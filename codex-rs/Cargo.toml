@@ -82,6 +82,7 @@ members = [
     "rmcp-client",
     "responses-api-proxy",
     "response-debug-context",
+    "riftx-app-server-adapter",
     "sandboxing",
     "stdio-to-uds",
     "otel",
@@ -219,6 +220,7 @@ codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
+codex-riftx-app-server-adapter = { path = "riftx-app-server-adapter" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
