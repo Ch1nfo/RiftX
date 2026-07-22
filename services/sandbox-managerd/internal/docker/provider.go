@@ -45,6 +45,54 @@ type Provider struct {
 	CredentialRoot string
 }
 
+// Reconcile removes labeled sandboxes left by an earlier managerd process.
+// Bootstrap material is not persisted, so retaining those containers after a
+// control-plane restart would leave unauditable execution behind.
+func (p Provider) Reconcile(ctx context.Context) error {
+	output, err := p.Runner.Run(
+		ctx,
+		nil,
+		p.DockerBinary,
+		"ps",
+		"-aq",
+		"--filter",
+		"label=riftx.engagement",
+	)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Fields(string(output)) {
+		if _, err := p.Runner.Run(ctx, nil, p.DockerBinary, "rm", "-f", id); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(p.CredentialRoot); err != nil {
+		return err
+	}
+	return os.MkdirAll(p.CredentialRoot, 0o700)
+}
+
+func (p Provider) EnsureManagementNetwork(ctx context.Context) error {
+	if _, err := p.Runner.Run(ctx, nil, p.DockerBinary, "network", "inspect", p.ManagementNet); err == nil {
+		return nil
+	}
+	_, err := p.Runner.Run(
+		ctx,
+		nil,
+		p.DockerBinary,
+		"network",
+		"create",
+		"--driver",
+		"bridge",
+		"--opt",
+		"com.docker.network.bridge.enable_icc=false",
+		"--label",
+		"riftx.management=true",
+		p.ManagementNet,
+	)
+	return err
+}
+
 func (p Provider) Create(ctx context.Context, record manager.Record) (string, error) {
 	name := "riftx-" + record.Sandbox.ID
 	managementDenies, err := p.managementDeniedCIDRs(ctx)

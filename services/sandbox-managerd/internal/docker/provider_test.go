@@ -2,6 +2,10 @@ package docker
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -10,8 +14,22 @@ import (
 )
 
 type recordingRunner struct {
-	calls  [][]string
-	inputs []string
+	calls    [][]string
+	inputs   []string
+	psOutput []byte
+}
+
+type failingInspectRunner struct {
+	recordingRunner
+}
+
+func (r *failingInspectRunner) Run(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+	if strings.Join(args, " ") == "network inspect riftx-management" {
+		r.calls = append(r.calls, append([]string{name}, args...))
+		r.inputs = append(r.inputs, string(input))
+		return nil, errors.New("network missing")
+	}
+	return r.recordingRunner.Run(ctx, input, name, args...)
 }
 
 func (r *recordingRunner) Run(_ context.Context, input []byte, name string, args ...string) ([]byte, error) {
@@ -19,6 +37,9 @@ func (r *recordingRunner) Run(_ context.Context, input []byte, name string, args
 	r.calls = append(r.calls, call)
 	r.inputs = append(r.inputs, string(input))
 	joined := strings.Join(call, " ")
+	if strings.Contains(joined, "ps -aq --filter label=riftx.engagement") {
+		return r.psOutput, nil
+	}
 	if strings.Contains(joined, "network inspect --format {{json .IPAM.Config}}") {
 		return []byte(`[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]`), nil
 	}
@@ -29,6 +50,44 @@ func (r *recordingRunner) Run(_ context.Context, input []byte, name string, args
 		return []byte("10.0.0.2\n"), nil
 	}
 	return nil, nil
+}
+
+func TestReconcileRemovesOnlyRiftXLabeledContainers(t *testing.T) {
+	credentialRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(credentialRoot, "stale.json"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{psOutput: []byte("container-a\ncontainer-b\n")}
+	provider := Provider{Runner: runner, DockerBinary: "docker", CredentialRoot: credentialRoot}
+	if err := provider.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	expected := [][]string{
+		{"docker", "ps", "-aq", "--filter", "label=riftx.engagement"},
+		{"docker", "rm", "-f", "container-a"},
+		{"docker", "rm", "-f", "container-b"},
+	}
+	if !reflect.DeepEqual(runner.calls, expected) {
+		t.Fatalf("unexpected calls: %#v", runner.calls)
+	}
+	if _, err := os.Stat(filepath.Join(credentialRoot, "stale.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale credential was not removed: %v", err)
+	}
+}
+
+func TestEnsureManagementNetworkDisablesInterContainerCommunication(t *testing.T) {
+	runner := &failingInspectRunner{}
+	provider := Provider{Runner: runner, DockerBinary: "docker", ManagementNet: "riftx-management"}
+	if err := provider.EnsureManagementNetwork(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	joined := make([]string, 0, len(runner.calls))
+	for _, call := range runner.calls {
+		joined = append(joined, strings.Join(call, " "))
+	}
+	if !strings.Contains(strings.Join(joined, "\n"), "network create --driver bridge --opt com.docker.network.bridge.enable_icc=false") {
+		t.Fatalf("management network was not hardened: %v", runner.calls)
+	}
 }
 
 func TestCreateAppliesContainerAndNetworkSecurityBaseline(t *testing.T) {

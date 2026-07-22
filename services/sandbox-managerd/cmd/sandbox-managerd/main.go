@@ -57,6 +57,14 @@ func run() error {
 		Runner: docker.CommandRunner{}, DockerBinary: "docker", NSenterBinary: "nsenter", NftBinary: "nft",
 		ManagementNet: *managementNet, ArtifactRoot: *artifactRoot, CredentialRoot: *credentialRoot,
 	}
+	reconcileContext, cancelReconcile := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelReconcile()
+	if err := provider.EnsureManagementNetwork(reconcileContext); err != nil {
+		return fmt.Errorf("prepare management network: %w", err)
+	}
+	if err := provider.Reconcile(reconcileContext); err != nil {
+		return fmt.Errorf("reconcile stale sandboxes: %w", err)
+	}
 	service := manager.NewService(provider, 5*time.Minute)
 	server := &http.Server{
 		Handler:           httpapi.New(service).Handler(),
