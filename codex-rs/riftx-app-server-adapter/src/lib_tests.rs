@@ -1,7 +1,9 @@
 use super::*;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
+use codex_app_server_protocol::EnvironmentConnectionNotification;
 use codex_app_server_protocol::EnvironmentStatusKind;
+use codex_app_server_protocol::ServerNotification;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
@@ -81,6 +83,29 @@ async fn unknown_environment_status_is_typed() {
     test.adapter.shutdown().await.expect("shutdown");
 }
 
+#[test]
+fn notification_envelope_preserves_correlation_ids() {
+    let event = RiftxAppServerEvent::Notification(ServerNotification::EnvironmentDisconnected(
+        EnvironmentConnectionNotification {
+            thread_id: "thread-1".to_string(),
+            environment_id: "sandbox-1".to_string(),
+        },
+    ));
+    assert_eq!(
+        event.envelope().expect("event envelope"),
+        RiftxEventEnvelope {
+            kind: "thread/environment/disconnected".to_string(),
+            thread_id: Some("thread-1".to_string()),
+            turn_id: None,
+            request_id: None,
+            data: serde_json::json!({
+                "threadId": "thread-1",
+                "environmentId": "sandbox-1",
+            }),
+        }
+    );
+}
+
 #[tokio::test]
 async fn registered_remote_environment_starts_pending() {
     let test = start_test_adapter().await;
@@ -138,7 +163,8 @@ async fn connects_to_authenticated_exec_server() {
     sleep(Duration::from_millis(50)).await;
 
     let test = start_test_adapter().await;
-    test.adapter
+    let request_handle = test.adapter.request_handle();
+    request_handle
         .add_environment(EnvironmentRegistration::new(
             "sandbox-real".to_string(),
             format!("ws://{address}"),
@@ -147,16 +173,14 @@ async fn connects_to_authenticated_exec_server() {
         ))
         .await
         .expect("environment/add should succeed");
-    let info = test
-        .adapter
+    let info = request_handle
         .environment_info("sandbox-real".to_string())
         .await
         .expect("real exec-server should report environment info");
     assert!(!info.shell.name.is_empty());
     assert!(!info.shell.path.is_empty());
 
-    let status = test
-        .adapter
+    let status = request_handle
         .environment_status("sandbox-real".to_string())
         .await
         .expect("status request should succeed");

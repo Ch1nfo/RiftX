@@ -4,15 +4,21 @@
 //! bound to an explicitly selected remote environment, so Gateway code cannot
 //! invoke host execution methods such as `thread/shellCommand` or `process/spawn`.
 
+mod events;
+
+pub use events::*;
+
+use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+use codex_app_server_client::EnvironmentManager;
 use codex_app_server_client::InProcessAppServerClient;
+use codex_app_server_client::InProcessAppServerRequestHandle;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
-use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
-use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::EnvironmentAddParams;
 use codex_app_server_protocol::EnvironmentAddResponse;
@@ -21,14 +27,11 @@ use codex_app_server_protocol::EnvironmentInfoResponse;
 use codex_app_server_protocol::EnvironmentStatusParams;
 use codex_app_server_protocol::EnvironmentStatusResponse;
 use codex_app_server_protocol::FileChangeApprovalDecision;
-use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
-use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SensitiveString;
-use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -37,7 +40,17 @@ use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput;
+use codex_arg0::Arg0DispatchPaths;
+use codex_config::CloudConfigBundleLoader;
+use codex_config::LoaderOverrides;
+use codex_core::config::ConfigBuilder;
+use codex_core::init_state_db;
+use codex_feedback::CodexFeedback;
+use codex_protocol::protocol::SessionSource;
+use codex_utils_path_uri::LegacyAppPathString;
 use std::io;
+use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
@@ -104,129 +117,118 @@ pub struct RemoteTurnStartParams {
     pub app_server: TurnStartParams,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingCommandApproval {
-    request_id: RequestId,
-    pub params: CommandExecutionRequestApprovalParams,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEnvironment {
+    pub environment_id: String,
+    pub cwd: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingFileChangeApproval {
-    request_id: RequestId,
-    pub params: FileChangeRequestApprovalParams,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingPermissionsApproval {
-    request_id: RequestId,
-    pub params: PermissionsRequestApprovalParams,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingDynamicToolCall {
-    request_id: RequestId,
-    pub params: DynamicToolCallParams,
-}
-
-#[derive(Debug, Clone)]
-pub enum RiftxAppServerEvent {
-    Notification(ServerNotification),
-    CommandApproval(PendingCommandApproval),
-    FileChangeApproval(PendingFileChangeApproval),
-    PermissionsApproval(PendingPermissionsApproval),
-    DynamicToolCall(PendingDynamicToolCall),
-    UnsupportedServerRequest { method: String },
-    Lagged { skipped: usize },
+/// Cloneable, restricted command surface used by RiftX Gateway request handlers.
+///
+/// The handle intentionally cannot issue arbitrary App Server requests.
+#[derive(Clone)]
+pub struct RiftxAppServerRequestHandle {
+    client: InProcessAppServerRequestHandle,
+    next_request_id: Arc<AtomicI64>,
 }
 
 /// Embedded Codex App Server surface available to RiftX Gateway.
 pub struct RiftxAppServerAdapter {
     client: InProcessAppServerClient,
-    next_request_id: AtomicI64,
+    request_handle: RiftxAppServerRequestHandle,
 }
 
 impl RiftxAppServerAdapter {
-    pub async fn start(args: InProcessClientStartArgs) -> Result<Self, AdapterError> {
-        Ok(Self {
-            client: InProcessAppServerClient::start(args).await?,
-            next_request_id: AtomicI64::new(1),
+    pub async fn start_embedded() -> Result<Self, AdapterError> {
+        let config = Arc::new(ConfigBuilder::default().strict_config(true).build().await?);
+        let config_warnings = config
+            .startup_warnings
+            .iter()
+            .map(|warning| ConfigWarningNotification {
+                summary: warning.clone(),
+                details: None,
+                path: None,
+                range: None,
+            })
+            .collect();
+        let state_db = init_state_db(config.as_ref()).await;
+        let environment_manager = Arc::new(
+            EnvironmentManager::from_codex_home(config.codex_home.clone(), None)
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))?,
+        );
+        Self::start(InProcessClientStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config,
+            cli_overrides: Vec::new(),
+            loader_overrides: LoaderOverrides::default(),
+            strict_config: true,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db,
+            environment_manager,
+            config_warnings,
+            session_source: SessionSource::Custom("riftx-gateway".to_string()),
+            enable_codex_api_key_env: true,
+            client_name: "riftx-gateway".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         })
+        .await
+    }
+
+    pub async fn start(args: InProcessClientStartArgs) -> Result<Self, AdapterError> {
+        let client = InProcessAppServerClient::start(args).await?;
+        Ok(Self {
+            request_handle: RiftxAppServerRequestHandle {
+                client: client.request_handle(),
+                next_request_id: Arc::new(AtomicI64::new(1)),
+            },
+            client,
+        })
+    }
+
+    pub fn request_handle(&self) -> RiftxAppServerRequestHandle {
+        self.request_handle.clone()
     }
 
     pub async fn add_environment(
         &self,
         registration: EnvironmentRegistration,
     ) -> Result<EnvironmentAddResponse, AdapterError> {
-        Ok(self
-            .client
-            .request_typed(ClientRequest::EnvironmentAdd {
-                request_id: self.next_request_id(),
-                params: EnvironmentAddParams {
-                    environment_id: registration.environment_id,
-                    exec_server_url: registration.exec_server_url,
-                    connect_timeout_ms: registration.connect_timeout_ms,
-                    bootstrap_token: registration.bootstrap_token,
-                },
-            })
-            .await?)
+        self.request_handle.add_environment(registration).await
     }
 
     pub async fn environment_info(
         &self,
         environment_id: String,
     ) -> Result<EnvironmentInfoResponse, AdapterError> {
-        Ok(self
-            .client
-            .request_typed(ClientRequest::EnvironmentInfo {
-                request_id: self.next_request_id(),
-                params: EnvironmentInfoParams { environment_id },
-            })
-            .await?)
+        self.request_handle.environment_info(environment_id).await
     }
 
     pub async fn environment_status(
         &self,
         environment_id: String,
     ) -> Result<EnvironmentStatusResponse, AdapterError> {
-        Ok(self
-            .client
-            .request_typed(ClientRequest::EnvironmentStatus {
-                request_id: self.next_request_id(),
-                params: EnvironmentStatusParams { environment_id },
-            })
-            .await?)
+        self.request_handle.environment_status(environment_id).await
     }
 
     pub async fn start_thread(
         &self,
-        mut params: RemoteThreadStartParams,
+        params: RemoteThreadStartParams,
     ) -> Result<ThreadStartResponse, AdapterError> {
-        params.app_server.cwd = None;
-        params.app_server.runtime_workspace_roots = None;
-        params.app_server.environments = Some(vec![params.environment]);
-        Ok(self
-            .client
-            .request_typed(ClientRequest::ThreadStart {
-                request_id: self.next_request_id(),
-                params: params.app_server,
-            })
-            .await?)
+        self.request_handle.start_thread(params).await
     }
 
     pub async fn start_turn(
         &self,
-        mut params: RemoteTurnStartParams,
+        params: RemoteTurnStartParams,
     ) -> Result<TurnStartResponse, AdapterError> {
-        params.app_server.cwd = None;
-        params.app_server.runtime_workspace_roots = None;
-        params.app_server.environments = Some(vec![params.environment]);
-        Ok(self
-            .client
-            .request_typed(ClientRequest::TurnStart {
-                request_id: self.next_request_id(),
-                params: params.app_server,
-            })
-            .await?)
+        self.request_handle.start_turn(params).await
     }
 
     pub async fn interrupt_turn(
@@ -234,13 +236,25 @@ impl RiftxAppServerAdapter {
         thread_id: String,
         turn_id: String,
     ) -> Result<TurnInterruptResponse, AdapterError> {
-        Ok(self
-            .client
-            .request_typed(ClientRequest::TurnInterrupt {
-                request_id: self.next_request_id(),
-                params: TurnInterruptParams { thread_id, turn_id },
-            })
-            .await?)
+        self.request_handle.interrupt_turn(thread_id, turn_id).await
+    }
+
+    pub async fn start_remote_thread(
+        &self,
+        environment: RemoteEnvironment,
+    ) -> Result<String, AdapterError> {
+        self.request_handle.start_remote_thread(environment).await
+    }
+
+    pub async fn start_remote_turn(
+        &self,
+        thread_id: String,
+        environment: RemoteEnvironment,
+        input: String,
+    ) -> Result<String, AdapterError> {
+        self.request_handle
+            .start_remote_turn(thread_id, environment, input)
+            .await
     }
 
     pub async fn resolve_command_approval(
@@ -361,9 +375,144 @@ impl RiftxAppServerAdapter {
         self.client.shutdown().await?;
         Ok(())
     }
+}
+
+impl RiftxAppServerRequestHandle {
+    pub async fn add_environment(
+        &self,
+        registration: EnvironmentRegistration,
+    ) -> Result<EnvironmentAddResponse, AdapterError> {
+        Ok(self
+            .client
+            .request_typed(ClientRequest::EnvironmentAdd {
+                request_id: self.next_request_id(),
+                params: EnvironmentAddParams {
+                    environment_id: registration.environment_id,
+                    exec_server_url: registration.exec_server_url,
+                    connect_timeout_ms: registration.connect_timeout_ms,
+                    bootstrap_token: registration.bootstrap_token,
+                },
+            })
+            .await?)
+    }
+
+    pub async fn environment_info(
+        &self,
+        environment_id: String,
+    ) -> Result<EnvironmentInfoResponse, AdapterError> {
+        Ok(self
+            .client
+            .request_typed(ClientRequest::EnvironmentInfo {
+                request_id: self.next_request_id(),
+                params: EnvironmentInfoParams { environment_id },
+            })
+            .await?)
+    }
+
+    pub async fn environment_status(
+        &self,
+        environment_id: String,
+    ) -> Result<EnvironmentStatusResponse, AdapterError> {
+        Ok(self
+            .client
+            .request_typed(ClientRequest::EnvironmentStatus {
+                request_id: self.next_request_id(),
+                params: EnvironmentStatusParams { environment_id },
+            })
+            .await?)
+    }
+
+    pub async fn start_thread(
+        &self,
+        mut params: RemoteThreadStartParams,
+    ) -> Result<ThreadStartResponse, AdapterError> {
+        params.app_server.cwd = None;
+        params.app_server.runtime_workspace_roots = None;
+        params.app_server.environments = Some(vec![params.environment]);
+        Ok(self
+            .client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: self.next_request_id(),
+                params: params.app_server,
+            })
+            .await?)
+    }
+
+    pub async fn start_turn(
+        &self,
+        mut params: RemoteTurnStartParams,
+    ) -> Result<TurnStartResponse, AdapterError> {
+        params.app_server.cwd = None;
+        params.app_server.runtime_workspace_roots = None;
+        params.app_server.environments = Some(vec![params.environment]);
+        Ok(self
+            .client
+            .request_typed(ClientRequest::TurnStart {
+                request_id: self.next_request_id(),
+                params: params.app_server,
+            })
+            .await?)
+    }
+
+    pub async fn interrupt_turn(
+        &self,
+        thread_id: String,
+        turn_id: String,
+    ) -> Result<TurnInterruptResponse, AdapterError> {
+        Ok(self
+            .client
+            .request_typed(ClientRequest::TurnInterrupt {
+                request_id: self.next_request_id(),
+                params: TurnInterruptParams { thread_id, turn_id },
+            })
+            .await?)
+    }
+
+    pub async fn start_remote_thread(
+        &self,
+        environment: RemoteEnvironment,
+    ) -> Result<String, AdapterError> {
+        let response = self
+            .start_thread(RemoteThreadStartParams {
+                environment: turn_environment(environment),
+                app_server: ThreadStartParams::default(),
+            })
+            .await?;
+        Ok(response.thread.id)
+    }
+
+    pub async fn start_remote_turn(
+        &self,
+        thread_id: String,
+        environment: RemoteEnvironment,
+        input: String,
+    ) -> Result<String, AdapterError> {
+        let response = self
+            .start_turn(RemoteTurnStartParams {
+                environment: turn_environment(environment),
+                app_server: TurnStartParams {
+                    thread_id,
+                    input: vec![UserInput::Text {
+                        text: input,
+                        text_elements: Vec::new(),
+                    }],
+                    ..Default::default()
+                },
+            })
+            .await?;
+        Ok(response.turn.id)
+    }
 
     fn next_request_id(&self) -> RequestId {
         RequestId::Integer(self.next_request_id.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+fn turn_environment(environment: RemoteEnvironment) -> TurnEnvironmentParams {
+    TurnEnvironmentParams {
+        environment_id: environment.environment_id,
+        cwd: LegacyAppPathString::from_string(environment.cwd),
+        runtime_workspace_roots: None,
     }
 }
 
