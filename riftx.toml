@@ -1,0 +1,36 @@
+[gateway]
+listen = "127.0.0.1:8787"
+operator_token_env = "RIFTX_OPERATOR_TOKEN"
+state_db = ".riftx/state.sqlite"
+
+[manager]
+socket = ".riftx/managerd.sock"
+request_timeout_ms = 10000
+
+[sandbox]
+image = "riftx/sandbox:dev"
+cpu_limit = 2
+memory_mib = 2048
+pids_limit = 512
+
+[policy]
+allowed_tools = ["rt_nmap", "rt_httpx", "rt_nuclei", "rt_ffuf"]
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1073741824
+
+[tool_profiles.recon]
+allowed_tools = ["rt_nmap", "rt_httpx", "rt_nuclei", "rt_ffuf"]
+approval = "high_risk"
+
+[tool_profiles.recon.scope]
+cidrs = ["0.0.0.0/0", "::/0"]
+domains = ["*"]
+ports = []

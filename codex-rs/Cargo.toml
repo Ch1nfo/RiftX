@@ -83,6 +83,7 @@ members = [
     "responses-api-proxy",
     "response-debug-context",
     "riftx-app-server-adapter",
+    "riftx-core",
     "sandboxing",
     "stdio-to-uds",
     "otel",
@@ -221,6 +222,7 @@ codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-riftx-app-server-adapter = { path = "riftx-app-server-adapter" }
+codex-riftx-core = { path = "riftx-core" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
@@ -330,6 +332,7 @@ ignore = "0.4.23"
 image = { version = "^0.25.9", default-features = false }
 include_dir = "0.7.4"
 indexmap = "2.12.0"
+ipnet = "2.11.0"
 insta = "1.46.3"
 inventory = "0.3.19"
 itertools = "0.14.0"
