@@ -1,0 +1,51 @@
+name: RiftX CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Verify vendored Codex revision
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 scripts/riftx/verify-upstream-lock.py
+          --expected-commit 963cda85aa2a4cfb85e52d771d22d9f3069951fa
+
+      - name: Check formatting
+        shell: bash -el {0}
+        run: conda run -n agent just fmt-check
+
+      - name: Check integration crates
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent sh -lc
+          'cd codex-rs && cargo check -p codex-app-server -p codex-exec-server'
+
+      - name: Test upstream lock verifier
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 -m unittest
+          scripts/riftx/test_verify_upstream_lock.py
+

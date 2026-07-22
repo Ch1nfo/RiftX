@@ -1,0 +1,44 @@
+name: Linux Remote Environment Compatibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remote-environment:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Verify Docker
+        run: docker info
+
+      - name: Run Codex remote environment compatibility test
+        shell: bash -el {0}
+        run: |
+          conda run -n agent bash -lc '
+            set -euo pipefail
+            source scripts/test-remote-env.sh
+            trap codex_remote_env_cleanup EXIT
+            just test -p codex-core --test all remote_test_env_can_connect_and_use_filesystem
+          '
+
+      - name: Record scope of this workflow
+        run: |
+          echo "This workflow validates Codex remote-environment compatibility."
+          echo "Its privileged fixture is not a RiftX production security acceptance test."
+
