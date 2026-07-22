@@ -1,0 +1,36 @@
+[package]
+name = "codex-riftx-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "riftx-gateway"
+path = "src/main.rs"
+
+[lib]
+name = "codex_riftx_gateway"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+clap = { workspace = true, features = ["derive"] }
+codex-riftx-core = { workspace = true }
+codex-riftx-manager-client = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+subtle = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
