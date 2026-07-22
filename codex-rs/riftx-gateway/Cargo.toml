@@ -21,6 +21,7 @@ anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
 clap = { workspace = true, features = ["derive"] }
 codex-riftx-core = { workspace = true }
+codex-riftx-app-server-adapter = { workspace = true }
 codex-riftx-manager-client = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

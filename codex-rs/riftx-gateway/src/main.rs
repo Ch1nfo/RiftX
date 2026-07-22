@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
+use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateStore;
 use codex_riftx_gateway::GatewayState;
@@ -42,7 +43,18 @@ async fn main() -> anyhow::Result<()> {
         &config.manager.socket,
         Duration::from_millis(config.manager.request_timeout_ms),
     )?;
-    let app = build_router(GatewayState::new(config, store, manager), token);
+    let app_server = RiftxAppServerAdapter::start_embedded()
+        .await
+        .context("start embedded Codex App Server")?;
+    let app_server_handle = app_server.request_handle();
+    let state = GatewayState::new(config, store, manager).with_app_server(app_server_handle);
+    state
+        .reconcile_after_restart()
+        .await
+        .context("reconcile active engagements after Gateway restart")?;
+    state.spawn_app_server_event_pump(app_server);
+    state.spawn_manager_event_pump();
+    let app = build_router(state, token);
     let listener = TcpListener::bind(listen).await?;
     println!("http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;

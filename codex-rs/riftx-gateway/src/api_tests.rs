@@ -7,8 +7,11 @@ use codex_riftx_core::AuditConfig;
 use codex_riftx_core::GatewayConfig;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::ManagerConfig;
+use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::SandboxConfig;
+use codex_riftx_core::StateStore;
 use codex_riftx_core::ToolProfileConfig;
+use codex_riftx_manager_client::ManagerClient;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
@@ -16,7 +19,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-async fn test_router(temp: &TempDir) -> Router {
+async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
         gateway: GatewayConfig {
             listen: "127.0.0.1:0".to_string(),
@@ -64,10 +67,51 @@ async fn test_router(temp: &TempDir) -> Router {
         .expect("state store");
     let manager = ManagerClient::new(&config.manager.socket, Duration::from_millis(100))
         .expect("manager client");
-    build_router(
-        GatewayState::new(config, store, manager),
-        "secret".to_string(),
-    )
+    GatewayState::new(config, store, manager)
+}
+
+async fn test_router(temp: &TempDir) -> Router {
+    build_router(test_state(temp).await, "secret".to_string())
+}
+
+#[tokio::test]
+async fn restart_reconciliation_interrupts_active_engagements() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = Engagement {
+        id: "eng-active".to_string(),
+        name: "Juice Shop".to_string(),
+        status: EngagementStatus::Active,
+        scope: Scope {
+            cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
+            domains: Vec::new(),
+            ports: vec![80],
+        },
+        tool_profile: "recon".to_string(),
+        policy_revision: "rev-1".to_string(),
+        sandbox_id: Some("sandbox-stale".to_string()),
+        thread_id: Some("thread-stale".to_string()),
+        created_at: 1,
+        updated_at: 1,
+    };
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    state
+        .reconcile_after_restart()
+        .await
+        .expect("reconcile state");
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("read engagement")
+            .status,
+        EngagementStatus::Interrupted
+    );
 }
 
 #[tokio::test]

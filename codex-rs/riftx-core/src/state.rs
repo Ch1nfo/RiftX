@@ -159,6 +159,15 @@ impl StateStore {
         Ok(serde_json::from_str(row.try_get("data")?)?)
     }
 
+    pub async fn engagements(&self) -> Result<Vec<Engagement>, StateError> {
+        let rows = sqlx::query("SELECT data FROM engagements ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
+            .collect()
+    }
+
     pub async fn transition_engagement(
         &self,
         id: &str,
@@ -169,6 +178,7 @@ impl StateStore {
         let valid = matches!(
             (engagement.status, to),
             (EngagementStatus::Draft, EngagementStatus::Active)
+                | (EngagementStatus::Interrupted, EngagementStatus::Active)
                 | (EngagementStatus::Active, EngagementStatus::Interrupted)
                 | (EngagementStatus::Active, EngagementStatus::Completed)
         );
@@ -223,6 +233,17 @@ impl StateStore {
     pub async fn put_task(&self, value: &Task) -> Result<(), StateError> {
         self.put_entity(EntityTable::Tasks, &value.id, &value.engagement_id, value)
             .await
+    }
+
+    pub async fn task_for_turn(
+        &self,
+        engagement_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<Task>, StateError> {
+        let tasks: Vec<Task> = self.entities(EntityTable::Tasks, engagement_id).await?;
+        Ok(tasks
+            .into_iter()
+            .find(|task| task.turn_id.as_deref() == Some(turn_id)))
     }
 
     pub async fn put_artifact(&self, value: &Artifact) -> Result<(), StateError> {

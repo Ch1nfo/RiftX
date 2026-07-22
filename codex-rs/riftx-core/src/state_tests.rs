@@ -1,5 +1,6 @@
 use super::*;
 use crate::Scope;
+use crate::TaskStatus;
 use ipnet::IpNet;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -42,6 +43,49 @@ async fn engagement_lifecycle_is_persisted() {
         .expect("activate");
     assert_eq!(active.status, EngagementStatus::Active);
     assert_eq!(active.updated_at, 2);
+    assert_eq!(
+        store.engagements().await.expect("list engagements"),
+        vec![active]
+    );
+
+    let interrupted = store
+        .transition_engagement("eng-1", EngagementStatus::Interrupted, 3)
+        .await
+        .expect("interrupt");
+    let reactivated = store
+        .transition_engagement("eng-1", EngagementStatus::Active, 4)
+        .await
+        .expect("reactivate");
+    assert_eq!(reactivated.status, EngagementStatus::Active);
+    assert_eq!(reactivated.id, interrupted.id);
+}
+
+#[tokio::test]
+async fn task_is_resolved_by_turn_id() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = StateStore::open(&temp.path().join("state.sqlite"))
+        .await
+        .expect("state store");
+    store
+        .put_engagement(&engagement())
+        .await
+        .expect("insert draft");
+    let task = Task {
+        id: "task-1".to_string(),
+        engagement_id: "eng-1".to_string(),
+        kind: "agent_turn".to_string(),
+        status: TaskStatus::Running,
+        turn_id: Some("turn-1".to_string()),
+        error: None,
+    };
+    store.put_task(&task).await.expect("insert task");
+    assert_eq!(
+        store
+            .task_for_turn("eng-1", "turn-1")
+            .await
+            .expect("lookup task"),
+        Some(task)
+    );
 }
 
 #[tokio::test]

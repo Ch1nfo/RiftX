@@ -1,3 +1,6 @@
+use crate::gateway_state::ActiveTurn;
+use crate::gateway_state::GatewayState;
+use crate::gateway_state::unix_timestamp;
 use crate::report::EngagementReport;
 use axum::Json;
 use axum::Router;
@@ -16,83 +19,28 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
+use codex_riftx_app_server_adapter::EnvironmentRegistration;
+use codex_riftx_app_server_adapter::RemoteEnvironment;
 use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
-use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::Scope;
 use codex_riftx_core::StateError;
-use codex_riftx_core::StateStore;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_manager_client::CreateSandboxRequest;
-use codex_riftx_manager_client::ManagerClient;
 use codex_riftx_manager_client::SandboxResources;
 use codex_riftx_manager_client::SandboxScope;
 use futures::Stream;
 use futures::stream;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value;
 use serde_json::json;
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 use subtle::ConstantTimeEq;
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use uuid::Uuid;
-
-#[derive(Clone)]
-pub struct GatewayState {
-    pub config: Arc<RiftxConfig>,
-    pub store: StateStore,
-    pub manager: ManagerClient,
-    events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
-}
-
-impl GatewayState {
-    pub fn new(config: RiftxConfig, store: StateStore, manager: ManagerClient) -> Self {
-        Self {
-            config: Arc::new(config),
-            store,
-            manager,
-            events: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    async fn publish(&self, engagement_id: &str, kind: &str, data: Value) {
-        let sender = self.event_sender(engagement_id).await;
-        let _ = sender.send(GatewayEvent {
-            engagement_id: engagement_id.to_string(),
-            kind: kind.to_string(),
-            timestamp: unix_timestamp(),
-            data,
-        });
-    }
-
-    async fn event_sender(&self, engagement_id: &str) -> broadcast::Sender<GatewayEvent> {
-        if let Some(sender) = self.events.read().await.get(engagement_id) {
-            return sender.clone();
-        }
-        let mut events = self.events.write().await;
-        events
-            .entry(engagement_id.to_string())
-            .or_insert_with(|| broadcast::channel(256).0)
-            .clone()
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GatewayEvent {
-    engagement_id: String,
-    kind: String,
-    timestamp: i64,
-    data: Value,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -166,6 +114,14 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             code: "manager_error",
+            message: message.into(),
+        }
+    }
+
+    fn app_server(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            code: "app_server_error",
             message: message.into(),
         }
     }
@@ -278,11 +234,19 @@ async fn activate_engagement(
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
     let mut engagement = state.store.engagement(&id).await?;
-    if engagement.status != EngagementStatus::Draft {
+    if !matches!(
+        engagement.status,
+        EngagementStatus::Draft | EngagementStatus::Interrupted
+    ) {
         return Err(ApiError::bad_request(
-            "only draft engagements can be activated",
+            "only draft or interrupted engagements can be activated",
         ));
     }
+    let app_server = state
+        .app_server
+        .as_ref()
+        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?
+        .clone();
     let profile = state
         .config
         .tool_profiles
@@ -293,7 +257,14 @@ async fn activate_engagement(
     if policy.revision != engagement.policy_revision {
         return Err(ApiError::bad_request("engagement policy revision is stale"));
     }
-    let sandbox = state
+    if engagement.status == EngagementStatus::Interrupted
+        && let Some(sandbox_id) = engagement.sandbox_id.take()
+    {
+        let _ = state.manager.kill(&sandbox_id).await;
+        let _ = state.manager.delete(&sandbox_id).await;
+        engagement.thread_id = None;
+    }
+    let mut sandbox = state
         .manager
         .create_sandbox(&CreateSandboxRequest {
             engagement_id: engagement.id.clone(),
@@ -323,7 +294,34 @@ async fn activate_engagement(
         })
         .await
         .map_err(|error| ApiError::upstream(error.to_string()))?;
+    let Some(bootstrap_token) = sandbox.bootstrap_token.take() else {
+        let _ = state.manager.kill(&sandbox.id).await;
+        let _ = state.manager.delete(&sandbox.id).await;
+        return Err(ApiError::upstream(
+            "managerd did not return the one-time bootstrap credential",
+        ));
+    };
+    let registration = EnvironmentRegistration::new(
+        sandbox.environment_id.clone(),
+        sandbox.exec_server_url.clone(),
+        Some(state.config.manager.request_timeout_ms),
+        bootstrap_token.into_inner(),
+    );
+    if let Err(error) = app_server.add_environment(registration).await {
+        let _ = state.manager.kill(&sandbox.id).await;
+        let _ = state.manager.delete(&sandbox.id).await;
+        return Err(ApiError::app_server(error.to_string()));
+    }
+    if let Err(error) = app_server
+        .environment_info(sandbox.environment_id.clone())
+        .await
+    {
+        let _ = state.manager.kill(&sandbox.id).await;
+        let _ = state.manager.delete(&sandbox.id).await;
+        return Err(ApiError::app_server(error.to_string()));
+    }
     engagement.sandbox_id = Some(sandbox.id);
+    engagement.thread_id = None;
     state.store.put_engagement(&engagement).await?;
     let engagement = state
         .store
@@ -344,14 +342,59 @@ async fn start_turn(
     Path(id): Path<String>,
     Json(params): Json<StartTurnParams>,
 ) -> Result<(StatusCode, Json<TurnAccepted>), ApiError> {
-    let engagement = state.store.engagement(&id).await?;
+    let _turn_permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let mut engagement = state.store.engagement(&id).await?;
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::bad_request("engagement is not active"));
     }
     if params.input.trim().is_empty() {
         return Err(ApiError::bad_request("turn input cannot be empty"));
     }
-    let task = Task {
+    let app_server = state
+        .app_server
+        .as_ref()
+        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
+    let sandbox_id = engagement
+        .sandbox_id
+        .as_deref()
+        .ok_or_else(|| ApiError::bad_request("engagement has no sandbox"))?;
+    let sandbox = match state.manager.sandbox(sandbox_id).await {
+        Ok(sandbox) => sandbox,
+        Err(error) => {
+            state
+                .store
+                .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
+                .await?;
+            return Err(ApiError::upstream(error.to_string()));
+        }
+    };
+    let environment = RemoteEnvironment {
+        environment_id: sandbox.environment_id,
+        cwd: "/workspace".to_string(),
+    };
+    let thread_id = match engagement.thread_id.clone() {
+        Some(thread_id) => thread_id,
+        None => {
+            let thread_id = app_server
+                .start_remote_thread(environment.clone())
+                .await
+                .map_err(|error| ApiError::app_server(error.to_string()))?;
+            engagement.thread_id = Some(thread_id.clone());
+            state.store.put_engagement(&engagement).await?;
+            thread_id
+        }
+    };
+    state
+        .thread_engagements
+        .write()
+        .await
+        .insert(thread_id.clone(), id.clone());
+    let mut task = Task {
         id: Uuid::new_v4().to_string(),
         engagement_id: id.clone(),
         kind: "agent_turn".to_string(),
@@ -360,11 +403,31 @@ async fn start_turn(
         error: None,
     };
     state.store.put_task(&task).await?;
+    let turn_id = match app_server
+        .start_remote_turn(thread_id.clone(), environment, params.input)
+        .await
+    {
+        Ok(turn_id) => turn_id,
+        Err(error) => {
+            task.status = TaskStatus::Failed;
+            task.error = Some(error.to_string());
+            state.store.put_task(&task).await?;
+            return Err(ApiError::app_server(error.to_string()));
+        }
+    };
+    task.status = TaskStatus::Running;
+    task.turn_id = Some(turn_id.clone());
+    state.store.put_task(&task).await?;
+    state
+        .active_turns
+        .write()
+        .await
+        .insert(id.clone(), ActiveTurn { thread_id, turn_id });
     state
         .publish(
             &id,
-            "turnQueued",
-            json!({"taskId": task.id, "input": params.input}),
+            "turnStarted",
+            json!({"taskId": task.id, "turnId": task.turn_id}),
         )
         .await;
     Ok((
@@ -396,18 +459,25 @@ async fn interrupt_engagement(
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
     let engagement = state.store.engagement(&id).await?;
-    if let Some(sandbox_id) = &engagement.sandbox_id {
-        state
-            .manager
-            .interrupt(sandbox_id)
-            .await
-            .map_err(|error| ApiError::upstream(error.to_string()))?;
+    let active_turn = state.active_turns.read().await.get(&id).cloned();
+    if let Some(active_turn) = active_turn
+        && let Some(app_server) = &state.app_server
+    {
+        let _ = app_server
+            .interrupt_turn(active_turn.thread_id, active_turn.turn_id)
+            .await;
     }
+    let manager_result = match &engagement.sandbox_id {
+        Some(sandbox_id) => state.manager.interrupt(sandbox_id).await.map(|_| ()),
+        None => Ok(()),
+    };
+    state.active_turns.write().await.remove(&id);
     let engagement = state
         .store
         .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
         .await?;
     state.publish(&id, "engagementInterrupted", json!({})).await;
+    manager_result.map_err(|error| ApiError::upstream(error.to_string()))?;
     Ok(Json(engagement))
 }
 
@@ -454,12 +524,6 @@ async fn report(
             .into_response()),
         ReportFormat::Json => Ok(Json(report).into_response()),
     }
-}
-
-fn unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
 }
 
 #[cfg(test)]

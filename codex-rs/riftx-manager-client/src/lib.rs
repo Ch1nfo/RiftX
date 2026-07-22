@@ -56,6 +56,22 @@ pub enum SandboxStatus {
     Failed,
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BootstrapToken(String);
+
+impl BootstrapToken {
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for BootstrapToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Sandbox {
@@ -64,7 +80,7 @@ pub struct Sandbox {
     pub status: SandboxStatus,
     pub environment_id: String,
     pub exec_server_url: String,
-    pub bootstrap_token: Option<String>,
+    pub bootstrap_token: Option<BootstrapToken>,
     pub policy_revision: String,
     pub created_at: i64,
 }

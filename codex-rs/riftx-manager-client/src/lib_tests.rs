@@ -79,3 +79,10 @@ async fn create_sandbox_uses_unix_socket_contract() {
     assert_eq!(sandbox.status, SandboxStatus::Ready);
     server.await.expect("server task");
 }
+
+#[test]
+fn bootstrap_token_debug_is_redacted() {
+    let token: BootstrapToken = serde_json::from_str(r#""secret-value""#).expect("token JSON");
+    assert_eq!(format!("{token:?}"), "[REDACTED]");
+    assert_eq!(token.into_inner(), "secret-value");
+}
