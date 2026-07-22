@@ -1,12 +1,43 @@
-name: Linux Remote Environment Compatibility
+name: Linux Security
 
 on:
+  pull_request:
+    paths:
+      - "services/sandbox-managerd/**"
+      - ".github/workflows/linux-security.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  network-boundary:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - name: Install nftables
+        run: sudo apt-get update && sudo apt-get install -y nftables
+
+      - name: Verify Docker
+        run: docker info
+
+      - name: Run managerd race tests
+        shell: bash -el {0}
+        working-directory: services/sandbox-managerd
+        run: conda run -n agent go test -race ./...
+
+      - name: Run Linux Docker network boundary test
+        shell: bash -el {0}
+        working-directory: services/sandbox-managerd
+        run: conda run -n agent go test -tags=integration ./internal/docker -run TestLinuxNetworkSecurityBoundary -count=1
+
   remote-environment:
     runs-on: ubuntu-24.04
     steps:
@@ -41,4 +72,3 @@ jobs:
         run: |
           echo "This workflow validates Codex remote-environment compatibility."
           echo "Its privileged fixture is not a RiftX production security acceptance test."
-
