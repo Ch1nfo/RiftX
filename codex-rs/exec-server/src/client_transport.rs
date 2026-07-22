@@ -24,6 +24,7 @@ use crate::client_api::NoiseRendezvousConnectArgs;
 use crate::client_api::NoiseRendezvousConnectBundle;
 use crate::client_api::NoiseRendezvousConnectProvider;
 use crate::client_api::RemoteExecServerConnectArgs;
+use crate::client_api::SensitiveBootstrapToken;
 use crate::client_api::StdioExecServerCommand;
 use crate::client_api::StdioExecServerConnectArgs;
 use crate::connection::JsonRpcConnection;
@@ -62,7 +63,11 @@ impl ExecServerReconnectStrategy {
             Self::WebSocket(args) => {
                 let mut args = args.clone();
                 args.resume_session_id = Some(session_id.to_string());
-                let connection = ExecServerClient::open_websocket_connection(&args).await?;
+                let connection = ExecServerClient::open_websocket_connection_with_authorization(
+                    &args,
+                    Some(WebSocketAuthorization::Session(session_id)),
+                )
+                .await?;
                 Ok((connection, args.into()))
             }
             Self::NoiseRendezvous {
@@ -112,51 +117,63 @@ impl ExecServerClient {
                 })?;
         }
 
-        let (websocket_url, connect_timeout, initialize_timeout) = match transport_params {
-            ExecServerTransportParams::Deferred(_) => {
-                return Err(ExecServerError::Protocol(
-                    "nested deferred exec-server transports are unsupported".to_string(),
-                ));
-            }
-            ExecServerTransportParams::WebSocketUrl {
-                websocket_url,
-                connect_timeout,
-                initialize_timeout,
-            } => (websocket_url, connect_timeout, initialize_timeout),
-            ExecServerTransportParams::NoiseRendezvous { provider, identity } => {
-                let reconnect_strategy = ExecServerReconnectStrategy::NoiseRendezvous {
-                    provider: Arc::clone(&provider),
-                    identity: identity.clone(),
-                    client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
-                    connect_timeout: DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
-                    initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
-                };
-                let (connection, options) =
-                    Self::open_initial_noise_rendezvous_connection(&provider, &identity).await?;
-                return Self::connect_with_recovery(connection, options, Some(reconnect_strategy))
-                    .await;
-            }
-            ExecServerTransportParams::StdioCommand {
-                command,
-                initialize_timeout,
-            } => {
-                return Self::connect_stdio_command(StdioExecServerConnectArgs {
-                    command,
-                    client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
+        let (websocket_url, connect_timeout, initialize_timeout, bootstrap_token) =
+            match transport_params {
+                ExecServerTransportParams::Deferred(_) => {
+                    return Err(ExecServerError::Protocol(
+                        "nested deferred exec-server transports are unsupported".to_string(),
+                    ));
+                }
+                ExecServerTransportParams::WebSocketUrl {
+                    websocket_url,
+                    connect_timeout,
                     initialize_timeout,
-                    resume_session_id: None,
-                })
-                .await;
-            }
-        };
-        Self::connect_websocket(RemoteExecServerConnectArgs {
+                    bootstrap_token,
+                } => (
+                    websocket_url,
+                    connect_timeout,
+                    initialize_timeout,
+                    bootstrap_token,
+                ),
+                ExecServerTransportParams::NoiseRendezvous { provider, identity } => {
+                    let reconnect_strategy = ExecServerReconnectStrategy::NoiseRendezvous {
+                        provider: Arc::clone(&provider),
+                        identity: identity.clone(),
+                        client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
+                        connect_timeout: DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
+                        initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
+                    };
+                    let (connection, options) =
+                        Self::open_initial_noise_rendezvous_connection(&provider, &identity)
+                            .await?;
+                    return Self::connect_with_recovery(
+                        connection,
+                        options,
+                        Some(reconnect_strategy),
+                    )
+                    .await;
+                }
+                ExecServerTransportParams::StdioCommand {
+                    command,
+                    initialize_timeout,
+                } => {
+                    return Self::connect_stdio_command(StdioExecServerConnectArgs {
+                        command,
+                        client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
+                        initialize_timeout,
+                        resume_session_id: None,
+                    })
+                    .await;
+                }
+            };
+        let args = RemoteExecServerConnectArgs {
             websocket_url,
             client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
             connect_timeout,
             initialize_timeout,
             resume_session_id: None,
-        })
-        .await
+        };
+        Self::connect_websocket_with_bootstrap(args, bootstrap_token).await
     }
 
     async fn open_initial_noise_rendezvous_connection(
@@ -209,10 +226,53 @@ impl ExecServerClient {
     pub(crate) async fn open_websocket_connection(
         args: &RemoteExecServerConnectArgs,
     ) -> Result<JsonRpcConnection, ExecServerError> {
+        Self::open_websocket_connection_with_authorization(args, None).await
+    }
+
+    async fn connect_websocket_with_bootstrap(
+        args: RemoteExecServerConnectArgs,
+        bootstrap_token: Option<SensitiveBootstrapToken>,
+    ) -> Result<Self, ExecServerError> {
+        let authorization = bootstrap_token
+            .as_ref()
+            .map(|token| WebSocketAuthorization::Bootstrap(token.expose()));
+        let connection =
+            Self::open_websocket_connection_with_authorization(&args, authorization).await?;
+        let options = args.clone().into();
+        Self::connect_with_recovery(
+            connection,
+            options,
+            Some(ExecServerReconnectStrategy::WebSocket(args)),
+        )
+        .await
+    }
+
+    async fn open_websocket_connection_with_authorization(
+        args: &RemoteExecServerConnectArgs,
+        authorization: Option<WebSocketAuthorization<'_>>,
+    ) -> Result<JsonRpcConnection, ExecServerError> {
         ensure_rustls_crypto_provider();
         let websocket_url = args.websocket_url.clone();
         let connect_timeout = args.connect_timeout;
-        let (stream, _) = timeout(connect_timeout, connect_async(websocket_url.as_str()))
+        let mut request = websocket_url
+            .as_str()
+            .into_client_request()
+            .map_err(|source| ExecServerError::WebSocketConnect {
+                url: websocket_url.clone(),
+                source,
+            })?;
+        request
+            .headers_mut()
+            .extend(current_trace_context_headers());
+        if let Some(authorization) = authorization {
+            let value = authorization.header_value().map_err(|message| {
+                ExecServerError::Protocol(format!("invalid WebSocket authorization: {message}"))
+            })?;
+            request
+                .headers_mut()
+                .insert(http::header::AUTHORIZATION, value);
+        }
+        let (stream, _) = timeout(connect_timeout, connect_async(request))
             .await
             .map_err(|_| ExecServerError::WebSocketConnectTimeout {
                 url: websocket_url.clone(),
@@ -370,6 +430,21 @@ impl ExecServerClient {
             args.into(),
         )
         .await
+    }
+}
+
+enum WebSocketAuthorization<'a> {
+    Bootstrap(&'a str),
+    Session(&'a str),
+}
+
+impl WebSocketAuthorization<'_> {
+    fn header_value(&self) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+        let value = match self {
+            Self::Bootstrap(token) => format!("Bearer {token}"),
+            Self::Session(session_id) => format!("RiftX-Session {session_id}"),
+        };
+        http::HeaderValue::from_str(&value)
     }
 }
 

@@ -156,6 +156,7 @@ fn parse_environment_toml(
                 websocket_url: url,
                 connect_timeout,
                 initialize_timeout,
+                bootstrap_token: None,
             }
         }
         (None, Some(program)) => {
@@ -625,6 +626,7 @@ mod tests {
             websocket_url,
             connect_timeout,
             initialize_timeout,
+            bootstrap_token,
         } = &provider.environments[0].1
         else {
             panic!("expected websocket transport");
@@ -632,6 +634,7 @@ mod tests {
         assert_eq!(websocket_url, "ws://127.0.0.1:8765");
         assert_eq!(*connect_timeout, Duration::from_secs(12));
         assert_eq!(*initialize_timeout, Duration::from_secs(34));
+        assert!(bootstrap_token.is_none());
 
         let ExecServerTransportParams::StdioCommand {
             command,

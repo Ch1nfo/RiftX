@@ -18,6 +18,7 @@ use crate::rpc::method_not_found;
 use crate::server::ExecServerHandler;
 use crate::server::registry::build_router;
 use crate::server::session_registry::SessionRegistry;
+use crate::server::websocket_auth::ConnectionAuthorization;
 use crate::telemetry::ConnectionTransport;
 use crate::telemetry::ExecServerTelemetry;
 
@@ -50,12 +51,23 @@ impl ConnectionProcessor {
         connection: JsonRpcConnection,
         transport: ConnectionTransport,
     ) {
+        self.run_authorized_connection(connection, transport, ConnectionAuthorization::Open)
+            .await;
+    }
+
+    pub(crate) async fn run_authorized_connection(
+        &self,
+        connection: JsonRpcConnection,
+        transport: ConnectionTransport,
+        authorization: ConnectionAuthorization,
+    ) {
         run_connection(
             connection,
             Arc::clone(&self.session_registry),
             self.runtime_paths.clone(),
             self.telemetry.clone(),
             transport,
+            authorization,
         )
         .await;
     }
@@ -71,6 +83,7 @@ async fn run_connection(
     runtime_paths: ExecServerRuntimePaths,
     telemetry: ExecServerTelemetry,
     transport: ConnectionTransport,
+    authorization: ConnectionAuthorization,
 ) {
     let _connection_metrics = telemetry.connection_started(transport);
     let router = Arc::new(build_router());
@@ -84,10 +97,11 @@ async fn run_connection(
     let (outgoing_tx, mut outgoing_rx) =
         mpsc::channel::<RpcServerOutboundMessage>(CHANNEL_CAPACITY);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
-    let handler = Arc::new(ExecServerHandler::new(
+    let handler = Arc::new(ExecServerHandler::new_with_authorization(
         session_registry,
         notifications,
         runtime_paths,
+        authorization,
     ));
 
     let outbound_task = tokio::spawn(async move {
@@ -520,6 +534,7 @@ mod tests {
             test_runtime_paths(),
             crate::ExecServerTelemetry::default(),
             crate::telemetry::ConnectionTransport::Stdio,
+            crate::server::websocket_auth::ConnectionAuthorization::Open,
         ));
         (client_writer, BufReader::new(client_reader).lines(), task)
     }

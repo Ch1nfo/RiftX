@@ -5,11 +5,14 @@ mod processor;
 mod registry;
 mod session_registry;
 mod transport;
+mod websocket_auth;
 
 pub(crate) use handler::ExecServerHandler;
 pub(crate) use processor::ConnectionProcessor;
 pub use transport::DEFAULT_LISTEN_URL;
 pub use transport::ExecServerListenUrlParseError;
+pub use websocket_auth::ExecServerWebSocketAuth;
+pub use websocket_auth::ExecServerWebSocketAuthError;
 
 use crate::ExecServerRuntimePaths;
 use crate::ExecServerTelemetry;
@@ -31,7 +34,21 @@ pub async fn run_main_with_telemetry(
     runtime_paths: ExecServerRuntimePaths,
     telemetry: ExecServerTelemetry,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    transport::run_transport(listen_url, runtime_paths, telemetry).await
+    transport::run_transport(listen_url, runtime_paths, telemetry, None).await
+}
+
+#[tracing::instrument(
+    name = "codex.exec_server",
+    skip_all,
+    fields(otel.kind = "internal")
+)]
+pub async fn run_main_with_telemetry_and_auth(
+    listen_url: &str,
+    runtime_paths: ExecServerRuntimePaths,
+    telemetry: ExecServerTelemetry,
+    websocket_auth: ExecServerWebSocketAuth,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    transport::run_transport(listen_url, runtime_paths, telemetry, Some(websocket_auth)).await
 }
 
 #[cfg(test)]

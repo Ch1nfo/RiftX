@@ -25,6 +25,8 @@ use crate::ExecServerRuntimePaths;
 use crate::ExecServerTelemetry;
 use crate::connection::JsonRpcConnection;
 use crate::server::processor::ConnectionProcessor;
+use crate::server::websocket_auth::ConnectionAuthorization;
+use crate::server::websocket_auth::ExecServerWebSocketAuth;
 use crate::telemetry::ConnectionTransport;
 
 pub const DEFAULT_LISTEN_URL: &str = "ws://127.0.0.1:0";
@@ -83,12 +85,18 @@ pub(crate) async fn run_transport(
     listen_url: &str,
     runtime_paths: ExecServerRuntimePaths,
     telemetry: ExecServerTelemetry,
+    websocket_auth: Option<ExecServerWebSocketAuth>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match parse_listen_url(listen_url)? {
         ExecServerListenTransport::WebSocket(bind_address) => {
-            run_websocket_listener(bind_address, runtime_paths, telemetry).await
+            run_websocket_listener(bind_address, runtime_paths, telemetry, websocket_auth).await
         }
-        ExecServerListenTransport::Stdio => run_stdio_connection(runtime_paths, telemetry).await,
+        ExecServerListenTransport::Stdio => {
+            if websocket_auth.is_some() {
+                return Err("WebSocket authentication cannot be used with stdio".into());
+            }
+            run_stdio_connection(runtime_paths, telemetry).await
+        }
     }
 }
 
@@ -126,6 +134,7 @@ async fn run_websocket_listener(
     bind_address: SocketAddr,
     runtime_paths: ExecServerRuntimePaths,
     telemetry: ExecServerTelemetry,
+    websocket_auth: Option<ExecServerWebSocketAuth>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(bind_address).await?;
     let local_addr = listener.local_addr()?;
@@ -138,7 +147,10 @@ async fn run_websocket_listener(
         .route("/", any(websocket_upgrade_handler))
         .route("/readyz", get(readiness_handler))
         .layer(middleware::from_fn(reject_requests_with_origin_header))
-        .with_state(ExecServerWebSocketState { processor });
+        .with_state(ExecServerWebSocketState {
+            processor,
+            websocket_auth,
+        });
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -150,6 +162,7 @@ async fn run_websocket_listener(
 #[derive(Clone)]
 struct ExecServerWebSocketState {
     processor: ConnectionProcessor,
+    websocket_auth: Option<ExecServerWebSocketAuth>,
 }
 
 async fn readiness_handler() -> StatusCode {
@@ -174,22 +187,33 @@ async fn reject_requests_with_origin_header(
 
 async fn websocket_upgrade_handler(
     websocket: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     State(state): State<ExecServerWebSocketState>,
 ) -> impl IntoResponse {
+    let authorization = match &state.websocket_auth {
+        Some(auth) => match auth.authorize(&headers) {
+            Some(authorization) => authorization,
+            None => return StatusCode::UNAUTHORIZED.into_response(),
+        },
+        None => ConnectionAuthorization::Open,
+    };
     info!(%peer_addr, "exec-server websocket client connected");
-    websocket.on_upgrade(move |stream| async move {
-        state
-            .processor
-            .run_connection(
-                JsonRpcConnection::from_axum_websocket(
-                    stream,
-                    format!("exec-server websocket {peer_addr}"),
-                ),
-                ConnectionTransport::WebSocket,
-            )
-            .await;
-    })
+    websocket
+        .on_upgrade(move |stream| async move {
+            state
+                .processor
+                .run_authorized_connection(
+                    JsonRpcConnection::from_axum_websocket(
+                        stream,
+                        format!("exec-server websocket {peer_addr}"),
+                    ),
+                    ConnectionTransport::WebSocket,
+                    authorization,
+                )
+                .await;
+        })
+        .into_response()
 }
 
 #[cfg(test)]

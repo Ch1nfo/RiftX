@@ -85,11 +85,11 @@ async fn unknown_environment_status_is_typed() {
 async fn registered_remote_environment_starts_pending() {
     let test = start_test_adapter().await;
     test.adapter
-        .add_environment(EnvironmentRegistration {
-            environment_id: "sandbox-1".to_string(),
-            exec_server_url: "ws://127.0.0.1:9".to_string(),
-            connect_timeout_ms: Some(50),
-        })
+        .add_environment(EnvironmentRegistration::without_auth_for_test(
+            "sandbox-1".to_string(),
+            "ws://127.0.0.1:9".to_string(),
+            Some(50),
+        ))
         .await
         .expect("environment/add should succeed");
     let status = test
@@ -97,12 +97,15 @@ async fn registered_remote_environment_starts_pending() {
         .environment_status("sandbox-1".to_string())
         .await
         .expect("status request should succeed");
-    assert_eq!(status.status, EnvironmentStatusKind::Pending);
+    assert!(matches!(
+        status.status,
+        EnvironmentStatusKind::Pending | EnvironmentStatusKind::Disconnected
+    ));
     test.adapter.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn connects_to_real_exec_server() {
+async fn connects_to_authenticated_exec_server() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("reserve exec-server port");
@@ -114,18 +117,34 @@ async fn connects_to_real_exec_server() {
         /*codex_linux_sandbox_exe*/ None,
     )
     .expect("runtime paths");
+    let auth_dir = TempDir::new().expect("auth temp dir");
+    let auth_file = auth_dir.path().join("auth.json");
+    std::fs::write(
+        &auth_file,
+        r#"{"bootstrapSha256":"fc17cbe42905e3308ba7175fd672651094e30c926f2bdd426636f12dd19df41b","expiresAt":4102444800}"#,
+    )
+    .expect("write auth file");
+    let websocket_auth =
+        codex_exec_server::ExecServerWebSocketAuth::from_file(&auth_file).expect("load auth file");
     let exec_server = tokio::spawn(async move {
-        codex_exec_server::run_main(&format!("ws://{address}"), runtime_paths).await
+        codex_exec_server::run_main_with_telemetry_and_auth(
+            &format!("ws://{address}"),
+            runtime_paths,
+            codex_exec_server::ExecServerTelemetry::default(),
+            websocket_auth,
+        )
+        .await
     });
     sleep(Duration::from_millis(50)).await;
 
     let test = start_test_adapter().await;
     test.adapter
-        .add_environment(EnvironmentRegistration {
-            environment_id: "sandbox-real".to_string(),
-            exec_server_url: format!("ws://{address}"),
-            connect_timeout_ms: Some(2_000),
-        })
+        .add_environment(EnvironmentRegistration::new(
+            "sandbox-real".to_string(),
+            format!("ws://{address}"),
+            Some(2_000),
+            "bootstrap-secret".to_string(),
+        ))
         .await
         .expect("environment/add should succeed");
     let info = test

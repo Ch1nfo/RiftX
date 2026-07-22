@@ -2225,6 +2225,7 @@ mod tests {
             websocket_url,
             connect_timeout: Duration::from_secs(1),
             initialize_timeout: Duration::from_secs(1),
+            bootstrap_token: None,
         });
         let stable_client = client.get().await.expect("client should connect");
         timeout(Duration::from_secs(1), resumed_rx)
@@ -2332,6 +2333,7 @@ mod tests {
             websocket_url,
             connect_timeout: Duration::from_secs(1),
             initialize_timeout: Duration::from_secs(1),
+            bootstrap_token: None,
         });
         let stable_client = client.get().await.expect("client should connect");
         let session = stable_client
@@ -2467,6 +2469,7 @@ mod tests {
             websocket_url,
             connect_timeout: Duration::from_secs(1),
             initialize_timeout: Duration::from_secs(1),
+            bootstrap_token: None,
         });
 
         assert!(!client.startup_finished());
@@ -2580,6 +2583,7 @@ mod tests {
             websocket_url,
             connect_timeout: Duration::from_secs(1),
             initialize_timeout: Duration::from_secs(1),
+            bootstrap_token: None,
         });
 
         let initial = client.get().await.expect("startup should connect");

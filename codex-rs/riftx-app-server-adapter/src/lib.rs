@@ -27,6 +27,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SensitiveString;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadStartParams;
@@ -58,6 +59,37 @@ pub struct EnvironmentRegistration {
     pub environment_id: String,
     pub exec_server_url: String,
     pub connect_timeout_ms: Option<u64>,
+    bootstrap_token: Option<SensitiveString>,
+}
+
+impl EnvironmentRegistration {
+    pub fn new(
+        environment_id: String,
+        exec_server_url: String,
+        connect_timeout_ms: Option<u64>,
+        bootstrap_token: String,
+    ) -> Self {
+        Self {
+            environment_id,
+            exec_server_url,
+            connect_timeout_ms,
+            bootstrap_token: Some(SensitiveString::new(bootstrap_token)),
+        }
+    }
+
+    #[cfg(test)]
+    fn without_auth_for_test(
+        environment_id: String,
+        exec_server_url: String,
+        connect_timeout_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            environment_id,
+            exec_server_url,
+            connect_timeout_ms,
+            bootstrap_token: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +165,7 @@ impl RiftxAppServerAdapter {
                     environment_id: registration.environment_id,
                     exec_server_url: registration.exec_server_url,
                     connect_timeout_ms: registration.connect_timeout_ms,
+                    bootstrap_token: registration.bootstrap_token,
                 },
             })
             .await?)

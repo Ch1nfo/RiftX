@@ -167,6 +167,7 @@ async fn add_environment(
         environment_id: environment_id.to_string(),
         exec_server_url: exec_server_url.to_string(),
         connect_timeout_ms: None,
+        bootstrap_token: None,
     };
     let add_request_id = app_server
         .send_raw_request("environment/add", Some(serde_json::to_value(params)?))

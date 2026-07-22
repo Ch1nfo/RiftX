@@ -2085,6 +2085,7 @@ mod tests {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
                 connect_timeout_ms: None,
+                bootstrap_token: None,
             },
         };
         assert_eq!(
@@ -3215,6 +3216,7 @@ mod tests {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
                 connect_timeout_ms: Some(300_000),
+                bootstrap_token: None,
             },
         };
         assert_eq!(
@@ -3224,7 +3226,8 @@ mod tests {
                 "params": {
                     "environmentId": "remote-a",
                     "execServerUrl": "ws://127.0.0.1:8765",
-                    "connectTimeoutMs": 300000
+                    "connectTimeoutMs": 300000,
+                    "bootstrapToken": null
                 }
             }),
             serde_json::to_value(&request)?,
@@ -3714,6 +3717,7 @@ mod tests {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
                 connect_timeout_ms: None,
+                bootstrap_token: None,
             },
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);

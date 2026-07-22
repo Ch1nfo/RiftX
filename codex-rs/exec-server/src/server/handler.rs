@@ -63,6 +63,7 @@ use crate::rpc::invalid_request;
 use crate::server::file_system_handler::FileSystemHandler;
 use crate::server::session_registry::SessionHandle;
 use crate::server::session_registry::SessionRegistry;
+use crate::server::websocket_auth::ConnectionAuthorization;
 
 pub(crate) struct ExecServerHandler {
     session_registry: Arc<SessionRegistry>,
@@ -75,13 +76,29 @@ pub(crate) struct ExecServerHandler {
     runtime_paths: ExecServerRuntimePaths,
     initialize_requested: AtomicBool,
     initialized: AtomicBool,
+    authorization: ConnectionAuthorization,
 }
 
 impl ExecServerHandler {
+    #[cfg(test)]
     pub(crate) fn new(
         session_registry: Arc<SessionRegistry>,
         notifications: RpcNotificationSender,
         runtime_paths: ExecServerRuntimePaths,
+    ) -> Self {
+        Self::new_with_authorization(
+            session_registry,
+            notifications,
+            runtime_paths,
+            ConnectionAuthorization::Open,
+        )
+    }
+
+    pub(crate) fn new_with_authorization(
+        session_registry: Arc<SessionRegistry>,
+        notifications: RpcNotificationSender,
+        runtime_paths: ExecServerRuntimePaths,
+        authorization: ConnectionAuthorization,
     ) -> Self {
         Self {
             session_registry,
@@ -94,6 +111,7 @@ impl ExecServerHandler {
             runtime_paths,
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            authorization,
         }
     }
 
@@ -122,6 +140,14 @@ impl ExecServerHandler {
             ));
         }
 
+        if let Err(message) = self
+            .authorization
+            .validate_initialize(params.resume_session_id.as_deref())
+        {
+            self.initialize_requested.store(false, Ordering::SeqCst);
+            return Err(invalid_request(message));
+        }
+
         let session = match self
             .session_registry
             .attach(
@@ -147,6 +173,7 @@ impl ExecServerHandler {
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
+        self.authorization.consume_bootstrap();
         Ok(InitializeResponse { session_id })
     }
 

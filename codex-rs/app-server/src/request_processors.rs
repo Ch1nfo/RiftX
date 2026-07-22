@@ -514,6 +514,7 @@ use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
 
+use codex_app_server_protocol::SensitiveString;
 #[cfg(test)]
 use codex_app_server_protocol::ServerRequest;
 

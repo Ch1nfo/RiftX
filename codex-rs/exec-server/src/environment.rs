@@ -359,13 +359,36 @@ impl EnvironmentManager {
         exec_server_url: String,
         connect_timeout: Option<std::time::Duration>,
     ) -> Result<(), ExecServerError> {
+        self.upsert_environment_with_bootstrap_token(
+            environment_id,
+            exec_server_url,
+            connect_timeout,
+            None,
+        )
+    }
+
+    /// Adds or replaces a named remote environment authenticated with a
+    /// single-use bootstrap token.
+    pub fn upsert_environment_with_bootstrap_token(
+        &self,
+        environment_id: String,
+        exec_server_url: String,
+        connect_timeout: Option<std::time::Duration>,
+        bootstrap_token: Option<String>,
+    ) -> Result<(), ExecServerError> {
         validate_environment_id(&environment_id)?;
         let exec_server_url = validate_remote_exec_server_url(exec_server_url)?;
-        let environment = Arc::new(Environment::remote_with_transport(
-            ExecServerTransportParams::websocket_url(
+        let connect_timeout = connect_timeout.unwrap_or(DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT);
+        let transport = match bootstrap_token {
+            Some(bootstrap_token) => ExecServerTransportParams::authenticated_websocket_url(
                 exec_server_url,
-                connect_timeout.unwrap_or(DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT),
+                connect_timeout,
+                bootstrap_token,
             ),
+            None => ExecServerTransportParams::websocket_url(exec_server_url, connect_timeout),
+        };
+        let environment = Arc::new(Environment::remote_with_transport(
+            transport,
             self.local_runtime_paths.clone(),
         ));
         self.insert_environment(environment_id, environment);

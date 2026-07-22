@@ -585,6 +585,14 @@ struct ExecServerCommand {
     /// Use Agent Identity auth from CODEX_ACCESS_TOKEN for remote registration.
     #[arg(long = "use-agent-identity-auth", requires = "remote")]
     use_agent_identity_auth: bool,
+
+    /// Read RiftX bootstrap authentication material from this file.
+    #[arg(
+        long = "riftx-auth-file",
+        value_name = "PATH",
+        conflicts_with = "remote"
+    )]
+    riftx_auth_file: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1735,8 +1743,31 @@ async fn run_exec_server_command(
         let listen_url = cmd
             .listen
             .unwrap_or_else(|| codex_exec_server::DEFAULT_LISTEN_URL.to_string());
+        let websocket_auth = cmd
+            .riftx_auth_file
+            .as_deref()
+            .map(codex_exec_server::ExecServerWebSocketAuth::from_file)
+            .transpose()?;
         exec_server_telemetry::run_until_shutdown(async move {
-            codex_exec_server::run_main_with_telemetry(&listen_url, runtime_paths, telemetry).await
+            match websocket_auth {
+                Some(websocket_auth) => {
+                    codex_exec_server::run_main_with_telemetry_and_auth(
+                        &listen_url,
+                        runtime_paths,
+                        telemetry,
+                        websocket_auth,
+                    )
+                    .await
+                }
+                None => {
+                    codex_exec_server::run_main_with_telemetry(
+                        &listen_url,
+                        runtime_paths,
+                        telemetry,
+                    )
+                    .await
+                }
+            }
         })
         .await
         .map_err(anyhow::Error::from_boxed)
@@ -3600,6 +3631,24 @@ mod tests {
                 strict_config: true,
                 ..
             }))
+        );
+    }
+
+    #[test]
+    fn exec_server_riftx_auth_file_parses() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "exec-server",
+            "--riftx-auth-file",
+            "/run/riftx/auth.json",
+        ])
+        .expect("parse");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::ExecServer(ExecServerCommand {
+                riftx_auth_file: Some(path),
+                ..
+            })) if path.to_str() == Some("/run/riftx/auth.json")
         );
     }
 

@@ -4,6 +4,27 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(transparent)]
+#[ts(type = "string")]
+pub struct SensitiveString(String);
+
+impl SensitiveString {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SensitiveString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -14,6 +35,10 @@ pub struct EnvironmentAddParams {
     #[ts(type = "number | null")]
     #[ts(optional = nullable)]
     pub connect_timeout_ms: Option<u64>,
+    /// Single-use bearer token for the initial exec-server WebSocket connection.
+    #[ts(type = "string | null")]
+    #[ts(optional = nullable)]
+    pub bootstrap_token: Option<SensitiveString>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

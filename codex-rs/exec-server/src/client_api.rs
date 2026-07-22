@@ -106,6 +106,7 @@ pub(crate) enum ExecServerTransportParams {
         websocket_url: String,
         connect_timeout: Duration,
         initialize_timeout: Duration,
+        bootstrap_token: Option<SensitiveBootstrapToken>,
     },
     NoiseRendezvous {
         provider: Arc<dyn NoiseRendezvousConnectProvider>,
@@ -129,11 +130,13 @@ impl std::fmt::Debug for ExecServerTransportParams {
                 websocket_url,
                 connect_timeout,
                 initialize_timeout,
+                bootstrap_token,
             } => f
                 .debug_struct("WebSocketUrl")
                 .field("websocket_url", websocket_url)
                 .field("connect_timeout", connect_timeout)
                 .field("initialize_timeout", initialize_timeout)
+                .field("authenticated", &bootstrap_token.is_some())
                 .finish(),
             Self::NoiseRendezvous { .. } => {
                 f.debug_struct("NoiseRendezvous").finish_non_exhaustive()
@@ -156,7 +159,36 @@ impl ExecServerTransportParams {
             websocket_url,
             connect_timeout,
             initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
+            bootstrap_token: None,
         }
+    }
+
+    pub(crate) fn authenticated_websocket_url(
+        websocket_url: String,
+        connect_timeout: Duration,
+        bootstrap_token: String,
+    ) -> Self {
+        Self::WebSocketUrl {
+            websocket_url,
+            connect_timeout,
+            initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
+            bootstrap_token: Some(SensitiveBootstrapToken(bootstrap_token)),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SensitiveBootstrapToken(String);
+
+impl SensitiveBootstrapToken {
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SensitiveBootstrapToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
     }
 }
 

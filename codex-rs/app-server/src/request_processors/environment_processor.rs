@@ -18,10 +18,11 @@ impl EnvironmentRequestProcessor {
         params: EnvironmentAddParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.environment_manager
-            .upsert_environment(
+            .upsert_environment_with_bootstrap_token(
                 params.environment_id,
                 params.exec_server_url,
                 params.connect_timeout_ms.map(Duration::from_millis),
+                params.bootstrap_token.map(SensitiveString::into_inner),
             )
             .map_err(|err| invalid_request(err.to_string()))?;
         Ok(Some(EnvironmentAddResponse {}.into()))
