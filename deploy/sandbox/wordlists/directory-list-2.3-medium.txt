@@ -1,0 +1,15 @@
+admin
+api
+backup
+config
+dashboard
+docs
+download
+images
+internal
+login
+private
+rest
+static
+swagger
+uploads

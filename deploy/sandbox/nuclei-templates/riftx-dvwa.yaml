@@ -1,0 +1,21 @@
+id: riftx-dvwa-login
+
+info:
+  name: DVWA Login Surface
+  author: riftx
+  severity: info
+  tags: dvwa,riftx
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/login.php"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: body
+        words:
+          - "Damn Vulnerable Web Application"

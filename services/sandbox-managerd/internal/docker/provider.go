@@ -119,12 +119,14 @@ func (p Provider) Create(ctx context.Context, record manager.Record) (string, er
 		"--label", "riftx.engagement=" + record.Sandbox.EngagementID,
 		"--label", "riftx.policy-revision=" + record.Sandbox.PolicyRevision,
 		"--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--user", "10001:10001",
+		"--env", "HOME=/tmp/riftx-home", "--env", "CODEX_HOME=/tmp/riftx-home",
 		"--pids-limit", strconv.FormatUint(uint64(record.Request.Resources.PIDsLimit), 10),
 		"--memory", fmt.Sprintf("%dm", record.Request.Resources.MemoryMiB),
 		"--cpus", strconv.FormatUint(uint64(record.Request.Resources.CPULimit), 10),
-		"--network", p.ManagementNet,
+		"--network", "none",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-		"--tmpfs", "/workspace:rw,nosuid,size=1024m",
+		"--tmpfs", "/workspace:rw,nosuid,size=1024m,uid=10001,gid=10001,mode=1770",
 		"--mount", "type=bind,src=" + credentialPath + ",dst=/run/riftx/auth.json,readonly",
 		record.Request.Image,
 		"codex", "exec-server", "--listen", "ws://0.0.0.0:9800", "--riftx-auth-file", "/run/riftx/auth.json",
@@ -143,6 +145,9 @@ func (p Provider) Create(ctx context.Context, record manager.Record) (string, er
 	pid := strings.TrimSpace(string(pidOutput))
 	policy := manager.RenderNftablesPolicy(record.Sandbox.ID, record.Request.Scope)
 	if _, err := p.Runner.Run(ctx, []byte(policy), p.NSenterBinary, "-t", pid, "-n", p.NftBinary, "-f", "-"); err != nil {
+		return "", err
+	}
+	if _, err := p.Runner.Run(ctx, nil, p.DockerBinary, "network", "connect", p.ManagementNet, name); err != nil {
 		return "", err
 	}
 	ipOutput, err := p.Runner.Run(ctx, nil, p.DockerBinary, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)
@@ -239,7 +244,9 @@ func (p Provider) writeCredential(record manager.Record) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
+	// The parent remains 0700 on the host. The mounted file contains only the
+	// token hash and must be readable by the non-root exec-server container.
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

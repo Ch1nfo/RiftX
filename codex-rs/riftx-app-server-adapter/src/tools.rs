@@ -188,7 +188,17 @@ impl StructuredToolRequest {
             }
             Self::Httpx(args) => repeated_targets("httpx", &["-silent", "-json"], &args.targets),
             Self::Nuclei(args) => {
-                let mut argv = repeated_targets("nuclei", &["-silent", "-jsonl"], &args.targets);
+                let mut argv = repeated_targets(
+                    "nuclei",
+                    &[
+                        "-silent",
+                        "-jsonl",
+                        "-duc",
+                        "-t",
+                        "/opt/riftx/nuclei-templates",
+                    ],
+                    &args.targets,
+                );
                 if !args.tags.is_empty() {
                     argv.extend(["-tags".to_string(), args.tags.join(",")]);
                 }

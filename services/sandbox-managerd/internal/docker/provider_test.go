@@ -118,15 +118,49 @@ func TestCreateAppliesContainerAndNetworkSecurityBaseline(t *testing.T) {
 		allCalls = append(allCalls, strings.Join(call, " "))
 	}
 	joined := strings.Join(allCalls, "\n")
-	for _, required := range []string{"--read-only", "--cap-drop ALL", "no-new-privileges", "--pids-limit 256", "--network riftx-management", "dst=/run/riftx/auth.json,readonly", "--riftx-auth-file /run/riftx/auth.json", "nsenter -t 123 -n nft -f -"} {
+	for _, required := range []string{"--read-only", "--cap-drop ALL", "no-new-privileges", "--user 10001:10001", "HOME=/tmp/riftx-home", "CODEX_HOME=/tmp/riftx-home", "--pids-limit 256", "--network none", "/workspace:rw,nosuid,size=1024m,uid=10001,gid=10001,mode=1770", "dst=/run/riftx/auth.json,readonly", "--riftx-auth-file /run/riftx/auth.json", "nsenter -t 123 -n nft -f -", "docker network connect riftx-management riftx-sb-1"} {
 		if !strings.Contains(joined, required) {
 			t.Errorf("missing %q in calls:\n%s", required, joined)
 		}
+	}
+	policyIndex := strings.Index(joined, "nsenter -t 123 -n nft -f -")
+	connectIndex := strings.Index(joined, "docker network connect riftx-management riftx-sb-1")
+	if policyIndex < 0 || connectIndex < 0 || policyIndex > connectIndex {
+		t.Fatalf("network connected before policy installation:\n%s", joined)
 	}
 	joinedInputs := strings.Join(runner.inputs, "\n")
 	for _, denied := range []string{"ip daddr 172.28.0.0/16 drop", "ip daddr 172.28.0.1/32 drop"} {
 		if !strings.Contains(joinedInputs, denied) {
 			t.Errorf("missing management deny %q in nft policy:\n%s", denied, joinedInputs)
 		}
+	}
+}
+
+func TestCredentialHashIsReadableOnlyThroughProtectedDirectory(t *testing.T) {
+	temp := t.TempDir()
+	credentialRoot := filepath.Join(temp, "credentials")
+	provider := Provider{CredentialRoot: credentialRoot}
+	record := manager.Record{
+		Sandbox:   manager.Sandbox{ID: "sandbox-1"},
+		ExpiresAt: time.Unix(100, 0),
+	}
+	path, err := provider.writeCredential(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directoryInfo, err := os.Stat(credentialRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directoryInfo.Mode().Perm() != 0o700 || fileInfo.Mode().Perm() != 0o644 {
+		t.Fatalf(
+			"credential modes = directory %o, file %o",
+			directoryInfo.Mode().Perm(),
+			fileInfo.Mode().Perm(),
+		)
 	}
 }

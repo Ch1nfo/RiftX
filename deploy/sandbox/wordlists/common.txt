@@ -1,0 +1,9 @@
+admin
+api
+assets
+config
+login
+rest
+robots.txt
+security.txt
+swagger

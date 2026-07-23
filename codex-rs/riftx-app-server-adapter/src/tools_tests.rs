@@ -44,3 +44,28 @@ fn ffuf_uses_only_managed_wordlists() {
         ]
     );
 }
+
+#[test]
+fn nuclei_uses_only_bundled_templates() {
+    let request = StructuredToolRequest::parse(
+        "rt_nuclei",
+        json!({"targets":["https://example.test"],"tags":["riftx"]}),
+    )
+    .expect("valid nuclei arguments");
+
+    assert_eq!(
+        request.argv(),
+        vec![
+            "nuclei",
+            "-silent",
+            "-jsonl",
+            "-duc",
+            "-t",
+            "/opt/riftx/nuclei-templates",
+            "-u",
+            "https://example.test",
+            "-tags",
+            "riftx",
+        ]
+    );
+}

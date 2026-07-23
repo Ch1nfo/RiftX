@@ -8,7 +8,7 @@ RiftX 是面向明确授权安全测试的智能渗透测试 Agent。项目以�
 
 ## 当前状态
 
-项目已完成 Codex 上游源码导入，当前进入技术方案 v0.4 的 P0 阶段：固定上游版本并验证 App Server、remote environment 和 exec-server 的集成路径。
+项目已完成 P0-P6 的代码基线：Codex App Server/exec-server 远程环境、Gateway/CLI、managerd、Linux 网络策略、四个结构化工具、Agent 隔离、审批、状态、审计和报告链路已落地。P7 的 Docker 安全验收由 Ubuntu CI 执行；macOS 只用于功能开发。
 
 - 技术方案：[RiftX-技术实现方案.md](./RiftX-技术实现方案.md)
 - 上游锁定：[codex-upstream.lock](./codex-upstream.lock)
@@ -30,17 +30,21 @@ Codex Core 不直接访问 Docker API。`sandbox-managerd` 独占容器生命周
 ## 源码布局
 
 ```text
-codex-rs/                       Codex Rust workspace and future RiftX crates
+codex-rs/                       Codex Rust workspace and RiftX Rust crates
 codex-rs/app-server/            Codex App Server
 codex-rs/app-server-protocol/   App Server protocol types
 codex-rs/core/                  Codex agent core
 codex-rs/exec-server/           Remote process and PTY execution service
 codex-cli/                      Legacy TypeScript CLI package
 sdk/                            Codex SDKs
+services/sandbox-managerd/      Docker lifecycle and Linux network policy
+deploy/sandbox/                 RiftX sandbox image and fixed tool assets
+deploy/demo/                    Digest-pinned Juice Shop and DVWA fixtures
+security/                       Linux security acceptance criteria
 RiftX-技术实现方案.md            RiftX architecture and delivery plan
 ```
 
-RiftX 自有模块将按技术方案逐步加入 `codex-rs/riftx-*` 和 `services/sandbox-managerd`，避免把领域模型直接写入 `codex-core`。
+RiftX 自有模块位于 `codex-rs/riftx-*` 和 `services/sandbox-managerd`，领域模型不写入 `codex-core`。
 
 ## 开发基线
 
