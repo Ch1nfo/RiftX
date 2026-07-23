@@ -165,6 +165,8 @@ Markdown 和 JSON。
 - Scope、Policy Revision、Approval 及三模式领域约束。
 - 目标导向状态模型、Evidence 引用验证和 SQLite 持久化。
 - append-only JSONL 审计。
+- 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
+- workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
 - Markdown/JSON 报告。
 - macOS、Windows、Linux 的核心领域契约 CI。
 
@@ -172,7 +174,7 @@ Markdown 和 JSON。
 
 - Tauri Desktop 和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- 工具执行审计和完整 Native 验收。
+- macOS、Windows、Linux 的完整 Native 验收。
 - 案件数据加密、OS credential store 和 `.riftxcase`。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。

@@ -34,9 +34,12 @@ Named Pipe 提供本地服务。
 - 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入和
   `riftx tools doctor`。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 `riftx skills doctor`。
+- 本机命令 Execution 审计，包括脱敏 argv、resolved path、工具/快照哈希、
+  stdout/stderr/stdin 哈希、退出状态和 interrupt 恢复。
+- workspace artifact 的内容寻址采集、容量限制、哈希清单和受控流式导出。
 
-尚未完成 Desktop、Linux TUI、工具执行审计闭环、加密案件存储、
-三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成 Desktop、Linux TUI、加密案件存储、三平台 Guard、Auto planner loop，以及
+完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。
@@ -94,6 +97,22 @@ directory = "/absolute/path/to/team-skills"
 ./codex-rs/target/debug/riftx skills doctor
 ./codex-rs/target/debug/riftx skills doctor --json
 ```
+
+## Artifact
+
+每个 engagement workspace 的 `artifacts/` 目录用于保存需要长期保留的证据文件。turn
+结束后 `riftxd` 会自动扫描该目录；操作者也可以显式采集 workspace 内的任意相对路径：
+
+```bash
+./codex-rs/target/debug/riftx artifacts capture <engagement-id> artifacts/result.json
+./codex-rs/target/debug/riftx artifacts list <engagement-id>
+./codex-rs/target/debug/riftx artifacts export \
+  <engagement-id> <artifact-id> --output result.json
+```
+
+采集拒绝绝对路径、路径穿越、符号链接和目录。文件按 SHA-256 内容寻址保存，并受
+`[artifacts].max_bytes_per_engagement` 限制；导出前会重新校验大小和哈希。当前开发基线
+尚未实现 artifact 加密。
 
 ## LLM 配置
 
