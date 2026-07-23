@@ -1251,6 +1251,20 @@
             "status": {
               "$ref": "#/definitions/CommandExecutionStatus"
             },
+            "stderr": {
+              "description": "Captured stderr. Present on completed live command items when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stdout": {
+              "description": "Captured stdout. Present on completed live command items when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "commandExecution"

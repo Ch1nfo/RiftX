@@ -2154,6 +2154,8 @@ mod tests {
                     command: "echo hello world".to_string(),
                 }],
                 aggregated_output: Some("hello world\n".to_string()),
+                stdout: Some("hello world\n".to_string()),
+                stderr: None,
                 exit_code: Some(0),
                 duration_ms: Some(12),
             }]
@@ -2773,6 +2775,8 @@ mod tests {
                     command: "echo hello world".into(),
                 }],
                 aggregated_output: Some("hello world\n".into()),
+                stdout: None,
+                stderr: None,
                 exit_code: Some(0),
                 duration_ms: Some(12),
             }
@@ -3032,6 +3036,8 @@ mod tests {
                     command: "ls".into(),
                 }],
                 aggregated_output: Some("exec command rejected by user".into()),
+                stdout: None,
+                stderr: Some("exec command rejected by user".into()),
                 exit_code: Some(-1),
                 duration_ms: Some(0),
             }
@@ -3130,6 +3136,8 @@ mod tests {
                     command: "rm -rf /tmp/guardian".into(),
                 }],
                 aggregated_output: None,
+                stdout: None,
+                stderr: None,
                 exit_code: None,
                 duration_ms: None,
             }
@@ -3196,6 +3204,8 @@ mod tests {
                     command: "/bin/rm -f /tmp/file.sqlite".into(),
                 }],
                 aggregated_output: None,
+                stdout: None,
+                stderr: None,
                 exit_code: None,
                 duration_ms: None,
             }
@@ -3298,6 +3308,8 @@ mod tests {
                     command: "echo done".into(),
                 }],
                 aggregated_output: Some("done\n".into()),
+                stdout: Some("done\n".into()),
+                stderr: None,
                 exit_code: Some(0),
                 duration_ms: Some(5),
             }

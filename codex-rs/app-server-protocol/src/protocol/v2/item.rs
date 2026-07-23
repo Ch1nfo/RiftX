@@ -284,6 +284,10 @@ pub enum ThreadItem {
         command_actions: Vec<CommandAction>,
         /// The command's output, aggregated from stdout and stderr.
         aggregated_output: Option<String>,
+        /// Captured stdout. Present on completed live command items when available.
+        stdout: Option<String>,
+        /// Captured stderr. Present on completed live command items when available.
+        stderr: Option<String>,
         /// The command's exit code.
         exit_code: Option<i32>,
         /// The duration of the command execution in milliseconds.
@@ -845,6 +849,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 aggregated_output: command
                     .aggregated_output
                     .filter(|output| !output.is_empty()),
+                stdout: command.stdout.filter(|output| !output.is_empty()),
+                stderr: command.stderr.filter(|output| !output.is_empty()),
                 exit_code: command.exit_code,
                 duration_ms: command
                     .duration

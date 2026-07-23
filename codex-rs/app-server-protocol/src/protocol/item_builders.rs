@@ -86,6 +86,8 @@ pub fn build_command_execution_begin_item(payload: &ExecCommandBeginEvent) -> Th
         status: CommandExecutionStatus::InProgress,
         command_actions,
         aggregated_output: None,
+        stdout: None,
+        stderr: None,
         exit_code: None,
         duration_ms: None,
     }
@@ -109,6 +111,8 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
         status: (&payload.status).into(),
         command_actions,
         aggregated_output,
+        stdout: (!payload.stdout.is_empty()).then(|| payload.stdout.clone()),
+        stderr: (!payload.stderr.is_empty()).then(|| payload.stderr.clone()),
         exit_code: Some(payload.exit_code),
         duration_ms: Some(duration_ms),
     }
@@ -182,6 +186,8 @@ pub fn build_item_from_guardian_event(
                 status,
                 command_actions,
                 aggregated_output: None,
+                stdout: None,
+                stderr: None,
                 exit_code: None,
                 duration_ms: None,
             })
@@ -218,6 +224,8 @@ pub fn build_item_from_guardian_event(
                 status,
                 command_actions,
                 aggregated_output: None,
+                stdout: None,
+                stderr: None,
                 exit_code: None,
                 duration_ms: None,
             })

@@ -166,6 +166,8 @@ async fn complete(state: &GatewayState, payload: &ItemCompletedNotification) {
         status,
         exit_code,
         duration_ms,
+        stdout,
+        stderr,
         ..
     } = &payload.item
     else {
@@ -175,6 +177,17 @@ async fn complete(state: &GatewayState, payload: &ItemCompletedNotification) {
     let Some(active) = state.active_executions.write().await.remove(&key) else {
         return;
     };
+    let mut active = active;
+    if active.stdout.bytes == 0
+        && let Some(stdout) = stdout
+    {
+        active.stdout.update(stdout.as_bytes());
+    }
+    if active.stderr.bytes == 0
+        && let Some(stderr) = stderr
+    {
+        active.stderr.update(stderr.as_bytes());
+    }
     let mut execution = active.execution;
     execution.status = terminal_status(status, *exit_code);
     execution.completed_at = Some(timestamp_seconds(payload.completed_at_ms));

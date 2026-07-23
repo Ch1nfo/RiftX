@@ -1357,6 +1357,8 @@ async fn start_command_execution_item(
                 status: CommandExecutionStatus::InProgress,
                 command_actions,
                 aggregated_output: None,
+                stdout: None,
+                stderr: None,
                 exit_code: None,
                 duration_ms: None,
             },
@@ -1401,6 +1403,8 @@ async fn complete_command_execution_item(
         status,
         command_actions,
         aggregated_output: None,
+        stdout: None,
+        stderr: None,
         exit_code: None,
         duration_ms: None,
     };
@@ -2534,6 +2538,8 @@ mod tests {
                         status: CommandExecutionStatus::InProgress,
                         command_actions: completion_item.command_actions.clone(),
                         aggregated_output: None,
+                        stdout: None,
+                        stderr: None,
                         exit_code: None,
                         duration_ms: None,
                     }

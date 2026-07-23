@@ -2744,6 +2744,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 command: "echo done".to_string(),
             }],
             aggregated_output: Some("done\n".to_string()),
+            stdout: Some("done\n".to_string()),
+            stderr: None,
             exit_code: Some(0),
             duration_ms: Some(5),
         }

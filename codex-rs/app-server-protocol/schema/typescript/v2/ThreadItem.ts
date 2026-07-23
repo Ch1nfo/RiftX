@@ -51,6 +51,14 @@ commandActions: Array<CommandAction>,
  */
 aggregatedOutput: string | null,
 /**
+ * Captured stdout. Present on completed live command items when available.
+ */
+stdout: string | null,
+/**
+ * Captured stderr. Present on completed live command items when available.
+ */
+stderr: string | null,
+/**
  * The command's exit code.
  */
 exitCode: number | null,
