@@ -79,6 +79,7 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
             config.model_provider.requires_openai_auth,
             config.forced_login_method,
             config.cli_auth_credentials_store_mode,
+            config.bundled_skills_enabled(),
             config
                 .permissions
                 .shell_environment_policy
@@ -94,9 +95,42 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
             false,
             Some(ForcedLoginMethod::Api),
             AuthCredentialsStoreMode::Ephemeral,
+            false,
             Some(&"/test/tools:/usr/bin".to_string()),
         )
     );
+}
+
+#[tokio::test]
+async fn exclusive_skill_root_is_the_only_runtime_skill_source() {
+    let test = start_test_adapter().await;
+    let skills_root = test.workspace.path().join("skills");
+    let skill_dir = skills_root.join("lab-recon");
+    std::fs::create_dir_all(&skill_dir).expect("create skill");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: lab-recon\ndescription: Run authorized lab reconnaissance\n---\n",
+    )
+    .expect("write skill");
+    let handle = test.adapter.request_handle();
+    handle
+        .set_exclusive_skill_root(&skills_root)
+        .await
+        .expect("set skill root");
+    let catalog = handle
+        .list_skills(test.workspace.path(), /*force_reload*/ true)
+        .await
+        .expect("list skills");
+
+    assert_eq!(
+        catalog
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["lab-recon"]
+    );
+    test.adapter.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]

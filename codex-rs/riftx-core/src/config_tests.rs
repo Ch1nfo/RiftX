@@ -20,6 +20,73 @@ api_key_env = "RIFTX_TEST_API_KEY"
     assert!(error.to_string().contains("unknown field `unexpected`"));
 }
 
+#[tokio::test]
+async fn config_paths_are_resolved_relative_to_the_config_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("riftx.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[skills]
+directory = "skills"
+
+[tools]
+directories = ["tools"]
+extra_paths = ["extra-tools"]
+
+[llm]
+model = "test-model"
+base_url = "http://127.0.0.1:8766/v1"
+api_key_env = "RIFTX_TEST_API_KEY"
+
+[policy]
+allowed_capabilities = []
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = false
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1024
+"#,
+    )
+    .expect("write config");
+
+    let config = RiftxConfig::load_resolved(&config_path)
+        .await
+        .expect("load config");
+
+    assert_eq!(
+        (
+            config.daemon.ipc_dir,
+            config.daemon.workspace_root,
+            config.skills.directory,
+            config.tools.directories,
+            config.tools.extra_paths,
+            config.audit.jsonl_path,
+            config.artifacts.root,
+        ),
+        (
+            temp.path().join(".riftx/ipc"),
+            temp.path().join(".riftx/workspaces"),
+            Some(temp.path().join("skills")),
+            vec![temp.path().join("tools")],
+            vec![temp.path().join("extra-tools")],
+            temp.path().join(".riftx/audit.jsonl"),
+            temp.path().join(".riftx/artifacts"),
+        )
+    );
+}
+
 #[test]
 fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
     for base_url in [

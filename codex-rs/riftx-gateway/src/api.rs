@@ -158,6 +158,7 @@ impl IntoResponse for ApiError {
 pub fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/system/info", get(system_info))
+        .route("/v1/skills", get(skills))
         .route("/v1/tools", get(tools))
         .route("/v1/engagements", post(create_engagement))
         .route("/v1/engagements/{id}", get(get_engagement))
@@ -177,6 +178,10 @@ async fn system_info() -> Json<DaemonInfo> {
 
 async fn tools(State(state): State<GatewayState>) -> Json<ToolInventory> {
     Json(state.tools.as_ref().clone())
+}
+
+async fn skills(State(state): State<GatewayState>) -> Json<codex_riftx_skills::SkillCatalog> {
+    Json(state.skills.as_ref().clone())
 }
 
 async fn create_engagement(

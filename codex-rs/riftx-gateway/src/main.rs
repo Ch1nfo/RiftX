@@ -10,6 +10,8 @@ use codex_riftx_gateway::GatewayState;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcListener;
+use codex_riftx_skills::SkillCatalogBuilder;
+use codex_riftx_skills::default_skills_root;
 use codex_riftx_tools::ToolScanner;
 use std::path::PathBuf;
 
@@ -25,7 +27,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let args = Args::parse();
-    let config = RiftxConfig::load(&args.config).await?;
+    let config = RiftxConfig::load_resolved(&args.config).await?;
     let llm_api_key = std::env::var(&config.llm.api_key_env)
         .with_context(|| format!("missing {}", config.llm.api_key_env))?;
     anyhow::ensure!(
@@ -38,6 +40,10 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::create_dir_all(&config.daemon.workspace_root).await?;
+    let skills_root = resolve_skills_root(config.skills.directory.as_deref())?;
+    tokio::fs::create_dir_all(&skills_root)
+        .await
+        .with_context(|| format!("create Skills Directory {}", skills_root.display()))?;
     let store = StateStore::open(&config.daemon.state_db).await?;
     let tools = ToolScanner::new(config.tools.clone()).scan().await;
     let process_path = tools
@@ -55,7 +61,18 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .await
         .context("start RiftX model runtime")?;
     let app_server_handle = app_server.request_handle();
-    let state = GatewayState::new(config, store, tools).with_app_server(app_server_handle);
+    app_server_handle
+        .set_exclusive_skill_root(&skills_root)
+        .await
+        .context("configure exclusive RiftX Skills Directory")?;
+    let skills_entry = app_server_handle
+        .list_skills(&config.daemon.workspace_root, /*force_reload*/ true)
+        .await
+        .context("load RiftX Skills Directory")?;
+    let skills = SkillCatalogBuilder::new(skills_root)
+        .build(skills_entry)
+        .await;
+    let state = GatewayState::new(config, store, skills, tools).with_app_server(app_server_handle);
     state
         .reconcile_after_restart()
         .await
@@ -67,4 +84,15 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     println!("{endpoint}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn resolve_skills_root(configured: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
+    let root = configured
+        .map(PathBuf::from)
+        .or_else(default_skills_root)
+        .context("the platform Skills Directory could not be determined")?;
+    if root.is_absolute() {
+        return Ok(root);
+    }
+    Ok(std::env::current_dir()?.join(root))
 }

@@ -33,8 +33,9 @@ Named Pipe 提供本地服务。
 - `riftxd` 本地 IPC API 和 Operator CLI。
 - 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入和
   `riftx tools doctor`。
+- 单一 Skills Directory、独占 Runtime 根目录、内容快照和 `riftx skills doctor`。
 
-尚未完成 Desktop、Linux TUI、Skills Directory、工具执行审计闭环、加密案件存储、
+尚未完成 Desktop、Linux TUI、工具执行审计闭环、加密案件存储、
 三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
@@ -68,6 +69,30 @@ health_check_args = ["--help"]
 ```bash
 ./codex-rs/target/debug/riftx tools doctor
 ./codex-rs/target/debug/riftx tools doctor --json
+```
+
+## 本机 Skill
+
+RiftX 只加载自己的单一 Skills Directory，不会混入 `~/.agents/skills`、项目 Skill、
+插件 Skill 或 Agent Runtime 的内置 Skill。默认目录为：
+
+- macOS：`~/Library/Application Support/RiftX/skills/`
+- Windows：`%LOCALAPPDATA%\RiftX\skills\`
+- Linux：`~/.local/share/riftx/skills/`
+
+每个 Skill 放在独立子目录中，入口文件为 `SKILL.md`。也可以配置自定义目录：
+
+```toml
+[skills]
+directory = "/absolute/path/to/team-skills"
+```
+
+`riftxd` 启动时固定 Skill 元数据和目录内容哈希快照；RiftX 不预装任何 Skill。检查当前
+启动快照：
+
+```bash
+./codex-rs/target/debug/riftx skills doctor
+./codex-rs/target/debug/riftx skills doctor --json
 ```
 
 ## LLM 配置

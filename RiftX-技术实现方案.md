@@ -1008,6 +1008,7 @@ RiftX/
 - Skills Directory 扫描。
 - Tool/Skill 快照。
 - `riftx tools doctor`。
+- `riftx skills doctor`。
 - 本机 shell、PTY、stdin、interrupt、artifact。
 - macOS、Windows、Linux Native 验收。
 

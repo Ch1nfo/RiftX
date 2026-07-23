@@ -18,6 +18,8 @@ use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
+use codex_riftx_skills::SkillCatalog;
+use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolInventory;
 use codex_riftx_tools::ToolScanConfig;
 use http_body_util::BodyExt;
@@ -55,6 +57,7 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             root: temp.path().join("artifacts"),
             max_bytes_per_engagement: 1024,
         },
+        skills: SkillDirectoryConfig::default(),
         tools: ToolScanConfig {
             directories: Vec::new(),
             extra_paths: Vec::new(),
@@ -63,11 +66,40 @@ async fn test_state(temp: &TempDir) -> GatewayState {
     let store = StateStore::open(&config.daemon.state_db)
         .await
         .expect("state store");
-    GatewayState::new(config, store, ToolInventory::empty())
+    GatewayState::new(
+        config,
+        store,
+        SkillCatalog::empty(temp.path().join("skills")),
+        ToolInventory::empty(),
+    )
 }
 
 async fn test_router(temp: &TempDir) -> Router {
     build_router(test_state(temp).await)
+}
+
+#[tokio::test]
+async fn skills_endpoint_returns_the_startup_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    let app = test_router(&temp).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/skills")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let catalog: SkillCatalog = serde_json::from_slice(&body).expect("skill catalog");
+    assert_eq!(catalog, SkillCatalog::empty(temp.path().join("skills")));
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolScanConfig;
 use serde::Deserialize;
 use serde::Serialize;
@@ -26,6 +27,8 @@ pub struct RiftxConfig {
     pub policy: ManagedPolicyConfig,
     pub audit: AuditConfig,
     pub artifacts: ArtifactConfig,
+    #[serde(default)]
+    pub skills: SkillDirectoryConfig,
     pub tools: ToolScanConfig,
 }
 
@@ -43,9 +46,44 @@ impl RiftxConfig {
         Ok(config)
     }
 
+    pub async fn load_resolved(path: &Path) -> Result<Self, ConfigError> {
+        let path = std::path::absolute(path)
+            .map_err(|error| ConfigError::Invalid(format!("resolve config path: {error}")))?;
+        let mut config = Self::load(&path).await?;
+        let base = path.parent().ok_or_else(|| {
+            ConfigError::Invalid(format!("config path has no parent: {}", path.display()))
+        })?;
+        config.resolve_paths(base);
+        Ok(config)
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.llm.validate()?;
         Ok(())
+    }
+
+    fn resolve_paths(&mut self, base: &Path) {
+        resolve_path(base, &mut self.daemon.ipc_dir);
+        resolve_path(base, &mut self.daemon.state_db);
+        resolve_path(base, &mut self.daemon.runtime_home);
+        resolve_path(base, &mut self.daemon.workspace_root);
+        resolve_path(base, &mut self.audit.jsonl_path);
+        resolve_path(base, &mut self.artifacts.root);
+        if let Some(directory) = self.skills.directory.as_mut() {
+            resolve_path(base, directory);
+        }
+        for directory in &mut self.tools.directories {
+            resolve_path(base, directory);
+        }
+        for path in &mut self.tools.extra_paths {
+            resolve_path(base, path);
+        }
+    }
+}
+
+fn resolve_path(base: &Path, path: &mut PathBuf) {
+    if path.is_relative() {
+        *path = base.join(&*path);
     }
 }
 

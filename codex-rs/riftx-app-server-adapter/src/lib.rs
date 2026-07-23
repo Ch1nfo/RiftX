@@ -27,6 +27,11 @@ use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SkillsExtraRootsSetParams;
+use codex_app_server_protocol::SkillsExtraRootsSetResponse;
+use codex_app_server_protocol::SkillsListEntry;
+use codex_app_server_protocol::SkillsListParams;
+use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnInterruptParams;
@@ -43,6 +48,7 @@ use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::protocol::SessionSource;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -65,6 +71,10 @@ pub enum AdapterError {
     UnsafeRuntimeConfig(String),
     #[error("RiftX workspace must be an absolute path: {0}")]
     InvalidWorkspace(PathBuf),
+    #[error("RiftX Skills Directory must be an absolute path: {0}")]
+    InvalidSkillRoot(PathBuf),
+    #[error("RiftX model runtime returned no skill catalog for workspace {0}")]
+    MissingSkillCatalog(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,6 +355,10 @@ async fn build_runtime_config(
                     "shell_environment_policy.set.PATH".to_string(),
                     toml::Value::String(runtime.process_path.clone()),
                 ),
+                (
+                    "skills.bundled.enabled".to_string(),
+                    toml::Value::Boolean(false),
+                ),
             ])
             .strict_config(true)
             .build()
@@ -357,7 +371,8 @@ async fn build_runtime_config(
         && config.model_provider.env_key.as_deref() == Some(runtime.api_key_env.as_str())
         && !config.model_provider.requires_openai_auth
         && config.forced_login_method == Some(ForcedLoginMethod::Api)
-        && config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral;
+        && config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral
+        && !config.bundled_skills_enabled();
     let path_is_enforced = config
         .permissions
         .shell_environment_policy
@@ -374,6 +389,47 @@ async fn build_runtime_config(
 }
 
 impl RiftxAppServerRequestHandle {
+    pub async fn set_exclusive_skill_root(&self, root: &Path) -> Result<(), AdapterError> {
+        let root = AbsolutePathBuf::from_absolute_path(root)
+            .map_err(|_| AdapterError::InvalidSkillRoot(root.to_path_buf()))?;
+        let _: SkillsExtraRootsSetResponse = self
+            .client
+            .request_typed(ClientRequest::SkillsExtraRootsSet {
+                request_id: self.next_request_id(),
+                params: SkillsExtraRootsSetParams {
+                    extra_roots: vec![root],
+                    exclusive: true,
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_skills(
+        &self,
+        cwd: &Path,
+        force_reload: bool,
+    ) -> Result<SkillsListEntry, AdapterError> {
+        if !cwd.is_absolute() {
+            return Err(AdapterError::InvalidWorkspace(cwd.to_path_buf()));
+        }
+        let response: SkillsListResponse = self
+            .client
+            .request_typed(ClientRequest::SkillsList {
+                request_id: self.next_request_id(),
+                params: SkillsListParams {
+                    cwds: vec![cwd.to_path_buf()],
+                    force_reload,
+                },
+            })
+            .await?;
+        response
+            .data
+            .into_iter()
+            .next()
+            .ok_or_else(|| AdapterError::MissingSkillCatalog(cwd.to_path_buf()))
+    }
+
     pub async fn start_local_thread(&self, cwd: &Path) -> Result<String, AdapterError> {
         let response: ThreadStartResponse = self
             .client

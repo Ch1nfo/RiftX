@@ -7,6 +7,8 @@ use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_skills::SkillCatalog;
+use codex_riftx_skills::SkillDiagnosticLevel;
 use codex_riftx_tools::DiagnosticLevel;
 use codex_riftx_tools::ToolInventory;
 use futures::StreamExt;
@@ -87,10 +89,22 @@ enum Command {
         #[command(subcommand)]
         command: ToolsCommand,
     },
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ToolsCommand {
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillsCommand {
     Doctor {
         #[arg(long)]
         json: bool,
@@ -149,7 +163,7 @@ impl ReportFormat {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = RiftxConfig::load(&cli.config).await?;
+    let config = RiftxConfig::load_resolved(&cli.config).await?;
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(config.daemon.ipc_dir));
     verify_daemon(&client).await?;
     match cli.command {
@@ -262,6 +276,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Tools {
             command: ToolsCommand::Doctor { json },
         } => tools_doctor(&client, json).await?,
+        Command::Skills {
+            command: SkillsCommand::Doctor { json },
+        } => skills_doctor(&client, json).await?,
     }
     Ok(())
 }
@@ -387,6 +404,43 @@ async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()>
         }
     }
     anyhow::ensure!(inventory.is_healthy(), "one or more tool checks failed");
+    Ok(())
+}
+
+async fn skills_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
+    let response = client
+        .get("/v1/skills")
+        .await
+        .context("request skill catalog")?;
+    let status = response.status();
+    let body = response.bytes().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "riftxd returned {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let catalog: SkillCatalog = serde_json::from_slice(&body).context("decode skill catalog")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+    } else {
+        println!("Skills: {}", catalog.skills.len());
+        println!("Directory: {}", catalog.root.display());
+        println!("Snapshot: {}", catalog.snapshot_sha256);
+        for diagnostic in &catalog.diagnostics {
+            let level = match diagnostic.level {
+                SkillDiagnosticLevel::Info => "INFO",
+                SkillDiagnosticLevel::Warning => "WARN",
+                SkillDiagnosticLevel::Error => "ERROR",
+            };
+            let path = diagnostic
+                .path
+                .as_deref()
+                .map(|path| format!(" ({})", path.display()))
+                .unwrap_or_default();
+            println!("{level} {}{path}: {}", diagnostic.code, diagnostic.message);
+        }
+    }
+    anyhow::ensure!(catalog.is_healthy(), "one or more RiftX skills are invalid");
     Ok(())
 }
 

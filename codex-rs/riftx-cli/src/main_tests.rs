@@ -64,3 +64,14 @@ fn tools_doctor_supports_machine_readable_output() {
         }
     ));
 }
+
+#[test]
+fn skills_doctor_supports_machine_readable_output() {
+    let cli = Cli::try_parse_from(["riftx", "skills", "doctor", "--json"]).expect("valid CLI");
+    assert!(matches!(
+        cli.command,
+        Command::Skills {
+            command: SkillsCommand::Doctor { json: true }
+        }
+    ));
+}
