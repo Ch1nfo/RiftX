@@ -20,6 +20,7 @@ codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-feedback = { workspace = true }
 codex-protocol = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

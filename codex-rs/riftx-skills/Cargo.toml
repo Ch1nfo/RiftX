@@ -1,11 +1,11 @@
 [package]
-name = "codex-riftx-core"
+name = "codex-riftx-skills"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "codex_riftx_core"
+name = "codex_riftx_skills"
 path = "src/lib.rs"
 doctest = false
 
@@ -13,19 +13,15 @@ doctest = false
 workspace = true
 
 [dependencies]
-codex-riftx-skills = { workspace = true }
-codex-riftx-tools = { workspace = true }
-ipnet = { workspace = true, features = ["serde"] }
+codex-app-server-protocol = { workspace = true }
+dirs = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
-sqlx = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
-toml = { workspace = true }
-url = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
+codex-utils-absolute-path = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
