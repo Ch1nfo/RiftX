@@ -578,12 +578,21 @@ impl CatalogRequestProcessor {
         &self,
         params: SkillsExtraRootsSetParams,
     ) -> Result<SkillsExtraRootsSetResponse, JSONRPCErrorError> {
-        let SkillsExtraRootsSetParams { extra_roots } = params;
+        let SkillsExtraRootsSetParams {
+            extra_roots,
+            exclusive,
+        } = params;
         self.skills_watcher
             .register_runtime_extra_roots(&extra_roots);
-        self.thread_manager
-            .skills_service()
-            .set_extra_roots(extra_roots);
+        if exclusive {
+            self.thread_manager
+                .skills_service()
+                .set_exclusive_roots(extra_roots);
+        } else {
+            self.thread_manager
+                .skills_service()
+                .set_extra_roots(extra_roots);
+        }
         self.outgoing
             .send_server_notification(ServerNotification::SkillsChanged(
                 codex_app_server_protocol::SkillsChangedNotification {},

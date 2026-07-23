@@ -145,6 +145,7 @@ async fn set_extra_roots(app_server: &mut TestAppServer, root: &std::path::Path)
     let request_id = app_server
         .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
             extra_roots: vec![AbsolutePathBuf::from_absolute_path(root)?],
+            exclusive: false,
         })
         .await?;
     let response: JSONRPCResponse = timeout(

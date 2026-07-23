@@ -5,6 +5,7 @@ use std::sync::RwLock;
 
 use codex_config::ConfigLayerStack;
 use codex_exec_server::ExecutorFileSystem;
+use codex_exec_server::LOCAL_FS;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -70,11 +71,17 @@ impl SkillsLoadInput {
 pub struct SkillsService {
     codex_home: AbsolutePathBuf,
     restriction_product: Option<Product>,
-    extra_roots: RwLock<Vec<AbsolutePathBuf>>,
+    runtime_roots: RwLock<RuntimeSkillRoots>,
     cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, HostSkillsSnapshot>>,
     cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, HostSkillsSnapshot>>,
     // Shared across cwds so root scheduling cannot multiply per-root I/O fanout.
     root_scan_slots: Arc<Semaphore>,
+}
+
+#[derive(Default)]
+struct RuntimeSkillRoots {
+    paths: Vec<AbsolutePathBuf>,
+    exclusive: bool,
 }
 
 impl SkillsService {
@@ -90,7 +97,7 @@ impl SkillsService {
         let service = Self {
             codex_home,
             restriction_product,
-            extra_roots: RwLock::new(Vec::new()),
+            runtime_roots: RwLock::new(RuntimeSkillRoots::default()),
             cache_by_cwd: RwLock::new(HashMap::new()),
             cache_by_config: RwLock::new(HashMap::new()),
             root_scan_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
@@ -106,12 +113,20 @@ impl SkillsService {
     }
 
     pub fn set_extra_roots(&self, extra_roots: Vec<AbsolutePathBuf>) {
+        self.set_runtime_roots(extra_roots, /*exclusive*/ false);
+    }
+
+    pub fn set_exclusive_roots(&self, roots: Vec<AbsolutePathBuf>) {
+        self.set_runtime_roots(roots, /*exclusive*/ true);
+    }
+
+    fn set_runtime_roots(&self, paths: Vec<AbsolutePathBuf>, exclusive: bool) {
         {
             let mut roots = self
-                .extra_roots
+                .runtime_roots
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *roots = extra_roots;
+            *roots = RuntimeSkillRoots { paths, exclusive };
         }
         self.clear_cache();
     }
@@ -157,14 +172,7 @@ impl SkillsService {
         input: &SkillsLoadInput,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> Vec<SkillRoot> {
-        let mut roots = skill_roots(
-            fs,
-            &input.config_layer_stack,
-            &input.cwd,
-            input.effective_skill_roots.clone(),
-            self.extra_roots(),
-        )
-        .await;
+        let mut roots = self.skill_roots(input, fs).await;
         if !input.bundled_skills_enabled {
             roots.retain(|root| root.scope != SkillScope::System);
         }
@@ -185,14 +193,7 @@ impl SkillsService {
             return snapshot;
         }
 
-        let mut roots = skill_roots(
-            fs.clone(),
-            &input.config_layer_stack,
-            &input.cwd,
-            input.effective_skill_roots.clone(),
-            self.extra_roots(),
-        )
-        .await;
+        let mut roots = self.skill_roots(input, fs.clone()).await;
         if !bundled_skills_enabled_from_stack(&input.config_layer_stack) {
             roots.retain(|root| root.scope != SkillScope::System);
         }
@@ -270,11 +271,39 @@ impl SkillsService {
         }
     }
 
-    fn extra_roots(&self) -> Vec<AbsolutePathBuf> {
-        match self.extra_roots.read() {
-            Ok(roots) => roots.clone(),
-            Err(err) => err.into_inner().clone(),
+    async fn skill_roots(
+        &self,
+        input: &SkillsLoadInput,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
+    ) -> Vec<SkillRoot> {
+        let (runtime_roots, exclusive) = match self.runtime_roots.read() {
+            Ok(roots) => (roots.paths.clone(), roots.exclusive),
+            Err(err) => {
+                let roots = err.into_inner();
+                (roots.paths.clone(), roots.exclusive)
+            }
+        };
+        if exclusive {
+            return runtime_roots
+                .into_iter()
+                .map(|path| SkillRoot {
+                    path,
+                    scope: SkillScope::User,
+                    file_system: Arc::clone(&LOCAL_FS),
+                    plugin_id: None,
+                    plugin_namespace: None,
+                    plugin_root: None,
+                })
+                .collect();
         }
+        skill_roots(
+            fs,
+            &input.config_layer_stack,
+            &input.cwd,
+            input.effective_skill_roots.clone(),
+            runtime_roots,
+        )
+        .await
     }
 }
 

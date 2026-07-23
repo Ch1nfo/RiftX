@@ -3161,10 +3161,26 @@ fn skills_extra_roots_set_params_serialization_uses_extra_roots() {
     assert_eq!(
         serde_json::to_value(SkillsExtraRootsSetParams {
             extra_roots: vec![absolute_path("tmp/skills")],
+            exclusive: false,
         })
         .unwrap(),
         json!({
             "extraRoots": [absolute_path_string("tmp/skills")],
+        }),
+    );
+}
+
+#[test]
+fn skills_extra_roots_set_params_serializes_exclusive_mode() {
+    assert_eq!(
+        serde_json::to_value(SkillsExtraRootsSetParams {
+            extra_roots: vec![absolute_path("tmp/skills")],
+            exclusive: true,
+        })
+        .unwrap(),
+        json!({
+            "extraRoots": [absolute_path_string("tmp/skills")],
+            "exclusive": true,
         }),
     );
 }

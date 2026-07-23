@@ -745,6 +745,7 @@ async fn skills_extra_roots_set_updates_process_runtime_roots() -> Result<()> {
     let set_request_id = mcp
         .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
             extra_roots: vec![AbsolutePathBuf::from_absolute_path(&extra_skills_root)?],
+            exclusive: false,
         })
         .await?;
     let set_response: JSONRPCResponse = timeout(
@@ -780,6 +781,7 @@ async fn skills_extra_roots_set_updates_process_runtime_roots() -> Result<()> {
     let reset_request_id = mcp
         .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
             extra_roots: vec![AbsolutePathBuf::from_absolute_path(&missing_root)?],
+            exclusive: false,
         })
         .await?;
     let reset_response: JSONRPCResponse = timeout(
@@ -814,6 +816,7 @@ async fn skills_extra_roots_set_updates_process_runtime_roots() -> Result<()> {
     let clear_request_id = mcp
         .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
             extra_roots: Vec::new(),
+            exclusive: false,
         })
         .await?;
     let clear_response: JSONRPCResponse = timeout(

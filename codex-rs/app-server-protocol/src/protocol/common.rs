@@ -674,6 +674,7 @@ client_request_definitions! {
     },
     SkillsExtraRootsSet => "skills/extraRoots/set" {
         params: v2::SkillsExtraRootsSetParams,
+        inspect_params: true,
         serialization: global("config"),
         response: v2::SkillsExtraRootsSetResponse,
     },
@@ -1926,6 +1927,7 @@ mod tests {
             request_id: request_id(),
             params: v2::SkillsExtraRootsSetParams {
                 extra_roots: vec![absolute_path("/tmp/skills")],
+                exclusive: false,
             },
         };
         assert_eq!(

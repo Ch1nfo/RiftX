@@ -3,6 +3,7 @@ use super::HookEventName;
 use super::HookHandlerType;
 use super::HookSource;
 use super::HookTrustStatus;
+use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
 use codex_protocol::protocol::SkillInterface as CoreSkillInterface;
 use codex_protocol::protocol::SkillMetadata as CoreSkillMetadata;
@@ -35,11 +36,16 @@ pub struct SkillsListResponse {
     pub data: Vec<SkillsListEntry>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SkillsExtraRootsSetParams {
     pub extra_roots: Vec<AbsolutePathBuf>,
+
+    /// When true, all configured, project, plugin, and bundled roots are excluded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[experimental("skills/extraRoots/set.exclusive")]
+    pub exclusive: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -354,6 +354,49 @@ async fn set_extra_roots_applies_to_config_loads_and_empty_clears() {
 }
 
 #[tokio::test]
+async fn set_exclusive_roots_ignores_config_and_plugin_roots() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let exclusive_root = tempfile::tempdir().expect("tempdir");
+    write_user_skill(&codex_home, "user", "user-skill", "from user");
+    let plugin_skill_path = write_plugin_skill(
+        &codex_home,
+        "test",
+        "sample",
+        "plugin-skill",
+        "plugin-skill",
+        "from plugin",
+    );
+    let exclusive_skill_dir = exclusive_root.path().join("exclusive-skill");
+    fs::create_dir_all(&exclusive_skill_dir).expect("create exclusive skill dir");
+    fs::write(
+        exclusive_skill_dir.join("SKILL.md"),
+        "---\nname: exclusive-skill\ndescription: exclusive skill\n---\n\n# Body\n",
+    )
+    .expect("write exclusive skill");
+    let config_layer_stack = config_stack(&codex_home, "");
+    let plugin_root =
+        plugin_skill_root_for_skill_path(&plugin_skill_path, "test-plugin@test", "sample");
+    let skills_service = SkillsService::new(
+        codex_home.path().abs(),
+        /*bundled_skills_enabled*/ false,
+    );
+    skills_service.set_exclusive_roots(vec![exclusive_root.path().abs()]);
+
+    let outcome =
+        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[plugin_root])
+            .await;
+    assert_eq!(
+        outcome
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exclusive-skill"]
+    );
+}
+
+#[tokio::test]
 async fn skills_for_config_disables_plugin_skills_by_name() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");
