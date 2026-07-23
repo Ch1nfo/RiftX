@@ -18,6 +18,7 @@ RiftX-specific code should be isolated where practical:
 - `codex-rs/riftx-core`
 - `codex-rs/riftx-gateway`
 - `codex-rs/riftx-ipc`
+- `codex-rs/riftx-tools`
 - `codex-rs/riftx-app-server-adapter`
 - `codex-rs/riftx-cli`
 

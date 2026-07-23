@@ -3822,6 +3822,7 @@ dependencies = [
  "clap",
  "codex-riftx-core",
  "codex-riftx-ipc",
+ "codex-riftx-tools",
  "futures",
  "pretty_assertions",
  "serde_json",
@@ -3832,6 +3833,7 @@ dependencies = [
 name = "codex-riftx-core"
 version = "0.0.0"
 dependencies = [
+ "codex-riftx-tools",
  "ipnet",
  "pretty_assertions",
  "serde",
@@ -3856,6 +3858,7 @@ dependencies = [
  "codex-riftx-app-server-adapter",
  "codex-riftx-core",
  "codex-riftx-ipc",
+ "codex-riftx-tools",
  "futures",
  "http-body-util",
  "pretty_assertions",
@@ -3886,6 +3889,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-riftx-tools"
+version = "0.0.0"
+dependencies = [
+ "dirs",
+ "pretty_assertions",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.11+spec-1.1.0",
 ]
 
 [[package]]

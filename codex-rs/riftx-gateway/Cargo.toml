@@ -24,6 +24,7 @@ codex-arg0 = { workspace = true }
 codex-riftx-core = { workspace = true }
 codex-riftx-app-server-adapter = { workspace = true }
 codex-riftx-ipc = { workspace = true }
+codex-riftx-tools = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

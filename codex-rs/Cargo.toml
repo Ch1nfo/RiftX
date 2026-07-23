@@ -87,6 +87,7 @@ members = [
     "riftx-core",
     "riftx-gateway",
     "riftx-ipc",
+    "riftx-tools",
     "sandboxing",
     "stdio-to-uds",
     "otel",
@@ -229,6 +230,7 @@ codex-riftx-cli = { path = "riftx-cli" }
 codex-riftx-core = { path = "riftx-core" }
 codex-riftx-gateway = { path = "riftx-gateway" }
 codex-riftx-ipc = { path = "riftx-ipc" }
+codex-riftx-tools = { path = "riftx-tools" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
