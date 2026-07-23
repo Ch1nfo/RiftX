@@ -4132,6 +4132,9 @@
         "itemId": {
           "type": "string"
         },
+        "stream": {
+          "$ref": "#/definitions/CommandExecutionOutputStream"
+        },
         "threadId": {
           "type": "string"
         },
@@ -4142,11 +4145,19 @@
       "required": [
         "delta",
         "itemId",
+        "stream",
         "threadId",
         "turnId"
       ],
       "title": "CommandExecutionOutputDeltaNotification",
       "type": "object"
+    },
+    "CommandExecutionOutputStream": {
+      "enum": [
+        "stdout",
+        "stderr"
+      ],
+      "type": "string"
     },
     "CommandExecutionSource": {
       "enum": [

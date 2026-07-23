@@ -1218,6 +1218,7 @@ mod tests {
                 thread_id: "thread".to_string(),
                 turn_id: "turn".to_string(),
                 item_id: "item".to_string(),
+                stream: codex_app_server_protocol::CommandExecutionOutputStream::Stdout,
                 delta: delta.to_string(),
             },
         )
@@ -2234,6 +2235,7 @@ mod tests {
                         thread_id: "thread".to_string(),
                         turn_id: "turn".to_string(),
                         item_id: "item".to_string(),
+                        stream: codex_app_server_protocol::CommandExecutionOutputStream::Stdout,
                         delta: "stdout".to_string(),
                     }
                 )

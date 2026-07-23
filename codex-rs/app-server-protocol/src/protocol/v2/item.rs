@@ -1394,7 +1394,16 @@ pub struct CommandExecutionOutputDeltaNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    pub stream: CommandExecutionOutputStream,
     pub delta: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum CommandExecutionOutputStream {
+    Stdout,
+    Stderr,
 }
 /// Deprecated legacy notification for `apply_patch` textual output.
 ///

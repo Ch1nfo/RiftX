@@ -1,10 +1,17 @@
 use crate::AdapterError;
+pub use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
+pub use codex_app_server_protocol::CommandExecutionOutputStream;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+pub use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
+pub use codex_app_server_protocol::ItemCompletedNotification;
+pub use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ServerNotification;
+pub use codex_app_server_protocol::ServerNotification;
+pub use codex_app_server_protocol::TerminalInteractionNotification;
+pub use codex_app_server_protocol::ThreadItem;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingCommandApproval {

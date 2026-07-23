@@ -1492,7 +1492,7 @@ There are additional item-specific events:
 
 #### commandExecution
 
-- `item/commandExecution/outputDelta` — streams stdout/stderr for the command; append deltas in order to render live output alongside `aggregatedOutput` in the final item.
+- `item/commandExecution/outputDelta` — streams command output with `stream` set to `stdout` or `stderr`; append deltas in order to render live output alongside `aggregatedOutput` in the final item.
   Final `commandExecution` items include parsed `commandActions`, `status`, `exitCode`, and `durationMs` so the UI can summarize what ran and whether it succeeded.
 
 #### fileChange

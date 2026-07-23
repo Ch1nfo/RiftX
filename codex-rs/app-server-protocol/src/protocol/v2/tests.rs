@@ -1588,6 +1588,7 @@ fn command_execution_output_delta_round_trips() {
         thread_id: "thread-1".to_string(),
         turn_id: "turn-1".to_string(),
         item_id: "item-1".to_string(),
+        stream: CommandExecutionOutputStream::Stderr,
         delta: "\u{fffd}a\n".to_string(),
     };
 
@@ -1599,6 +1600,7 @@ fn command_execution_output_delta_round_trips() {
             "threadId": "thread-1",
             "turnId": "turn-1",
             "itemId": "item-1",
+            "stream": "stderr",
             "delta": "\u{fffd}a\n",
         })
     );

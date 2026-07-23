@@ -863,6 +863,7 @@ async fn live_app_server_command_output_delta_transcript_snapshot() {
                     thread_id: "thread-1".to_string(),
                     turn_id: "turn-1".to_string(),
                     item_id: "cmd-1".to_string(),
+                    stream: codex_app_server_protocol::CommandExecutionOutputStream::Stdout,
                     delta: delta.to_string(),
                 },
             ),

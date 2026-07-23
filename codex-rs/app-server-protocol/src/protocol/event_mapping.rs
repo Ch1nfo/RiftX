@@ -7,6 +7,7 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
+use crate::protocol::v2::CommandExecutionOutputStream;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -436,11 +437,20 @@ pub fn item_event_to_server_notification(
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
             let item_id = exec_command_output_delta_event.call_id;
             let delta = String::from_utf8_lossy(&exec_command_output_delta_event.chunk).to_string();
+            let stream = match exec_command_output_delta_event.stream {
+                codex_protocol::protocol::ExecOutputStream::Stdout => {
+                    CommandExecutionOutputStream::Stdout
+                }
+                codex_protocol::protocol::ExecOutputStream::Stderr => {
+                    CommandExecutionOutputStream::Stderr
+                }
+            };
             ServerNotification::CommandExecutionOutputDelta(
                 CommandExecutionOutputDeltaNotification {
                     thread_id,
                     turn_id,
                     item_id,
+                    stream,
                     delta,
                 },
             )
@@ -607,6 +617,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 item_id: "call-1".to_string(),
+                stream: CommandExecutionOutputStream::Stdout,
                 delta: "hello".to_string(),
             },
         );
