@@ -1,5 +1,6 @@
 //! RiftX domain, configuration, policy, and persistent state primitives.
 
+mod audit;
 mod config;
 mod model;
 mod policy;
@@ -13,3 +14,4 @@ pub use state::*;
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+pub use audit::*;

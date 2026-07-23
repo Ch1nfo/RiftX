@@ -260,6 +260,22 @@ impl StateStore {
         self.entities(EntityTable::Findings, engagement_id).await
     }
 
+    pub async fn assets(&self, engagement_id: &str) -> Result<Vec<Asset>, StateError> {
+        self.entities(EntityTable::Assets, engagement_id).await
+    }
+
+    pub async fn services(&self, engagement_id: &str) -> Result<Vec<Service>, StateError> {
+        self.entities(EntityTable::Services, engagement_id).await
+    }
+
+    pub async fn evidence(&self, engagement_id: &str) -> Result<Vec<Evidence>, StateError> {
+        self.entities(EntityTable::Evidence, engagement_id).await
+    }
+
+    pub async fn tasks(&self, engagement_id: &str) -> Result<Vec<Task>, StateError> {
+        self.entities(EntityTable::Tasks, engagement_id).await
+    }
+
     pub async fn artifacts(&self, engagement_id: &str) -> Result<Vec<Artifact>, StateError> {
         self.entities(EntityTable::Artifacts, engagement_id).await
     }
