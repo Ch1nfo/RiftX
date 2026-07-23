@@ -491,3 +491,7 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "execution_events_tests.rs"]
+mod tests;
