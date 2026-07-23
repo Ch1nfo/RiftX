@@ -65,9 +65,10 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
         api_key_env: "RIFTX_TEST_API_KEY".to_string(),
         process_path: "/test/tools:/usr/bin".to_string(),
     };
-    let config = build_runtime_config(&runtime)
+    let built = build_runtime_config(&runtime)
         .await
         .expect("runtime config");
+    let config = built.config;
 
     assert_eq!(
         (

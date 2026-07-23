@@ -107,12 +107,20 @@ pub struct RiftxAppServerAdapter {
     request_handle: RiftxAppServerRequestHandle,
 }
 
+struct BuiltRuntimeConfig {
+    config: Arc<codex_core::config::Config>,
+    cli_overrides: Vec<(String, toml::Value)>,
+}
+
 impl RiftxAppServerAdapter {
     pub async fn start_embedded(
         runtime: RiftxLlmRuntimeConfig,
         arg0_paths: Arg0DispatchPaths,
     ) -> Result<Self, AdapterError> {
-        let config = build_runtime_config(&runtime).await?;
+        let BuiltRuntimeConfig {
+            config,
+            cli_overrides,
+        } = build_runtime_config(&runtime).await?;
         let config_warnings = config
             .startup_warnings
             .iter()
@@ -139,7 +147,7 @@ impl RiftxAppServerAdapter {
         Self::start(InProcessClientStartArgs {
             arg0_paths,
             config,
-            cli_overrides: Vec::new(),
+            cli_overrides,
             loader_overrides: LoaderOverrides::default(),
             strict_config: true,
             cloud_config_bundle: CloudConfigBundleLoader::default(),
@@ -309,57 +317,13 @@ impl RiftxAppServerAdapter {
 
 async fn build_runtime_config(
     runtime: &RiftxLlmRuntimeConfig,
-) -> Result<Arc<codex_core::config::Config>, AdapterError> {
+) -> Result<BuiltRuntimeConfig, AdapterError> {
     tokio::fs::create_dir_all(&runtime.runtime_home).await?;
+    let cli_overrides = runtime_overrides(runtime);
     let config = Arc::new(
         ConfigBuilder::default()
             .codex_home(runtime.runtime_home.clone())
-            .cli_overrides(vec![
-                (
-                    "model".to_string(),
-                    toml::Value::String(runtime.model.clone()),
-                ),
-                (
-                    "model_provider".to_string(),
-                    toml::Value::String("riftx".to_string()),
-                ),
-                (
-                    "model_providers.riftx.name".to_string(),
-                    toml::Value::String("RiftX LLM".to_string()),
-                ),
-                (
-                    "model_providers.riftx.base_url".to_string(),
-                    toml::Value::String(runtime.base_url.clone()),
-                ),
-                (
-                    "model_providers.riftx.env_key".to_string(),
-                    toml::Value::String(runtime.api_key_env.clone()),
-                ),
-                (
-                    "model_providers.riftx.wire_api".to_string(),
-                    toml::Value::String("responses".to_string()),
-                ),
-                (
-                    "model_providers.riftx.requires_openai_auth".to_string(),
-                    toml::Value::Boolean(false),
-                ),
-                (
-                    "forced_login_method".to_string(),
-                    toml::Value::String("api".to_string()),
-                ),
-                (
-                    "cli_auth_credentials_store".to_string(),
-                    toml::Value::String("ephemeral".to_string()),
-                ),
-                (
-                    "shell_environment_policy.set.PATH".to_string(),
-                    toml::Value::String(runtime.process_path.clone()),
-                ),
-                (
-                    "skills.bundled.enabled".to_string(),
-                    toml::Value::Boolean(false),
-                ),
-            ])
+            .cli_overrides(cli_overrides.clone())
             .strict_config(true)
             .build()
             .await?,
@@ -385,7 +349,59 @@ async fn build_runtime_config(
                 .to_string(),
         ));
     }
-    Ok(config)
+    Ok(BuiltRuntimeConfig {
+        config,
+        cli_overrides,
+    })
+}
+
+fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Value)> {
+    vec![
+        (
+            "model".to_string(),
+            toml::Value::String(runtime.model.clone()),
+        ),
+        (
+            "model_provider".to_string(),
+            toml::Value::String("riftx".to_string()),
+        ),
+        (
+            "model_providers.riftx.name".to_string(),
+            toml::Value::String("RiftX LLM".to_string()),
+        ),
+        (
+            "model_providers.riftx.base_url".to_string(),
+            toml::Value::String(runtime.base_url.clone()),
+        ),
+        (
+            "model_providers.riftx.env_key".to_string(),
+            toml::Value::String(runtime.api_key_env.clone()),
+        ),
+        (
+            "model_providers.riftx.wire_api".to_string(),
+            toml::Value::String("responses".to_string()),
+        ),
+        (
+            "model_providers.riftx.requires_openai_auth".to_string(),
+            toml::Value::Boolean(false),
+        ),
+        (
+            "forced_login_method".to_string(),
+            toml::Value::String("api".to_string()),
+        ),
+        (
+            "cli_auth_credentials_store".to_string(),
+            toml::Value::String("ephemeral".to_string()),
+        ),
+        (
+            "shell_environment_policy.set.PATH".to_string(),
+            toml::Value::String(runtime.process_path.clone()),
+        ),
+        (
+            "skills.bundled.enabled".to_string(),
+            toml::Value::Boolean(false),
+        ),
+    ]
 }
 
 impl RiftxAppServerRequestHandle {
@@ -440,7 +456,7 @@ impl RiftxAppServerRequestHandle {
                     approval_policy: Some(AskForApproval::OnRequest),
                     sandbox: Some(SandboxMode::DangerFullAccess),
                     developer_instructions: Some(MAIN_AGENT_INSTRUCTIONS.to_string()),
-                    environments: Some(Vec::new()),
+                    environments: None,
                     dynamic_tools: Some(Vec::new()),
                     ..Default::default()
                 },
@@ -465,7 +481,7 @@ impl RiftxAppServerRequestHandle {
                         text: input,
                         text_elements: Vec::new(),
                     }],
-                    environments: Some(Vec::new()),
+                    environments: None,
                     cwd: Some(cwd.to_path_buf()),
                     ..Default::default()
                 },
