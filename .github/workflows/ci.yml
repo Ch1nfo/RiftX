@@ -35,17 +35,23 @@ jobs:
         with:
           workspaces: codex-rs
 
-      - name: Test RiftX core and IPC contracts
+      - name: Test RiftX local contracts
         working-directory: codex-rs
         run: >-
           conda run -n agent just test
-          -p codex-riftx-core -p codex-riftx-ipc -p codex-riftx-tools
+          -p codex-riftx-app-server-adapter
+          -p codex-riftx-artifacts
+          -p codex-riftx-cli
+          -p codex-riftx-core
+          -p codex-riftx-ipc
+          -p codex-riftx-skills
+          -p codex-riftx-tools
 
-      - name: Check local daemon and CLI
+      - name: Run Native daemon acceptance
         working-directory: codex-rs
         run: >-
-          conda run -n agent cargo check
-          -p codex-riftx-gateway -p codex-riftx-cli
+          conda run -n agent just test
+          -p codex-riftx-gateway
 
   rust:
     runs-on: ubuntu-24.04
@@ -82,6 +88,12 @@ jobs:
           -p codex-riftx-app-server-adapter -p codex-riftx-core
           -p codex-riftx-ipc -p codex-riftx-tools
           -p codex-riftx-gateway -p codex-riftx-cli'
+
+      - name: Test App Server protocol fixtures
+        working-directory: codex-rs
+        run: >-
+          conda run -n agent just test
+          -p codex-app-server-protocol
 
       - name: Test upstream lock verifier
         shell: bash -el {0}
