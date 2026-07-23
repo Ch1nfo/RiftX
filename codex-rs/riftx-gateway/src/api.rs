@@ -23,6 +23,7 @@ use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::ExecutionMode;
+use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
@@ -483,12 +484,19 @@ async fn interrupt_engagement(
 ) -> Result<Json<Engagement>, ApiError> {
     state.store.engagement(&id).await?;
     let active_turn = state.active_turns.read().await.get(&id).cloned();
-    if let Some(active_turn) = active_turn
-        && let Some(app_server) = &state.app_server
-    {
-        let _ = app_server
-            .interrupt_turn(active_turn.thread_id, active_turn.turn_id)
-            .await;
+    if let Some(active_turn) = active_turn {
+        if let Some(app_server) = &state.app_server {
+            let _ = app_server
+                .interrupt_turn(active_turn.thread_id.clone(), active_turn.turn_id.clone())
+                .await;
+        }
+        crate::execution_events::finish_turn(
+            &state,
+            &id,
+            &active_turn.turn_id,
+            ExecutionStatus::Interrupted,
+        )
+        .await;
     }
     state.active_turns.write().await.remove(&id);
     state.agent_threads.write().await.remove(&id);

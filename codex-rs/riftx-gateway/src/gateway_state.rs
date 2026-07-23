@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -34,6 +35,8 @@ pub struct GatewayState {
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
     pub(crate) agent_threads: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
+    pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
+    pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
 }
 
@@ -72,6 +75,12 @@ impl GatewayState {
         tools: ToolInventory,
     ) -> Self {
         let audit = AuditWriter::new(&config.audit);
+        let mut tool_search_path = tools.path_entries.clone();
+        if let Some(system_path) = std::env::var_os("PATH") {
+            tool_search_path.extend(
+                std::env::split_paths(&system_path).filter(|path| !path.as_os_str().is_empty()),
+            );
+        }
         Self {
             config: Arc::new(config),
             store,
@@ -84,6 +93,8 @@ impl GatewayState {
             active_turns: Arc::new(RwLock::new(HashMap::new())),
             agent_threads: Arc::new(RwLock::new(HashMap::new())),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
+            active_executions: Arc::new(RwLock::new(HashMap::new())),
+            tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
         }
     }
@@ -120,11 +131,23 @@ impl GatewayState {
             if engagement.status != EngagementStatus::Active {
                 continue;
             }
+            let interrupted_at = unix_timestamp();
+            for mut execution in self.store.executions(&engagement.id).await? {
+                if matches!(
+                    execution.status,
+                    codex_riftx_core::ExecutionStatus::Pending
+                        | codex_riftx_core::ExecutionStatus::Running
+                ) {
+                    execution.status = codex_riftx_core::ExecutionStatus::Interrupted;
+                    execution.completed_at = Some(interrupted_at);
+                    self.store.put_execution(&execution).await?;
+                }
+            }
             self.store
                 .transition_engagement(
                     &engagement.id,
                     EngagementStatus::Interrupted,
-                    unix_timestamp(),
+                    interrupted_at,
                 )
                 .await?;
         }
@@ -142,11 +165,17 @@ impl GatewayState {
                 turn_id: first_string(&data, &["/turnId", "/payload/turnId", "/payload/turn/id"]),
                 tool_call_id: first_string(
                     &data,
-                    &["/toolCallId", "/payload/toolCallId", "/payload/callId"],
+                    &[
+                        "/toolCallId",
+                        "/payload/toolCallId",
+                        "/payload/callId",
+                        "/id",
+                    ],
                 ),
                 mode: Some(engagement.mode),
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),
+                details: kind.starts_with("execution/").then(|| data.clone()),
             };
             let _ = self.audit.append(&record).await;
         }
@@ -232,3 +261,5 @@ pub(crate) fn unix_timestamp() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64)
 }
+use crate::execution_events::ActiveExecution;
+use crate::execution_events::ExecutionKey;

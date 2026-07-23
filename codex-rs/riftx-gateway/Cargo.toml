@@ -29,6 +29,8 @@ codex-riftx-tools = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+shlex = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 uuid = { workspace = true, features = ["v4"] }
 url = { workspace = true }

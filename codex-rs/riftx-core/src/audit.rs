@@ -29,6 +29,7 @@ pub struct AuditRecord {
     pub mode: Option<crate::ExecutionMode>,
     pub policy_revision: Option<String>,
     pub outcome: Option<String>,
+    pub details: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]

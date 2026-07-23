@@ -3,11 +3,16 @@ use crate::gateway_state::PendingApproval;
 use crate::gateway_state::PendingApprovalKind;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
+use codex_riftx_core::ExecutionStatus;
 use serde_json::Value;
 use serde_json::json;
 
 pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
     match event {
+        RiftxAppServerEvent::Notification(notification) => {
+            crate::execution_events::process_notification(state, &notification).await;
+            forward_event(state, RiftxAppServerEvent::Notification(notification)).await;
+        }
         RiftxAppServerEvent::CommandApproval(pending) => command_approval(state, pending).await,
         RiftxAppServerEvent::FileChangeApproval(pending) => {
             if let Some(app_server) = &state.app_server {
@@ -106,6 +111,11 @@ async fn forward_event(state: &GatewayState, event: RiftxAppServerEvent) {
     if event.kind == "turn/completed"
         && let Some(turn_id) = event.turn_id.as_deref()
     {
+        let status = match event.data.pointer("/turn/status").and_then(Value::as_str) {
+            Some("interrupted") => ExecutionStatus::Interrupted,
+            _ => ExecutionStatus::Failed,
+        };
+        crate::execution_events::finish_turn(state, &engagement_id, turn_id, status).await;
         state
             .complete_task(&engagement_id, turn_id, &event.data)
             .await;

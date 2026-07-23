@@ -19,6 +19,7 @@ async fn records_are_appended_as_json_lines() {
         mode: Some(ExecutionMode::Native),
         policy_revision: Some("revision-1".to_string()),
         outcome: Some("success".to_string()),
+        details: Some(serde_json::json!({"exitCode": 0})),
     };
 
     writer.append(&record).await.expect("first append");
