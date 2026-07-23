@@ -247,13 +247,27 @@ fn execution() -> Execution {
     Execution {
         id: "execution-1".to_string(),
         engagement_id: "eng-1".to_string(),
-        test_case_id: "test-1".to_string(),
+        test_case_id: Some("test-1".to_string()),
         task_id: None,
+        turn_id: "turn-1".to_string(),
         runner: "native-tool".to_string(),
         status: ExecutionStatus::Completed,
         started_at: 60,
         completed_at: Some(70),
         exit_code: Some(0),
+        duration_ms: Some(10_000),
+        argv: vec!["nmap".to_string(), "10.10.20.10".to_string()],
+        command_sha256: "command-sha256".to_string(),
+        cwd: "/tmp".to_string(),
+        process_id: None,
+        tool: None,
+        tool_inventory_sha256: "inventory-sha256".to_string(),
+        stdout_sha256: Some("stdout-sha256".to_string()),
+        stderr_sha256: Some("stderr-sha256".to_string()),
+        stdin_sha256: None,
+        stdout_bytes: 10,
+        stderr_bytes: 5,
+        stdin_bytes: 0,
     }
 }
 

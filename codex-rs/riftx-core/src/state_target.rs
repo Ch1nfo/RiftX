@@ -177,13 +177,15 @@ impl StateStore {
             )?;
         }
         for execution in executions {
-            check_reference(
-                "execution",
-                &execution.id,
-                "testCase",
-                &execution.test_case_id,
-                &test_case_ids,
-            )?;
+            if let Some(test_case_id) = execution.test_case_id {
+                check_reference(
+                    "execution",
+                    &execution.id,
+                    "testCase",
+                    &test_case_id,
+                    &test_case_ids,
+                )?;
+            }
         }
         for evidence in evidence {
             let execution_id = evidence.execution_id.as_deref().ok_or_else(|| {

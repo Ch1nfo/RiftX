@@ -85,16 +85,42 @@ pub enum ExecutionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionTool {
+    pub requested_name: String,
+    pub resolved_path: Option<String>,
+    pub sha256: Option<String>,
+    pub metadata_sha256: Option<String>,
+    pub version: Option<String>,
+    pub managed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Execution {
     pub id: String,
     pub engagement_id: String,
-    pub test_case_id: String,
+    pub test_case_id: Option<String>,
     pub task_id: Option<String>,
+    pub turn_id: String,
     pub runner: String,
     pub status: ExecutionStatus,
     pub started_at: i64,
     pub completed_at: Option<i64>,
     pub exit_code: Option<i32>,
+    pub duration_ms: Option<i64>,
+    /// Redacted argument vector. Secret values must never be persisted here.
+    pub argv: Vec<String>,
+    pub command_sha256: String,
+    pub cwd: String,
+    pub process_id: Option<String>,
+    pub tool: Option<ExecutionTool>,
+    pub tool_inventory_sha256: String,
+    pub stdout_sha256: Option<String>,
+    pub stderr_sha256: Option<String>,
+    pub stdin_sha256: Option<String>,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub stdin_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,9 +211,14 @@ impl Execution {
         require_fields([
             ("id", self.id.as_str()),
             ("engagementId", self.engagement_id.as_str()),
-            ("testCaseId", self.test_case_id.as_str()),
+            ("turnId", self.turn_id.as_str()),
             ("runner", self.runner.as_str()),
+            ("commandSha256", self.command_sha256.as_str()),
+            ("toolInventorySha256", self.tool_inventory_sha256.as_str()),
         ])?;
+        if self.argv.is_empty() || self.cwd.trim().is_empty() {
+            return Err(TargetStateError::InvalidExecutionCommand);
+        }
         let terminal = matches!(
             self.status,
             ExecutionStatus::Completed | ExecutionStatus::Failed | ExecutionStatus::Interrupted
@@ -286,6 +317,8 @@ pub enum TargetStateError {
     InvalidBasisPoints,
     #[error("terminal executions require a valid completion time")]
     InvalidExecutionWindow,
+    #[error("execution command metadata is incomplete")]
+    InvalidExecutionCommand,
     #[error("coverage requires 0 < total items and covered items <= total items")]
     InvalidCoverage,
 }
