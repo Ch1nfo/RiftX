@@ -5,8 +5,10 @@
 //! invoke host execution methods such as `thread/shellCommand` or `process/spawn`.
 
 mod events;
+mod tools;
 
 pub use events::*;
+pub use tools::*;
 
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
@@ -65,6 +67,8 @@ pub enum AdapterError {
     Serialize(#[from] serde_json::Error),
     #[error(transparent)]
     Transport(#[from] io::Error),
+    #[error(transparent)]
+    Tool(#[from] StructuredToolError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,12 +127,19 @@ pub struct RemoteEnvironment {
     pub cwd: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorApprovalDecision {
+    Approve,
+    Deny,
+}
+
 /// Cloneable, restricted command surface used by RiftX Gateway request handlers.
 ///
 /// The handle intentionally cannot issue arbitrary App Server requests.
 #[derive(Clone)]
 pub struct RiftxAppServerRequestHandle {
     client: InProcessAppServerRequestHandle,
+    environment_manager: Arc<EnvironmentManager>,
     next_request_id: Arc<AtomicI64>,
 }
 
@@ -182,10 +193,12 @@ impl RiftxAppServerAdapter {
     }
 
     pub async fn start(args: InProcessClientStartArgs) -> Result<Self, AdapterError> {
+        let environment_manager = Arc::clone(&args.environment_manager);
         let client = InProcessAppServerClient::start(args).await?;
         Ok(Self {
             request_handle: RiftxAppServerRequestHandle {
                 client: client.request_handle(),
+                environment_manager,
                 next_request_id: Arc::new(AtomicI64::new(1)),
             },
             client,
@@ -378,6 +391,135 @@ impl RiftxAppServerAdapter {
 }
 
 impl RiftxAppServerRequestHandle {
+    pub async fn execute_structured_tool(
+        &self,
+        environment_id: &str,
+        request: StructuredToolRequest,
+    ) -> Result<StructuredToolOutput, AdapterError> {
+        Ok(execute_structured_tool(&self.environment_manager, environment_id, request).await?)
+    }
+
+    pub async fn resolve_command_approval(
+        &self,
+        pending: PendingCommandApproval,
+        decision: CommandExecutionApprovalDecision,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .resolve_server_request(
+                pending.request_id,
+                serde_json::to_value(CommandExecutionRequestApprovalResponse { decision })?,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn decide_command_approval(
+        &self,
+        pending: PendingCommandApproval,
+        decision: OperatorApprovalDecision,
+    ) -> Result<(), AdapterError> {
+        self.resolve_command_approval(
+            pending,
+            match decision {
+                OperatorApprovalDecision::Approve => CommandExecutionApprovalDecision::Accept,
+                OperatorApprovalDecision::Deny => CommandExecutionApprovalDecision::Decline,
+            },
+        )
+        .await
+    }
+
+    pub async fn resolve_file_change_approval(
+        &self,
+        pending: PendingFileChangeApproval,
+        decision: FileChangeApprovalDecision,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .resolve_server_request(
+                pending.request_id,
+                serde_json::to_value(FileChangeRequestApprovalResponse { decision })?,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn resolve_permissions_approval(
+        &self,
+        pending: PendingPermissionsApproval,
+        response: PermissionsRequestApprovalResponse,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .resolve_server_request(pending.request_id, serde_json::to_value(response)?)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn resolve_dynamic_tool_call(
+        &self,
+        pending: PendingDynamicToolCall,
+        response: DynamicToolCallResponse,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .resolve_server_request(pending.request_id, serde_json::to_value(response)?)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn complete_dynamic_tool_call(
+        &self,
+        pending: PendingDynamicToolCall,
+        result: Result<&StructuredToolOutput, &str>,
+    ) -> Result<(), AdapterError> {
+        let (text, success) = match result {
+            Ok(output) => (serde_json::to_string(output)?, output.exit_code == 0),
+            Err(message) => (message.to_string(), false),
+        };
+        self.resolve_dynamic_tool_call(
+            pending,
+            DynamicToolCallResponse {
+                content_items: vec![
+                    codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text },
+                ],
+                success,
+            },
+        )
+        .await
+    }
+
+    pub async fn deny_file_change(
+        &self,
+        pending: PendingFileChangeApproval,
+    ) -> Result<(), AdapterError> {
+        self.resolve_file_change_approval(pending, FileChangeApprovalDecision::Decline)
+            .await
+    }
+
+    pub async fn reject_permissions(
+        &self,
+        pending: PendingPermissionsApproval,
+        message: String,
+    ) -> Result<(), AdapterError> {
+        self.reject_server_request(pending.request_id, message)
+            .await
+    }
+
+    pub async fn reject_server_request(
+        &self,
+        request_id: RequestId,
+        message: String,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .reject_server_request(
+                request_id,
+                JSONRPCErrorError {
+                    code: UNSUPPORTED_REQUEST_CODE,
+                    message,
+                    data: None,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn add_environment(
         &self,
         registration: EnvironmentRegistration,
@@ -475,7 +617,10 @@ impl RiftxAppServerRequestHandle {
         let response = self
             .start_thread(RemoteThreadStartParams {
                 environment: turn_environment(environment),
-                app_server: ThreadStartParams::default(),
+                app_server: ThreadStartParams {
+                    dynamic_tools: Some(structured_tool_specs()),
+                    ..Default::default()
+                },
             })
             .await?;
         Ok(response.thread.id)

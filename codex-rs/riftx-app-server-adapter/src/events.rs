@@ -30,6 +30,30 @@ pub struct PendingDynamicToolCall {
     pub params: DynamicToolCallParams,
 }
 
+impl PendingCommandApproval {
+    pub fn approval_id(&self) -> String {
+        self.request_id.to_string()
+    }
+}
+
+impl PendingFileChangeApproval {
+    pub fn approval_id(&self) -> String {
+        self.request_id.to_string()
+    }
+}
+
+impl PendingPermissionsApproval {
+    pub fn approval_id(&self) -> String {
+        self.request_id.to_string()
+    }
+}
+
+impl PendingDynamicToolCall {
+    pub fn approval_id(&self) -> String {
+        self.request_id.to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RiftxAppServerEvent {
     Notification(ServerNotification),

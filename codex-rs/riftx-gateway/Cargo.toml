@@ -24,11 +24,13 @@ codex-riftx-core = { workspace = true }
 codex-riftx-app-server-adapter = { workspace = true }
 codex-riftx-manager-client = { workspace = true }
 futures = { workspace = true }
+quick-xml = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 subtle = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 uuid = { workspace = true, features = ["v4"] }
+url = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
