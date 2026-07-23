@@ -1,6 +1,7 @@
 use super::*;
 use axum::body::Body;
 use axum::http::Request;
+use codex_riftx_core::Artifact;
 use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::Asset;
 use codex_riftx_core::AssetRelation;
@@ -204,6 +205,127 @@ async fn engagement_can_be_created_and_read() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = Engagement {
+        id: "eng-artifacts".to_string(),
+        name: "Artifact lab".to_string(),
+        status: EngagementStatus::Active,
+        objective: AssessmentObjective {
+            summary: "Preserve authorized evidence".to_string(),
+            success_criteria: Vec::new(),
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["127.0.0.1".to_string()],
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
+                domains: Vec::new(),
+                ports: Vec::new(),
+            },
+            identities: Vec::new(),
+            capabilities: vec!["network.discovery".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(2_000_000_000),
+            },
+        },
+        policy_revision: "revision-1".to_string(),
+        thread_id: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let workspace = state.config.daemon.workspace_root.join(&engagement.id);
+    tokio::fs::create_dir_all(workspace.join("artifacts"))
+        .await
+        .expect("create artifact directory");
+    tokio::fs::write(workspace.join("artifacts/result.json"), br#"{"ok":true}"#)
+        .await
+        .expect("write artifact");
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/artifacts", engagement.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"path":"artifacts/result.json"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("capture response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let artifact: Artifact = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("capture body")
+            .to_bytes(),
+    )
+    .expect("artifact JSON");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/engagements/{}/artifacts/{}/content",
+                    engagement.id, artifact.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("export response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("export body")
+            .to_bytes(),
+        br#"{"ok":true}"#.as_slice()
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/engagements/{}/artifacts", engagement.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("list response");
+    let artifacts: Vec<Artifact> = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("list body")
+            .to_bytes(),
+    )
+    .expect("artifact list");
+    assert_eq!(artifacts, vec![artifact]);
+    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+        .await
+        .expect("artifact audit");
+    assert!(audit.contains("artifact/captured"));
+    assert!(audit.contains(&artifacts[0].sha256));
 }
 
 #[tokio::test]

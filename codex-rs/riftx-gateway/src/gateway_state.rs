@@ -1,6 +1,7 @@
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
+use codex_riftx_artifacts::ArtifactStore;
 use codex_riftx_core::AuditRecord;
 use codex_riftx_core::AuditWriter;
 use codex_riftx_core::EngagementStatus;
@@ -28,6 +29,7 @@ pub struct GatewayState {
     pub store: StateStore,
     pub skills: Arc<SkillCatalog>,
     pub tools: Arc<ToolInventory>,
+    pub(crate) artifact_store: Arc<ArtifactStore>,
     pub(crate) audit: AuditWriter,
     pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
@@ -75,6 +77,7 @@ impl GatewayState {
         tools: ToolInventory,
     ) -> Self {
         let audit = AuditWriter::new(&config.audit);
+        let artifact_store = ArtifactStore::new(&config.artifacts);
         let mut tool_search_path = tools.path_entries.clone();
         if let Some(system_path) = std::env::var_os("PATH") {
             tool_search_path.extend(
@@ -86,6 +89,7 @@ impl GatewayState {
             store,
             skills: Arc::new(skills),
             tools: Arc::new(tools),
+            artifact_store: Arc::new(artifact_store),
             audit,
             app_server: None,
             events: Arc::new(RwLock::new(HashMap::new())),
@@ -150,6 +154,7 @@ impl GatewayState {
                     interrupted_at,
                 )
                 .await?;
+            crate::artifacts::capture_pending(self.clone(), engagement.id).await;
         }
         Ok(())
     }
@@ -175,7 +180,8 @@ impl GatewayState {
                 mode: Some(engagement.mode),
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),
-                details: kind.starts_with("execution/").then(|| data.clone()),
+                details: (kind.starts_with("execution/") || kind.starts_with("artifact/"))
+                    .then(|| data.clone()),
             };
             let _ = self.audit.append(&record).await;
         }

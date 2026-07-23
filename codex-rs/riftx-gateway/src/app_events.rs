@@ -120,6 +120,10 @@ async fn forward_event(state: &GatewayState, event: RiftxAppServerEvent) {
             .complete_task(&engagement_id, turn_id, &event.data)
             .await;
         state.active_turns.write().await.remove(&engagement_id);
+        tokio::spawn(crate::artifacts::capture_pending(
+            state.clone(),
+            engagement_id.clone(),
+        ));
     }
     state
         .publish(

@@ -101,14 +101,14 @@ struct ApiErrorBody {
     message: String,
 }
 
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
 }
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             code: "bad_request",
@@ -120,6 +120,22 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             code: "app_server_error",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error",
             message: message.into(),
         }
     }
@@ -169,6 +185,14 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/engagements/{id}/interrupt", post(interrupt_engagement))
         .route("/v1/engagements/{id}/events", get(events))
         .route("/v1/engagements/{id}/report", get(report))
+        .route(
+            "/v1/engagements/{id}/artifacts",
+            get(crate::artifact_api::list).post(crate::artifact_api::capture),
+        )
+        .route(
+            "/v1/engagements/{id}/artifacts/{artifact_id}/content",
+            get(crate::artifact_api::export),
+        )
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_IPC_REQUEST_BYTES))
 }
@@ -287,6 +311,9 @@ async fn activate_engagement(
     state.agent_threads.write().await.remove(&id);
     let workspace = state.config.daemon.workspace_root.join(&id);
     tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|error| ApiError::app_server(error.to_string()))?;
+    tokio::fs::create_dir_all(workspace.join("artifacts"))
         .await
         .map_err(|error| ApiError::app_server(error.to_string()))?;
     let engagement = state
@@ -500,6 +527,7 @@ async fn interrupt_engagement(
     }
     state.active_turns.write().await.remove(&id);
     state.agent_threads.write().await.remove(&id);
+    tokio::spawn(crate::artifacts::capture_pending(state.clone(), id.clone()));
     let engagement = state
         .store
         .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
@@ -592,6 +620,7 @@ async fn operational_agent_input(
         "attackPaths": state.store.attack_paths(engagement_id).await?,
         "coverage": state.store.coverage(engagement_id).await?,
         "tasks": state.store.tasks(engagement_id).await?,
+        "artifacts": state.store.artifacts(engagement_id).await?,
     });
     let mission = bounded_json(&mission, MAX_MISSION_CONTEXT_BYTES)?;
     let observed_state = bounded_json(&observed_state, MAX_OBSERVED_STATE_BYTES)?;
@@ -603,7 +632,8 @@ async fn operational_agent_input(
          Advance the objective iteratively across any assets discovered inside the authorized \
          scope. Entry points are starting clues, not the scope boundary. Re-check every candidate \
          target before using a tool, never act outside the scope, and do not claim objective \
-         completion without validated evidence."
+         completion without validated evidence. Save durable evidence files under the workspace \
+         artifacts/ directory so RiftX can capture them with hashes."
     ))
 }
 
