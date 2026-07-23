@@ -20,6 +20,7 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
+use codex_riftx_app_server_adapter::AgentRole;
 use codex_riftx_app_server_adapter::EnvironmentRegistration;
 use codex_riftx_app_server_adapter::RemoteEnvironment;
 use codex_riftx_core::EffectivePolicy;
@@ -55,6 +56,12 @@ struct CreateEngagementParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StartTurnParams {
     input: String,
+    #[serde(default = "default_agent_role")]
+    agent: AgentRole,
+}
+
+fn default_agent_role() -> AgentRole {
+    AgentRole::Recon
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +272,11 @@ async fn activate_engagement(
         let _ = state.manager.delete(&sandbox_id).await;
         engagement.thread_id = None;
     }
+    state
+        .agent_threads
+        .write()
+        .await
+        .retain(|(engagement_id, _), _| engagement_id != &id);
     let mut sandbox = state
         .manager
         .create_sandbox(&CreateSandboxRequest {
@@ -378,13 +390,28 @@ async fn start_turn(
         environment_id: sandbox.environment_id,
         cwd: "/workspace".to_string(),
     };
-    let thread_id = match engagement.thread_id.clone() {
+    let thread_key = (id.clone(), params.agent);
+    let existing_thread = {
+        let threads = state.agent_threads.read().await;
+        threads.get(&thread_key).cloned()
+    };
+    let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
         None => {
-            let thread_id = app_server
-                .start_remote_thread(environment.clone())
+            let thread_id = match params.agent {
+                AgentRole::Recon | AgentRole::Exploit => {
+                    app_server
+                        .start_agent_thread(params.agent, environment.clone())
+                        .await
+                }
+                AgentRole::Report => app_server.start_report_thread().await,
+            }
+            .map_err(|error| ApiError::app_server(error.to_string()))?;
+            state
+                .agent_threads
+                .write()
                 .await
-                .map_err(|error| ApiError::app_server(error.to_string()))?;
+                .insert(thread_key, thread_id.clone());
             engagement.thread_id = Some(thread_id.clone());
             state.store.put_engagement(&engagement).await?;
             thread_id
@@ -398,16 +425,26 @@ async fn start_turn(
     let mut task = Task {
         id: Uuid::new_v4().to_string(),
         engagement_id: id.clone(),
-        kind: "agent_turn".to_string(),
+        kind: format!("{:?}_agent_turn", params.agent).to_ascii_lowercase(),
         status: TaskStatus::Pending,
         turn_id: None,
         error: None,
     };
     state.store.put_task(&task).await?;
-    let turn_id = match app_server
-        .start_remote_turn(thread_id.clone(), environment, params.input)
-        .await
-    {
+    let input = if params.agent == AgentRole::Report {
+        report_agent_input(&state, &id, params.input).await?
+    } else {
+        params.input
+    };
+    let turn_result = match params.agent {
+        AgentRole::Recon | AgentRole::Exploit => {
+            app_server
+                .start_remote_turn(thread_id.clone(), environment, input)
+                .await
+        }
+        AgentRole::Report => app_server.start_report_turn(thread_id.clone(), input).await,
+    };
+    let turn_id = match turn_result {
         Ok(turn_id) => turn_id,
         Err(error) => {
             task.status = TaskStatus::Failed;
@@ -568,6 +605,11 @@ async fn interrupt_engagement(
         None => Ok(()),
     };
     state.active_turns.write().await.remove(&id);
+    state
+        .agent_threads
+        .write()
+        .await
+        .retain(|(engagement_id, _), _| engagement_id != &id);
     let engagement = state
         .store
         .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
@@ -624,6 +666,35 @@ async fn report(
             .into_response()),
         ReportFormat::Json => Ok(Json(report).into_response()),
     }
+}
+
+async fn report_agent_input(
+    state: &GatewayState,
+    engagement_id: &str,
+    request: String,
+) -> Result<String, ApiError> {
+    const MAX_STATE_BYTES: usize = 32 * 1024;
+    let state_value = json!({
+        "engagement": state.store.engagement(engagement_id).await?,
+        "assets": state.store.assets(engagement_id).await?,
+        "services": state.store.services(engagement_id).await?,
+        "findings": state.store.findings(engagement_id).await?,
+        "evidence": state.store.evidence(engagement_id).await?,
+        "artifacts": state.store.artifacts(engagement_id).await?,
+    });
+    let mut encoded = serde_json::to_string(&state_value)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if encoded.len() > MAX_STATE_BYTES {
+        let mut end = MAX_STATE_BYTES;
+        while !encoded.is_char_boundary(end) {
+            end -= 1;
+        }
+        encoded.truncate(end);
+        encoded.push_str("...[truncated]");
+    }
+    Ok(format!(
+        "Operator report request:\n{request}\n\nRiftX structured state (bounded):\n{encoded}"
+    ))
 }
 
 #[cfg(test)]

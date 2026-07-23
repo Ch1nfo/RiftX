@@ -44,6 +44,8 @@ enum Command {
     },
     Turn {
         id: String,
+        #[arg(long, value_enum, default_value_t = AgentRole::Recon)]
+        agent: AgentRole,
         input: String,
     },
     Approve {
@@ -69,6 +71,23 @@ enum Command {
 enum ReportFormat {
     Markdown,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum AgentRole {
+    Recon,
+    Exploit,
+    Report,
+}
+
+impl AgentRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Recon => "recon",
+            Self::Exploit => "exploit",
+            Self::Report => "report",
+        }
+    }
 }
 
 impl ReportFormat {
@@ -130,13 +149,13 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Command::Turn { id, input } => {
+        Command::Turn { id, agent, input } => {
             send(
                 &client,
                 &cli.token,
                 Method::POST,
                 format!("{base}/v1/engagements/{id}/turns"),
-                Some(json!({"input": input})),
+                Some(json!({"input": input, "agent": agent.as_str()})),
             )
             .await?;
         }

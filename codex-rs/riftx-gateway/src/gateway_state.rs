@@ -1,3 +1,4 @@
+use codex_riftx_app_server_adapter::AgentRole;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
@@ -33,6 +34,7 @@ pub struct GatewayState {
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
+    pub(crate) agent_threads: Arc<RwLock<HashMap<(String, AgentRole), String>>>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
     pub(crate) turn_slot: Arc<Semaphore>,
 }
@@ -81,6 +83,7 @@ impl GatewayState {
             events: Arc::new(RwLock::new(HashMap::new())),
             thread_engagements: Arc::new(RwLock::new(HashMap::new())),
             active_turns: Arc::new(RwLock::new(HashMap::new())),
+            agent_threads: Arc::new(RwLock::new(HashMap::new())),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             turn_slot: Arc::new(Semaphore::new(1)),
         }

@@ -69,6 +69,8 @@ pub enum AdapterError {
     Transport(#[from] io::Error),
     #[error(transparent)]
     Tool(#[from] StructuredToolError),
+    #[error("report agent cannot be bound to a remote execution environment")]
+    ReportEnvironment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +127,14 @@ pub struct RemoteTurnStartParams {
 pub struct RemoteEnvironment {
     pub environment_id: String,
     pub cwd: String,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentRole {
+    Recon,
+    Exploit,
+    Report,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,6 +401,46 @@ impl RiftxAppServerAdapter {
 }
 
 impl RiftxAppServerRequestHandle {
+    pub async fn start_agent_thread(
+        &self,
+        role: AgentRole,
+        environment: RemoteEnvironment,
+    ) -> Result<String, AdapterError> {
+        if role == AgentRole::Report {
+            return Err(AdapterError::ReportEnvironment);
+        }
+        let response = self
+            .start_thread(RemoteThreadStartParams {
+                environment: turn_environment(environment),
+                app_server: ThreadStartParams {
+                    developer_instructions: Some(agent_instructions(role).to_string()),
+                    dynamic_tools: Some(structured_tool_specs_for(role)),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        Ok(response.thread.id)
+    }
+
+    pub async fn start_report_thread(&self) -> Result<String, AdapterError> {
+        let mut params = ThreadStartParams {
+            developer_instructions: Some(agent_instructions(AgentRole::Report).to_string()),
+            environments: Some(Vec::new()),
+            dynamic_tools: Some(Vec::new()),
+            ..Default::default()
+        };
+        params.cwd = None;
+        params.runtime_workspace_roots = None;
+        let response: ThreadStartResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: self.next_request_id(),
+                params,
+            })
+            .await?;
+        Ok(response.thread.id)
+    }
+
     pub async fn execute_structured_tool(
         &self,
         environment_id: &str,
@@ -648,6 +698,31 @@ impl RiftxAppServerRequestHandle {
         Ok(response.turn.id)
     }
 
+    pub async fn start_report_turn(
+        &self,
+        thread_id: String,
+        input: String,
+    ) -> Result<String, AdapterError> {
+        let response: TurnStartResponse = self
+            .client
+            .request_typed(ClientRequest::TurnStart {
+                request_id: self.next_request_id(),
+                params: TurnStartParams {
+                    thread_id,
+                    input: vec![UserInput::Text {
+                        text: input,
+                        text_elements: Vec::new(),
+                    }],
+                    environments: Some(Vec::new()),
+                    cwd: None,
+                    runtime_workspace_roots: None,
+                    ..Default::default()
+                },
+            })
+            .await?;
+        Ok(response.turn.id)
+    }
+
     fn next_request_id(&self) -> RequestId {
         RequestId::Integer(self.next_request_id.fetch_add(1, Ordering::Relaxed))
     }
@@ -658,6 +733,34 @@ fn turn_environment(environment: RemoteEnvironment) -> TurnEnvironmentParams {
         environment_id: environment.environment_id,
         cwd: LegacyAppPathString::from_string(environment.cwd),
         runtime_workspace_roots: None,
+    }
+}
+
+fn structured_tool_specs_for(role: AgentRole) -> Vec<codex_app_server_protocol::DynamicToolSpec> {
+    structured_tool_specs()
+        .into_iter()
+        .filter(|spec| match spec {
+            codex_app_server_protocol::DynamicToolSpec::Function(function) => match role {
+                AgentRole::Recon => true,
+                AgentRole::Exploit => matches!(function.name.as_str(), "rt_nuclei" | "rt_ffuf"),
+                AgentRole::Report => false,
+            },
+            codex_app_server_protocol::DynamicToolSpec::Namespace(_) => false,
+        })
+        .collect()
+}
+
+fn agent_instructions(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Recon => {
+            "Act as the RiftX reconnaissance agent. Use only registered RiftX tools and remain within the authorized scope. Record assets and services before drawing conclusions."
+        }
+        AgentRole::Exploit => {
+            "Act as the RiftX validation agent. Validate only authorized findings, request approval for risky actions, minimize impact, and preserve concise evidence."
+        }
+        AgentRole::Report => {
+            "Act as the RiftX report agent. Use only the supplied structured state. Do not request shell, filesystem, network, or dynamic tools. Produce evidence-based findings and remediation."
+        }
     }
 }
 
