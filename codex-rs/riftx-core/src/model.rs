@@ -141,6 +141,7 @@ pub struct Task {
 pub struct Artifact {
     pub id: String,
     pub engagement_id: String,
+    pub execution_id: Option<String>,
     pub path: String,
     pub media_type: String,
     pub sha256: String,

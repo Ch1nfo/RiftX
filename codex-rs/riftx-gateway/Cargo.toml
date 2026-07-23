@@ -21,6 +21,7 @@ anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
 clap = { workspace = true, features = ["derive"] }
 codex-arg0 = { workspace = true }
+codex-riftx-artifacts = { workspace = true }
 codex-riftx-core = { workspace = true }
 codex-riftx-app-server-adapter = { workspace = true }
 codex-riftx-ipc = { workspace = true }
@@ -31,7 +32,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true, features = ["v4"] }
 url = { workspace = true }
 

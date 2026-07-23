@@ -3816,6 +3816,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-riftx-artifacts"
+version = "0.0.0"
+dependencies = [
+ "codex-riftx-core",
+ "mime_guess",
+ "pretty_assertions",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "codex-riftx-cli"
 version = "0.0.0"
 dependencies = [
@@ -3859,6 +3874,7 @@ dependencies = [
  "clap",
  "codex-arg0",
  "codex-riftx-app-server-adapter",
+ "codex-riftx-artifacts",
  "codex-riftx-core",
  "codex-riftx-ipc",
  "codex-riftx-skills",
@@ -3871,7 +3887,9 @@ dependencies = [
  "sha2 0.10.9",
  "shlex",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tower",
  "url",
  "uuid",

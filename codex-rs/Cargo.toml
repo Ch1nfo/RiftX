@@ -83,6 +83,7 @@ members = [
     "responses-api-proxy",
     "response-debug-context",
     "riftx-app-server-adapter",
+    "riftx-artifacts",
     "riftx-cli",
     "riftx-core",
     "riftx-gateway",
@@ -227,6 +228,7 @@ codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-riftx-app-server-adapter = { path = "riftx-app-server-adapter" }
+codex-riftx-artifacts = { path = "riftx-artifacts" }
 codex-riftx-cli = { path = "riftx-cli" }
 codex-riftx-core = { path = "riftx-core" }
 codex-riftx-gateway = { path = "riftx-gateway" }

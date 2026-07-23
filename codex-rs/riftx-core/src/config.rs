@@ -59,6 +59,7 @@ impl RiftxConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.llm.validate()?;
+        self.artifacts.validate()?;
         Ok(())
     }
 
@@ -181,4 +182,20 @@ pub struct AuditConfig {
 pub struct ArtifactConfig {
     pub root: PathBuf,
     pub max_bytes_per_engagement: u64,
+}
+
+impl ArtifactConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.root.as_os_str().is_empty() {
+            return Err(ConfigError::Invalid(
+                "artifacts.root must not be empty".to_string(),
+            ));
+        }
+        if self.max_bytes_per_engagement == 0 {
+            return Err(ConfigError::Invalid(
+                "artifacts.max_bytes_per_engagement must be greater than zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
