@@ -18,18 +18,17 @@ RiftX-specific code should be isolated where practical:
 - `codex-rs/riftx-core`
 - `codex-rs/riftx-gateway`
 - `codex-rs/riftx-app-server-adapter`
-- `codex-rs/riftx-manager-client`
-- `services/sandbox-managerd`
+- `codex-rs/riftx-cli`
 
 Changes to upstream crates should be limited to integration points that cannot be implemented through composition. Each such component must be listed in `patched_components` and covered by focused tests.
 
 ## Updating Upstream
 
 1. Fetch the desired official Codex revision in a separate checkout.
-2. Review App Server protocol, permissions, network behavior, and exec-server changes.
-3. Run the protocol fixtures and RiftX security regression suite against the candidate revision.
+2. Review Agent Runtime protocol, permissions, local execution, and model-provider changes.
+3. Run the typed adapter fixtures and RiftX cross-platform contract tests against the candidate revision.
 4. Import the candidate source while preserving RiftX-owned files and directories.
 5. Reapply the small, recorded RiftX patches.
 6. Update `codex-upstream.lock` only after build and compatibility checks pass.
 
-Do not build RiftX releases from a floating upstream branch. A failed protocol compatibility check must stop the update rather than fall back to host execution.
+Do not build RiftX releases from a floating upstream branch. A failed compatibility check must stop the update; RiftX does not carry a container or remote-execution fallback.

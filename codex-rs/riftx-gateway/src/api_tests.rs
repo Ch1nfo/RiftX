@@ -3,19 +3,21 @@ use axum::body::Body;
 use axum::http::Request;
 use codex_riftx_core::ApprovalMode;
 use codex_riftx_core::ArtifactConfig;
+use codex_riftx_core::Asset;
+use codex_riftx_core::AssetRelation;
 use codex_riftx_core::AuditConfig;
 use codex_riftx_core::GatewayConfig;
+use codex_riftx_core::LlmConfig;
 use codex_riftx_core::ManagedPolicyConfig;
-use codex_riftx_core::ManagerConfig;
+use codex_riftx_core::Observation;
 use codex_riftx_core::RiftxConfig;
-use codex_riftx_core::SandboxConfig;
 use codex_riftx_core::StateStore;
+use codex_riftx_core::StateSubject;
+use codex_riftx_core::TargetStateError;
 use codex_riftx_core::ToolProfileConfig;
-use codex_riftx_manager_client::ManagerClient;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
-use std::time::Duration;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -25,19 +27,16 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             listen: "127.0.0.1:0".to_string(),
             operator_token_env: "RIFTX_OPERATOR_TOKEN".to_string(),
             state_db: temp.path().join("state.sqlite"),
+            runtime_home: temp.path().join("runtime"),
+            workspace_root: temp.path().join("workspaces"),
         },
-        manager: ManagerConfig {
-            socket: temp.path().join("manager.sock"),
-            request_timeout_ms: 100,
-        },
-        sandbox: SandboxConfig {
-            image: "riftx/sandbox:test".to_string(),
-            cpu_limit: 1,
-            memory_mib: 512,
-            pids_limit: 128,
+        llm: LlmConfig {
+            model: "riftx-test-model".to_string(),
+            base_url: "http://127.0.0.1:8766/v1".to_string(),
+            api_key_env: "RIFTX_TEST_API_KEY".to_string(),
         },
         policy: ManagedPolicyConfig {
-            allowed_tools: vec!["rt_nmap".to_string()],
+            allowed_tools: Vec::new(),
             denied_cidrs: Vec::new(),
             denied_domains: Vec::new(),
         },
@@ -50,9 +49,9 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             max_bytes_per_engagement: 1024,
         },
         tool_profiles: BTreeMap::from([(
-            "recon".to_string(),
+            "native".to_string(),
             ToolProfileConfig {
-                allowed_tools: vec!["rt_nmap".to_string()],
+                allowed_tools: Vec::new(),
                 scope: Scope {
                     cidrs: vec!["0.0.0.0/0".parse().expect("CIDR")],
                     domains: vec!["*".to_string()],
@@ -65,9 +64,7 @@ async fn test_state(temp: &TempDir) -> GatewayState {
     let store = StateStore::open(&config.gateway.state_db)
         .await
         .expect("state store");
-    let manager = ManagerClient::new(&config.manager.socket, Duration::from_millis(100))
-        .expect("manager client");
-    GatewayState::new(config, store, manager)
+    GatewayState::new(config, store)
 }
 
 async fn test_router(temp: &TempDir) -> Router {
@@ -82,14 +79,19 @@ async fn restart_reconciliation_interrupts_active_engagements() {
         id: "eng-active".to_string(),
         name: "Juice Shop".to_string(),
         status: EngagementStatus::Active,
+        objective: AssessmentObjective {
+            summary: "Validate exploitable web risks".to_string(),
+            success_criteria: Vec::new(),
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["10.10.0.10".to_string()],
         scope: Scope {
             cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
             domains: Vec::new(),
             ports: vec![80],
         },
-        tool_profile: "recon".to_string(),
+        tool_profile: "native".to_string(),
         policy_revision: "rev-1".to_string(),
-        sandbox_id: Some("sandbox-stale".to_string()),
         thread_id: Some("thread-stale".to_string()),
         created_at: 1,
         updated_at: 1,
@@ -143,7 +145,7 @@ async fn engagement_can_be_created_and_read() {
                 .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Juice Shop","scope":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"toolProfile":"recon"}"#,
+                    r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"]},"entryPoints":["juice.local"],"scope":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"toolProfile":"native"}"#,
                 ))
                 .expect("request"),
         )
@@ -160,6 +162,14 @@ async fn engagement_can_be_created_and_read() {
     )
     .expect("engagement JSON");
     assert_eq!(engagement.status, EngagementStatus::Draft);
+    assert_eq!(
+        engagement.objective,
+        AssessmentObjective {
+            summary: "Validate exploitable web risks".to_string(),
+            success_criteria: vec!["Record evidence".to_string()],
+            structured_criteria: Vec::new(),
+        }
+    );
 
     let response = app
         .oneshot(
@@ -172,4 +182,137 @@ async fn engagement_can_be_created_and_read() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn entry_points_must_be_inside_the_authorized_scope() {
+    let temp = TempDir::new().expect("temp dir");
+    let response = test_router(&temp)
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Internal assessment","objective":{"summary":"Map authorized services"},"entryPoints":["10.20.0.10"],"scope":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"toolProfile":"native"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn operational_turn_context_includes_objective_and_multi_asset_graph() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = Engagement {
+        id: "eng-domain".to_string(),
+        name: "Authorized domain lab".to_string(),
+        status: EngagementStatus::Active,
+        objective: AssessmentObjective {
+            summary: "Validate a path to domain administrator".to_string(),
+            success_criteria: vec!["Preserve evidence without persistence".to_string()],
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["10.10.0.10".to_string()],
+        scope: Scope {
+            cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
+            domains: vec!["lab.example".to_string()],
+            ports: Vec::new(),
+        },
+        tool_profile: "native".to_string(),
+        policy_revision: "revision-1".to_string(),
+        thread_id: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    for asset in [
+        Asset {
+            id: "workstation".to_string(),
+            engagement_id: engagement.id.clone(),
+            kind: "host".to_string(),
+            value: "10.10.0.10".to_string(),
+            discovered_at: 2,
+        },
+        Asset {
+            id: "domain-controller".to_string(),
+            engagement_id: engagement.id.clone(),
+            kind: "host".to_string(),
+            value: "10.10.0.20".to_string(),
+            discovered_at: 3,
+        },
+    ] {
+        state.store.put_asset(&asset).await.expect("store asset");
+    }
+    state
+        .store
+        .put_asset_relation(&AssetRelation {
+            id: "relation-1".to_string(),
+            engagement_id: engagement.id.clone(),
+            source_asset_id: "workstation".to_string(),
+            target_asset_id: "domain-controller".to_string(),
+            kind: "domainMemberOf".to_string(),
+            evidence_id: None,
+            discovered_at: 4,
+        })
+        .await
+        .expect("store relation");
+    state
+        .store
+        .put_observation(&Observation {
+            id: "observation-1".to_string(),
+            engagement_id: engagement.id.clone(),
+            subject: StateSubject::Asset {
+                asset_id: "domain-controller".to_string(),
+            },
+            execution_id: None,
+            source: "local:nmap".to_string(),
+            kind: "serviceDiscovery".to_string(),
+            summary: "Domain controller exposes an authorized test service".to_string(),
+            confidence_basis_points: 8_000,
+            observed_at: 5,
+        })
+        .await
+        .expect("store observation");
+
+    let context = match operational_agent_input(
+        &state,
+        &engagement.id,
+        "Continue the assessment".to_string(),
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(error) => panic!("agent context: {}", error.message),
+    };
+
+    for expected in [
+        "Validate a path to domain administrator",
+        "10.10.0.10",
+        "10.10.0.20",
+        "domainMemberOf",
+        "Domain controller exposes an authorized test service",
+        "Entry points are starting clues, not the scope boundary",
+    ] {
+        assert!(context.contains(expected), "missing context: {expected}");
+    }
+}
+
+#[test]
+fn invalid_target_state_maps_to_bad_request() {
+    let error = ApiError::from(StateError::InvalidTargetState(
+        TargetStateError::InvalidCoverage,
+    ));
+
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
 }

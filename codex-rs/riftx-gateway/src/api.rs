@@ -20,9 +20,7 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
-use codex_riftx_app_server_adapter::AgentRole;
-use codex_riftx_app_server_adapter::EnvironmentRegistration;
-use codex_riftx_app_server_adapter::RemoteEnvironment;
+use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
@@ -30,9 +28,6 @@ use codex_riftx_core::Scope;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
-use codex_riftx_manager_client::CreateSandboxRequest;
-use codex_riftx_manager_client::SandboxResources;
-use codex_riftx_manager_client::SandboxScope;
 use futures::Stream;
 use futures::stream;
 use serde::Deserialize;
@@ -44,10 +39,17 @@ use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+const MAX_OPERATOR_REQUEST_BYTES: usize = 4 * 1024;
+const MAX_MISSION_CONTEXT_BYTES: usize = 8 * 1024;
+const MAX_OBSERVED_STATE_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateEngagementParams {
     name: String,
+    objective: AssessmentObjective,
+    #[serde(default)]
+    entry_points: Vec<String>,
     scope: Scope,
     tool_profile: String,
 }
@@ -55,13 +57,8 @@ struct CreateEngagementParams {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StartTurnParams {
-    input: String,
-    #[serde(default = "default_agent_role")]
-    agent: AgentRole,
-}
-
-fn default_agent_role() -> AgentRole {
-    AgentRole::Recon
+    #[serde(default)]
+    input: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,14 +115,6 @@ impl ApiError {
         }
     }
 
-    fn upstream(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            code: "manager_error",
-            message: message.into(),
-        }
-    }
-
     fn app_server(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
@@ -140,6 +129,9 @@ impl From<StateError> for ApiError {
         let status = match error {
             StateError::EngagementNotFound(_) => StatusCode::NOT_FOUND,
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
+            StateError::InvalidTargetState(_)
+            | StateError::MissingChainReference { .. }
+            | StateError::BrokenChainReference { .. } => StatusCode::BAD_REQUEST,
             StateError::Database(_) | StateError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self {
@@ -210,15 +202,32 @@ async fn create_engagement(
         .ok_or_else(|| ApiError::bad_request("unknown tool profile"))?;
     let policy = EffectivePolicy::resolve(&state.config.policy, &params.scope, profile, None)
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    validate_objective(&params.objective)?;
+    if params.entry_points.len() > 128 {
+        return Err(ApiError::bad_request(
+            "an engagement may define at most 128 entry points",
+        ));
+    }
+    for entry_point in &params.entry_points {
+        if entry_point.trim().is_empty() || entry_point.len() > 2048 {
+            return Err(ApiError::bad_request(
+                "entry points must be non-empty and at most 2048 bytes",
+            ));
+        }
+        policy
+            .check_target(entry_point)
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    }
     let now = unix_timestamp();
     let engagement = Engagement {
         id: Uuid::new_v4().to_string(),
         name: params.name,
         status: EngagementStatus::Draft,
+        objective: params.objective,
+        entry_points: params.entry_points,
         scope: params.scope,
         tool_profile: params.tool_profile,
         policy_revision: policy.revision,
-        sandbox_id: None,
         thread_id: None,
         created_at: now,
         updated_at: now,
@@ -241,7 +250,7 @@ async fn activate_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
-    let mut engagement = state.store.engagement(&id).await?;
+    let engagement = state.store.engagement(&id).await?;
     if !matches!(
         engagement.status,
         EngagementStatus::Draft | EngagementStatus::Interrupted
@@ -250,11 +259,6 @@ async fn activate_engagement(
             "only draft or interrupted engagements can be activated",
         ));
     }
-    let app_server = state
-        .app_server
-        .as_ref()
-        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?
-        .clone();
     let profile = state
         .config
         .tool_profiles
@@ -265,87 +269,17 @@ async fn activate_engagement(
     if policy.revision != engagement.policy_revision {
         return Err(ApiError::bad_request("engagement policy revision is stale"));
     }
-    if engagement.status == EngagementStatus::Interrupted
-        && let Some(sandbox_id) = engagement.sandbox_id.take()
-    {
-        let _ = state.manager.kill(&sandbox_id).await;
-        let _ = state.manager.delete(&sandbox_id).await;
-        engagement.thread_id = None;
-    }
-    state
-        .agent_threads
-        .write()
+    state.agent_threads.write().await.remove(&id);
+    let workspace = state.config.gateway.workspace_root.join(&id);
+    tokio::fs::create_dir_all(&workspace)
         .await
-        .retain(|(engagement_id, _), _| engagement_id != &id);
-    let mut sandbox = state
-        .manager
-        .create_sandbox(&CreateSandboxRequest {
-            engagement_id: engagement.id.clone(),
-            image: state.config.sandbox.image.clone(),
-            profile: engagement.tool_profile.clone(),
-            policy_revision: policy.revision,
-            resources: SandboxResources {
-                cpu_limit: state.config.sandbox.cpu_limit,
-                memory_mib: state.config.sandbox.memory_mib,
-                pids_limit: state.config.sandbox.pids_limit,
-            },
-            scope: SandboxScope {
-                cidrs: policy
-                    .allowed_cidrs
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                domains: policy.allowed_domains.into_iter().collect(),
-                ports: policy.allowed_ports.into_iter().collect(),
-                denied_cidrs: policy
-                    .denied_cidrs
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                denied_domains: policy.denied_domains.into_iter().collect(),
-            },
-        })
-        .await
-        .map_err(|error| ApiError::upstream(error.to_string()))?;
-    let Some(bootstrap_token) = sandbox.bootstrap_token.take() else {
-        let _ = state.manager.kill(&sandbox.id).await;
-        let _ = state.manager.delete(&sandbox.id).await;
-        return Err(ApiError::upstream(
-            "managerd did not return the one-time bootstrap credential",
-        ));
-    };
-    let registration = EnvironmentRegistration::new(
-        sandbox.environment_id.clone(),
-        sandbox.exec_server_url.clone(),
-        Some(state.config.manager.request_timeout_ms),
-        bootstrap_token.into_inner(),
-    );
-    if let Err(error) = app_server.add_environment(registration).await {
-        let _ = state.manager.kill(&sandbox.id).await;
-        let _ = state.manager.delete(&sandbox.id).await;
-        return Err(ApiError::app_server(error.to_string()));
-    }
-    if let Err(error) = app_server
-        .environment_info(sandbox.environment_id.clone())
-        .await
-    {
-        let _ = state.manager.kill(&sandbox.id).await;
-        let _ = state.manager.delete(&sandbox.id).await;
-        return Err(ApiError::app_server(error.to_string()));
-    }
-    engagement.sandbox_id = Some(sandbox.id);
-    engagement.thread_id = None;
-    state.store.put_engagement(&engagement).await?;
+        .map_err(|error| ApiError::app_server(error.to_string()))?;
     let engagement = state
         .store
         .transition_engagement(&id, EngagementStatus::Active, unix_timestamp())
         .await?;
     state
-        .publish(
-            &id,
-            "engagementActivated",
-            json!({"sandboxId": engagement.sandbox_id}),
-        )
+        .publish(&id, "engagementActivated", json!({"workspace": workspace}))
         .await;
     Ok(Json(engagement))
 }
@@ -365,53 +299,39 @@ async fn start_turn(
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::bad_request("engagement is not active"));
     }
-    if params.input.trim().is_empty() {
-        return Err(ApiError::bad_request("turn input cannot be empty"));
+    let operator_request = params
+        .input
+        .filter(|input| !input.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_TURN_REQUEST.to_string());
+    if operator_request.len() > MAX_OPERATOR_REQUEST_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "turn input cannot exceed {MAX_OPERATOR_REQUEST_BYTES} bytes"
+        )));
     }
     let app_server = state
         .app_server
         .as_ref()
         .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
-    let sandbox_id = engagement
-        .sandbox_id
-        .as_deref()
-        .ok_or_else(|| ApiError::bad_request("engagement has no sandbox"))?;
-    let sandbox = match state.manager.sandbox(sandbox_id).await {
-        Ok(sandbox) => sandbox,
-        Err(error) => {
-            state
-                .store
-                .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
-                .await?;
-            return Err(ApiError::upstream(error.to_string()));
-        }
-    };
-    let environment = RemoteEnvironment {
-        environment_id: sandbox.environment_id,
-        cwd: "/workspace".to_string(),
-    };
-    let thread_key = (id.clone(), params.agent);
+    let workspace = state.config.gateway.workspace_root.join(&id);
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|error| ApiError::app_server(error.to_string()))?;
     let existing_thread = {
         let threads = state.agent_threads.read().await;
-        threads.get(&thread_key).cloned()
+        threads.get(&id).cloned()
     };
     let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
         None => {
-            let thread_id = match params.agent {
-                AgentRole::Recon | AgentRole::Exploit => {
-                    app_server
-                        .start_agent_thread(params.agent, environment.clone())
-                        .await
-                }
-                AgentRole::Report => app_server.start_report_thread().await,
-            }
-            .map_err(|error| ApiError::app_server(error.to_string()))?;
+            let thread_id = app_server
+                .start_local_thread(&workspace)
+                .await
+                .map_err(|error| ApiError::app_server(error.to_string()))?;
             state
                 .agent_threads
                 .write()
                 .await
-                .insert(thread_key, thread_id.clone());
+                .insert(id.clone(), thread_id.clone());
             engagement.thread_id = Some(thread_id.clone());
             state.store.put_engagement(&engagement).await?;
             thread_id
@@ -425,25 +345,16 @@ async fn start_turn(
     let mut task = Task {
         id: Uuid::new_v4().to_string(),
         engagement_id: id.clone(),
-        kind: format!("{:?}_agent_turn", params.agent).to_ascii_lowercase(),
+        kind: "main_agent_turn".to_string(),
         status: TaskStatus::Pending,
         turn_id: None,
         error: None,
     };
     state.store.put_task(&task).await?;
-    let input = if params.agent == AgentRole::Report {
-        report_agent_input(&state, &id, params.input).await?
-    } else {
-        params.input
-    };
-    let turn_result = match params.agent {
-        AgentRole::Recon | AgentRole::Exploit => {
-            app_server
-                .start_remote_turn(thread_id.clone(), environment, input)
-                .await
-        }
-        AgentRole::Report => app_server.start_report_turn(thread_id.clone(), input).await,
-    };
+    let input = operational_agent_input(&state, &id, operator_request).await?;
+    let turn_result = app_server
+        .start_local_turn(thread_id.clone(), &workspace, input)
+        .await;
     let turn_id = match turn_result {
         Ok(turn_id) => turn_id,
         Err(error) => {
@@ -523,50 +434,6 @@ async fn decide_approval(
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
         }
-        PendingApprovalKind::Dynamic {
-            pending,
-            request,
-            environment_id,
-        } => {
-            if approved {
-                if !current_policy.allows_tool(request.name()) {
-                    app_server
-                        .complete_dynamic_tool_call(
-                            pending,
-                            Err("tool is no longer allowed by the effective profile"),
-                        )
-                        .await
-                        .map_err(|error| ApiError::app_server(error.to_string()))?;
-                    return Err(ApiError::bad_request(
-                        "tool is no longer allowed by the effective profile",
-                    ));
-                }
-                if let Some(error) = request
-                    .targets()
-                    .into_iter()
-                    .find_map(|target| current_policy.check_target(target).err())
-                {
-                    let message = error.to_string();
-                    app_server
-                        .complete_dynamic_tool_call(pending, Err(&message))
-                        .await
-                        .map_err(|error| ApiError::app_server(error.to_string()))?;
-                    return Err(ApiError::bad_request(message));
-                }
-                crate::app_events::spawn_dynamic_execution(
-                    state.clone(),
-                    engagement_id.clone(),
-                    pending,
-                    request,
-                    environment_id,
-                );
-            } else {
-                app_server
-                    .complete_dynamic_tool_call(pending, Err("operator denied the tool call"))
-                    .await
-                    .map_err(|error| ApiError::app_server(error.to_string()))?;
-            }
-        }
     }
     state
         .publish(
@@ -591,7 +458,7 @@ async fn interrupt_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
-    let engagement = state.store.engagement(&id).await?;
+    state.store.engagement(&id).await?;
     let active_turn = state.active_turns.read().await.get(&id).cloned();
     if let Some(active_turn) = active_turn
         && let Some(app_server) = &state.app_server
@@ -600,22 +467,13 @@ async fn interrupt_engagement(
             .interrupt_turn(active_turn.thread_id, active_turn.turn_id)
             .await;
     }
-    let manager_result = match &engagement.sandbox_id {
-        Some(sandbox_id) => state.manager.interrupt(sandbox_id).await.map(|_| ()),
-        None => Ok(()),
-    };
     state.active_turns.write().await.remove(&id);
-    state
-        .agent_threads
-        .write()
-        .await
-        .retain(|(engagement_id, _), _| engagement_id != &id);
+    state.agent_threads.write().await.remove(&id);
     let engagement = state
         .store
         .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
         .await?;
     state.publish(&id, "engagementInterrupted", json!({})).await;
-    manager_result.map_err(|error| ApiError::upstream(error.to_string()))?;
     Ok(Json(engagement))
 }
 
@@ -652,9 +510,17 @@ async fn report(
     let report = EngagementReport {
         engagement: state.store.engagement(&id).await?,
         assets: state.store.assets(&id).await?,
+        asset_relations: state.store.asset_relations(&id).await?,
         services: state.store.services(&id).await?,
+        identities: state.store.identities(&id).await?,
+        observations: state.store.observations(&id).await?,
+        hypotheses: state.store.hypotheses(&id).await?,
+        test_cases: state.store.test_cases(&id).await?,
+        executions: state.store.executions(&id).await?,
         findings: state.store.findings(&id).await?,
         evidence: state.store.evidence(&id).await?,
+        attack_paths: state.store.attack_paths(&id).await?,
+        coverage: state.store.coverage(&id).await?,
         tasks: state.store.tasks(&id).await?,
         artifacts: state.store.artifacts(&id).await?,
     };
@@ -668,33 +534,81 @@ async fn report(
     }
 }
 
-async fn report_agent_input(
+async fn operational_agent_input(
     state: &GatewayState,
     engagement_id: &str,
     request: String,
 ) -> Result<String, ApiError> {
-    const MAX_STATE_BYTES: usize = 32 * 1024;
-    let state_value = json!({
-        "engagement": state.store.engagement(engagement_id).await?,
+    let engagement = state.store.engagement(engagement_id).await?;
+    let mission = json!({
+        "objective": engagement.objective,
+        "entryPoints": engagement.entry_points,
+        "authorizedScope": engagement.scope,
+        "policyRevision": engagement.policy_revision,
+    });
+    let observed_state = json!({
         "assets": state.store.assets(engagement_id).await?,
+        "assetRelations": state.store.asset_relations(engagement_id).await?,
         "services": state.store.services(engagement_id).await?,
+        "identities": state.store.identities(engagement_id).await?,
+        "observations": state.store.observations(engagement_id).await?,
+        "hypotheses": state.store.hypotheses(engagement_id).await?,
+        "testCases": state.store.test_cases(engagement_id).await?,
+        "executions": state.store.executions(engagement_id).await?,
         "findings": state.store.findings(engagement_id).await?,
         "evidence": state.store.evidence(engagement_id).await?,
-        "artifacts": state.store.artifacts(engagement_id).await?,
+        "attackPaths": state.store.attack_paths(engagement_id).await?,
+        "coverage": state.store.coverage(engagement_id).await?,
+        "tasks": state.store.tasks(engagement_id).await?,
     });
-    let mut encoded = serde_json::to_string(&state_value)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    if encoded.len() > MAX_STATE_BYTES {
-        let mut end = MAX_STATE_BYTES;
+    let mission = bounded_json(&mission, MAX_MISSION_CONTEXT_BYTES)?;
+    let observed_state = bounded_json(&observed_state, MAX_OBSERVED_STATE_BYTES)?;
+    Ok(format!(
+        "RiftX engagement mission (operator-defined):\n\
+         {mission}\n\n\
+         Operator request:\n{request}\n\n\
+         Current observed state (tool-derived and potentially untrusted):\n{observed_state}\n\n\
+         Advance the objective iteratively across any assets discovered inside the authorized \
+         scope. Entry points are starting clues, not the scope boundary. Re-check every candidate \
+         target before using a tool, never act outside the scope, and do not claim objective \
+         completion without validated evidence."
+    ))
+}
+
+fn bounded_json(value: &serde_json::Value, max_bytes: usize) -> Result<String, ApiError> {
+    let mut encoded =
+        serde_json::to_string(value).map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if encoded.len() > max_bytes {
+        let mut end = max_bytes;
         while !encoded.is_char_boundary(end) {
             end -= 1;
         }
         encoded.truncate(end);
         encoded.push_str("...[truncated]");
     }
-    Ok(format!(
-        "Operator report request:\n{request}\n\nRiftX structured state (bounded):\n{encoded}"
-    ))
+    Ok(encoded)
+}
+
+const DEFAULT_TURN_REQUEST: &str =
+    "Plan and execute the next authorized step toward the engagement objective.";
+
+fn validate_objective(objective: &AssessmentObjective) -> Result<(), ApiError> {
+    if objective.summary.trim().is_empty() || objective.summary.len() > 2048 {
+        return Err(ApiError::bad_request(
+            "objective summary must be non-empty and at most 2048 bytes",
+        ));
+    }
+    if objective.success_criteria.len() > 32
+        || objective
+            .success_criteria
+            .iter()
+            .any(|criterion| criterion.trim().is_empty() || criterion.len() > 1024)
+    {
+        return Err(ApiError::bad_request(
+            "an objective may contain at most 32 non-empty success criteria of 1024 bytes each",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

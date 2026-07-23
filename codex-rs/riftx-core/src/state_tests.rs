@@ -1,4 +1,5 @@
 use super::*;
+use crate::AssessmentObjective;
 use crate::Scope;
 use crate::TaskStatus;
 use ipnet::IpNet;
@@ -10,6 +11,12 @@ fn engagement() -> Engagement {
         id: "eng-1".to_string(),
         name: "Juice Shop".to_string(),
         status: EngagementStatus::Draft,
+        objective: AssessmentObjective {
+            summary: "Identify exploitable web risks".to_string(),
+            success_criteria: vec!["Record evidence for validated findings".to_string()],
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["juice.local".to_string()],
         scope: Scope {
             cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],
             domains: vec!["juice.local".to_string()],
@@ -17,7 +24,6 @@ fn engagement() -> Engagement {
         },
         tool_profile: "recon".to_string(),
         policy_revision: "revision-1".to_string(),
-        sandbox_id: None,
         thread_id: None,
         created_at: 1,
         updated_at: 1,
@@ -85,6 +91,39 @@ async fn task_is_resolved_by_turn_id() {
             .await
             .expect("lookup task"),
         Some(task)
+    );
+}
+
+#[tokio::test]
+async fn multi_asset_relationship_is_persisted() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = StateStore::open(&temp.path().join("state.sqlite"))
+        .await
+        .expect("state store");
+    store
+        .put_engagement(&engagement())
+        .await
+        .expect("insert draft");
+    let relation = AssetRelation {
+        id: "relation-1".to_string(),
+        engagement_id: "eng-1".to_string(),
+        source_asset_id: "workstation-1".to_string(),
+        target_asset_id: "domain-controller-1".to_string(),
+        kind: "domainMemberOf".to_string(),
+        evidence_id: Some("evidence-1".to_string()),
+        discovered_at: 2,
+    };
+    store
+        .put_asset_relation(&relation)
+        .await
+        .expect("store relation");
+
+    assert_eq!(
+        store
+            .asset_relations("eng-1")
+            .await
+            .expect("list relations"),
+        vec![relation]
     );
 }
 

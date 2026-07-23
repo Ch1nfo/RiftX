@@ -10,6 +10,10 @@ fn create_command_accepts_repeated_scope_arguments() {
         "create",
         "--name",
         "Juice Shop",
+        "--objective",
+        "Validate exploitable web risks",
+        "--entry-point",
+        "juice.local",
         "--cidr",
         "10.10.0.0/24",
         "--domain",
@@ -19,6 +23,8 @@ fn create_command_accepts_repeated_scope_arguments() {
     ])
     .expect("valid CLI");
     let Command::Create {
+        objective,
+        entry_points,
         cidrs,
         domains,
         ports,
@@ -27,6 +33,8 @@ fn create_command_accepts_repeated_scope_arguments() {
     else {
         panic!("expected create command");
     };
+    assert_eq!(objective, "Validate exploitable web risks");
+    assert_eq!(entry_points, vec!["juice.local"]);
     assert_eq!(cidrs, vec!["10.10.0.0/24"]);
     assert_eq!(domains, vec!["juice.local"]);
     assert_eq!(ports, vec![80]);

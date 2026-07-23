@@ -27,13 +27,19 @@ enum Command {
     Create {
         #[arg(long)]
         name: String,
+        #[arg(long)]
+        objective: String,
+        #[arg(long = "success-criterion")]
+        success_criteria: Vec<String>,
+        #[arg(long = "entry-point")]
+        entry_points: Vec<String>,
         #[arg(long = "cidr", required = true)]
         cidrs: Vec<String>,
         #[arg(long = "domain")]
         domains: Vec<String>,
         #[arg(long = "port")]
         ports: Vec<u16>,
-        #[arg(long, default_value = "recon")]
+        #[arg(long, default_value = "native")]
         profile: String,
     },
     Get {
@@ -44,9 +50,7 @@ enum Command {
     },
     Turn {
         id: String,
-        #[arg(long, value_enum, default_value_t = AgentRole::Recon)]
-        agent: AgentRole,
-        input: String,
+        input: Option<String>,
     },
     Approve {
         id: String,
@@ -73,23 +77,6 @@ enum ReportFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum AgentRole {
-    Recon,
-    Exploit,
-    Report,
-}
-
-impl AgentRole {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Recon => "recon",
-            Self::Exploit => "exploit",
-            Self::Report => "report",
-        }
-    }
-}
-
 impl ReportFormat {
     fn as_str(self) -> &'static str {
         match self {
@@ -111,6 +98,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Create {
             name,
+            objective,
+            success_criteria,
+            entry_points,
             cidrs,
             domains,
             ports,
@@ -123,6 +113,11 @@ async fn main() -> anyhow::Result<()> {
                 format!("{base}/v1/engagements"),
                 Some(json!({
                     "name": name,
+                    "objective": {
+                        "summary": objective,
+                        "successCriteria": success_criteria,
+                    },
+                    "entryPoints": entry_points,
                     "scope": {"cidrs": cidrs, "domains": domains, "ports": ports},
                     "toolProfile": profile,
                 })),
@@ -149,13 +144,13 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Command::Turn { id, agent, input } => {
+        Command::Turn { id, input } => {
             send(
                 &client,
                 &cli.token,
                 Method::POST,
                 format!("{base}/v1/engagements/{id}/turns"),
-                Some(json!({"input": input, "agent": agent.as_str()})),
+                Some(json!({"input": input})),
             )
             .await?;
         }

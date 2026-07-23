@@ -1,34 +1,27 @@
 use super::*;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
-use codex_app_server_protocol::EnvironmentConnectionNotification;
-use codex_app_server_protocol::EnvironmentStatusKind;
-use codex_app_server_protocol::ServerNotification;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
 use codex_core::init_state_db;
-use codex_exec_server::ExecServerRuntimePaths;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::net::TcpListener;
-use tokio::time::Duration;
-use tokio::time::sleep;
 
 struct TestAdapter {
-    _codex_home: TempDir,
+    workspace: TempDir,
     adapter: RiftxAppServerAdapter,
 }
 
 async fn start_test_adapter() -> TestAdapter {
-    let codex_home = TempDir::new().expect("temp dir");
+    let workspace = TempDir::new().expect("workspace");
     let config = Arc::new(
         ConfigBuilder::default()
-            .codex_home(codex_home.path().to_path_buf())
+            .codex_home(workspace.path().join("runtime"))
             .build()
             .await
             .expect("test config"),
@@ -48,9 +41,9 @@ async fn start_test_adapter() -> TestAdapter {
         state_db: Some(state_db),
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
-        session_source: SessionSource::Exec,
+        session_source: SessionSource::Custom("riftx-test".to_string()),
         enable_codex_api_key_env: false,
-        client_name: "riftx-adapter-test".to_string(),
+        client_name: "riftx-agent-client-test".to_string(),
         client_version: "0.0.0-test".to_string(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
@@ -59,133 +52,78 @@ async fn start_test_adapter() -> TestAdapter {
     })
     .await
     .expect("adapter should start");
-    TestAdapter {
-        _codex_home: codex_home,
-        adapter,
-    }
+    TestAdapter { workspace, adapter }
 }
 
 #[tokio::test]
-async fn unknown_environment_status_is_typed() {
-    let test = start_test_adapter().await;
-    let status = test
-        .adapter
-        .environment_status("missing".to_string())
+async fn embedded_runtime_forces_api_key_only_authentication() {
+    let runtime_home = TempDir::new().expect("runtime home");
+    let runtime = RiftxLlmRuntimeConfig {
+        runtime_home: runtime_home.path().to_path_buf(),
+        model: "riftx-test-model".to_string(),
+        base_url: "http://127.0.0.1:8766/v1".to_string(),
+        api_key_env: "RIFTX_TEST_API_KEY".to_string(),
+    };
+    let config = build_runtime_config(&runtime)
         .await
-        .expect("status request should succeed");
+        .expect("runtime config");
+
     assert_eq!(
-        status,
-        EnvironmentStatusResponse {
-            status: EnvironmentStatusKind::Unknown,
-            error: Some("unknown environment id `missing`".to_string()),
-        }
+        (
+            config.model.as_deref(),
+            config.model_provider_id.as_str(),
+            config.model_provider.name.as_str(),
+            config.model_provider.base_url.as_deref(),
+            config.model_provider.env_key.as_deref(),
+            config.model_provider.requires_openai_auth,
+            config.forced_login_method,
+            config.cli_auth_credentials_store_mode,
+        ),
+        (
+            Some("riftx-test-model"),
+            "riftx",
+            "RiftX LLM",
+            Some("http://127.0.0.1:8766/v1"),
+            Some("RIFTX_TEST_API_KEY"),
+            false,
+            Some(ForcedLoginMethod::Api),
+            AuthCredentialsStoreMode::Ephemeral,
+        )
     );
+}
+
+#[tokio::test]
+async fn local_workspace_starts_a_single_main_agent_thread() {
+    let test = start_test_adapter().await;
+    let thread_id = test
+        .adapter
+        .start_local_thread(test.workspace.path())
+        .await
+        .expect("local thread should start");
+
+    assert!(!thread_id.is_empty());
     test.adapter.shutdown().await.expect("shutdown");
 }
 
 #[test]
-fn notification_envelope_preserves_correlation_ids() {
-    let event = RiftxAppServerEvent::Notification(ServerNotification::EnvironmentDisconnected(
-        EnvironmentConnectionNotification {
-            thread_id: "thread-1".to_string(),
-            environment_id: "sandbox-1".to_string(),
-        },
+fn relative_workspaces_are_rejected() {
+    assert!(matches!(
+        workspace_string(Path::new("relative")),
+        Err(AdapterError::InvalidWorkspace(_))
     ));
+}
+
+#[test]
+fn event_envelope_preserves_lag_information() {
+    let event = RiftxAppServerEvent::Lagged { skipped: 3 };
     assert_eq!(
         event.envelope().expect("event envelope"),
         RiftxEventEnvelope {
-            kind: "thread/environment/disconnected".to_string(),
-            thread_id: Some("thread-1".to_string()),
+            kind: "appServer/lagged".to_string(),
+            thread_id: None,
             turn_id: None,
             request_id: None,
-            data: serde_json::json!({
-                "threadId": "thread-1",
-                "environmentId": "sandbox-1",
-            }),
+            data: serde_json::json!({"skipped": 3}),
         }
     );
-}
-
-#[tokio::test]
-async fn registered_remote_environment_starts_pending() {
-    let test = start_test_adapter().await;
-    test.adapter
-        .add_environment(EnvironmentRegistration::without_auth_for_test(
-            "sandbox-1".to_string(),
-            "ws://127.0.0.1:9".to_string(),
-            Some(50),
-        ))
-        .await
-        .expect("environment/add should succeed");
-    let status = test
-        .adapter
-        .environment_status("sandbox-1".to_string())
-        .await
-        .expect("status request should succeed");
-    assert!(matches!(
-        status.status,
-        EnvironmentStatusKind::Pending | EnvironmentStatusKind::Disconnected
-    ));
-    test.adapter.shutdown().await.expect("shutdown");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn connects_to_authenticated_exec_server() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("reserve exec-server port");
-    let address = listener.local_addr().expect("listener address");
-    drop(listener);
-
-    let runtime_paths = ExecServerRuntimePaths::new(
-        std::env::current_exe().expect("current test executable"),
-        /*codex_linux_sandbox_exe*/ None,
-    )
-    .expect("runtime paths");
-    let auth_dir = TempDir::new().expect("auth temp dir");
-    let auth_file = auth_dir.path().join("auth.json");
-    std::fs::write(
-        &auth_file,
-        r#"{"bootstrapSha256":"fc17cbe42905e3308ba7175fd672651094e30c926f2bdd426636f12dd19df41b","expiresAt":4102444800}"#,
-    )
-    .expect("write auth file");
-    let websocket_auth =
-        codex_exec_server::ExecServerWebSocketAuth::from_file(&auth_file).expect("load auth file");
-    let exec_server = tokio::spawn(async move {
-        codex_exec_server::run_main_with_telemetry_and_auth(
-            &format!("ws://{address}"),
-            runtime_paths,
-            codex_exec_server::ExecServerTelemetry::default(),
-            websocket_auth,
-        )
-        .await
-    });
-    sleep(Duration::from_millis(50)).await;
-
-    let test = start_test_adapter().await;
-    let request_handle = test.adapter.request_handle();
-    request_handle
-        .add_environment(EnvironmentRegistration::new(
-            "sandbox-real".to_string(),
-            format!("ws://{address}"),
-            Some(2_000),
-            "bootstrap-secret".to_string(),
-        ))
-        .await
-        .expect("environment/add should succeed");
-    let info = request_handle
-        .environment_info("sandbox-real".to_string())
-        .await
-        .expect("real exec-server should report environment info");
-    assert!(!info.shell.name.is_empty());
-    assert!(!info.shell.path.is_empty());
-
-    let status = request_handle
-        .environment_status("sandbox-real".to_string())
-        .await
-        .expect("status request should succeed");
-    assert_eq!(status.status, EnvironmentStatusKind::Ready);
-
-    test.adapter.shutdown().await.expect("shutdown");
-    exec_server.abort();
 }

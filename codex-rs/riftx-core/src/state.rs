@@ -1,10 +1,12 @@
 use crate::Artifact;
 use crate::Asset;
+use crate::AssetRelation;
 use crate::Engagement;
 use crate::EngagementStatus;
 use crate::Evidence;
 use crate::Finding;
 use crate::Service;
+use crate::TargetStateError;
 use crate::Task;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -29,6 +31,21 @@ pub enum StateError {
         from: EngagementStatus,
         to: EngagementStatus,
     },
+    #[error(transparent)]
+    InvalidTargetState(#[from] TargetStateError),
+    #[error("{entity_kind} {entity_id} is missing required {reference_kind} reference")]
+    MissingChainReference {
+        entity_kind: &'static str,
+        entity_id: String,
+        reference_kind: &'static str,
+    },
+    #[error("{entity_kind} {entity_id} references unknown {reference_kind} {reference_id}")]
+    BrokenChainReference {
+        entity_kind: &'static str,
+        entity_id: String,
+        reference_kind: &'static str,
+        reference_id: String,
+    },
 }
 
 #[derive(Clone)]
@@ -36,74 +53,63 @@ pub struct StateStore {
     pool: SqlitePool,
 }
 
-#[derive(Clone, Copy)]
-enum EntityTable {
-    Assets,
-    Services,
-    Findings,
-    Evidence,
-    Tasks,
-    Artifacts,
+macro_rules! entity_tables {
+    ($($variant:ident => $table:literal),+ $(,)?) => {
+        #[derive(Clone, Copy)]
+        enum EntityTable {
+            $($variant),+
+        }
+
+        impl EntityTable {
+            fn create_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!(
+                        "CREATE TABLE IF NOT EXISTS ",
+                        $table,
+                        " (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
+                    )),+
+                }
+            }
+
+            fn upsert_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!(
+                        "INSERT INTO ",
+                        $table,
+                        "(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
+                    )),+
+                }
+            }
+
+            fn list_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!(
+                        "SELECT data FROM ",
+                        $table,
+                        " WHERE engagement_id = ? ORDER BY id"
+                    )),+
+                }
+            }
+        }
+    };
 }
 
-impl EntityTable {
-    fn create_sql(self) -> &'static str {
-        match self {
-            Self::Assets => {
-                "CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-            Self::Services => {
-                "CREATE TABLE IF NOT EXISTS services (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-            Self::Findings => {
-                "CREATE TABLE IF NOT EXISTS findings (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-            Self::Evidence => {
-                "CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-            Self::Tasks => {
-                "CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-            Self::Artifacts => {
-                "CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
-            }
-        }
-    }
-
-    fn upsert_sql(self) -> &'static str {
-        match self {
-            Self::Assets => {
-                "INSERT INTO assets(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-            Self::Services => {
-                "INSERT INTO services(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-            Self::Findings => {
-                "INSERT INTO findings(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-            Self::Evidence => {
-                "INSERT INTO evidence(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-            Self::Tasks => {
-                "INSERT INTO tasks(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-            Self::Artifacts => {
-                "INSERT INTO artifacts(id, engagement_id, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET engagement_id=excluded.engagement_id, data=excluded.data"
-            }
-        }
-    }
-
-    fn list_sql(self) -> &'static str {
-        match self {
-            Self::Assets => "SELECT data FROM assets WHERE engagement_id = ? ORDER BY id",
-            Self::Services => "SELECT data FROM services WHERE engagement_id = ? ORDER BY id",
-            Self::Findings => "SELECT data FROM findings WHERE engagement_id = ? ORDER BY id",
-            Self::Evidence => "SELECT data FROM evidence WHERE engagement_id = ? ORDER BY id",
-            Self::Tasks => "SELECT data FROM tasks WHERE engagement_id = ? ORDER BY id",
-            Self::Artifacts => "SELECT data FROM artifacts WHERE engagement_id = ? ORDER BY id",
-        }
-    }
-}
+entity_tables!(
+    Assets => "assets",
+    AssetRelations => "asset_relations",
+    Services => "services",
+    Identities => "identities",
+    Observations => "observations",
+    Hypotheses => "hypotheses",
+    TestCases => "test_cases",
+    Executions => "executions",
+    Findings => "findings",
+    Evidence => "evidence",
+    AttackPaths => "attack_paths",
+    Coverage => "coverage",
+    Tasks => "tasks",
+    Artifacts => "artifacts",
+);
 
 impl StateStore {
     pub async fn open(path: &Path) -> Result<Self, StateError> {
@@ -128,9 +134,17 @@ impl StateStore {
         .await?;
         for table in [
             EntityTable::Assets,
+            EntityTable::AssetRelations,
             EntityTable::Services,
+            EntityTable::Identities,
+            EntityTable::Observations,
+            EntityTable::Hypotheses,
+            EntityTable::TestCases,
+            EntityTable::Executions,
             EntityTable::Findings,
             EntityTable::Evidence,
+            EntityTable::AttackPaths,
+            EntityTable::Coverage,
             EntityTable::Tasks,
             EntityTable::Artifacts,
         ] {
@@ -200,6 +214,16 @@ impl StateStore {
             .await
     }
 
+    pub async fn put_asset_relation(&self, value: &AssetRelation) -> Result<(), StateError> {
+        self.put_entity(
+            EntityTable::AssetRelations,
+            &value.id,
+            &value.engagement_id,
+            value,
+        )
+        .await
+    }
+
     pub async fn put_service(&self, value: &Service) -> Result<(), StateError> {
         self.put_entity(
             EntityTable::Services,
@@ -264,6 +288,14 @@ impl StateStore {
         self.entities(EntityTable::Assets, engagement_id).await
     }
 
+    pub async fn asset_relations(
+        &self,
+        engagement_id: &str,
+    ) -> Result<Vec<AssetRelation>, StateError> {
+        self.entities(EntityTable::AssetRelations, engagement_id)
+            .await
+    }
+
     pub async fn services(&self, engagement_id: &str) -> Result<Vec<Service>, StateError> {
         self.entities(EntityTable::Services, engagement_id).await
     }
@@ -310,6 +342,9 @@ impl StateStore {
             .collect()
     }
 }
+
+#[path = "state_target.rs"]
+mod target;
 
 #[cfg(test)]
 #[path = "state_tests.rs"]

@@ -2,19 +2,16 @@
 listen = "127.0.0.1:8787"
 operator_token_env = "RIFTX_OPERATOR_TOKEN"
 state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
 
-[manager]
-socket = ".riftx/managerd.sock"
-request_timeout_ms = 10000
-
-[sandbox]
-image = "riftx/sandbox:dev"
-cpu_limit = 2
-memory_mib = 2048
-pids_limit = 512
+[llm]
+model = "gpt-5.2"
+base_url = "https://api.openai.com/v1"
+api_key_env = "RIFTX_LLM_API_KEY"
 
 [policy]
-allowed_tools = ["rt_nmap", "rt_httpx", "rt_nuclei", "rt_ffuf"]
+allowed_tools = []
 denied_cidrs = []
 denied_domains = []
 
@@ -26,11 +23,11 @@ fsync = true
 root = ".riftx/artifacts"
 max_bytes_per_engagement = 1073741824
 
-[tool_profiles.recon]
-allowed_tools = ["rt_nmap", "rt_httpx", "rt_nuclei", "rt_ffuf"]
+[tool_profiles.native]
+allowed_tools = []
 approval = "high_risk"
 
-[tool_profiles.recon.scope]
+[tool_profiles.native.scope]
 cidrs = ["0.0.0.0/0", "::/0"]
 domains = ["*"]
 ports = []

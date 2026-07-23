@@ -1,9 +1,6 @@
-use codex_riftx_app_server_adapter::AgentRole;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
-use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
-use codex_riftx_app_server_adapter::StructuredToolRequest;
 use codex_riftx_core::AuditRecord;
 use codex_riftx_core::AuditWriter;
 use codex_riftx_core::EngagementStatus;
@@ -11,13 +8,11 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
-use codex_riftx_manager_client::ManagerClient;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::sync::RwLock;
@@ -28,13 +23,12 @@ use tokio::sync::broadcast;
 pub struct GatewayState {
     pub config: Arc<RiftxConfig>,
     pub store: StateStore,
-    pub manager: ManagerClient,
     pub(crate) audit: AuditWriter,
     pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
-    pub(crate) agent_threads: Arc<RwLock<HashMap<(String, AgentRole), String>>>,
+    pub(crate) agent_threads: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
     pub(crate) turn_slot: Arc<Semaphore>,
 }
@@ -55,11 +49,6 @@ pub(crate) struct PendingApproval {
 #[derive(Clone)]
 pub(crate) enum PendingApprovalKind {
     Command(PendingCommandApproval),
-    Dynamic {
-        pending: PendingDynamicToolCall,
-        request: StructuredToolRequest,
-        environment_id: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,12 +61,11 @@ pub(crate) struct GatewayEvent {
 }
 
 impl GatewayState {
-    pub fn new(config: RiftxConfig, store: StateStore, manager: ManagerClient) -> Self {
+    pub fn new(config: RiftxConfig, store: StateStore) -> Self {
         let audit = AuditWriter::new(&config.audit);
         Self {
             config: Arc::new(config),
             store,
-            manager,
             audit,
             app_server: None,
             events: Arc::new(RwLock::new(HashMap::new())),
@@ -116,55 +104,10 @@ impl GatewayState {
         });
     }
 
-    pub fn spawn_manager_event_pump(&self) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let mut cursor = None;
-            loop {
-                match state.manager.events(cursor.as_deref()).await {
-                    Ok(response) => {
-                        cursor = response.next_cursor;
-                        let engagements = state.store.engagements().await.unwrap_or_default();
-                        for event in response.events {
-                            let Some(engagement) = engagements.iter().find(|engagement| {
-                                engagement.sandbox_id.as_deref() == Some(&event.sandbox_id)
-                            }) else {
-                                continue;
-                            };
-                            state
-                                .publish(
-                                    &engagement.id,
-                                    &format!("manager/{}", event.kind),
-                                    json!({
-                                        "sandboxId": event.sandbox_id,
-                                        "cursor": event.cursor,
-                                        "detail": event.detail,
-                                    }),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(error) => {
-                        state
-                            .publish_to_active(
-                                "manager/error",
-                                json!({"message": error.to_string()}),
-                            )
-                            .await;
-                    }
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        });
-    }
-
     pub async fn reconcile_after_restart(&self) -> Result<(), StateError> {
         for engagement in self.store.engagements().await? {
             if engagement.status != EngagementStatus::Active {
                 continue;
-            }
-            if let Some(sandbox_id) = engagement.sandbox_id.as_deref() {
-                let _ = self.manager.kill(sandbox_id).await;
             }
             self.store
                 .transition_engagement(
@@ -190,7 +133,6 @@ impl GatewayState {
                     &data,
                     &["/toolCallId", "/payload/toolCallId", "/payload/callId"],
                 ),
-                sandbox_id: engagement.sandbox_id,
                 profile: Some(engagement.tool_profile),
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),

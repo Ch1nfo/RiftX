@@ -26,7 +26,6 @@ pub struct AuditRecord {
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     pub tool_call_id: Option<String>,
-    pub sandbox_id: Option<String>,
     pub profile: Option<String>,
     pub policy_revision: Option<String>,
     pub outcome: Option<String>,
