@@ -53,3 +53,14 @@ fn create_command_accepts_repeated_scope_arguments() {
     assert!(matches!(environment, EnvironmentClassArg::Lab));
     assert_eq!(capabilities, vec!["web.discovery"]);
 }
+
+#[test]
+fn tools_doctor_supports_machine_readable_output() {
+    let cli = Cli::try_parse_from(["riftx", "tools", "doctor", "--json"]).expect("valid CLI");
+    assert!(matches!(
+        cli.command,
+        Command::Tools {
+            command: ToolsCommand::Doctor { json: true }
+        }
+    ));
+}

@@ -7,6 +7,8 @@ use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_tools::DiagnosticLevel;
+use codex_riftx_tools::ToolInventory;
 use futures::StreamExt;
 use serde_json::Value;
 use serde_json::json;
@@ -80,6 +82,18 @@ enum Command {
         id: String,
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
+    },
+    Tools {
+        #[command(subcommand)]
+        command: ToolsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolsCommand {
+    Doctor {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -245,6 +259,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Command::Tools {
+            command: ToolsCommand::Doctor { json },
+        } => tools_doctor(&client, json).await?,
     }
     Ok(())
 }
@@ -332,6 +349,44 @@ async fn verify_daemon(client: &LocalIpcClient) -> anyhow::Result<()> {
         IPC_PROTOCOL_VERSION,
         info.protocol_version
     );
+    Ok(())
+}
+
+async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
+    let response = client
+        .get("/v1/tools")
+        .await
+        .context("request tool inventory")?;
+    let status = response.status();
+    let body = response.bytes().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "riftxd returned {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let inventory: ToolInventory =
+        serde_json::from_slice(&body).context("decode tool inventory")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&inventory)?);
+    } else {
+        println!("Tools: {}", inventory.tools.len());
+        println!("PATH entries: {}", inventory.path_entries.len());
+        println!("Snapshot: {}", inventory.snapshot_sha256);
+        for diagnostic in &inventory.diagnostics {
+            let level = match diagnostic.level {
+                DiagnosticLevel::Info => "INFO",
+                DiagnosticLevel::Warning => "WARN",
+                DiagnosticLevel::Error => "ERROR",
+            };
+            let path = diagnostic
+                .path
+                .as_ref()
+                .map(|path| format!(" {}:", path.display()))
+                .unwrap_or_default();
+            println!("{level} {}{path} {}", diagnostic.code, diagnostic.message);
+        }
+    }
+    anyhow::ensure!(inventory.is_healthy(), "one or more tool checks failed");
     Ok(())
 }
 

@@ -160,6 +160,7 @@ Markdown 和 JSON。
 - API-Key-only 内嵌 Agent Runtime。
 - 本机 engagement workspace 和单一持续主 Agent。
 - `riftxd` 本地 IPC API 与 Operator CLI。
+- Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
 - Scope、Policy Revision、Approval 及三模式领域约束。
 - 目标导向状态模型、Evidence 引用验证和 SQLite 持久化。
 - append-only JSONL 审计。
@@ -170,7 +171,7 @@ Markdown 和 JSON。
 
 - Tauri Desktop 和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- Tools/Skills Directory 扫描和 Native Tool Runner。
+- Skills Directory、工具执行审计和完整 Native 验收。
 - 案件数据加密、OS credential store 和 `.riftxcase`。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
@@ -224,6 +225,7 @@ RiftX/
 │   ├── riftx-core/                 # 当前领域、状态、策略和审计
 │   ├── riftx-gateway/              # riftxd API 与业务编排
 │   ├── riftx-ipc/                  # UDS / Named Pipe 本地传输
+│   ├── riftx-tools/                # Tools Directory、元数据和快照
 │   ├── riftx-cli/                  # 当前 Operator CLI
 │   └── riftx-app-server-adapter/   # 受限 typed Agent Runtime facade
 ├── architecture/adr/               # 架构决策

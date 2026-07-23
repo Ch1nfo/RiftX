@@ -8,6 +8,7 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_tools::ToolInventory;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
@@ -23,6 +24,7 @@ use tokio::sync::broadcast;
 pub struct GatewayState {
     pub config: Arc<RiftxConfig>,
     pub store: StateStore,
+    pub tools: Arc<ToolInventory>,
     pub(crate) audit: AuditWriter,
     pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
@@ -61,11 +63,12 @@ pub(crate) struct GatewayEvent {
 }
 
 impl GatewayState {
-    pub fn new(config: RiftxConfig, store: StateStore) -> Self {
+    pub fn new(config: RiftxConfig, store: StateStore, tools: ToolInventory) -> Self {
         let audit = AuditWriter::new(&config.audit);
         Self {
             config: Arc::new(config),
             store,
+            tools: Arc::new(tools),
             audit,
             app_server: None,
             events: Arc::new(RwLock::new(HashMap::new())),

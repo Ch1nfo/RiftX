@@ -27,6 +27,7 @@ use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_tools::ToolInventory;
 use futures::Stream;
 use futures::stream;
 use serde::Deserialize;
@@ -157,6 +158,7 @@ impl IntoResponse for ApiError {
 pub fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/system/info", get(system_info))
+        .route("/v1/tools", get(tools))
         .route("/v1/engagements", post(create_engagement))
         .route("/v1/engagements/{id}", get(get_engagement))
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
@@ -171,6 +173,10 @@ pub fn build_router(state: GatewayState) -> Router {
 
 async fn system_info() -> Json<DaemonInfo> {
     Json(DaemonInfo::current())
+}
+
+async fn tools(State(state): State<GatewayState>) -> Json<ToolInventory> {
+    Json(state.tools.as_ref().clone())
 }
 
 async fn create_engagement(

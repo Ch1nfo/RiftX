@@ -73,6 +73,7 @@ pub struct RiftxLlmRuntimeConfig {
     pub model: String,
     pub base_url: String,
     pub api_key_env: String,
+    pub process_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +341,10 @@ async fn build_runtime_config(
                     "cli_auth_credentials_store".to_string(),
                     toml::Value::String("ephemeral".to_string()),
                 ),
+                (
+                    "shell_environment_policy.set.PATH".to_string(),
+                    toml::Value::String(runtime.process_path.clone()),
+                ),
             ])
             .strict_config(true)
             .build()
@@ -353,7 +358,13 @@ async fn build_runtime_config(
         && !config.model_provider.requires_openai_auth
         && config.forced_login_method == Some(ForcedLoginMethod::Api)
         && config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral;
-    if !enforced {
+    let path_is_enforced = config
+        .permissions
+        .shell_environment_policy
+        .r#set
+        .get("PATH")
+        .is_some_and(|path| path == &runtime.process_path);
+    if !enforced || !path_is_enforced {
         return Err(AdapterError::UnsafeRuntimeConfig(
             "API-key-only provider, isolated runtime home, and ephemeral auth are required"
                 .to_string(),

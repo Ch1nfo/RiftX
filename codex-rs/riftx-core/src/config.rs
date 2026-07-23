@@ -1,3 +1,4 @@
+use codex_riftx_tools::ToolScanConfig;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
@@ -25,6 +26,7 @@ pub struct RiftxConfig {
     pub policy: ManagedPolicyConfig,
     pub audit: AuditConfig,
     pub artifacts: ArtifactConfig,
+    pub tools: ToolScanConfig,
 }
 
 impl RiftxConfig {

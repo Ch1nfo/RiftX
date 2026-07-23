@@ -31,18 +31,44 @@ Named Pipe 提供本地服务。
 - Objective、Scope、Policy Revision、Approval 和三模式领域约束。
 - 多资产 Target State、Evidence 链、SQLite 状态、JSONL 审计和 Markdown/JSON 报告。
 - `riftxd` 本地 IPC API 和 Operator CLI。
+- 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入和
+  `riftx tools doctor`。
 
-尚未完成 Desktop、Linux TUI、Tools/Skills Directory、加密案件存储、三平台 Guard、
-Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成 Desktop、Linux TUI、Skills Directory、工具执行审计闭环、加密案件存储、
+三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。
 
 ## 本机工具
 
-正式实现将扫描用户配置的 Tools Directory，并把其中可执行文件加入任务 PATH。一个工具
-只要能由当前用户在本机运行，Agent 原则上就能通过 shell 使用它。可选元数据用于补充名称、
-平台、风险等级和健康检查，但不会要求为每个工具开发适配器。
+`[tools].directories` 为空时使用平台默认目录，也可以配置一个或多个自定义目录：
+
+```toml
+[tools]
+directories = ["/absolute/path/to/team-tools"]
+extra_paths = []
+```
+
+RiftX 扫描根目录、一级子目录及其 `bin/`，不递归遍历、不跟随符号链接。发现的可执行文件
+按 Tools Directory、`extra_paths`、系统 PATH 的顺序进入 Agent 任务 PATH。初始安装不会
+下载或预装任何安全工具。
+
+可执行文件旁可以放置可选的 `<filename>.riftx.toml`：
+
+```toml
+capabilities = ["network.discovery"]
+risk = "low"
+version_args = ["--version"]
+health_check_args = ["--help"]
+```
+
+检查当前启动时工具快照：
+
+```bash
+./codex-rs/target/debug/riftx tools doctor
+./codex-rs/target/debug/riftx tools doctor --json
+```
 
 ## LLM 配置
 

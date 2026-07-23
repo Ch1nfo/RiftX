@@ -10,6 +10,7 @@ use codex_riftx_gateway::GatewayState;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcListener;
+use codex_riftx_tools::ToolScanner;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -38,17 +39,23 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     }
     tokio::fs::create_dir_all(&config.daemon.workspace_root).await?;
     let store = StateStore::open(&config.daemon.state_db).await?;
+    let tools = ToolScanner::new(config.tools.clone()).scan().await;
+    let process_path = tools
+        .process_path(std::env::var_os("PATH"))?
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("the effective tool PATH is not valid UTF-8"))?;
     let runtime = RiftxLlmRuntimeConfig {
         runtime_home: config.daemon.runtime_home.clone(),
         model: config.llm.model.clone(),
         base_url: config.llm.base_url.clone(),
         api_key_env: config.llm.api_key_env.clone(),
+        process_path,
     };
     let app_server = RiftxAppServerAdapter::start_embedded(runtime, arg0_paths)
         .await
         .context("start RiftX model runtime")?;
     let app_server_handle = app_server.request_handle();
-    let state = GatewayState::new(config, store).with_app_server(app_server_handle);
+    let state = GatewayState::new(config, store, tools).with_app_server(app_server_handle);
     state
         .reconcile_after_restart()
         .await

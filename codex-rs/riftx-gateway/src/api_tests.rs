@@ -18,6 +18,8 @@ use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
+use codex_riftx_tools::ToolInventory;
+use codex_riftx_tools::ToolScanConfig;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -53,11 +55,15 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             root: temp.path().join("artifacts"),
             max_bytes_per_engagement: 1024,
         },
+        tools: ToolScanConfig {
+            directories: Vec::new(),
+            extra_paths: Vec::new(),
+        },
     };
     let store = StateStore::open(&config.daemon.state_db)
         .await
         .expect("state store");
-    GatewayState::new(config, store)
+    GatewayState::new(config, store, ToolInventory::empty())
 }
 
 async fn test_router(temp: &TempDir) -> Router {
