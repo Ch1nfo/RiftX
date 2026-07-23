@@ -1,23 +1,22 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
+use codex_riftx_core::RiftxConfig;
+use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
+use codex_riftx_ipc::LocalIpcClient;
+use codex_riftx_ipc::LocalIpcEndpoint;
+use codex_riftx_ipc::LocalIpcResponse;
 use futures::StreamExt;
-use reqwest::Client;
-use reqwest::Method;
 use serde_json::Value;
 use serde_json::json;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
 struct Cli {
-    #[arg(
-        long,
-        env = "RIFTX_GATEWAY_URL",
-        default_value = "http://127.0.0.1:8787"
-    )]
-    gateway: String,
-    #[arg(long, env = "RIFTX_OPERATOR_TOKEN", hide_env_values = true)]
-    token: String,
+    #[arg(long, default_value = "riftx.toml")]
+    config: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
@@ -136,12 +135,9 @@ impl ReportFormat {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    anyhow::ensure!(
-        !cli.token.is_empty(),
-        "operator bearer token cannot be empty"
-    );
-    let client = Client::new();
-    let base = cli.gateway.trim_end_matches('/');
+    let config = RiftxConfig::load(&cli.config).await?;
+    let client = LocalIpcClient::new(LocalIpcEndpoint::new(config.daemon.ipc_dir));
+    verify_daemon(&client).await?;
     match cli.command {
         Command::Create {
             name,
@@ -165,9 +161,8 @@ async fn main() -> anyhow::Result<()> {
                 parse_json_arguments(&structured_criteria, "structured criterion")?;
             send(
                 &client,
-                &cli.token,
-                Method::POST,
-                format!("{base}/v1/engagements"),
+                RequestKind::PostJson,
+                "/v1/engagements".to_string(),
                 Some(json!({
                     "name": name,
                     "objective": {
@@ -191,9 +186,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Get { id } => {
             send(
                 &client,
-                &cli.token,
-                Method::GET,
-                format!("{base}/v1/engagements/{id}"),
+                RequestKind::Get,
+                format!("/v1/engagements/{id}"),
                 None,
             )
             .await?;
@@ -201,9 +195,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Activate { id } => {
             send(
                 &client,
-                &cli.token,
-                Method::POST,
-                format!("{base}/v1/engagements/{id}/activate"),
+                RequestKind::Post,
+                format!("/v1/engagements/{id}/activate"),
                 None,
             )
             .await?;
@@ -211,37 +204,34 @@ async fn main() -> anyhow::Result<()> {
         Command::Turn { id, input } => {
             send(
                 &client,
-                &cli.token,
-                Method::POST,
-                format!("{base}/v1/engagements/{id}/turns"),
+                RequestKind::PostJson,
+                format!("/v1/engagements/{id}/turns"),
                 Some(json!({"input": input})),
             )
             .await?;
         }
         Command::Approve { id } => {
-            decide(&client, &cli.token, base, &id, "approve").await?;
+            decide(&client, &id, "approve").await?;
         }
         Command::Deny { id } => {
-            decide(&client, &cli.token, base, &id, "deny").await?;
+            decide(&client, &id, "deny").await?;
         }
         Command::Interrupt { id } => {
             send(
                 &client,
-                &cli.token,
-                Method::POST,
-                format!("{base}/v1/engagements/{id}/interrupt"),
+                RequestKind::Post,
+                format!("/v1/engagements/{id}/interrupt"),
                 None,
             )
             .await?;
         }
         Command::Events { id } => {
             let response = client
-                .get(format!("{base}/v1/engagements/{id}/events"))
-                .bearer_auth(&cli.token)
-                .send()
-                .await?
-                .error_for_status()?;
-            let mut body = response.bytes_stream();
+                .get(&format!("/v1/engagements/{id}/events"))
+                .await
+                .context("riftxd request failed")?;
+            ensure_success(&response)?;
+            let mut body = response.into_data_stream();
             while let Some(chunk) = body.next().await {
                 print!("{}", String::from_utf8_lossy(&chunk?));
             }
@@ -249,12 +239,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Report { id, format } => {
             send(
                 &client,
-                &cli.token,
-                Method::GET,
-                format!(
-                    "{base}/v1/engagements/{id}/report?format={}",
-                    format.as_str()
-                ),
+                RequestKind::Get,
+                format!("/v1/engagements/{id}/report?format={}", format.as_str()),
                 None,
             )
             .await?;
@@ -273,41 +259,79 @@ fn parse_json_arguments(arguments: &[String], kind: &str) -> anyhow::Result<Vec<
         .collect()
 }
 
-async fn decide(
-    client: &Client,
-    token: &str,
-    base: &str,
-    id: &str,
-    decision: &str,
-) -> anyhow::Result<()> {
+async fn decide(client: &LocalIpcClient, id: &str, decision: &str) -> anyhow::Result<()> {
     send(
         client,
-        token,
-        Method::POST,
-        format!("{base}/v1/approvals/{id}/decision"),
+        RequestKind::PostJson,
+        format!("/v1/approvals/{id}/decision"),
         Some(json!({"decision": decision})),
     )
     .await
 }
 
 async fn send(
-    client: &Client,
-    token: &str,
-    method: Method,
-    url: String,
+    client: &LocalIpcClient,
+    kind: RequestKind,
+    path: String,
     body: Option<Value>,
 ) -> anyhow::Result<()> {
-    let mut request = client.request(method, url).bearer_auth(token);
-    if let Some(body) = body {
-        request = request.json(&body);
+    let response = match kind {
+        RequestKind::Get => client.get(&path).await,
+        RequestKind::Post => client.post(&path).await,
+        RequestKind::PostJson => {
+            let body = body.context("JSON request body is required")?;
+            client.post_json(&path, serde_json::to_vec(&body)?).await
+        }
     }
-    let response = request.send().await.context("Gateway request failed")?;
+    .context("riftxd request failed")?;
     let status = response.status();
-    let body = response.text().await?;
-    anyhow::ensure!(status.is_success(), "Gateway returned {status}: {body}");
+    let body = response.bytes().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "riftxd returned {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
     if !body.is_empty() {
-        println!("{body}");
+        println!("{}", String::from_utf8_lossy(&body));
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RequestKind {
+    Get,
+    Post,
+    PostJson,
+}
+
+fn ensure_success(response: &LocalIpcResponse) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        response.status().is_success(),
+        "riftxd returned {}",
+        response.status()
+    );
+    Ok(())
+}
+
+async fn verify_daemon(client: &LocalIpcClient) -> anyhow::Result<()> {
+    let response = client
+        .get("/v1/system/info")
+        .await
+        .context("connect to riftxd")?;
+    let status = response.status();
+    let body = response.bytes().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "riftxd protocol handshake returned {status}"
+    );
+    let info: DaemonInfo =
+        serde_json::from_slice(&body).context("decode riftxd protocol handshake")?;
+    anyhow::ensure!(
+        info.protocol_version == IPC_PROTOCOL_VERSION,
+        "incompatible riftxd protocol: CLI requires {}, daemon provides {}",
+        IPC_PROTOCOL_VERSION,
+        info.protocol_version
+    );
     Ok(())
 }
 

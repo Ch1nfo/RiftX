@@ -5,14 +5,11 @@ use crate::gateway_state::unix_timestamp;
 use crate::report::EngagementReport;
 use axum::Json;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::Path;
 use axum::extract::Query;
-use axum::extract::Request;
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::http::StatusCode;
-use axum::middleware;
-use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::response::sse::Event;
@@ -29,6 +26,7 @@ use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_ipc::DaemonInfo;
 use futures::Stream;
 use futures::stream;
 use serde::Deserialize;
@@ -36,14 +34,13 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::convert::Infallible;
-use std::sync::Arc;
-use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 const MAX_OPERATOR_REQUEST_BYTES: usize = 4 * 1024;
 const MAX_MISSION_CONTEXT_BYTES: usize = 8 * 1024;
 const MAX_OBSERVED_STATE_BYTES: usize = 16 * 1024;
+const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -157,8 +154,9 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub fn build_router(state: GatewayState, operator_token: String) -> Router {
+pub fn build_router(state: GatewayState) -> Router {
     Router::new()
+        .route("/v1/system/info", get(system_info))
         .route("/v1/engagements", post(create_engagement))
         .route("/v1/engagements/{id}", get(get_engagement))
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
@@ -168,29 +166,11 @@ pub fn build_router(state: GatewayState, operator_token: String) -> Router {
         .route("/v1/engagements/{id}/events", get(events))
         .route("/v1/engagements/{id}/report", get(report))
         .with_state(state)
-        .layer(middleware::from_fn_with_state(
-            Arc::<str>::from(operator_token),
-            authorize,
-        ))
+        .layer(DefaultBodyLimit::max(MAX_IPC_REQUEST_BYTES))
 }
 
-async fn authorize(
-    State(operator_token): State<Arc<str>>,
-    headers: HeaderMap,
-    request: Request,
-    next: Next,
-) -> Response {
-    let provided = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = provided
-        .is_some_and(|provided| provided.as_bytes().ct_eq(operator_token.as_bytes()).into());
-    if authorized {
-        next.run(request).await
-    } else {
-        StatusCode::UNAUTHORIZED.into_response()
-    }
+async fn system_info() -> Json<DaemonInfo> {
+    Json(DaemonInfo::current())
 }
 
 async fn create_engagement(
@@ -293,7 +273,7 @@ async fn activate_engagement(
         return Err(ApiError::bad_request("engagement policy revision is stale"));
     }
     state.agent_threads.write().await.remove(&id);
-    let workspace = state.config.gateway.workspace_root.join(&id);
+    let workspace = state.config.daemon.workspace_root.join(&id);
     tokio::fs::create_dir_all(&workspace)
         .await
         .map_err(|error| ApiError::app_server(error.to_string()))?;
@@ -342,7 +322,7 @@ async fn start_turn(
         .app_server
         .as_ref()
         .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
-    let workspace = state.config.gateway.workspace_root.join(&id);
+    let workspace = state.config.daemon.workspace_root.join(&id);
     tokio::fs::create_dir_all(&workspace)
         .await
         .map_err(|error| ApiError::app_server(error.to_string()))?;

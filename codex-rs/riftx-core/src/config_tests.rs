@@ -4,9 +4,8 @@ use pretty_assertions::assert_eq;
 #[test]
 fn strict_config_rejects_unknown_fields() {
     let input = r#"
-[gateway]
-listen = "127.0.0.1:8787"
-operator_token_env = "RIFTX_OPERATOR_TOKEN"
+[daemon]
+ipc_dir = ".riftx/ipc"
 state_db = "state.sqlite"
 runtime_home = "runtime"
 workspace_root = "workspaces"

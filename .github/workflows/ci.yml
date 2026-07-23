@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  core-contracts:
-    name: Core contracts (${{ matrix.os }})
+  local-contracts:
+    name: Local contracts (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -35,9 +35,17 @@ jobs:
         with:
           workspaces: codex-rs
 
-      - name: Test RiftX core contracts
+      - name: Test RiftX core and IPC contracts
         working-directory: codex-rs
-        run: conda run -n agent just test -p codex-riftx-core
+        run: >-
+          conda run -n agent just test
+          -p codex-riftx-core -p codex-riftx-ipc
+
+      - name: Check local daemon and CLI
+        working-directory: codex-rs
+        run: >-
+          conda run -n agent cargo check
+          -p codex-riftx-gateway -p codex-riftx-cli
 
   rust:
     runs-on: ubuntu-24.04
@@ -72,7 +80,7 @@ jobs:
           conda run -n agent sh -lc
           'cd codex-rs && cargo check -p codex-app-server
           -p codex-riftx-app-server-adapter -p codex-riftx-core
-          -p codex-riftx-gateway -p codex-riftx-cli'
+          -p codex-riftx-ipc -p codex-riftx-gateway -p codex-riftx-cli'
 
       - name: Test upstream lock verifier
         shell: bash -el {0}

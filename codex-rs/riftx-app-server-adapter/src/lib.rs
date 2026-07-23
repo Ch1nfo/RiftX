@@ -9,6 +9,7 @@ pub use events::*;
 
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
+use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessAppServerRequestHandle;
 use codex_app_server_client::InProcessClientStartArgs;
@@ -96,7 +97,10 @@ pub struct RiftxAppServerAdapter {
 }
 
 impl RiftxAppServerAdapter {
-    pub async fn start_embedded(runtime: RiftxLlmRuntimeConfig) -> Result<Self, AdapterError> {
+    pub async fn start_embedded(
+        runtime: RiftxLlmRuntimeConfig,
+        arg0_paths: Arg0DispatchPaths,
+    ) -> Result<Self, AdapterError> {
         let config = build_runtime_config(&runtime).await?;
         let config_warnings = config
             .startup_warnings
@@ -109,13 +113,20 @@ impl RiftxAppServerAdapter {
             })
             .collect();
         let state_db = init_state_db(config.as_ref()).await;
+        let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+            arg0_paths.codex_self_exe.clone(),
+            arg0_paths.codex_linux_sandbox_exe.clone(),
+        )?;
         let environment_manager = Arc::new(
-            EnvironmentManager::from_codex_home(config.codex_home.clone(), None)
-                .await
-                .map_err(|error| io::Error::other(error.to_string()))?,
+            EnvironmentManager::from_codex_home(
+                config.codex_home.clone(),
+                Some(local_runtime_paths),
+            )
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?,
         );
         Self::start(InProcessClientStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
+            arg0_paths,
             config,
             cli_overrides: Vec::new(),
             loader_overrides: LoaderOverrides::default(),

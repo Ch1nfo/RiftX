@@ -1,6 +1,5 @@
-[gateway]
-listen = "127.0.0.1:8787"
-operator_token_env = "RIFTX_OPERATOR_TOKEN"
+[daemon]
+ipc_dir = ".riftx/ipc"
 state_db = ".riftx/state.sqlite"
 runtime_home = ".riftx/runtime"
 workspace_root = ".riftx/workspaces"

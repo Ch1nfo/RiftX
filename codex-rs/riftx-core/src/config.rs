@@ -20,7 +20,7 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RiftxConfig {
-    pub gateway: GatewayConfig,
+    pub daemon: DaemonConfig,
     pub llm: LlmConfig,
     pub policy: ManagedPolicyConfig,
     pub audit: AuditConfig,
@@ -43,20 +43,14 @@ impl RiftxConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.llm.validate()?;
-        if self.llm.api_key_env == self.gateway.operator_token_env {
-            return Err(ConfigError::Invalid(
-                "llm.api_key_env must differ from gateway.operator_token_env".to_string(),
-            ));
-        }
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct GatewayConfig {
-    pub listen: String,
-    pub operator_token_env: String,
+pub struct DaemonConfig {
+    pub ipc_dir: PathBuf,
     pub state_db: PathBuf,
     pub runtime_home: PathBuf,
     pub workspace_root: PathBuf,

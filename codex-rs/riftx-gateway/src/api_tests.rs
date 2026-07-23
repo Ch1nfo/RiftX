@@ -7,9 +7,9 @@ use codex_riftx_core::AssetRelation;
 use codex_riftx_core::AuditConfig;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::AuthorizationWindow;
+use codex_riftx_core::DaemonConfig;
 use codex_riftx_core::EnvironmentClass;
 use codex_riftx_core::ExecutionMode;
-use codex_riftx_core::GatewayConfig;
 use codex_riftx_core::LlmConfig;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::Observation;
@@ -25,9 +25,8 @@ use tower::ServiceExt;
 
 async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
-        gateway: GatewayConfig {
-            listen: "127.0.0.1:0".to_string(),
-            operator_token_env: "RIFTX_OPERATOR_TOKEN".to_string(),
+        daemon: DaemonConfig {
+            ipc_dir: temp.path().join("ipc"),
             state_db: temp.path().join("state.sqlite"),
             runtime_home: temp.path().join("runtime"),
             workspace_root: temp.path().join("workspaces"),
@@ -55,14 +54,14 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             max_bytes_per_engagement: 1024,
         },
     };
-    let store = StateStore::open(&config.gateway.state_db)
+    let store = StateStore::open(&config.daemon.state_db)
         .await
         .expect("state store");
     GatewayState::new(config, store)
 }
 
 async fn test_router(temp: &TempDir) -> Router {
-    build_router(test_state(temp).await, "secret".to_string())
+    build_router(test_state(temp).await)
 }
 
 #[tokio::test]
@@ -120,22 +119,6 @@ async fn restart_reconciliation_interrupts_active_engagements() {
 }
 
 #[tokio::test]
-async fn bearer_token_is_required() {
-    let temp = TempDir::new().expect("temp dir");
-    let response = test_router(&temp)
-        .await
-        .oneshot(
-            Request::builder()
-                .uri("/v1/engagements/missing")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
 async fn engagement_can_be_created_and_read() {
     let temp = TempDir::new().expect("temp dir");
     let app = test_router(&temp).await;
@@ -145,7 +128,6 @@ async fn engagement_can_be_created_and_read() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/engagements")
-                .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"],"structuredCriteria":[]},"entryPoints":["juice.local"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
@@ -178,7 +160,6 @@ async fn engagement_can_be_created_and_read() {
         .oneshot(
             Request::builder()
                 .uri(format!("/v1/engagements/{}", engagement.id))
-                .header("authorization", "Bearer secret")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -197,7 +178,6 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/engagements")
-                .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"name":"Guarded lab","objective":{"summary":"Validate the guarded path","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"hardened","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
@@ -221,7 +201,6 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/v1/engagements/{}/activate", engagement.id))
-                .header("authorization", "Bearer secret")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -241,7 +220,6 @@ async fn expired_authorization_cannot_activate() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/engagements")
-                .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"name":"Expired lab","objective":{"summary":"Validate expiry enforcement","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":1}}}"#,
@@ -265,7 +243,6 @@ async fn expired_authorization_cannot_activate() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/v1/engagements/{}/activate", engagement.id))
-                .header("authorization", "Bearer secret")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -284,7 +261,6 @@ async fn entry_points_must_be_inside_the_authorized_scope() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/engagements")
-                .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"name":"Internal assessment","objective":{"summary":"Map authorized services","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.20.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
@@ -306,7 +282,6 @@ async fn managed_policy_rejects_unapproved_capabilities() {
             Request::builder()
                 .method("POST")
                 .uri("/v1/engagements")
-                .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"name":"Denied capability","objective":{"summary":"Validate policy enforcement","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["code_execution"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,

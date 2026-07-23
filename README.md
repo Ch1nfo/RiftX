@@ -30,11 +30,10 @@ Named Pipe 提供本地服务。
 - 本机 engagement workspace 与单一持续主 Agent。
 - Objective、Scope、Policy Revision、Approval 和三模式领域约束。
 - 多资产 Target State、Evidence 链、SQLite 状态、JSONL 审计和 Markdown/JSON 报告。
-- Gateway API 和 Operator CLI。
+- `riftxd` 本地 IPC API 和 Operator CLI。
 
-尚未完成 Desktop、Linux TUI、本地 IPC、Tools/Skills Directory、加密案件存储、
-三平台 Guard 和 Auto planner loop。当前 Gateway 的 loopback HTTP 是开发接口，不是最终
-产品 IPC。
+尚未完成 Desktop、Linux TUI、Tools/Skills Directory、加密案件存储、三平台 Guard、
+Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。
@@ -59,7 +58,6 @@ api_key_env = "RIFTX_LLM_API_KEY"
 
 ```bash
 export RIFTX_LLM_API_KEY="<your-api-key>"
-export RIFTX_OPERATOR_TOKEN="<random-local-token>"
 ```
 
 API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
@@ -71,15 +69,12 @@ conda run -n agent sh -lc \
   'cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli'
 
 export RIFTX_LLM_API_KEY="<your-api-key>"
-export RIFTX_OPERATOR_TOKEN="<random-local-token>"
-./codex-rs/target/debug/riftx-gateway --config riftx.toml
+./codex-rs/target/debug/riftxd --config riftx.toml
 ```
 
-另一个终端使用相同的 operator token：
+另一个终端通过同一 `riftx.toml` 中的本地 IPC 端点连接：
 
 ```bash
-export RIFTX_OPERATOR_TOKEN="<random-local-token>"
-
 ./codex-rs/target/debug/riftx create \
   --name "Authorized Lab" \
   --objective "验证授权范围内是否存在到达域控的攻击路径" \

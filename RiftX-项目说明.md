@@ -159,7 +159,7 @@ Markdown 和 JSON。
 
 - API-Key-only 内嵌 Agent Runtime。
 - 本机 engagement workspace 和单一持续主 Agent。
-- loopback Gateway API 与 Operator CLI。
+- `riftxd` 本地 IPC API 与 Operator CLI。
 - Scope、Policy Revision、Approval 及三模式领域约束。
 - 目标导向状态模型、Evidence 引用验证和 SQLite 持久化。
 - append-only JSONL 审计。
@@ -169,15 +169,15 @@ Markdown 和 JSON。
 尚未实现：
 
 - Tauri Desktop 和 Linux 全屏 TUI。
-- `riftxd` 本地 IPC。
+- 完整的 typed IPC 业务消息。
 - Tools/Skills Directory 扫描和 Native Tool Runner。
 - 案件数据加密、OS credential store 和 `.riftxcase`。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
 - HTML/PDF 报告及正式安装包。
 
-当前 Gateway HTTP 只用于开发，不是最终产品接口。项目不包含容器执行后端、固定动态工具
-或预装渗透工具。
+`riftxd` 默认不监听 TCP；macOS/Linux 使用 UDS，Windows 使用 Named Pipe。项目不包含
+容器执行后端、固定动态工具或预装渗透工具。
 
 ## 9. 当前运行方式
 
@@ -192,15 +192,12 @@ conda run -n agent sh -lc \
 
 ```bash
 export RIFTX_LLM_API_KEY="<your-api-key>"
-export RIFTX_OPERATOR_TOKEN="<random-local-token>"
-./codex-rs/target/debug/riftx-gateway --config riftx.toml
+./codex-rs/target/debug/riftxd --config riftx.toml
 ```
 
 创建并运行任务：
 
 ```bash
-export RIFTX_OPERATOR_TOKEN="<same-local-token>"
-
 ./codex-rs/target/debug/riftx create \
   --name "Authorized Lab" \
   --objective "验证授权范围内是否存在到达域控的攻击路径" \
@@ -225,7 +222,8 @@ export RIFTX_OPERATOR_TOKEN="<same-local-token>"
 RiftX/
 ├── codex-rs/
 │   ├── riftx-core/                 # 当前领域、状态、策略和审计
-│   ├── riftx-gateway/              # 当前开发 API 与编排
+│   ├── riftx-gateway/              # riftxd API 与业务编排
+│   ├── riftx-ipc/                  # UDS / Named Pipe 本地传输
 │   ├── riftx-cli/                  # 当前 Operator CLI
 │   └── riftx-app-server-adapter/   # 受限 typed Agent Runtime facade
 ├── architecture/adr/               # 架构决策

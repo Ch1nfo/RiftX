@@ -3820,9 +3820,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "codex-riftx-core",
+ "codex-riftx-ipc",
  "futures",
  "pretty_assertions",
- "reqwest 0.12.28",
  "serde_json",
  "tokio",
 ]
@@ -3851,19 +3852,40 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "codex-arg0",
  "codex-riftx-app-server-adapter",
  "codex-riftx-core",
+ "codex-riftx-ipc",
  "futures",
  "http-body-util",
  "pretty_assertions",
  "serde",
  "serde_json",
- "subtle",
  "tempfile",
  "tokio",
  "tower",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "codex-riftx-ipc"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "pretty_assertions",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

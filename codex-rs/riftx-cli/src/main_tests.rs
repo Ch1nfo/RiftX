@@ -5,8 +5,6 @@ use pretty_assertions::assert_eq;
 fn create_command_accepts_repeated_scope_arguments() {
     let cli = Cli::try_parse_from([
         "riftx",
-        "--token",
-        "secret",
         "create",
         "--name",
         "Juice Shop",
