@@ -1,5 +1,6 @@
 use crate::gateway_state::ActiveTurn;
 use crate::gateway_state::GatewayState;
+use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::unix_timestamp;
 use crate::report::EngagementReport;
 use axum::Json;
@@ -62,7 +63,7 @@ struct ApprovalDecisionParams {
     decision: ApprovalDecision,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum ApprovalDecision {
     Approve,
@@ -443,15 +444,110 @@ async fn decide_approval(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
     Json(params): Json<ApprovalDecisionParams>,
-) -> StatusCode {
+) -> Result<StatusCode, ApiError> {
+    let pending = state
+        .pending_approvals
+        .write()
+        .await
+        .remove(&id)
+        .ok_or_else(|| ApiError {
+            status: StatusCode::NOT_FOUND,
+            code: "approval_not_found",
+            message: format!("approval {id} was not found or already decided"),
+        })?;
+    let engagement = state.store.engagement(&pending.engagement_id).await?;
+    let profile = state
+        .config
+        .tool_profiles
+        .get(&engagement.tool_profile)
+        .ok_or_else(|| ApiError::bad_request("engagement tool profile no longer exists"))?;
+    let current_policy =
+        EffectivePolicy::resolve(&state.config.policy, &engagement.scope, profile, None)
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let policy_is_current = current_policy.revision == pending.policy_revision
+        && engagement.policy_revision == pending.policy_revision;
+    let approved = matches!(params.decision, ApprovalDecision::Approve) && policy_is_current;
+    let engagement_id = pending.engagement_id.clone();
+    let app_server = state
+        .app_server
+        .as_ref()
+        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
+    match pending.kind {
+        PendingApprovalKind::Command(command) => {
+            app_server
+                .decide_command_approval(
+                    command,
+                    if approved {
+                        codex_riftx_app_server_adapter::OperatorApprovalDecision::Approve
+                    } else {
+                        codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny
+                    },
+                )
+                .await
+                .map_err(|error| ApiError::app_server(error.to_string()))?;
+        }
+        PendingApprovalKind::Dynamic {
+            pending,
+            request,
+            environment_id,
+        } => {
+            if approved {
+                if !current_policy.allows_tool(request.name()) {
+                    app_server
+                        .complete_dynamic_tool_call(
+                            pending,
+                            Err("tool is no longer allowed by the effective profile"),
+                        )
+                        .await
+                        .map_err(|error| ApiError::app_server(error.to_string()))?;
+                    return Err(ApiError::bad_request(
+                        "tool is no longer allowed by the effective profile",
+                    ));
+                }
+                if let Some(error) = request
+                    .targets()
+                    .into_iter()
+                    .find_map(|target| current_policy.check_target(target).err())
+                {
+                    let message = error.to_string();
+                    app_server
+                        .complete_dynamic_tool_call(pending, Err(&message))
+                        .await
+                        .map_err(|error| ApiError::app_server(error.to_string()))?;
+                    return Err(ApiError::bad_request(message));
+                }
+                crate::app_events::spawn_dynamic_execution(
+                    state.clone(),
+                    engagement_id.clone(),
+                    pending,
+                    request,
+                    environment_id,
+                );
+            } else {
+                app_server
+                    .complete_dynamic_tool_call(pending, Err("operator denied the tool call"))
+                    .await
+                    .map_err(|error| ApiError::app_server(error.to_string()))?;
+            }
+        }
+    }
     state
         .publish(
-            "approvals",
+            &engagement_id,
             "approvalDecided",
-            json!({"approvalId": id, "decision": params.decision}),
+            json!({
+                "approvalId": id,
+                "decision": params.decision,
+                "policyCurrent": policy_is_current,
+            }),
         )
         .await;
-    StatusCode::NO_CONTENT
+    if matches!(params.decision, ApprovalDecision::Approve) && !policy_is_current {
+        return Err(ApiError::bad_request(
+            "approval invalidated because the policy revision changed",
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn interrupt_engagement(
@@ -513,7 +609,11 @@ async fn report(
 ) -> Result<Response, ApiError> {
     let report = EngagementReport {
         engagement: state.store.engagement(&id).await?,
+        assets: state.store.assets(&id).await?,
+        services: state.store.services(&id).await?,
         findings: state.store.findings(&id).await?,
+        evidence: state.store.evidence(&id).await?,
+        tasks: state.store.tasks(&id).await?,
         artifacts: state.store.artifacts(&id).await?,
     };
     match query.format {

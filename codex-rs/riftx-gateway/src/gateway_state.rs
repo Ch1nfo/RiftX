@@ -1,5 +1,10 @@
+use codex_riftx_app_server_adapter::PendingCommandApproval;
+use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
+use codex_riftx_app_server_adapter::StructuredToolRequest;
+use codex_riftx_core::AuditRecord;
+use codex_riftx_core::AuditWriter;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
@@ -23,10 +28,12 @@ pub struct GatewayState {
     pub config: Arc<RiftxConfig>,
     pub store: StateStore,
     pub manager: ManagerClient,
+    pub(crate) audit: AuditWriter,
     pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
+    pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
     pub(crate) turn_slot: Arc<Semaphore>,
 }
 
@@ -34,6 +41,23 @@ pub struct GatewayState {
 pub(crate) struct ActiveTurn {
     pub(crate) thread_id: String,
     pub(crate) turn_id: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingApproval {
+    pub(crate) engagement_id: String,
+    pub(crate) policy_revision: String,
+    pub(crate) kind: PendingApprovalKind,
+}
+
+#[derive(Clone)]
+pub(crate) enum PendingApprovalKind {
+    Command(PendingCommandApproval),
+    Dynamic {
+        pending: PendingDynamicToolCall,
+        request: StructuredToolRequest,
+        environment_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,14 +71,17 @@ pub(crate) struct GatewayEvent {
 
 impl GatewayState {
     pub fn new(config: RiftxConfig, store: StateStore, manager: ManagerClient) -> Self {
+        let audit = AuditWriter::new(&config.audit);
         Self {
             config: Arc::new(config),
             store,
             manager,
+            audit,
             app_server: None,
             events: Arc::new(RwLock::new(HashMap::new())),
             thread_engagements: Arc::new(RwLock::new(HashMap::new())),
             active_turns: Arc::new(RwLock::new(HashMap::new())),
+            pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             turn_slot: Arc::new(Semaphore::new(1)),
         }
     }
@@ -67,39 +94,20 @@ impl GatewayState {
     pub fn spawn_app_server_event_pump(&self, mut adapter: RiftxAppServerAdapter) {
         let state = self.clone();
         tokio::spawn(async move {
-            while let Some(event) = next_app_server_event(&state, &mut adapter).await {
-                let Some(thread_id) = event.thread_id.as_deref() else {
-                    state.publish_to_active(&event.kind, event.data).await;
-                    continue;
-                };
-                let engagement_id = state
-                    .thread_engagements
-                    .read()
-                    .await
-                    .get(thread_id)
-                    .cloned();
-                let Some(engagement_id) = engagement_id else {
-                    continue;
-                };
-                if event.kind == "turn/completed"
-                    && let Some(turn_id) = event.turn_id.as_deref()
-                {
-                    state
-                        .complete_task(&engagement_id, turn_id, &event.data)
-                        .await;
-                    state.active_turns.write().await.remove(&engagement_id);
+            loop {
+                match adapter.next_event().await {
+                    Ok(Some(event)) => crate::app_events::process(&state, event).await,
+                    Ok(None) => break,
+                    Err(error) => {
+                        state
+                            .publish_to_active(
+                                "appServer/error",
+                                json!({"message": error.to_string()}),
+                            )
+                            .await;
+                        break;
+                    }
                 }
-                state
-                    .publish(
-                        &engagement_id,
-                        &event.kind,
-                        json!({
-                            "requestId": event.request_id,
-                            "turnId": event.turn_id,
-                            "payload": event.data,
-                        }),
-                    )
-                    .await;
             }
             state.publish_to_active("appServer/closed", json!({})).await;
         });
@@ -167,6 +175,25 @@ impl GatewayState {
     }
 
     pub(crate) async fn publish(&self, engagement_id: &str, kind: &str, data: Value) {
+        if let Ok(engagement) = self.store.engagement(engagement_id).await {
+            let record = AuditRecord {
+                timestamp: unix_timestamp(),
+                event: kind.to_string(),
+                engagement_id: engagement_id.to_string(),
+                thread_id: first_string(&data, &["/threadId", "/payload/threadId"])
+                    .or(engagement.thread_id),
+                turn_id: first_string(&data, &["/turnId", "/payload/turnId", "/payload/turn/id"]),
+                tool_call_id: first_string(
+                    &data,
+                    &["/toolCallId", "/payload/toolCallId", "/payload/callId"],
+                ),
+                sandbox_id: engagement.sandbox_id,
+                profile: Some(engagement.tool_profile),
+                policy_revision: Some(engagement.policy_revision),
+                outcome: event_outcome(kind, &data),
+            };
+            let _ = self.audit.append(&record).await;
+        }
         let sender = self.event_sender(engagement_id).await;
         let _ = sender.send(GatewayEvent {
             engagement_id: engagement_id.to_string(),
@@ -190,7 +217,7 @@ impl GatewayState {
             .clone()
     }
 
-    async fn publish_to_active(&self, kind: &str, data: Value) {
+    pub(crate) async fn publish_to_active(&self, kind: &str, data: Value) {
         let active = self
             .active_turns
             .read()
@@ -203,7 +230,7 @@ impl GatewayState {
         }
     }
 
-    async fn complete_task(&self, engagement_id: &str, turn_id: &str, data: &Value) {
+    pub(crate) async fn complete_task(&self, engagement_id: &str, turn_id: &str, data: &Value) {
         let Ok(Some(mut task)) = self.store.task_for_turn(engagement_id, turn_id).await else {
             return;
         };
@@ -225,29 +252,23 @@ impl GatewayState {
     }
 }
 
-async fn next_app_server_event(
-    state: &GatewayState,
-    adapter: &mut RiftxAppServerAdapter,
-) -> Option<codex_riftx_app_server_adapter::RiftxEventEnvelope> {
-    let event = match adapter.next_event().await {
-        Ok(Some(event)) => event,
-        Ok(None) => return None,
-        Err(error) => {
-            state
-                .publish_to_active("appServer/error", json!({"message": error.to_string()}))
-                .await;
-            return None;
-        }
-    };
-    match event.envelope() {
-        Ok(event) => Some(event),
-        Err(error) => {
-            state
-                .publish_to_active("appServer/error", json!({"message": error.to_string()}))
-                .await;
+fn first_string(data: &Value, pointers: &[&str]) -> Option<String> {
+    pointers
+        .iter()
+        .find_map(|pointer| data.pointer(pointer).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn event_outcome(kind: &str, data: &Value) -> Option<String> {
+    first_string(data, &["/outcome", "/status", "/decision"]).or_else(|| {
+        if kind.ends_with("/completed") || kind.ends_with("Completed") {
+            Some("success".to_string())
+        } else if kind.ends_with("/failed") || kind.ends_with("/rejected") {
+            Some("failure".to_string())
+        } else {
             None
         }
-    }
+    })
 }
 
 pub(crate) fn unix_timestamp() -> i64 {
