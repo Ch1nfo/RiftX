@@ -15,6 +15,7 @@ use futures::StreamExt;
 use serde_json::Value;
 use serde_json::json;
 use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
@@ -93,6 +94,10 @@ enum Command {
         #[command(subcommand)]
         command: SkillsCommand,
     },
+    Artifacts {
+        #[command(subcommand)]
+        command: ArtifactsCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -108,6 +113,27 @@ enum SkillsCommand {
     Doctor {
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ArtifactsCommand {
+    Capture {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        media_type: Option<String>,
+        #[arg(long)]
+        execution_id: Option<String>,
+    },
+    List {
+        id: String,
+    },
+    Export {
+        id: String,
+        artifact_id: String,
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -279,6 +305,46 @@ async fn main() -> anyhow::Result<()> {
         Command::Skills {
             command: SkillsCommand::Doctor { json },
         } => skills_doctor(&client, json).await?,
+        Command::Artifacts {
+            command:
+                ArtifactsCommand::Capture {
+                    id,
+                    path,
+                    media_type,
+                    execution_id,
+                },
+        } => {
+            send(
+                &client,
+                RequestKind::PostJson,
+                format!("/v1/engagements/{id}/artifacts"),
+                Some(json!({
+                    "path": path,
+                    "mediaType": media_type,
+                    "executionId": execution_id,
+                })),
+            )
+            .await?;
+        }
+        Command::Artifacts {
+            command: ArtifactsCommand::List { id },
+        } => {
+            send(
+                &client,
+                RequestKind::Get,
+                format!("/v1/engagements/{id}/artifacts"),
+                None,
+            )
+            .await?;
+        }
+        Command::Artifacts {
+            command:
+                ArtifactsCommand::Export {
+                    id,
+                    artifact_id,
+                    output,
+                },
+        } => export_artifact(&client, &id, &artifact_id, &output).await?,
     }
     Ok(())
 }
@@ -441,6 +507,53 @@ async fn skills_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()
         }
     }
     anyhow::ensure!(catalog.is_healthy(), "one or more RiftX skills are invalid");
+    Ok(())
+}
+
+async fn export_artifact(
+    client: &LocalIpcClient,
+    engagement_id: &str,
+    artifact_id: &str,
+    output: &std::path::Path,
+) -> anyhow::Result<()> {
+    let response = client
+        .get(&format!(
+            "/v1/engagements/{engagement_id}/artifacts/{artifact_id}/content"
+        ))
+        .await
+        .context("request artifact export")?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.bytes().await?;
+        anyhow::bail!(
+            "riftxd returned {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(output)
+        .await
+        .with_context(|| format!("create artifact export {}", output.display()))?;
+    let mut stream = response.into_data_stream();
+    let write_result: anyhow::Result<()> = async {
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?)
+                .await
+                .with_context(|| format!("write artifact export {}", output.display()))?;
+        }
+        file.flush()
+            .await
+            .with_context(|| format!("flush artifact export {}", output.display()))
+    }
+    .await;
+    if let Err(error) = write_result {
+        drop(file);
+        let _ = tokio::fs::remove_file(output).await;
+        return Err(error);
+    }
+    println!("{}", output.display());
     Ok(())
 }
 

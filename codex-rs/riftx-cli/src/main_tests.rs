@@ -75,3 +75,50 @@ fn skills_doctor_supports_machine_readable_output() {
         }
     ));
 }
+
+#[test]
+fn artifacts_commands_capture_and_export_workspace_files() {
+    let capture = Cli::try_parse_from([
+        "riftx",
+        "artifacts",
+        "capture",
+        "eng-1",
+        "artifacts/result.json",
+        "--execution-id",
+        "execution-1",
+    ])
+    .expect("capture command");
+    assert!(matches!(
+        capture.command,
+        Command::Artifacts {
+            command: ArtifactsCommand::Capture {
+                id,
+                execution_id: Some(execution_id),
+                ..
+            }
+        } if id == "eng-1" && execution_id == "execution-1"
+    ));
+
+    let export = Cli::try_parse_from([
+        "riftx",
+        "artifacts",
+        "export",
+        "eng-1",
+        "artifact-1",
+        "--output",
+        "result.json",
+    ])
+    .expect("export command");
+    assert!(matches!(
+        export.command,
+        Command::Artifacts {
+            command: ArtifactsCommand::Export {
+                id,
+                artifact_id,
+                output,
+            }
+        } if id == "eng-1"
+            && artifact_id == "artifact-1"
+            && output.as_path() == std::path::Path::new("result.json")
+    ));
+}
