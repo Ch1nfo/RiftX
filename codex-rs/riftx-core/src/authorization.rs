@@ -25,7 +25,7 @@ pub enum EnvironmentClass {
     Production,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdentitySelector {
     pub domain: Option<String>,
@@ -67,6 +67,16 @@ impl AuthorizationScope {
                 return Err(AuthorizationError::EmptyIdentitySelector);
             }
         }
+        if self.capabilities.is_empty() {
+            return Err(AuthorizationError::MissingCapabilities);
+        }
+        if self.capabilities.iter().any(|capability| {
+            capability.trim().is_empty()
+                || capability.len() > 128
+                || capability.chars().any(char::is_control)
+        }) {
+            return Err(AuthorizationError::InvalidCapability);
+        }
         if mode == ExecutionMode::Auto {
             if self.environment != EnvironmentClass::Lab {
                 return Err(AuthorizationError::AutoRequiresLab);
@@ -85,6 +95,12 @@ pub enum AuthorizationError {
     InvalidWindow,
     #[error("identity selectors must contain a domain, tenant, or account")]
     EmptyIdentitySelector,
+    #[error("authorization requires at least one capability")]
+    MissingCapabilities,
+    #[error(
+        "capabilities must be non-empty, contain no control characters, and be at most 128 bytes"
+    )]
+    InvalidCapability,
     #[error("Auto Mode is restricted to lab environments")]
     AutoRequiresLab,
     #[error("Auto Mode requires an authorization expiry")]

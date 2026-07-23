@@ -11,7 +11,20 @@ base_url = "https://api.openai.com/v1"
 api_key_env = "RIFTX_LLM_API_KEY"
 
 [policy]
-allowed_tools = []
+allowed_capabilities = [
+  "network.discovery",
+  "service.enumeration",
+  "web.discovery",
+  "content.discovery",
+  "vulnerability.scanning",
+  "vulnerability.validation",
+  "credential.testing",
+  "attack_path.analysis",
+  "lateral_movement",
+  "privilege_escalation",
+  "code_execution",
+  "evidence.capture",
+]
 denied_cidrs = []
 denied_domains = []
 
@@ -22,12 +35,3 @@ fsync = true
 [artifacts]
 root = ".riftx/artifacts"
 max_bytes_per_engagement = 1073741824
-
-[tool_profiles.native]
-allowed_tools = []
-approval = "high_risk"
-
-[tool_profiles.native.scope]
-cidrs = ["0.0.0.0/0", "::/0"]
-domains = ["*"]
-ports = []

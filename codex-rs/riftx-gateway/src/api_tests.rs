@@ -1,23 +1,25 @@
 use super::*;
 use axum::body::Body;
 use axum::http::Request;
-use codex_riftx_core::ApprovalMode;
 use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::Asset;
 use codex_riftx_core::AssetRelation;
 use codex_riftx_core::AuditConfig;
+use codex_riftx_core::AuthorizationScope;
+use codex_riftx_core::AuthorizationWindow;
+use codex_riftx_core::EnvironmentClass;
+use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::GatewayConfig;
 use codex_riftx_core::LlmConfig;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::Observation;
 use codex_riftx_core::RiftxConfig;
+use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
-use codex_riftx_core::ToolProfileConfig;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
-use std::collections::BTreeMap;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -36,7 +38,11 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             api_key_env: "RIFTX_TEST_API_KEY".to_string(),
         },
         policy: ManagedPolicyConfig {
-            allowed_tools: Vec::new(),
+            allowed_capabilities: vec![
+                "network.discovery".to_string(),
+                "web.discovery".to_string(),
+                "attack_path.analysis".to_string(),
+            ],
             denied_cidrs: Vec::new(),
             denied_domains: Vec::new(),
         },
@@ -48,18 +54,6 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             root: temp.path().join("artifacts"),
             max_bytes_per_engagement: 1024,
         },
-        tool_profiles: BTreeMap::from([(
-            "native".to_string(),
-            ToolProfileConfig {
-                allowed_tools: Vec::new(),
-                scope: Scope {
-                    cidrs: vec!["0.0.0.0/0".parse().expect("CIDR")],
-                    domains: vec!["*".to_string()],
-                    ports: Vec::new(),
-                },
-                approval: ApprovalMode::HighRisk,
-            },
-        )]),
     };
     let store = StateStore::open(&config.gateway.state_db)
         .await
@@ -85,12 +79,21 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        scope: Scope {
-            cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
-            domains: Vec::new(),
-            ports: vec![80],
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
+                domains: Vec::new(),
+                ports: vec![80],
+            },
+            identities: Vec::new(),
+            capabilities: vec!["network.discovery".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(2_000_000_000),
+            },
         },
-        tool_profile: "native".to_string(),
         policy_revision: "rev-1".to_string(),
         thread_id: Some("thread-stale".to_string()),
         created_at: 1,
@@ -145,7 +148,7 @@ async fn engagement_can_be_created_and_read() {
                 .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"]},"entryPoints":["juice.local"],"scope":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"toolProfile":"native"}"#,
+                    r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"],"structuredCriteria":[]},"entryPoints":["juice.local"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
                 ))
                 .expect("request"),
         )
@@ -185,6 +188,94 @@ async fn engagement_can_be_created_and_read() {
 }
 
 #[tokio::test]
+async fn guarded_modes_cannot_activate_before_guard_is_available() {
+    let temp = TempDir::new().expect("temp dir");
+    let app = test_router(&temp).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Guarded lab","objective":{"summary":"Validate the guarded path","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"hardened","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let engagement: Engagement = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn expired_authorization_cannot_activate() {
+    let temp = TempDir::new().expect("temp dir");
+    let app = test_router(&temp).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Expired lab","objective":{"summary":"Validate expiry enforcement","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":1}}}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let engagement: Engagement = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn entry_points_must_be_inside_the_authorized_scope() {
     let temp = TempDir::new().expect("temp dir");
     let response = test_router(&temp)
@@ -196,7 +287,29 @@ async fn entry_points_must_be_inside_the_authorized_scope() {
                 .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Internal assessment","objective":{"summary":"Map authorized services"},"entryPoints":["10.20.0.10"],"scope":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"toolProfile":"native"}"#,
+                    r#"{"name":"Internal assessment","objective":{"summary":"Map authorized services","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.20.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn managed_policy_rejects_unapproved_capabilities() {
+    let temp = TempDir::new().expect("temp dir");
+    let response = test_router(&temp)
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Denied capability","objective":{"summary":"Validate policy enforcement","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["code_execution"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
                 ))
                 .expect("request"),
         )
@@ -220,12 +333,21 @@ async fn operational_turn_context_includes_objective_and_multi_asset_graph() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        scope: Scope {
-            cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
-            domains: vec!["lab.example".to_string()],
-            ports: Vec::new(),
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
+                domains: vec!["lab.example".to_string()],
+                ports: Vec::new(),
+            },
+            identities: Vec::new(),
+            capabilities: vec!["attack_path.analysis".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(2_000_000_000),
+            },
         },
-        tool_profile: "native".to_string(),
         policy_revision: "revision-1".to_string(),
         thread_id: None,
         created_at: 1,

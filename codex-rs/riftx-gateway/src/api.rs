@@ -21,10 +21,11 @@ use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
 use codex_riftx_core::AssessmentObjective;
+use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
-use codex_riftx_core::Scope;
+use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
@@ -33,6 +34,7 @@ use futures::stream;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -50,8 +52,8 @@ struct CreateEngagementParams {
     objective: AssessmentObjective,
     #[serde(default)]
     entry_points: Vec<String>,
-    scope: Scope,
-    tool_profile: String,
+    mode: ExecutionMode,
+    authorization: AuthorizationScope,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,13 +197,23 @@ async fn create_engagement(
     State(state): State<GatewayState>,
     Json(params): Json<CreateEngagementParams>,
 ) -> Result<(StatusCode, Json<Engagement>), ApiError> {
-    let profile = state
-        .config
-        .tool_profiles
-        .get(&params.tool_profile)
-        .ok_or_else(|| ApiError::bad_request("unknown tool profile"))?;
-    let policy = EffectivePolicy::resolve(&state.config.policy, &params.scope, profile, None)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let policy = EffectivePolicy::resolve(
+        &state.config.policy,
+        params.mode,
+        &params.authorization,
+        None,
+    )
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if params
+        .authorization
+        .capabilities
+        .iter()
+        .any(|capability| !policy.allows_capability(capability))
+    {
+        return Err(ApiError::bad_request(
+            "one or more requested capabilities are denied by managed policy",
+        ));
+    }
     validate_objective(&params.objective)?;
     if params.entry_points.len() > 128 {
         return Err(ApiError::bad_request(
@@ -225,8 +237,8 @@ async fn create_engagement(
         status: EngagementStatus::Draft,
         objective: params.objective,
         entry_points: params.entry_points,
-        scope: params.scope,
-        tool_profile: params.tool_profile,
+        mode: params.mode,
+        authorization: params.authorization,
         policy_revision: policy.revision,
         thread_id: None,
         created_at: now,
@@ -259,13 +271,24 @@ async fn activate_engagement(
             "only draft or interrupted engagements can be activated",
         ));
     }
-    let profile = state
-        .config
-        .tool_profiles
-        .get(&engagement.tool_profile)
-        .ok_or_else(|| ApiError::bad_request("unknown tool profile"))?;
-    let policy = EffectivePolicy::resolve(&state.config.policy, &engagement.scope, profile, None)
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if engagement.mode.requires_guard() {
+        return Err(ApiError {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code: "guard_unavailable",
+            message: format!(
+                "{:?} Mode cannot start until the platform RiftX Guard is available",
+                engagement.mode
+            ),
+        });
+    }
+    validate_authorization_time(&engagement.authorization, unix_timestamp())?;
+    let policy = EffectivePolicy::resolve(
+        &state.config.policy,
+        engagement.mode,
+        &engagement.authorization,
+        None,
+    )
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
     if policy.revision != engagement.policy_revision {
         return Err(ApiError::bad_request("engagement policy revision is stale"));
     }
@@ -298,6 +321,13 @@ async fn start_turn(
     let mut engagement = state.store.engagement(&id).await?;
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::bad_request("engagement is not active"));
+    }
+    if let Err(error) = validate_authorization_time(&engagement.authorization, unix_timestamp()) {
+        state
+            .store
+            .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
+            .await?;
+        return Err(error);
     }
     let operator_request = params
         .input
@@ -404,15 +434,17 @@ async fn decide_approval(
             message: format!("approval {id} was not found or already decided"),
         })?;
     let engagement = state.store.engagement(&pending.engagement_id).await?;
-    let profile = state
-        .config
-        .tool_profiles
-        .get(&engagement.tool_profile)
-        .ok_or_else(|| ApiError::bad_request("engagement tool profile no longer exists"))?;
-    let current_policy =
-        EffectivePolicy::resolve(&state.config.policy, &engagement.scope, profile, None)
-            .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    let policy_is_current = current_policy.revision == pending.policy_revision
+    let authorization_is_current =
+        validate_authorization_time(&engagement.authorization, unix_timestamp()).is_ok();
+    let current_policy = EffectivePolicy::resolve(
+        &state.config.policy,
+        engagement.mode,
+        &engagement.authorization,
+        None,
+    )
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let policy_is_current = authorization_is_current
+        && current_policy.revision == pending.policy_revision
         && engagement.policy_revision == pending.policy_revision;
     let approved = matches!(params.decision, ApprovalDecision::Approve) && policy_is_current;
     let engagement_id = pending.engagement_id.clone();
@@ -448,7 +480,7 @@ async fn decide_approval(
         .await;
     if matches!(params.decision, ApprovalDecision::Approve) && !policy_is_current {
         return Err(ApiError::bad_request(
-            "approval invalidated because the policy revision changed",
+            "approval invalidated because the authorization expired or policy revision changed",
         ));
     }
     Ok(StatusCode::NO_CONTENT)
@@ -543,7 +575,8 @@ async fn operational_agent_input(
     let mission = json!({
         "objective": engagement.objective,
         "entryPoints": engagement.entry_points,
-        "authorizedScope": engagement.scope,
+        "executionMode": engagement.mode,
+        "authorization": engagement.authorization,
         "policyRevision": engagement.policy_revision,
     });
     let observed_state = json!({
@@ -607,6 +640,45 @@ fn validate_objective(objective: &AssessmentObjective) -> Result<(), ApiError> {
         return Err(ApiError::bad_request(
             "an objective may contain at most 32 non-empty success criteria of 1024 bytes each",
         ));
+    }
+    if objective.structured_criteria.len() > 32 {
+        return Err(ApiError::bad_request(
+            "an objective may contain at most 32 structured success criteria",
+        ));
+    }
+    let mut criterion_ids = BTreeSet::new();
+    for criterion in &objective.structured_criteria {
+        criterion
+            .validate()
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        if !criterion_ids.insert(&criterion.id) {
+            return Err(ApiError::bad_request(
+                "structured success criterion ids must be unique",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_authorization_time(
+    authorization: &AuthorizationScope,
+    now: i64,
+) -> Result<(), ApiError> {
+    if authorization
+        .window
+        .starts_at
+        .is_some_and(|starts_at| starts_at > now)
+    {
+        return Err(ApiError::bad_request(
+            "the authorization window has not started",
+        ));
+    }
+    if authorization
+        .window
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return Err(ApiError::bad_request("the authorization has expired"));
     }
     Ok(())
 }

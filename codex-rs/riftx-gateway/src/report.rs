@@ -39,10 +39,17 @@ pub struct EngagementReport {
 impl EngagementReport {
     pub fn markdown(&self) -> String {
         let mut output = format!(
-            "# RiftX Report: {}\n\n- Engagement: `{}`\n- Objective: {}\n- Policy revision: `{}`\n- Status: `{:?}`\n\n## Success Criteria\n\n",
+            "# RiftX Report: {}\n\n- Engagement: `{}`\n- Objective: {}\n- Mode: `{:?}`\n- Environment: `{:?}`\n- Authorization expires: `{}`\n- Policy revision: `{}`\n- Status: `{:?}`\n\n## Success Criteria\n\n",
             self.engagement.name,
             self.engagement.id,
             self.engagement.objective.summary,
+            self.engagement.mode,
+            self.engagement.authorization.environment,
+            self.engagement
+                .authorization
+                .window
+                .expires_at
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.engagement.policy_revision,
             self.engagement.status
         );
@@ -59,6 +66,35 @@ impl EngagementReport {
                 criterion.id, criterion.description
             ));
         }
+        output.push_str("\n## Authorization\n\n");
+        output.push_str(&format!(
+            "- CIDRs: {}\n- Domains: {}\n- Ports: {}\n- Capabilities: {}\n",
+            joined(
+                self.engagement
+                    .authorization
+                    .network
+                    .cidrs
+                    .iter()
+                    .map(ToString::to_string)
+            ),
+            joined(
+                self.engagement
+                    .authorization
+                    .network
+                    .domains
+                    .iter()
+                    .cloned()
+            ),
+            joined(
+                self.engagement
+                    .authorization
+                    .network
+                    .ports
+                    .iter()
+                    .map(ToString::to_string)
+            ),
+            joined(self.engagement.authorization.capabilities.iter().cloned()),
+        ));
         output.push_str("\n## Assets and Services\n\n");
         if self.assets.is_empty() {
             output.push_str("No assets recorded.\n");
@@ -221,6 +257,15 @@ impl EngagementReport {
             output.push_str(&format!("{}  {}\n", artifact.sha256, artifact.path));
         }
         output
+    }
+}
+
+fn joined(values: impl Iterator<Item = String>) -> String {
+    let values = values.collect::<Vec<_>>();
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
     }
 }
 

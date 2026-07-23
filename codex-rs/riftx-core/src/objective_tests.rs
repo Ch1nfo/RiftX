@@ -1,5 +1,4 @@
 use super::*;
-use crate::AssessmentObjective;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -16,6 +15,7 @@ fn attack_path_criterion_round_trips_and_validates() {
     };
     expected.validate().expect("valid criterion");
     let encoded = serde_json::to_string(&expected).expect("serialize criterion");
+    assert!(encoded.contains("\"destinationRole\""));
     let decoded: StructuredSuccessCriterion =
         serde_json::from_str(&encoded).expect("deserialize criterion");
     assert_eq!(decoded, expected);
@@ -35,23 +35,5 @@ fn criterion_rejects_out_of_range_confidence() {
     assert_eq!(
         criterion.validate(),
         Err(SuccessCriterionError::InvalidBasisPoints)
-    );
-}
-
-#[test]
-fn legacy_objective_defaults_structured_criteria() {
-    let decoded: AssessmentObjective = serde_json::from_value(serde_json::json!({
-        "summary": "Assess the authorized scope",
-        "successCriteria": ["Document validated findings"]
-    }))
-    .expect("legacy objective should decode");
-
-    assert_eq!(
-        decoded,
-        AssessmentObjective {
-            summary: "Assess the authorized scope".to_string(),
-            success_criteria: vec!["Document validated findings".to_string()],
-            structured_criteria: Vec::new(),
-        }
     );
 }

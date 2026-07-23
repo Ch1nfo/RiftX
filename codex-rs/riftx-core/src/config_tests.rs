@@ -53,34 +53,40 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
 #[test]
 fn policy_layers_only_reduce_access() {
     let managed = ManagedPolicyConfig {
-        allowed_tools: vec!["network_mapper".to_string(), "http_probe".to_string()],
+        allowed_capabilities: vec![
+            "network.discovery".to_string(),
+            "service.enumeration".to_string(),
+        ],
         denied_cidrs: Vec::new(),
         denied_domains: Vec::new(),
     };
-    let scope = Scope {
-        cidrs: vec!["10.0.0.0/24".parse().expect("CIDR")],
-        domains: vec!["target.local".to_string()],
-        ports: vec![80, 443],
-    };
-    let profile = ToolProfileConfig {
-        allowed_tools: vec![
-            "network_mapper".to_string(),
-            "content_discovery".to_string(),
-        ],
-        scope: Scope {
-            cidrs: vec!["0.0.0.0/0".parse().expect("CIDR")],
-            domains: vec!["*".to_string()],
-            ports: Vec::new(),
+    let authorization = AuthorizationScope {
+        network: Scope {
+            cidrs: vec!["10.0.0.0/24".parse().expect("CIDR")],
+            domains: vec!["target.local".to_string()],
+            ports: vec![80, 443],
         },
-        approval: ApprovalMode::HighRisk,
+        identities: Vec::new(),
+        capabilities: vec![
+            "network.discovery".to_string(),
+            "content.discovery".to_string(),
+        ],
+        environment: EnvironmentClass::Lab,
+        window: AuthorizationWindow {
+            starts_at: None,
+            expires_at: Some(200),
+        },
     };
-    let effective =
-        EffectivePolicy::resolve(&managed, &scope, &profile, None).expect("valid policy");
+    let effective = EffectivePolicy::resolve(&managed, ExecutionMode::Native, &authorization, None)
+        .expect("valid policy");
     assert_eq!(
-        effective.allowed_tools,
-        ["network_mapper".to_string()].into()
+        effective.allowed_capabilities,
+        ["network.discovery".to_string()].into()
     );
-    assert_eq!(effective.allowed_cidrs, scope.cidrs.into_iter().collect());
+    assert_eq!(
+        effective.allowed_cidrs,
+        authorization.network.cidrs.into_iter().collect()
+    );
     assert!(
         effective
             .denied_cidrs

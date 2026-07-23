@@ -83,8 +83,15 @@ export RIFTX_OPERATOR_TOKEN="<random-local-token>"
 ./codex-rs/target/debug/riftx create \
   --name "Authorized Lab" \
   --objective "验证授权范围内是否存在到达域控的攻击路径" \
+  --success-criterion "到达域控的每一跳都有可复现证据" \
+  --structured-criterion '{"id":"reach-dc","description":"验证到达域控的攻击路径","predicate":{"type":"attackPath","destinationRole":"domainController","accessLevel":"domainAdminEquivalent","minimumConfidenceBasisPoints":9000,"reproducibleEvidence":true}}' \
   --entry-point "10.10.20.15" \
-  --cidr "10.10.0.0/16"
+  --cidr "10.10.0.0/16" \
+  --mode native \
+  --environment lab \
+  --capability network.discovery \
+  --capability attack_path.analysis \
+  --identity-selector '{"domain":"lab.example"}'
 ```
 
 `create` 返回 engagement ID。随后运行：

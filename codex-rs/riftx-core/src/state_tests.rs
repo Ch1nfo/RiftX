@@ -1,5 +1,9 @@
 use super::*;
 use crate::AssessmentObjective;
+use crate::AuthorizationScope;
+use crate::AuthorizationWindow;
+use crate::EnvironmentClass;
+use crate::ExecutionMode;
 use crate::Scope;
 use crate::TaskStatus;
 use ipnet::IpNet;
@@ -17,12 +21,21 @@ fn engagement() -> Engagement {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["juice.local".to_string()],
-        scope: Scope {
-            cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],
-            domains: vec!["juice.local".to_string()],
-            ports: vec![80, 443],
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],
+                domains: vec!["juice.local".to_string()],
+                ports: vec![80, 443],
+            },
+            identities: Vec::new(),
+            capabilities: vec!["web.discovery".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(200),
+            },
         },
-        tool_profile: "recon".to_string(),
         policy_revision: "revision-1".to_string(),
         thread_id: None,
         created_at: 1,

@@ -1,9 +1,13 @@
 use super::*;
 use crate::AssessmentObjective;
 use crate::AttackPathHop;
+use crate::AuthorizationScope;
+use crate::AuthorizationWindow;
 use crate::Engagement;
 use crate::EngagementStatus;
+use crate::EnvironmentClass;
 use crate::Evidence;
+use crate::ExecutionMode;
 use crate::ExecutionStatus;
 use crate::Finding;
 use crate::FindingSeverity;
@@ -129,54 +133,6 @@ async fn invalid_target_state_is_rejected_before_persistence() {
     );
 }
 
-#[test]
-fn legacy_findings_and_evidence_default_chain_references() {
-    let legacy_finding: Finding = serde_json::from_value(serde_json::json!({
-        "id": "finding-1",
-        "engagementId": "eng-1",
-        "assetId": null,
-        "title": "Legacy finding",
-        "severity": "high",
-        "description": "Imported from the previous schema",
-        "remediation": null
-    }))
-    .expect("legacy finding should decode");
-    let legacy_evidence: Evidence = serde_json::from_value(serde_json::json!({
-        "id": "evidence-1",
-        "engagementId": "eng-1",
-        "findingId": null,
-        "artifactId": null,
-        "summary": "Legacy evidence",
-        "capturedAt": 100
-    }))
-    .expect("legacy evidence should decode");
-
-    assert_eq!(
-        (legacy_finding, legacy_evidence),
-        (
-            Finding {
-                id: "finding-1".to_string(),
-                engagement_id: "eng-1".to_string(),
-                asset_id: None,
-                evidence_ids: Vec::new(),
-                title: "Legacy finding".to_string(),
-                severity: FindingSeverity::High,
-                description: "Imported from the previous schema".to_string(),
-                remediation: None,
-            },
-            Evidence {
-                id: "evidence-1".to_string(),
-                engagement_id: "eng-1".to_string(),
-                finding_id: None,
-                execution_id: None,
-                artifact_id: None,
-                summary: "Legacy evidence".to_string(),
-                captured_at: 100,
-            },
-        )
-    );
-}
-
 async fn store() -> (TempDir, StateStore) {
     let temp = TempDir::new().expect("temp dir");
     let store = StateStore::open(&temp.path().join("state.sqlite"))
@@ -194,14 +150,27 @@ fn engagement() -> Engagement {
         id: "eng-1".to_string(),
         name: "Authorized lab".to_string(),
         status: EngagementStatus::Active,
-        objective: AssessmentObjective::default(),
-        entry_points: vec!["10.10.20.10".to_string()],
-        scope: Scope {
-            cidrs: vec!["10.10.20.0/24".parse::<IpNet>().expect("CIDR")],
-            domains: Vec::new(),
-            ports: vec![445],
+        objective: AssessmentObjective {
+            summary: "Validate authorized identity paths".to_string(),
+            success_criteria: vec!["Preserve reproducible evidence".to_string()],
+            structured_criteria: Vec::new(),
         },
-        tool_profile: "native".to_string(),
+        entry_points: vec!["10.10.20.10".to_string()],
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["10.10.20.0/24".parse::<IpNet>().expect("CIDR")],
+                domains: Vec::new(),
+                ports: vec![445],
+            },
+            identities: Vec::new(),
+            capabilities: vec!["attack_path.analysis".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(200),
+            },
+        },
         policy_revision: "revision-1".to_string(),
         thread_id: None,
         created_at: 1,

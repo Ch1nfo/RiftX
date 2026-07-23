@@ -1,4 +1,5 @@
 use super::*;
+use crate::ExecutionMode;
 
 #[tokio::test]
 async fn records_are_appended_as_json_lines() {
@@ -15,7 +16,7 @@ async fn records_are_appended_as_json_lines() {
         thread_id: Some("thread-1".to_string()),
         turn_id: Some("turn-1".to_string()),
         tool_call_id: Some("call-1".to_string()),
-        profile: Some("recon".to_string()),
+        mode: Some(ExecutionMode::Native),
         policy_revision: Some("revision-1".to_string()),
         outcome: Some("success".to_string()),
     };

@@ -16,20 +16,8 @@ pub struct Scope {
 #[serde(rename_all = "camelCase")]
 pub struct AssessmentObjective {
     pub summary: String,
-    #[serde(default)]
     pub success_criteria: Vec<String>,
-    #[serde(default)]
     pub structured_criteria: Vec<crate::StructuredSuccessCriterion>,
-}
-
-impl Default for AssessmentObjective {
-    fn default() -> Self {
-        Self {
-            summary: "Assess the authorized scope".to_string(),
-            success_criteria: Vec::new(),
-            structured_criteria: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,12 +35,11 @@ pub struct Engagement {
     pub id: String,
     pub name: String,
     pub status: EngagementStatus,
-    #[serde(default)]
     pub objective: AssessmentObjective,
     #[serde(default)]
     pub entry_points: Vec<String>,
-    pub scope: Scope,
-    pub tool_profile: String,
+    pub mode: crate::ExecutionMode,
+    pub authorization: crate::AuthorizationScope,
     pub policy_revision: String,
     pub thread_id: Option<String>,
     pub created_at: i64,
@@ -109,7 +96,6 @@ pub struct Finding {
     pub id: String,
     pub engagement_id: String,
     pub asset_id: Option<String>,
-    #[serde(default)]
     pub evidence_ids: Vec<String>,
     pub title: String,
     pub severity: FindingSeverity,
@@ -123,7 +109,6 @@ pub struct Evidence {
     pub id: String,
     pub engagement_id: String,
     pub finding_id: Option<String>,
-    #[serde(default)]
     pub execution_id: Option<String>,
     pub artifact_id: Option<String>,
     pub summary: String,

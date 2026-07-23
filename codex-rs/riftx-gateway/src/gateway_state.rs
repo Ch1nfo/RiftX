@@ -133,7 +133,7 @@ impl GatewayState {
                     &data,
                     &["/toolCallId", "/payload/toolCallId", "/payload/callId"],
                 ),
-                profile: Some(engagement.tool_profile),
+                mode: Some(engagement.mode),
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),
             };

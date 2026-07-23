@@ -58,3 +58,13 @@ fn authorization_scope_round_trips_as_a_complete_value() {
     let decoded: AuthorizationScope = serde_json::from_str(&encoded).expect("deserialize scope");
     assert_eq!(decoded, expected);
 }
+
+#[test]
+fn authorization_requires_explicit_capabilities() {
+    let mut authorization = scope(EnvironmentClass::Lab, Some(200));
+    authorization.capabilities.clear();
+    assert_eq!(
+        authorization.validate_for(ExecutionMode::Native),
+        Err(AuthorizationError::MissingCapabilities)
+    );
+}

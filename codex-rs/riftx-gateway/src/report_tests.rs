@@ -1,7 +1,11 @@
 use super::*;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AttackPathHop;
+use codex_riftx_core::AuthorizationScope;
+use codex_riftx_core::AuthorizationWindow;
 use codex_riftx_core::EngagementStatus;
+use codex_riftx_core::EnvironmentClass;
+use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::HypothesisStatus;
 use codex_riftx_core::Scope;
@@ -14,14 +18,27 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             id: "eng-1".to_string(),
             name: "Authorized lab".to_string(),
             status: EngagementStatus::Active,
-            objective: AssessmentObjective::default(),
-            entry_points: vec!["10.10.20.10".to_string()],
-            scope: Scope {
-                cidrs: vec!["10.10.20.0/24".parse().expect("CIDR")],
-                domains: Vec::new(),
-                ports: vec![445],
+            objective: AssessmentObjective {
+                summary: "Validate an authorized attack path".to_string(),
+                success_criteria: vec!["Preserve reproducible evidence".to_string()],
+                structured_criteria: Vec::new(),
             },
-            tool_profile: "native".to_string(),
+            entry_points: vec!["10.10.20.10".to_string()],
+            mode: ExecutionMode::Native,
+            authorization: AuthorizationScope {
+                network: Scope {
+                    cidrs: vec!["10.10.20.0/24".parse().expect("CIDR")],
+                    domains: Vec::new(),
+                    ports: vec![445],
+                },
+                identities: Vec::new(),
+                capabilities: vec!["attack_path.analysis".to_string()],
+                environment: EnvironmentClass::Lab,
+                window: AuthorizationWindow {
+                    starts_at: None,
+                    expires_at: Some(2_000_000_000),
+                },
+            },
             policy_revision: "revision-1".to_string(),
             thread_id: None,
             created_at: 1,
@@ -114,6 +131,8 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         "Credential reuse may reach domain control",
         "credentialValidation",
         "native-tool",
+        "Mode: `Native`",
+        "attack_path.analysis",
         "domainController",
         "authorizedAssets`: 3/4",
     ] {

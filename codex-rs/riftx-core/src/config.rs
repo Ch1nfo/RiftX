@@ -1,7 +1,5 @@
-use crate::Scope;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -27,7 +25,6 @@ pub struct RiftxConfig {
     pub policy: ManagedPolicyConfig,
     pub audit: AuditConfig,
     pub artifacts: ArtifactConfig,
-    pub tool_profiles: BTreeMap<String, ToolProfileConfig>,
 }
 
 impl RiftxConfig {
@@ -131,7 +128,7 @@ fn valid_env_name(value: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ManagedPolicyConfig {
     #[serde(default)]
-    pub allowed_tools: Vec<String>,
+    pub allowed_capabilities: Vec<String>,
     #[serde(default)]
     pub denied_cidrs: Vec<ipnet::IpNet>,
     #[serde(default)]
@@ -150,20 +147,4 @@ pub struct AuditConfig {
 pub struct ArtifactConfig {
     pub root: PathBuf,
     pub max_bytes_per_engagement: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ToolProfileConfig {
-    pub allowed_tools: Vec<String>,
-    pub scope: Scope,
-    pub approval: ApprovalMode,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    Always,
-    HighRisk,
-    Never,
 }

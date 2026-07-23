@@ -23,6 +23,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     Create {
         #[arg(long)]
@@ -31,6 +32,8 @@ enum Command {
         objective: String,
         #[arg(long = "success-criterion")]
         success_criteria: Vec<String>,
+        #[arg(long = "structured-criterion")]
+        structured_criteria: Vec<String>,
         #[arg(long = "entry-point")]
         entry_points: Vec<String>,
         #[arg(long = "cidr", required = true)]
@@ -39,8 +42,18 @@ enum Command {
         domains: Vec<String>,
         #[arg(long = "port")]
         ports: Vec<u16>,
-        #[arg(long, default_value = "native")]
-        profile: String,
+        #[arg(long, value_enum)]
+        mode: ExecutionModeArg,
+        #[arg(long, value_enum)]
+        environment: EnvironmentClassArg,
+        #[arg(long = "capability", required = true)]
+        capabilities: Vec<String>,
+        #[arg(long = "identity-selector")]
+        identity_selectors: Vec<String>,
+        #[arg(long)]
+        starts_at: Option<i64>,
+        #[arg(long)]
+        expires_at: Option<i64>,
     },
     Get {
         id: String,
@@ -77,6 +90,40 @@ enum ReportFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ExecutionModeArg {
+    Native,
+    Hardened,
+    Auto,
+}
+
+impl ExecutionModeArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Hardened => "hardened",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum EnvironmentClassArg {
+    Lab,
+    Staging,
+    Production,
+}
+
+impl EnvironmentClassArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Lab => "lab",
+            Self::Staging => "staging",
+            Self::Production => "production",
+        }
+    }
+}
+
 impl ReportFormat {
     fn as_str(self) -> &'static str {
         match self {
@@ -100,12 +147,22 @@ async fn main() -> anyhow::Result<()> {
             name,
             objective,
             success_criteria,
+            structured_criteria,
             entry_points,
             cidrs,
             domains,
             ports,
-            profile,
+            mode,
+            environment,
+            capabilities,
+            identity_selectors,
+            starts_at,
+            expires_at,
         } => {
+            let identity_selectors =
+                parse_json_arguments(&identity_selectors, "identity selector")?;
+            let structured_criteria =
+                parse_json_arguments(&structured_criteria, "structured criterion")?;
             send(
                 &client,
                 &cli.token,
@@ -116,10 +173,17 @@ async fn main() -> anyhow::Result<()> {
                     "objective": {
                         "summary": objective,
                         "successCriteria": success_criteria,
+                        "structuredCriteria": structured_criteria,
                     },
                     "entryPoints": entry_points,
-                    "scope": {"cidrs": cidrs, "domains": domains, "ports": ports},
-                    "toolProfile": profile,
+                    "mode": mode.as_str(),
+                    "authorization": {
+                        "network": {"cidrs": cidrs, "domains": domains, "ports": ports},
+                        "identities": identity_selectors,
+                        "capabilities": capabilities,
+                        "environment": environment.as_str(),
+                        "window": {"startsAt": starts_at, "expiresAt": expires_at},
+                    },
                 })),
             )
             .await?;
@@ -197,6 +261,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_json_arguments(arguments: &[String], kind: &str) -> anyhow::Result<Vec<Value>> {
+    arguments
+        .iter()
+        .map(|argument| {
+            serde_json::from_str::<Value>(argument)
+                .with_context(|| format!("invalid {kind} JSON: {argument}"))
+        })
+        .collect()
 }
 
 async fn decide(

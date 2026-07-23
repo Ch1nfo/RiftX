@@ -1,6 +1,10 @@
+use crate::AuthorizationError;
+use crate::AuthorizationScope;
+use crate::AuthorizationWindow;
+use crate::EnvironmentClass;
+use crate::ExecutionMode;
+use crate::IdentitySelector;
 use crate::ManagedPolicyConfig;
-use crate::Scope;
-use crate::ToolProfileConfig;
 use ipnet::IpNet;
 use serde::Deserialize;
 use serde::Serialize;
@@ -25,6 +29,8 @@ pub enum PolicyError {
     InvalidBuiltInCidr(#[from] ipnet::AddrParseError),
     #[error("failed to encode effective policy: {0}")]
     Encode(#[from] serde_json::Error),
+    #[error(transparent)]
+    Authorization(#[from] AuthorizationError),
     #[error("target {target} is outside the effective scope: {reason}")]
     TargetOutsideScope { target: String, reason: String },
 }
@@ -32,14 +38,18 @@ pub enum PolicyError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalGrant {
-    pub tools: BTreeSet<String>,
+    pub capabilities: BTreeSet<String>,
     pub cidrs: BTreeSet<IpNet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectivePolicy {
-    pub allowed_tools: BTreeSet<String>,
+    pub execution_mode: ExecutionMode,
+    pub environment: EnvironmentClass,
+    pub authorization_window: AuthorizationWindow,
+    pub allowed_identities: Vec<IdentitySelector>,
+    pub allowed_capabilities: BTreeSet<String>,
     pub allowed_cidrs: BTreeSet<IpNet>,
     pub allowed_domains: BTreeSet<String>,
     pub allowed_ports: BTreeSet<u16>,
@@ -51,29 +61,35 @@ pub struct EffectivePolicy {
 impl EffectivePolicy {
     pub fn resolve(
         managed: &ManagedPolicyConfig,
-        engagement_scope: &Scope,
-        profile: &ToolProfileConfig,
+        mode: ExecutionMode,
+        authorization: &AuthorizationScope,
         approval: Option<&ApprovalGrant>,
     ) -> Result<Self, PolicyError> {
-        let managed_tools = managed
-            .allowed_tools
+        authorization.validate_for(mode)?;
+        let managed_capabilities = managed
+            .allowed_capabilities
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let profile_tools = profile
-            .allowed_tools
+        let requested_capabilities = authorization
+            .capabilities
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let mut allowed_tools = managed_tools
-            .intersection(&profile_tools)
+        let mut allowed_capabilities = managed_capabilities
+            .intersection(&requested_capabilities)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let mut allowed_cidrs = intersect_cidrs(&engagement_scope.cidrs, &profile.scope.cidrs);
+        let mut allowed_cidrs = authorization
+            .network
+            .cidrs
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
 
         if let Some(approval) = approval {
-            allowed_tools = allowed_tools
-                .intersection(&approval.tools)
+            allowed_capabilities = allowed_capabilities
+                .intersection(&approval.capabilities)
                 .cloned()
                 .collect();
             allowed_cidrs = allowed_cidrs
@@ -82,39 +98,18 @@ impl EffectivePolicy {
                 .collect();
         }
 
-        let engagement_domains = engagement_scope
+        let allowed_domains = authorization
+            .network
             .domains
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let profile_domains = profile
-            .scope
-            .domains
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let allowed_domains = if profile_domains.contains("*") {
-            engagement_domains
-        } else {
-            engagement_domains
-                .intersection(&profile_domains)
-                .cloned()
-                .collect()
-        };
-        let engagement_ports = engagement_scope
+        let allowed_ports = authorization
+            .network
             .ports
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let profile_ports = profile.scope.ports.iter().copied().collect::<BTreeSet<_>>();
-        let allowed_ports = if profile_ports.is_empty() {
-            engagement_ports
-        } else {
-            engagement_ports
-                .intersection(&profile_ports)
-                .copied()
-                .collect()
-        };
         let denied_cidrs = BUILT_IN_DENIED_CIDRS
             .iter()
             .map(|cidr| cidr.parse())
@@ -123,8 +118,15 @@ impl EffectivePolicy {
             .chain(managed.denied_cidrs.iter().copied())
             .collect();
         let denied_domains = managed.denied_domains.iter().cloned().collect();
+        let mut allowed_identities = authorization.identities.clone();
+        allowed_identities.sort();
+        allowed_identities.dedup();
         let mut policy = Self {
-            allowed_tools,
+            execution_mode: mode,
+            environment: authorization.environment,
+            authorization_window: authorization.window.clone(),
+            allowed_identities,
+            allowed_capabilities,
             allowed_cidrs,
             allowed_domains,
             allowed_ports,
@@ -137,8 +139,8 @@ impl EffectivePolicy {
         Ok(policy)
     }
 
-    pub fn allows_tool(&self, tool: &str) -> bool {
-        self.allowed_tools.contains(tool)
+    pub fn allows_capability(&self, capability: &str) -> bool {
+        self.allowed_capabilities.contains(capability)
     }
 
     pub fn check_target(&self, target: &str) -> Result<(), PolicyError> {
@@ -234,22 +236,6 @@ fn outside_scope(target: &str, reason: &str) -> PolicyError {
         target: target.to_string(),
         reason: reason.to_string(),
     }
-}
-
-fn intersect_cidrs(left: &[IpNet], right: &[IpNet]) -> BTreeSet<IpNet> {
-    left.iter()
-        .flat_map(|left_net| {
-            right.iter().filter_map(move |right_net| {
-                if left_net.contains(&right_net.network()) {
-                    Some(*right_net)
-                } else if right_net.contains(&left_net.network()) {
-                    Some(*left_net)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
