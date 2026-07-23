@@ -177,7 +177,10 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/system/info", get(system_info))
         .route("/v1/skills", get(skills))
         .route("/v1/tools", get(tools))
-        .route("/v1/engagements", post(create_engagement))
+        .route(
+            "/v1/engagements",
+            get(list_engagements).post(create_engagement),
+        )
         .route("/v1/engagements/{id}", get(get_engagement))
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/turns", post(start_turn))
@@ -265,6 +268,19 @@ async fn create_engagement(
         .publish(&engagement.id, "engagementCreated", json!({}))
         .await;
     Ok((StatusCode::CREATED, Json(engagement)))
+}
+
+async fn list_engagements(
+    State(state): State<GatewayState>,
+) -> Result<Json<Vec<Engagement>>, ApiError> {
+    let mut engagements = state.store.engagements().await?;
+    engagements.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(Json(engagements))
 }
 
 async fn get_engagement(

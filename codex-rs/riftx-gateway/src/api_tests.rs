@@ -196,6 +196,7 @@ async fn engagement_can_be_created_and_read() {
     );
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/v1/engagements/{}", engagement.id))
@@ -205,6 +206,27 @@ async fn engagement_can_be_created_and_read() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/engagements")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let engagements: Vec<Engagement> = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement list JSON");
+    assert_eq!(engagements, vec![engagement]);
 }
 
 #[tokio::test]
