@@ -201,10 +201,22 @@ impl From<StateError> for ApiError {
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
             StateError::InvalidTargetState(_)
             | StateError::InvalidCredential(_)
+            | StateError::InvalidCredentialUse(_)
+            | StateError::CredentialCapabilityDenied(_)
+            | StateError::CredentialTargetDenied(_)
             | StateError::InvalidConversationEntry(_)
             | StateError::InvalidConversationQuery(_)
             | StateError::MissingChainReference { .. }
             | StateError::BrokenChainReference { .. } => StatusCode::BAD_REQUEST,
+            StateError::CredentialGrantNotFound(_)
+            | StateError::CredentialReferenceNotFound(_)
+            | StateError::CredentialUseNotFound(_) => StatusCode::NOT_FOUND,
+            StateError::CredentialPolicyRevisionMismatch
+            | StateError::CredentialGrantInactive
+            | StateError::CredentialUseLimitExceeded
+            | StateError::CredentialFailureLimitExceeded
+            | StateError::CredentialUseInProgress
+            | StateError::InvalidCredentialUseTransition { .. } => StatusCode::CONFLICT,
             StateError::Database(_) | StateError::Json(_) | StateError::SystemStateUnavailable => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -261,6 +273,10 @@ pub fn build_router(state: GatewayState) -> Router {
         .route(
             "/v1/engagements/{id}/credential-grants/{grant_id}/revoke",
             post(crate::credential_api::revoke_grant),
+        )
+        .route(
+            "/v1/engagements/{id}/credential-executions",
+            post(crate::credential_execution::execute),
         )
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/turns", post(start_turn))
@@ -813,6 +829,11 @@ async fn interrupt_engagement_inner(
     reason: &str,
 ) -> Result<Engagement, ApiError> {
     state.store.engagement(id).await?;
+    for process in state.credential_processes.read().await.values() {
+        if process.engagement_id == id {
+            process.cancellation.cancel();
+        }
+    }
     let active_turn = state.active_turns.read().await.get(id).cloned();
     if let Some(active_turn) = active_turn {
         if let Some(app_server) = state.app_server(&active_turn.profile_name) {
@@ -872,6 +893,9 @@ async fn pause_execution(
     let status = state
         .set_control(DaemonRunState::Paused, Some(reason))
         .await?;
+    for process in state.credential_processes.read().await.values() {
+        process.cancellation.cancel();
+    }
     let _turn_permit = state
         .turn_slot
         .clone()
@@ -896,7 +920,7 @@ async fn pause_execution(
     Ok(Json(status))
 }
 
-async fn require_execution_running(state: &GatewayState) -> Result<(), ApiError> {
+pub(crate) async fn require_execution_running(state: &GatewayState) -> Result<(), ApiError> {
     let status = state.control_status().await;
     if status.state == DaemonRunState::Running {
         return Ok(());

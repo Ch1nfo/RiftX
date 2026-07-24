@@ -9,6 +9,8 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_credentials::AssessmentCredentialStore;
+use codex_riftx_credentials::AssessmentSecretProvider;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -26,6 +28,7 @@ use std::time::UNIX_EPOCH;
 use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 const DAEMON_CONTROL_STATE_KEY: &str = "daemonControl";
 
@@ -44,6 +47,8 @@ pub struct GatewayState {
     pub(crate) agent_threads: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApprovalRequest>>>,
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
+    pub(crate) credential_processes: Arc<RwLock<HashMap<String, ActiveCredentialProcess>>>,
+    pub(crate) assessment_credentials: Arc<dyn AssessmentSecretProvider>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
     pub(crate) control_slot: Arc<Semaphore>,
@@ -69,6 +74,12 @@ pub(crate) struct PendingApprovalRequest {
 #[derive(Clone)]
 pub(crate) enum PendingApprovalKind {
     Command(PendingCommandApproval),
+}
+
+#[derive(Clone)]
+pub(crate) struct ActiveCredentialProcess {
+    pub(crate) engagement_id: String,
+    pub(crate) cancellation: CancellationToken,
 }
 
 impl GatewayState {
@@ -100,6 +111,8 @@ impl GatewayState {
             agent_threads: Arc::new(RwLock::new(HashMap::new())),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             active_executions: Arc::new(RwLock::new(HashMap::new())),
+            credential_processes: Arc::new(RwLock::new(HashMap::new())),
+            assessment_credentials: Arc::new(AssessmentCredentialStore::default()),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
             control_slot: Arc::new(Semaphore::new(1)),
@@ -110,6 +123,14 @@ impl GatewayState {
                 updated_at: unix_timestamp(),
             })),
         }
+    }
+
+    pub fn with_assessment_credentials(
+        mut self,
+        provider: Arc<dyn AssessmentSecretProvider>,
+    ) -> Self {
+        self.assessment_credentials = provider;
+        self
     }
 
     pub fn with_app_server(
@@ -242,13 +263,23 @@ impl GatewayState {
                 engagement_id: engagement_id.to_string(),
                 thread_id: first_string(&data, &["/threadId", "/payload/threadId"])
                     .or(engagement.thread_id),
-                turn_id: first_string(&data, &["/turnId", "/payload/turnId", "/payload/turn/id"]),
+                turn_id: first_string(
+                    &data,
+                    &[
+                        "/turnId",
+                        "/execution/turnId",
+                        "/payload/turnId",
+                        "/payload/turn/id",
+                    ],
+                ),
                 tool_call_id: first_string(
                     &data,
                     &[
                         "/toolCallId",
                         "/payload/toolCallId",
                         "/payload/callId",
+                        "/useId",
+                        "/usage/id",
                         "/id",
                     ],
                 ),
@@ -256,6 +287,7 @@ impl GatewayState {
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),
                 details: (kind.starts_with("execution/")
+                    || kind.starts_with("credential/use")
                     || kind.starts_with("artifact/")
                     || kind == "engagement/modeChanged")
                     .then(|| data.clone()),
