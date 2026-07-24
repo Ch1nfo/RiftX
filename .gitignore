@@ -76,6 +76,8 @@ personal/
 .DS_Store
 Thumbs.db
 Icon?
+!apps/desktop/src-tauri/icons/
+!apps/desktop/src-tauri/icons/**
 .Spotlight-V100/
 
 # Unwanted package managers

@@ -1,0 +1,18 @@
+mod bridge;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(bridge::DesktopState::load())
+        .invoke_handler(tauri::generate_handler![
+            bridge::daemon_info,
+            bridge::list_engagements,
+            bridge::create_engagement,
+            bridge::activate_engagement,
+            bridge::start_turn,
+            bridge::interrupt_engagement,
+            bridge::engagement_report,
+        ])
+        .run(tauri::generate_context!())
+        .expect("RiftX desktop runtime failed");
+}
