@@ -266,7 +266,14 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         .context("event collector task failed")??;
     anyhow::ensure!(event_kinds.iter().any(|kind| kind == "operator/message"));
     anyhow::ensure!(event_kinds.iter().any(|kind| kind == "turn/completed"));
-    anyhow::ensure!(response_mock.requests().len() == 2);
+    let requests = response_mock.requests();
+    anyhow::ensure!(requests.len() == 2);
+    anyhow::ensure!(
+        requests
+            .iter()
+            .all(|request| request.header("authorization") == Some(format!("Bearer {API_KEY}"))),
+        "model requests did not use the in-memory API key"
+    );
     Ok(())
 }
 
@@ -393,10 +400,10 @@ async fn ensure_status(
 
 #[cfg(not(windows))]
 fn native_command() -> &'static str {
-    "printf 'stdout-marker'; printf 'stderr-marker' >&2; printf 'native-artifact' > artifacts/native.txt"
+    "test -z \"${RIFTX_NATIVE_ACCEPTANCE_API_KEY+x}\" || exit 97; printf 'stdout-marker'; printf 'stderr-marker' >&2; printf 'native-artifact' > artifacts/native.txt"
 }
 
 #[cfg(windows)]
 fn native_command() -> &'static str {
-    "[Console]::Out.Write('stdout-marker'); [Console]::Error.Write('stderr-marker'); [IO.File]::WriteAllText('artifacts/native.txt', 'native-artifact')"
+    "if (Test-Path Env:RIFTX_NATIVE_ACCEPTANCE_API_KEY) { exit 97 }; [Console]::Out.Write('stdout-marker'); [Console]::Error.Write('stderr-marker'); [IO.File]::WriteAllText('artifacts/native.txt', 'native-artifact')"
 }

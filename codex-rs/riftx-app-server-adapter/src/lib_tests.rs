@@ -63,6 +63,7 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
         model: "riftx-test-model".to_string(),
         base_url: "http://127.0.0.1:8766/v1".to_string(),
         api_key_env: "RIFTX_TEST_API_KEY".to_string(),
+        api_key: RiftxApiKey::new("riftx-test-key".to_string()).expect("API key"),
         process_path: "/test/tools:/usr/bin".to_string(),
     };
     let built = build_runtime_config(&runtime)
@@ -92,13 +93,21 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
             "riftx",
             "RiftX LLM",
             Some("http://127.0.0.1:8766/v1"),
-            Some("RIFTX_TEST_API_KEY"),
+            None,
             false,
             Some(ForcedLoginMethod::Api),
             AuthCredentialsStoreMode::Ephemeral,
             false,
             Some(&"/test/tools:/usr/bin".to_string()),
         )
+    );
+    assert!(
+        config
+            .permissions
+            .shell_environment_policy
+            .exclude
+            .iter()
+            .any(|name| *name == "RIFTX_TEST_API_KEY")
     );
 }
 

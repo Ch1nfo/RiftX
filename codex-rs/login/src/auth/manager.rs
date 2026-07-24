@@ -157,9 +157,17 @@ impl PartialEq for CodexAuth {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApiKeyAuth {
     api_key: String,
+}
+
+impl std::fmt::Debug for ApiKeyAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyAuth")
+            .field("api_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1836,6 +1844,37 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 }
 
 impl AuthManager {
+    /// Creates a manager from authentication supplied by an external credential owner.
+    ///
+    /// The authentication remains in memory and is never loaded from or written to Codex auth
+    /// storage. Callers own persistence and rotation of the source credential.
+    pub fn from_static_auth(auth: CodexAuth, config: &impl AuthManagerConfig) -> Arc<Self> {
+        let chatgpt_base_url = Some(config.chatgpt_base_url());
+        let agent_identity_authapi_base_url =
+            agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
+        let cached = CachedAuth {
+            auth: Some(auth),
+            permanent_refresh_failure: None,
+        };
+        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
+        Arc::new(Self {
+            codex_home: config.codex_home(),
+            inner: RwLock::new(cached),
+            auth_change_tx,
+            enable_codex_api_key_env: false,
+            auth_credentials_store_mode: AuthCredentialsStoreMode::Ephemeral,
+            keyring_backend_kind: config.auth_keyring_backend_kind(),
+            forced_chatgpt_workspace_id: RwLock::new(config.forced_chatgpt_workspace_id()),
+            chatgpt_base_url,
+            agent_identity_authapi_base_url,
+            refresh_lock: Semaphore::new(/*permits*/ 1),
+            agent_identity_lock: Semaphore::new(/*permits*/ 1),
+            agent_identity_bootstrap_cooldown: Mutex::default(),
+            external_auth: RwLock::new(None),
+            auth_route_config: config.auth_route_config(),
+        })
+    }
+
     /// Create a new manager loading the initial auth using the provided
     /// preferred auth method. Errors loading auth are swallowed; `auth()` will
     /// simply return `None` in that case so callers can treat it as an

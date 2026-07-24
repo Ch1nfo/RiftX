@@ -139,7 +139,8 @@ api_key_env = "RIFTX_LLM_API_KEY"
 export RIFTX_LLM_API_KEY="<your-api-key>"
 ```
 
-API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
+守护进程启动时读取 API Key，并只通过内存认证对象交给模型客户端。RiftX 强制从
+Agent 工具进程环境中排除该变量；API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
 
 ## 开发运行
 

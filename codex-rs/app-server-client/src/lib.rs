@@ -458,8 +458,28 @@ impl InProcessAppServerClient {
     /// with overload error instead of being silently dropped.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let handle = codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        Self::start_with_handle(channel_capacity, handle).await
+    }
+
+    /// Starts the in-process runtime with an externally supplied API key held only in memory.
+    pub async fn start_with_static_api_key(
+        args: InProcessClientStartArgs,
+        api_key: String,
+    ) -> IoResult<Self> {
+        let channel_capacity = args.channel_capacity.max(1);
+        let handle = codex_app_server::in_process::start_with_static_api_key(
+            args.into_runtime_start_args(),
+            api_key,
+        )
+        .await?;
+        Self::start_with_handle(channel_capacity, handle).await
+    }
+
+    async fn start_with_handle(
+        channel_capacity: usize,
+        mut handle: codex_app_server::in_process::InProcessClientHandle,
+    ) -> IoResult<Self> {
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);

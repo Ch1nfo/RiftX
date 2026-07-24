@@ -12,6 +12,15 @@ use base64::Engine;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use pretty_assertions::assert_eq;
+
+#[test]
+fn api_key_debug_output_is_redacted() {
+    let auth = CodexAuth::from_api_key("riftx-secret-api-key");
+    let debug = format!("{auth:?}");
+
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("riftx-secret-api-key"));
+}
 use serde::Serialize;
 use serde_json::json;
 use std::sync::Arc;

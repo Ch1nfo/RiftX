@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
+use codex_riftx_app_server_adapter::RiftxApiKey;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxLlmRuntimeConfig;
 use codex_riftx_core::RiftxConfig;
@@ -35,7 +36,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         "{} cannot be empty",
         config.llm.api_key_env
     );
-    drop(llm_api_key);
+    let llm_api_key = RiftxApiKey::new(llm_api_key)?;
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -55,6 +56,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         model: config.llm.model.clone(),
         base_url: config.llm.base_url.clone(),
         api_key_env: config.llm.api_key_env.clone(),
+        api_key: llm_api_key,
         process_path,
     };
     let app_server = RiftxAppServerAdapter::start_embedded(runtime, arg0_paths)

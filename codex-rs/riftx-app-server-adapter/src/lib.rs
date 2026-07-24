@@ -75,6 +75,30 @@ pub enum AdapterError {
     InvalidSkillRoot(PathBuf),
     #[error("RiftX model runtime returned no skill catalog for workspace {0}")]
     MissingSkillCatalog(PathBuf),
+    #[error("RiftX API key cannot be empty")]
+    EmptyApiKey,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RiftxApiKey(String);
+
+impl RiftxApiKey {
+    pub fn new(value: String) -> Result<Self, AdapterError> {
+        if value.trim().is_empty() {
+            return Err(AdapterError::EmptyApiKey);
+        }
+        Ok(Self(value))
+    }
+
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for RiftxApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RiftxApiKey([REDACTED])")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +107,7 @@ pub struct RiftxLlmRuntimeConfig {
     pub model: String,
     pub base_url: String,
     pub api_key_env: String,
+    pub api_key: RiftxApiKey,
     pub process_path: String,
 }
 
@@ -144,39 +169,47 @@ impl RiftxAppServerAdapter {
             .await
             .map_err(|error| io::Error::other(error.to_string()))?,
         );
-        Self::start(InProcessClientStartArgs {
-            arg0_paths,
-            config,
-            cli_overrides,
-            loader_overrides: LoaderOverrides::default(),
-            strict_config: true,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db,
-            environment_manager,
-            config_warnings,
-            session_source: SessionSource::Custom("riftxd".to_string()),
-            enable_codex_api_key_env: false,
-            client_name: "riftxd".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            experimental_api: true,
-            mcp_server_openai_form_elicitation: false,
-            opt_out_notification_methods: Vec::new(),
-            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        })
-        .await
+        let client = InProcessAppServerClient::start_with_static_api_key(
+            InProcessClientStartArgs {
+                arg0_paths,
+                config,
+                cli_overrides,
+                loader_overrides: LoaderOverrides::default(),
+                strict_config: true,
+                cloud_config_bundle: CloudConfigBundleLoader::default(),
+                feedback: CodexFeedback::new(),
+                log_db: None,
+                state_db,
+                environment_manager,
+                config_warnings,
+                session_source: SessionSource::Custom("riftxd".to_string()),
+                enable_codex_api_key_env: false,
+                client_name: "riftxd".to_string(),
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+                experimental_api: true,
+                mcp_server_openai_form_elicitation: false,
+                opt_out_notification_methods: Vec::new(),
+                channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            },
+            runtime.api_key.into_inner(),
+        )
+        .await?;
+        Ok(Self::from_client(client))
     }
 
     pub async fn start(args: InProcessClientStartArgs) -> Result<Self, AdapterError> {
         let client = InProcessAppServerClient::start(args).await?;
-        Ok(Self {
+        Ok(Self::from_client(client))
+    }
+
+    fn from_client(client: InProcessAppServerClient) -> Self {
+        Self {
             request_handle: RiftxAppServerRequestHandle {
                 client: client.request_handle(),
                 next_request_id: Arc::new(AtomicI64::new(1)),
             },
             client,
-        })
+        }
     }
 
     pub fn request_handle(&self) -> RiftxAppServerRequestHandle {
@@ -332,7 +365,7 @@ async fn build_runtime_config(
         && config.model_provider_id == "riftx"
         && config.model_provider.name == "RiftX LLM"
         && config.model_provider.base_url.as_deref() == Some(runtime.base_url.as_str())
-        && config.model_provider.env_key.as_deref() == Some(runtime.api_key_env.as_str())
+        && config.model_provider.env_key.is_none()
         && !config.model_provider.requires_openai_auth
         && config.forced_login_method == Some(ForcedLoginMethod::Api)
         && config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral
@@ -343,7 +376,13 @@ async fn build_runtime_config(
         .r#set
         .get("PATH")
         .is_some_and(|path| path == &runtime.process_path);
-    if !enforced || !path_is_enforced {
+    let api_key_is_excluded = config
+        .permissions
+        .shell_environment_policy
+        .exclude
+        .iter()
+        .any(|name| *name == runtime.api_key_env.as_str());
+    if !enforced || !path_is_enforced || !api_key_is_excluded {
         return Err(AdapterError::UnsafeRuntimeConfig(
             "API-key-only provider, isolated runtime home, and ephemeral auth are required"
                 .to_string(),
@@ -374,10 +413,6 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
             toml::Value::String(runtime.base_url.clone()),
         ),
         (
-            "model_providers.riftx.env_key".to_string(),
-            toml::Value::String(runtime.api_key_env.clone()),
-        ),
-        (
             "model_providers.riftx.wire_api".to_string(),
             toml::Value::String("responses".to_string()),
         ),
@@ -396,6 +431,10 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
         (
             "shell_environment_policy.set.PATH".to_string(),
             toml::Value::String(runtime.process_path.clone()),
+        ),
+        (
+            "shell_environment_policy.exclude".to_string(),
+            toml::Value::Array(vec![toml::Value::String(runtime.api_key_env.clone())]),
         ),
         (
             "skills.bundled.enabled".to_string(),
