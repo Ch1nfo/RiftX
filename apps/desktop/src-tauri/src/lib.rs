@@ -1,6 +1,7 @@
 mod background;
 mod bridge;
 mod daemon;
+mod extensions;
 mod notifications;
 mod settings;
 
@@ -30,6 +31,8 @@ pub fn run() {
             bridge::interrupt_engagement,
             bridge::engagement_report,
             bridge::conversation_history,
+            extensions::tool_inventory,
+            extensions::skill_catalog,
             settings::llm_settings,
             settings::save_llm_api_key,
             settings::delete_llm_api_key,

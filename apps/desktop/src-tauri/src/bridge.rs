@@ -52,7 +52,7 @@ impl DesktopState {
         }
     }
 
-    fn client(&self) -> Result<LocalIpcClient, DesktopError> {
+    pub(crate) fn client(&self) -> Result<LocalIpcClient, DesktopError> {
         self.client
             .clone()
             .ok_or_else(|| self.startup_error.clone().unwrap_or_else(unavailable))
@@ -437,7 +437,7 @@ pub(crate) async fn conversation_history(
     json_response(client.get(&path).await).await
 }
 
-async fn json_response<T>(
+pub(crate) async fn json_response<T>(
     response: Result<LocalIpcResponse, LocalIpcError>,
 ) -> Result<T, DesktopError>
 where

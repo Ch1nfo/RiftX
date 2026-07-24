@@ -35,6 +35,58 @@ export interface LlmProfileSettings {
   configured: boolean;
 }
 
+export type DiagnosticLevel = "info" | "warning" | "error";
+
+export interface ExtensionDiagnostic {
+  level: DiagnosticLevel;
+  code: string;
+  path: string | null;
+  message: string;
+}
+
+export interface ToolInventory {
+  roots: string[];
+  pathEntries: string[];
+  tools: DiscoveredTool[];
+  snapshotSha256: string;
+  diagnostics: ExtensionDiagnostic[];
+}
+
+export interface DiscoveredTool {
+  name: string;
+  path: string;
+  sha256: string;
+  metadataPath: string | null;
+  metadataSha256: string | null;
+  metadata: {
+    capabilities: string[];
+    risk: "low" | "medium" | "high" | "critical" | null;
+    helpArgs: string[];
+    versionArgs: string[];
+    healthCheckArgs: string[];
+    inputTargetField: string | null;
+    outputFormat: string | null;
+    parser: string | null;
+  } | null;
+  shadowedBy: string | null;
+}
+
+export interface SkillCatalog {
+  root: string;
+  skills: DiscoveredSkill[];
+  snapshotSha256: string;
+  diagnostics: ExtensionDiagnostic[];
+}
+
+export interface DiscoveredSkill {
+  name: string;
+  description: string;
+  path: string;
+  source: "builtIn" | "user";
+  enabled: boolean;
+  sha256: string;
+}
+
 export interface NotificationSettings {
   permission: "granted" | "denied" | "prompt" | "promptWithRationale";
 }

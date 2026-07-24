@@ -14,6 +14,8 @@ import type {
   LlmSettings,
   NotificationSettings,
   PendingApproval,
+  SkillCatalog,
+  ToolInventory,
   TurnAccepted,
 } from "./models";
 
@@ -53,6 +55,14 @@ export function saveLlmApiKey(
 
 export function deleteLlmApiKey(profileName: string): Promise<LlmSettings> {
   return desktopInvoke("delete_llm_api_key", { input: { profileName } });
+}
+
+export function toolInventory(): Promise<ToolInventory> {
+  return desktopInvoke("tool_inventory");
+}
+
+export function skillCatalog(): Promise<SkillCatalog> {
+  return desktopInvoke("skill_catalog");
 }
 
 export function notificationSettings(): Promise<NotificationSettings> {
