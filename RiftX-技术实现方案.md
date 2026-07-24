@@ -776,8 +776,9 @@ P1 加密基础固定为：
 - envelope 认证失败必须作为数据完整性错误停止读取，不允许返回部分明文或静默降级。
 
 当前 `riftx-crypto` 已固定密钥与 envelope API，Engagement 所属 SQLite 与 Audit 记录已按
-该格式加密；全局 daemon 控制 Audit 只保留隐私安全的系统元数据。Artifact 仍使用后续
-独立的流式加密格式，在接入前不得宣称案件数据已完成静态加密。
+该格式加密；全局 daemon 控制 Audit 只保留隐私安全的系统元数据。Artifact 使用独立的
+`RXF1` 分块认证加密格式，导出前完整校验并通过关闭即删除的最小权限临时文件流式返回。
+至此 P1 案件数据静态加密已覆盖 SQLite、Audit 和 Artifact；`.riftxcase` 容器仍在 P7 实现。
 
 ### 15.3 `.riftxcase`
 

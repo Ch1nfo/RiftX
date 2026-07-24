@@ -63,12 +63,12 @@ Named Pipe 提供本地服务。
   以及 Desktop 中的 Skill 来源、启用状态和诊断视图。
 - 本机命令 Execution 审计，包括脱敏 argv、resolved path、工具/快照哈希、
   stdout/stderr/stdin 哈希、退出状态和 interrupt 恢复。
-- workspace artifact 的内容寻址采集、容量限制、哈希清单和受控流式导出。
+- workspace artifact 的内容寻址采集、容量限制、分块认证加密、哈希清单和受控流式导出。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、Artifact 与
-`.riftxcase` 加密、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、加密
+`.riftxcase`、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。
@@ -139,9 +139,10 @@ directory = "/absolute/path/to/team-skills"
   <engagement-id> <artifact-id> --output result.json
 ```
 
-采集拒绝绝对路径、路径穿越、符号链接和目录。文件按 SHA-256 内容寻址保存，并受
-`[artifacts].max_bytes_per_engagement` 限制；导出前会重新校验大小和哈希。当前开发基线
-尚未实现 artifact 加密。
+采集拒绝绝对路径、路径穿越、符号链接和目录。文件按明文 SHA-256 内容寻址，并使用
+Engagement 数据密钥以 64 KiB 分块认证加密保存，受 `[artifacts].max_bytes_per_engagement`
+限制。导出会先完整解密并重新校验大小和哈希，再从最小权限、关闭即删除的临时文件
+流式返回；认证或完整性失败时不会返回部分内容。
 
 ## LLM 配置
 

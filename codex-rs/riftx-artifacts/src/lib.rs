@@ -2,18 +2,23 @@
 
 use codex_riftx_core::Artifact;
 use codex_riftx_core::ArtifactConfig;
+use codex_riftx_crypto::CryptoError;
+use codex_riftx_crypto::EngagementRecordCipher;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeSet;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use walkdir::WalkDir;
+
+mod encrypted_blob;
+
+pub use encrypted_blob::DecryptedArtifact;
 
 const MAX_DISCOVERED_ARTIFACTS: usize = 256;
 const MAX_DISCOVERY_DEPTH: usize = 8;
@@ -48,6 +53,12 @@ pub enum ArtifactError {
     },
     #[error("artifact discovery failed: {0}")]
     Discovery(#[from] walkdir::Error),
+    #[error(transparent)]
+    Crypto(#[from] CryptoError),
+    #[error("artifact encryption task failed: {0}")]
+    CryptoTask(String),
+    #[error("stored artifact uses an invalid encrypted format")]
+    InvalidFormat,
 }
 
 impl ArtifactError {
@@ -84,13 +95,15 @@ pub struct CaptureArtifact<'a> {
 pub struct ArtifactStore {
     root: PathBuf,
     max_bytes_per_engagement: u64,
+    cipher: Arc<dyn EngagementRecordCipher>,
 }
 
 impl ArtifactStore {
-    pub fn new(config: &ArtifactConfig) -> Self {
+    pub fn new(config: &ArtifactConfig, cipher: Arc<dyn EngagementRecordCipher>) -> Self {
         Self {
             root: config.root.clone(),
             max_bytes_per_engagement: config.max_bytes_per_engagement,
+            cipher,
         }
     }
 
@@ -112,17 +125,29 @@ impl ArtifactStore {
 
         let engagement_root = self.root.join(request.engagement_id);
         create_dir_all(&engagement_root).await?;
+        let (sha256, size_bytes) = hash_file(&source, self.max_bytes_per_engagement).await?;
         let temporary = engagement_root.join(format!(".capture-{}", Uuid::new_v4()));
-        let (sha256, size_bytes) =
-            match copy_and_hash(&source, &temporary, self.max_bytes_per_engagement).await {
-                Ok(captured) => captured,
-                Err(error) => {
-                    remove_if_exists(&temporary).await;
-                    return Err(error);
-                }
-            };
+        let encrypted = encrypted_blob::encrypt_source(
+            self.cipher.clone(),
+            request.engagement_id,
+            &sha256,
+            &source,
+            &temporary,
+            self.max_bytes_per_engagement,
+        )
+        .await;
+        let (encrypted_sha256, encrypted_size) = match encrypted {
+            Ok(captured) => captured,
+            Err(error) => {
+                remove_if_exists(&temporary).await;
+                return Err(error);
+            }
+        };
         let final_metadata = metadata(&source).await?;
-        if final_metadata.len() != source_metadata.len() || final_metadata.len() != size_bytes {
+        if final_metadata.len() != source_metadata.len()
+            || encrypted_size != size_bytes
+            || encrypted_sha256 != sha256
+        {
             remove_if_exists(&temporary).await;
             return Err(ArtifactError::SourceChanged(source));
         }
@@ -163,40 +188,31 @@ impl ArtifactStore {
         })
     }
 
-    pub async fn open(&self, artifact: &Artifact) -> Result<tokio::fs::File, ArtifactError> {
+    pub async fn open(&self, artifact: &Artifact) -> Result<DecryptedArtifact, ArtifactError> {
         validate_component(&artifact.engagement_id)?;
         if artifact.sha256.len() != 64
             || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(ArtifactError::InvalidDigest);
         }
-        let path = self
-            .root
-            .join(&artifact.engagement_id)
-            .join(&artifact.sha256);
+        let engagement_root = self.root.join(&artifact.engagement_id);
+        let path = engagement_root.join(&artifact.sha256);
         let metadata = symlink_metadata(&path).await?;
         if metadata.file_type().is_symlink() {
             return Err(ArtifactError::SymbolicLink(path));
         }
-        if !metadata.is_file() || metadata.len() != artifact.size_bytes {
+        if !metadata.is_file() {
             return Err(ArtifactError::SourceNotRegular(path));
         }
-        let mut file = tokio::fs::File::open(&path)
-            .await
-            .map_err(|source| ArtifactError::Io {
-                path: path.clone(),
-                source,
-            })?;
-        if hash_reader(&mut file, &path).await? != artifact.sha256 {
-            return Err(ArtifactError::DigestMismatch);
-        }
-        file.seek(std::io::SeekFrom::Start(0))
-            .await
-            .map_err(|source| ArtifactError::Io {
-                path: path.clone(),
-                source,
-            })?;
-        Ok(file)
+        encrypted_blob::decrypt_to_temporary(
+            self.cipher.clone(),
+            &artifact.engagement_id,
+            &artifact.sha256,
+            &path,
+            &engagement_root,
+            artifact.size_bytes,
+        )
+        .await
     }
 
     pub fn discover(&self, workspace: &Path) -> Result<Vec<PathBuf>, ArtifactError> {
@@ -293,25 +309,12 @@ async fn checked_source(workspace: &Path, relative_path: &Path) -> Result<PathBu
     Ok(source)
 }
 
-async fn copy_and_hash(
-    source: &Path,
-    destination: &Path,
-    limit: u64,
-) -> Result<(String, u64), ArtifactError> {
+async fn hash_file(source: &Path, limit: u64) -> Result<(String, u64), ArtifactError> {
     let mut input = tokio::fs::File::open(source)
         .await
         .map_err(|source_error| ArtifactError::Io {
             path: source.to_path_buf(),
             source: source_error,
-        })?;
-    let mut output = tokio::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(destination)
-        .await
-        .map_err(|source| ArtifactError::Io {
-            path: destination.to_path_buf(),
-            source,
         })?;
     let mut hasher = Sha256::new();
     let mut size = 0_u64;
@@ -325,26 +328,13 @@ async fn copy_and_hash(
                 source: error,
             })?;
         if count == 0 {
-            output.flush().await.map_err(|source| ArtifactError::Io {
-                path: destination.to_path_buf(),
-                source,
-            })?;
             return Ok((hex_digest(hasher.finalize()), size));
         }
         size = size.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
         if size > limit {
-            drop(output);
-            remove_if_exists(destination).await;
             return Err(ArtifactError::CapacityExceeded { limit });
         }
         hasher.update(&buffer[..count]);
-        output
-            .write_all(&buffer[..count])
-            .await
-            .map_err(|source| ArtifactError::Io {
-                path: destination.to_path_buf(),
-                source,
-            })?;
     }
 }
 
@@ -425,24 +415,6 @@ async fn create_dir_all(path: &Path) -> Result<(), ArtifactError> {
 
 async fn remove_if_exists(path: &Path) {
     let _ = tokio::fs::remove_file(path).await;
-}
-
-async fn hash_reader(file: &mut tokio::fs::File, path: &Path) -> Result<String, ArtifactError> {
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .await
-            .map_err(|source| ArtifactError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        if count == 0 {
-            return Ok(hex_digest(hasher.finalize()));
-        }
-        hasher.update(&buffer[..count]);
-    }
 }
 
 fn hex_digest(bytes: impl AsRef<[u8]>) -> String {

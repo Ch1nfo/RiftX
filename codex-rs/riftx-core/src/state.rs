@@ -221,6 +221,11 @@ impl StateStore {
         AuditWriter::new(config, self.cipher.clone())
     }
 
+    /// Returns an opaque cipher handle for other engagement-owned encrypted stores.
+    pub fn record_cipher(&self) -> Arc<dyn EngagementRecordCipher> {
+        self.cipher.clone()
+    }
+
     async fn initialize(&self) -> Result<(), StateError> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS engagements (id TEXT PRIMARY KEY, data BLOB NOT NULL)",

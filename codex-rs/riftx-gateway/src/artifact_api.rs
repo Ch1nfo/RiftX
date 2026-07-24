@@ -87,6 +87,11 @@ fn map_capture_error(error: CaptureError) -> ApiError {
 fn map_store_error(error: ArtifactError) -> ApiError {
     if error.is_request_error() {
         ApiError::bad_request(error.to_string())
+    } else if matches!(
+        error,
+        ArtifactError::Crypto(_) | ArtifactError::CryptoTask(_)
+    ) {
+        ApiError::internal("encrypted artifact is unavailable")
     } else {
         ApiError::internal(error.to_string())
     }

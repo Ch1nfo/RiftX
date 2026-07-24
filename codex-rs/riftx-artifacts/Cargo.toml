@@ -14,14 +14,17 @@ workspace = true
 
 [dependencies]
 codex-riftx-core = { workspace = true }
+codex-riftx-crypto = { workspace = true }
 mime_guess = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt"] }
 uuid = { workspace = true, features = ["v4"] }
 walkdir = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
+codex-keyring-store = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -171,7 +171,7 @@ Markdown 和 JSON。
 - 按 Engagement 数据密钥加密的 append-only Audit；全局 daemon 控制记录只保留隐私安全
   的系统元数据。
 - 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
-- workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
+- workspace Artifact 内容寻址采集、容量限制、分块认证加密、哈希复验和受控导出。
 - Markdown/JSON 报告。
 - macOS、Windows、Linux 的核心领域契约和确定性 Native daemon 验收 CI。
 - macOS 调试 `.app` 的实际 IPC、列表、创建、实时事件、interrupt、连续指令和报告
@@ -181,7 +181,7 @@ Markdown 和 JSON。
 
 - Provider/Profile 定义增删与端点编辑、完整审批矩阵和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- Artifact 和 `.riftxcase` 加密；SQLite 与 Engagement Audit 数据已经加密。
+- 加密 `.riftxcase`；SQLite、Engagement Audit 和 Artifact 数据已经加密。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
 - HTML/PDF 报告及正式安装包。

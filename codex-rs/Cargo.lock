@@ -3819,7 +3819,9 @@ dependencies = [
 name = "codex-riftx-artifacts"
 version = "0.0.0"
 dependencies = [
+ "codex-keyring-store",
  "codex-riftx-core",
+ "codex-riftx-crypto",
  "mime_guess",
  "pretty_assertions",
  "sha2 0.10.9",
@@ -3828,6 +3830,7 @@ dependencies = [
  "tokio",
  "uuid",
  "walkdir",
+ "zeroize",
 ]
 
 [[package]]
