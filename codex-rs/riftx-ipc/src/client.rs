@@ -8,7 +8,10 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
+use std::pin::Pin;
 use thiserror::Error;
+
+const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LocalIpcError {
@@ -18,6 +21,8 @@ pub enum LocalIpcError {
     Http(#[from] hyper::Error),
     #[error("invalid local IPC request: {0}")]
     Request(#[from] http::Error),
+    #[error("invalid local IPC event stream: {0}")]
+    EventStream(String),
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +103,104 @@ impl LocalIpcResponse {
     ) -> impl futures::Stream<Item = Result<Bytes, hyper::Error>> + Send {
         self.inner.into_body().into_data_stream()
     }
+
+    pub fn into_sse_stream(self) -> LocalSseStream {
+        LocalSseStream {
+            inner: Box::pin(self.inner.into_body().into_data_stream()),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSseEvent {
+    pub event: Option<String>,
+    pub data: String,
+    pub id: Option<String>,
+}
+
+pub struct LocalSseStream {
+    inner: Pin<Box<dyn futures::Stream<Item = Result<Bytes, hyper::Error>> + Send>>,
+    buffer: Vec<u8>,
+}
+
+impl LocalSseStream {
+    pub async fn next_event(&mut self) -> Result<Option<LocalSseEvent>, LocalIpcError> {
+        use futures::StreamExt;
+
+        loop {
+            if let Some(frame_end) = frame_end(&self.buffer) {
+                let frame = self.buffer.drain(..frame_end).collect::<Vec<_>>();
+                if let Some(event) = parse_sse_frame(&frame)? {
+                    return Ok(Some(event));
+                }
+                continue;
+            }
+
+            match self.inner.next().await {
+                Some(Ok(chunk)) => {
+                    self.buffer.extend_from_slice(&chunk);
+                    if self.buffer.len() > MAX_SSE_EVENT_BYTES
+                        && frame_end(&self.buffer)
+                            .is_none_or(|frame_end| frame_end > MAX_SSE_EVENT_BYTES)
+                    {
+                        return Err(LocalIpcError::EventStream(format!(
+                            "event exceeds the {MAX_SSE_EVENT_BYTES}-byte limit"
+                        )));
+                    }
+                }
+                Some(Err(error)) => return Err(LocalIpcError::Http(error)),
+                None if self.buffer.is_empty() => return Ok(None),
+                None => {
+                    let frame = std::mem::take(&mut self.buffer);
+                    return parse_sse_frame(&frame);
+                }
+            }
+        }
+    }
+}
+
+fn frame_end(buffer: &[u8]) -> Option<usize> {
+    for index in 0..buffer.len() {
+        if buffer[index..].starts_with(b"\n\n") {
+            return Some(index + 2);
+        }
+        if buffer[index..].starts_with(b"\r\n\r\n") {
+            return Some(index + 4);
+        }
+    }
+    None
+}
+
+fn parse_sse_frame(frame: &[u8]) -> Result<Option<LocalSseEvent>, LocalIpcError> {
+    let frame = std::str::from_utf8(frame)
+        .map_err(|error| LocalIpcError::EventStream(error.to_string()))?;
+    let mut event = None;
+    let mut id = None;
+    let mut data = Vec::new();
+    for line in frame.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| {
+            (field, value.strip_prefix(' ').unwrap_or(value))
+        });
+        match field {
+            "event" => event = Some(value.to_string()),
+            "data" => data.push(value),
+            "id" => id = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if event.is_none() && data.is_empty() && id.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(LocalSseEvent {
+        event,
+        data: data.join("\n"),
+        id,
+    }))
 }
 
 #[cfg(unix)]

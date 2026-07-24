@@ -9,9 +9,10 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_ipc::EngagementEvent;
+use codex_riftx_ipc::PendingApproval;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_tools::ToolInventory;
-use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -32,11 +33,11 @@ pub struct GatewayState {
     pub(crate) artifact_store: Arc<ArtifactStore>,
     pub(crate) audit: AuditWriter,
     pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
-    pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<GatewayEvent>>>>,
+    pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<EngagementEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
     pub(crate) agent_threads: Arc<RwLock<HashMap<String, String>>>,
-    pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
+    pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApprovalRequest>>>,
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
@@ -49,24 +50,15 @@ pub(crate) struct ActiveTurn {
 }
 
 #[derive(Clone)]
-pub(crate) struct PendingApproval {
+pub(crate) struct PendingApprovalRequest {
     pub(crate) engagement_id: String,
-    pub(crate) policy_revision: String,
+    pub(crate) view: PendingApproval,
     pub(crate) kind: PendingApprovalKind,
 }
 
 #[derive(Clone)]
 pub(crate) enum PendingApprovalKind {
     Command(PendingCommandApproval),
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct GatewayEvent {
-    pub(crate) engagement_id: String,
-    pub(crate) kind: String,
-    pub(crate) timestamp: i64,
-    pub(crate) data: Value,
 }
 
 impl GatewayState {
@@ -126,6 +118,7 @@ impl GatewayState {
                     }
                 }
             }
+            state.pending_approvals.write().await.clear();
             state.publish_to_active("appServer/closed", json!({})).await;
         });
     }
@@ -186,7 +179,7 @@ impl GatewayState {
             let _ = self.audit.append(&record).await;
         }
         let sender = self.event_sender(engagement_id).await;
-        let _ = sender.send(GatewayEvent {
+        let _ = sender.send(EngagementEvent {
             engagement_id: engagement_id.to_string(),
             kind: kind.to_string(),
             timestamp: unix_timestamp(),
@@ -197,7 +190,7 @@ impl GatewayState {
     pub(crate) async fn event_sender(
         &self,
         engagement_id: &str,
-    ) -> broadcast::Sender<GatewayEvent> {
+    ) -> broadcast::Sender<EngagementEvent> {
         if let Some(sender) = self.events.read().await.get(engagement_id) {
             return sender.clone();
         }
@@ -219,6 +212,17 @@ impl GatewayState {
         for engagement_id in active {
             self.publish(&engagement_id, kind, data.clone()).await;
         }
+    }
+
+    pub(crate) async fn take_pending_approvals(
+        &self,
+        engagement_id: &str,
+    ) -> Vec<PendingApprovalRequest> {
+        let mut approvals = self.pending_approvals.write().await;
+        approvals
+            .extract_if(|_, pending| pending.engagement_id == engagement_id)
+            .map(|(_, pending)| pending)
+            .collect()
     }
 
     pub(crate) async fn complete_task(&self, engagement_id: &str, turn_id: &str, data: &Value) {

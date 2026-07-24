@@ -208,6 +208,28 @@ async fn engagement_can_be_created_and_read() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/engagements/{}/approvals", engagement.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let approvals: Vec<codex_riftx_ipc::PendingApproval> = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("approval list JSON");
+    assert_eq!(approvals, Vec::new());
+
+    let response = app
         .oneshot(
             Request::builder()
                 .uri("/v1/engagements")

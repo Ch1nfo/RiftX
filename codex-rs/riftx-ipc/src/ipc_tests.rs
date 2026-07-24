@@ -48,3 +48,58 @@ async fn local_http_round_trip_and_streaming() {
     assert_eq!(chunks.concat(), b"one\ntwo\n");
     server.abort();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_sse_stream_decodes_events_and_ignores_keep_alive_frames() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let endpoint = LocalIpcEndpoint::new(temp.path().join("ipc"));
+    let listener = LocalIpcListener::bind(endpoint.clone())
+        .await
+        .expect("bind");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/events",
+                get(|| async {
+                    concat!(
+                        ":keep-alive\r\n\r\n",
+                        "id: event-1\r\n",
+                        "event: turnStarted\r\n",
+                        "data: {\"engagementId\":\"eng-1\",\r\n",
+                        "data: \"kind\":\"turnStarted\"}\r\n\r\n",
+                        "event: turnCompleted\n",
+                        "data: {}\n\n"
+                    )
+                }),
+            ),
+        )
+        .await
+        .expect("serve");
+    });
+
+    let response = LocalIpcClient::new(endpoint)
+        .get("/events")
+        .await
+        .expect("request");
+    let mut events = response.into_sse_stream();
+    assert_eq!(
+        events.next_event().await.expect("first event"),
+        Some(LocalSseEvent {
+            event: Some("turnStarted".to_string()),
+            data: "{\"engagementId\":\"eng-1\",\n\"kind\":\"turnStarted\"}".to_string(),
+            id: Some("event-1".to_string()),
+        })
+    );
+    assert_eq!(
+        events.next_event().await.expect("second event"),
+        Some(LocalSseEvent {
+            event: Some("turnCompleted".to_string()),
+            data: "{}".to_string(),
+            id: None,
+        })
+    );
+    assert_eq!(events.next_event().await.expect("stream end"), None);
+    server.abort();
+}

@@ -27,7 +27,9 @@ use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::PendingApproval;
 use codex_riftx_tools::ToolInventory;
 use futures::Stream;
 use futures::stream;
@@ -66,13 +68,6 @@ struct StartTurnParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApprovalDecisionParams {
     decision: ApprovalDecision,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum ApprovalDecision {
-    Approve,
-    Deny,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +179,7 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/engagements/{id}", get(get_engagement))
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/turns", post(start_turn))
+        .route("/v1/engagements/{id}/approvals", get(list_approvals))
         .route("/v1/approvals/{id}/decision", post(decide_approval))
         .route("/v1/engagements/{id}/interrupt", post(interrupt_engagement))
         .route("/v1/engagements/{id}/events", get(events))
@@ -416,6 +412,9 @@ async fn start_turn(
         error: None,
     };
     state.store.put_task(&task).await?;
+    state
+        .publish(&id, "operator/message", json!({"text": operator_request}))
+        .await;
     let input = operational_agent_input(&state, &id, operator_request).await?;
     let turn_result = app_server
         .start_local_turn(thread_id.clone(), &workspace, input)
@@ -453,6 +452,27 @@ async fn start_turn(
     ))
 }
 
+async fn list_approvals(
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<PendingApproval>>, ApiError> {
+    state.store.engagement(&id).await?;
+    let mut approvals = state
+        .pending_approvals
+        .read()
+        .await
+        .values()
+        .filter(|pending| pending.engagement_id == id)
+        .map(|pending| pending.view.clone())
+        .collect::<Vec<_>>();
+    approvals.sort_by(|left, right| {
+        left.requested_at
+            .cmp(&right.requested_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(Json(approvals))
+}
+
 async fn decide_approval(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
@@ -479,8 +499,8 @@ async fn decide_approval(
     )
     .map_err(|error| ApiError::bad_request(error.to_string()))?;
     let policy_is_current = authorization_is_current
-        && current_policy.revision == pending.policy_revision
-        && engagement.policy_revision == pending.policy_revision;
+        && current_policy.revision == pending.view.policy_revision
+        && engagement.policy_revision == pending.view.policy_revision;
     let approved = matches!(params.decision, ApprovalDecision::Approve) && policy_is_current;
     let engagement_id = pending.engagement_id.clone();
     let app_server = state
@@ -543,6 +563,21 @@ async fn interrupt_engagement(
     }
     state.active_turns.write().await.remove(&id);
     state.agent_threads.write().await.remove(&id);
+    let pending_approvals = state.take_pending_approvals(&id).await;
+    if let Some(app_server) = &state.app_server {
+        for pending in pending_approvals {
+            match pending.kind {
+                PendingApprovalKind::Command(command) => {
+                    let _ = app_server
+                        .decide_command_approval(
+                            command,
+                            codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                        )
+                        .await;
+                }
+            }
+        }
+    }
     tokio::spawn(crate::artifacts::capture_pending(state.clone(), id.clone()));
     let engagement = state
         .store

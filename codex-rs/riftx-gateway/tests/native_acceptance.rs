@@ -124,6 +124,17 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         .post(&format!("/v1/engagements/{}/activate", engagement.id))
         .await?;
     ensure_status(response, StatusCode::OK, "activate engagement").await?;
+    let event_response = client
+        .get(&format!("/v1/engagements/{}/events", engagement.id))
+        .await?;
+    anyhow::ensure!(
+        event_response.status() == StatusCode::OK,
+        "subscribe to engagement events returned {}",
+        event_response.status()
+    );
+    let event_collector = tokio::spawn(collect_events_until_turn_completion(
+        event_response.into_sse_stream(),
+    ));
     let response = client
         .post_json(
             &format!("/v1/engagements/{}/turns", engagement.id),
@@ -221,6 +232,12 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
     anyhow::ensure!(audit.contains("execution/completed"));
     anyhow::ensure!(audit.contains("artifact/captured"));
     anyhow::ensure!(!audit.contains(API_KEY));
+    let event_kinds = tokio::time::timeout(Duration::from_secs(10), event_collector)
+        .await
+        .context("event stream did not observe turn completion")?
+        .context("event collector task failed")??;
+    anyhow::ensure!(event_kinds.iter().any(|kind| kind == "operator/message"));
+    anyhow::ensure!(event_kinds.iter().any(|kind| kind == "turn/completed"));
     anyhow::ensure!(response_mock.requests().len() == 2);
     Ok(())
 }
@@ -310,6 +327,24 @@ async fn wait_for_completed_report(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("Native turn did not complete with an artifact: {last_report}")
+}
+
+async fn collect_events_until_turn_completion(
+    mut stream: codex_riftx_ipc::LocalSseStream,
+) -> anyhow::Result<Vec<String>> {
+    let mut kinds = Vec::new();
+    while let Some(frame) = stream.next_event().await? {
+        if frame.data.is_empty() {
+            continue;
+        }
+        let event: codex_riftx_ipc::EngagementEvent = serde_json::from_str(&frame.data)?;
+        let completed = event.kind == "turn/completed";
+        kinds.push(event.kind);
+        if completed {
+            return Ok(kinds);
+        }
+    }
+    anyhow::bail!("engagement event stream closed before turn completion")
 }
 
 async fn ensure_status(

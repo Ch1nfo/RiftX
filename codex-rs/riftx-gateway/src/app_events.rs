@@ -1,9 +1,11 @@
 use crate::gateway_state::GatewayState;
-use crate::gateway_state::PendingApproval;
 use crate::gateway_state::PendingApprovalKind;
+use crate::gateway_state::PendingApprovalRequest;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
 use codex_riftx_core::ExecutionStatus;
+use codex_riftx_ipc::ApprovalKind;
+use codex_riftx_ipc::PendingApproval;
 use serde_json::Value;
 use serde_json::json;
 
@@ -82,9 +84,18 @@ async fn command_approval(state: &GatewayState, pending: PendingCommandApproval)
     let approval_id = pending.approval_id();
     state.pending_approvals.write().await.insert(
         approval_id.clone(),
-        PendingApproval {
+        PendingApprovalRequest {
             engagement_id: engagement_id.clone(),
-            policy_revision: engagement.policy_revision,
+            view: PendingApproval {
+                id: approval_id.clone(),
+                engagement_id: engagement_id.clone(),
+                policy_revision: engagement.policy_revision,
+                kind: ApprovalKind::Command,
+                requested_at: pending.params.started_at_ms / 1_000,
+                command: pending.params.command.clone(),
+                cwd: pending.params.cwd.as_ref().map(ToString::to_string),
+                reason: pending.params.reason.clone(),
+            },
             kind: PendingApprovalKind::Command(pending.clone()),
         },
     );
@@ -120,6 +131,7 @@ async fn forward_event(state: &GatewayState, event: RiftxAppServerEvent) {
             .complete_task(&engagement_id, turn_id, &event.data)
             .await;
         state.active_turns.write().await.remove(&engagement_id);
+        state.take_pending_approvals(&engagement_id).await;
         tokio::spawn(crate::artifacts::capture_pending(
             state.clone(),
             engagement_id.clone(),
