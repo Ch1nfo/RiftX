@@ -41,3 +41,46 @@ fn credential_store_rejects_unsafe_profile_names() {
         Err(CredentialError::InvalidProfile)
     ));
 }
+
+#[test]
+fn assessment_secret_debug_output_is_redacted_without_changing_whitespace() {
+    let secret = AssessmentSecret::new("  password\n".to_string()).expect("assessment secret");
+    let debug = format!("{secret:?}");
+
+    assert_eq!(secret.into_inner(), "  password\n");
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("password"));
+}
+
+#[test]
+fn assessment_store_round_trips_and_deletes_a_credential() {
+    let backend = MockKeyringStore::default();
+    let store = AssessmentCredentialStore::new(backend);
+    let locator = CredentialLocator::new("engagement-1", "credential-1").expect("locator");
+
+    assert_eq!(store.load(&locator).expect("load missing secret"), None);
+    store
+        .save(
+            &locator,
+            AssessmentSecret::new("saved-secret".to_string()).expect("secret"),
+        )
+        .expect("save secret");
+    assert_eq!(
+        store.load(&locator).expect("load secret"),
+        Some(AssessmentSecret::new("saved-secret".to_string()).expect("secret"))
+    );
+    assert!(store.delete(&locator).expect("delete secret"));
+    assert_eq!(store.load(&locator).expect("load deleted secret"), None);
+}
+
+#[test]
+fn credential_locator_rejects_unsafe_identifiers() {
+    assert!(matches!(
+        CredentialLocator::new("../engagement", "credential"),
+        Err(CredentialError::InvalidEngagementId)
+    ));
+    assert!(matches!(
+        CredentialLocator::new("engagement", "../credential"),
+        Err(CredentialError::InvalidCredentialId)
+    ));
+}
