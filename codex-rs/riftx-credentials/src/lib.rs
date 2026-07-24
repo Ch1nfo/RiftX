@@ -179,6 +179,17 @@ pub struct AssessmentCredentialStore<S = DefaultKeyringStore> {
     store: S,
 }
 
+/// Loads assessment secrets for a trusted local execution boundary.
+///
+/// Implementations must return the secret only to the immediate process owner and must not log,
+/// serialize, or persist the returned value outside the operating-system credential store.
+pub trait AssessmentSecretProvider: Send + Sync {
+    fn load_secret(
+        &self,
+        locator: &CredentialLocator,
+    ) -> Result<Option<AssessmentSecret>, CredentialError>;
+}
+
 impl Default for AssessmentCredentialStore {
     fn default() -> Self {
         Self {
@@ -219,6 +230,18 @@ where
         self.store
             .delete(ASSESSMENT_SERVICE, &locator.storage_key())
             .map_err(Into::into)
+    }
+}
+
+impl<S> AssessmentSecretProvider for AssessmentCredentialStore<S>
+where
+    S: KeyringStore + Send + Sync,
+{
+    fn load_secret(
+        &self,
+        locator: &CredentialLocator,
+    ) -> Result<Option<AssessmentSecret>, CredentialError> {
+        self.load(locator)
     }
 }
 
