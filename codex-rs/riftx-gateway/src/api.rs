@@ -33,7 +33,10 @@ use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_ipc::ApprovalDecision;
+use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::DaemonPauseReason;
+use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_tools::ToolInventory;
 use futures::Stream;
@@ -153,6 +156,21 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn daemon_paused(status: &DaemonControlStatus) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "daemon_paused",
+            message: match status.reason {
+                Some(DaemonPauseReason::KillSwitch) => {
+                    "RiftX execution is blocked by the Kill Switch".to_string()
+                }
+                Some(DaemonPauseReason::OperatorPause) | None => {
+                    "RiftX execution is paused".to_string()
+                }
+            },
+        }
+    }
 }
 
 impl From<StateError> for ApiError {
@@ -191,6 +209,10 @@ impl IntoResponse for ApiError {
 pub fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/system/info", get(system_info))
+        .route("/v1/system/status", get(system_status))
+        .route("/v1/system/pause", post(pause_system))
+        .route("/v1/system/resume", post(resume_system))
+        .route("/v1/system/kill", post(kill_system))
         .route("/v1/skills", get(skills))
         .route("/v1/tools", get(tools))
         .route(
@@ -223,6 +245,26 @@ pub fn build_router(state: GatewayState) -> Router {
 
 async fn system_info() -> Json<DaemonInfo> {
     Json(DaemonInfo::current())
+}
+
+async fn system_status(State(state): State<GatewayState>) -> Json<DaemonControlStatus> {
+    Json(state.control_status().await)
+}
+
+async fn pause_system(
+    State(state): State<GatewayState>,
+) -> Result<Json<DaemonControlStatus>, ApiError> {
+    pause_execution(state, DaemonPauseReason::OperatorPause).await
+}
+
+async fn kill_system(
+    State(state): State<GatewayState>,
+) -> Result<Json<DaemonControlStatus>, ApiError> {
+    pause_execution(state, DaemonPauseReason::KillSwitch).await
+}
+
+async fn resume_system(State(state): State<GatewayState>) -> Json<DaemonControlStatus> {
+    Json(state.set_control(DaemonRunState::Running, None).await)
 }
 
 async fn tools(State(state): State<GatewayState>) -> Json<ToolInventory> {
@@ -315,6 +357,7 @@ async fn activate_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
+    require_execution_running(&state).await?;
     let engagement = state.store.engagement(&id).await?;
     if !matches!(
         engagement.status,
@@ -368,12 +411,14 @@ async fn start_turn(
     Path(id): Path<String>,
     Json(params): Json<StartTurnParams>,
 ) -> Result<(StatusCode, Json<TurnAccepted>), ApiError> {
+    require_execution_running(&state).await?;
     let _turn_permit = state
         .turn_slot
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    require_execution_running(&state).await?;
     let mut engagement = state.store.engagement(&id).await?;
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::bad_request("engagement is not active"));
@@ -547,7 +592,10 @@ async fn decide_approval(
     let policy_is_current = authorization_is_current
         && current_policy.revision == pending.view.policy_revision
         && engagement.policy_revision == pending.view.policy_revision;
-    let approved = matches!(params.decision, ApprovalDecision::Approve) && policy_is_current;
+    let execution_is_running = state.control_status().await.state == DaemonRunState::Running;
+    let approved = matches!(params.decision, ApprovalDecision::Approve)
+        && policy_is_current
+        && execution_is_running;
     let engagement_id = pending.engagement_id.clone();
     let app_server = state
         .app_server
@@ -576,9 +624,13 @@ async fn decide_approval(
                 "approvalId": id,
                 "decision": params.decision,
                 "policyCurrent": policy_is_current,
+                "executionRunning": execution_is_running,
             }),
         )
         .await;
+    if matches!(params.decision, ApprovalDecision::Approve) && !execution_is_running {
+        return Err(ApiError::daemon_paused(&state.control_status().await));
+    }
     if matches!(params.decision, ApprovalDecision::Approve) && !policy_is_current {
         return Err(ApiError::bad_request(
             "approval invalidated because the authorization expired or policy revision changed",
@@ -591,8 +643,18 @@ async fn interrupt_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
-    state.store.engagement(&id).await?;
-    let active_turn = state.active_turns.read().await.get(&id).cloned();
+    Ok(Json(
+        interrupt_engagement_inner(&state, &id, "operatorInterrupt").await?,
+    ))
+}
+
+async fn interrupt_engagement_inner(
+    state: &GatewayState,
+    id: &str,
+    reason: &str,
+) -> Result<Engagement, ApiError> {
+    state.store.engagement(id).await?;
+    let active_turn = state.active_turns.read().await.get(id).cloned();
     if let Some(active_turn) = active_turn {
         if let Some(app_server) = &state.app_server {
             let _ = app_server
@@ -600,16 +662,16 @@ async fn interrupt_engagement(
                 .await;
         }
         crate::execution_events::finish_turn(
-            &state,
-            &id,
+            state,
+            id,
             &active_turn.turn_id,
             ExecutionStatus::Interrupted,
         )
         .await;
     }
-    state.active_turns.write().await.remove(&id);
-    state.agent_threads.write().await.remove(&id);
-    let pending_approvals = state.take_pending_approvals(&id).await;
+    state.active_turns.write().await.remove(id);
+    state.agent_threads.write().await.remove(id);
+    let pending_approvals = state.take_pending_approvals(id).await;
     if let Some(app_server) = &state.app_server {
         for pending in pending_approvals {
             match pending.kind {
@@ -624,13 +686,57 @@ async fn interrupt_engagement(
             }
         }
     }
-    tokio::spawn(crate::artifacts::capture_pending(state.clone(), id.clone()));
+    tokio::spawn(crate::artifacts::capture_pending(
+        state.clone(),
+        id.to_string(),
+    ));
     let engagement = state
         .store
-        .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
+        .transition_engagement(id, EngagementStatus::Interrupted, unix_timestamp())
         .await?;
-    state.publish(&id, "engagementInterrupted", json!({})).await;
-    Ok(Json(engagement))
+    state
+        .publish(id, "engagementInterrupted", json!({"reason": reason}))
+        .await;
+    Ok(engagement)
+}
+
+async fn pause_execution(
+    state: GatewayState,
+    reason: DaemonPauseReason,
+) -> Result<Json<DaemonControlStatus>, ApiError> {
+    let status = state
+        .set_control(DaemonRunState::Paused, Some(reason))
+        .await;
+    let _turn_permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let active = state
+        .store
+        .engagements()
+        .await?
+        .into_iter()
+        .filter(|engagement| engagement.status == EngagementStatus::Active)
+        .map(|engagement| engagement.id)
+        .collect::<Vec<_>>();
+    let event_reason = match reason {
+        DaemonPauseReason::OperatorPause => "operatorPause",
+        DaemonPauseReason::KillSwitch => "killSwitch",
+    };
+    for engagement_id in active {
+        interrupt_engagement_inner(&state, &engagement_id, event_reason).await?;
+    }
+    Ok(Json(status))
+}
+
+async fn require_execution_running(state: &GatewayState) -> Result<(), ApiError> {
+    let status = state.control_status().await;
+    if status.state == DaemonRunState::Running {
+        return Ok(());
+    }
+    Err(ApiError::daemon_paused(&status))
 }
 
 async fn events(

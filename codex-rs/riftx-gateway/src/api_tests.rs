@@ -12,6 +12,7 @@ use codex_riftx_core::ConversationEntryDraft;
 use codex_riftx_core::ConversationKind;
 use codex_riftx_core::ConversationRole;
 use codex_riftx_core::DaemonConfig;
+use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::EnvironmentClass;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::LlmApiKeySource;
@@ -23,6 +24,9 @@ use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
+use codex_riftx_ipc::DaemonControlStatus;
+use codex_riftx_ipc::DaemonPauseReason;
+use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolInventory;
@@ -83,6 +87,48 @@ async fn test_state(temp: &TempDir) -> GatewayState {
 
 async fn test_router(temp: &TempDir) -> Router {
     build_router(test_state(temp).await)
+}
+
+fn native_engagement(state: &GatewayState, id: &str, status: EngagementStatus) -> Engagement {
+    let authorization = AuthorizationScope {
+        network: Scope {
+            cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
+            domains: Vec::new(),
+            ports: Vec::new(),
+        },
+        identities: Vec::new(),
+        capabilities: vec!["network.discovery".to_string()],
+        environment: EnvironmentClass::Lab,
+        window: AuthorizationWindow {
+            starts_at: None,
+            expires_at: Some(2_000_000_000),
+        },
+    };
+    let policy_revision = EffectivePolicy::resolve(
+        &state.config.policy,
+        ExecutionMode::Native,
+        &authorization,
+        None,
+    )
+    .expect("effective policy")
+    .revision;
+    Engagement {
+        id: id.to_string(),
+        name: "Controlled lab".to_string(),
+        status,
+        objective: AssessmentObjective {
+            summary: "Validate runtime controls".to_string(),
+            success_criteria: Vec::new(),
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["10.10.0.10".to_string()],
+        mode: ExecutionMode::Native,
+        authorization,
+        policy_revision,
+        thread_id: None,
+        created_at: 1,
+        updated_at: 1,
+    }
 }
 
 #[tokio::test]
@@ -161,6 +207,171 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             .status,
         EngagementStatus::Interrupted
     );
+}
+
+#[tokio::test]
+async fn pause_interrupts_active_work_and_resume_never_replays_it() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-pause", EngagementStatus::Active);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let app = build_router(state.clone());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/system/pause")
+                .body(Body::empty())
+                .expect("pause request"),
+        )
+        .await
+        .expect("pause response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let paused: DaemonControlStatus = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("pause body")
+            .to_bytes(),
+    )
+    .expect("pause status");
+    assert_eq!(
+        (paused.state, paused.reason),
+        (
+            DaemonRunState::Paused,
+            Some(DaemonPauseReason::OperatorPause),
+        )
+    );
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("paused engagement")
+            .status,
+        EngagementStatus::Interrupted
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .body(Body::empty())
+                .expect("blocked activation request"),
+        )
+        .await
+        .expect("blocked activation response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/system/resume")
+                .body(Body::empty())
+                .expect("resume request"),
+        )
+        .await
+        .expect("resume response");
+    let resumed: DaemonControlStatus = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("resume body")
+            .to_bytes(),
+    )
+    .expect("resume status");
+    assert_eq!(
+        (resumed.state, resumed.reason),
+        (DaemonRunState::Running, None)
+    );
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("engagement after resume")
+            .status,
+        EngagementStatus::Interrupted
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .body(Body::empty())
+                .expect("activation request"),
+        )
+        .await
+        .expect("activation response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let audit = tokio::fs::read_to_string(&state.config.audit.jsonl_path)
+        .await
+        .expect("control audit");
+    assert!(audit.contains("\"event\":\"daemon/paused\""));
+    assert!(audit.contains("\"event\":\"daemon/resumed\""));
+}
+
+#[tokio::test]
+async fn kill_switch_blocks_new_execution_with_a_distinct_reason() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-kill", EngagementStatus::Draft);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/system/kill")
+                .body(Body::empty())
+                .expect("kill request"),
+        )
+        .await
+        .expect("kill response");
+    let killed: DaemonControlStatus = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("kill body")
+            .to_bytes(),
+    )
+    .expect("kill status");
+    assert_eq!(
+        (killed.state, killed.reason),
+        (DaemonRunState::Paused, Some(DaemonPauseReason::KillSwitch),)
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .body(Body::empty())
+                .expect("activation request"),
+        )
+        .await
+        .expect("activation response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]

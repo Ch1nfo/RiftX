@@ -9,6 +9,9 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateError;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_ipc::DaemonControlStatus;
+use codex_riftx_ipc::DaemonPauseReason;
+use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::EngagementEvent;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_skills::SkillCatalog;
@@ -41,6 +44,7 @@ pub struct GatewayState {
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
+    pub(crate) control: Arc<RwLock<DaemonControlStatus>>,
 }
 
 #[derive(Clone)]
@@ -92,6 +96,11 @@ impl GatewayState {
             active_executions: Arc::new(RwLock::new(HashMap::new())),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
+            control: Arc::new(RwLock::new(DaemonControlStatus {
+                state: DaemonRunState::Running,
+                reason: None,
+                updated_at: unix_timestamp(),
+            })),
         }
     }
 
@@ -212,6 +221,52 @@ impl GatewayState {
         for engagement_id in active {
             self.publish(&engagement_id, kind, data.clone()).await;
         }
+    }
+
+    pub(crate) async fn control_status(&self) -> DaemonControlStatus {
+        self.control.read().await.clone()
+    }
+
+    pub(crate) async fn set_control(
+        &self,
+        state: DaemonRunState,
+        reason: Option<DaemonPauseReason>,
+    ) -> DaemonControlStatus {
+        let status = DaemonControlStatus {
+            state,
+            reason,
+            updated_at: unix_timestamp(),
+        };
+        *self.control.write().await = status.clone();
+        let event = match (state, reason) {
+            (DaemonRunState::Running, None) => "daemon/resumed",
+            (DaemonRunState::Paused, Some(DaemonPauseReason::OperatorPause)) => "daemon/paused",
+            (DaemonRunState::Paused, Some(DaemonPauseReason::KillSwitch)) => {
+                "daemon/killSwitchActivated"
+            }
+            (DaemonRunState::Running, Some(_)) | (DaemonRunState::Paused, None) => {
+                "daemon/controlChanged"
+            }
+        };
+        let _ = self
+            .audit
+            .append(&AuditRecord {
+                timestamp: status.updated_at,
+                event: event.to_string(),
+                engagement_id: "system".to_string(),
+                thread_id: None,
+                turn_id: None,
+                tool_call_id: None,
+                mode: None,
+                policy_revision: None,
+                outcome: Some("success".to_string()),
+                details: Some(json!({
+                    "state": status.state,
+                    "reason": status.reason,
+                })),
+            })
+            .await;
+        status
     }
 
     pub(crate) async fn take_pending_approvals(
