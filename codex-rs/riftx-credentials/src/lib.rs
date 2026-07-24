@@ -4,6 +4,10 @@ use codex_keyring_store::KeyringStore;
 use thiserror::Error;
 use zeroize::Zeroize;
 
+mod process;
+
+pub use process::*;
+
 const LLM_SERVICE: &str = "com.riftx.llm";
 const ASSESSMENT_SERVICE: &str = "com.riftx.assessment";
 const ACCOUNT_PREFIX: &str = "api-key/";
