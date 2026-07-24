@@ -62,6 +62,10 @@ impl AssessmentSecret {
     pub fn into_inner(mut self) -> String {
         std::mem::take(&mut self.0)
     }
+
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.0).into_bytes()
+    }
 }
 
 impl std::fmt::Debug for AssessmentSecret {
@@ -179,15 +183,23 @@ pub struct AssessmentCredentialStore<S = DefaultKeyringStore> {
     store: S,
 }
 
-/// Loads assessment secrets for a trusted local execution boundary.
+/// Owns assessment secrets for a trusted local execution boundary.
 ///
-/// Implementations must return the secret only to the immediate process owner and must not log,
-/// serialize, or persist the returned value outside the operating-system credential store.
+/// Implementations must keep secrets in the operating-system credential store and return them only
+/// to the immediate process owner. Callers must not log, serialize, or persist returned values.
 pub trait AssessmentSecretProvider: Send + Sync {
     fn load_secret(
         &self,
         locator: &CredentialLocator,
     ) -> Result<Option<AssessmentSecret>, CredentialError>;
+
+    fn save_secret(
+        &self,
+        locator: &CredentialLocator,
+        secret: AssessmentSecret,
+    ) -> Result<(), CredentialError>;
+
+    fn delete_secret(&self, locator: &CredentialLocator) -> Result<bool, CredentialError>;
 }
 
 impl Default for AssessmentCredentialStore {
@@ -242,6 +254,18 @@ where
         locator: &CredentialLocator,
     ) -> Result<Option<AssessmentSecret>, CredentialError> {
         self.load(locator)
+    }
+
+    fn save_secret(
+        &self,
+        locator: &CredentialLocator,
+        secret: AssessmentSecret,
+    ) -> Result<(), CredentialError> {
+        self.save(locator, secret)
+    }
+
+    fn delete_secret(&self, locator: &CredentialLocator) -> Result<bool, CredentialError> {
+        self.delete(locator)
     }
 }
 

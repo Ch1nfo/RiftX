@@ -118,20 +118,21 @@ pub(crate) async fn execute_inner(
     let reserved = state.store.reserve_credential_use(&usage_request).await?;
     let locator = CredentialLocator::new(&engagement_id, &reserved.credential_id)
         .map_err(|error| ApiError::internal(error.to_string()))?;
-    let secret = match state.assessment_credentials.load_secret(&locator) {
-        Ok(Some(secret)) => secret,
-        Ok(None) => {
-            fail_reservation(state, &engagement_id, &use_id).await;
-            return Err(ApiError::conflict(
-                "credential_secret_missing",
-                "credential secret is not available in the operating-system credential store",
-            ));
-        }
-        Err(error) => {
-            fail_reservation(state, &engagement_id, &use_id).await;
-            return Err(ApiError::internal(error.to_string()));
-        }
-    };
+    let secret =
+        match crate::credential_store::load(state.assessment_credentials.clone(), locator).await {
+            Ok(Some(secret)) => secret,
+            Ok(None) => {
+                fail_reservation(state, &engagement_id, &use_id).await;
+                return Err(ApiError::conflict(
+                    "credential_secret_missing",
+                    "credential secret is not available in the operating-system credential store",
+                ));
+            }
+            Err(error) => {
+                fail_reservation(state, &engagement_id, &use_id).await;
+                return Err(error);
+            }
+        };
     let request = CredentialProcessRequest {
         program: tool.path.clone(),
         expected_sha256: tool.sha256.clone(),

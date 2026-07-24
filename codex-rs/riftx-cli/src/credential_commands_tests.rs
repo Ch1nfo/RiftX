@@ -78,16 +78,6 @@ fn credential_grant_parses_explicit_safety_limits() {
 }
 
 #[test]
-fn credential_locator_matches_gateway_storage_key() {
-    let locator = CredentialLocator::new("engagement-1", "credential-1").expect("locator");
-
-    assert_eq!(
-        locator.storage_key(),
-        "engagement/engagement-1/credential/credential-1"
-    );
-}
-
-#[test]
 fn entity_lookup_returns_only_the_requested_credential() {
     let references = json!([
         {"id": "credential-1", "label": "first"},

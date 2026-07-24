@@ -27,6 +27,7 @@ async fn credential_references_and_grants_are_engagement_scoped() {
         storage_key: "engagement/engagement-1/credential/credential-1".to_string(),
         username: Some("lab.user".to_string()),
         domain: Some("LAB".to_string()),
+        configured: true,
         created_at: 100,
     };
     let grant = CredentialGrant {

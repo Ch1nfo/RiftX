@@ -1,8 +1,6 @@
 use anyhow::Context;
 use clap::Subcommand;
-use codex_riftx_credentials::AssessmentCredentialStore;
 use codex_riftx_credentials::AssessmentSecret;
-use codex_riftx_credentials::CredentialLocator;
 use codex_riftx_ipc::LocalIpcClient;
 use serde_json::Value;
 use serde_json::json;
@@ -108,24 +106,31 @@ pub(crate) async fn execute(
                 },
             )
             .await?;
-            let credential_id = response_id(&reference, "credential")?;
-            let locator = CredentialLocator::new(&id, credential_id)?;
-            let save_result = tokio::task::spawn_blocking(move || {
-                AssessmentCredentialStore::default().save(&locator, secret)
-            })
+            let credential_id = response_id(&reference, "credential")?.to_string();
+            let configured = match request_json(
+                client,
+                Request::PostBytes {
+                    path: format!("/v1/engagements/{id}/credentials/{credential_id}/secret"),
+                    body: secret.into_bytes(),
+                },
+            )
             .await
-            .context("credential store task failed")?;
-            if let Err(error) = save_result {
-                let _ = request_json(
-                    client,
-                    Request::Post {
-                        path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
-                    },
-                )
-                .await;
-                return Err(error).context("save assessment credential");
-            }
-            print_json(&reference)?;
+            {
+                Ok(configured) => configured,
+                Err(error) => {
+                    let _ = request_json(
+                        client,
+                        Request::Post {
+                            path: format!(
+                                "/v1/engagements/{id}/credentials/{credential_id}/delete"
+                            ),
+                        },
+                    )
+                    .await;
+                    return Err(error).context("save assessment credential through riftxd");
+                }
+            };
+            print_json(&configured)?;
         }
         CredentialCommand::List { id } => {
             print_json(
@@ -146,7 +151,7 @@ pub(crate) async fn execute(
                 },
             )
             .await?;
-            let reference = entity_by_id(&references, &credential_id, "credential")?;
+            entity_by_id(&references, &credential_id, "credential")?;
             let grants = request_json(
                 client,
                 Request::Get {
@@ -165,23 +170,13 @@ pub(crate) async fn execute(
                 )
                 .await?;
             }
-            let locator = CredentialLocator::new(&id, &credential_id)?;
-            tokio::task::spawn_blocking(move || {
-                AssessmentCredentialStore::default().delete(&locator)
-            })
-            .await
-            .context("credential store task failed")??;
-            let reference = if matching_grants.is_empty() {
-                request_json(
-                    client,
-                    Request::Post {
-                        path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
-                    },
-                )
-                .await?
-            } else {
-                reference
-            };
+            let reference = request_json(
+                client,
+                Request::Post {
+                    path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
+                },
+            )
+            .await?;
             print_json(&reference)?;
         }
         CredentialCommand::Grant {
@@ -270,6 +265,7 @@ enum Request {
     Get { path: String },
     Post { path: String },
     PostJson { path: String, body: Value },
+    PostBytes { path: String, body: Vec<u8> },
 }
 
 async fn request_json(client: &LocalIpcClient, request: Request) -> anyhow::Result<Value> {
@@ -279,6 +275,7 @@ async fn request_json(client: &LocalIpcClient, request: Request) -> anyhow::Resu
         Request::PostJson { path, body } => {
             client.post_json(&path, serde_json::to_vec(&body)?).await
         }
+        Request::PostBytes { path, body } => client.post_bytes(&path, body).await,
     }
     .context("riftxd request failed")?;
     let status = response.status();

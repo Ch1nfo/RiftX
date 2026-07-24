@@ -415,6 +415,18 @@ Scope
 | Windows | Credential Manager |
 | Linux | Secret Service |
 
+`riftxd` 是评估凭据的唯一安全存储所有者。Desktop 和 CLI 先通过本机 IPC 创建
+`configured=false` 的凭据引用，再通过独立的二进制请求把秘密交给 `riftxd`；只有系统
+安全存储写入成功后，引用才更新为 `configured=true`。Desktop、CLI 和 Agent 都不直接
+读取评估秘密，避免不同可执行文件身份导致安全存储访问失败。
+
+同一引用的秘密不可覆盖；轮换凭据必须创建新引用和新 Grant。已有 Grant 历史的
+`configured=false` 引用仅用于审计，不能重新配置。
+
+系统安全存储调用必须运行在 blocking 线程池，不能阻塞 Agent 事件循环。执行前读取设置
+固定超时；超时或读取失败必须关闭已预留的 Credential Use，且不得启动工具进程。删除
+秘密前必须撤销活动 Grant；存在历史 Grant 时保留 `configured=false` 的引用用于审计。
+
 Agent 只看到引用：
 
 ```text
@@ -442,6 +454,7 @@ CredentialGrant
 - 报告。
 - 普通日志。
 - 命令行参数。
+- 凭据元数据 JSON。
 
 工具启动时优先通过 stdin、临时文件或受控环境变量注入。临时文件必须使用最小权限并在进程结束后删除。
 

@@ -22,6 +22,7 @@ pub struct CredentialReference {
     pub storage_key: String,
     pub username: Option<String>,
     pub domain: Option<String>,
+    pub configured: bool,
     pub created_at: i64,
 }
 

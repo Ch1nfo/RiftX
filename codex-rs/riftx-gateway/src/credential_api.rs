@@ -2,6 +2,7 @@ use crate::api::ApiError;
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::unix_timestamp;
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -15,6 +16,8 @@ use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::Scope;
+use codex_riftx_credentials::AssessmentSecret;
+use codex_riftx_credentials::CredentialLocator;
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -64,6 +67,7 @@ pub(crate) async fn create_reference(
         storage_key: format!("engagement/{id}/credential/{credential_id}"),
         username: params.username,
         domain: params.domain,
+        configured: false,
         created_at: unix_timestamp(),
     };
     reference
@@ -81,6 +85,55 @@ pub(crate) async fn create_reference(
         )
         .await;
     Ok((StatusCode::CREATED, Json(reference)))
+}
+
+pub(crate) async fn configure_secret(
+    State(state): State<GatewayState>,
+    Path((id, credential_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Json<CredentialReference>, ApiError> {
+    let engagement = state.store.engagement(&id).await?;
+    ensure_credentials_mutable(&state, &engagement).await?;
+    let mut reference = state
+        .store
+        .credential_reference(&id, &credential_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("credential {credential_id} was not found")))?;
+    if reference.configured {
+        return Err(ApiError::conflict(
+            "credential_already_configured",
+            "credential secret replacement requires a new credential reference",
+        ));
+    }
+    if state
+        .store
+        .credential_grants(&id)
+        .await?
+        .iter()
+        .any(|grant| grant.credential_id == credential_id)
+    {
+        return Err(ApiError::conflict(
+            "credential_has_grant_history",
+            "credential references with grant history cannot be reconfigured",
+        ));
+    }
+    let secret = String::from_utf8(body.to_vec())
+        .map_err(|_| ApiError::bad_request("credential secret must be valid UTF-8"))?;
+    let secret =
+        AssessmentSecret::new(secret).map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let locator = CredentialLocator::new(&id, &credential_id)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    crate::credential_store::save(state.assessment_credentials.clone(), locator, secret).await?;
+    reference.configured = true;
+    state.store.put_credential_reference(&reference).await?;
+    state
+        .publish(
+            &id,
+            "credential/secretConfigured",
+            json!({"credentialId": credential_id}),
+        )
+        .await;
+    Ok(Json(reference))
 }
 
 pub(crate) async fn list_references(
@@ -103,32 +156,45 @@ pub(crate) async fn delete_reference(
 ) -> Result<Json<CredentialReference>, ApiError> {
     let engagement = state.store.engagement(&id).await?;
     ensure_credentials_mutable(&state, &engagement).await?;
-    let reference = state
+    let mut reference = state
         .store
         .credential_reference(&id, &credential_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("credential {credential_id} was not found")))?;
-    if state
-        .store
-        .credential_grants(&id)
-        .await?
+    let grants = state.store.credential_grants(&id).await?;
+    let matching_grants = grants
         .iter()
-        .any(|grant| grant.credential_id == credential_id)
+        .filter(|grant| grant.credential_id == credential_id)
+        .collect::<Vec<_>>();
+    if matching_grants
+        .iter()
+        .any(|grant| grant.revoked_at.is_none())
     {
         return Err(ApiError::conflict(
             "credential_in_use",
-            "credential references with grant history cannot be deleted",
+            "active credential grants must be revoked before deleting the secret",
         ));
     }
-    state
-        .store
-        .delete_credential_reference(&id, &credential_id)
-        .await?;
+    let locator = CredentialLocator::new(&id, &credential_id)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    crate::credential_store::delete(state.assessment_credentials.clone(), locator).await?;
+    reference.configured = false;
+    if matching_grants.is_empty() {
+        state
+            .store
+            .delete_credential_reference(&id, &credential_id)
+            .await?;
+    } else {
+        state.store.put_credential_reference(&reference).await?;
+    }
     state
         .publish(
             &id,
-            "credential/referenceDeleted",
-            json!({"credentialId": credential_id}),
+            "credential/secretDeleted",
+            json!({
+                "credentialId": credential_id,
+                "referenceRetained": !matching_grants.is_empty(),
+            }),
         )
         .await;
     Ok(Json(reference))
@@ -146,7 +212,7 @@ pub(crate) async fn create_grant(
             "an engagement may define at most {MAX_CREDENTIAL_GRANTS} credential grants"
         )));
     }
-    state
+    let reference = state
         .store
         .credential_reference(&id, &params.credential_id)
         .await?
@@ -156,6 +222,12 @@ pub(crate) async fn create_grant(
                 params.credential_id
             ))
         })?;
+    if !reference.configured {
+        return Err(ApiError::conflict(
+            "credential_secret_missing",
+            "credential secret is not configured",
+        ));
+    }
     let now = unix_timestamp();
     let grant = CredentialGrant {
         id: Uuid::new_v4().to_string(),

@@ -5,6 +5,7 @@ mod artifacts;
 mod conversation;
 mod credential_api;
 mod credential_execution;
+mod credential_store;
 mod execution_events;
 mod gateway_state;
 mod report;

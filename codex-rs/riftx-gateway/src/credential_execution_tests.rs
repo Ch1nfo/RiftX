@@ -35,6 +35,18 @@ impl AssessmentSecretProvider for TestSecretProvider {
             .map(|secret| AssessmentSecret::new(secret.to_string()))
             .transpose()
     }
+
+    fn save_secret(
+        &self,
+        _locator: &CredentialLocator,
+        _secret: AssessmentSecret,
+    ) -> Result<(), CredentialError> {
+        Ok(())
+    }
+
+    fn delete_secret(&self, _locator: &CredentialLocator) -> Result<bool, CredentialError> {
+        Ok(self.0.is_some())
+    }
 }
 
 #[cfg(unix)]
@@ -271,6 +283,7 @@ async fn fixture(
         storage_key: "engagement/credential-execution/credential/credential-1".to_string(),
         username: Some("operator".to_string()),
         domain: Some("LAB".to_string()),
+        configured: true,
         created_at: unix_timestamp(),
     };
     state

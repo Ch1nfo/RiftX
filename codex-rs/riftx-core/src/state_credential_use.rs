@@ -109,6 +109,9 @@ async fn reserve(
             .await?
             .ok_or_else(|| StateError::CredentialReferenceNotFound(grant.credential_id.clone()))?;
     let reference: CredentialReference = serde_json::from_str(reference.get("data"))?;
+    if !reference.configured {
+        return Err(StateError::CredentialSecretUnavailable(reference.id));
+    }
     let identity_hash = identity_hash(&reference);
     let use_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM credential_grant_uses WHERE grant_id = ?")

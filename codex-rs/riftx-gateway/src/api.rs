@@ -219,6 +219,7 @@ impl From<StateError> for ApiError {
             | StateError::CredentialUseNotFound(_) => StatusCode::NOT_FOUND,
             StateError::CredentialPolicyRevisionMismatch
             | StateError::CredentialGrantInactive
+            | StateError::CredentialSecretUnavailable(_)
             | StateError::CredentialUseLimitExceeded
             | StateError::CredentialFailureLimitExceeded
             | StateError::CredentialUseInProgress
@@ -267,6 +268,10 @@ pub fn build_router(state: GatewayState) -> Router {
             "/v1/engagements/{id}/credentials",
             get(crate::credential_api::list_references)
                 .post(crate::credential_api::create_reference),
+        )
+        .route(
+            "/v1/engagements/{id}/credentials/{credential_id}/secret",
+            post(crate::credential_api::configure_secret),
         )
         .route(
             "/v1/engagements/{id}/credentials/{credential_id}/delete",

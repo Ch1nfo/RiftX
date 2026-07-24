@@ -12,6 +12,7 @@ fn credential_reference_round_trips_without_a_secret() {
         storage_key: "riftx/engagement-1/corp-test-user".to_string(),
         username: Some("test.user".to_string()),
         domain: Some("LAB".to_string()),
+        configured: true,
         created_at: 100,
     };
 
@@ -31,6 +32,7 @@ fn credential_reference_round_trips_without_a_secret() {
             "storageKey": "riftx/engagement-1/corp-test-user",
             "username": "test.user",
             "domain": "LAB",
+            "configured": true,
             "createdAt": 100
         })
     );

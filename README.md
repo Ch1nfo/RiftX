@@ -175,6 +175,11 @@ Desktop 设置页可逐 Profile 管理 Keyring 凭据，新建 Engagement 时可
 Profile。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、命令行、环境变量或普通
 日志。
 
+评估目标使用的密码、Token、私钥等凭据与 LLM API Key 分开管理。CLI/Desktop 只通过
+本机 IPC 向 `riftxd` 提交秘密，`riftxd` 负责写入和读取 Keychain、Credential Manager
+或 Secret Service；凭据元数据、SQLite、审计、报告和 Agent 上下文只保留引用及
+`configured` 状态。未成功写入系统安全存储的引用不能创建 Credential Grant。
+
 ## 开发运行
 
 ```bash

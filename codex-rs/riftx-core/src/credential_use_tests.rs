@@ -65,6 +65,7 @@ fn identity_hash_is_deterministic_and_excludes_plaintext() {
         storage_key: "engagement/engagement-1/credential/credential-1".to_string(),
         username: Some("Administrator".to_string()),
         domain: Some("LAB.EXAMPLE".to_string()),
+        configured: true,
         created_at: 100,
     };
     let hash = identity_hash(&reference);

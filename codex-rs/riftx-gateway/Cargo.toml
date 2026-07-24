@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true, features = ["v4"] }
 url = { workspace = true }

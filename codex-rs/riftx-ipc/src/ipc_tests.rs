@@ -1,6 +1,7 @@
 use super::*;
 use axum::Router;
 use axum::routing::get;
+use axum::routing::post;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 
@@ -27,7 +28,22 @@ async fn local_http_round_trip_and_streaming() {
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
-            Router::new().route("/events", get(|| async { "one\ntwo\n" })),
+            Router::new()
+                .route("/events", get(|| async { "one\ntwo\n" }))
+                .route(
+                    "/secret",
+                    post(
+                        |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+                            assert_eq!(
+                                headers.get(axum::http::header::CONTENT_TYPE),
+                                Some(&axum::http::HeaderValue::from_static(
+                                    "application/octet-stream"
+                                ))
+                            );
+                            body
+                        },
+                    ),
+                ),
         )
         .await
         .expect("serve");
@@ -46,6 +62,14 @@ async fn local_http_round_trip_and_streaming() {
         .collect::<Result<Vec<_>, _>>()
         .expect("stream");
     assert_eq!(chunks.concat(), b"one\ntwo\n");
+    let response = LocalIpcClient::new(LocalIpcEndpoint::new(temp.path().join("ipc")))
+        .post_bytes("/secret", b"sensitive bytes".to_vec())
+        .await
+        .expect("binary request");
+    assert_eq!(
+        response.bytes().await.expect("binary response"),
+        "sensitive bytes"
+    );
     server.abort();
 }
 

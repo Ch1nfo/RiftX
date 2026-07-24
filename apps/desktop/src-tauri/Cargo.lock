@@ -580,7 +580,11 @@ name = "codex-riftx-credentials"
 version = "0.0.0"
 dependencies = [
  "codex-keyring-store",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
  "zeroize",
 ]
 
@@ -4262,6 +4266,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -4287,6 +4292,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

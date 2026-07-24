@@ -2,14 +2,12 @@ use crate::bridge::DesktopError;
 use crate::bridge::DesktopState;
 use crate::bridge::json_response;
 use crate::bridge::validate_opaque_id;
-use codex_riftx_credentials::AssessmentCredentialStore;
 use codex_riftx_credentials::AssessmentSecret;
-use codex_riftx_credentials::CredentialLocator;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateAssessmentCredentialInput {
     engagement_id: String,
@@ -56,15 +54,12 @@ pub(crate) async fn list_assessment_credentials(
 ) -> Result<Value, DesktopError> {
     validate_opaque_id("engagement", &engagement_id)?;
     let client = state.client()?;
-    let references = json_response(
+    json_response(
         client
             .get(&format!("/v1/engagements/{engagement_id}/credentials"))
             .await,
     )
-    .await?;
-    tokio::task::spawn_blocking(move || annotate_references(&engagement_id, references))
-        .await
-        .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
+    .await
 }
 
 #[tauri::command]
@@ -77,7 +72,7 @@ pub(crate) async fn create_assessment_credential(
     let body = create_reference_body(&input)?;
     let secret = AssessmentSecret::new(input.secret).map_err(credential_error)?;
     let client = state.client()?;
-    let mut reference: Value = json_response(
+    let reference: Value = json_response(
         client
             .post_json(
                 &format!("/v1/engagements/{}/credentials", input.engagement_id),
@@ -87,24 +82,30 @@ pub(crate) async fn create_assessment_credential(
     )
     .await?;
     let credential_id = response_id(&reference, "credential")?.to_string();
-    let locator =
-        CredentialLocator::new(&input.engagement_id, &credential_id).map_err(credential_error)?;
-    let save_result = tokio::task::spawn_blocking(move || {
-        AssessmentCredentialStore::default().save(&locator, secret)
-    })
+    match json_response(
+        client
+            .post_bytes(
+                &format!(
+                    "/v1/engagements/{}/credentials/{credential_id}/secret",
+                    input.engagement_id
+                ),
+                secret.into_bytes(),
+            )
+            .await,
+    )
     .await
-    .map_err(|error| DesktopError::new("credential_store", error.to_string()))?;
-    if let Err(error) = save_result {
-        let _ = client
-            .post(&format!(
-                "/v1/engagements/{}/credentials/{credential_id}/delete",
-                input.engagement_id
-            ))
-            .await;
-        return Err(credential_error(error));
+    {
+        Ok(configured) => Ok(configured),
+        Err(error) => {
+            let _ = client
+                .post(&format!(
+                    "/v1/engagements/{}/credentials/{credential_id}/delete",
+                    input.engagement_id
+                ))
+                .await;
+            Err(error)
+        }
     }
-    set_configured(&mut reference, true)?;
-    Ok(reference)
 }
 
 #[tauri::command]
@@ -124,7 +125,7 @@ pub(crate) async fn delete_assessment_credential(
             .await,
     )
     .await?;
-    let mut reference = entity_by_id(&references, &input.credential_id, "credential")?;
+    entity_by_id(&references, &input.credential_id, "credential")?;
     let grants: Value = json_response(
         client
             .get(&format!(
@@ -147,25 +148,15 @@ pub(crate) async fn delete_assessment_credential(
         )
         .await?;
     }
-    let locator = CredentialLocator::new(&input.engagement_id, &input.credential_id)
-        .map_err(credential_error)?;
-    tokio::task::spawn_blocking(move || AssessmentCredentialStore::default().delete(&locator))
-        .await
-        .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
-        .map_err(credential_error)?;
-    if matching_grants.is_empty() {
-        reference = json_response(
-            client
-                .post(&format!(
-                    "/v1/engagements/{}/credentials/{}/delete",
-                    input.engagement_id, input.credential_id
-                ))
-                .await,
-        )
-        .await?;
-    }
-    set_configured(&mut reference, false)?;
-    Ok(reference)
+    json_response(
+        client
+            .post(&format!(
+                "/v1/engagements/{}/credentials/{}/delete",
+                input.engagement_id, input.credential_id
+            ))
+            .await,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -273,26 +264,6 @@ fn response_id<'a>(value: &'a Value, kind: &str) -> Result<&'a str, DesktopError
     })
 }
 
-fn annotate_references(engagement_id: &str, mut references: Value) -> Result<Value, DesktopError> {
-    {
-        let entries = references.as_array_mut().ok_or_else(|| {
-            DesktopError::new(
-                "invalid_daemon_response",
-                "riftxd returned a non-array credential response",
-            )
-        })?;
-        let store = AssessmentCredentialStore::default();
-        for reference in entries {
-            let credential_id = response_id(reference, "credential")?;
-            let locator =
-                CredentialLocator::new(engagement_id, credential_id).map_err(credential_error)?;
-            let configured = store.load(&locator).map_err(credential_error)?.is_some();
-            set_configured(reference, configured)?;
-        }
-    }
-    Ok(references)
-}
-
 fn entity_by_id(value: &Value, id: &str, kind: &str) -> Result<Value, DesktopError> {
     value
         .as_array()
@@ -317,19 +288,6 @@ fn grants_for_credential<'a>(value: &'a Value, credential_id: &str) -> Vec<&'a V
         .flatten()
         .filter(|grant| grant.get("credentialId").and_then(Value::as_str) == Some(credential_id))
         .collect()
-}
-
-fn set_configured(value: &mut Value, configured: bool) -> Result<(), DesktopError> {
-    value
-        .as_object_mut()
-        .ok_or_else(|| {
-            DesktopError::new(
-                "invalid_daemon_response",
-                "riftxd returned a non-object credential response",
-            )
-        })?
-        .insert("configured".to_string(), Value::Bool(configured));
-    Ok(())
 }
 
 fn credential_error(error: impl std::fmt::Display) -> DesktopError {

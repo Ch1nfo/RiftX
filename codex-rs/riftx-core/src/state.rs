@@ -45,6 +45,8 @@ pub enum StateError {
     CredentialGrantNotFound(String),
     #[error("credential reference {0} was not found")]
     CredentialReferenceNotFound(String),
+    #[error("credential reference {0} has no configured secret")]
+    CredentialSecretUnavailable(String),
     #[error("credential grant policy revision is stale")]
     CredentialPolicyRevisionMismatch,
     #[error("credential grant is not active")]

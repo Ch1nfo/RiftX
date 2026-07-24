@@ -52,6 +52,15 @@ impl LocalIpcClient {
             .await
     }
 
+    pub async fn post_bytes(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+    ) -> Result<LocalIpcResponse, LocalIpcError> {
+        self.request(Method::POST, path, RequestBody::Bytes(bytes))
+            .await
+    }
+
     async fn request(
         &self,
         method: Method,
@@ -74,6 +83,10 @@ impl LocalIpcClient {
                 request = request.header(http::header::CONTENT_TYPE, "application/json");
                 Full::new(Bytes::from(json))
             }
+            RequestBody::Bytes(bytes) => {
+                request = request.header(http::header::CONTENT_TYPE, "application/octet-stream");
+                Full::new(Bytes::from(bytes))
+            }
         };
         let response = sender.send_request(request.body(body)?).await?;
         Ok(LocalIpcResponse { inner: response })
@@ -83,6 +96,7 @@ impl LocalIpcClient {
 enum RequestBody {
     Empty,
     Json(Vec<u8>),
+    Bytes(Vec<u8>),
 }
 
 pub struct LocalIpcResponse {

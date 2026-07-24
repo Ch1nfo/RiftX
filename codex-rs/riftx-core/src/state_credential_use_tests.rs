@@ -103,6 +103,28 @@ async fn reservation_rejects_stale_policy_scope_and_capability() {
 }
 
 #[tokio::test]
+async fn reservation_rejects_a_reference_without_a_secret() {
+    let (_temp, store, grant) = fixture(1, 1).await;
+    let mut reference = store
+        .credential_reference(&grant.engagement_id, &grant.credential_id)
+        .await
+        .expect("credential query")
+        .expect("credential reference");
+    reference.configured = false;
+    store
+        .put_credential_reference(&reference)
+        .await
+        .expect("unconfigured reference");
+
+    assert!(matches!(
+        store
+            .reserve_credential_use(&request("use-unconfigured", "10.10.0.10"))
+            .await,
+        Err(StateError::CredentialSecretUnavailable(id)) if id == reference.id
+    ));
+}
+
+#[tokio::test]
 async fn concurrent_reservations_allow_only_one_use_per_identity() {
     let (_temp, store, _grant) = fixture(2, 2).await;
     let attempts = (0..8)
@@ -173,6 +195,7 @@ async fn fixture(max_uses: u32, max_failures: u32) -> (TempDir, StateStore, Cred
         storage_key: "engagement/engagement-1/credential/credential-1".to_string(),
         username: Some("administrator".to_string()),
         domain: Some("lab.example".to_string()),
+        configured: true,
         created_at: 100,
     };
     store
