@@ -4,6 +4,7 @@ use crate::AssetRelation;
 use crate::CredentialError;
 use crate::CredentialGrant;
 use crate::CredentialReference;
+use crate::CredentialUseError;
 use crate::Engagement;
 use crate::EngagementStatus;
 use crate::Evidence;
@@ -38,6 +39,34 @@ pub enum StateError {
     InvalidTargetState(#[from] TargetStateError),
     #[error(transparent)]
     InvalidCredential(#[from] CredentialError),
+    #[error(transparent)]
+    InvalidCredentialUse(#[from] CredentialUseError),
+    #[error("credential grant {0} was not found")]
+    CredentialGrantNotFound(String),
+    #[error("credential reference {0} was not found")]
+    CredentialReferenceNotFound(String),
+    #[error("credential grant policy revision is stale")]
+    CredentialPolicyRevisionMismatch,
+    #[error("credential grant is not active")]
+    CredentialGrantInactive,
+    #[error("credential grant does not allow capability {0}")]
+    CredentialCapabilityDenied(String),
+    #[error("credential grant does not allow target {0}")]
+    CredentialTargetDenied(String),
+    #[error("credential grant use limit has been reached")]
+    CredentialUseLimitExceeded,
+    #[error("credential failure limit has been reached for this identity")]
+    CredentialFailureLimitExceeded,
+    #[error("another credential use is already active for this identity")]
+    CredentialUseInProgress,
+    #[error("credential use {0} was not found")]
+    CredentialUseNotFound(String),
+    #[error("credential use {id} cannot transition from {from:?} to {to:?}")]
+    InvalidCredentialUseTransition {
+        id: String,
+        from: crate::CredentialUseStatus,
+        to: crate::CredentialUseStatus,
+    },
     #[error("invalid conversation entry: {0}")]
     InvalidConversationEntry(String),
     #[error("invalid conversation query: {0}")]
@@ -188,6 +217,28 @@ impl StateStore {
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS conversation_entries_engagement_sequence
              ON conversation_entries(engagement_id, sequence)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS credential_grant_uses (
+                id TEXT PRIMARY KEY,
+                engagement_id TEXT NOT NULL,
+                grant_id TEXT NOT NULL,
+                credential_id TEXT NOT NULL,
+                identity_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                data TEXT NOT NULL,
+                FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS credential_grant_uses_limits
+             ON credential_grant_uses(grant_id, identity_hash, status)",
         )
         .execute(&self.pool)
         .await?;
@@ -469,6 +520,9 @@ mod target;
 
 #[path = "state_credential.rs"]
 mod credential;
+
+#[path = "state_credential_use.rs"]
+mod credential_use;
 
 #[path = "state_conversation.rs"]
 mod conversation;
