@@ -1,3 +1,4 @@
+mod background;
 mod bridge;
 mod daemon;
 mod settings;
@@ -6,6 +7,11 @@ mod settings;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            background::install(app)?;
+            Ok(())
+        })
+        .on_window_event(background::handle_window_event)
         .manage(bridge::DesktopState::load())
         .invoke_handler(tauri::generate_handler![
             bridge::daemon_info,

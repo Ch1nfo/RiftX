@@ -34,6 +34,8 @@ Named Pipe 提供本地服务。
 - Tauri 2 + React 桌面壳，已具备 Engagement 列表、创建、选择、Native 指令提交、
   interrupt、实时对话事件、单次命令审批和状态报告工作台；前端只通过 Rust bridge
   访问本地 IPC。
+- Desktop 原生打包携带当前平台的 `riftxd` sidecar，并负责自动启动、健康检查、
+  Key 变更重启和显式退出清理；普通关闭窗口会隐藏到系统托盘并保持后台任务运行。
 - IPC v3 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
   待审批请求。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、
@@ -47,8 +49,8 @@ Named Pipe 提供本地服务。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成桌面设置、完整审批矩阵、通知、Linux TUI、加密案件存储、三平台 Guard、
-Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成完整 Provider/Profile 设置、完整审批矩阵、托盘任务控制、通知、Linux TUI、
+加密案件存储、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。
