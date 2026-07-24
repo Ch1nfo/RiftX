@@ -11,6 +11,8 @@ mod linux;
 mod unsupported;
 
 pub use exec::GuardExecPolicy;
+pub use exec::GuardNetworkPolicy;
+pub use exec::RIFTX_GUARD_NET_ENV;
 pub use exec::RIFTX_GUARD_WORK_ROOT_ENV;
 pub use exec::apply_hardened_launch;
 pub use exec::apply_hardened_launch_std;

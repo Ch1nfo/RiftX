@@ -134,4 +134,78 @@ fn spawn_env_policy_allows_bare_program_names() {
         .expect("present");
     assert_eq!(policy.work_root, PathBuf::from("/tmp/riftx-work"));
     assert!(!policy.readable_roots.is_empty());
+    assert!(policy.network.is_empty());
+}
+
+#[test]
+fn network_policy_round_trips_env_encoding() {
+    assert!(GuardNetworkPolicy::default().is_empty());
+    assert_eq!(GuardNetworkPolicy::default().encode_env(), "");
+    assert_eq!(
+        GuardNetworkPolicy::decode_env("").expect("empty"),
+        GuardNetworkPolicy::default()
+    );
+
+    let policy = GuardNetworkPolicy::from_cidrs_and_ports(
+        vec![
+            "10.0.0.0/8".parse().expect("cidr"),
+            "192.168.1.0/24".parse().expect("cidr"),
+        ],
+        vec![443, 22, 22],
+    );
+    assert_eq!(policy.ports, vec![22, 443]);
+    let encoded = policy.encode_env();
+    assert_eq!(encoded, "10.0.0.0/8,192.168.1.0/24;ports=22,443");
+    assert_eq!(
+        GuardNetworkPolicy::decode_env(&encoded).expect("decode"),
+        policy
+    );
+}
+
+#[test]
+fn network_policy_rejects_invalid_cidr() {
+    let err = GuardNetworkPolicy::decode_env("not-a-cidr").expect_err("invalid");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn empty_network_policy_renders_no_nft_script() {
+    assert_eq!(GuardNetworkPolicy::default().nftables_script(), None);
+}
+
+#[test]
+fn network_policy_renders_loopback_allowlist_script() {
+    let policy = GuardNetworkPolicy::from_cidrs_and_ports(
+        vec!["127.0.0.0/8".parse().expect("cidr")],
+        vec![8080],
+    );
+    let script = policy.nftables_script().expect("script");
+    assert!(script.contains("policy drop"));
+    assert!(script.contains("oifname \"lo\" accept"));
+    assert!(script.contains("ip daddr 127.0.0.0/8"));
+    assert!(script.contains("8080"));
+}
+
+#[test]
+fn spawn_env_policy_parses_network_allowlist() {
+    let env = std::collections::HashMap::from([
+        (
+            RIFTX_GUARD_WORK_ROOT_ENV.to_string(),
+            "/tmp/riftx-work".to_string(),
+        ),
+        (
+            RIFTX_GUARD_NET_ENV.to_string(),
+            "10.0.0.0/8;ports=443".to_string(),
+        ),
+    ]);
+    let policy = GuardExecPolicy::from_spawn_env(&env, "/bin/true")
+        .expect("policy")
+        .expect("present");
+    assert_eq!(
+        policy.network,
+        GuardNetworkPolicy::from_cidrs_and_ports(
+            vec!["10.0.0.0/8".parse().expect("cidr")],
+            vec![443],
+        )
+    );
 }

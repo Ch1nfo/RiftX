@@ -1,5 +1,6 @@
 use crate::GuardCapabilities;
 use crate::GuardExecPolicy;
+use crate::GuardNetworkPolicy;
 use crate::GuardPreflightReport;
 use crate::GuardPreflightStatus;
 use crate::PlatformGuard;
@@ -15,6 +16,8 @@ use landlock::RulesetStatus;
 use landlock::path_beneath_rules;
 use std::fs;
 use std::io;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::path::Path;
 
 #[cfg(unix)]
@@ -65,6 +68,7 @@ impl PlatformGuard for LinuxPlatformGuard {
 
 pub(crate) fn apply_hardened_isolation(policy: &GuardExecPolicy) -> io::Result<()> {
     enter_network_namespace()?;
+    apply_network_scope(&policy.network)?;
     enforce_landlock_policy(policy)
 }
 
@@ -125,6 +129,7 @@ fn probe_file_rules(work_root: &Path) -> io::Result<()> {
     let policy = GuardExecPolicy {
         work_root: allowed.clone(),
         readable_roots: Vec::new(),
+        network: GuardNetworkPolicy::default(),
     };
     let denied_for_child = denied.clone();
     let marker = allowed.join("landlock-ok");
@@ -149,9 +154,20 @@ fn probe_file_rules(work_root: &Path) -> io::Result<()> {
 }
 
 fn probe_network_rules() -> io::Result<()> {
-    run_in_child(|| match enter_network_namespace() {
-        Ok(()) => ChildProbeExit::Ok,
-        Err(error) => ChildProbeExit::Failed(error),
+    run_in_child(|| {
+        if let Err(error) = enter_network_namespace() {
+            return ChildProbeExit::Failed(error);
+        }
+        // Preflight must prove nftables can be installed inside the netns so
+        // non-empty Network Scope allowlists fail closed at mode start.
+        let probe = GuardNetworkPolicy::from_cidrs_and_ports(
+            vec!["127.0.0.0/8".parse().expect("loopback cidr")],
+            vec![9],
+        );
+        match apply_network_scope(&probe) {
+            Ok(()) => ChildProbeExit::Ok,
+            Err(error) => ChildProbeExit::Failed(error),
+        }
     })
 }
 
@@ -166,6 +182,104 @@ fn enter_network_namespace() -> io::Result<()> {
     fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))?;
     fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))?;
     Ok(())
+}
+
+fn apply_network_scope(policy: &GuardNetworkPolicy) -> io::Result<()> {
+    let Some(script) = policy.nftables_script() else {
+        // Empty Scope: stay in the isolated netns with no allowlist (deny-all).
+        return Ok(());
+    };
+    bring_up_loopback()?;
+    run_nft_script(&script)
+}
+
+fn bring_up_loopback() -> io::Result<()> {
+    // Prefer the portable `ip` tool when present; fall back to ioctl.
+    let status = std::process::Command::new("ip")
+        .args(["link", "set", "lo", "up"])
+        .status();
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(io::Error::other(format!(
+            "failed to bring up loopback (ip exited {status})"
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => bring_up_loopback_ioctl(),
+        Err(error) => Err(error),
+    }
+}
+
+fn bring_up_loopback_ioctl() -> io::Result<()> {
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd;
+
+    #[repr(C)]
+    struct IfReq {
+        ifr_name: [libc::c_char; libc::IFNAMSIZ],
+        ifr_flags: libc::c_short,
+    }
+
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+
+    let mut req = MaybeUninit::<IfReq>::zeroed();
+    unsafe {
+        let req = req.assume_init_mut();
+        let name = b"lo\0";
+        for (dst, src) in req.ifr_name.iter_mut().zip(name.iter()) {
+            *dst = *src as libc::c_char;
+        }
+        if libc::ioctl(socket.as_raw_fd(), libc::SIOCGIFFLAGS, req as *mut IfReq) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        req.ifr_flags |= libc::IFF_UP as libc::c_short;
+        if libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS, req as *mut IfReq) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn run_nft_script(script: &str) -> io::Result<()> {
+    let nft = ["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).exists())
+        .unwrap_or("nft");
+    let mut child = std::process::Command::new(nft)
+        .args(["-f", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "nftables (`nft`) is required for Hardened Network Scope",
+                )
+            } else {
+                error
+            }
+        })?;
+    use std::io::Write;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "nft stdin unavailable"))?;
+        stdin.write_all(script.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(io::Error::other(format!(
+        "nftables rule install failed: {}",
+        stderr.trim()
+    )))
 }
 
 fn enforce_landlock_policy(policy: &GuardExecPolicy) -> io::Result<()> {
