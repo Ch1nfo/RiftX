@@ -2,6 +2,8 @@ use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::PendingApprovalRequest;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
+use codex_riftx_app_server_adapter::PendingDynamicToolCall;
+use codex_riftx_app_server_adapter::RIFTX_CREDENTIAL_TOOL_NAME;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_ipc::ApprovalKind;
@@ -60,18 +62,92 @@ pub(crate) async fn process(state: &GatewayState, profile_name: &str, event: Rif
             .await;
         }
         RiftxAppServerEvent::DynamicToolCall(pending) => {
-            if let Some(app_server) = state.app_server(profile_name) {
-                let _ = app_server
-                    .reject_dynamic_tool(
-                        pending,
-                        "RiftX does not expose fixed dynamic tools; use local shell tools"
-                            .to_string(),
-                    )
-                    .await;
-            }
+            dynamic_tool(state, profile_name, pending).await
         }
         other => forward_event(state, profile_name, other).await,
     }
+}
+
+async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: PendingDynamicToolCall) {
+    let Some(app_server) = state.app_server(profile_name) else {
+        return;
+    };
+    if pending.params.namespace.is_some() || pending.params.tool != RIFTX_CREDENTIAL_TOOL_NAME {
+        let _ = app_server
+            .reject_dynamic_tool(
+                pending,
+                "RiftX rejected an unknown dynamic tool".to_string(),
+            )
+            .await;
+        return;
+    }
+    let Some(engagement_id) = engagement_for_thread(state, &pending.params.thread_id).await else {
+        let _ = app_server
+            .reject_dynamic_tool(
+                pending,
+                "RiftX could not bind the tool call to an engagement".to_string(),
+            )
+            .await;
+        return;
+    };
+    let params = match serde_json::from_value::<
+        crate::credential_execution::CredentialExecutionParams,
+    >(pending.params.arguments.clone())
+    {
+        Ok(params) => params,
+        Err(error) => {
+            let _ = app_server
+                .resolve_dynamic_tool_text(
+                    pending,
+                    format!("RiftX rejected invalid credential tool arguments: {error}"),
+                    false,
+                )
+                .await;
+            return;
+        }
+    };
+    state
+        .publish(
+            &engagement_id,
+            "tool/credentialRequested",
+            json!({
+                "callId": &pending.params.call_id,
+                "turnId": &pending.params.turn_id,
+                "tool": &params.tool,
+                "target": &params.target,
+            }),
+        )
+        .await;
+    let result = crate::credential_execution::execute_inner(
+        state,
+        engagement_id.clone(),
+        params,
+        crate::credential_execution::CredentialExecutionOrigin::DynamicTool {
+            tool_call_id: pending.params.call_id.clone(),
+            turn_id: pending.params.turn_id.clone(),
+        },
+    )
+    .await;
+    let (text, success) = match result {
+        Ok(response) => (crate::credential_execution::model_output(&response), true),
+        Err(error) => {
+            state
+                .publish(
+                    &engagement_id,
+                    "tool/credentialRejected",
+                    json!({
+                        "callId": &pending.params.call_id,
+                        "turnId": &pending.params.turn_id,
+                        "error": error.to_string(),
+                    }),
+                )
+                .await;
+            (format!("RiftX credential tool failed: {error}"), false)
+        }
+    };
+    let _ = app_server
+        .resolve_dynamic_tool_text(pending, text, success)
+        .await;
 }
 
 async fn command_approval(

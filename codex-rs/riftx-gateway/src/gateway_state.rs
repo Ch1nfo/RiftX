@@ -276,6 +276,7 @@ impl GatewayState {
                     &data,
                     &[
                         "/toolCallId",
+                        "/callId",
                         "/payload/toolCallId",
                         "/payload/callId",
                         "/useId",
@@ -288,6 +289,7 @@ impl GatewayState {
                 outcome: event_outcome(kind, &data),
                 details: (kind.starts_with("execution/")
                     || kind.starts_with("credential/use")
+                    || kind.starts_with("tool/credential")
                     || kind.starts_with("artifact/")
                     || kind == "engagement/modeChanged")
                     .then(|| data.clone()),

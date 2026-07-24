@@ -62,6 +62,15 @@ async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
     );
     assert_eq!(response.execution.status, ExecutionStatus::Completed);
     assert!(response.stdout.contains("[REDACTED]"));
+    let agent_output = model_output(&response);
+    assert!(agent_output.len() <= 32 * 1024);
+    assert!(!agent_output.contains(SECRET));
+    let mut large_response = response.clone();
+    large_response.stdout = "测".repeat(32 * 1024);
+    large_response.stderr = "error".repeat(8 * 1024);
+    let bounded_model_output = model_output(&large_response);
+    assert!(bounded_model_output.len() <= 32 * 1024);
+    assert!(bounded_model_output.is_char_boundary(bounded_model_output.len()));
     assert_eq!(response.execution.stdin_sha256, None);
     assert_eq!(response.execution.stdin_bytes, 0);
     assert_eq!(
@@ -86,6 +95,29 @@ async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
     assert!(audit.contains("credential/useStarted"));
     assert!(audit.contains("credential/useCompleted"));
     assert!(!audit.contains(SECRET));
+}
+
+#[test]
+fn dynamic_tool_arguments_reject_argv_and_secret_fields() {
+    for forbidden in [
+        json!({
+            "grantId": "grant-1",
+            "tool": "probe",
+            "target": {"host": "10.10.0.10", "port": null},
+            "args": ["--other-target", "10.20.0.1"],
+        }),
+        json!({
+            "grantId": "grant-1",
+            "tool": "probe",
+            "target": {"host": "10.10.0.10", "port": null},
+            "secret": "must-not-be-accepted",
+        }),
+    ] {
+        assert!(
+            serde_json::from_value::<CredentialExecutionParams>(forbidden).is_err(),
+            "forbidden dynamic tool field was accepted"
+        );
+    }
 }
 
 #[cfg(unix)]

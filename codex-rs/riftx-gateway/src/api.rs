@@ -137,6 +137,12 @@ pub(crate) struct ApiError {
     message: String,
 }
 
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 impl ApiError {
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {

@@ -41,12 +41,12 @@ const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CredentialExecutionParams {
-    grant_id: String,
-    tool: String,
-    target: CredentialUseTarget,
+    pub(crate) grant_id: String,
+    pub(crate) tool: String,
+    pub(crate) target: CredentialUseTarget,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialExecutionResponse {
     usage: CredentialGrantUse,
@@ -60,7 +60,32 @@ pub(crate) async fn execute(
     Path(engagement_id): Path<String>,
     Json(params): Json<CredentialExecutionParams>,
 ) -> Result<Json<CredentialExecutionResponse>, ApiError> {
-    require_execution_running(&state).await?;
+    Ok(Json(
+        execute_inner(
+            &state,
+            engagement_id,
+            params,
+            CredentialExecutionOrigin::OperatorApi,
+        )
+        .await?,
+    ))
+}
+
+pub(crate) enum CredentialExecutionOrigin {
+    OperatorApi,
+    DynamicTool {
+        tool_call_id: String,
+        turn_id: String,
+    },
+}
+
+pub(crate) async fn execute_inner(
+    state: &GatewayState,
+    engagement_id: String,
+    params: CredentialExecutionParams,
+    origin: CredentialExecutionOrigin,
+) -> Result<CredentialExecutionResponse, ApiError> {
+    require_execution_running(state).await?;
     let engagement = state.store.engagement(&engagement_id).await?;
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::conflict(
@@ -68,7 +93,7 @@ pub(crate) async fn execute(
             "credential tools require an active engagement",
         ));
     }
-    let (tool, metadata) = resolve_tool(&state, &params.tool)?;
+    let (tool, metadata) = resolve_tool(state, &params.tool)?;
     let arguments = metadata
         .render_arguments(&params.target.host, params.target.port)
         .ok_or_else(|| ApiError::bad_request("credential tool target template is invalid"))?;
@@ -77,7 +102,7 @@ pub(crate) async fn execute(
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let injection = injection(metadata)?;
-    let environment = safe_environment(&state)?;
+    let environment = safe_environment(state)?;
     let runner = CredentialProcessRunner::new(PROCESS_TIMEOUT, MAX_OUTPUT_BYTES)
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let use_id = Uuid::new_v4().to_string();
@@ -96,14 +121,14 @@ pub(crate) async fn execute(
     let secret = match state.assessment_credentials.load_secret(&locator) {
         Ok(Some(secret)) => secret,
         Ok(None) => {
-            fail_reservation(&state, &engagement_id, &use_id).await;
+            fail_reservation(state, &engagement_id, &use_id).await;
             return Err(ApiError::conflict(
                 "credential_secret_missing",
                 "credential secret is not available in the operating-system credential store",
             ));
         }
         Err(error) => {
-            fail_reservation(&state, &engagement_id, &use_id).await;
+            fail_reservation(state, &engagement_id, &use_id).await;
             return Err(ApiError::internal(error.to_string()));
         }
     };
@@ -138,6 +163,8 @@ pub(crate) async fn execute(
                 "toolSha256": tool.sha256,
                 "target": usage_request.target,
                 "capability": metadata.capability,
+                "toolCallId": origin.tool_call_id(),
+                "turnId": origin.turn_id(),
             }),
         )
         .await;
@@ -146,7 +173,7 @@ pub(crate) async fn execute(
     let output = match result {
         Ok(output) => output,
         Err(error) => {
-            fail_reservation(&state, &engagement_id, &use_id).await;
+            fail_reservation(state, &engagement_id, &use_id).await;
             state
                 .publish(
                     &engagement_id,
@@ -164,13 +191,16 @@ pub(crate) async fn execute(
         .complete_credential_use(&engagement_id, &use_id, outcome, completed_at)
         .await?;
     let execution = execution(ExecutionRecordInput {
-        state: &state,
+        state,
         tool,
         arguments: &arguments,
         workspace: &workspace,
         output: &output,
         use_id: &use_id,
         engagement_id: &engagement_id,
+        turn_id: origin
+            .turn_id()
+            .map_or_else(|| format!("credential:{use_id}"), str::to_string),
         started_at,
         completed_at,
         duration: started.elapsed(),
@@ -180,15 +210,78 @@ pub(crate) async fn execute(
         .publish(
             &engagement_id,
             "credential/useCompleted",
-            json!({"usage": &usage, "execution": &execution}),
+            json!({
+                "usage": &usage,
+                "execution": &execution,
+                "toolCallId": origin.tool_call_id(),
+            }),
         )
         .await;
-    Ok(Json(CredentialExecutionResponse {
+    Ok(CredentialExecutionResponse {
         usage,
         execution,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }))
+    })
+}
+
+impl CredentialExecutionOrigin {
+    fn tool_call_id(&self) -> Option<&str> {
+        match self {
+            Self::OperatorApi => None,
+            Self::DynamicTool { tool_call_id, .. } => Some(tool_call_id),
+        }
+    }
+
+    fn turn_id(&self) -> Option<&str> {
+        match self {
+            Self::OperatorApi => None,
+            Self::DynamicTool { turn_id, .. } => Some(turn_id),
+        }
+    }
+}
+
+pub(crate) fn model_output(response: &CredentialExecutionResponse) -> String {
+    const MAX_MODEL_OUTPUT_BYTES: usize = 32 * 1024;
+    let header = format!(
+        "credentialUseId={}\nstatus={:?}\nexecutionStatus={:?}\nexitCode={:?}\nstdoutSha256={}\nstderrSha256={}\n",
+        response.usage.id,
+        response.usage.status,
+        response.execution.status,
+        response.execution.exit_code,
+        response
+            .execution
+            .stdout_sha256
+            .as_deref()
+            .unwrap_or("none"),
+        response
+            .execution
+            .stderr_sha256
+            .as_deref()
+            .unwrap_or("none"),
+    );
+    const SECTION_LABEL_BYTES: usize = "stdout:\n\nstderr:\n".len();
+    let available = MAX_MODEL_OUTPUT_BYTES
+        .saturating_sub(header.len())
+        .saturating_sub(SECTION_LABEL_BYTES);
+    let stdout_limit = available.saturating_mul(2) / 3;
+    let stderr_limit = available.saturating_sub(stdout_limit);
+    format!(
+        "{header}stdout:\n{}\nstderr:\n{}",
+        truncate_utf8(&response.stdout, stdout_limit),
+        truncate_utf8(&response.stderr, stderr_limit),
+    )
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &value[..boundary]
 }
 
 fn resolve_tool<'a>(
@@ -282,6 +375,7 @@ struct ExecutionRecordInput<'a> {
     output: &'a CredentialProcessOutput,
     use_id: &'a str,
     engagement_id: &'a str,
+    turn_id: String,
     started_at: i64,
     completed_at: i64,
     duration: Duration,
@@ -304,7 +398,7 @@ fn execution(input: ExecutionRecordInput<'_>) -> Execution {
         engagement_id: input.engagement_id.to_string(),
         test_case_id: None,
         task_id: None,
-        turn_id: format!("credential:{}", input.use_id),
+        turn_id: input.turn_id,
         runner: "local:credential".to_string(),
         status,
         started_at: input.started_at,
