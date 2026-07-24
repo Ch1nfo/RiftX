@@ -68,10 +68,7 @@ async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
     assert!(!body_text.contains(SECRET));
     let response: CredentialExecutionResponse =
         serde_json::from_str(&body_text).expect("execution response");
-    assert_eq!(
-        response.usage.status,
-        codex_riftx_core::CredentialUseStatus::Succeeded
-    );
+    assert_eq!(response.usage.status, CredentialUseStatus::Succeeded);
     assert_eq!(response.execution.status, ExecutionStatus::Completed);
     assert!(response.stdout.contains("[REDACTED]"));
     let agent_output = model_output(&response);
@@ -90,7 +87,10 @@ async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
             .store
             .credential_uses(&engagement_id)
             .await
-            .expect("uses"),
+            .expect("uses")
+            .into_iter()
+            .map(ipc_credential_grant_use)
+            .collect::<Vec<_>>(),
         vec![response.usage]
     );
     assert_eq!(
@@ -178,7 +178,7 @@ async fn declared_authentication_exit_code_consumes_the_failure_budget() {
     .expect("response");
     assert_eq!(
         response.usage.status,
-        codex_riftx_core::CredentialUseStatus::AuthenticationFailed
+        CredentialUseStatus::AuthenticationFailed
     );
     assert_eq!(response.execution.status, ExecutionStatus::Failed);
 }
@@ -225,10 +225,7 @@ async fn kill_switch_cancels_an_active_credential_process() {
             .to_bytes(),
     )
     .expect("response");
-    assert_eq!(
-        response.usage.status,
-        codex_riftx_core::CredentialUseStatus::Interrupted
-    );
+    assert_eq!(response.usage.status, CredentialUseStatus::Interrupted);
     assert_eq!(response.execution.status, ExecutionStatus::Interrupted);
     assert!(state.credential_processes.read().await.is_empty());
 }

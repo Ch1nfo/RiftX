@@ -90,10 +90,9 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
             .await;
         return;
     };
-    let params = match serde_json::from_value::<
-        crate::credential_execution::CredentialExecutionParams,
-    >(pending.params.arguments.clone())
-    {
+    let params = match serde_json::from_value::<codex_riftx_ipc::CredentialExecutionParams>(
+        pending.params.arguments.clone(),
+    ) {
         Ok(params) => params,
         Err(error) => {
             let _ = app_server

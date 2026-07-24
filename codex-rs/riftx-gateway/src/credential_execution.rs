@@ -6,10 +6,11 @@ use crate::gateway_state::unix_timestamp;
 use axum::Json;
 use axum::extract::Path;
 use axum::extract::State;
-use codex_riftx_core::CredentialGrantUse;
+use codex_riftx_core::CredentialGrantUse as StoredCredentialGrantUse;
 use codex_riftx_core::CredentialUseOutcome;
 use codex_riftx_core::CredentialUseRequest;
-use codex_riftx_core::CredentialUseTarget;
+use codex_riftx_core::CredentialUseStatus as StoredCredentialUseStatus;
+use codex_riftx_core::CredentialUseTarget as StoredCredentialUseTarget;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::Execution;
 use codex_riftx_core::ExecutionStatus;
@@ -20,11 +21,14 @@ use codex_riftx_credentials::CredentialProcessOutput;
 use codex_riftx_credentials::CredentialProcessRequest;
 use codex_riftx_credentials::CredentialProcessRunner;
 use codex_riftx_credentials::CredentialProcessTermination;
+use codex_riftx_ipc::CredentialExecutionParams;
+use codex_riftx_ipc::CredentialExecutionResponse;
+use codex_riftx_ipc::CredentialGrantUse;
+use codex_riftx_ipc::CredentialUseStatus;
+use codex_riftx_ipc::CredentialUseTarget;
 use codex_riftx_tools::DiscoveredTool;
 use codex_riftx_tools::ToolCredentialInjection;
 use codex_riftx_tools::ToolCredentialMetadata;
-use serde::Deserialize;
-use serde::Serialize;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
@@ -37,23 +41,6 @@ use uuid::Uuid;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CredentialExecutionParams {
-    pub(crate) grant_id: String,
-    pub(crate) tool: String,
-    pub(crate) target: CredentialUseTarget,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CredentialExecutionResponse {
-    usage: CredentialGrantUse,
-    execution: Execution,
-    stdout: String,
-    stderr: String,
-}
 
 pub(crate) async fn execute(
     State(state): State<GatewayState>,
@@ -110,7 +97,10 @@ pub(crate) async fn execute_inner(
         id: use_id.clone(),
         engagement_id: engagement_id.clone(),
         grant_id: params.grant_id,
-        target: params.target,
+        target: StoredCredentialUseTarget {
+            host: params.target.host,
+            port: params.target.port,
+        },
         capability: metadata.capability.clone(),
         policy_revision: engagement.policy_revision,
         requested_at: unix_timestamp(),
@@ -191,6 +181,7 @@ pub(crate) async fn execute_inner(
         .store
         .complete_credential_use(&engagement_id, &use_id, outcome, completed_at)
         .await?;
+    let usage = ipc_credential_grant_use(usage);
     let execution = execution(ExecutionRecordInput {
         state,
         tool,
@@ -224,6 +215,33 @@ pub(crate) async fn execute_inner(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+fn ipc_credential_grant_use(usage: StoredCredentialGrantUse) -> CredentialGrantUse {
+    CredentialGrantUse {
+        id: usage.id,
+        engagement_id: usage.engagement_id,
+        grant_id: usage.grant_id,
+        credential_id: usage.credential_id,
+        identity_hash: usage.identity_hash,
+        target: CredentialUseTarget {
+            host: usage.target.host,
+            port: usage.target.port,
+        },
+        capability: usage.capability,
+        policy_revision: usage.policy_revision,
+        status: match usage.status {
+            StoredCredentialUseStatus::Reserved => CredentialUseStatus::Reserved,
+            StoredCredentialUseStatus::Succeeded => CredentialUseStatus::Succeeded,
+            StoredCredentialUseStatus::AuthenticationFailed => {
+                CredentialUseStatus::AuthenticationFailed
+            }
+            StoredCredentialUseStatus::ExecutionFailed => CredentialUseStatus::ExecutionFailed,
+            StoredCredentialUseStatus::Interrupted => CredentialUseStatus::Interrupted,
+        },
+        started_at: usage.started_at,
+        completed_at: usage.completed_at,
+    }
 }
 
 impl CredentialExecutionOrigin {

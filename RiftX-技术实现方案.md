@@ -932,8 +932,10 @@ Engagement、Scope、授权、执行模式、对话、凭据、Artifact、目标
 创建、模式切换、turn、审批决策、对话分页、CredentialReference/Grant、Artifact 捕获、Report
 snapshot 及 Tools/Skills inventory 已使用共享请求/响应 DTO。报告 DTO 与 Markdown 渲染位于独立
 的轻量 `riftx-report`；Desktop 不再以无类型 JSON 接收报告，也不再复制 Tools/Skills wire model；
-CLI 的 doctor 命令同样直接使用 `riftx-ipc` DTO。`riftx-ipc` 仍不依赖包含 SQLx、加密、Tools 和
-Skills 的完整 `riftx-core`。Credential execution 等剩余业务消息仍需继续迁移，P2 尚未完成。
+CLI 的 doctor 命令同样直接使用 `riftx-ipc` DTO。Credential execution 请求、使用记录和执行响应
+也已迁移到共享协议；`riftx-ipc` 仍不依赖包含 SQLx、加密、Tools 和 Skills 的完整 `riftx-core`。
+至此当前本机 API 的业务请求/响应已完成 typed protocol 收敛；P2 仍需在 Linux/Windows CI 完成
+UDS、Named Pipe 和后台生命周期的平台验收。
 
 ## 20. CLI 与 TUI
 

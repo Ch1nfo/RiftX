@@ -66,3 +66,64 @@ fn extension_inventory_round_trips_as_complete_typed_values() {
         json!([tool_json, skill_json])
     );
 }
+
+#[test]
+fn credential_execution_round_trips_without_untyped_payloads() {
+    let params_json = json!({
+        "grantId": "grant-1",
+        "tool": "scanner",
+        "target": {"host": "host.lab.example", "port": 445}
+    });
+    let response_json = json!({
+        "usage": {
+            "id": "use-1",
+            "engagementId": "engagement-1",
+            "grantId": "grant-1",
+            "credentialId": "credential-1",
+            "identityHash": "identity-sha256",
+            "target": {"host": "host.lab.example", "port": 445},
+            "capability": "credential.testing",
+            "policyRevision": "policy-sha256",
+            "status": "succeeded",
+            "startedAt": 100,
+            "completedAt": 110
+        },
+        "execution": {
+            "id": "execution-1",
+            "engagementId": "engagement-1",
+            "testCaseId": null,
+            "taskId": null,
+            "turnId": "credential:use-1",
+            "runner": "native-credential-tool",
+            "status": "completed",
+            "startedAt": 100,
+            "completedAt": 110,
+            "exitCode": 0,
+            "durationMs": 10000,
+            "argv": ["scanner", "--target", "host.lab.example"],
+            "commandSha256": "command-sha256",
+            "cwd": "/workspace",
+            "processId": null,
+            "tool": null,
+            "toolInventorySha256": "inventory-sha256",
+            "stdoutSha256": "stdout-sha256",
+            "stderrSha256": "stderr-sha256",
+            "stdinSha256": null,
+            "stdoutBytes": 10,
+            "stderrBytes": 0,
+            "stdinBytes": 0
+        },
+        "stdout": "success",
+        "stderr": ""
+    });
+
+    let params: CredentialExecutionParams =
+        serde_json::from_value(params_json.clone()).expect("params should decode");
+    let response: CredentialExecutionResponse =
+        serde_json::from_value(response_json.clone()).expect("response should decode");
+
+    assert_eq!(
+        serde_json::to_value((params, response)).expect("credential execution should encode"),
+        json!([params_json, response_json])
+    );
+}

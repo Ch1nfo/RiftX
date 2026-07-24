@@ -11,6 +11,7 @@ pub use codex_riftx_domain::CredentialReference;
 pub use codex_riftx_domain::Engagement;
 pub use codex_riftx_domain::EngagementStatus;
 pub use codex_riftx_domain::EnvironmentClass;
+pub use codex_riftx_domain::Execution;
 pub use codex_riftx_domain::ExecutionMode;
 pub use codex_riftx_domain::IdentitySelector;
 pub use codex_riftx_domain::Scope;
@@ -135,6 +136,56 @@ pub struct CreateCredentialGrantParams {
     pub max_failures_per_identity: u32,
     pub starts_at: Option<i64>,
     pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialUseTarget {
+    pub host: String,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialUseStatus {
+    Reserved,
+    Succeeded,
+    AuthenticationFailed,
+    ExecutionFailed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialGrantUse {
+    pub id: String,
+    pub engagement_id: String,
+    pub grant_id: String,
+    pub credential_id: String,
+    pub identity_hash: String,
+    pub target: CredentialUseTarget,
+    pub capability: String,
+    pub policy_revision: String,
+    pub status: CredentialUseStatus,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialExecutionParams {
+    pub grant_id: String,
+    pub tool: String,
+    pub target: CredentialUseTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialExecutionResponse {
+    pub usage: CredentialGrantUse,
+    pub execution: Execution,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
