@@ -500,9 +500,9 @@ async fn verify_daemon(client: &LocalIpcClient) -> anyhow::Result<()> {
 
 async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
     let response = client
-        .get("/v1/tools")
+        .post("/v1/tools/doctor")
         .await
-        .context("request tool inventory")?;
+        .context("run tool doctor")?;
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(
@@ -538,9 +538,9 @@ async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()>
 
 async fn skills_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
     let response = client
-        .get("/v1/skills")
+        .post("/v1/skills/doctor")
         .await
-        .context("request skill catalog")?;
+        .context("run skill doctor")?;
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(

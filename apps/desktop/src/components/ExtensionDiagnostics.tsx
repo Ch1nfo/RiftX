@@ -4,12 +4,15 @@ import {
   CircleCheck,
   CircleX,
   LoaderCircle,
+  RefreshCw,
   Wrench,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   bridgeError,
   skillCatalog as loadSkillCatalog,
+  skillDoctor,
+  toolDoctor,
   toolInventory as loadToolInventory,
 } from "../bridge";
 import type {
@@ -26,6 +29,7 @@ interface ExtensionDiagnosticsProps {
 export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   const [inventory, setInventory] = useState<ToolInventory | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     void loadToolInventory()
@@ -35,6 +39,18 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         onError(bridgeError(cause));
       });
   }, [onError]);
+
+  const runDoctor = async () => {
+    setChecking(true);
+    try {
+      setInventory(await toolDoctor());
+      setLoadFailed(false);
+    } catch (cause) {
+      onError(bridgeError(cause));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   if (!inventory) {
     return (
@@ -55,6 +71,18 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         pathCount={inventory.pathEntries.length}
         snapshot={inventory.snapshotSha256}
       />
+      <div className="extension-actions">
+        <span>Doctor performs a fresh scan without changing active snapshots.</span>
+        <button
+          className="secondary-button"
+          disabled={checking}
+          type="button"
+          onClick={() => void runDoctor()}
+        >
+          <RefreshCw className={checking ? "spin" : undefined} size={14} />
+          {checking ? "Checking" : "Run doctor"}
+        </button>
+      </div>
       <DiagnosticList diagnostics={inventory.diagnostics} />
       <div className="extension-list">
         {inventory.tools.map((tool) => (
@@ -90,6 +118,7 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
 export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     void loadSkillCatalog()
@@ -99,6 +128,18 @@ export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         onError(bridgeError(cause));
       });
   }, [onError]);
+
+  const runDoctor = async () => {
+    setChecking(true);
+    try {
+      setCatalog(await skillDoctor());
+      setLoadFailed(false);
+    } catch (cause) {
+      onError(bridgeError(cause));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   if (!catalog) {
     return (
@@ -118,6 +159,18 @@ export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         locationLabel="Directory"
         snapshot={catalog.snapshotSha256}
       />
+      <div className="extension-actions">
+        <span>Doctor force-reloads the Skills Directory without changing active snapshots.</span>
+        <button
+          className="secondary-button"
+          disabled={checking}
+          type="button"
+          onClick={() => void runDoctor()}
+        >
+          <RefreshCw className={checking ? "spin" : undefined} size={14} />
+          {checking ? "Checking" : "Run doctor"}
+        </button>
+      </div>
       <DiagnosticList diagnostics={catalog.diagnostics} />
       <div className="extension-list">
         {catalog.skills.map((skill) => (

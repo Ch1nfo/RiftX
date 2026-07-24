@@ -44,6 +44,9 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
         daemon: DaemonConfig {
@@ -278,6 +281,68 @@ async fn extension_endpoints_return_typed_startup_inventories() {
             },
         )
     );
+}
+
+#[tokio::test]
+async fn tool_doctor_rescans_the_configured_directory() {
+    let temp = TempDir::new().expect("temp dir");
+    let tools_root = temp.path().join("doctor-tools");
+    tokio::fs::create_dir_all(&tools_root)
+        .await
+        .expect("tool directory");
+    let tool_path = tools_root.join(if cfg!(windows) {
+        "doctor-probe.exe"
+    } else {
+        "doctor-probe"
+    });
+    tokio::fs::write(&tool_path, b"doctor probe")
+        .await
+        .expect("tool file");
+    #[cfg(unix)]
+    {
+        let mut permissions = tokio::fs::metadata(&tool_path)
+            .await
+            .expect("tool metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&tool_path, permissions)
+            .await
+            .expect("tool permissions");
+    }
+    let mut state = test_state(&temp).await;
+    Arc::make_mut(&mut state.config).tools.directories = vec![tools_root.clone()];
+    let startup_snapshot = state.tools.snapshot_sha256.clone();
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tools/doctor")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let inventory: IpcToolInventory = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("tool doctor inventory");
+
+    assert_eq!(inventory.roots, vec![tools_root]);
+    assert_eq!(
+        inventory
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["doctor-probe"]
+    );
+    assert_ne!(inventory.snapshot_sha256, startup_snapshot);
 }
 
 #[tokio::test]

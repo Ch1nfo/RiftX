@@ -66,8 +66,16 @@ export function toolInventory(): Promise<ToolInventory> {
   return desktopInvoke("tool_inventory");
 }
 
+export function toolDoctor(): Promise<ToolInventory> {
+  return desktopInvoke("tool_doctor");
+}
+
 export function skillCatalog(): Promise<SkillCatalog> {
   return desktopInvoke("skill_catalog");
+}
+
+export function skillDoctor(): Promise<SkillCatalog> {
+  return desktopInvoke("skill_doctor");
 }
 
 export function notificationSettings(): Promise<NotificationSettings> {

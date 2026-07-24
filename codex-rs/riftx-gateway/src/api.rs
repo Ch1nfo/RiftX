@@ -107,7 +107,7 @@ impl ApiError {
         }
     }
 
-    fn app_server(message: impl Into<String>) -> Self {
+    pub(crate) fn app_server(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             code: "app_server_error",
@@ -220,7 +220,12 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/system/resume", post(resume_system))
         .route("/v1/system/kill", post(kill_system))
         .route("/v1/skills", get(skills))
+        .route(
+            "/v1/skills/doctor",
+            post(crate::extension_api::doctor_skills),
+        )
         .route("/v1/tools", get(tools))
+        .route("/v1/tools/doctor", post(crate::extension_api::doctor_tools))
         .route(
             "/v1/engagements",
             get(list_engagements).post(create_engagement),

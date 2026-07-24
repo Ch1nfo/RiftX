@@ -1678,6 +1678,27 @@ button:disabled {
   gap: 16px;
 }
 
+.extension-actions {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.extension-actions > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.extension-actions button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .extension-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

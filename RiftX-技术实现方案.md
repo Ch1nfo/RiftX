@@ -1097,6 +1097,10 @@ Windows 构建前端、准备 `riftxd` sidecar 和运行 Tauri bridge 测试。�
 - 本机 shell、PTY、stdin、interrupt、artifact。
 - macOS、Windows、Linux Native 验收。
 
+Tools/Skills Doctor 现在通过独立本机 IPC 端点执行实时扫描：Tools 重新扫描配置目录，Skills 通过
+默认 Profile 的 App Server 强制刷新。CLI 与 Desktop 设置页共用这些端点；Doctor 结果只用于诊断，
+不会替换活动 Engagement 已固定的 Tool/Skill 快照或执行 PATH。
+
 ### P4：桌面端与 Linux TUI，5-7 周
 
 - Tauri 应用壳。

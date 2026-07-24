@@ -13,9 +13,25 @@ pub(crate) async fn tool_inventory(
 }
 
 #[tauri::command]
+pub(crate) async fn tool_doctor(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<ToolInventory, DesktopError> {
+    let client = state.client()?;
+    json_response(client.post("/v1/tools/doctor").await).await
+}
+
+#[tauri::command]
 pub(crate) async fn skill_catalog(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<SkillCatalog, DesktopError> {
     let client = state.client()?;
     json_response(client.get("/v1/skills").await).await
+}
+
+#[tauri::command]
+pub(crate) async fn skill_doctor(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SkillCatalog, DesktopError> {
+    let client = state.client()?;
+    json_response(client.post("/v1/skills/doctor").await).await
 }
