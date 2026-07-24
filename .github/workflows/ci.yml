@@ -105,7 +105,7 @@ jobs:
           -p codex-riftx-skills
           -p codex-riftx-tools
 
-      - name: Run Native daemon acceptance
+      - name: Run Native daemon and lifecycle acceptance
         working-directory: codex-rs
         run: >-
           conda run -n agent just test
