@@ -48,11 +48,11 @@ Auto Mode 不得用于生产环境。
 
 ## 3. 产品形态
 
-| 平台 | 首发形态 |
-| --- | --- |
-| macOS | Apple Silicon arm64 DMG |
-| Windows | x86_64 签名 EXE 安装程序 |
-| Linux | x86_64 单文件 CLI 与全屏 TUI |
+| 平台    | 首发形态                     |
+| ------- | ---------------------------- |
+| macOS   | Apple Silicon arm64 DMG      |
+| Windows | x86_64 签名 EXE 安装程序     |
+| Linux   | x86_64 单文件 CLI 与全屏 TUI |
 
 macOS 和 Windows 桌面端采用 Tauri + React/TypeScript，界面是对话优先的三栏工作台：
 
@@ -160,6 +160,8 @@ Markdown 和 JSON。
 - API-Key-only 内嵌 Agent Runtime。
 - 本机 engagement workspace 和单一持续主 Agent。
 - `riftxd` 本地 IPC API 与 Operator CLI。
+- Tauri 2 + React 桌面壳，以及只访问本地 IPC 的 Rust bridge。
+- 桌面 Engagement 列表、创建、选择、Native 指令提交、interrupt 和报告状态面板。
 - Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 doctor。
 - Scope、Policy Revision、Approval 及三模式领域约束。
@@ -168,13 +170,13 @@ Markdown 和 JSON。
 - 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
 - workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
 - Markdown/JSON 报告。
-- macOS、Windows、Linux 的核心领域契约 CI。
+- macOS、Windows、Linux 的核心领域契约和确定性 Native daemon 验收 CI。
+- macOS 调试 `.app` 的实际 IPC、列表、创建和报告工作流验证。
 
 尚未实现：
 
-- Tauri Desktop 和 Linux 全屏 TUI。
+- 桌面设置、审批、通知、完整对话历史和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- macOS、Windows、Linux 的完整 Native 验收。
 - 案件数据加密、OS credential store 和 `.riftxcase`。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
@@ -197,6 +199,22 @@ conda run -n agent sh -lc \
 ```bash
 export RIFTX_LLM_API_KEY="<your-api-key>"
 ./codex-rs/target/debug/riftxd --config riftx.toml
+```
+
+启动 Tauri Desktop：
+
+```bash
+conda run -n agent pnpm install
+RIFTX_CONFIG="$PWD/riftx.toml" \
+  conda run --no-capture-output -n agent \
+  pnpm --filter @riftx/desktop tauri dev
+```
+
+macOS 调试应用包：
+
+```bash
+conda run -n agent pnpm --filter @riftx/desktop \
+  tauri build --debug --bundles app
 ```
 
 创建并运行任务：
@@ -224,6 +242,8 @@ export RIFTX_LLM_API_KEY="<your-api-key>"
 
 ```text
 RiftX/
+├── apps/
+│   └── desktop/                    # Tauri 2 + React 桌面工作台
 ├── codex-rs/
 │   ├── riftx-core/                 # 当前领域、状态、策略和审计
 │   ├── riftx-gateway/              # riftxd API 与业务编排
