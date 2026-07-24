@@ -31,6 +31,7 @@ export function SettingsDialog({
   onRuntimeChanged,
 }: SettingsDialogProps) {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
+  const [selectedProfileName, setSelectedProfileName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -43,6 +44,7 @@ export function SettingsDialog({
       setApiKey("");
       setShowKey(false);
       setConfirmRemove(false);
+      setSelectedProfileName("");
       setNotice(null);
       return;
     }
@@ -50,7 +52,10 @@ export function SettingsDialog({
     setLoadFailed(false);
     setBusy(true);
     void llmSettings()
-      .then(setSettings)
+      .then((loaded) => {
+        setSettings(loaded);
+        setSelectedProfileName(loaded.defaultProfile);
+      })
       .catch((cause) => {
         setLoadFailed(true);
         onError(bridgeError(cause));
@@ -58,18 +63,24 @@ export function SettingsDialog({
       .finally(() => setBusy(false));
   }, [onError, open]);
 
+  const profile =
+    settings?.profiles.find(
+      (candidate) => candidate.profileName === selectedProfileName,
+    ) ?? null;
+  const keyring = profile?.credentialSource === "keyring";
+
   if (!open) {
     return null;
   }
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!apiKey.trim() || busy) {
+    if (!profile || !apiKey.trim() || busy) {
       return;
     }
     setBusy(true);
     try {
-      const updated = await saveLlmApiKey(apiKey);
+      const updated = await saveLlmApiKey(profile.profileName, apiKey);
       setSettings(updated);
       setApiKey("");
       setShowKey(false);
@@ -87,12 +98,12 @@ export function SettingsDialog({
   };
 
   const remove = async () => {
-    if (busy) {
+    if (busy || !profile) {
       return;
     }
     setBusy(true);
     try {
-      const updated = await deleteLlmApiKey();
+      const updated = await deleteLlmApiKey(profile.profileName);
       setSettings(updated);
       setApiKey("");
       setConfirmRemove(false);
@@ -108,8 +119,6 @@ export function SettingsDialog({
       setBusy(false);
     }
   };
-
-  const keyring = settings?.credentialSource === "keyring";
 
   return (
     <div
@@ -145,136 +154,163 @@ export function SettingsDialog({
 
         {settings ? (
           <form className="settings-body" onSubmit={save}>
-            <dl className="settings-summary">
-              <div>
-                <dt>Profile</dt>
-                <dd>{settings.profileName}</dd>
-              </div>
-              <div>
-                <dt>Model</dt>
-                <dd>{settings.model}</dd>
-              </div>
-              <div>
-                <dt>Endpoint</dt>
-                <dd>{settings.baseUrl}</dd>
-              </div>
-              <div>
-                <dt>Reasoning</dt>
-                <dd>{settings.reasoningLevel}</dd>
-              </div>
-              <div>
-                <dt>Context budget</dt>
-                <dd>{settings.contextBudget.toLocaleString()}</dd>
-              </div>
-              <div>
-                <dt>Timeout</dt>
-                <dd>{settings.timeoutSeconds}s</dd>
-              </div>
-            </dl>
+            <label className="settings-profile-selector">
+              <span>Profile</span>
+              <select
+                value={selectedProfileName}
+                onChange={(event) => {
+                  setSelectedProfileName(event.target.value);
+                  setApiKey("");
+                  setShowKey(false);
+                  setConfirmRemove(false);
+                  setNotice(null);
+                }}
+                disabled={busy}
+              >
+                {settings.profiles.map((candidate) => (
+                  <option
+                    key={candidate.profileName}
+                    value={candidate.profileName}
+                  >
+                    {candidate.profileName}
+                    {candidate.profileName === settings.defaultProfile
+                      ? " (default)"
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-            <div className="credential-heading">
-              <div className="credential-title">
-                <KeyRound size={16} />
-                <div>
-                  <strong>API key</strong>
-                  <span>
-                    {settings.credentialSource === "keyring"
-                      ? `System keyring · ${settings.credentialName}`
-                      : `Environment · ${settings.credentialName}`}
+            {profile && (
+              <>
+                <dl className="settings-summary">
+                  <div>
+                    <dt>Model</dt>
+                    <dd>{profile.model}</dd>
+                  </div>
+                  <div>
+                    <dt>Endpoint</dt>
+                    <dd>{profile.baseUrl}</dd>
+                  </div>
+                  <div>
+                    <dt>Reasoning</dt>
+                    <dd>{profile.reasoningLevel}</dd>
+                  </div>
+                  <div>
+                    <dt>Context budget</dt>
+                    <dd>{profile.contextBudget.toLocaleString()}</dd>
+                  </div>
+                  <div>
+                    <dt>Timeout</dt>
+                    <dd>{profile.timeoutSeconds}s</dd>
+                  </div>
+                </dl>
+
+                <div className="credential-heading">
+                  <div className="credential-title">
+                    <KeyRound size={16} />
+                    <div>
+                      <strong>API key</strong>
+                      <span>
+                        {profile.credentialSource === "keyring"
+                          ? `System keyring · ${profile.credentialName}`
+                          : `Environment · ${profile.credentialName}`}
+                      </span>
+                    </div>
+                  </div>
+                  <span
+                    className={`credential-status ${
+                      profile.configured ? "configured" : "missing"
+                    }`}
+                  >
+                    {profile.configured ? "Configured" : "Missing"}
                   </span>
                 </div>
-              </div>
-              <span
-                className={`credential-status ${
-                  settings.configured ? "configured" : "missing"
-                }`}
-              >
-                {settings.configured ? "Configured" : "Missing"}
-              </span>
-            </div>
 
-            {keyring ? (
-              <>
-                <label className="key-field">
-                  <span>
-                    {settings.configured ? "Replace API key" : "API key"}
-                  </span>
-                  <div>
-                    <input
-                      type={showKey ? "text" : "password"}
-                      value={apiKey}
-                      onChange={(event) => {
-                        setApiKey(event.target.value);
-                        setConfirmRemove(false);
-                        setNotice(null);
-                      }}
-                      autoComplete="off"
-                      spellCheck={false}
-                      disabled={busy}
-                    />
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={showKey ? "Hide API key" : "Show API key"}
-                      title={showKey ? "Hide API key" : "Show API key"}
-                      onClick={() => setShowKey((current) => !current)}
-                    >
-                      {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                </label>
-
-                <div className="settings-actions">
-                  {settings.configured &&
-                    (confirmRemove ? (
-                      <div className="remove-confirmation">
-                        <span>Remove stored key?</span>
+                {keyring ? (
+                  <>
+                    <label className="key-field">
+                      <span>
+                        {profile.configured ? "Replace API key" : "API key"}
+                      </span>
+                      <div>
+                        <input
+                          type={showKey ? "text" : "password"}
+                          value={apiKey}
+                          onChange={(event) => {
+                            setApiKey(event.target.value);
+                            setConfirmRemove(false);
+                            setNotice(null);
+                          }}
+                          autoComplete="off"
+                          spellCheck={false}
+                          disabled={busy}
+                        />
                         <button
                           type="button"
-                          className="secondary-button"
-                          onClick={() => setConfirmRemove(false)}
-                          disabled={busy}
+                          className="icon-button"
+                          aria-label={showKey ? "Hide API key" : "Show API key"}
+                          title={showKey ? "Hide API key" : "Show API key"}
+                          onClick={() => setShowKey((current) => !current)}
                         >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          className="danger-button"
-                          onClick={() => void remove()}
-                          disabled={busy}
-                        >
-                          <Trash2 size={15} />
-                          Remove
+                          {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                         </button>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger-text-button"
-                        onClick={() => setConfirmRemove(true)}
-                        disabled={busy}
-                      >
-                        <Trash2 size={15} />
-                        Remove
-                      </button>
-                    ))}
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    disabled={!apiKey.trim() || busy}
-                  >
-                    {busy && <LoaderCircle className="spin" size={15} />}
-                    Save key
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="settings-readonly">
-                This key is managed outside RiftX Desktop.
-              </p>
-            )}
+                    </label>
 
-            {notice && <p className="settings-notice">{notice}</p>}
+                    <div className="settings-actions">
+                      {profile.configured &&
+                        (confirmRemove ? (
+                          <div className="remove-confirmation">
+                            <span>Remove stored key?</span>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setConfirmRemove(false)}
+                              disabled={busy}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="danger-button"
+                              onClick={() => void remove()}
+                              disabled={busy}
+                            >
+                              <Trash2 size={15} />
+                              Remove
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="danger-text-button"
+                            onClick={() => setConfirmRemove(true)}
+                            disabled={busy}
+                          >
+                            <Trash2 size={15} />
+                            Remove
+                          </button>
+                        ))}
+                      <button
+                        type="submit"
+                        className="primary-button"
+                        disabled={!apiKey.trim() || busy}
+                      >
+                        {busy && <LoaderCircle className="spin" size={15} />}
+                        Save key
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="settings-readonly">
+                    This key is managed outside RiftX Desktop.
+                  </p>
+                )}
+
+                {notice && <p className="settings-notice">{notice}</p>}
+              </>
+            )}
             <NotificationControls open={open} onError={onError} />
           </form>
         ) : loadFailed ? (

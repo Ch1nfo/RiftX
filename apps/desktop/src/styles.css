@@ -996,7 +996,7 @@ button:disabled {
 
 .mode-fields {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(160px, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(130px, 1fr) minmax(180px, 1.4fr);
   padding: 12px 18px;
   gap: 14px;
 }
@@ -1075,6 +1075,33 @@ button:disabled {
   display: grid;
   margin: 0;
   gap: 10px;
+}
+
+.settings-profile-selector {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-profile-selector > span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.settings-profile-selector select {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.settings-profile-selector select:focus {
+  border-color: #4c9879;
 }
 
 .settings-summary > div {

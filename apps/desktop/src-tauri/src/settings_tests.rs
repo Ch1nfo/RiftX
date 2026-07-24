@@ -73,3 +73,66 @@ context_budget = 64000
         )
     );
 }
+
+#[tokio::test]
+async fn settings_view_lists_every_profile_in_name_order() {
+    let config: SettingsConfig = toml::from_str(
+        r#"
+[llm]
+default_profile = "zeta"
+
+[llm.profiles.alpha]
+model = "model-a"
+base_url = "https://alpha.example.test/v1"
+api_key = { source = "environment", variable = "RIFTX_SETTINGS_ALPHA_UNSET" }
+timeout_seconds = 60
+reasoning_level = "medium"
+context_budget = 64000
+
+[llm.profiles.zeta]
+model = "model-z"
+base_url = "https://zeta.example.test/v1"
+api_key = { source = "environment", variable = "RIFTX_SETTINGS_ZETA_UNSET" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+"#,
+    )
+    .expect("multi-profile config");
+
+    let view = settings_view(config, true)
+        .await
+        .expect("multi-profile settings view");
+
+    assert_eq!(
+        view,
+        LlmSettingsView {
+            default_profile: "zeta".to_string(),
+            profiles: vec![
+                LlmProfileSettingsView {
+                    profile_name: "alpha".to_string(),
+                    model: "model-a".to_string(),
+                    base_url: "https://alpha.example.test/v1".to_string(),
+                    timeout_seconds: 60,
+                    reasoning_level: "medium".to_string(),
+                    context_budget: 64_000,
+                    credential_source: "environment".to_string(),
+                    credential_name: "RIFTX_SETTINGS_ALPHA_UNSET".to_string(),
+                    configured: false,
+                },
+                LlmProfileSettingsView {
+                    profile_name: "zeta".to_string(),
+                    model: "model-z".to_string(),
+                    base_url: "https://zeta.example.test/v1".to_string(),
+                    timeout_seconds: 300,
+                    reasoning_level: "high".to_string(),
+                    context_budget: 200_000,
+                    credential_source: "environment".to_string(),
+                    credential_name: "RIFTX_SETTINGS_ZETA_UNSET".to_string(),
+                    configured: false,
+                },
+            ],
+            daemon_restart_required: true,
+        }
+    );
+}

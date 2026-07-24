@@ -128,6 +128,7 @@ pub(crate) struct EngagementView {
     #[serde(default)]
     entry_points: Vec<String>,
     mode: String,
+    llm_profile: String,
     authorization: AuthorizationView,
     policy_revision: String,
     thread_id: Option<String>,
@@ -183,6 +184,7 @@ pub(crate) struct CreateEngagementInput {
     #[serde(default)]
     ports: Vec<u16>,
     mode: String,
+    llm_profile: Option<String>,
     environment: String,
     #[serde(default)]
     capabilities: Vec<String>,
@@ -304,6 +306,7 @@ pub(crate) async fn create_engagement(
         },
         "entryPoints": input.entry_points,
         "mode": input.mode,
+        "llmProfile": input.llm_profile,
         "authorization": {
             "network": {
                 "cidrs": input.cidrs,

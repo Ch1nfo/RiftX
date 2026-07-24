@@ -42,12 +42,17 @@ export function llmSettings(): Promise<LlmSettings> {
   return desktopInvoke("llm_settings");
 }
 
-export function saveLlmApiKey(apiKey: string): Promise<LlmSettings> {
-  return desktopInvoke("save_llm_api_key", { input: { apiKey } });
+export function saveLlmApiKey(
+  profileName: string,
+  apiKey: string,
+): Promise<LlmSettings> {
+  return desktopInvoke("save_llm_api_key", {
+    input: { profileName, apiKey },
+  });
 }
 
-export function deleteLlmApiKey(): Promise<LlmSettings> {
-  return desktopInvoke("delete_llm_api_key");
+export function deleteLlmApiKey(profileName: string): Promise<LlmSettings> {
+  return desktopInvoke("delete_llm_api_key", { input: { profileName } });
 }
 
 export function notificationSettings(): Promise<NotificationSettings> {

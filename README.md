@@ -162,8 +162,10 @@ api_key = { source = "environment", variable = "RIFTX_LLM_API_KEY" }
 `runtime/profiles/<name>` runtime home。Desktop 从系统安全存储读取所有 Keyring
 Profile 的 API Key，并通过继承的 stdin 发送一次性、长度前缀的 Profile-Key 内存帧；
 独立启动的 `riftxd` 仍可直接读取系统安全存储。环境变量来源会被强制从 Agent 工具
-进程环境中排除。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、命令行、环境变量
-或普通日志。
+进程环境中排除；每个 Runtime 都排除所有 Profile 的密钥变量，防止跨 Profile 泄漏。
+Desktop 设置页可逐 Profile 管理 Keyring 凭据，新建 Engagement 时可选择配置中的任意
+Profile。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、命令行、环境变量或普通
+日志。
 
 ## 开发运行
 

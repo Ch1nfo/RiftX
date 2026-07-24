@@ -1,9 +1,12 @@
 import { AlertTriangle, X } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import { bridgeError, llmSettings } from "../bridge";
 import type {
   CreateEngagementInput,
+  DesktopBridgeError,
   EnvironmentClass,
   ExecutionMode,
+  LlmProfileSettings,
 } from "../models";
 
 interface NewEngagementDialogProps {
@@ -11,6 +14,7 @@ interface NewEngagementDialogProps {
   busy: boolean;
   onClose: () => void;
   onCreate: (input: CreateEngagementInput) => Promise<void>;
+  onError: (error: DesktopBridgeError) => void;
 }
 
 const splitLines = (value: string) =>
@@ -24,6 +28,7 @@ export function NewEngagementDialog({
   busy,
   onClose,
   onCreate,
+  onError,
 }: NewEngagementDialogProps) {
   const [name, setName] = useState("");
   const [objective, setObjective] = useState("");
@@ -34,6 +39,23 @@ export function NewEngagementDialog({
   const [capabilities, setCapabilities] = useState("network.discovery");
   const [mode, setMode] = useState<ExecutionMode>("native");
   const [environment, setEnvironment] = useState<EnvironmentClass>("lab");
+  const [profiles, setProfiles] = useState<LlmProfileSettings[]>([]);
+  const [llmProfile, setLlmProfile] = useState("");
+  const [profilesLoading, setProfilesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setProfilesLoading(true);
+    void llmSettings()
+      .then((settings) => {
+        setProfiles(settings.profiles);
+        setLlmProfile(settings.defaultProfile);
+      })
+      .catch((cause) => onError(bridgeError(cause)))
+      .finally(() => setProfilesLoading(false));
+  }, [onError, open]);
 
   if (!open) {
     return null;
@@ -50,6 +72,7 @@ export function NewEngagementDialog({
       domains: splitLines(domains),
       ports: [],
       mode,
+      llmProfile,
       environment,
       capabilities: splitLines(capabilities),
       identities: [],
@@ -175,6 +198,21 @@ export function NewEngagementDialog({
               <option value="production">Production</option>
             </select>
           </label>
+          <label>
+            <span>LLM profile</span>
+            <select
+              required
+              value={llmProfile}
+              onChange={(event) => setLlmProfile(event.target.value)}
+              disabled={profilesLoading}
+            >
+              {profiles.map((profile) => (
+                <option key={profile.profileName} value={profile.profileName}>
+                  {profile.profileName} · {profile.model}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {mode === "auto" && (
@@ -188,7 +226,11 @@ export function NewEngagementDialog({
           <button type="button" className="secondary-button" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary-button" disabled={busy}>
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={busy || profilesLoading || !llmProfile}
+          >
             {busy ? "Creating..." : "Create task"}
           </button>
         </footer>

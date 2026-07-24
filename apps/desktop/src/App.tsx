@@ -657,6 +657,7 @@ export default function App() {
         busy={submitting}
         onClose={() => setCreateOpen(false)}
         onCreate={create}
+        onError={setError}
       />
       <SettingsDialog
         open={settingsOpen}

@@ -57,6 +57,10 @@ export function EngagementInspector({
             <dt>Environment</dt>
             <dd>{engagement.authorization.environment}</dd>
           </div>
+          <div>
+            <dt>LLM profile</dt>
+            <dd>{engagement.llmProfile}</dd>
+          </div>
         </dl>
         <div className="scope-values">
           {[

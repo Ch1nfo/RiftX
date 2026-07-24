@@ -18,6 +18,12 @@ export interface DesktopDaemonInfo {
 }
 
 export interface LlmSettings {
+  defaultProfile: string;
+  profiles: LlmProfileSettings[];
+  daemonRestartRequired: boolean;
+}
+
+export interface LlmProfileSettings {
   profileName: string;
   model: string;
   baseUrl: string;
@@ -27,7 +33,6 @@ export interface LlmSettings {
   credentialSource: "keyring" | "environment";
   credentialName: string;
   configured: boolean;
-  daemonRestartRequired: boolean;
 }
 
 export interface NotificationSettings {
@@ -45,6 +50,7 @@ export interface Engagement {
   };
   entryPoints: string[];
   mode: ExecutionMode;
+  llmProfile: string;
   authorization: {
     network: {
       cidrs: string[];
@@ -74,6 +80,7 @@ export interface CreateEngagementInput {
   domains: string[];
   ports: number[];
   mode: ExecutionMode;
+  llmProfile: string;
   environment: EnvironmentClass;
   capabilities: string[];
   identities: unknown[];

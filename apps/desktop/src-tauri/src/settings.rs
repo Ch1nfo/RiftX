@@ -10,6 +10,14 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LlmSettingsView {
+    default_profile: String,
+    profiles: Vec<LlmProfileSettingsView>,
+    daemon_restart_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct LlmProfileSettingsView {
     profile_name: String,
     model: String,
     base_url: String,
@@ -19,13 +27,19 @@ pub(crate) struct LlmSettingsView {
     credential_source: String,
     credential_name: String,
     configured: bool,
-    daemon_restart_required: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SaveLlmApiKeyInput {
+    profile_name: String,
     api_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SelectLlmProfileInput {
+    profile_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +87,7 @@ pub(crate) async fn save_llm_api_key(
     input: SaveLlmApiKeyInput,
 ) -> Result<LlmSettingsView, DesktopError> {
     let config = load_config(state.config_path()?).await?;
-    let (_, profile) = default_profile(&config)?;
+    let profile = profile(&config, &input.profile_name)?;
     let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
         return Err(read_only_source());
     };
@@ -90,9 +104,10 @@ pub(crate) async fn save_llm_api_key(
 #[tauri::command]
 pub(crate) async fn delete_llm_api_key(
     state: tauri::State<'_, DesktopState>,
+    input: SelectLlmProfileInput,
 ) -> Result<LlmSettingsView, DesktopError> {
     let config = load_config(state.config_path()?).await?;
-    let (_, profile) = default_profile(&config)?;
+    let profile = profile(&config, &input.profile_name)?;
     let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
         return Err(read_only_source());
     };
@@ -109,37 +124,54 @@ async fn settings_view(
     config: SettingsConfig,
     daemon_restart_required: bool,
 ) -> Result<LlmSettingsView, DesktopError> {
-    let (profile_name, profile) = default_profile(&config)?;
-    let (credential_source, credential_name, configured) = match &profile.api_key {
-        SettingsApiKeySource::Keyring { credential } => {
-            let credential_name = credential.clone();
-            let credential = credential.clone();
-            let configured = tokio::task::spawn_blocking(move || {
-                LlmCredentialStore::default()
-                    .load(&credential)
-                    .map(|key| key.is_some())
+    let default_profile = config.llm.default_profile;
+    if !config.llm.profiles.contains_key(&default_profile) {
+        return Err(DesktopError::new(
+            "invalid_config",
+            format!("default LLM profile {default_profile:?} is not configured"),
+        ));
+    }
+    let profiles = tokio::task::spawn_blocking(move || {
+        let store = LlmCredentialStore::default();
+        config
+            .llm
+            .profiles
+            .into_iter()
+            .map(|(profile_name, profile)| {
+                let (credential_source, credential_name, configured) = match &profile.api_key {
+                    SettingsApiKeySource::Keyring { credential } => (
+                        "keyring".to_string(),
+                        credential.clone(),
+                        store
+                            .load(credential)
+                            .map(|key| key.is_some())
+                            .map_err(credential_error)?,
+                    ),
+                    SettingsApiKeySource::Environment { variable } => (
+                        "environment".to_string(),
+                        variable.clone(),
+                        std::env::var_os(variable).is_some(),
+                    ),
+                };
+                Ok(LlmProfileSettingsView {
+                    profile_name,
+                    model: profile.model,
+                    base_url: profile.base_url,
+                    timeout_seconds: profile.timeout_seconds,
+                    reasoning_level: profile.reasoning_level,
+                    context_budget: profile.context_budget,
+                    credential_source,
+                    credential_name,
+                    configured,
+                })
             })
-            .await
-            .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
-            .map_err(credential_error)?;
-            ("keyring".to_string(), credential_name, configured)
-        }
-        SettingsApiKeySource::Environment { variable } => (
-            "environment".to_string(),
-            variable.clone(),
-            std::env::var_os(variable).is_some(),
-        ),
-    };
+            .collect::<Result<Vec<_>, DesktopError>>()
+    })
+    .await
+    .map_err(|error| DesktopError::new("credential_store", error.to_string()))??;
     Ok(LlmSettingsView {
-        profile_name: profile_name.to_string(),
-        model: profile.model.clone(),
-        base_url: profile.base_url.clone(),
-        timeout_seconds: profile.timeout_seconds,
-        reasoning_level: profile.reasoning_level.clone(),
-        context_budget: profile.context_budget,
-        credential_source,
-        credential_name,
-        configured,
+        default_profile,
+        profiles,
         daemon_restart_required,
     })
 }
@@ -154,17 +186,16 @@ async fn load_config(path: &Path) -> Result<SettingsConfig, DesktopError> {
     toml::from_str(&content).map_err(|error| DesktopError::new("invalid_config", error.to_string()))
 }
 
-fn default_profile(
-    config: &SettingsConfig,
-) -> Result<(&str, &SettingsLlmProfileConfig), DesktopError> {
-    let profile_name = config.llm.default_profile.as_str();
-    let profile = config.llm.profiles.get(profile_name).ok_or_else(|| {
+fn profile<'a>(
+    config: &'a SettingsConfig,
+    profile_name: &str,
+) -> Result<&'a SettingsLlmProfileConfig, DesktopError> {
+    config.llm.profiles.get(profile_name).ok_or_else(|| {
         DesktopError::new(
             "invalid_config",
-            format!("default LLM profile {profile_name:?} is not configured"),
+            format!("LLM profile {profile_name:?} is not configured"),
         )
-    })?;
-    Ok((profile_name, profile))
+    })
 }
 
 fn credential_error(error: impl std::fmt::Display) -> DesktopError {
