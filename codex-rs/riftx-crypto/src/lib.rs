@@ -13,6 +13,11 @@ use thiserror::Error;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
+mod cipher;
+
+pub use cipher::EngagementRecordCipher;
+pub use cipher::KeyringEngagementCipher;
+
 const KEY_SERVICE: &str = "com.riftx.engagement-key";
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
@@ -208,6 +213,8 @@ pub enum CryptoError {
     InvalidStoredKey,
     #[error("engagement data key already exists")]
     KeyAlreadyExists,
+    #[error("engagement data key is missing")]
+    KeyMissing,
     #[error("operating-system engagement key store failed: {0}")]
     KeyStore(String),
 }

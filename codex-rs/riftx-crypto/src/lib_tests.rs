@@ -94,3 +94,40 @@ fn context_and_key_storage_inputs_are_bounded() {
         Err(CryptoError::InvalidStoredKey)
     ));
 }
+
+#[test]
+fn record_cipher_caches_existing_keys_and_never_recreates_missing_keys() {
+    let backend = MockKeyringStore::default();
+    let first = KeyringEngagementCipher::new(backend.clone());
+    first
+        .create_engagement("engagement-1")
+        .expect("create engagement key");
+    let envelope = first
+        .seal_record("engagement-1", "observation", "observation-1", b"state")
+        .expect("sealed state");
+    let reopened = KeyringEngagementCipher::new(backend.clone());
+    reopened
+        .prepare_engagement("engagement-1")
+        .expect("prepare existing key");
+
+    assert_eq!(
+        reopened
+            .open_record("engagement-1", "observation", "observation-1", &envelope,)
+            .expect("open state")
+            .as_slice(),
+        b"state"
+    );
+    assert_eq!(
+        reopened.prepare_engagement("missing-engagement"),
+        Err(CryptoError::KeyMissing)
+    );
+    assert!(
+        reopened
+            .delete_engagement("engagement-1")
+            .expect("delete key")
+    );
+    assert_eq!(
+        KeyringEngagementCipher::new(backend).prepare_engagement("engagement-1"),
+        Err(CryptoError::KeyMissing)
+    );
+}
