@@ -9,16 +9,23 @@ use codex_riftx_ipc::PendingApproval;
 use serde_json::Value;
 use serde_json::json;
 
-pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
+pub(crate) async fn process(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {
     match event {
         RiftxAppServerEvent::Notification(notification) => {
             crate::execution_events::process_notification(state, &notification).await;
             crate::conversation::process_notification(state, &notification).await;
-            forward_event(state, RiftxAppServerEvent::Notification(notification)).await;
+            forward_event(
+                state,
+                profile_name,
+                RiftxAppServerEvent::Notification(notification),
+            )
+            .await;
         }
-        RiftxAppServerEvent::CommandApproval(pending) => command_approval(state, pending).await,
+        RiftxAppServerEvent::CommandApproval(pending) => {
+            command_approval(state, profile_name, pending).await
+        }
         RiftxAppServerEvent::FileChangeApproval(pending) => {
-            if let Some(app_server) = &state.app_server {
+            if let Some(app_server) = state.app_server(profile_name) {
                 let _ = app_server.deny_file_change(pending.clone()).await;
             }
             publish_pending(
@@ -33,7 +40,7 @@ pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
             .await;
         }
         RiftxAppServerEvent::PermissionsApproval(pending) => {
-            if let Some(app_server) = &state.app_server {
+            if let Some(app_server) = state.app_server(profile_name) {
                 let _ = app_server
                     .reject_permissions(
                         pending.clone(),
@@ -53,7 +60,7 @@ pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
             .await;
         }
         RiftxAppServerEvent::DynamicToolCall(pending) => {
-            if let Some(app_server) = &state.app_server {
+            if let Some(app_server) = state.app_server(profile_name) {
                 let _ = app_server
                     .reject_dynamic_tool(
                         pending,
@@ -63,13 +70,17 @@ pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
                     .await;
             }
         }
-        other => forward_event(state, other).await,
+        other => forward_event(state, profile_name, other).await,
     }
 }
 
-async fn command_approval(state: &GatewayState, pending: PendingCommandApproval) {
+async fn command_approval(
+    state: &GatewayState,
+    profile_name: &str,
+    pending: PendingCommandApproval,
+) {
     let Some(engagement_id) = engagement_for_thread(state, &pending.params.thread_id).await else {
-        if let Some(app_server) = &state.app_server {
+        if let Some(app_server) = state.app_server(profile_name) {
             let _ = app_server
                 .decide_command_approval(
                     pending,
@@ -86,6 +97,7 @@ async fn command_approval(state: &GatewayState, pending: PendingCommandApproval)
     state.pending_approvals.write().await.insert(
         approval_id.clone(),
         PendingApprovalRequest {
+            profile_name: profile_name.to_string(),
             engagement_id: engagement_id.clone(),
             view: PendingApproval {
                 id: approval_id.clone(),
@@ -109,12 +121,14 @@ async fn command_approval(state: &GatewayState, pending: PendingCommandApproval)
         .await;
 }
 
-async fn forward_event(state: &GatewayState, event: RiftxAppServerEvent) {
+async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {
     let Ok(event) = event.envelope() else {
         return;
     };
     let Some(thread_id) = event.thread_id.as_deref() else {
-        state.publish_to_active(&event.kind, event.data).await;
+        state
+            .publish_to_profile_active(profile_name, &event.kind, event.data)
+            .await;
         return;
     };
     let Some(engagement_id) = engagement_for_thread(state, thread_id).await else {

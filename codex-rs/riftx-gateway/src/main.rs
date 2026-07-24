@@ -46,6 +46,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .default_profile()
         .context("default LLM profile is missing after config validation")?
         .clone();
+    let default_profile_name = config.llm.default_profile.clone();
     let (llm_api_key, excluded_api_key_env) =
         load_llm_api_key(&llm_profile.api_key, stdin_api_key).await?;
     if let Some(parent) = config.daemon.state_db.parent() {
@@ -85,12 +86,13 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let skills = SkillCatalogBuilder::new(skills_root)
         .build(skills_entry)
         .await;
-    let state = GatewayState::new(config, store, skills, tools).with_app_server(app_server_handle);
+    let state = GatewayState::new(config, store, skills, tools)
+        .with_app_server(default_profile_name.clone(), app_server_handle);
     state
         .reconcile_after_restart()
         .await
         .context("reconcile active engagements after Gateway restart")?;
-    state.spawn_app_server_event_pump(app_server);
+    state.spawn_app_server_event_pump(default_profile_name, app_server);
     let endpoint = LocalIpcEndpoint::new(&state.config.daemon.ipc_dir);
     let app = build_router(state);
     let listener = LocalIpcListener::bind(endpoint.clone()).await?;

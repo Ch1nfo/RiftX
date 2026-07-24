@@ -451,9 +451,9 @@ async fn start_turn(
             "turn input cannot exceed {MAX_OPERATOR_REQUEST_BYTES} bytes"
         )));
     }
+    let profile_name = state.config.llm.default_profile.clone();
     let app_server = state
-        .app_server
-        .as_ref()
+        .app_server(&profile_name)
         .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
     let workspace = state.config.daemon.workspace_root.join(&id);
     tokio::fs::create_dir_all(&workspace)
@@ -534,11 +534,14 @@ async fn start_turn(
     task.status = TaskStatus::Running;
     task.turn_id = Some(turn_id.clone());
     state.store.put_task(&task).await?;
-    state
-        .active_turns
-        .write()
-        .await
-        .insert(id.clone(), ActiveTurn { thread_id, turn_id });
+    state.active_turns.write().await.insert(
+        id.clone(),
+        ActiveTurn {
+            profile_name,
+            thread_id,
+            turn_id,
+        },
+    );
     state
         .publish(
             &id,
@@ -610,8 +613,7 @@ async fn decide_approval(
         && execution_is_running;
     let engagement_id = pending.engagement_id.clone();
     let app_server = state
-        .app_server
-        .as_ref()
+        .app_server(&pending.profile_name)
         .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
     match pending.kind {
         PendingApprovalKind::Command(command) => {
@@ -668,7 +670,7 @@ async fn interrupt_engagement_inner(
     state.store.engagement(id).await?;
     let active_turn = state.active_turns.read().await.get(id).cloned();
     if let Some(active_turn) = active_turn {
-        if let Some(app_server) = &state.app_server {
+        if let Some(app_server) = state.app_server(&active_turn.profile_name) {
             let _ = app_server
                 .interrupt_turn(active_turn.thread_id.clone(), active_turn.turn_id.clone())
                 .await;
@@ -684,8 +686,8 @@ async fn interrupt_engagement_inner(
     state.active_turns.write().await.remove(id);
     state.agent_threads.write().await.remove(id);
     let pending_approvals = state.take_pending_approvals(id).await;
-    if let Some(app_server) = &state.app_server {
-        for pending in pending_approvals {
+    for pending in pending_approvals {
+        if let Some(app_server) = state.app_server(&pending.profile_name) {
             match pending.kind {
                 PendingApprovalKind::Command(command) => {
                     let _ = app_server

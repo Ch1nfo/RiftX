@@ -37,7 +37,7 @@ pub struct GatewayState {
     pub tools: Arc<ToolInventory>,
     pub(crate) artifact_store: Arc<ArtifactStore>,
     pub(crate) audit: AuditWriter,
-    pub(crate) app_server: Option<RiftxAppServerRequestHandle>,
+    pub(crate) app_servers: Arc<HashMap<String, RiftxAppServerRequestHandle>>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<EngagementEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
@@ -53,12 +53,14 @@ pub struct GatewayState {
 
 #[derive(Clone)]
 pub(crate) struct ActiveTurn {
+    pub(crate) profile_name: String,
     pub(crate) thread_id: String,
     pub(crate) turn_id: String,
 }
 
 #[derive(Clone)]
 pub(crate) struct PendingApprovalRequest {
+    pub(crate) profile_name: String,
     pub(crate) engagement_id: String,
     pub(crate) view: PendingApproval,
     pub(crate) kind: PendingApprovalKind,
@@ -91,7 +93,7 @@ impl GatewayState {
             tools: Arc::new(tools),
             artifact_store: Arc::new(artifact_store),
             audit,
-            app_server: None,
+            app_servers: Arc::new(HashMap::new()),
             events: Arc::new(RwLock::new(HashMap::new())),
             thread_engagements: Arc::new(RwLock::new(HashMap::new())),
             active_turns: Arc::new(RwLock::new(HashMap::new())),
@@ -110,21 +112,36 @@ impl GatewayState {
         }
     }
 
-    pub fn with_app_server(mut self, app_server: RiftxAppServerRequestHandle) -> Self {
-        self.app_server = Some(app_server);
+    pub fn with_app_server(
+        mut self,
+        profile_name: String,
+        app_server: RiftxAppServerRequestHandle,
+    ) -> Self {
+        Arc::make_mut(&mut self.app_servers).insert(profile_name, app_server);
         self
     }
 
-    pub fn spawn_app_server_event_pump(&self, mut adapter: RiftxAppServerAdapter) {
+    pub(crate) fn app_server(&self, profile_name: &str) -> Option<&RiftxAppServerRequestHandle> {
+        self.app_servers.get(profile_name)
+    }
+
+    pub fn spawn_app_server_event_pump(
+        &self,
+        profile_name: String,
+        mut adapter: RiftxAppServerAdapter,
+    ) {
         let state = self.clone();
         tokio::spawn(async move {
             loop {
                 match adapter.next_event().await {
-                    Ok(Some(event)) => crate::app_events::process(&state, event).await,
+                    Ok(Some(event)) => {
+                        crate::app_events::process(&state, &profile_name, event).await
+                    }
                     Ok(None) => break,
                     Err(error) => {
                         state
-                            .publish_to_active(
+                            .publish_to_profile_active(
+                                &profile_name,
                                 "appServer/error",
                                 json!({"message": error.to_string()}),
                             )
@@ -133,8 +150,14 @@ impl GatewayState {
                     }
                 }
             }
-            state.pending_approvals.write().await.clear();
-            state.publish_to_active("appServer/closed", json!({})).await;
+            state
+                .pending_approvals
+                .write()
+                .await
+                .retain(|_, pending| pending.profile_name != profile_name);
+            state
+                .publish_to_profile_active(&profile_name, "appServer/closed", json!({}))
+                .await;
         });
     }
 
@@ -260,13 +283,19 @@ impl GatewayState {
             .clone()
     }
 
-    pub(crate) async fn publish_to_active(&self, kind: &str, data: Value) {
+    pub(crate) async fn publish_to_profile_active(
+        &self,
+        profile_name: &str,
+        kind: &str,
+        data: Value,
+    ) {
         let active = self
             .active_turns
             .read()
             .await
-            .keys()
-            .cloned()
+            .iter()
+            .filter(|(_, turn)| turn.profile_name == profile_name)
+            .map(|(engagement_id, _)| engagement_id.clone())
             .collect::<Vec<_>>();
         for engagement_id in active {
             self.publish(&engagement_id, kind, data.clone()).await;

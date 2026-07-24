@@ -101,6 +101,49 @@ async fn test_router(temp: &TempDir) -> Router {
     build_router(test_state(temp).await)
 }
 
+#[tokio::test]
+async fn profile_runtime_events_are_isolated_to_matching_active_turns() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    state.active_turns.write().await.extend([
+        (
+            "engagement-a".to_string(),
+            ActiveTurn {
+                profile_name: "profile-a".to_string(),
+                thread_id: "thread-a".to_string(),
+                turn_id: "turn-a".to_string(),
+            },
+        ),
+        (
+            "engagement-b".to_string(),
+            ActiveTurn {
+                profile_name: "profile-b".to_string(),
+                thread_id: "thread-b".to_string(),
+                turn_id: "turn-b".to_string(),
+            },
+        ),
+    ]);
+    let mut events_a = state.event_sender("engagement-a").await.subscribe();
+    let mut events_b = state.event_sender("engagement-b").await.subscribe();
+
+    state
+        .publish_to_profile_active("profile-a", "runtime/test", json!({}))
+        .await;
+
+    assert_eq!(
+        events_a
+            .recv()
+            .await
+            .expect("profile-a event")
+            .engagement_id,
+        "engagement-a"
+    );
+    assert!(matches!(
+        events_b.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
 fn native_engagement(state: &GatewayState, id: &str, status: EngagementStatus) -> Engagement {
     let authorization = AuthorizationScope {
         network: Scope {
