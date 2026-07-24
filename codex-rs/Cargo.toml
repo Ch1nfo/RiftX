@@ -90,6 +90,7 @@ members = [
     "riftx-credentials",
     "riftx-crypto",
     "riftx-gateway",
+    "riftx-guard",
     "riftx-ipc",
     "riftx-report",
     "riftx-skills",
@@ -239,6 +240,7 @@ codex-riftx-domain = { path = "riftx-domain" }
 codex-riftx-credentials = { path = "riftx-credentials" }
 codex-riftx-crypto = { path = "riftx-crypto" }
 codex-riftx-gateway = { path = "riftx-gateway" }
+codex-riftx-guard = { path = "riftx-guard" }
 codex-riftx-ipc = { path = "riftx-ipc" }
 codex-riftx-report = { path = "riftx-report" }
 codex-riftx-skills = { path = "riftx-skills" }
