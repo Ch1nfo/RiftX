@@ -32,7 +32,10 @@ Named Pipe 提供本地服务。
 - 多资产 Target State、Evidence 链、SQLite 状态、JSONL 审计和 Markdown/JSON 报告。
 - `riftxd` 本地 IPC API 和 Operator CLI。
 - Tauri 2 + React 桌面壳，已具备 Engagement 列表、创建、选择、Native 指令提交、
-  interrupt 和状态报告工作台；前端只通过 Rust bridge 访问本地 IPC。
+  interrupt、实时对话事件、单次命令审批和状态报告工作台；前端只通过 Rust bridge
+  访问本地 IPC。
+- IPC v2 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
+  待审批请求。
 - 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入和
   `riftx tools doctor`。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 `riftx skills doctor`。
@@ -42,8 +45,8 @@ Named Pipe 提供本地服务。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成桌面设置/审批/通知等完整功能、Linux TUI、加密案件存储、三平台 Guard、
-Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成桌面设置、完整审批矩阵、通知与持久对话历史、Linux TUI、加密案件存储、
+三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。

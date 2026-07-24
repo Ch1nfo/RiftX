@@ -161,7 +161,9 @@ Markdown 和 JSON。
 - 本机 engagement workspace 和单一持续主 Agent。
 - `riftxd` 本地 IPC API 与 Operator CLI。
 - Tauri 2 + React 桌面壳，以及只访问本地 IPC 的 Rust bridge。
-- 桌面 Engagement 列表、创建、选择、Native 指令提交、interrupt 和报告状态面板。
+- 桌面 Engagement 列表、创建、选择、Native 指令提交、interrupt、实时消息、单次命令
+  审批和报告状态面板。
+- IPC v2 协议协商、有大小上限的 SSE 解码、断线重连和待审批查询/决策。
 - Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 doctor。
 - Scope、Policy Revision、Approval 及三模式领域约束。
@@ -171,11 +173,12 @@ Markdown 和 JSON。
 - workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
 - Markdown/JSON 报告。
 - macOS、Windows、Linux 的核心领域契约和确定性 Native daemon 验收 CI。
-- macOS 调试 `.app` 的实际 IPC、列表、创建和报告工作流验证。
+- macOS 调试 `.app` 的实际 IPC、列表、创建、实时事件、interrupt、连续指令和报告
+  工作流验证。
 
 尚未实现：
 
-- 桌面设置、审批、通知、完整对话历史和 Linux 全屏 TUI。
+- 桌面设置、完整审批矩阵、通知、持久对话历史和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
 - 案件数据加密、OS credential store 和 `.riftxcase`。
 - macOS、Windows、Linux `riftx-guard`。
