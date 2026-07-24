@@ -639,7 +639,7 @@ fn report_path(engagement_id: &str, format: &str) -> Result<String, DesktopError
     ))
 }
 
-fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {
+pub(crate) fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {
     if !id.is_empty()
         && id.len() <= 128
         && id

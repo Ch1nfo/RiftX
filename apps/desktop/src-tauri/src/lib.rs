@@ -1,5 +1,6 @@
 mod background;
 mod bridge;
+mod credentials;
 mod daemon;
 mod extensions;
 mod notifications;
@@ -33,6 +34,12 @@ pub fn run() {
             bridge::engagement_report,
             bridge::engagement_report_markdown,
             bridge::conversation_history,
+            credentials::list_assessment_credentials,
+            credentials::create_assessment_credential,
+            credentials::delete_assessment_credential,
+            credentials::list_credential_grants,
+            credentials::create_credential_grant,
+            credentials::revoke_credential_grant,
             extensions::tool_inventory,
             extensions::skill_catalog,
             settings::llm_settings,

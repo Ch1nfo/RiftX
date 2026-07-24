@@ -581,6 +581,7 @@ version = "0.0.0"
 dependencies = [
  "codex-keyring-store",
  "thiserror 2.0.19",
+ "zeroize",
 ]
 
 [[package]]
