@@ -140,6 +140,64 @@ export interface CreateEngagementInput {
   expiresAt: number | null;
 }
 
+export type CredentialKind =
+  | "password"
+  | "apiToken"
+  | "sshKey"
+  | "certificate"
+  | "other";
+
+export interface CredentialReference {
+  id: string;
+  engagementId: string;
+  label: string;
+  kind: CredentialKind;
+  username: string | null;
+  domain: string | null;
+  createdAt: number;
+  configured: boolean;
+}
+
+export interface CreateAssessmentCredentialInput {
+  engagementId: string;
+  label: string;
+  kind: CredentialKind;
+  username: string | null;
+  domain: string | null;
+  secret: string;
+}
+
+export interface CredentialGrant {
+  id: string;
+  engagementId: string;
+  credentialId: string;
+  allowedTargets: {
+    cidrs: string[];
+    domains: string[];
+    ports: number[];
+  };
+  allowedCapabilities: string[];
+  maxUses: number;
+  maxFailuresPerIdentity: number;
+  startsAt: number | null;
+  expiresAt: number;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+export interface CreateCredentialGrantInput {
+  engagementId: string;
+  credentialId: string;
+  cidrs: string[];
+  domains: string[];
+  ports: number[];
+  capabilities: string[];
+  maxUses: number;
+  maxFailuresPerIdentity: number;
+  startsAt: number | null;
+  expiresAt: number;
+}
+
 export interface TurnAccepted {
   taskId: string;
   status: string;

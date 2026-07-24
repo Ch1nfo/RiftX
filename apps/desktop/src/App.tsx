@@ -26,6 +26,8 @@ import {
   interruptEngagement,
   killRuntime,
   listApprovals,
+  listAssessmentCredentials,
+  listCredentialGrants,
   listEngagements,
   onEngagementEvent,
   onEngagementStream,
@@ -37,6 +39,7 @@ import {
 } from "./bridge";
 import riftxIcon from "./assets/riftx-icon.png";
 import { ActivityTimeline } from "./components/ActivityTimeline";
+import { CredentialDialog } from "./components/CredentialDialog";
 import { EngagementInspector } from "./components/EngagementInspector";
 import { NewEngagementDialog } from "./components/NewEngagementDialog";
 import { ReportDialog } from "./components/ReportDialog";
@@ -46,6 +49,8 @@ import type {
   ApprovalDecision,
   ConversationEntry,
   CreateEngagementInput,
+  CredentialGrant,
+  CredentialReference,
   DaemonControlStatus,
   DesktopBridgeError,
   DesktopDaemonInfo,
@@ -67,6 +72,12 @@ export default function App() {
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [credentialReferences, setCredentialReferences] = useState<
+    CredentialReference[]
+  >([]);
+  const [credentialGrants, setCredentialGrants] = useState<CredentialGrant[]>(
+    [],
+  );
   const [streamState, setStreamState] =
     useState<EngagementStreamStatus["state"]>("disconnected");
   const [turnRunning, setTurnRunning] = useState(false);
@@ -81,6 +92,7 @@ export default function App() {
   const [controlBusy, setControlBusy] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
@@ -126,6 +138,19 @@ export default function App() {
   const loadApprovals = useCallback(async (engagementId: string) => {
     try {
       setApprovals(await listApprovals(engagementId));
+    } catch (cause) {
+      setError(bridgeError(cause));
+    }
+  }, []);
+
+  const loadCredentials = useCallback(async (engagementId: string) => {
+    try {
+      const [references, grants] = await Promise.all([
+        listAssessmentCredentials(engagementId),
+        listCredentialGrants(engagementId),
+      ]);
+      setCredentialReferences(references);
+      setCredentialGrants(grants);
     } catch (cause) {
       setError(bridgeError(cause));
     }
@@ -226,6 +251,9 @@ export default function App() {
       setHistory([]);
       setHistoryCursor(null);
       setApprovals([]);
+      setCredentialReferences([]);
+      setCredentialGrants([]);
+      setCredentialsOpen(false);
       setTurnRunning(false);
       setStreamState("disconnected");
       return;
@@ -237,12 +265,16 @@ export default function App() {
     setHistory([]);
     setHistoryCursor(null);
     setApprovals([]);
+    setCredentialReferences([]);
+    setCredentialGrants([]);
+    setCredentialsOpen(false);
     setTurnRunning(false);
     setStreamState("connecting");
     void Promise.all([
       loadReport(selectedId),
       loadApprovals(selectedId),
       loadConversation(selectedId, true),
+      loadCredentials(selectedId),
     ]);
 
     let disposed = false;
@@ -270,6 +302,9 @@ export default function App() {
           event.kind === "appServer/closed"
         ) {
           void loadApprovals(selectedId);
+        }
+        if (event.kind.startsWith("credential/")) {
+          void Promise.all([loadCredentials(selectedId), refresh(false)]);
         }
         if (
           event.kind === "turn/completed" ||
@@ -319,7 +354,14 @@ export default function App() {
       stopEvents();
       stopStream();
     };
-  }, [loadApprovals, loadConversation, loadReport, refresh, selectedId]);
+  }, [
+    loadApprovals,
+    loadConversation,
+    loadCredentials,
+    loadReport,
+    refresh,
+    selectedId,
+  ]);
 
   useEffect(() => {
     if (!selected || selected.status !== "active") {
@@ -330,11 +372,19 @@ export default function App() {
         loadReport(selected.id),
         loadApprovals(selected.id),
         loadConversation(selected.id),
+        loadCredentials(selected.id),
         refresh(false),
       ]);
     }, 15_000);
     return () => window.clearInterval(timer);
-  }, [loadApprovals, loadConversation, loadReport, refresh, selected]);
+  }, [
+    loadApprovals,
+    loadConversation,
+    loadCredentials,
+    loadReport,
+    refresh,
+    selected,
+  ]);
 
   const reportHasRunningTask =
     report?.tasks.some(
@@ -706,9 +756,16 @@ export default function App() {
           report={report}
           modeBusy={modeBusy}
           modeBlocked={isRunning || approvals.length > 0}
+          credentialGrants={credentialGrants}
           onModeChange={(mode, confirmation) =>
             void changeMode(mode, confirmation)
           }
+          onOpenCredentials={() => {
+            setCredentialsOpen(true);
+            if (selectedId) {
+              void loadCredentials(selectedId);
+            }
+          }}
           onOpenReport={() => void openReport()}
         />
       </div>
@@ -758,6 +815,30 @@ export default function App() {
         markdown={reportMarkdown}
         loading={reportLoading}
         onClose={() => setReportOpen(false)}
+      />
+      <CredentialDialog
+        open={credentialsOpen}
+        engagement={selected}
+        references={credentialReferences}
+        grants={credentialGrants}
+        mutable={
+          selected !== null &&
+          selected.status !== "completed" &&
+          !(selected.mode === "auto" && selected.status === "active") &&
+          !isRunning &&
+          approvals.length === 0
+        }
+        onChanged={() => {
+          if (selectedId) {
+            void Promise.all([
+              loadCredentials(selectedId),
+              loadReport(selectedId),
+              refresh(false),
+            ]);
+          }
+        }}
+        onClose={() => setCredentialsOpen(false)}
+        onError={setError}
       />
     </div>
   );

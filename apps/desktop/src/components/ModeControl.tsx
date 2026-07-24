@@ -1,6 +1,6 @@
 import { LoaderCircle, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Engagement, ExecutionMode } from "../models";
+import type { CredentialGrant, Engagement, ExecutionMode } from "../models";
 
 const AUTO_CONFIRMATION = "AUTO MODE - TEST ENVIRONMENT ONLY";
 const MODES: ExecutionMode[] = ["native", "hardened", "auto"];
@@ -9,6 +9,7 @@ interface ModeControlProps {
   engagement: Engagement;
   busy: boolean;
   blocked: boolean;
+  credentialGrants: CredentialGrant[];
   onChange: (mode: ExecutionMode, confirmation: string | null) => void;
 }
 
@@ -16,6 +17,7 @@ export function ModeControl({
   engagement,
   busy,
   blocked,
+  credentialGrants,
   onChange,
 }: ModeControlProps) {
   const [target, setTarget] = useState<ExecutionMode>(engagement.mode);
@@ -31,6 +33,11 @@ export function ModeControl({
   const controlsDisabled = busy || blocked || completed;
   const autoConfirmed =
     target !== "auto" || confirmation === AUTO_CONFIRMATION;
+  const activeCredentialGrants = credentialGrants.filter(
+    (grant) =>
+      grant.revokedAt === null &&
+      grant.expiresAt > Math.floor(Date.now() / 1000),
+  );
 
   return (
     <section className="mode-control">
@@ -108,6 +115,10 @@ export function ModeControl({
               </dd>
             </div>
             <div>
+              <dt>Credential grants</dt>
+              <dd>{activeCredentialGrants.length}</dd>
+            </div>
+            <div>
               <dt>Authorization expiry</dt>
               <dd>
                 {engagement.authorization.window.expiresAt
@@ -118,6 +129,16 @@ export function ModeControl({
               </dd>
             </div>
           </dl>
+          {activeCredentialGrants.length > 0 && (
+            <div className="auto-grant-list">
+              {activeCredentialGrants.map((grant) => (
+                <code key={grant.id}>
+                  credential://{grant.credentialId} ·{" "}
+                  {grant.allowedCapabilities.join(", ")} · max {grant.maxUses}
+                </code>
+              ))}
+            </div>
+          )}
           <label>
             <span>Type the confirmation phrase</span>
             <code>{AUTO_CONFIRMATION}</code>

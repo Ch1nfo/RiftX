@@ -3,7 +3,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ApprovalDecision,
   ConversationPage,
+  CreateAssessmentCredentialInput,
+  CreateCredentialGrantInput,
   CreateEngagementInput,
+  CredentialGrant,
+  CredentialReference,
   DaemonControlStatus,
   DesktopBridgeError,
   DesktopDaemonInfo,
@@ -95,6 +99,48 @@ export function changeEngagementMode(
 ): Promise<Engagement> {
   return desktopInvoke("change_engagement_mode", {
     input: { engagementId, mode, confirmation },
+  });
+}
+
+export function listAssessmentCredentials(
+  engagementId: string,
+): Promise<CredentialReference[]> {
+  return desktopInvoke("list_assessment_credentials", { engagementId });
+}
+
+export function createAssessmentCredential(
+  input: CreateAssessmentCredentialInput,
+): Promise<CredentialReference> {
+  return desktopInvoke("create_assessment_credential", { input });
+}
+
+export function deleteAssessmentCredential(
+  engagementId: string,
+  credentialId: string,
+): Promise<CredentialReference> {
+  return desktopInvoke("delete_assessment_credential", {
+    input: { engagementId, credentialId },
+  });
+}
+
+export function listCredentialGrants(
+  engagementId: string,
+): Promise<CredentialGrant[]> {
+  return desktopInvoke("list_credential_grants", { engagementId });
+}
+
+export function createCredentialGrant(
+  input: CreateCredentialGrantInput,
+): Promise<CredentialGrant> {
+  return desktopInvoke("create_credential_grant", { input });
+}
+
+export function revokeCredentialGrant(
+  engagementId: string,
+  grantId: string,
+): Promise<CredentialGrant> {
+  return desktopInvoke("revoke_credential_grant", {
+    input: { engagementId, grantId },
   });
 }
 

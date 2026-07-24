@@ -1,5 +1,6 @@
-import { ChevronRight, FileText, ShieldCheck } from "lucide-react";
+import { ChevronRight, FileText, KeyRound, ShieldCheck } from "lucide-react";
 import type {
+  CredentialGrant,
   Engagement,
   EngagementReport,
   ExecutionMode,
@@ -11,7 +12,9 @@ interface EngagementInspectorProps {
   report: EngagementReport | null;
   modeBusy: boolean;
   modeBlocked: boolean;
+  credentialGrants: CredentialGrant[];
   onModeChange: (mode: ExecutionMode, confirmation: string | null) => void;
+  onOpenCredentials: () => void;
   onOpenReport: () => void;
 }
 
@@ -20,7 +23,9 @@ export function EngagementInspector({
   report,
   modeBusy,
   modeBlocked,
+  credentialGrants,
   onModeChange,
+  onOpenCredentials,
   onOpenReport,
 }: EngagementInspectorProps) {
   if (!engagement) {
@@ -39,6 +44,15 @@ export function EngagementInspector({
         <span>Engagement</span>
         <div className="inspector-heading-actions">
           <strong>{engagement.status}</strong>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Manage credentials"
+            title="Credentials"
+            onClick={onOpenCredentials}
+          >
+            <KeyRound size={15} />
+          </button>
           <button
             type="button"
             className="icon-button"
@@ -66,6 +80,7 @@ export function EngagementInspector({
         engagement={engagement}
         busy={modeBusy}
         blocked={modeBlocked}
+        credentialGrants={credentialGrants}
         onChange={onModeChange}
       />
 
