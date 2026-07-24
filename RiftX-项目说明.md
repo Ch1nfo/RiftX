@@ -123,14 +123,13 @@ Scope，也不能绕过审批、Credential Grant 或 Guard。
 ## 6. LLM 与凭据
 
 RiftX 不提供 GPT 账号登录、浏览器授权或设备码登录。用户在本机配置一个或多个
-Responses-compatible LLM Profile，API Key 保存在操作系统安全存储；当前开发基线从
-指定环境变量读取：
+Responses-compatible LLM Profile，API Key 保存在操作系统安全存储：
 
 ```toml
 [llm]
 model = "gpt-5.2"
 base_url = "https://api.openai.com/v1"
-api_key_env = "RIFTX_LLM_API_KEY"
+api_key = { source = "keyring", profile = "default" }
 ```
 
 模型 API Key、目标凭据和代理凭据不得进入 prompt、SQLite 明文字段、审计 payload、

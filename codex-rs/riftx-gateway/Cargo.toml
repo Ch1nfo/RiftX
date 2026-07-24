@@ -23,6 +23,7 @@ clap = { workspace = true, features = ["derive"] }
 codex-arg0 = { workspace = true }
 codex-riftx-artifacts = { workspace = true }
 codex-riftx-core = { workspace = true }
+codex-riftx-credentials = { workspace = true }
 codex-riftx-app-server-adapter = { workspace = true }
 codex-riftx-ipc = { workspace = true }
 codex-riftx-skills = { workspace = true }

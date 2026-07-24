@@ -4,6 +4,7 @@ use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::AuditConfig;
 use codex_riftx_core::DaemonConfig;
 use codex_riftx_core::Engagement;
+use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmConfig;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::RiftxConfig;
@@ -288,7 +289,9 @@ fn test_config(root: &std::path::Path, base_url: String) -> RiftxConfig {
         llm: LlmConfig {
             model: "gpt-5.2".to_string(),
             base_url,
-            api_key_env: API_KEY_ENV.to_string(),
+            api_key: LlmApiKeySource::Environment {
+                variable: API_KEY_ENV.to_string(),
+            },
         },
         policy: ManagedPolicyConfig {
             allowed_capabilities: vec!["evidence.capture".to_string()],

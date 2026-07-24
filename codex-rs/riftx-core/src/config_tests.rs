@@ -14,7 +14,7 @@ unexpected = true
 [llm]
 model = "test-model"
 base_url = "http://127.0.0.1:8766/v1"
-api_key_env = "RIFTX_TEST_API_KEY"
+api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
 "#;
     let error = toml::from_str::<RiftxConfig>(input).expect_err("unknown field should fail");
     assert!(error.to_string().contains("unknown field `unexpected`"));
@@ -43,7 +43,7 @@ extra_paths = ["extra-tools"]
 [llm]
 model = "test-model"
 base_url = "http://127.0.0.1:8766/v1"
-api_key_env = "RIFTX_TEST_API_KEY"
+api_key = { source = "keyring", profile = "default" }
 
 [policy]
 allowed_capabilities = []
@@ -97,7 +97,9 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
         LlmConfig {
             model: "riftx-model".to_string(),
             base_url: base_url.to_string(),
-            api_key_env: "RIFTX_LLM_API_KEY".to_string(),
+            api_key: LlmApiKeySource::Keyring {
+                profile: "default".to_string(),
+            },
         }
         .validate()
         .expect("valid LLM config");
@@ -106,7 +108,9 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
     let error = LlmConfig {
         model: "riftx-model".to_string(),
         base_url: "http://llm.example.test/v1".to_string(),
-        api_key_env: "RIFTX_LLM_API_KEY".to_string(),
+        api_key: LlmApiKeySource::Environment {
+            variable: "RIFTX_LLM_API_KEY".to_string(),
+        },
     }
     .validate()
     .expect_err("remote HTTP must be rejected");

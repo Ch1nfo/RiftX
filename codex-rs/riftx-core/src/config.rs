@@ -102,7 +102,14 @@ pub struct DaemonConfig {
 pub struct LlmConfig {
     pub model: String,
     pub base_url: String,
-    pub api_key_env: String,
+    pub api_key: LlmApiKeySource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LlmApiKeySource {
+    Keyring { profile: String },
+    Environment { variable: String },
 }
 
 impl LlmConfig {
@@ -116,10 +123,19 @@ impl LlmConfig {
                     .to_string(),
             ));
         }
-        if !valid_env_name(&self.api_key_env) {
-            return Err(ConfigError::Invalid(
-                "llm.api_key_env must be a valid environment variable name".to_string(),
-            ));
+        match &self.api_key {
+            LlmApiKeySource::Keyring { profile } if !valid_credential_profile(profile) => {
+                return Err(ConfigError::Invalid(
+                    "llm.api_key keyring profile must use 1-128 ASCII letters, digits, dots, hyphens, or underscores"
+                        .to_string(),
+                ));
+            }
+            LlmApiKeySource::Environment { variable } if !valid_env_name(variable) => {
+                return Err(ConfigError::Invalid(
+                    "llm.api_key environment variable must be a valid name".to_string(),
+                ));
+            }
+            LlmApiKeySource::Keyring { .. } | LlmApiKeySource::Environment { .. } => {}
         }
         let base_url = url::Url::parse(&self.base_url)
             .map_err(|error| ConfigError::Invalid(format!("llm.base_url is invalid: {error}")))?;
@@ -151,6 +167,14 @@ impl LlmConfig {
         }
         Ok(())
     }
+}
+
+fn valid_credential_profile(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn valid_env_name(value: &str) -> bool {

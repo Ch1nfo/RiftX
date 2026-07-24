@@ -106,7 +106,7 @@ pub struct RiftxLlmRuntimeConfig {
     pub runtime_home: PathBuf,
     pub model: String,
     pub base_url: String,
-    pub api_key_env: String,
+    pub excluded_api_key_env: Option<String>,
     pub api_key: RiftxApiKey,
     pub process_path: String,
 }
@@ -376,12 +376,17 @@ async fn build_runtime_config(
         .r#set
         .get("PATH")
         .is_some_and(|path| path == &runtime.process_path);
-    let api_key_is_excluded = config
-        .permissions
-        .shell_environment_policy
-        .exclude
-        .iter()
-        .any(|name| *name == runtime.api_key_env.as_str());
+    let api_key_is_excluded = runtime
+        .excluded_api_key_env
+        .as_ref()
+        .is_none_or(|variable| {
+            config
+                .permissions
+                .shell_environment_policy
+                .exclude
+                .iter()
+                .any(|name| *name == variable.as_str())
+        });
     if !enforced || !path_is_enforced || !api_key_is_excluded {
         return Err(AdapterError::UnsafeRuntimeConfig(
             "API-key-only provider, isolated runtime home, and ephemeral auth are required"
@@ -395,7 +400,7 @@ async fn build_runtime_config(
 }
 
 fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Value)> {
-    vec![
+    let mut overrides = vec![
         (
             "model".to_string(),
             toml::Value::String(runtime.model.clone()),
@@ -433,14 +438,17 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
             toml::Value::String(runtime.process_path.clone()),
         ),
         (
-            "shell_environment_policy.exclude".to_string(),
-            toml::Value::Array(vec![toml::Value::String(runtime.api_key_env.clone())]),
-        ),
-        (
             "skills.bundled.enabled".to_string(),
             toml::Value::Boolean(false),
         ),
-    ]
+    ];
+    if let Some(variable) = &runtime.excluded_api_key_env {
+        overrides.push((
+            "shell_environment_policy.exclude".to_string(),
+            toml::Value::Array(vec![toml::Value::String(variable.clone())]),
+        ));
+    }
+    overrides
 }
 
 impl RiftxAppServerRequestHandle {

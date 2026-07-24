@@ -3866,6 +3866,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-riftx-credentials"
+version = "0.0.0"
+dependencies = [
+ "codex-keyring-store",
+ "pretty_assertions",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "codex-riftx-gateway"
 version = "0.0.0"
 dependencies = [
@@ -3876,6 +3885,7 @@ dependencies = [
  "codex-riftx-app-server-adapter",
  "codex-riftx-artifacts",
  "codex-riftx-core",
+ "codex-riftx-credentials",
  "codex-riftx-ipc",
  "codex-riftx-skills",
  "codex-riftx-tools",

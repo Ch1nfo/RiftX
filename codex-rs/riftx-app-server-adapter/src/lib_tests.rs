@@ -62,7 +62,7 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
         runtime_home: runtime_home.path().to_path_buf(),
         model: "riftx-test-model".to_string(),
         base_url: "http://127.0.0.1:8766/v1".to_string(),
-        api_key_env: "RIFTX_TEST_API_KEY".to_string(),
+        excluded_api_key_env: Some("RIFTX_TEST_API_KEY".to_string()),
         api_key: RiftxApiKey::new("riftx-test-key".to_string()).expect("API key"),
         process_path: "/test/tools:/usr/bin".to_string(),
     };

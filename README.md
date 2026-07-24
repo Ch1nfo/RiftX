@@ -126,21 +126,23 @@ directory = "/absolute/path/to/team-skills"
 ## LLM 配置
 
 RiftX 不提供账号登录、浏览器授权或设备码登录。模型配置位于
-[riftx.toml](./riftx.toml)，API Key 只从指定环境变量读取：
+[riftx.toml](./riftx.toml)，默认从操作系统安全存储读取 API Key：
 
 ```toml
 [llm]
 model = "gpt-5.2"
 base_url = "https://api.openai.com/v1"
-api_key_env = "RIFTX_LLM_API_KEY"
+api_key = { source = "keyring", profile = "default" }
 ```
 
-```bash
-export RIFTX_LLM_API_KEY="<your-api-key>"
+确定性测试和本地 mock 可显式使用环境变量来源：
+
+```toml
+api_key = { source = "environment", variable = "RIFTX_LLM_API_KEY" }
 ```
 
-守护进程启动时读取 API Key，并只通过内存认证对象交给模型客户端。RiftX 强制从
-Agent 工具进程环境中排除该变量；API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
+守护进程启动时读取 API Key，并只通过内存认证对象交给模型客户端。环境变量来源会被
+强制从 Agent 工具进程环境中排除；API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
 
 ## 开发运行
 

@@ -5,8 +5,11 @@ use codex_arg0::arg0_dispatch_or_else;
 use codex_riftx_app_server_adapter::RiftxApiKey;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxLlmRuntimeConfig;
+use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateStore;
+use codex_riftx_credentials::LlmApiKey;
+use codex_riftx_credentials::LlmCredentialStore;
 use codex_riftx_gateway::GatewayState;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
@@ -29,14 +32,7 @@ fn main() -> anyhow::Result<()> {
 async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let args = Args::parse();
     let config = RiftxConfig::load_resolved(&args.config).await?;
-    let llm_api_key = std::env::var(&config.llm.api_key_env)
-        .with_context(|| format!("missing {}", config.llm.api_key_env))?;
-    anyhow::ensure!(
-        !llm_api_key.trim().is_empty(),
-        "{} cannot be empty",
-        config.llm.api_key_env
-    );
-    let llm_api_key = RiftxApiKey::new(llm_api_key)?;
+    let (llm_api_key, excluded_api_key_env) = load_llm_api_key(&config.llm.api_key).await?;
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -55,7 +51,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         runtime_home: config.daemon.runtime_home.clone(),
         model: config.llm.model.clone(),
         base_url: config.llm.base_url.clone(),
-        api_key_env: config.llm.api_key_env.clone(),
+        excluded_api_key_env,
         api_key: llm_api_key,
         process_path,
     };
@@ -86,6 +82,30 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     println!("{endpoint}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn load_llm_api_key(
+    source: &LlmApiKeySource,
+) -> anyhow::Result<(RiftxApiKey, Option<String>)> {
+    let (api_key, excluded_variable) = match source {
+        LlmApiKeySource::Keyring { profile } => {
+            let profile = profile.clone();
+            let missing_profile = profile.clone();
+            let api_key =
+                tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&profile))
+                    .await
+                    .context("join operating system credential store task")??
+                    .with_context(|| {
+                        format!("LLM API key profile {missing_profile:?} is not configured")
+                    })?;
+            (api_key, None)
+        }
+        LlmApiKeySource::Environment { variable } => {
+            let value = std::env::var(variable).with_context(|| format!("missing {variable}"))?;
+            (LlmApiKey::new(value)?, Some(variable.clone()))
+        }
+    };
+    Ok((RiftxApiKey::new(api_key.into_inner())?, excluded_variable))
 }
 
 fn resolve_skills_root(configured: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {

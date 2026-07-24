@@ -86,6 +86,7 @@ members = [
     "riftx-artifacts",
     "riftx-cli",
     "riftx-core",
+    "riftx-credentials",
     "riftx-gateway",
     "riftx-ipc",
     "riftx-skills",
@@ -231,6 +232,7 @@ codex-riftx-app-server-adapter = { path = "riftx-app-server-adapter" }
 codex-riftx-artifacts = { path = "riftx-artifacts" }
 codex-riftx-cli = { path = "riftx-cli" }
 codex-riftx-core = { path = "riftx-core" }
+codex-riftx-credentials = { path = "riftx-credentials" }
 codex-riftx-gateway = { path = "riftx-gateway" }
 codex-riftx-ipc = { path = "riftx-ipc" }
 codex-riftx-skills = { path = "riftx-skills" }
