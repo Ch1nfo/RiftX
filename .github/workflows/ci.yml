@@ -10,6 +10,51 @@ permissions:
   contents: read
 
 jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install desktop dependencies
+        run: >-
+          conda run -n agent pnpm install
+          --filter @riftx/desktop...
+          --frozen-lockfile
+
+      - name: Build desktop frontend
+        run: conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Check Tauri bridge
+        run: >-
+          conda run -n agent cargo check
+          --manifest-path apps/desktop/src-tauri/Cargo.toml
+
   local-contracts:
     name: Local contracts (${{ matrix.os }})
     strategy:
