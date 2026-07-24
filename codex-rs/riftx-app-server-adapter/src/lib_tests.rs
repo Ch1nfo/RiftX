@@ -189,3 +189,17 @@ fn event_envelope_preserves_lag_information() {
         }
     );
 }
+
+#[test]
+fn credential_dynamic_tool_has_a_closed_secret_free_schema() {
+    let tools = riftx_dynamic_tools();
+    let serialized = serde_json::to_value(&tools).expect("dynamic tools");
+    let text = serialized.to_string();
+
+    assert_eq!(tools.len(), 1);
+    assert!(text.contains("riftx_credential_tool"));
+    assert!(text.contains("\"additionalProperties\":false"));
+    assert!(!text.contains("\"secret\""));
+    assert!(!text.contains("\"password\""));
+    assert!(!text.contains("\"args\""));
+}

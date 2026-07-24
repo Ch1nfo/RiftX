@@ -20,6 +20,10 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolFunctionSpec;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -58,6 +62,7 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 
 const UNSUPPORTED_REQUEST_CODE: i64 = -32601;
+pub const RIFTX_CREDENTIAL_TOOL_NAME: &str = "riftx_credential_tool";
 
 #[derive(Debug, Error)]
 pub enum AdapterError {
@@ -508,7 +513,7 @@ impl RiftxAppServerRequestHandle {
                     sandbox: Some(SandboxMode::DangerFullAccess),
                     developer_instructions: Some(MAIN_AGENT_INSTRUCTIONS.to_string()),
                     environments: None,
-                    dynamic_tools: Some(Vec::new()),
+                    dynamic_tools: Some(riftx_dynamic_tools()),
                     ..Default::default()
                 },
             })
@@ -621,6 +626,24 @@ impl RiftxAppServerRequestHandle {
             .await
     }
 
+    pub async fn resolve_dynamic_tool_text(
+        &self,
+        pending: PendingDynamicToolCall,
+        text: String,
+        success: bool,
+    ) -> Result<(), AdapterError> {
+        self.client
+            .resolve_server_request(
+                pending.request_id,
+                serde_json::to_value(DynamicToolCallResponse {
+                    content_items: vec![DynamicToolCallOutputContentItem::InputText { text }],
+                    success,
+                })?,
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn reject_server_request(
         &self,
         request_id: RequestId,
@@ -665,7 +688,39 @@ fn workspace_string(cwd: &Path) -> Result<String, AdapterError> {
     Ok(cwd.to_string_lossy().into_owned())
 }
 
-const MAIN_AGENT_INSTRUCTIONS: &str = "Act as the RiftX main security-testing agent. Work only within the operator-authorized scope and objective. Treat entry points as starting clues, build hypotheses from observations, request approval for risky actions, preserve evidence, and never claim success without validated evidence. Tools are local executables available through the RiftX process environment; do not assume any tool is installed.";
+fn riftx_dynamic_tools() -> Vec<DynamicToolSpec> {
+    vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+        name: RIFTX_CREDENTIAL_TOOL_NAME.to_string(),
+        description: "Run one credential-aware local tool using an existing operator grant. The tool, capability, target template, use limits, and secret injection are enforced by RiftX. Never place secrets or arbitrary argv in this call.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["grantId", "tool", "target"],
+            "properties": {
+                "grantId": {
+                    "type": "string",
+                    "description": "Existing CredentialGrant identifier"
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Credential-aware tool name from the RiftX inventory"
+                },
+                "target": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["host"],
+                    "properties": {
+                        "host": {"type": "string"},
+                        "port": {"type": ["integer", "null"], "minimum": 1, "maximum": 65535}
+                    }
+                }
+            }
+        }),
+        defer_loading: false,
+    })]
+}
+
+const MAIN_AGENT_INSTRUCTIONS: &str = "Act as the RiftX main security-testing agent. Work only within the operator-authorized scope and objective. Treat entry points as starting clues, build hypotheses from observations, request approval for risky actions, preserve evidence, and never claim success without validated evidence. Tools are local executables available through the RiftX process environment; do not assume any tool is installed. Secrets are never available in shell or conversation context. Use riftx_credential_tool only with an operator-created CredentialGrant and a credential-aware tool from the inventory.";
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]
