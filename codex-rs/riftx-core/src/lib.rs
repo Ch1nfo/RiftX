@@ -5,14 +5,12 @@ mod config;
 mod credential_use;
 mod policy;
 mod state;
-mod target_state;
 
 pub use codex_riftx_domain::*;
 pub use config::*;
 pub use credential_use::*;
 pub use policy::*;
 pub use state::*;
-pub use target_state::*;
 
 #[cfg(test)]
 #[path = "config_tests.rs"]

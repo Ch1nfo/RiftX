@@ -3929,6 +3929,7 @@ dependencies = [
  "codex-riftx-credentials",
  "codex-riftx-crypto",
  "codex-riftx-ipc",
+ "codex-riftx-report",
  "codex-riftx-skills",
  "codex-riftx-tools",
  "codex-utils-cargo-bin",
@@ -3957,6 +3958,7 @@ dependencies = [
  "axum",
  "bytes",
  "codex-riftx-domain",
+ "codex-riftx-report",
  "futures",
  "http 1.4.0",
  "http-body-util",
@@ -3970,6 +3972,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-riftx-report"
+version = "0.0.0"
+dependencies = [
+ "codex-riftx-domain",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

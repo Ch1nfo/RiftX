@@ -604,6 +604,7 @@ dependencies = [
  "axum",
  "bytes",
  "codex-riftx-domain",
+ "codex-riftx-report",
  "futures",
  "http",
  "http-body-util",
@@ -615,6 +616,14 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-riftx-report"
+version = "0.0.0"
+dependencies = [
+ "codex-riftx-domain",
+ "serde",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ use codex_riftx_ipc::ConversationPage;
 use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::Engagement;
+use codex_riftx_ipc::EngagementReport;
 use codex_riftx_ipc::EngagementStatus;
 use codex_riftx_ipc::EnvironmentClass;
 use codex_riftx_ipc::ExecutionMode;
@@ -26,7 +27,6 @@ use codex_riftx_ipc::TurnAccepted;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -381,7 +381,7 @@ pub(crate) async fn interrupt_engagement(
 pub(crate) async fn engagement_report(
     state: tauri::State<'_, DesktopState>,
     engagement_id: String,
-) -> Result<Value, DesktopError> {
+) -> Result<EngagementReport, DesktopError> {
     let client = state.client()?;
     json_response(client.get(&report_path(&engagement_id, ReportFormat::Json)?).await).await
 }

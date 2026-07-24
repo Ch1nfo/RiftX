@@ -91,6 +91,7 @@ members = [
     "riftx-crypto",
     "riftx-gateway",
     "riftx-ipc",
+    "riftx-report",
     "riftx-skills",
     "riftx-tools",
     "sandboxing",
@@ -239,6 +240,7 @@ codex-riftx-credentials = { path = "riftx-credentials" }
 codex-riftx-crypto = { path = "riftx-crypto" }
 codex-riftx-gateway = { path = "riftx-gateway" }
 codex-riftx-ipc = { path = "riftx-ipc" }
+codex-riftx-report = { path = "riftx-report" }
 codex-riftx-skills = { path = "riftx-skills" }
 codex-riftx-tools = { path = "riftx-tools" }
 codex-rmcp-client = { path = "rmcp-client" }
