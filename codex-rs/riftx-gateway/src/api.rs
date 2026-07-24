@@ -130,6 +130,7 @@ struct ApiErrorBody {
     message: String,
 }
 
+#[derive(Debug)]
 pub(crate) struct ApiError {
     status: StatusCode,
     code: &'static str,
@@ -157,6 +158,14 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
             message: message.into(),
         }
     }
@@ -191,6 +200,7 @@ impl From<StateError> for ApiError {
             StateError::EngagementNotFound(_) => StatusCode::NOT_FOUND,
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
             StateError::InvalidTargetState(_)
+            | StateError::InvalidCredential(_)
             | StateError::InvalidConversationEntry(_)
             | StateError::InvalidConversationQuery(_)
             | StateError::MissingChainReference { .. }
@@ -235,6 +245,23 @@ pub fn build_router(state: GatewayState) -> Router {
         )
         .route("/v1/engagements/{id}", get(get_engagement))
         .route("/v1/engagements/{id}/mode", post(change_mode))
+        .route(
+            "/v1/engagements/{id}/credentials",
+            get(crate::credential_api::list_references)
+                .post(crate::credential_api::create_reference),
+        )
+        .route(
+            "/v1/engagements/{id}/credentials/{credential_id}/delete",
+            post(crate::credential_api::delete_reference),
+        )
+        .route(
+            "/v1/engagements/{id}/credential-grants",
+            get(crate::credential_api::list_grants).post(crate::credential_api::create_grant),
+        )
+        .route(
+            "/v1/engagements/{id}/credential-grants/{grant_id}/revoke",
+            post(crate::credential_api::revoke_grant),
+        )
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/turns", post(start_turn))
         .route("/v1/engagements/{id}/approvals", get(list_approvals))
@@ -433,13 +460,8 @@ async fn change_mode(
             message: format!("enter the exact confirmation phrase: {AUTO_MODE_CONFIRMATION}"),
         });
     }
-    let policy = EffectivePolicy::resolve(
-        &state.config.policy,
-        params.mode,
-        &engagement.authorization,
-        None,
-    )
-    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let policy =
+        crate::credential_api::resolve_engagement_policy(&state, &engagement, params.mode).await?;
     validate_managed_capabilities(&engagement.authorization, &policy)?;
     if params.mode.requires_guard() {
         return Err(ApiError {
@@ -497,13 +519,9 @@ async fn activate_engagement(
         });
     }
     validate_authorization_time(&engagement.authorization, unix_timestamp())?;
-    let policy = EffectivePolicy::resolve(
-        &state.config.policy,
-        engagement.mode,
-        &engagement.authorization,
-        None,
-    )
-    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let policy =
+        crate::credential_api::resolve_engagement_policy(&state, &engagement, engagement.mode)
+            .await?;
     if policy.revision != engagement.policy_revision {
         return Err(ApiError::bad_request("engagement policy revision is stale"));
     }
@@ -728,13 +746,9 @@ async fn decide_approval(
     let engagement = state.store.engagement(&pending.engagement_id).await?;
     let authorization_is_current =
         validate_authorization_time(&engagement.authorization, unix_timestamp()).is_ok();
-    let current_policy = EffectivePolicy::resolve(
-        &state.config.policy,
-        engagement.mode,
-        &engagement.authorization,
-        None,
-    )
-    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let current_policy =
+        crate::credential_api::resolve_engagement_policy(&state, &engagement, engagement.mode)
+            .await?;
     let policy_is_current = authorization_is_current
         && current_policy.revision == pending.view.policy_revision
         && engagement.policy_revision == pending.view.policy_revision;
@@ -965,17 +979,54 @@ async fn report(
     }
 }
 
-async fn operational_agent_input(
+pub(crate) async fn operational_agent_input(
     state: &GatewayState,
     engagement_id: &str,
     request: String,
 ) -> Result<String, ApiError> {
     let engagement = state.store.engagement(engagement_id).await?;
+    let credential_references = state
+        .store
+        .credential_references(engagement_id)
+        .await?
+        .into_iter()
+        .map(|reference| {
+            json!({
+                "id": reference.id,
+                "uri": format!("credential://{}", reference.id),
+                "label": reference.label,
+                "kind": reference.kind,
+                "username": reference.username,
+                "domain": reference.domain,
+            })
+        })
+        .collect::<Vec<_>>();
+    let credential_grants = state
+        .store
+        .credential_grants(engagement_id)
+        .await?
+        .into_iter()
+        .map(|grant| {
+            json!({
+                "id": grant.id,
+                "credentialId": grant.credential_id,
+                "allowedTargets": grant.allowed_targets,
+                "allowedCapabilities": grant.allowed_capabilities,
+                "maxUses": grant.max_uses,
+                "maxFailuresPerIdentity": grant.max_failures_per_identity,
+                "startsAt": grant.starts_at,
+                "expiresAt": grant.expires_at,
+                "revokedAt": grant.revoked_at,
+            })
+        })
+        .collect::<Vec<_>>();
     let mission = json!({
         "objective": engagement.objective,
         "entryPoints": engagement.entry_points,
         "executionMode": engagement.mode,
         "authorization": engagement.authorization,
+        "credentialReferences": credential_references,
+        "credentialGrants": credential_grants,
         "policyRevision": engagement.policy_revision,
     });
     let observed_state = json!({
@@ -1086,4 +1137,4 @@ fn validate_authorization_time(
 
 #[cfg(test)]
 #[path = "api_tests.rs"]
-mod tests;
+pub(crate) mod tests;

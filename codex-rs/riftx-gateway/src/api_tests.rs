@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-async fn test_state(temp: &TempDir) -> GatewayState {
+pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
         daemon: DaemonConfig {
             ipc_dir: temp.path().join("ipc"),
@@ -159,7 +159,11 @@ async fn profile_runtime_events_are_isolated_to_matching_active_turns() {
     ));
 }
 
-fn native_engagement(state: &GatewayState, id: &str, status: EngagementStatus) -> Engagement {
+pub(crate) fn native_engagement(
+    state: &GatewayState,
+    id: &str,
+    status: EngagementStatus,
+) -> Engagement {
     let authorization = AuthorizationScope {
         network: Scope {
             cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
