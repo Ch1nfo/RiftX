@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 codex-keyring-store = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

@@ -2,6 +2,7 @@ use codex_keyring_store::CredentialStoreError;
 use codex_keyring_store::DefaultKeyringStore;
 use codex_keyring_store::KeyringStore;
 use thiserror::Error;
+use zeroize::Zeroize;
 
 const LLM_SERVICE: &str = "com.riftx.llm";
 const ASSESSMENT_SERVICE: &str = "com.riftx.assessment";
@@ -54,14 +55,20 @@ impl AssessmentSecret {
         Ok(Self(value))
     }
 
-    pub fn into_inner(self) -> String {
-        self.0
+    pub fn into_inner(mut self) -> String {
+        std::mem::take(&mut self.0)
     }
 }
 
 impl std::fmt::Debug for AssessmentSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AssessmentSecret([REDACTED])")
+    }
+}
+
+impl Drop for AssessmentSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 

@@ -17,6 +17,8 @@ use serde_json::json;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
+mod credential_commands;
+
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
 struct Cli {
@@ -94,6 +96,10 @@ enum Command {
         id: String,
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
+    },
+    Credentials {
+        #[command(subcommand)]
+        command: credential_commands::CredentialCommand,
     },
     Tools {
         #[command(subcommand)]
@@ -325,6 +331,9 @@ async fn main() -> anyhow::Result<()> {
                 None,
             )
             .await?;
+        }
+        Command::Credentials { command } => {
+            credential_commands::execute(&client, command).await?;
         }
         Command::Tools {
             command: ToolsCommand::Doctor { json },
