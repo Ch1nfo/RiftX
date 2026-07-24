@@ -156,3 +156,29 @@ async fn invalid_engagement_transition_is_rejected() {
         .expect_err("draft cannot complete");
     assert!(matches!(error, StateError::InvalidTransition { .. }));
 }
+
+#[tokio::test]
+async fn system_state_survives_store_reopen() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("state.sqlite");
+    let store = StateStore::open(&path).await.expect("state store");
+    let expected = serde_json::json!({
+        "state": "paused",
+        "reason": "killSwitch",
+        "updatedAt": 42,
+    });
+    store
+        .put_system_state("daemonControl", &expected)
+        .await
+        .expect("put system state");
+    drop(store);
+
+    let reopened = StateStore::open(&path).await.expect("reopen state store");
+    assert_eq!(
+        reopened
+            .system_state::<serde_json::Value>("daemonControl")
+            .await
+            .expect("read system state"),
+        Some(expected)
+    );
+}

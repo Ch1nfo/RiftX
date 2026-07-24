@@ -37,7 +37,8 @@ Named Pipe 提供本地服务。
 - Desktop 原生打包携带当前平台的 `riftxd` sidecar，并负责自动启动、健康检查、
   Key 变更重启和显式退出清理；普通关闭窗口会隐藏到系统托盘并保持后台任务运行。
 - Desktop 顶栏和系统托盘提供全局 Pause、Resume 与 Kill Switch；暂停会关闭新执行入口、
-  拒绝待执行批准并中断活动 Engagement，恢复不会自动重放命令。
+  拒绝待执行批准并中断活动 Engagement，恢复不会自动重放命令；控制状态持久化到
+  SQLite，Kill Switch 和活动任务的重启暂停不能通过重启 daemon 绕过。
 - IPC v4 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
   待审批请求；运行态变化写入 append-only JSONL 审计。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、

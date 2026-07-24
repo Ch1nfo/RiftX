@@ -27,6 +27,8 @@ use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 
+const DAEMON_CONTROL_STATE_KEY: &str = "daemonControl";
+
 #[derive(Clone)]
 pub struct GatewayState {
     pub config: Arc<RiftxConfig>,
@@ -44,6 +46,8 @@ pub struct GatewayState {
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
+    pub(crate) control_slot: Arc<Semaphore>,
+    control_write_slot: Arc<Semaphore>,
     pub(crate) control: Arc<RwLock<DaemonControlStatus>>,
 }
 
@@ -96,6 +100,8 @@ impl GatewayState {
             active_executions: Arc::new(RwLock::new(HashMap::new())),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
+            control_slot: Arc::new(Semaphore::new(1)),
+            control_write_slot: Arc::new(Semaphore::new(1)),
             control: Arc::new(RwLock::new(DaemonControlStatus {
                 state: DaemonRunState::Running,
                 reason: None,
@@ -133,7 +139,51 @@ impl GatewayState {
     }
 
     pub async fn reconcile_after_restart(&self) -> Result<(), StateError> {
-        for engagement in self.store.engagements().await? {
+        let engagements = self.store.engagements().await?;
+        let had_active_engagement = engagements
+            .iter()
+            .any(|engagement| engagement.status == EngagementStatus::Active);
+        let persisted = self
+            .store
+            .system_state::<DaemonControlStatus>(DAEMON_CONTROL_STATE_KEY)
+            .await?;
+        let restored = persisted.map(|status| match (status.state, status.reason) {
+            (DaemonRunState::Running, None)
+            | (DaemonRunState::Paused, Some(DaemonPauseReason::OperatorPause))
+            | (DaemonRunState::Paused, Some(DaemonPauseReason::KillSwitch)) => status,
+            (DaemonRunState::Running, Some(reason)) => DaemonControlStatus {
+                state: DaemonRunState::Paused,
+                reason: Some(reason),
+                updated_at: status.updated_at,
+            },
+            (DaemonRunState::Paused, None) => DaemonControlStatus {
+                state: DaemonRunState::Paused,
+                reason: Some(DaemonPauseReason::OperatorPause),
+                updated_at: status.updated_at,
+            },
+        });
+        match restored {
+            Some(status) if status.state == DaemonRunState::Paused => {
+                self.restore_control(status).await?;
+            }
+            _ if had_active_engagement => {
+                self.set_control(
+                    DaemonRunState::Paused,
+                    Some(DaemonPauseReason::OperatorPause),
+                )
+                .await?;
+            }
+            Some(status) => self.restore_control(status).await?,
+            None => {
+                self.restore_control(DaemonControlStatus {
+                    state: DaemonRunState::Running,
+                    reason: None,
+                    updated_at: unix_timestamp(),
+                })
+                .await?;
+            }
+        }
+        for engagement in engagements {
             if engagement.status != EngagementStatus::Active {
                 continue;
             }
@@ -231,12 +281,21 @@ impl GatewayState {
         &self,
         state: DaemonRunState,
         reason: Option<DaemonPauseReason>,
-    ) -> DaemonControlStatus {
+    ) -> Result<DaemonControlStatus, StateError> {
         let status = DaemonControlStatus {
             state,
             reason,
             updated_at: unix_timestamp(),
         };
+        let _write_permit = self
+            .control_write_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| StateError::SystemStateUnavailable)?;
+        self.store
+            .put_system_state(DAEMON_CONTROL_STATE_KEY, &status)
+            .await?;
         *self.control.write().await = status.clone();
         let event = match (state, reason) {
             (DaemonRunState::Running, None) => "daemon/resumed",
@@ -266,7 +325,21 @@ impl GatewayState {
                 })),
             })
             .await;
-        status
+        Ok(status)
+    }
+
+    async fn restore_control(&self, status: DaemonControlStatus) -> Result<(), StateError> {
+        let _write_permit = self
+            .control_write_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| StateError::SystemStateUnavailable)?;
+        self.store
+            .put_system_state(DAEMON_CONTROL_STATE_KEY, &status)
+            .await?;
+        *self.control.write().await = status;
+        Ok(())
     }
 
     pub(crate) async fn take_pending_approvals(

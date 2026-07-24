@@ -183,7 +183,9 @@ impl From<StateError> for ApiError {
             | StateError::InvalidConversationQuery(_)
             | StateError::MissingChainReference { .. }
             | StateError::BrokenChainReference { .. } => StatusCode::BAD_REQUEST,
-            StateError::Database(_) | StateError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            StateError::Database(_) | StateError::Json(_) | StateError::SystemStateUnavailable => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         Self {
             status,
@@ -263,8 +265,18 @@ async fn kill_system(
     pause_execution(state, DaemonPauseReason::KillSwitch).await
 }
 
-async fn resume_system(State(state): State<GatewayState>) -> Json<DaemonControlStatus> {
-    Json(state.set_control(DaemonRunState::Running, None).await)
+async fn resume_system(
+    State(state): State<GatewayState>,
+) -> Result<Json<DaemonControlStatus>, ApiError> {
+    let _control_permit = state
+        .control_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("runtime control coordinator is closed"))?;
+    Ok(Json(
+        state.set_control(DaemonRunState::Running, None).await?,
+    ))
 }
 
 async fn tools(State(state): State<GatewayState>) -> Json<ToolInventory> {
@@ -704,9 +716,15 @@ async fn pause_execution(
     state: GatewayState,
     reason: DaemonPauseReason,
 ) -> Result<Json<DaemonControlStatus>, ApiError> {
+    let _control_permit = state
+        .control_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("runtime control coordinator is closed"))?;
     let status = state
         .set_control(DaemonRunState::Paused, Some(reason))
-        .await;
+        .await?;
     let _turn_permit = state
         .turn_slot
         .clone()

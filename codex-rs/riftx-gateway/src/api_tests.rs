@@ -207,6 +207,37 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             .status,
         EngagementStatus::Interrupted
     );
+    let paused = state.control_status().await;
+    assert_eq!(
+        paused,
+        DaemonControlStatus {
+            state: DaemonRunState::Paused,
+            reason: Some(DaemonPauseReason::OperatorPause),
+            updated_at: paused.updated_at,
+        }
+    );
+}
+
+#[tokio::test]
+async fn kill_switch_survives_gateway_restart() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let expected = state
+        .set_control(DaemonRunState::Paused, Some(DaemonPauseReason::KillSwitch))
+        .await
+        .expect("activate kill switch");
+    let restarted = GatewayState::new(
+        state.config.as_ref().clone(),
+        state.store.clone(),
+        state.skills.as_ref().clone(),
+        state.tools.as_ref().clone(),
+    );
+    restarted
+        .reconcile_after_restart()
+        .await
+        .expect("restore runtime state");
+
+    assert_eq!(restarted.control_status().await, expected);
 }
 
 #[tokio::test]

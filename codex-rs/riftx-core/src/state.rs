@@ -37,6 +37,8 @@ pub enum StateError {
     InvalidConversationEntry(String),
     #[error("invalid conversation query: {0}")]
     InvalidConversationQuery(String),
+    #[error("system state coordinator is unavailable")]
+    SystemStateUnavailable,
     #[error("{entity_kind} {entity_id} is missing required {reference_kind} reference")]
     MissingChainReference {
         entity_kind: &'static str,
@@ -149,6 +151,14 @@ impl StateStore {
         .execute(&self.pool)
         .await?;
         sqlx::query(
+            "CREATE TABLE IF NOT EXISTS system_state (
+                key TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS conversation_entries_engagement_sequence
              ON conversation_entries(engagement_id, sequence)",
         )
@@ -202,6 +212,35 @@ impl StateStore {
         rows.into_iter()
             .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
             .collect()
+    }
+
+    pub async fn system_state<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, StateError> {
+        let row = sqlx::query("SELECT data FROM system_state WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| serde_json::from_str(row.get("data")))
+            .transpose()
+            .map_err(StateError::from)
+    }
+
+    pub async fn put_system_state<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+    ) -> Result<(), StateError> {
+        sqlx::query(
+            "INSERT INTO system_state(key, data) VALUES(?, ?)
+             ON CONFLICT(key) DO UPDATE SET data=excluded.data",
+        )
+        .bind(key)
+        .bind(serde_json::to_string(value)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn transition_engagement(

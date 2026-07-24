@@ -840,6 +840,7 @@ Test Mock
 - Auto 默认可以在 Desktop 窗口关闭后继续。
 - 系统重启后任务进入 `Paused`。
 - 系统重启后不得自动恢复攻击。
+- Pause 和 Kill Switch 状态必须持久化，daemon 重启不得把执行入口隐式恢复为 Running。
 - 恢复前重新检查网络、VPN、DNS、Scope、工具快照和 Skill 快照。
 - 崩溃恢复不自动重放最后一个命令。
 
