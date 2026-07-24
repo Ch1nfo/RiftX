@@ -20,12 +20,14 @@ interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   onError: (error: DesktopBridgeError) => void;
+  onRuntimeChanged: (available: boolean) => void;
 }
 
 export function SettingsDialog({
   open,
   onClose,
   onError,
+  onRuntimeChanged,
 }: SettingsDialogProps) {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -66,10 +68,16 @@ export function SettingsDialog({
     }
     setBusy(true);
     try {
-      setSettings(await saveLlmApiKey(apiKey));
+      const updated = await saveLlmApiKey(apiKey);
+      setSettings(updated);
       setApiKey("");
       setShowKey(false);
-      setNotice("Saved. Restart the daemon to apply the new key.");
+      setNotice(
+        updated.daemonRestartRequired
+          ? "Saved. Restart the externally managed daemon to apply the new key."
+          : "Saved. The local runtime is ready.",
+      );
+      onRuntimeChanged(true);
     } catch (cause) {
       onError(bridgeError(cause));
     } finally {
@@ -83,10 +91,16 @@ export function SettingsDialog({
     }
     setBusy(true);
     try {
-      setSettings(await deleteLlmApiKey());
+      const updated = await deleteLlmApiKey();
+      setSettings(updated);
       setApiKey("");
       setConfirmRemove(false);
-      setNotice("Removed. Restart the daemon to clear the active key.");
+      setNotice(
+        updated.daemonRestartRequired
+          ? "Removed. Restart the externally managed daemon to clear its active key."
+          : "Removed. The local runtime has stopped.",
+      );
+      onRuntimeChanged(updated.daemonRestartRequired);
     } catch (cause) {
       onError(bridgeError(cause));
     } finally {

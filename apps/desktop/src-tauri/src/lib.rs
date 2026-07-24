@@ -1,9 +1,11 @@
 mod bridge;
+mod daemon;
 mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(bridge::DesktopState::load())
         .invoke_handler(tauri::generate_handler![
             bridge::daemon_info,
@@ -22,6 +24,16 @@ pub fn run() {
             settings::save_llm_api_key,
             settings::delete_llm_api_key,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("RiftX desktop runtime failed");
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            use tauri::Manager;
+
+            app_handle
+                .state::<bridge::DesktopState>()
+                .daemon
+                .stop_owned();
+        }
+    });
 }

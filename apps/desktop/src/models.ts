@@ -14,6 +14,7 @@ export interface LlmSettings {
   credentialSource: "keyring" | "environment";
   credentialName: string;
   configured: boolean;
+  daemonRestartRequired: boolean;
 }
 
 export interface Engagement {

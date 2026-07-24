@@ -17,12 +17,17 @@ use codex_riftx_ipc::LocalIpcListener;
 use codex_riftx_skills::SkillCatalogBuilder;
 use codex_riftx_skills::default_skills_root;
 use codex_riftx_tools::ToolScanner;
+use std::io::Read;
 use std::path::PathBuf;
+
+const MAX_STDIN_API_KEY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long, default_value = "riftx.toml")]
     config: PathBuf,
+    #[arg(long, hide = true)]
+    llm_api_key_stdin: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -32,7 +37,12 @@ fn main() -> anyhow::Result<()> {
 async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let args = Args::parse();
     let config = RiftxConfig::load_resolved(&args.config).await?;
-    let (llm_api_key, excluded_api_key_env) = load_llm_api_key(&config.llm.api_key).await?;
+    let stdin_api_key = args
+        .llm_api_key_stdin
+        .then(read_llm_api_key_stdin)
+        .transpose()?;
+    let (llm_api_key, excluded_api_key_env) =
+        load_llm_api_key(&config.llm.api_key, stdin_api_key).await?;
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -86,7 +96,15 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
 
 async fn load_llm_api_key(
     source: &LlmApiKeySource,
+    stdin_api_key: Option<LlmApiKey>,
 ) -> anyhow::Result<(RiftxApiKey, Option<String>)> {
+    if let Some(api_key) = stdin_api_key {
+        anyhow::ensure!(
+            matches!(source, LlmApiKeySource::Keyring { .. }),
+            "stdin LLM API key injection requires a keyring-backed configuration"
+        );
+        return Ok((RiftxApiKey::new(api_key.into_inner())?, None));
+    }
     let (api_key, excluded_variable) = match source {
         LlmApiKeySource::Keyring { profile } => {
             let profile = profile.clone();
@@ -108,6 +126,28 @@ async fn load_llm_api_key(
     Ok((RiftxApiKey::new(api_key.into_inner())?, excluded_variable))
 }
 
+fn read_llm_api_key_stdin() -> anyhow::Result<LlmApiKey> {
+    read_llm_api_key(&mut std::io::stdin())
+}
+
+fn read_llm_api_key(reader: &mut impl Read) -> anyhow::Result<LlmApiKey> {
+    let mut length = [0_u8; 4];
+    reader
+        .read_exact(&mut length)
+        .context("read LLM API key frame length from stdin")?;
+    let length = u32::from_be_bytes(length) as usize;
+    anyhow::ensure!(
+        (1..=MAX_STDIN_API_KEY_BYTES).contains(&length),
+        "invalid LLM API key frame length"
+    );
+    let mut secret = vec![0_u8; length];
+    reader
+        .read_exact(&mut secret)
+        .context("read LLM API key frame from stdin")?;
+    LlmApiKey::new(String::from_utf8(secret).context("LLM API key frame is not UTF-8")?)
+        .map_err(Into::into)
+}
+
 fn resolve_skills_root(configured: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
     let root = configured
         .map(PathBuf::from)
@@ -118,3 +158,7 @@ fn resolve_skills_root(configured: Option<&std::path::Path>) -> anyhow::Result<P
     }
     Ok(std::env::current_dir()?.join(root))
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

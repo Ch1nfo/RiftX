@@ -14,6 +14,7 @@ pub(crate) struct LlmSettingsView {
     credential_source: String,
     credential_name: String,
     configured: bool,
+    daemon_restart_required: bool,
 }
 
 #[derive(Deserialize)]
@@ -46,11 +47,12 @@ pub(crate) async fn llm_settings(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<LlmSettingsView, DesktopError> {
     let config = load_config(state.config_path()?).await?;
-    settings_view(config).await
+    settings_view(config, false).await
 }
 
 #[tauri::command]
 pub(crate) async fn save_llm_api_key(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: SaveLlmApiKeyInput,
 ) -> Result<LlmSettingsView, DesktopError> {
@@ -64,7 +66,8 @@ pub(crate) async fn save_llm_api_key(
         .await
         .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
         .map_err(credential_error)?;
-    settings_view(config).await
+    let daemon_restart_required = state.daemon.reload_after_api_key_save(&app, &state).await?;
+    settings_view(config, daemon_restart_required).await
 }
 
 #[tauri::command]
@@ -80,10 +83,14 @@ pub(crate) async fn delete_llm_api_key(
         .await
         .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
         .map_err(credential_error)?;
-    settings_view(config).await
+    let daemon_restart_required = state.daemon.stop_after_api_key_delete(&state).await?;
+    settings_view(config, daemon_restart_required).await
 }
 
-async fn settings_view(config: SettingsConfig) -> Result<LlmSettingsView, DesktopError> {
+async fn settings_view(
+    config: SettingsConfig,
+    daemon_restart_required: bool,
+) -> Result<LlmSettingsView, DesktopError> {
     let (credential_source, credential_name, configured) = match &config.llm.api_key {
         SettingsApiKeySource::Keyring { profile } => {
             let credential_name = profile.clone();
@@ -110,6 +117,7 @@ async fn settings_view(config: SettingsConfig) -> Result<LlmSettingsView, Deskto
         credential_source,
         credential_name,
         configured,
+        daemon_restart_required,
     })
 }
 
@@ -132,6 +140,25 @@ fn read_only_source() -> DesktopError {
         "credential_source_read_only",
         "Environment-backed API keys cannot be changed from RiftX Desktop",
     )
+}
+
+pub(crate) async fn sidecar_api_key(path: &Path) -> Result<Option<LlmApiKey>, DesktopError> {
+    let config = load_config(path).await?;
+    let SettingsApiKeySource::Keyring { profile } = config.llm.api_key else {
+        return Ok(None);
+    };
+    let missing_profile = profile.clone();
+    let api_key = tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&profile))
+        .await
+        .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
+        .map_err(credential_error)?
+        .ok_or_else(|| {
+            DesktopError::new(
+                "credential_missing",
+                format!("LLM API key profile {missing_profile:?} is not configured"),
+            )
+        })?;
+    Ok(Some(api_key))
 }
 
 #[cfg(test)]

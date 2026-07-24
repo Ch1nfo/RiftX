@@ -26,6 +26,10 @@ impl LlmApiKey {
     pub fn into_inner(self) -> String {
         self.0
     }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0.into_bytes()
+    }
 }
 
 impl std::fmt::Debug for LlmApiKey {

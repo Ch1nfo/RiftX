@@ -125,10 +125,8 @@ export default function App() {
       setLoading(true);
     }
     try {
-      const [daemonState, taskList] = await Promise.all([
-        daemonInfo(),
-        listEngagements(),
-      ]);
+      const daemonState = await daemonInfo();
+      const taskList = await listEngagements();
       setDaemon(daemonState);
       setEngagements(taskList);
       setSelectedId((current) => {
@@ -529,6 +527,14 @@ export default function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onError={setError}
+        onRuntimeChanged={(available) => {
+          if (available) {
+            void refresh(false);
+          } else {
+            setDaemon(null);
+            setError(null);
+          }
+        }}
       />
     </div>
   );

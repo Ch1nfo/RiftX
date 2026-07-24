@@ -25,6 +25,7 @@ pub(crate) struct DesktopState {
     config_path: Option<PathBuf>,
     startup_error: Option<DesktopError>,
     subscriptions: event_stream::SubscriptionRegistry,
+    pub(crate) daemon: crate::daemon::DaemonSupervisor,
 }
 
 impl DesktopState {
@@ -35,12 +36,14 @@ impl DesktopState {
                 config_path: Some(config_path),
                 startup_error: None,
                 subscriptions: event_stream::SubscriptionRegistry::default(),
+                daemon: crate::daemon::DaemonSupervisor::default(),
             },
             Err(error) => Self {
                 client: None,
                 config_path: None,
                 startup_error: Some(error),
                 subscriptions: event_stream::SubscriptionRegistry::default(),
+                daemon: crate::daemon::DaemonSupervisor::default(),
             },
         }
     }
@@ -53,6 +56,17 @@ impl DesktopState {
 
     pub(crate) fn config_path(&self) -> Result<&Path, DesktopError> {
         self.config_path.as_deref().ok_or_else(unavailable)
+    }
+
+    pub(crate) async fn query_daemon_info(&self) -> Result<DesktopDaemonInfo, DesktopError> {
+        let client = self.client()?;
+        let info: DaemonInfo = json_response(client.get("/v1/system/info").await).await?;
+        validate_protocol_version(info.protocol_version)?;
+        Ok(DesktopDaemonInfo {
+            protocol_version: info.protocol_version,
+            daemon_version: info.daemon_version,
+            config_path: self.config_path.clone().ok_or_else(unavailable)?,
+        })
     }
 }
 
@@ -69,6 +83,10 @@ impl DesktopError {
             code: code.into(),
             message: message.into(),
         }
+    }
+
+    pub(crate) fn is_code(&self, code: &str) -> bool {
+        self.code == code
     }
 }
 
@@ -199,16 +217,11 @@ struct ApiErrorBody {
 
 #[tauri::command]
 pub(crate) async fn daemon_info(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DesktopDaemonInfo, DesktopError> {
-    let client = state.client()?;
-    let info: DaemonInfo = json_response(client.get("/v1/system/info").await).await?;
-    validate_protocol_version(info.protocol_version)?;
-    Ok(DesktopDaemonInfo {
-        protocol_version: info.protocol_version,
-        daemon_version: info.daemon_version,
-        config_path: state.config_path.clone().ok_or_else(unavailable)?,
-    })
+    state.daemon.ensure_running(&app, &state).await?;
+    state.query_daemon_info().await
 }
 
 #[tauri::command]
@@ -410,7 +423,12 @@ async fn empty_response(
 }
 
 fn load_endpoint() -> Result<(PathBuf, LocalIpcEndpoint), DesktopError> {
-    let config_path = find_config_path()?;
+    let config_path = find_config_path()?.canonicalize().map_err(|error| {
+        DesktopError::new(
+            "config_unavailable",
+            format!("resolve RiftX config path: {error}"),
+        )
+    })?;
     let content = std::fs::read_to_string(&config_path).map_err(|error| {
         DesktopError::new(
             "config_unavailable",

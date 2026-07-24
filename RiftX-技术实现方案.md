@@ -137,7 +137,8 @@ flowchart LR
 | `riftx-guard` | Hardened/Auto 的进程、文件、资源和网络约束 |
 | Evidence Evaluator | 只读检查成功条件和 Finding 证据 |
 
-桌面 UI 不直接持有 API Key，不直接执行工具，也不直接访问特权系统接口。
+桌面 WebView 不回读或持久持有 API Key，不直接执行工具，也不直接访问特权系统接口。
+Tauri 后端负责访问 OS 安全存储，并只在启动本应用携带的 `riftxd` 时短暂持有 Key。
 
 ## 5. 桌面交互
 
@@ -799,8 +800,11 @@ Test Mock
 - 只支持 API Key。
 - 不提供 GPT/ChatGPT 账号登录。
 - API Key 存入 OS 安全存储。
-- Desktop UI 只接收输入和显示连接状态。
-- `riftxd` 在模型请求时读取 Key。
+- Desktop WebView 只接收输入和显示连接状态，不回读明文 Key。
+- Desktop 自己启动 `riftxd` 时，由 Tauri 后端读取 Key，并通过继承 stdin 的一次性
+  长度前缀内存帧注入。
+- 独立运行的 `riftxd` 直接从 OS 安全存储读取 Key。
+- Keyring 来源的 Key 不进入命令行、环境变量、配置、数据库、审计或普通日志。
 
 ## 17. 报告
 

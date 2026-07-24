@@ -141,8 +141,10 @@ api_key = { source = "keyring", profile = "default" }
 api_key = { source = "environment", variable = "RIFTX_LLM_API_KEY" }
 ```
 
-守护进程启动时读取 API Key，并只通过内存认证对象交给模型客户端。环境变量来源会被
-强制从 Agent 工具进程环境中排除；API Key 不写入 TOML、SQLite、审计、命令行或普通日志。
+Desktop 从系统安全存储读取 API Key，并通过继承的 stdin 向自己启动的 `riftxd` 发送
+一次性长度前缀内存帧；独立启动的 `riftxd` 仍可直接读取系统安全存储。环境变量来源会被
+强制从 Agent 工具进程环境中排除。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、
+命令行、环境变量或普通日志。
 
 ## 开发运行
 
@@ -151,8 +153,9 @@ conda run -n agent sh -lc \
   'cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli'
 ```
 
-先启动桌面端。即使 daemon 尚未运行，也可以通过右上角设置按钮将 API Key 保存到
-系统安全存储：
+启动桌面端时会自动构建并运行随应用携带的 `riftxd` sidecar。若尚未配置 Key，右上角
+设置可以将其保存到系统安全存储；保存后 sidecar 自动启动，替换 Key 时自动重启，删除
+Key 时自动停止：
 
 ```bash
 conda run -n agent pnpm install
@@ -161,7 +164,7 @@ RIFTX_CONFIG="$PWD/riftx.toml" \
   pnpm --filter @riftx/desktop tauri dev
 ```
 
-另一个终端启动 daemon；保存或删除 API Key 后需要重启 daemon：
+仅在无桌面的 CLI/TUI 开发或显式测试外部 daemon 时，才需要单独启动：
 
 ```bash
 ./codex-rs/target/debug/riftxd --config riftx.toml
@@ -181,8 +184,8 @@ conda run -n agent pnpm --filter @riftx/desktop \
 ```
 
 产物位于
-`apps/desktop/src-tauri/target/debug/bundle/macos/RiftX.app`。正式 DMG、签名和
-notarization 在发布阶段实现。
+`apps/desktop/src-tauri/target/debug/bundle/macos/RiftX.app`，其中已经包含当前平台的
+`riftxd` sidecar。正式 DMG、签名和 notarization 在发布阶段实现。
 
 另一个终端通过同一 `riftx.toml` 中的本地 IPC 端点连接：
 
