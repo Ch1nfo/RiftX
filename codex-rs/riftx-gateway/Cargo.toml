@@ -26,6 +26,7 @@ codex-riftx-core = { workspace = true }
 codex-riftx-crypto = { workspace = true }
 codex-riftx-credentials = { workspace = true }
 codex-riftx-app-server-adapter = { workspace = true }
+codex-riftx-guard = { workspace = true }
 codex-riftx-ipc = { workspace = true }
 codex-riftx-report = { workspace = true }
 codex-riftx-skills = { workspace = true }

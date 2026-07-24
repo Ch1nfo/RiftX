@@ -459,14 +459,7 @@ async fn change_mode(
         crate::credential_api::resolve_engagement_policy(&state, &engagement, params.mode).await?;
     validate_managed_capabilities(&engagement.authorization, &policy)?;
     if params.mode.requires_guard() {
-        return Err(ApiError {
-            status: StatusCode::NOT_IMPLEMENTED,
-            code: "guard_unavailable",
-            message: format!(
-                "{:?} Mode cannot be selected until the platform RiftX Guard is available",
-                params.mode
-            ),
-        });
+        require_guard_ready(&state, params.mode)?;
     }
     let previous_mode = engagement.mode;
     let previous_revision = engagement.policy_revision.clone();
@@ -504,14 +497,7 @@ async fn activate_engagement(
         ));
     }
     if engagement.mode.requires_guard() {
-        return Err(ApiError {
-            status: StatusCode::NOT_IMPLEMENTED,
-            code: "guard_unavailable",
-            message: format!(
-                "{:?} Mode cannot start until the platform RiftX Guard is available",
-                engagement.mode
-            ),
-        });
+        require_guard_ready(&state, engagement.mode)?;
     }
     validate_authorization_time(&engagement.authorization, unix_timestamp())?;
     let policy =
@@ -552,6 +538,23 @@ fn validate_managed_capabilities(
         ));
     }
     Ok(())
+}
+
+fn require_guard_ready(state: &GatewayState, mode: ExecutionMode) -> Result<(), ApiError> {
+    let work_root = state.config.daemon.runtime_home.join("guard");
+    let report = state.guard.preflight(&work_root);
+    if report.allows_hardened() {
+        return Ok(());
+    }
+    Err(ApiError {
+        status: StatusCode::NOT_IMPLEMENTED,
+        code: "guard_unavailable",
+        message: report.refusal_message(match mode {
+            ExecutionMode::Hardened => "Hardened",
+            ExecutionMode::Auto => "Auto",
+            ExecutionMode::Native => "Native",
+        }),
+    })
 }
 
 fn mode_switch_conflict(message: impl Into<String>) -> ApiError {

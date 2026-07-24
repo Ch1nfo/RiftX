@@ -28,6 +28,10 @@ use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
 use codex_riftx_crypto::CryptoError;
 use codex_riftx_crypto::KeyringEngagementCipher;
+use codex_riftx_guard::GuardCapabilities;
+use codex_riftx_guard::GuardPreflightReport;
+use codex_riftx_guard::GuardPreflightStatus;
+use codex_riftx_guard::PlatformGuard;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -40,12 +44,32 @@ use codex_riftx_tools::ToolScanConfig;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+struct ReadyGuard;
+
+impl PlatformGuard for ReadyGuard {
+    fn preflight(&self, _work_root: &Path) -> GuardPreflightReport {
+        GuardPreflightReport {
+            status: GuardPreflightStatus::Ready,
+            platform: "test",
+            capabilities: GuardCapabilities {
+                process_group: true,
+                temp_workdir: true,
+                resource_limits: true,
+                file_rules: true,
+                network_rules: true,
+            },
+            failures: Vec::new(),
+        }
+    }
+}
 
 pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
@@ -1050,6 +1074,60 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let error: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("error JSON");
+    assert_eq!(error["code"], "guard_unavailable");
+}
+
+#[tokio::test]
+async fn hardened_mode_can_activate_when_guard_preflight_is_ready() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await.with_guard(Arc::new(ReadyGuard));
+    let mut engagement = native_engagement(&state, "eng-guard-ready", EngagementStatus::Draft);
+    engagement.mode = ExecutionMode::Hardened;
+    engagement.policy_revision = EffectivePolicy::resolve(
+        &state.config.policy,
+        engagement.mode,
+        &engagement.authorization,
+        None,
+    )
+    .expect("hardened policy")
+    .revision;
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let activated: Engagement = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+    assert_eq!(activated.status, EngagementStatus::Active);
+    assert_eq!(activated.mode, ExecutionMode::Hardened);
 }
 
 #[tokio::test]

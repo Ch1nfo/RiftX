@@ -100,6 +100,7 @@ jobs:
           -p codex-riftx-credentials
           -p codex-riftx-crypto
           -p codex-riftx-domain
+          -p codex-riftx-guard
           -p codex-riftx-ipc
           -p codex-riftx-report
           -p codex-riftx-skills
@@ -146,7 +147,7 @@ jobs:
           -p codex-riftx-app-server-adapter -p codex-riftx-artifacts
           -p codex-riftx-core -p codex-riftx-credentials
           -p codex-riftx-crypto -p codex-riftx-domain
-          -p codex-riftx-ipc -p codex-riftx-report
+          -p codex-riftx-guard -p codex-riftx-ipc -p codex-riftx-report
           -p codex-riftx-skills -p codex-riftx-tools
           -p codex-riftx-gateway -p codex-riftx-cli'
 
