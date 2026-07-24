@@ -4,13 +4,18 @@ use codex_riftx_credentials::LlmApiKey;
 use codex_riftx_credentials::LlmCredentialStore;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LlmSettingsView {
+    profile_name: String,
     model: String,
     base_url: String,
+    timeout_seconds: u64,
+    reasoning_level: String,
+    context_budget: u32,
     credential_source: String,
     credential_name: String,
     configured: bool,
@@ -29,16 +34,27 @@ struct SettingsConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SettingsLlmConfig {
+    default_profile: String,
+    profiles: BTreeMap<String, SettingsLlmProfileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SettingsLlmProfileConfig {
     model: String,
     base_url: String,
     api_key: SettingsApiKeySource,
+    timeout_seconds: u64,
+    reasoning_level: String,
+    context_budget: u32,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 enum SettingsApiKeySource {
-    Keyring { profile: String },
+    Keyring { credential: String },
     Environment { variable: String },
 }
 
@@ -57,12 +73,13 @@ pub(crate) async fn save_llm_api_key(
     input: SaveLlmApiKeyInput,
 ) -> Result<LlmSettingsView, DesktopError> {
     let config = load_config(state.config_path()?).await?;
-    let SettingsApiKeySource::Keyring { profile } = &config.llm.api_key else {
+    let (_, profile) = default_profile(&config)?;
+    let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
         return Err(read_only_source());
     };
-    let profile = profile.clone();
+    let credential = credential.clone();
     let api_key = LlmApiKey::new(input.api_key).map_err(credential_error)?;
-    tokio::task::spawn_blocking(move || LlmCredentialStore::default().save(&profile, api_key))
+    tokio::task::spawn_blocking(move || LlmCredentialStore::default().save(&credential, api_key))
         .await
         .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
         .map_err(credential_error)?;
@@ -75,11 +92,12 @@ pub(crate) async fn delete_llm_api_key(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<LlmSettingsView, DesktopError> {
     let config = load_config(state.config_path()?).await?;
-    let SettingsApiKeySource::Keyring { profile } = &config.llm.api_key else {
+    let (_, profile) = default_profile(&config)?;
+    let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
         return Err(read_only_source());
     };
-    let profile = profile.clone();
-    tokio::task::spawn_blocking(move || LlmCredentialStore::default().delete(&profile))
+    let credential = credential.clone();
+    tokio::task::spawn_blocking(move || LlmCredentialStore::default().delete(&credential))
         .await
         .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
         .map_err(credential_error)?;
@@ -91,13 +109,14 @@ async fn settings_view(
     config: SettingsConfig,
     daemon_restart_required: bool,
 ) -> Result<LlmSettingsView, DesktopError> {
-    let (credential_source, credential_name, configured) = match &config.llm.api_key {
-        SettingsApiKeySource::Keyring { profile } => {
-            let credential_name = profile.clone();
-            let profile = profile.clone();
+    let (profile_name, profile) = default_profile(&config)?;
+    let (credential_source, credential_name, configured) = match &profile.api_key {
+        SettingsApiKeySource::Keyring { credential } => {
+            let credential_name = credential.clone();
+            let credential = credential.clone();
             let configured = tokio::task::spawn_blocking(move || {
                 LlmCredentialStore::default()
-                    .load(&profile)
+                    .load(&credential)
                     .map(|key| key.is_some())
             })
             .await
@@ -112,8 +131,12 @@ async fn settings_view(
         ),
     };
     Ok(LlmSettingsView {
-        model: config.llm.model,
-        base_url: config.llm.base_url,
+        profile_name: profile_name.to_string(),
+        model: profile.model.clone(),
+        base_url: profile.base_url.clone(),
+        timeout_seconds: profile.timeout_seconds,
+        reasoning_level: profile.reasoning_level.clone(),
+        context_budget: profile.context_budget,
         credential_source,
         credential_name,
         configured,
@@ -131,6 +154,19 @@ async fn load_config(path: &Path) -> Result<SettingsConfig, DesktopError> {
     toml::from_str(&content).map_err(|error| DesktopError::new("invalid_config", error.to_string()))
 }
 
+fn default_profile(
+    config: &SettingsConfig,
+) -> Result<(&str, &SettingsLlmProfileConfig), DesktopError> {
+    let profile_name = config.llm.default_profile.as_str();
+    let profile = config.llm.profiles.get(profile_name).ok_or_else(|| {
+        DesktopError::new(
+            "invalid_config",
+            format!("default LLM profile {profile_name:?} is not configured"),
+        )
+    })?;
+    Ok((profile_name, profile))
+}
+
 fn credential_error(error: impl std::fmt::Display) -> DesktopError {
     DesktopError::new("credential_store", error.to_string())
 }
@@ -144,20 +180,23 @@ fn read_only_source() -> DesktopError {
 
 pub(crate) async fn sidecar_api_key(path: &Path) -> Result<Option<LlmApiKey>, DesktopError> {
     let config = load_config(path).await?;
-    let SettingsApiKeySource::Keyring { profile } = config.llm.api_key else {
+    let (_, profile) = default_profile(&config)?;
+    let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
         return Ok(None);
     };
-    let missing_profile = profile.clone();
-    let api_key = tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&profile))
-        .await
-        .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
-        .map_err(credential_error)?
-        .ok_or_else(|| {
-            DesktopError::new(
-                "credential_missing",
-                format!("LLM API key profile {missing_profile:?} is not configured"),
-            )
-        })?;
+    let credential = credential.clone();
+    let missing_credential = credential.clone();
+    let api_key =
+        tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&credential))
+            .await
+            .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
+            .map_err(credential_error)?
+            .ok_or_else(|| {
+                DesktopError::new(
+                    "credential_missing",
+                    format!("LLM API key credential {missing_credential:?} is not configured"),
+                )
+            })?;
     Ok(Some(api_key))
 }
 

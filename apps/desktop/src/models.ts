@@ -18,8 +18,12 @@ export interface DesktopDaemonInfo {
 }
 
 export interface LlmSettings {
+  profileName: string;
   model: string;
   baseUrl: string;
+  timeoutSeconds: number;
+  reasoningLevel: string;
+  contextBudget: number;
   credentialSource: "keyring" | "environment";
   credentialName: string;
   configured: boolean;

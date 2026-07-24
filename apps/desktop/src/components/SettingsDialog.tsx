@@ -147,12 +147,28 @@ export function SettingsDialog({
           <form className="settings-body" onSubmit={save}>
             <dl className="settings-summary">
               <div>
+                <dt>Profile</dt>
+                <dd>{settings.profileName}</dd>
+              </div>
+              <div>
                 <dt>Model</dt>
                 <dd>{settings.model}</dd>
               </div>
               <div>
                 <dt>Endpoint</dt>
                 <dd>{settings.baseUrl}</dd>
+              </div>
+              <div>
+                <dt>Reasoning</dt>
+                <dd>{settings.reasoningLevel}</dd>
+              </div>
+              <div>
+                <dt>Context budget</dt>
+                <dd>{settings.contextBudget.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Timeout</dt>
+                <dd>{settings.timeoutSeconds}s</dd>
               </div>
             </dl>
 

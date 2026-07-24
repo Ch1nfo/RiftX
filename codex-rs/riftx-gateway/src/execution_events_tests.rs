@@ -16,6 +16,8 @@ use codex_riftx_core::EnvironmentClass;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmConfig;
+use codex_riftx_core::LlmProfileConfig;
+use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::Scope;
@@ -26,6 +28,7 @@ use codex_riftx_tools::ToolInventory;
 use codex_riftx_tools::ToolScanConfig;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::BTreeMap;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -246,11 +249,20 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             workspace_root: temp.path().join("workspaces"),
         },
         llm: LlmConfig {
-            model: "riftx-test-model".to_string(),
-            base_url: "http://127.0.0.1:8766/v1".to_string(),
-            api_key: LlmApiKeySource::Environment {
-                variable: "RIFTX_TEST_API_KEY".to_string(),
-            },
+            default_profile: "default".to_string(),
+            profiles: BTreeMap::from([(
+                "default".to_string(),
+                LlmProfileConfig {
+                    model: "riftx-test-model".to_string(),
+                    base_url: "http://127.0.0.1:8766/v1".to_string(),
+                    api_key: LlmApiKeySource::Environment {
+                        variable: "RIFTX_TEST_API_KEY".to_string(),
+                    },
+                    timeout_seconds: 300,
+                    reasoning_level: LlmReasoningLevel::High,
+                    context_budget: 200_000,
+                },
+            )]),
         },
         policy: ManagedPolicyConfig {
             allowed_capabilities: vec!["network.discovery".to_string()],

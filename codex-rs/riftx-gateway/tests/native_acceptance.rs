@@ -6,6 +6,8 @@ use codex_riftx_core::DaemonConfig;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmConfig;
+use codex_riftx_core::LlmProfileConfig;
+use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_ipc::LocalIpcClient;
@@ -15,6 +17,7 @@ use codex_riftx_tools::ToolScanConfig;
 use core_test_support::responses;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
@@ -287,11 +290,20 @@ fn test_config(root: &std::path::Path, base_url: String) -> RiftxConfig {
             workspace_root: root.join("workspaces"),
         },
         llm: LlmConfig {
-            model: "gpt-5.2".to_string(),
-            base_url,
-            api_key: LlmApiKeySource::Environment {
-                variable: API_KEY_ENV.to_string(),
-            },
+            default_profile: "default".to_string(),
+            profiles: BTreeMap::from([(
+                "default".to_string(),
+                LlmProfileConfig {
+                    model: "gpt-5.2".to_string(),
+                    base_url,
+                    api_key: LlmApiKeySource::Environment {
+                        variable: API_KEY_ENV.to_string(),
+                    },
+                    timeout_seconds: 300,
+                    reasoning_level: LlmReasoningLevel::High,
+                    context_budget: 200_000,
+                },
+            )]),
         },
         policy: ManagedPolicyConfig {
             allowed_capabilities: vec!["evidence.capture".to_string()],

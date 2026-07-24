@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 
 #[test]
 fn strict_config_rejects_unknown_fields() {
@@ -12,9 +13,15 @@ workspace_root = "workspaces"
 unexpected = true
 
 [llm]
+default_profile = "default"
+
+[llm.profiles.default]
 model = "test-model"
 base_url = "http://127.0.0.1:8766/v1"
 api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
 "#;
     let error = toml::from_str::<RiftxConfig>(input).expect_err("unknown field should fail");
     assert!(error.to_string().contains("unknown field `unexpected`"));
@@ -41,9 +48,15 @@ directories = ["tools"]
 extra_paths = ["extra-tools"]
 
 [llm]
+default_profile = "default"
+
+[llm.profiles.default]
 model = "test-model"
 base_url = "http://127.0.0.1:8766/v1"
-api_key = { source = "keyring", profile = "default" }
+api_key = { source = "keyring", credential = "default" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
 
 [policy]
 allowed_capabilities = []
@@ -94,29 +107,71 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
         "http://127.0.0.1:8766/v1",
         "http://[::1]:8766/v1",
     ] {
-        LlmConfig {
+        let profile = LlmProfileConfig {
             model: "riftx-model".to_string(),
             base_url: base_url.to_string(),
             api_key: LlmApiKeySource::Keyring {
-                profile: "default".to_string(),
+                credential: "default".to_string(),
             },
+            timeout_seconds: 300,
+            reasoning_level: LlmReasoningLevel::High,
+            context_budget: 200_000,
+        };
+        LlmConfig {
+            default_profile: "default".to_string(),
+            profiles: BTreeMap::from([("default".to_string(), profile)]),
         }
         .validate()
         .expect("valid LLM config");
     }
 
-    let error = LlmConfig {
+    let profile = LlmProfileConfig {
         model: "riftx-model".to_string(),
         base_url: "http://llm.example.test/v1".to_string(),
         api_key: LlmApiKeySource::Environment {
             variable: "RIFTX_LLM_API_KEY".to_string(),
         },
+        timeout_seconds: 300,
+        reasoning_level: LlmReasoningLevel::High,
+        context_budget: 200_000,
+    };
+    let error = LlmConfig {
+        default_profile: "default".to_string(),
+        profiles: BTreeMap::from([("default".to_string(), profile)]),
     }
     .validate()
     .expect_err("remote HTTP must be rejected");
     assert_eq!(
         error.to_string(),
-        "invalid RiftX config: llm.base_url must use HTTPS; HTTP is allowed only for loopback development endpoints"
+        "invalid RiftX config: llm.profiles.default.base_url must use HTTPS; HTTP is allowed only for loopback development endpoints"
+    );
+}
+
+#[test]
+fn llm_config_requires_an_existing_default_profile() {
+    let config = LlmConfig {
+        default_profile: "missing".to_string(),
+        profiles: BTreeMap::from([(
+            "available".to_string(),
+            LlmProfileConfig {
+                model: "riftx-model".to_string(),
+                base_url: "https://llm.example.test/v1".to_string(),
+                api_key: LlmApiKeySource::Keyring {
+                    credential: "available".to_string(),
+                },
+                timeout_seconds: 300,
+                reasoning_level: LlmReasoningLevel::Medium,
+                context_budget: 200_000,
+            },
+        )]),
+    };
+
+    assert_eq!(
+        config
+            .validate()
+            .expect_err("missing default profile")
+            .to_string(),
+        "invalid RiftX config: llm.default_profile \"missing\" does not exist in llm.profiles"
     );
 }
 

@@ -41,8 +41,13 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .llm_api_key_stdin
         .then(read_llm_api_key_stdin)
         .transpose()?;
+    let llm_profile = config
+        .llm
+        .default_profile()
+        .context("default LLM profile is missing after config validation")?
+        .clone();
     let (llm_api_key, excluded_api_key_env) =
-        load_llm_api_key(&config.llm.api_key, stdin_api_key).await?;
+        load_llm_api_key(&llm_profile.api_key, stdin_api_key).await?;
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -59,8 +64,8 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("the effective tool PATH is not valid UTF-8"))?;
     let runtime = RiftxLlmRuntimeConfig {
         runtime_home: config.daemon.runtime_home.clone(),
-        model: config.llm.model.clone(),
-        base_url: config.llm.base_url.clone(),
+        model: llm_profile.model,
+        base_url: llm_profile.base_url,
         excluded_api_key_env,
         api_key: llm_api_key,
         process_path,
@@ -106,16 +111,17 @@ async fn load_llm_api_key(
         return Ok((RiftxApiKey::new(api_key.into_inner())?, None));
     }
     let (api_key, excluded_variable) = match source {
-        LlmApiKeySource::Keyring { profile } => {
-            let profile = profile.clone();
-            let missing_profile = profile.clone();
-            let api_key =
-                tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&profile))
-                    .await
-                    .context("join operating system credential store task")??
-                    .with_context(|| {
-                        format!("LLM API key profile {missing_profile:?} is not configured")
-                    })?;
+        LlmApiKeySource::Keyring { credential } => {
+            let credential = credential.clone();
+            let missing_credential = credential.clone();
+            let api_key = tokio::task::spawn_blocking(move || {
+                LlmCredentialStore::default().load(&credential)
+            })
+            .await
+            .context("join operating system credential store task")??
+            .with_context(|| {
+                format!("LLM API key credential {missing_credential:?} is not configured")
+            })?;
             (api_key, None)
         }
         LlmApiKeySource::Environment { variable } => {

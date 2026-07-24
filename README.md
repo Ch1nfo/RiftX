@@ -141,9 +141,15 @@ RiftX 不提供账号登录、浏览器授权或设备码登录。模型配置�
 
 ```toml
 [llm]
+default_profile = "openai"
+
+[llm.profiles.openai]
 model = "gpt-5.2"
 base_url = "https://api.openai.com/v1"
-api_key = { source = "keyring", profile = "default" }
+api_key = { source = "keyring", credential = "openai" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
 ```
 
 确定性测试和本地 mock 可显式使用环境变量来源：

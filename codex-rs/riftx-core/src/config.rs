@@ -2,6 +2,7 @@ use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolScanConfig;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -100,76 +101,139 @@ pub struct DaemonConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
+    pub default_profile: String,
+    pub profiles: BTreeMap<String, LlmProfileConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LlmProfileConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: LlmApiKeySource,
+    pub timeout_seconds: u64,
+    pub reasoning_level: LlmReasoningLevel,
+    pub context_budget: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LlmApiKeySource {
-    Keyring { profile: String },
+    Keyring { credential: String },
     Environment { variable: String },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmReasoningLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
 }
 
 impl LlmConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !valid_profile_name(&self.default_profile) {
+            return Err(ConfigError::Invalid(
+                "llm.default_profile must use 1-128 ASCII letters, digits, dots, hyphens, or underscores"
+                    .to_string(),
+            ));
+        }
+        if self.profiles.is_empty() {
+            return Err(ConfigError::Invalid(
+                "llm.profiles must define at least one profile".to_string(),
+            ));
+        }
+        if !self.profiles.contains_key(&self.default_profile) {
+            return Err(ConfigError::Invalid(format!(
+                "llm.default_profile {:?} does not exist in llm.profiles",
+                self.default_profile
+            )));
+        }
+        for (name, profile) in &self.profiles {
+            if !valid_profile_name(name) {
+                return Err(ConfigError::Invalid(format!(
+                    "LLM profile name {name:?} must use 1-128 ASCII letters, digits, dots, hyphens, or underscores"
+                )));
+            }
+            profile.validate(name)?;
+        }
+        Ok(())
+    }
+
+    pub fn default_profile(&self) -> Option<&LlmProfileConfig> {
+        self.profiles.get(&self.default_profile)
+    }
+}
+
+impl LlmProfileConfig {
+    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+        let prefix = format!("llm.profiles.{profile_name}");
         if self.model.trim().is_empty()
             || self.model.len() > 256
             || self.model.chars().any(char::is_control)
         {
-            return Err(ConfigError::Invalid(
-                "llm.model must be non-empty, contain no control characters, and be at most 256 bytes"
-                    .to_string(),
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "{prefix}.model must be non-empty, contain no control characters, and be at most 256 bytes"
+            )));
         }
         match &self.api_key {
-            LlmApiKeySource::Keyring { profile } if !valid_credential_profile(profile) => {
-                return Err(ConfigError::Invalid(
-                    "llm.api_key keyring profile must use 1-128 ASCII letters, digits, dots, hyphens, or underscores"
-                        .to_string(),
-                ));
+            LlmApiKeySource::Keyring { credential } if !valid_profile_name(credential) => {
+                return Err(ConfigError::Invalid(format!(
+                    "{prefix}.api_key keyring credential must use 1-128 ASCII letters, digits, dots, hyphens, or underscores"
+                )));
             }
             LlmApiKeySource::Environment { variable } if !valid_env_name(variable) => {
-                return Err(ConfigError::Invalid(
-                    "llm.api_key environment variable must be a valid name".to_string(),
-                ));
+                return Err(ConfigError::Invalid(format!(
+                    "{prefix}.api_key environment variable must be a valid name"
+                )));
             }
             LlmApiKeySource::Keyring { .. } | LlmApiKeySource::Environment { .. } => {}
         }
-        let base_url = url::Url::parse(&self.base_url)
-            .map_err(|error| ConfigError::Invalid(format!("llm.base_url is invalid: {error}")))?;
+        let base_url = url::Url::parse(&self.base_url).map_err(|error| {
+            ConfigError::Invalid(format!("{prefix}.base_url is invalid: {error}"))
+        })?;
         let loopback = match base_url.host() {
             Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
             Some(url::Host::Ipv4(address)) => address.is_loopback(),
             Some(url::Host::Ipv6(address)) => address.is_loopback(),
             None => {
-                return Err(ConfigError::Invalid(
-                    "llm.base_url must include a host".to_string(),
-                ));
+                return Err(ConfigError::Invalid(format!(
+                    "{prefix}.base_url must include a host"
+                )));
             }
         };
         if base_url.scheme() != "https" && !(base_url.scheme() == "http" && loopback) {
-            return Err(ConfigError::Invalid(
-                "llm.base_url must use HTTPS; HTTP is allowed only for loopback development endpoints"
-                    .to_string(),
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "{prefix}.base_url must use HTTPS; HTTP is allowed only for loopback development endpoints"
+            )));
         }
         if !base_url.username().is_empty()
             || base_url.password().is_some()
             || base_url.query().is_some()
             || base_url.fragment().is_some()
         {
-            return Err(ConfigError::Invalid(
-                "llm.base_url cannot contain credentials, query parameters, or fragments"
-                    .to_string(),
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "{prefix}.base_url cannot contain credentials, query parameters, or fragments"
+            )));
+        }
+        if !(1..=3_600).contains(&self.timeout_seconds) {
+            return Err(ConfigError::Invalid(format!(
+                "{prefix}.timeout_seconds must be between 1 and 3600"
+            )));
+        }
+        if !(1_024..=2_000_000).contains(&self.context_budget) {
+            return Err(ConfigError::Invalid(format!(
+                "{prefix}.context_budget must be between 1024 and 2000000"
+            )));
         }
         Ok(())
     }
 }
 
-fn valid_credential_profile(value: &str) -> bool {
+fn valid_profile_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value

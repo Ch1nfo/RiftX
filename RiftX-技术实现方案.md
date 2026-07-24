@@ -783,6 +783,22 @@ Local Compatible Endpoint
 Test Mock
 ```
 
+配置使用命名 Profile，`default_profile` 只定义新 Engagement 的默认选择，不是唯一可用
+配置：
+
+```toml
+[llm]
+default_profile = "openai"
+
+[llm.profiles.openai]
+model = "gpt-5.2"
+base_url = "https://api.openai.com/v1"
+api_key = { source = "keyring", credential = "openai" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+```
+
 每个 Engagement 选择一个 Profile。
 
 配置包括：
