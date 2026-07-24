@@ -4,6 +4,7 @@ import type {
   ApprovalDecision,
   ConversationPage,
   CreateEngagementInput,
+  DaemonControlStatus,
   DesktopBridgeError,
   DesktopDaemonInfo,
   Engagement,
@@ -17,9 +18,23 @@ import type {
 
 const ENGAGEMENT_EVENT_NAME = "riftx://engagement-event";
 const ENGAGEMENT_STREAM_NAME = "riftx://engagement-stream";
+const RUNTIME_STATUS_EVENT_NAME = "riftx://runtime-status";
+const RUNTIME_ERROR_EVENT_NAME = "riftx://runtime-error";
 
 export function daemonInfo(): Promise<DesktopDaemonInfo> {
   return desktopInvoke("daemon_info");
+}
+
+export function pauseRuntime(): Promise<DaemonControlStatus> {
+  return desktopInvoke("pause_runtime");
+}
+
+export function resumeRuntime(): Promise<DaemonControlStatus> {
+  return desktopInvoke("resume_runtime");
+}
+
+export function killRuntime(): Promise<DaemonControlStatus> {
+  return desktopInvoke("kill_runtime");
 }
 
 export function llmSettings(): Promise<LlmSettings> {
@@ -98,6 +113,28 @@ export function onEngagementStream(
     return Promise.resolve(() => undefined);
   }
   return listen<EngagementStreamStatus>(ENGAGEMENT_STREAM_NAME, (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onRuntimeStatus(
+  handler: (status: DaemonControlStatus) => void,
+): Promise<UnlistenFn> {
+  if (!isDesktopRuntime()) {
+    return Promise.resolve(() => undefined);
+  }
+  return listen<DaemonControlStatus>(RUNTIME_STATUS_EVENT_NAME, (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onRuntimeError(
+  handler: (error: DesktopBridgeError) => void,
+): Promise<UnlistenFn> {
+  if (!isDesktopRuntime()) {
+    return Promise.resolve(() => undefined);
+  }
+  return listen<DesktopBridgeError>(RUNTIME_ERROR_EVENT_NAME, (event) =>
     handler(event.payload),
   );
 }

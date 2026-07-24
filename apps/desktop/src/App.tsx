@@ -1,7 +1,10 @@
 import {
   AlertCircle,
   Command,
+  OctagonX,
   PanelRight,
+  Pause,
+  Play,
   Send,
   Settings,
   Square,
@@ -17,10 +20,15 @@ import {
   decideApproval,
   engagementReport,
   interruptEngagement,
+  killRuntime,
   listApprovals,
   listEngagements,
   onEngagementEvent,
   onEngagementStream,
+  onRuntimeError,
+  onRuntimeStatus,
+  pauseRuntime,
+  resumeRuntime,
   startTurn,
   subscribeEngagement,
   unsubscribeEngagement,
@@ -35,6 +43,7 @@ import type {
   ApprovalDecision,
   ConversationEntry,
   CreateEngagementInput,
+  DaemonControlStatus,
   DesktopBridgeError,
   DesktopDaemonInfo,
   Engagement,
@@ -65,6 +74,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [controlBusy, setControlBusy] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
 
   const selected = useMemo(
@@ -79,6 +89,16 @@ export default function App() {
         (engagement) => engagement.id !== updated.id,
       );
       return [updated, ...remaining];
+    });
+  }, []);
+
+  const replaceEngagements = useCallback((taskList: Engagement[]) => {
+    setEngagements(taskList);
+    setSelectedId((current) => {
+      if (current && taskList.some((task) => task.id === current)) {
+        return current;
+      }
+      return taskList[0]?.id ?? null;
     });
   }, []);
 
@@ -128,13 +148,7 @@ export default function App() {
       const daemonState = await daemonInfo();
       const taskList = await listEngagements();
       setDaemon(daemonState);
-      setEngagements(taskList);
-      setSelectedId((current) => {
-        if (current && taskList.some((task) => task.id === current)) {
-          return current;
-        }
-        return taskList[0]?.id ?? null;
-      });
+      replaceEngagements(taskList);
       setError(null);
     } catch (cause) {
       setDaemon(null);
@@ -144,11 +158,56 @@ export default function App() {
         setLoading(false);
       }
     }
-  }, []);
+  }, [replaceEngagements]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopStatus: () => void = () => undefined;
+    let stopError: () => void = () => undefined;
+    void Promise.all([
+      onRuntimeStatus((runtime) => {
+        if (disposed) {
+          return;
+        }
+        setDaemon((current) => (current ? { ...current, runtime } : current));
+        setControlBusy(false);
+        void listEngagements()
+          .then((taskList) => {
+            if (!disposed) {
+              replaceEngagements(taskList);
+            }
+          })
+          .catch((cause) => {
+            if (!disposed) {
+              setError(bridgeError(cause));
+            }
+          });
+      }),
+      onRuntimeError((runtimeError) => {
+        if (!disposed) {
+          setControlBusy(false);
+          setError(runtimeError);
+        }
+      }),
+    ]).then(([statusListener, errorListener]) => {
+      if (disposed) {
+        statusListener();
+        errorListener();
+        return;
+      }
+      stopStatus = statusListener;
+      stopError = errorListener;
+    });
+    return () => {
+      disposed = true;
+      stopStatus();
+      stopError();
+    };
+  }, [replaceEngagements]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -266,6 +325,8 @@ export default function App() {
       (task) => task.status === "pending" || task.status === "running",
     ) ?? false;
   const isRunning = turnRunning || reportHasRunningTask;
+  const runtimePaused = daemon?.runtime.state === "paused";
+  const killSwitchActive = daemon?.runtime.reason === "killSwitch";
 
   const create = async (newEngagement: CreateEngagementInput) => {
     setSubmitting(true);
@@ -285,7 +346,13 @@ export default function App() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const instruction = input.trim();
-    if (!selected || !instruction || submitting || isRunning) {
+    if (
+      !selected ||
+      !instruction ||
+      submitting ||
+      isRunning ||
+      runtimePaused
+    ) {
       return;
     }
     setSubmitting(true);
@@ -343,6 +410,25 @@ export default function App() {
     }
   };
 
+  const changeRuntime = async (
+    command: () => Promise<DaemonControlStatus>,
+  ) => {
+    if (!daemon || controlBusy) {
+      return;
+    }
+    setControlBusy(true);
+    try {
+      const runtime = await command();
+      setDaemon((current) => (current ? { ...current, runtime } : current));
+      replaceEngagements(await listEngagements());
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
   const loadOlder = async () => {
     if (!selectedId || !historyCursor || loadingOlder) {
       return;
@@ -373,12 +459,54 @@ export default function App() {
           <strong>RiftX</strong>
         </div>
         <div className="topbar-actions">
+          <div className="runtime-controls">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={runtimePaused ? "Resume runtime" : "Pause runtime"}
+              title={runtimePaused ? "Resume runtime" : "Pause runtime"}
+              disabled={!daemon || controlBusy}
+              onClick={() =>
+                void changeRuntime(runtimePaused ? resumeRuntime : pauseRuntime)
+              }
+            >
+              {runtimePaused ? <Play size={15} /> : <Pause size={15} />}
+            </button>
+            <button
+              type="button"
+              className={`icon-button kill-switch ${killSwitchActive ? "active" : ""}`}
+              aria-label="Activate Kill Switch"
+              title="Activate Kill Switch"
+              disabled={!daemon || controlBusy || killSwitchActive}
+              onClick={() => void changeRuntime(killRuntime)}
+            >
+              <OctagonX size={15} />
+            </button>
+          </div>
           <div
-            className={`daemon-state ${daemon ? "connected" : "disconnected"}`}
-            title={daemon?.configPath}
+            className={`daemon-state ${
+              daemon
+                ? killSwitchActive
+                  ? "kill-switch-active"
+                  : runtimePaused
+                    ? "paused"
+                    : "connected"
+                : "disconnected"
+            }`}
+            title={
+              daemon
+                ? `${daemon.configPath} · daemon ${daemon.daemonVersion}`
+                : undefined
+            }
           >
             <span />
-            {daemon ? `Daemon ${daemon.daemonVersion}` : "Daemon offline"}
+            {daemon
+              ? killSwitchActive
+                ? "Kill Switch"
+                : runtimePaused
+                  ? "Paused"
+                  : "Running"
+              : "Daemon offline"}
           </div>
           <button
             type="button"
@@ -447,7 +575,10 @@ export default function App() {
                   onChange={(event) => setInput(event.target.value)}
                   placeholder="Give the next authorized instruction..."
                   disabled={
-                    selected.status === "completed" || submitting || isRunning
+                    selected.status === "completed" ||
+                    submitting ||
+                    isRunning ||
+                    runtimePaused
                   }
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
@@ -473,7 +604,9 @@ export default function App() {
                     type="submit"
                     title="Run instruction"
                     aria-label="Run instruction"
-                    disabled={!input.trim() || submitting || isRunning}
+                    disabled={
+                      !input.trim() || submitting || isRunning || runtimePaused
+                    }
                   >
                     <Send size={17} />
                   </button>

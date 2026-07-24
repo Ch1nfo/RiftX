@@ -835,6 +835,8 @@ Test Mock
 - Desktop 关闭窗口后 `riftxd` 可以继续运行。
 - 系统托盘显示运行、等待、暂停和风险状态。
 - 托盘提供 Pause、Resume 和 Kill Switch。
+- Pause 和 Kill Switch 先关闭新执行与批准入口，再中断活动 Engagement。
+- Resume 只重新开放执行入口，不自动恢复 Engagement 或重放最后一个命令。
 - Auto 默认可以在 Desktop 窗口关闭后继续。
 - 系统重启后任务进入 `Paused`。
 - 系统重启后不得自动恢复攻击。

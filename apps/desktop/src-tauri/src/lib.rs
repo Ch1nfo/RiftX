@@ -15,6 +15,9 @@ pub fn run() {
         .manage(bridge::DesktopState::load())
         .invoke_handler(tauri::generate_handler![
             bridge::daemon_info,
+            bridge::pause_runtime,
+            bridge::resume_runtime,
+            bridge::kill_runtime,
             bridge::list_engagements,
             bridge::create_engagement,
             bridge::activate_engagement,

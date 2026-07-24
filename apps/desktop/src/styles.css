@@ -101,6 +101,34 @@ button:disabled {
   gap: 8px;
 }
 
+.runtime-controls {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.runtime-controls .icon-button {
+  width: 29px;
+  height: 27px;
+  border-radius: 0;
+}
+
+.runtime-controls .icon-button + .icon-button {
+  border-left: 1px solid var(--border);
+}
+
+.runtime-controls .kill-switch {
+  color: #e18179;
+}
+
+.runtime-controls .kill-switch:hover:not(:disabled),
+.runtime-controls .kill-switch.active {
+  color: #fff0ef;
+  background: #8e302d;
+}
+
 .daemon-state {
   display: flex;
   align-items: center;
@@ -121,6 +149,18 @@ button:disabled {
 
 .daemon-state.connected > span {
   background: var(--mint);
+}
+
+.daemon-state.paused > span {
+  background: #d1a64d;
+}
+
+.daemon-state.kill-switch-active {
+  color: #ffaaa5;
+}
+
+.daemon-state.kill-switch-active > span {
+  background: var(--red);
 }
 
 .workspace {

@@ -1,4 +1,5 @@
 use codex_riftx_ipc::ApprovalDecision;
+use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::LocalIpcClient;
@@ -62,11 +63,26 @@ impl DesktopState {
         let client = self.client()?;
         let info: DaemonInfo = json_response(client.get("/v1/system/info").await).await?;
         validate_protocol_version(info.protocol_version)?;
+        let runtime = self.query_runtime_status().await?;
         Ok(DesktopDaemonInfo {
             protocol_version: info.protocol_version,
             daemon_version: info.daemon_version,
             config_path: self.config_path.clone().ok_or_else(unavailable)?,
+            runtime,
         })
+    }
+
+    pub(crate) async fn query_runtime_status(&self) -> Result<DaemonControlStatus, DesktopError> {
+        let client = self.client()?;
+        json_response(client.get("/v1/system/status").await).await
+    }
+
+    pub(crate) async fn update_runtime(
+        &self,
+        path: &str,
+    ) -> Result<DaemonControlStatus, DesktopError> {
+        let client = self.client()?;
+        json_response(client.post(path).await).await
     }
 }
 
@@ -96,6 +112,7 @@ pub(crate) struct DesktopDaemonInfo {
     protocol_version: u32,
     daemon_version: String,
     config_path: PathBuf,
+    runtime: DaemonControlStatus,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -221,7 +238,33 @@ pub(crate) async fn daemon_info(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DesktopDaemonInfo, DesktopError> {
     state.daemon.ensure_running(&app, &state).await?;
-    state.query_daemon_info().await
+    let info = state.query_daemon_info().await?;
+    crate::background::sync_runtime_status(&app, &info.runtime);
+    Ok(info)
+}
+
+#[tauri::command]
+pub(crate) async fn pause_runtime(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DaemonControlStatus, DesktopError> {
+    update_runtime(&app, &state, "/v1/system/pause").await
+}
+
+#[tauri::command]
+pub(crate) async fn resume_runtime(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DaemonControlStatus, DesktopError> {
+    update_runtime(&app, &state, "/v1/system/resume").await
+}
+
+#[tauri::command]
+pub(crate) async fn kill_runtime(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DaemonControlStatus, DesktopError> {
+    update_runtime(&app, &state, "/v1/system/kill").await
 }
 
 #[tauri::command]
@@ -420,6 +463,16 @@ async fn empty_response(
         message: format!("riftxd returned HTTP {status}"),
     });
     Err(DesktopError::new(error.code, error.message))
+}
+
+async fn update_runtime(
+    app: &tauri::AppHandle,
+    state: &DesktopState,
+    path: &str,
+) -> Result<DaemonControlStatus, DesktopError> {
+    let status = state.update_runtime(path).await?;
+    crate::background::sync_runtime_status(app, &status);
+    Ok(status)
 }
 
 fn load_endpoint() -> Result<(PathBuf, LocalIpcEndpoint), DesktopError> {
