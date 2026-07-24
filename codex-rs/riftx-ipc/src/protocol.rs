@@ -146,6 +146,131 @@ pub struct CaptureArtifactParams {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExtensionDiagnosticLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionDiagnostic {
+    pub level: ExtensionDiagnosticLevel,
+    pub code: String,
+    pub path: Option<PathBuf>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolRisk {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolCredentialInjection {
+    Stdin,
+    Environment,
+    FileEnvironment,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolCredentialMetadata {
+    pub capability: String,
+    pub injection: ToolCredentialInjection,
+    pub environment_variable: Option<String>,
+    pub arguments: Vec<String>,
+    pub authentication_failure_exit_codes: Vec<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolMetadata {
+    pub capabilities: Vec<String>,
+    pub risk: Option<ToolRisk>,
+    pub help_args: Vec<String>,
+    pub version_args: Vec<String>,
+    pub health_check_args: Vec<String>,
+    pub input_target_field: Option<String>,
+    pub output_format: Option<String>,
+    pub parser: Option<String>,
+    pub credential: Option<ToolCredentialMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveredTool {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub metadata_path: Option<PathBuf>,
+    pub metadata_sha256: Option<String>,
+    pub metadata: Option<ToolMetadata>,
+    pub shadowed_by: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolInventory {
+    pub roots: Vec<PathBuf>,
+    pub path_entries: Vec<PathBuf>,
+    pub tools: Vec<DiscoveredTool>,
+    pub snapshot_sha256: String,
+    pub diagnostics: Vec<ExtensionDiagnostic>,
+}
+
+impl ToolInventory {
+    pub fn is_healthy(&self) -> bool {
+        !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.level == ExtensionDiagnosticLevel::Error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillSource {
+    BuiltIn,
+    User,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveredSkill {
+    pub name: String,
+    pub description: String,
+    pub path: PathBuf,
+    pub source: SkillSource,
+    pub enabled: bool,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillCatalog {
+    pub root: PathBuf,
+    pub skills: Vec<DiscoveredSkill>,
+    pub snapshot_sha256: String,
+    pub diagnostics: Vec<ExtensionDiagnostic>,
+}
+
+impl SkillCatalog {
+    pub fn is_healthy(&self) -> bool {
+        !self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.level == ExtensionDiagnosticLevel::Error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReportFormat {
     Markdown,
@@ -194,3 +319,7 @@ pub struct ConversationPage {
     pub data: Vec<ConversationEntry>,
     pub next_cursor: Option<String>,
 }
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

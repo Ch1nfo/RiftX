@@ -3842,8 +3842,6 @@ dependencies = [
  "codex-riftx-core",
  "codex-riftx-credentials",
  "codex-riftx-ipc",
- "codex-riftx-skills",
- "codex-riftx-tools",
  "futures",
  "pretty_assertions",
  "rpassword",

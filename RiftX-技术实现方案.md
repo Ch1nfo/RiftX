@@ -929,10 +929,11 @@ IPC 要求：
 
 当前 P2 已抽出轻量 `riftx-domain`，由状态层、`riftx-ipc`、CLI 和 Desktop 共享
 Engagement、Scope、授权、执行模式、对话、凭据、Artifact、目标状态与任务状态类型。Engagement
-创建、模式切换、turn、审批决策、对话分页、CredentialReference/Grant、Artifact 捕获和 Report
-snapshot 已使用共享请求/响应 DTO。报告 DTO 与 Markdown 渲染位于独立的轻量 `riftx-report`，
-Desktop 不再以无类型 JSON 接收报告；`riftx-ipc` 仍不依赖包含 SQLx、加密、Tools 和 Skills 的
-完整 `riftx-core`。Tools/Skills inventory 等剩余业务消息仍需继续迁移，P2 尚未完成。
+创建、模式切换、turn、审批决策、对话分页、CredentialReference/Grant、Artifact 捕获、Report
+snapshot 及 Tools/Skills inventory 已使用共享请求/响应 DTO。报告 DTO 与 Markdown 渲染位于独立
+的轻量 `riftx-report`；Desktop 不再以无类型 JSON 接收报告，也不再复制 Tools/Skills wire model；
+CLI 的 doctor 命令同样直接使用 `riftx-ipc` DTO。`riftx-ipc` 仍不依赖包含 SQLx、加密、Tools 和
+Skills 的完整 `riftx-core`。Credential execution 等剩余业务消息仍需继续迁移，P2 尚未完成。
 
 ## 20. CLI 与 TUI
 

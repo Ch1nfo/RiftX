@@ -17,8 +17,6 @@ clap = { workspace = true, features = ["derive", "env"] }
 codex-riftx-core = { workspace = true }
 codex-riftx-credentials = { workspace = true }
 codex-riftx-ipc = { workspace = true }
-codex-riftx-skills = { workspace = true }
-codex-riftx-tools = { workspace = true }
 futures = { workspace = true }
 rpassword = { workspace = true }
 serde = { workspace = true }

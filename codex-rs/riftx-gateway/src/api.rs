@@ -2,6 +2,8 @@ use crate::gateway_state::ActiveTurn;
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::unix_timestamp;
+use crate::inventory::ipc_skill_catalog;
+use crate::inventory::ipc_tool_inventory;
 use crate::report::EngagementReport;
 use crate::report::skill_report_snapshot;
 use crate::report::tool_report_snapshot;
@@ -44,9 +46,10 @@ use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_ipc::ReportFormat;
+use codex_riftx_ipc::SkillCatalog;
 use codex_riftx_ipc::StartTurnParams;
+use codex_riftx_ipc::ToolInventory;
 use codex_riftx_ipc::TurnAccepted;
-use codex_riftx_tools::ToolInventory;
 use futures::Stream;
 use futures::stream;
 use serde::Deserialize;
@@ -307,11 +310,11 @@ async fn resume_system(
 }
 
 async fn tools(State(state): State<GatewayState>) -> Json<ToolInventory> {
-    Json(state.tools.as_ref().clone())
+    Json(ipc_tool_inventory(&state.tools))
 }
 
-async fn skills(State(state): State<GatewayState>) -> Json<codex_riftx_skills::SkillCatalog> {
-    Json(state.skills.as_ref().clone())
+async fn skills(State(state): State<GatewayState>) -> Json<SkillCatalog> {
+    Json(ipc_skill_catalog(&state.skills))
 }
 
 async fn create_engagement(

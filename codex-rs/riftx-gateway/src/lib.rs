@@ -8,6 +8,7 @@ mod credential_execution;
 mod credential_store;
 mod execution_events;
 mod gateway_state;
+mod inventory;
 mod report;
 
 pub use api::build_router;

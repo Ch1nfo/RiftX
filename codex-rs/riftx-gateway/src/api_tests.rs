@@ -31,6 +31,8 @@ use codex_riftx_crypto::KeyringEngagementCipher;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
+use codex_riftx_ipc::SkillCatalog as IpcSkillCatalog;
+use codex_riftx_ipc::ToolInventory as IpcToolInventory;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolInventory;
@@ -213,10 +215,20 @@ pub(crate) fn native_engagement(
 }
 
 #[tokio::test]
-async fn skills_endpoint_returns_the_startup_catalog() {
+async fn extension_endpoints_return_typed_startup_inventories() {
     let temp = TempDir::new().expect("temp dir");
     let app = test_router(&temp).await;
-    let response = app
+    let tools_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/tools")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let skills_response = app
         .oneshot(
             Request::builder()
                 .uri("/v1/skills")
@@ -225,15 +237,47 @@ async fn skills_endpoint_returns_the_startup_catalog() {
         )
         .await
         .expect("response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let catalog: SkillCatalog = serde_json::from_slice(&body).expect("skill catalog");
-    assert_eq!(catalog, SkillCatalog::empty(temp.path().join("skills")));
+    assert_eq!(
+        (tools_response.status(), skills_response.status()),
+        (StatusCode::OK, StatusCode::OK)
+    );
+    let tools: IpcToolInventory = serde_json::from_slice(
+        &tools_response
+            .into_body()
+            .collect()
+            .await
+            .expect("tool body")
+            .to_bytes(),
+    )
+    .expect("tool inventory");
+    let skills: IpcSkillCatalog = serde_json::from_slice(
+        &skills_response
+            .into_body()
+            .collect()
+            .await
+            .expect("skill body")
+            .to_bytes(),
+    )
+    .expect("skill catalog");
+
+    assert_eq!(
+        (tools, skills),
+        (
+            IpcToolInventory {
+                roots: Vec::new(),
+                path_entries: Vec::new(),
+                tools: Vec::new(),
+                snapshot_sha256: ToolInventory::empty().snapshot_sha256,
+                diagnostics: Vec::new(),
+            },
+            IpcSkillCatalog {
+                root: temp.path().join("skills"),
+                skills: Vec::new(),
+                snapshot_sha256: SkillCatalog::empty(temp.path().join("skills")).snapshot_sha256,
+                diagnostics: Vec::new(),
+            },
+        )
+    );
 }
 
 #[tokio::test]

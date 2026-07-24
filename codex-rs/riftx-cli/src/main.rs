@@ -13,6 +13,7 @@ use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::EnvironmentClass;
 use codex_riftx_ipc::ExecutionMode;
+use codex_riftx_ipc::ExtensionDiagnosticLevel;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
@@ -20,12 +21,10 @@ use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
 use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::Scope;
+use codex_riftx_ipc::SkillCatalog;
 use codex_riftx_ipc::StartTurnParams;
 use codex_riftx_ipc::StructuredSuccessCriterion;
-use codex_riftx_skills::SkillCatalog;
-use codex_riftx_skills::SkillDiagnosticLevel;
-use codex_riftx_tools::DiagnosticLevel;
-use codex_riftx_tools::ToolInventory;
+use codex_riftx_ipc::ToolInventory;
 use futures::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -521,9 +520,9 @@ async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()>
         println!("Snapshot: {}", inventory.snapshot_sha256);
         for diagnostic in &inventory.diagnostics {
             let level = match diagnostic.level {
-                DiagnosticLevel::Info => "INFO",
-                DiagnosticLevel::Warning => "WARN",
-                DiagnosticLevel::Error => "ERROR",
+                ExtensionDiagnosticLevel::Info => "INFO",
+                ExtensionDiagnosticLevel::Warning => "WARN",
+                ExtensionDiagnosticLevel::Error => "ERROR",
             };
             let path = diagnostic
                 .path
@@ -558,9 +557,9 @@ async fn skills_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()
         println!("Snapshot: {}", catalog.snapshot_sha256);
         for diagnostic in &catalog.diagnostics {
             let level = match diagnostic.level {
-                SkillDiagnosticLevel::Info => "INFO",
-                SkillDiagnosticLevel::Warning => "WARN",
-                SkillDiagnosticLevel::Error => "ERROR",
+                ExtensionDiagnosticLevel::Info => "INFO",
+                ExtensionDiagnosticLevel::Warning => "WARN",
+                ExtensionDiagnosticLevel::Error => "ERROR",
             };
             let path = diagnostic
                 .path

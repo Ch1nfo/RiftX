@@ -67,6 +67,13 @@ export interface DiscoveredTool {
     inputTargetField: string | null;
     outputFormat: string | null;
     parser: string | null;
+    credential: {
+      capability: string;
+      injection: "stdin" | "environment" | "fileEnvironment";
+      environmentVariable: string | null;
+      arguments: string[];
+      authenticationFailureExitCodes: number[];
+    } | null;
   } | null;
   shadowedBy: string | null;
 }
