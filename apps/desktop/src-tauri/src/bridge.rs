@@ -19,6 +19,7 @@ use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcError;
 use codex_riftx_ipc::LocalIpcResponse;
 use codex_riftx_ipc::PendingApproval;
+use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::Scope;
 use codex_riftx_ipc::StartTurnParams;
 use codex_riftx_ipc::TurnAccepted;
@@ -382,7 +383,7 @@ pub(crate) async fn engagement_report(
     engagement_id: String,
 ) -> Result<Value, DesktopError> {
     let client = state.client()?;
-    json_response(client.get(&report_path(&engagement_id, "json")?).await).await
+    json_response(client.get(&report_path(&engagement_id, ReportFormat::Json)?).await).await
 }
 
 #[tauri::command]
@@ -391,7 +392,7 @@ pub(crate) async fn engagement_report_markdown(
     engagement_id: String,
 ) -> Result<String, DesktopError> {
     let client = state.client()?;
-    text_response(client.get(&report_path(&engagement_id, "markdown")?).await).await
+    text_response(client.get(&report_path(&engagement_id, ReportFormat::Markdown)?).await).await
 }
 
 #[tauri::command]
@@ -575,10 +576,14 @@ fn mode_change_request(
     ))
 }
 
-fn report_path(engagement_id: &str, format: &str) -> Result<String, DesktopError> {
+fn report_path(
+    engagement_id: &str,
+    format: ReportFormat,
+) -> Result<String, DesktopError> {
     validate_engagement_id(engagement_id)?;
     Ok(format!(
-        "/v1/engagements/{engagement_id}/report?format={format}"
+        "/v1/engagements/{engagement_id}/report?format={}",
+        format.as_str()
     ))
 }
 

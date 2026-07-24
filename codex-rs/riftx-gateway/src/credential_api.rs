@@ -7,44 +7,22 @@ use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
 use codex_riftx_core::AuthorizationScope;
-use codex_riftx_core::CredentialGrant;
-use codex_riftx_core::CredentialKind;
-use codex_riftx_core::CredentialReference;
 use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
-use codex_riftx_core::Scope;
 use codex_riftx_credentials::AssessmentSecret;
 use codex_riftx_credentials::CredentialLocator;
-use serde::Deserialize;
+use codex_riftx_ipc::CreateCredentialGrantParams;
+use codex_riftx_ipc::CreateCredentialReferenceParams;
+use codex_riftx_ipc::CredentialGrant;
+use codex_riftx_ipc::CredentialReference;
 use serde_json::json;
 use uuid::Uuid;
 
 const MAX_CREDENTIAL_REFERENCES: usize = 128;
 const MAX_CREDENTIAL_GRANTS: usize = 128;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreateCredentialReferenceParams {
-    label: String,
-    kind: CredentialKind,
-    username: Option<String>,
-    domain: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreateCredentialGrantParams {
-    credential_id: String,
-    allowed_targets: Scope,
-    allowed_capabilities: Vec<String>,
-    max_uses: u32,
-    max_failures_per_identity: u32,
-    starts_at: Option<i64>,
-    expires_at: i64,
-}
 
 pub(crate) async fn create_reference(
     State(state): State<GatewayState>,

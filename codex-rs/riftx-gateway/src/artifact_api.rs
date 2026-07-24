@@ -8,18 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use codex_riftx_artifacts::ArtifactError;
-use codex_riftx_core::Artifact;
-use serde::Deserialize;
-use std::path::PathBuf;
+use codex_riftx_ipc::Artifact;
+use codex_riftx_ipc::CaptureArtifactParams;
 use tokio_util::io::ReaderStream;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CaptureArtifactParams {
-    path: PathBuf,
-    media_type: Option<String>,
-    execution_id: Option<String>,
-}
 
 pub(crate) async fn list(
     State(state): State<GatewayState>,

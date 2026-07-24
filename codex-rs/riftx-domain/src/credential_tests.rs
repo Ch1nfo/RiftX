@@ -98,3 +98,15 @@ fn credential_grant() -> CredentialGrant {
         revoked_at: None,
     }
 }
+
+#[test]
+fn legacy_private_key_kind_decodes_to_the_canonical_ssh_key_value() {
+    let kind: CredentialKind =
+        serde_json::from_str(r#""privateKey""#).expect("legacy credential kind");
+
+    assert_eq!(kind, CredentialKind::SshKey);
+    assert_eq!(
+        serde_json::to_string(&kind).expect("canonical credential kind"),
+        r#""sshKey""#
+    );
+}

@@ -1,9 +1,16 @@
 use anyhow::Context;
 use clap::Subcommand;
 use codex_riftx_credentials::AssessmentSecret;
+use codex_riftx_ipc::CreateCredentialGrantParams;
+use codex_riftx_ipc::CreateCredentialReferenceParams;
+use codex_riftx_ipc::CredentialGrant;
+use codex_riftx_ipc::CredentialKind;
+use codex_riftx_ipc::CredentialReference;
 use codex_riftx_ipc::LocalIpcClient;
-use serde_json::Value;
-use serde_json::json;
+use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_ipc::Scope;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::io::IsTerminal;
 use std::io::Read;
 
@@ -67,14 +74,14 @@ pub(crate) enum CredentialKindArg {
     Other,
 }
 
-impl CredentialKindArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Password => "password",
-            Self::ApiToken => "apiToken",
-            Self::SshKey => "sshKey",
-            Self::Certificate => "certificate",
-            Self::Other => "other",
+impl From<CredentialKindArg> for CredentialKind {
+    fn from(kind: CredentialKindArg) -> Self {
+        match kind {
+            CredentialKindArg::Password => Self::Password,
+            CredentialKindArg::ApiToken => Self::ApiToken,
+            CredentialKindArg::SshKey => Self::SshKey,
+            CredentialKindArg::Certificate => Self::Certificate,
+            CredentialKindArg::Other => Self::Other,
         }
     }
 }
@@ -93,21 +100,19 @@ pub(crate) async fn execute(
             secret_stdin,
         } => {
             let secret = read_secret(secret_stdin).await?;
-            let reference = request_json(
+            let reference: CredentialReference = post_typed(
                 client,
-                Request::PostJson {
-                    path: format!("/v1/engagements/{id}/credentials"),
-                    body: json!({
-                        "label": label,
-                        "kind": kind.as_str(),
-                        "username": username,
-                        "domain": domain,
-                    }),
+                &format!("/v1/engagements/{id}/credentials"),
+                &CreateCredentialReferenceParams {
+                    label,
+                    kind: kind.into(),
+                    username,
+                    domain,
                 },
             )
             .await?;
-            let credential_id = response_id(&reference, "credential")?.to_string();
-            let configured = match request_json(
+            let credential_id = reference.id;
+            let configured: CredentialReference = match request_typed(
                 client,
                 Request::PostBytes {
                     path: format!("/v1/engagements/{id}/credentials/{credential_id}/secret"),
@@ -118,7 +123,7 @@ pub(crate) async fn execute(
             {
                 Ok(configured) => configured,
                 Err(error) => {
-                    let _ = request_json(
+                    let _: Result<CredentialReference, _> = request_typed(
                         client,
                         Request::Post {
                             path: format!(
@@ -133,44 +138,41 @@ pub(crate) async fn execute(
             print_json(&configured)?;
         }
         CredentialCommand::List { id } => {
-            print_json(
-                &request_json(
-                    client,
-                    Request::Get {
-                        path: format!("/v1/engagements/{id}/credentials"),
-                    },
-                )
-                .await?,
-            )?;
-        }
-        CredentialCommand::Delete { id, credential_id } => {
-            let references = request_json(
+            let references: Vec<CredentialReference> = request_typed(
                 client,
                 Request::Get {
                     path: format!("/v1/engagements/{id}/credentials"),
                 },
             )
             .await?;
-            entity_by_id(&references, &credential_id, "credential")?;
-            let grants = request_json(
+            print_json(&references)?;
+        }
+        CredentialCommand::Delete { id, credential_id } => {
+            let references: Vec<CredentialReference> = request_typed(
+                client,
+                Request::Get {
+                    path: format!("/v1/engagements/{id}/credentials"),
+                },
+            )
+            .await?;
+            credential_by_id(&references, &credential_id)?;
+            let grants: Vec<CredentialGrant> = request_typed(
                 client,
                 Request::Get {
                     path: format!("/v1/engagements/{id}/credential-grants"),
                 },
             )
             .await?;
-            let matching_grants = grants_for_credential(&grants, &credential_id);
-            for grant in &matching_grants {
-                let grant_id = response_id(grant, "credential grant")?;
-                request_json(
+            for grant in grants_for_credential(&grants, &credential_id) {
+                let _: CredentialGrant = request_typed(
                     client,
                     Request::Post {
-                        path: format!("/v1/engagements/{id}/credential-grants/{grant_id}/revoke"),
+                        path: format!("/v1/engagements/{id}/credential-grants/{}/revoke", grant.id),
                     },
                 )
                 .await?;
             }
-            let reference = request_json(
+            let reference: CredentialReference = request_typed(
                 client,
                 Request::Post {
                     path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
@@ -191,50 +193,52 @@ pub(crate) async fn execute(
             starts_at,
             expires_at,
         } => {
-            print_json(
-                &request_json(
-                    client,
-                    Request::PostJson {
-                        path: format!("/v1/engagements/{id}/credential-grants"),
-                        body: json!({
-                            "credentialId": credential_id,
-                            "allowedTargets": {
-                                "cidrs": cidrs,
-                                "domains": domains,
-                                "ports": ports,
-                            },
-                            "allowedCapabilities": capabilities,
-                            "maxUses": max_uses,
-                            "maxFailuresPerIdentity": max_failures_per_identity,
-                            "startsAt": starts_at,
-                            "expiresAt": expires_at,
-                        }),
+            let cidrs = cidrs
+                .into_iter()
+                .map(|cidr| {
+                    cidr.parse()
+                        .with_context(|| format!("invalid CIDR: {cidr}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let grant: CredentialGrant = post_typed(
+                client,
+                &format!("/v1/engagements/{id}/credential-grants"),
+                &CreateCredentialGrantParams {
+                    credential_id,
+                    allowed_targets: Scope {
+                        cidrs,
+                        domains,
+                        ports,
                     },
-                )
-                .await?,
-            )?;
+                    allowed_capabilities: capabilities,
+                    max_uses,
+                    max_failures_per_identity,
+                    starts_at,
+                    expires_at,
+                },
+            )
+            .await?;
+            print_json(&grant)?;
         }
         CredentialCommand::Grants { id } => {
-            print_json(
-                &request_json(
-                    client,
-                    Request::Get {
-                        path: format!("/v1/engagements/{id}/credential-grants"),
-                    },
-                )
-                .await?,
-            )?;
+            let grants: Vec<CredentialGrant> = request_typed(
+                client,
+                Request::Get {
+                    path: format!("/v1/engagements/{id}/credential-grants"),
+                },
+            )
+            .await?;
+            print_json(&grants)?;
         }
         CredentialCommand::Revoke { id, grant_id } => {
-            print_json(
-                &request_json(
-                    client,
-                    Request::Post {
-                        path: format!("/v1/engagements/{id}/credential-grants/{grant_id}/revoke"),
-                    },
-                )
-                .await?,
-            )?;
+            let grant: CredentialGrant = request_typed(
+                client,
+                Request::Post {
+                    path: format!("/v1/engagements/{id}/credential-grants/{grant_id}/revoke"),
+                },
+            )
+            .await?;
+            print_json(&grant)?;
         }
     }
     Ok(())
@@ -264,20 +268,39 @@ async fn read_secret(secret_stdin: bool) -> anyhow::Result<AssessmentSecret> {
 enum Request {
     Get { path: String },
     Post { path: String },
-    PostJson { path: String, body: Value },
     PostBytes { path: String, body: Vec<u8> },
 }
 
-async fn request_json(client: &LocalIpcClient, request: Request) -> anyhow::Result<Value> {
+async fn post_typed<RequestBody, ResponseBody>(
+    client: &LocalIpcClient,
+    path: &str,
+    body: &RequestBody,
+) -> anyhow::Result<ResponseBody>
+where
+    RequestBody: Serialize + ?Sized,
+    ResponseBody: DeserializeOwned,
+{
+    let response = client
+        .post_typed(path, body)
+        .await
+        .context("riftxd request failed")?;
+    decode_response(response).await
+}
+
+async fn request_typed<T: DeserializeOwned>(
+    client: &LocalIpcClient,
+    request: Request,
+) -> anyhow::Result<T> {
     let response = match request {
         Request::Get { path } => client.get(&path).await,
         Request::Post { path } => client.post(&path).await,
-        Request::PostJson { path, body } => {
-            client.post_json(&path, serde_json::to_vec(&body)?).await
-        }
         Request::PostBytes { path, body } => client.post_bytes(&path, body).await,
     }
     .context("riftxd request failed")?;
+    decode_response(response).await
+}
+
+async fn decode_response<T: DeserializeOwned>(response: LocalIpcResponse) -> anyhow::Result<T> {
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(
@@ -288,35 +311,27 @@ async fn request_json(client: &LocalIpcClient, request: Request) -> anyhow::Resu
     serde_json::from_slice(&body).context("decode riftxd credential response")
 }
 
-fn response_id<'a>(value: &'a Value, kind: &str) -> anyhow::Result<&'a str> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .with_context(|| format!("riftxd returned a credential response without a valid {kind} id"))
+fn credential_by_id<'a>(
+    references: &'a [CredentialReference],
+    id: &str,
+) -> anyhow::Result<&'a CredentialReference> {
+    references
+        .iter()
+        .find(|reference| reference.id == id)
+        .with_context(|| format!("credential {id:?} was not found"))
 }
 
-fn entity_by_id(value: &Value, id: &str, kind: &str) -> anyhow::Result<Value> {
-    value
-        .as_array()
-        .and_then(|entities| {
-            entities
-                .iter()
-                .find(|entity| entity.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .cloned()
-        .with_context(|| format!("{kind} {id:?} was not found"))
-}
-
-fn grants_for_credential<'a>(value: &'a Value, credential_id: &str) -> Vec<&'a Value> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|grant| grant.get("credentialId").and_then(Value::as_str) == Some(credential_id))
+fn grants_for_credential<'a>(
+    grants: &'a [CredentialGrant],
+    credential_id: &str,
+) -> Vec<&'a CredentialGrant> {
+    grants
+        .iter()
+        .filter(|grant| grant.credential_id == credential_id)
         .collect()
 }
 
-fn print_json(value: &Value) -> anyhow::Result<()> {
+fn print_json(value: &impl Serialize) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }

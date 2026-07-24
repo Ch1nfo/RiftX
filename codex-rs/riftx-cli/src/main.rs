@@ -7,6 +7,7 @@ use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::AssessmentObjective;
 use codex_riftx_ipc::AuthorizationScope;
 use codex_riftx_ipc::AuthorizationWindow;
+use codex_riftx_ipc::CaptureArtifactParams;
 use codex_riftx_ipc::ChangeModeParams;
 use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
@@ -17,6 +18,7 @@ use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::Scope;
 use codex_riftx_ipc::StartTurnParams;
 use codex_riftx_ipc::StructuredSuccessCriterion;
@@ -27,8 +29,6 @@ use codex_riftx_tools::ToolInventory;
 use futures::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
-use serde_json::json;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
@@ -109,8 +109,8 @@ enum Command {
     },
     Report {
         id: String,
-        #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
-        format: ReportFormat,
+        #[arg(long, value_enum, default_value_t = ReportFormatArg::Markdown)]
+        format: ReportFormatArg,
     },
     Credentials {
         #[command(subcommand)]
@@ -168,7 +168,7 @@ enum ArtifactsCommand {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum ReportFormat {
+enum ReportFormatArg {
     Markdown,
     Json,
 }
@@ -207,11 +207,11 @@ impl From<EnvironmentClassArg> for EnvironmentClass {
     }
 }
 
-impl ReportFormat {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Markdown => "markdown",
-            Self::Json => "json",
+impl From<ReportFormatArg> for ReportFormat {
+    fn from(format: ReportFormatArg) -> Self {
+        match format {
+            ReportFormatArg::Markdown => Self::Markdown,
+            ReportFormatArg::Json => Self::Json,
         }
     }
 }
@@ -283,20 +283,13 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Command::Get { id } => {
-            send(
-                &client,
-                RequestKind::Get,
-                format!("/v1/engagements/{id}"),
-                None,
-            )
-            .await?;
+            send(&client, RequestKind::Get, format!("/v1/engagements/{id}")).await?;
         }
         Command::Activate { id } => {
             send(
                 &client,
                 RequestKind::Post,
                 format!("/v1/engagements/{id}/activate"),
-                None,
             )
             .await?;
         }
@@ -334,7 +327,6 @@ async fn main() -> anyhow::Result<()> {
                 &client,
                 RequestKind::Post,
                 format!("/v1/engagements/{id}/interrupt"),
-                None,
             )
             .await?;
         }
@@ -350,11 +342,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Report { id, format } => {
+            let format = ReportFormat::from(format);
             send(
                 &client,
                 RequestKind::Get,
                 format!("/v1/engagements/{id}/report?format={}", format.as_str()),
-                None,
             )
             .await?;
         }
@@ -376,15 +368,14 @@ async fn main() -> anyhow::Result<()> {
                     execution_id,
                 },
         } => {
-            send(
+            send_typed(
                 &client,
-                RequestKind::PostJson,
-                format!("/v1/engagements/{id}/artifacts"),
-                Some(json!({
-                    "path": path,
-                    "mediaType": media_type,
-                    "executionId": execution_id,
-                })),
+                &format!("/v1/engagements/{id}/artifacts"),
+                &CaptureArtifactParams {
+                    path,
+                    media_type,
+                    execution_id,
+                },
             )
             .await?;
         }
@@ -395,7 +386,6 @@ async fn main() -> anyhow::Result<()> {
                 &client,
                 RequestKind::Get,
                 format!("/v1/engagements/{id}/artifacts"),
-                None,
             )
             .await?;
         }
@@ -449,19 +439,10 @@ async fn send_typed<T: Serialize + ?Sized>(
     print_response(response).await
 }
 
-async fn send(
-    client: &LocalIpcClient,
-    kind: RequestKind,
-    path: String,
-    body: Option<Value>,
-) -> anyhow::Result<()> {
+async fn send(client: &LocalIpcClient, kind: RequestKind, path: String) -> anyhow::Result<()> {
     let response = match kind {
         RequestKind::Get => client.get(&path).await,
         RequestKind::Post => client.post(&path).await,
-        RequestKind::PostJson => {
-            let body = body.context("JSON request body is required")?;
-            client.post_json(&path, serde_json::to_vec(&body)?).await
-        }
     }
     .context("riftxd request failed")?;
     print_response(response).await
@@ -485,7 +466,6 @@ async fn print_response(response: LocalIpcResponse) -> anyhow::Result<()> {
 enum RequestKind {
     Get,
     Post,
-    PostJson,
 }
 
 fn ensure_success(response: &LocalIpcResponse) -> anyhow::Result<()> {

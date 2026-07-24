@@ -928,10 +928,10 @@ IPC 要求：
 - 支持事件流、interrupt、pause、resume 和 shutdown。
 
 当前 P2 已抽出轻量 `riftx-domain`，由状态层、`riftx-ipc`、CLI 和 Desktop 共享
-Engagement、Scope、授权、执行模式、对话与任务状态类型。Engagement 创建、模式切换、
-turn、审批决策和对话分页已使用共享请求/响应 DTO；`riftx-ipc` 不再依赖包含 SQLx、加密、
-Tools 和 Skills 的完整 `riftx-core`。Credential、Artifact 与 Report 的业务消息仍需继续
-迁移，P2 尚未完成。
+Engagement、Scope、授权、执行模式、对话、凭据、Artifact 与任务状态类型。Engagement 创建、
+模式切换、turn、审批决策、对话分页、CredentialReference/Grant 和 Artifact 捕获已使用共享
+请求/响应 DTO；`riftx-ipc` 不再依赖包含 SQLx、加密、Tools 和 Skills 的完整 `riftx-core`。
+Report snapshot 响应及其他剩余业务消息仍需继续迁移，P2 尚未完成。
 
 ## 20. CLI 与 TUI
 

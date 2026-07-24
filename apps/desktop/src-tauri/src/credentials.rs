@@ -3,16 +3,20 @@ use crate::bridge::DesktopState;
 use crate::bridge::json_response;
 use crate::bridge::validate_opaque_id;
 use codex_riftx_credentials::AssessmentSecret;
+use codex_riftx_ipc::CreateCredentialGrantParams;
+use codex_riftx_ipc::CreateCredentialReferenceParams;
+use codex_riftx_ipc::CredentialGrant;
+use codex_riftx_ipc::CredentialKind;
+use codex_riftx_ipc::CredentialReference;
+use codex_riftx_ipc::Scope;
 use serde::Deserialize;
-use serde_json::Value;
-use serde_json::json;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateAssessmentCredentialInput {
     engagement_id: String,
     label: String,
-    kind: String,
+    kind: CredentialKind,
     username: Option<String>,
     domain: Option<String>,
     secret: String,
@@ -51,7 +55,7 @@ pub(crate) struct RevokeCredentialGrantInput {
 pub(crate) async fn list_assessment_credentials(
     state: tauri::State<'_, DesktopState>,
     engagement_id: String,
-) -> Result<Value, DesktopError> {
+) -> Result<Vec<CredentialReference>, DesktopError> {
     validate_opaque_id("engagement", &engagement_id)?;
     let client = state.client()?;
     json_response(
@@ -66,22 +70,21 @@ pub(crate) async fn list_assessment_credentials(
 pub(crate) async fn create_assessment_credential(
     state: tauri::State<'_, DesktopState>,
     input: CreateAssessmentCredentialInput,
-) -> Result<Value, DesktopError> {
+) -> Result<CredentialReference, DesktopError> {
     validate_opaque_id("engagement", &input.engagement_id)?;
-    validate_credential_kind(&input.kind)?;
-    let body = create_reference_body(&input)?;
+    let params = create_reference_params(&input);
     let secret = AssessmentSecret::new(input.secret).map_err(credential_error)?;
     let client = state.client()?;
-    let reference: Value = json_response(
+    let reference: CredentialReference = json_response(
         client
-            .post_json(
+            .post_typed(
                 &format!("/v1/engagements/{}/credentials", input.engagement_id),
-                body,
+                &params,
             )
             .await,
     )
     .await?;
-    let credential_id = response_id(&reference, "credential")?.to_string();
+    let credential_id = reference.id;
     match json_response(
         client
             .post_bytes(
@@ -112,11 +115,11 @@ pub(crate) async fn create_assessment_credential(
 pub(crate) async fn delete_assessment_credential(
     state: tauri::State<'_, DesktopState>,
     input: DeleteAssessmentCredentialInput,
-) -> Result<Value, DesktopError> {
+) -> Result<CredentialReference, DesktopError> {
     validate_opaque_id("engagement", &input.engagement_id)?;
     validate_opaque_id("credential", &input.credential_id)?;
     let client = state.client()?;
-    let references: Value = json_response(
+    let references: Vec<CredentialReference> = json_response(
         client
             .get(&format!(
                 "/v1/engagements/{}/credentials",
@@ -125,8 +128,8 @@ pub(crate) async fn delete_assessment_credential(
             .await,
     )
     .await?;
-    entity_by_id(&references, &input.credential_id, "credential")?;
-    let grants: Value = json_response(
+    credential_by_id(&references, &input.credential_id)?;
+    let grants: Vec<CredentialGrant> = json_response(
         client
             .get(&format!(
                 "/v1/engagements/{}/credential-grants",
@@ -135,14 +138,12 @@ pub(crate) async fn delete_assessment_credential(
             .await,
     )
     .await?;
-    let matching_grants = grants_for_credential(&grants, &input.credential_id);
-    for grant in &matching_grants {
-        let grant_id = response_id(grant, "credential grant")?;
-        let _: Value = json_response(
+    for grant in grants_for_credential(&grants, &input.credential_id) {
+        let _: CredentialGrant = json_response(
             client
                 .post(&format!(
-                    "/v1/engagements/{}/credential-grants/{grant_id}/revoke",
-                    input.engagement_id
+                    "/v1/engagements/{}/credential-grants/{}/revoke",
+                    input.engagement_id, grant.id
                 ))
                 .await,
         )
@@ -163,7 +164,7 @@ pub(crate) async fn delete_assessment_credential(
 pub(crate) async fn list_credential_grants(
     state: tauri::State<'_, DesktopState>,
     engagement_id: String,
-) -> Result<Value, DesktopError> {
+) -> Result<Vec<CredentialGrant>, DesktopError> {
     validate_opaque_id("engagement", &engagement_id)?;
     let client = state.client()?;
     json_response(
@@ -180,16 +181,16 @@ pub(crate) async fn list_credential_grants(
 pub(crate) async fn create_credential_grant(
     state: tauri::State<'_, DesktopState>,
     input: CreateCredentialGrantInput,
-) -> Result<Value, DesktopError> {
+) -> Result<CredentialGrant, DesktopError> {
     validate_opaque_id("engagement", &input.engagement_id)?;
     validate_opaque_id("credential", &input.credential_id)?;
-    let body = grant_body(&input)?;
+    let params = grant_params(&input)?;
     let client = state.client()?;
     json_response(
         client
-            .post_json(
+            .post_typed(
                 &format!("/v1/engagements/{}/credential-grants", input.engagement_id),
-                body,
+                &params,
             )
             .await,
     )
@@ -200,7 +201,7 @@ pub(crate) async fn create_credential_grant(
 pub(crate) async fn revoke_credential_grant(
     state: tauri::State<'_, DesktopState>,
     input: RevokeCredentialGrantInput,
-) -> Result<Value, DesktopError> {
+) -> Result<CredentialGrant, DesktopError> {
     validate_opaque_id("engagement", &input.engagement_id)?;
     validate_opaque_id("credential grant", &input.grant_id)?;
     let client = state.client()?;
@@ -215,78 +216,65 @@ pub(crate) async fn revoke_credential_grant(
     .await
 }
 
-fn create_reference_body(input: &CreateAssessmentCredentialInput) -> Result<Vec<u8>, DesktopError> {
-    serde_json::to_vec(&json!({
-        "label": input.label,
-        "kind": input.kind,
-        "username": input.username,
-        "domain": input.domain,
-    }))
-    .map_err(|error| DesktopError::new("encode_request", error.to_string()))
-}
-
-fn grant_body(input: &CreateCredentialGrantInput) -> Result<Vec<u8>, DesktopError> {
-    serde_json::to_vec(&json!({
-        "credentialId": input.credential_id,
-        "allowedTargets": {
-            "cidrs": input.cidrs,
-            "domains": input.domains,
-            "ports": input.ports,
-        },
-        "allowedCapabilities": input.capabilities,
-        "maxUses": input.max_uses,
-        "maxFailuresPerIdentity": input.max_failures_per_identity,
-        "startsAt": input.starts_at,
-        "expiresAt": input.expires_at,
-    }))
-    .map_err(|error| DesktopError::new("encode_request", error.to_string()))
-}
-
-fn validate_credential_kind(kind: &str) -> Result<(), DesktopError> {
-    if matches!(
-        kind,
-        "password" | "apiToken" | "sshKey" | "certificate" | "other"
-    ) {
-        return Ok(());
+fn create_reference_params(
+    input: &CreateAssessmentCredentialInput,
+) -> CreateCredentialReferenceParams {
+    CreateCredentialReferenceParams {
+        label: input.label.clone(),
+        kind: input.kind,
+        username: input.username.clone(),
+        domain: input.domain.clone(),
     }
-    Err(DesktopError::new(
-        "invalid_credential_kind",
-        "credential kind is invalid",
-    ))
 }
 
-fn response_id<'a>(value: &'a Value, kind: &str) -> Result<&'a str, DesktopError> {
-    value.get("id").and_then(Value::as_str).ok_or_else(|| {
-        DesktopError::new(
-            "invalid_daemon_response",
-            format!("riftxd returned a response without a valid {kind} id"),
-        )
+fn grant_params(
+    input: &CreateCredentialGrantInput,
+) -> Result<CreateCredentialGrantParams, DesktopError> {
+    let cidrs = input
+        .cidrs
+        .iter()
+        .map(|cidr| {
+            cidr.parse()
+                .map_err(|error| DesktopError::new("invalid_cidr", format!("{cidr}: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CreateCredentialGrantParams {
+        credential_id: input.credential_id.clone(),
+        allowed_targets: Scope {
+            cidrs,
+            domains: input.domains.clone(),
+            ports: input.ports.clone(),
+        },
+        allowed_capabilities: input.capabilities.clone(),
+        max_uses: input.max_uses,
+        max_failures_per_identity: input.max_failures_per_identity,
+        starts_at: input.starts_at,
+        expires_at: input.expires_at,
     })
 }
 
-fn entity_by_id(value: &Value, id: &str, kind: &str) -> Result<Value, DesktopError> {
-    value
-        .as_array()
-        .and_then(|entities| {
-            entities
-                .iter()
-                .find(|entity| entity.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .cloned()
+fn credential_by_id<'a>(
+    references: &'a [CredentialReference],
+    id: &str,
+) -> Result<&'a CredentialReference, DesktopError> {
+    references
+        .iter()
+        .find(|reference| reference.id == id)
         .ok_or_else(|| {
             DesktopError::new(
                 "invalid_daemon_response",
-                format!("{kind} {id:?} was not found"),
+                format!("credential {id:?} was not found"),
             )
         })
 }
 
-fn grants_for_credential<'a>(value: &'a Value, credential_id: &str) -> Vec<&'a Value> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|grant| grant.get("credentialId").and_then(Value::as_str) == Some(credential_id))
+fn grants_for_credential<'a>(
+    grants: &'a [CredentialGrant],
+    credential_id: &str,
+) -> Vec<&'a CredentialGrant> {
+    grants
+        .iter()
+        .filter(|grant| grant.credential_id == credential_id)
         .collect()
 }
 

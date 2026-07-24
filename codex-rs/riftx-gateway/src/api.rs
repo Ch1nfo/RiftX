@@ -43,6 +43,7 @@ use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::PendingApproval;
+use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::StartTurnParams;
 use codex_riftx_ipc::TurnAccepted;
 use codex_riftx_tools::ToolInventory;
@@ -72,13 +73,6 @@ struct ReportQuery {
 struct ConversationQuery {
     cursor: Option<i64>,
     limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ReportFormat {
-    Markdown,
-    Json,
 }
 
 #[derive(Debug, Serialize)]

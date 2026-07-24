@@ -8,8 +8,10 @@ use thiserror::Error;
 pub enum CredentialKind {
     Password,
     ApiToken,
-    PrivateKey,
+    #[serde(alias = "privateKey")]
+    SshKey,
     Certificate,
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

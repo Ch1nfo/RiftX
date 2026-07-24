@@ -163,8 +163,9 @@ Markdown 和 JSON。
 - 桌面 Engagement 列表、创建、选择、Native 指令提交、interrupt、实时消息、单次命令
   审批和报告状态面板。
 - IPC v4 协议协商、有大小上限的 SSE 解码、断线重连和待审批查询/决策。
-- 轻量 `riftx-domain` 共享 Engagement、Scope、授权、对话和任务状态；Gateway、CLI 与
-  Desktop 的创建、模式切换、turn、审批和对话分页已经使用共享 typed IPC 消息。
+- 轻量 `riftx-domain` 共享 Engagement、Scope、授权、对话、凭据、Artifact 和任务状态；
+  Gateway、CLI 与 Desktop 的创建、模式切换、turn、审批、对话分页、凭据授权和 Artifact
+  捕获已经使用共享 typed IPC 消息。
 - Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 doctor。
 - Scope、Policy Revision、Approval 及三模式领域约束。
@@ -182,7 +183,7 @@ Markdown 和 JSON。
 尚未实现：
 
 - Provider/Profile 定义增删与端点编辑、完整审批矩阵和 Linux 全屏 TUI。
-- Credential、Artifact、Report 等剩余 typed IPC 业务消息。
+- Report snapshot 等剩余 typed IPC 业务消息。
 - 加密 `.riftxcase`；SQLite、Engagement Audit 和 Artifact 数据已经加密。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
