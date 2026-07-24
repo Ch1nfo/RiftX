@@ -2,6 +2,16 @@ use crate::GuardCapabilities;
 use crate::GuardPreflightReport;
 use crate::GuardPreflightStatus;
 use crate::PlatformGuard;
+use landlock::ABI;
+use landlock::Access;
+use landlock::AccessFs;
+use landlock::CompatLevel;
+use landlock::Compatible;
+use landlock::Ruleset;
+use landlock::RulesetAttr;
+use landlock::RulesetCreatedAttr;
+use landlock::RulesetStatus;
+use landlock::path_beneath_rules;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -28,11 +38,14 @@ impl PlatformGuard for LinuxPlatformGuard {
             Ok(()) => capabilities.resource_limits = true,
             Err(error) => failures.push(format!("resource_limits: {error}")),
         }
-
-        // File and network OS rules are not implemented in this slice. Keep
-        // Hardened fail-closed until those capabilities exist.
-        failures.push("file_rules: not implemented".to_string());
-        failures.push("network_rules: not implemented".to_string());
+        match probe_file_rules(work_root) {
+            Ok(()) => capabilities.file_rules = true,
+            Err(error) => failures.push(format!("file_rules: {error}")),
+        }
+        match probe_network_rules() {
+            Ok(()) => capabilities.network_rules = true,
+            Err(error) => failures.push(format!("network_rules: {error}")),
+        }
 
         let status = if capabilities.hardened_ready() && failures.is_empty() {
             GuardPreflightStatus::Ready
@@ -90,4 +103,126 @@ fn probe_resource_limits() -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn probe_file_rules(work_root: &Path) -> io::Result<()> {
+    fs::create_dir_all(work_root)?;
+    let allowed = work_root
+        .canonicalize()
+        .unwrap_or_else(|_| work_root.to_path_buf());
+    let denied_parent = allowed
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "work root has no parent"))?;
+    let denied = denied_parent.join(format!("riftx-guard-denied-{}", std::process::id()));
+    fs::write(&denied, b"secret")?;
+
+    let allowed_for_child = allowed.clone();
+    let denied_for_child = denied.clone();
+    let marker = allowed.join("landlock-ok");
+    let result = run_in_child(move || {
+        if let Err(error) = enforce_landlock_work_root(&allowed_for_child) {
+            return ChildProbeExit::Failed(error);
+        }
+        if fs::read(&denied_for_child).is_ok() {
+            return ChildProbeExit::Failed(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Landlock did not deny access outside the work root",
+            ));
+        }
+        if let Err(error) = fs::write(&marker, b"ok") {
+            return ChildProbeExit::Failed(error);
+        }
+        ChildProbeExit::Ok
+    });
+    let _ = fs::remove_file(&denied);
+    let _ = fs::remove_file(&marker);
+    result
+}
+
+fn enforce_landlock_work_root(work_root: &Path) -> io::Result<()> {
+    let abi = ABI::V3;
+    let access_all = AccessFs::from_all(abi);
+    let paths: [&Path; 1] = [work_root];
+    let status = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(access_all)
+        .map_err(landlock_io_error)?
+        .create()
+        .map_err(landlock_io_error)?
+        .add_rules(path_beneath_rules(paths, access_all))
+        .map_err(landlock_io_error)?
+        .restrict_self()
+        .map_err(landlock_io_error)?;
+    match status.ruleset {
+        RulesetStatus::FullyEnforced => Ok(()),
+        RulesetStatus::PartiallyEnforced => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Landlock is only partially enforced",
+        )),
+        RulesetStatus::NotEnforced => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Landlock is not enforced by the kernel",
+        )),
+    }
+}
+
+fn probe_network_rules() -> io::Result<()> {
+    run_in_child(|| {
+        // Prefer an unprivileged user+net namespace pair so Lab hosts without
+        // CAP_NET_ADMIN can still prove network isolation is available.
+        let flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNET;
+        let result = unsafe { libc::unshare(flags) };
+        if result != 0 {
+            return ChildProbeExit::Failed(io::Error::last_os_error());
+        }
+        ChildProbeExit::Ok
+    })
+}
+
+enum ChildProbeExit {
+    Ok,
+    Failed(io::Error),
+}
+
+fn run_in_child(child_body: impl FnOnce() -> ChildProbeExit) -> io::Result<()> {
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        let code = match child_body() {
+            ChildProbeExit::Ok => 0,
+            ChildProbeExit::Failed(_) => 1,
+        };
+        unsafe { libc::_exit(code) };
+    }
+
+    let mut status = 0;
+    let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+    if waited < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        return Ok(());
+    }
+    if libc::WIFSIGNALED(status) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "guard probe child terminated by signal {}",
+                libc::WTERMSIG(status)
+            ),
+        ));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "guard probe child exited with status {}",
+            libc::WEXITSTATUS(status)
+        ),
+    ))
+}
+
+fn landlock_io_error(error: impl std::fmt::Display) -> io::Error {
+    io::Error::other(error.to_string())
 }

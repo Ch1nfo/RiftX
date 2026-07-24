@@ -3955,6 +3955,7 @@ dependencies = [
 name = "codex-riftx-guard"
 version = "0.0.0"
 dependencies = [
+ "landlock",
  "libc",
  "pretty_assertions",
  "tempfile",

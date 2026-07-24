@@ -33,22 +33,31 @@ fn full_capabilities_allow_hardened() {
 }
 
 #[test]
-fn native_guard_stays_fail_closed_without_file_and_network_rules() {
+fn native_guard_reports_linux_or_unsupported_preflight() {
     let temp = TempDir::new().expect("tempdir");
     let report = native_platform_guard().preflight(temp.path());
-    assert!(!report.allows_hardened());
-    assert!(!report.capabilities.file_rules);
-    assert!(!report.capabilities.network_rules);
     #[cfg(target_os = "linux")]
     {
-        assert_eq!(report.status, GuardPreflightStatus::Failed);
         assert_eq!(report.platform, "linux");
         assert!(report.capabilities.process_group);
         assert!(report.capabilities.temp_workdir);
         assert!(report.capabilities.resource_limits);
+        if report.allows_hardened() {
+            assert_eq!(report.status, GuardPreflightStatus::Ready);
+            assert!(report.capabilities.file_rules);
+            assert!(report.capabilities.network_rules);
+            assert!(report.failures.is_empty());
+        } else {
+            assert_eq!(report.status, GuardPreflightStatus::Failed);
+            assert!(!report.capabilities.hardened_ready());
+            assert!(!report.failures.is_empty());
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
+        assert!(!report.allows_hardened());
+        assert!(!report.capabilities.file_rules);
+        assert!(!report.capabilities.network_rules);
         assert_eq!(report.status, GuardPreflightStatus::UnsupportedPlatform);
     }
 }
@@ -66,8 +75,8 @@ fn refusal_message_lists_missing_capabilities() {
             network_rules: false,
         },
         failures: vec![
-            "file_rules: not implemented".to_string(),
-            "network_rules: not implemented".to_string(),
+            "file_rules: Landlock is not enforced by the kernel".to_string(),
+            "network_rules: Operation not permitted".to_string(),
         ],
     };
     let message = report.refusal_message("Hardened");
