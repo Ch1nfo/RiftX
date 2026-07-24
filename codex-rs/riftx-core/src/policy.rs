@@ -1,6 +1,7 @@
 use crate::AuthorizationError;
 use crate::AuthorizationScope;
 use crate::AuthorizationWindow;
+use crate::CredentialGrant;
 use crate::EnvironmentClass;
 use crate::ExecutionMode;
 use crate::IdentitySelector;
@@ -33,6 +34,8 @@ pub enum PolicyError {
     Authorization(#[from] AuthorizationError),
     #[error("target {target} is outside the effective scope: {reason}")]
     TargetOutsideScope { target: String, reason: String },
+    #[error("an engagement may define at most 128 credential grants")]
+    TooManyCredentialGrants,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +144,23 @@ impl EffectivePolicy {
 
     pub fn allows_capability(&self, capability: &str) -> bool {
         self.allowed_capabilities.contains(capability)
+    }
+
+    pub fn bind_credential_grants(
+        mut self,
+        grants: &[CredentialGrant],
+    ) -> Result<Self, PolicyError> {
+        if grants.is_empty() {
+            return Ok(self);
+        }
+        if grants.len() > 128 {
+            return Err(PolicyError::TooManyCredentialGrants);
+        }
+        let mut grants = grants.to_vec();
+        grants.sort_by(|left, right| left.id.cmp(&right.id));
+        let encoded = serde_json::to_vec(&(&self, grants))?;
+        self.revision = format!("{:x}", Sha256::digest(encoded));
+        Ok(self)
     }
 
     pub fn check_target(&self, target: &str) -> Result<(), PolicyError> {

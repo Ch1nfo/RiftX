@@ -1,4 +1,5 @@
 use super::*;
+use crate::Scope;
 
 #[test]
 fn effective_policy_checks_ip_domain_and_port_scope() {
@@ -24,4 +25,53 @@ fn effective_policy_checks_ip_domain_and_port_scope() {
     assert!(policy.check_target("10.20.30.5").is_err());
     assert!(policy.check_target("https://example.test").is_err());
     assert!(policy.check_target("http://api.example.test").is_err());
+}
+
+#[test]
+fn credential_grants_are_order_independent_policy_inputs() {
+    let managed = ManagedPolicyConfig {
+        allowed_capabilities: vec!["credential.testing".to_string()],
+        denied_cidrs: Vec::new(),
+        denied_domains: Vec::new(),
+    };
+    let authorization = AuthorizationScope {
+        network: Scope {
+            cidrs: vec!["10.20.0.0/16".parse().expect("CIDR")],
+            domains: Vec::new(),
+            ports: vec![445],
+        },
+        identities: Vec::new(),
+        capabilities: vec!["credential.testing".to_string()],
+        environment: EnvironmentClass::Lab,
+        window: AuthorizationWindow {
+            starts_at: None,
+            expires_at: Some(300),
+        },
+    };
+    let grant = |id: &str| CredentialGrant {
+        id: id.to_string(),
+        engagement_id: "engagement-1".to_string(),
+        credential_id: format!("credential-{id}"),
+        allowed_targets: authorization.network.clone(),
+        allowed_capabilities: authorization.capabilities.clone(),
+        max_uses: 3,
+        max_failures_per_identity: 1,
+        starts_at: None,
+        expires_at: 250,
+        created_at: 100,
+        revoked_at: None,
+    };
+    let base = EffectivePolicy::resolve(&managed, ExecutionMode::Native, &authorization, None)
+        .expect("base policy");
+    let left = base
+        .clone()
+        .bind_credential_grants(&[grant("a"), grant("b")])
+        .expect("bound policy");
+    let right = base
+        .clone()
+        .bind_credential_grants(&[grant("b"), grant("a")])
+        .expect("bound policy");
+
+    assert_eq!(left.revision, right.revision);
+    assert_ne!(left.revision, base.revision);
 }

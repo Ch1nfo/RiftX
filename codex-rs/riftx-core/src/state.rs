@@ -1,6 +1,9 @@
 use crate::Artifact;
 use crate::Asset;
 use crate::AssetRelation;
+use crate::CredentialError;
+use crate::CredentialGrant;
+use crate::CredentialReference;
 use crate::Engagement;
 use crate::EngagementStatus;
 use crate::Evidence;
@@ -33,6 +36,8 @@ pub enum StateError {
     },
     #[error(transparent)]
     InvalidTargetState(#[from] TargetStateError),
+    #[error(transparent)]
+    InvalidCredential(#[from] CredentialError),
     #[error("invalid conversation entry: {0}")]
     InvalidConversationEntry(String),
     #[error("invalid conversation query: {0}")]
@@ -96,6 +101,26 @@ macro_rules! entity_tables {
                     )),+
                 }
             }
+
+            fn get_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!(
+                        "SELECT data FROM ",
+                        $table,
+                        " WHERE engagement_id = ? AND id = ?"
+                    )),+
+                }
+            }
+
+            fn delete_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!(
+                        "DELETE FROM ",
+                        $table,
+                        " WHERE engagement_id = ? AND id = ?"
+                    )),+
+                }
+            }
         }
     };
 }
@@ -113,6 +138,8 @@ entity_tables!(
     Evidence => "evidence",
     AttackPaths => "attack_paths",
     Coverage => "coverage",
+    CredentialReferences => "credential_references",
+    CredentialGrants => "credential_grants",
     Tasks => "tasks",
     Artifacts => "artifacts",
 );
@@ -177,6 +204,8 @@ impl StateStore {
             EntityTable::Evidence,
             EntityTable::AttackPaths,
             EntityTable::Coverage,
+            EntityTable::CredentialReferences,
+            EntityTable::CredentialGrants,
             EntityTable::Tasks,
             EntityTable::Artifacts,
         ] {
@@ -402,10 +431,44 @@ impl StateStore {
             .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
             .collect()
     }
+
+    async fn entity<T: DeserializeOwned>(
+        &self,
+        table: EntityTable,
+        engagement_id: &str,
+        id: &str,
+    ) -> Result<Option<T>, StateError> {
+        let row = sqlx::query(table.get_sql())
+            .bind(engagement_id)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| serde_json::from_str(row.get("data")))
+            .transpose()
+            .map_err(StateError::from)
+    }
+
+    async fn delete_entity(
+        &self,
+        table: EntityTable,
+        engagement_id: &str,
+        id: &str,
+    ) -> Result<bool, StateError> {
+        Ok(sqlx::query(table.delete_sql())
+            .bind(engagement_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
 }
 
 #[path = "state_target.rs"]
 mod target;
+
+#[path = "state_credential.rs"]
+mod credential;
 
 #[path = "state_conversation.rs"]
 mod conversation;

@@ -6,12 +6,13 @@ use pretty_assertions::assert_eq;
 fn credential_reference_round_trips_without_a_secret() {
     let reference = CredentialReference {
         id: "corp-test-user".to_string(),
+        engagement_id: "engagement-1".to_string(),
         label: "Corporate test user".to_string(),
         kind: CredentialKind::Password,
-        store: CredentialStore::MacOsKeychain,
         storage_key: "riftx/engagement-1/corp-test-user".to_string(),
         username: Some("test.user".to_string()),
         domain: Some("LAB".to_string()),
+        created_at: 100,
     };
 
     reference.validate().expect("reference should be valid");
@@ -24,12 +25,13 @@ fn credential_reference_round_trips_without_a_secret() {
         encoded,
         serde_json::json!({
             "id": "corp-test-user",
+            "engagementId": "engagement-1",
             "label": "Corporate test user",
             "kind": "password",
-            "store": "macOsKeychain",
             "storageKey": "riftx/engagement-1/corp-test-user",
             "username": "test.user",
-            "domain": "LAB"
+            "domain": "LAB",
+            "createdAt": 100
         })
     );
 }
@@ -57,9 +59,28 @@ fn credential_grant_round_trips_as_a_complete_value() {
     assert_eq!(decoded, grant);
 }
 
+#[test]
+fn credential_grant_requires_a_target_and_tracks_revocation() {
+    let mut grant = credential_grant();
+    grant.allowed_targets = Scope {
+        cidrs: Vec::new(),
+        domains: Vec::new(),
+        ports: vec![445],
+    };
+    assert_eq!(grant.validate(), Err(CredentialError::MissingTarget));
+
+    grant = credential_grant();
+    assert!(grant.is_active_at(150));
+    grant.revoked_at = Some(160);
+    assert!(!grant.is_active_at(170));
+    grant.revoked_at = Some(99);
+    assert_eq!(grant.validate(), Err(CredentialError::InvalidRevocation));
+}
+
 fn credential_grant() -> CredentialGrant {
     CredentialGrant {
         id: "grant-1".to_string(),
+        engagement_id: "engagement-1".to_string(),
         credential_id: "corp-test-user".to_string(),
         allowed_targets: Scope {
             cidrs: vec!["10.10.20.0/24".parse::<IpNet>().expect("valid CIDR")],
@@ -71,5 +92,7 @@ fn credential_grant() -> CredentialGrant {
         max_failures_per_identity: 2,
         starts_at: Some(100),
         expires_at: 200,
+        created_at: 100,
+        revoked_at: None,
     }
 }
