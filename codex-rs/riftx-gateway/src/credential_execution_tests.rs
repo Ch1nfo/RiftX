@@ -101,12 +101,21 @@ async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
             .expect("executions"),
         vec![response.execution]
     );
-    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+    let audit = state
+        .audit
+        .read_records(/*limit*/ 100)
         .await
         .expect("audit");
-    assert!(audit.contains("credential/useStarted"));
-    assert!(audit.contains("credential/useCompleted"));
-    assert!(!audit.contains(SECRET));
+    let events = audit
+        .iter()
+        .map(|record| record.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"credential/useStarted"));
+    assert!(events.contains(&"credential/useCompleted"));
+    let raw_audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+        .await
+        .expect("raw audit");
+    assert!(!raw_audit.contains(SECRET));
 }
 
 #[test]

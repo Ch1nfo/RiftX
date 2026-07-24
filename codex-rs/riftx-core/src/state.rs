@@ -1,6 +1,8 @@
 use crate::Artifact;
 use crate::Asset;
 use crate::AssetRelation;
+use crate::AuditConfig;
+use crate::AuditWriter;
 use crate::CredentialError;
 use crate::CredentialGrant;
 use crate::CredentialReference;
@@ -212,6 +214,11 @@ impl StateStore {
         store.initialize().await?;
         store.prepare_existing_engagements().await?;
         Ok(store)
+    }
+
+    /// Creates an audit writer that shares this store's prepared engagement data keys.
+    pub fn audit_writer(&self, config: &AuditConfig) -> AuditWriter {
+        AuditWriter::new(config, self.cipher.clone())
     }
 
     async fn initialize(&self) -> Result<(), StateError> {

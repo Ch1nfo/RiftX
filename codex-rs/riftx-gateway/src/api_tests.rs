@@ -769,7 +769,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
     tokio::fs::write(workspace.join("artifacts/result.json"), br#"{"ok":true}"#)
         .await
         .expect("write artifact");
-    let app = build_router(state);
+    let app = build_router(state.clone());
 
     let response = app
         .clone()
@@ -837,11 +837,21 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
     )
     .expect("artifact list");
     assert_eq!(artifacts, vec![artifact]);
-    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+    let audit = state
+        .audit
+        .read_records(/*limit*/ 100)
         .await
         .expect("artifact audit");
-    assert!(audit.contains("artifact/captured"));
-    assert!(audit.contains(&artifacts[0].sha256));
+    let captured = audit
+        .iter()
+        .find(|record| record.event == "artifact/captured")
+        .expect("artifact captured audit");
+    assert!(
+        captured
+            .details
+            .as_ref()
+            .is_some_and(|details| details.to_string().contains(&artifacts[0].sha256))
+    );
 }
 
 #[tokio::test]
@@ -939,12 +949,18 @@ async fn guarded_draft_can_switch_to_native_with_a_new_audited_policy() {
             .expect("stored engagement"),
         changed
     );
-    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+    let audit = state
+        .audit
+        .read_records(/*limit*/ 100)
         .await
         .expect("mode audit");
-    assert!(audit.contains("engagement/modeChanged"));
-    assert!(audit.contains(&previous_revision));
-    assert!(audit.contains(&changed.policy_revision));
+    let changed_record = audit
+        .iter()
+        .find(|record| record.event == "engagement/modeChanged")
+        .expect("mode changed audit");
+    let details = changed_record.details.as_ref().expect("mode audit details");
+    assert!(details.to_string().contains(&previous_revision));
+    assert!(details.to_string().contains(&changed.policy_revision));
 }
 
 #[tokio::test]

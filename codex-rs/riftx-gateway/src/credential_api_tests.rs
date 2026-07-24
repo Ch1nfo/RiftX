@@ -233,17 +233,26 @@ async fn credential_grants_are_scoped_audited_and_policy_bound() {
     assert!(!deleted.configured);
     assert_eq!(credentials.value(&locator), None);
 
-    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+    let audit = state
+        .audit
+        .read_records(/*limit*/ 100)
         .await
         .expect("credential audit");
-    assert!(audit.contains("credential/referenceCreated"));
-    assert!(audit.contains("credential/secretConfigured"));
-    assert!(audit.contains("credential/grantCreated"));
-    assert!(audit.contains("credential/grantRevoked"));
-    assert!(audit.contains("credential/secretDeleted"));
-    assert!(!audit.contains("lab.user"));
-    assert!(!audit.contains(&reference.storage_key));
-    assert!(!audit.contains(SECRET));
+    let events = audit
+        .iter()
+        .map(|record| record.event.as_str())
+        .collect::<Vec<_>>();
+    assert!(events.contains(&"credential/referenceCreated"));
+    assert!(events.contains(&"credential/secretConfigured"));
+    assert!(events.contains(&"credential/grantCreated"));
+    assert!(events.contains(&"credential/grantRevoked"));
+    assert!(events.contains(&"credential/secretDeleted"));
+    let raw_audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+        .await
+        .expect("raw credential audit");
+    assert!(!raw_audit.contains("lab.user"));
+    assert!(!raw_audit.contains(&reference.storage_key));
+    assert!(!raw_audit.contains(SECRET));
 }
 
 async fn post_json(app: axum::Router, uri: &str, body: &str) -> axum::response::Response {

@@ -89,7 +89,7 @@ impl GatewayState {
         skills: SkillCatalog,
         tools: ToolInventory,
     ) -> Self {
-        let audit = AuditWriter::new(&config.audit);
+        let audit = store.audit_writer(&config.audit);
         let artifact_store = ArtifactStore::new(&config.artifacts);
         let mut tool_search_path = tools.path_entries.clone();
         if let Some(system_path) = std::env::var_os("PATH") {

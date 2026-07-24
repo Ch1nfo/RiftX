@@ -168,7 +168,8 @@ Markdown 和 JSON。
 - Scope、Policy Revision、Approval 及三模式领域约束。
 - 目标导向状态模型、Evidence 引用验证，以及按 Engagement 数据密钥加密的 SQLite
   持久化。
-- append-only JSONL 审计。
+- 按 Engagement 数据密钥加密的 append-only Audit；全局 daemon 控制记录只保留隐私安全
+  的系统元数据。
 - 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
 - workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
 - Markdown/JSON 报告。
@@ -180,7 +181,7 @@ Markdown 和 JSON。
 
 - Provider/Profile 定义增删与端点编辑、完整审批矩阵和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- Audit、Artifact 和 `.riftxcase` 加密；SQLite Engagement 数据已经加密。
+- Artifact 和 `.riftxcase` 加密；SQLite 与 Engagement Audit 数据已经加密。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
 - HTML/PDF 报告及正式安装包。

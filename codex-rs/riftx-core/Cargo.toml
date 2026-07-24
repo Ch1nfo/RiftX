@@ -13,6 +13,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 codex-riftx-crypto = { workspace = true }
 codex-riftx-skills = { workspace = true }
 codex-riftx-tools = { workspace = true }
@@ -25,6 +26,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 toml = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]

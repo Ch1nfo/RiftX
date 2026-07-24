@@ -3852,6 +3852,7 @@ dependencies = [
 name = "codex-riftx-core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "codex-keyring-store",
  "codex-riftx-crypto",
  "codex-riftx-skills",
@@ -3867,6 +3868,7 @@ dependencies = [
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "url",
+ "uuid",
  "zeroize",
 ]
 

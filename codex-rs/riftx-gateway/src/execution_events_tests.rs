@@ -6,7 +6,6 @@ use codex_riftx_app_server_adapter::TerminalInteractionNotification;
 use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuditConfig;
-use codex_riftx_core::AuditRecord;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::AuthorizationWindow;
 use codex_riftx_core::DaemonConfig;
@@ -164,15 +163,16 @@ async fn command_lifecycle_persists_redacted_execution_and_stream_hashes() {
         stderr_bytes: 6,
         stdin_bytes: 12,
     };
-    let audit = tokio::fs::read_to_string(&state.config.audit.jsonl_path)
+    let raw_audit = tokio::fs::read_to_string(&state.config.audit.jsonl_path)
         .await
-        .expect("audit");
-    assert!(!audit.contains("super-secret"));
-    assert!(!audit.contains("stdin-secret"));
-    let records = audit
-        .lines()
-        .map(|line| serde_json::from_str::<AuditRecord>(line).expect("audit record"))
-        .collect::<Vec<_>>();
+        .expect("raw audit");
+    assert!(!raw_audit.contains("super-secret"));
+    assert!(!raw_audit.contains("stdin-secret"));
+    let records = state
+        .audit
+        .read_records(/*limit*/ 100)
+        .await
+        .expect("audit records");
     let completed = records
         .iter()
         .find(|record| record.event == "execution/completed")

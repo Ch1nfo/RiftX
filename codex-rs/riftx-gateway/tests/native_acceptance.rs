@@ -279,8 +279,9 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         }),
         "agent message missing from conversation: {conversation}"
     );
-    anyhow::ensure!(audit.contains("execution/completed"));
-    anyhow::ensure!(audit.contains("artifact/captured"));
+    anyhow::ensure!(audit.contains("riftxAuditEncryptedV1"));
+    anyhow::ensure!(!audit.contains("execution/completed"));
+    anyhow::ensure!(!audit.contains("artifact/captured"));
     anyhow::ensure!(!audit.contains(API_KEY));
     anyhow::ensure!(!audit.contains(SECONDARY_API_KEY));
     let event_kinds = tokio::time::timeout(Duration::from_secs(10), event_collector)
