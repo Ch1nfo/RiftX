@@ -52,6 +52,8 @@ use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::protocol::SessionSource;
+use codex_riftx_guard::GuardNetworkPolicy;
+use codex_riftx_guard::RIFTX_GUARD_NET_ENV;
 use codex_riftx_guard::RIFTX_GUARD_WORK_ROOT_ENV;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
@@ -65,6 +67,13 @@ use thiserror::Error;
 
 const UNSUPPORTED_REQUEST_CODE: i64 = -32601;
 pub const RIFTX_CREDENTIAL_TOOL_NAME: &str = "riftx_credential_tool";
+
+/// Hardened/Auto isolation settings injected into a local agent thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardenedThreadGuard {
+    pub work_root: PathBuf,
+    pub network: GuardNetworkPolicy,
+}
 
 #[derive(Debug, Error)]
 pub enum AdapterError {
@@ -226,11 +235,9 @@ impl RiftxAppServerAdapter {
     pub async fn start_local_thread(
         &self,
         cwd: &Path,
-        guard_work_root: Option<&Path>,
+        hardened: Option<HardenedThreadGuard>,
     ) -> Result<String, AdapterError> {
-        self.request_handle
-            .start_local_thread(cwd, guard_work_root)
-            .await
+        self.request_handle.start_local_thread(cwd, hardened).await
     }
 
     pub async fn start_local_turn(
@@ -513,14 +520,18 @@ impl RiftxAppServerRequestHandle {
     pub async fn start_local_thread(
         &self,
         cwd: &Path,
-        guard_work_root: Option<&Path>,
+        hardened: Option<HardenedThreadGuard>,
     ) -> Result<String, AdapterError> {
         let mut config = HashMap::new();
-        if let Some(work_root) = guard_work_root {
-            let work_root = workspace_string(work_root)?;
+        if let Some(guard) = hardened {
+            let work_root = workspace_string(&guard.work_root)?;
             config.insert(
                 format!("shell_environment_policy.set.{RIFTX_GUARD_WORK_ROOT_ENV}"),
                 serde_json::Value::String(work_root),
+            );
+            config.insert(
+                format!("shell_environment_policy.set.{RIFTX_GUARD_NET_ENV}"),
+                serde_json::Value::String(guard.network.encode_env()),
             );
         }
         let response: ThreadStartResponse = self

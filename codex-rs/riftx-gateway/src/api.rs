@@ -21,6 +21,7 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
+use codex_riftx_app_server_adapter::HardenedThreadGuard;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::ConversationEntryDraft;
@@ -35,6 +36,7 @@ use codex_riftx_core::MAX_CONVERSATION_PAGE_SIZE;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_guard::GuardNetworkPolicy;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::ChangeModeParams;
@@ -617,12 +619,18 @@ async fn start_turn(
     let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
         None => {
-            let guard_work_root = engagement
+            let hardened = engagement
                 .mode
                 .requires_guard()
-                .then_some(workspace.as_path());
+                .then(|| HardenedThreadGuard {
+                    work_root: workspace.clone(),
+                    network: GuardNetworkPolicy::from_cidrs_and_ports(
+                        engagement.authorization.network.cidrs.clone(),
+                        engagement.authorization.network.ports.clone(),
+                    ),
+                });
             let thread_id = app_server
-                .start_local_thread(&workspace, guard_work_root)
+                .start_local_thread(&workspace, hardened)
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
             state

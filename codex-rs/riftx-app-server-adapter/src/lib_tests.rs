@@ -159,7 +159,7 @@ async fn local_workspace_starts_a_single_main_agent_thread() {
     let test = start_test_adapter().await;
     let thread_id = test
         .adapter
-        .start_local_thread(test.workspace.path(), /*guard_work_root*/ None)
+        .start_local_thread(test.workspace.path(), /*hardened*/ None)
         .await
         .expect("local thread should start");
 
@@ -169,10 +169,22 @@ async fn local_workspace_starts_a_single_main_agent_thread() {
 
 #[tokio::test]
 async fn hardened_thread_accepts_guard_work_root_override() {
+    use crate::HardenedThreadGuard;
+    use codex_riftx_guard::GuardNetworkPolicy;
+
     let test = start_test_adapter().await;
     let thread_id = test
         .adapter
-        .start_local_thread(test.workspace.path(), Some(test.workspace.path()))
+        .start_local_thread(
+            test.workspace.path(),
+            Some(HardenedThreadGuard {
+                work_root: test.workspace.path().to_path_buf(),
+                network: GuardNetworkPolicy::from_cidrs_and_ports(
+                    vec!["10.10.0.0/24".parse().expect("cidr")],
+                    vec![443],
+                ),
+            }),
+        )
         .await
         .expect("hardened local thread should start");
 
