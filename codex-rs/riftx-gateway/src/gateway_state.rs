@@ -255,7 +255,9 @@ impl GatewayState {
                 mode: Some(engagement.mode),
                 policy_revision: Some(engagement.policy_revision),
                 outcome: event_outcome(kind, &data),
-                details: (kind.starts_with("execution/") || kind.starts_with("artifact/"))
+                details: (kind.starts_with("execution/")
+                    || kind.starts_with("artifact/")
+                    || kind == "engagement/modeChanged")
                     .then(|| data.clone()),
             };
             let _ = self.audit.append(&record).await;

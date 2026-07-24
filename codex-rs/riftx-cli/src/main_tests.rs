@@ -81,6 +81,27 @@ fn skills_doctor_supports_machine_readable_output() {
 }
 
 #[test]
+fn mode_command_carries_the_explicit_auto_confirmation() {
+    let cli = Cli::try_parse_from([
+        "riftx",
+        "mode",
+        "eng-1",
+        "auto",
+        "--confirmation",
+        "AUTO MODE - TEST ENVIRONMENT ONLY",
+    ])
+    .expect("valid CLI");
+    assert!(matches!(
+        cli.command,
+        Command::Mode {
+            id,
+            mode: ExecutionModeArg::Auto,
+            confirmation: Some(confirmation),
+        } if id == "eng-1" && confirmation == "AUTO MODE - TEST ENVIRONMENT ONLY"
+    ));
+}
+
+#[test]
 fn artifacts_commands_capture_and_export_workspace_files() {
     let capture = Cli::try_parse_from([
         "riftx",

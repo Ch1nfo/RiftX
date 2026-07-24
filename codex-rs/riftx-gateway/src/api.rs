@@ -53,6 +53,7 @@ const MAX_OPERATOR_REQUEST_BYTES: usize = 4 * 1024;
 const MAX_MISSION_CONTEXT_BYTES: usize = 8 * 1024;
 const MAX_OBSERVED_STATE_BYTES: usize = 16 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
+const AUTO_MODE_CONFIRMATION: &str = "AUTO MODE - TEST ENVIRONMENT ONLY";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -72,6 +73,13 @@ struct CreateEngagementParams {
 struct StartTurnParams {
     #[serde(default)]
     input: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChangeModeParams {
+    mode: ExecutionMode,
+    confirmation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +232,7 @@ pub fn build_router(state: GatewayState) -> Router {
             get(list_engagements).post(create_engagement),
         )
         .route("/v1/engagements/{id}", get(get_engagement))
+        .route("/v1/engagements/{id}/mode", post(change_mode))
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/turns", post(start_turn))
         .route("/v1/engagements/{id}/approvals", get(list_approvals))
@@ -300,16 +309,7 @@ async fn create_engagement(
         None,
     )
     .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    if params
-        .authorization
-        .capabilities
-        .iter()
-        .any(|capability| !policy.allows_capability(capability))
-    {
-        return Err(ApiError::bad_request(
-            "one or more requested capabilities are denied by managed policy",
-        ));
-    }
+    validate_managed_capabilities(&params.authorization, &policy)?;
     validate_objective(&params.objective)?;
     if params.entry_points.len() > 128 {
         return Err(ApiError::bad_request(
@@ -376,6 +376,100 @@ async fn get_engagement(
     Ok(Json(state.store.engagement(&id).await?))
 }
 
+async fn change_mode(
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+    Json(params): Json<ChangeModeParams>,
+) -> Result<Json<Engagement>, ApiError> {
+    let _turn_permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let mut engagement = state.store.engagement(&id).await?;
+    if engagement.mode == params.mode {
+        return Ok(Json(engagement));
+    }
+    if engagement.status == EngagementStatus::Completed {
+        return Err(mode_switch_conflict(
+            "completed engagements cannot change execution mode",
+        ));
+    }
+    if state.active_turns.read().await.contains_key(&id) {
+        return Err(mode_switch_conflict(
+            "execution mode cannot change while an agent turn is active",
+        ));
+    }
+    if state
+        .pending_approvals
+        .read()
+        .await
+        .values()
+        .any(|pending| pending.engagement_id == id)
+    {
+        return Err(mode_switch_conflict(
+            "execution mode cannot change while an approval is pending",
+        ));
+    }
+    if state.store.executions(&id).await?.iter().any(|execution| {
+        matches!(
+            execution.status,
+            ExecutionStatus::Pending | ExecutionStatus::Running
+        )
+    }) {
+        return Err(mode_switch_conflict(
+            "execution mode cannot change while an execution is active",
+        ));
+    }
+    if params.mode == ExecutionMode::Auto
+        && params.confirmation.as_deref() != Some(AUTO_MODE_CONFIRMATION)
+    {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "auto_confirmation_required",
+            message: format!("enter the exact confirmation phrase: {AUTO_MODE_CONFIRMATION}"),
+        });
+    }
+    let policy = EffectivePolicy::resolve(
+        &state.config.policy,
+        params.mode,
+        &engagement.authorization,
+        None,
+    )
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    validate_managed_capabilities(&engagement.authorization, &policy)?;
+    if params.mode.requires_guard() {
+        return Err(ApiError {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code: "guard_unavailable",
+            message: format!(
+                "{:?} Mode cannot be selected until the platform RiftX Guard is available",
+                params.mode
+            ),
+        });
+    }
+    let previous_mode = engagement.mode;
+    let previous_revision = engagement.policy_revision.clone();
+    engagement.mode = params.mode;
+    engagement.policy_revision = policy.revision;
+    engagement.updated_at = unix_timestamp();
+    state.store.put_engagement(&engagement).await?;
+    state
+        .publish(
+            &id,
+            "engagement/modeChanged",
+            json!({
+                "previousMode": previous_mode,
+                "mode": engagement.mode,
+                "previousPolicyRevision": previous_revision,
+                "policyRevision": engagement.policy_revision,
+            }),
+        )
+        .await;
+    Ok(Json(engagement))
+}
+
 async fn activate_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
@@ -427,6 +521,30 @@ async fn activate_engagement(
         .publish(&id, "engagementActivated", json!({"workspace": workspace}))
         .await;
     Ok(Json(engagement))
+}
+
+fn validate_managed_capabilities(
+    authorization: &AuthorizationScope,
+    policy: &EffectivePolicy,
+) -> Result<(), ApiError> {
+    if authorization
+        .capabilities
+        .iter()
+        .any(|capability| !policy.allows_capability(capability))
+    {
+        return Err(ApiError::bad_request(
+            "one or more requested capabilities are denied by managed policy",
+        ));
+    }
+    Ok(())
+}
+
+fn mode_switch_conflict(message: impl Into<String>) -> ApiError {
+    ApiError {
+        status: StatusCode::CONFLICT,
+        code: "mode_switch_conflict",
+        message: message.into(),
+    }
 }
 
 async fn start_turn(

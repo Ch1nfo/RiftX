@@ -67,6 +67,13 @@ enum Command {
     Activate {
         id: String,
     },
+    Mode {
+        id: String,
+        #[arg(value_enum)]
+        mode: ExecutionModeArg,
+        #[arg(long)]
+        confirmation: Option<String>,
+    },
     Turn {
         id: String,
         input: Option<String>,
@@ -256,6 +263,22 @@ async fn main() -> anyhow::Result<()> {
                 RequestKind::Post,
                 format!("/v1/engagements/{id}/activate"),
                 None,
+            )
+            .await?;
+        }
+        Command::Mode {
+            id,
+            mode,
+            confirmation,
+        } => {
+            send(
+                &client,
+                RequestKind::PostJson,
+                format!("/v1/engagements/{id}/mode"),
+                Some(json!({
+                    "mode": mode.as_str(),
+                    "confirmation": confirmation,
+                })),
             )
             .await?;
         }

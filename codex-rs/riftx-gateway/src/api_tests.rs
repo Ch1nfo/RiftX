@@ -877,6 +877,170 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
 }
 
 #[tokio::test]
+async fn guarded_draft_can_switch_to_native_with_a_new_audited_policy() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let mut engagement = native_engagement(&state, "eng-mode-native", EngagementStatus::Draft);
+    engagement.mode = ExecutionMode::Hardened;
+    engagement.policy_revision = EffectivePolicy::resolve(
+        &state.config.policy,
+        engagement.mode,
+        &engagement.authorization,
+        None,
+    )
+    .expect("hardened policy")
+    .revision;
+    let previous_revision = engagement.policy_revision.clone();
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/mode", engagement.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"native","confirmation":null}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed: Engagement = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+    assert_eq!(changed.mode, ExecutionMode::Native);
+    assert_ne!(changed.policy_revision, previous_revision);
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("stored engagement"),
+        changed
+    );
+    let audit = tokio::fs::read_to_string(temp.path().join("audit.jsonl"))
+        .await
+        .expect("mode audit");
+    assert!(audit.contains("engagement/modeChanged"));
+    assert!(audit.contains(&previous_revision));
+    assert!(audit.contains(&changed.policy_revision));
+}
+
+#[tokio::test]
+async fn mode_switch_rejects_active_turns_and_preserves_policy() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-mode-active", EngagementStatus::Active);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    state.active_turns.write().await.insert(
+        engagement.id.clone(),
+        ActiveTurn {
+            profile_name: "default".to_string(),
+            thread_id: "thread-active".to_string(),
+            turn_id: "turn-active".to_string(),
+        },
+    );
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/mode", engagement.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"hardened","confirmation":null}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("error JSON");
+    assert_eq!(error["code"], "mode_switch_conflict");
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("stored engagement"),
+        engagement
+    );
+}
+
+#[tokio::test]
+async fn auto_mode_requires_exact_confirmation_before_guard_preflight() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-mode-auto", EngagementStatus::Draft);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let app = build_router(state.clone());
+    let uri = format!("/v1/engagements/{}/mode", engagement.id);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"auto","confirmation":"AUTO"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"mode":"auto","confirmation":"{AUTO_MODE_CONFIRMATION}"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("stored engagement"),
+        engagement
+    );
+}
+
+#[tokio::test]
 async fn expired_authorization_cannot_activate() {
     let temp = TempDir::new().expect("temp dir");
     let app = test_router(&temp).await;
