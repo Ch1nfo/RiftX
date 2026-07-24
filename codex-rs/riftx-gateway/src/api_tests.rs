@@ -8,6 +8,9 @@ use codex_riftx_core::AssetRelation;
 use codex_riftx_core::AuditConfig;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::AuthorizationWindow;
+use codex_riftx_core::ConversationEntryDraft;
+use codex_riftx_core::ConversationKind;
+use codex_riftx_core::ConversationRole;
 use codex_riftx_core::DaemonConfig;
 use codex_riftx_core::EnvironmentClass;
 use codex_riftx_core::ExecutionMode;
@@ -249,6 +252,124 @@ async fn engagement_can_be_created_and_read() {
     )
     .expect("engagement list JSON");
     assert_eq!(engagements, vec![engagement]);
+}
+
+#[tokio::test]
+async fn conversation_endpoint_returns_latest_entries_with_an_older_cursor() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = Engagement {
+        id: "eng-conversation".to_string(),
+        name: "Conversation lab".to_string(),
+        status: EngagementStatus::Active,
+        objective: AssessmentObjective {
+            summary: "Preserve the operator transcript".to_string(),
+            success_criteria: Vec::new(),
+            structured_criteria: Vec::new(),
+        },
+        entry_points: vec!["127.0.0.1".to_string()],
+        mode: ExecutionMode::Native,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
+                domains: Vec::new(),
+                ports: Vec::new(),
+            },
+            identities: Vec::new(),
+            capabilities: Vec::new(),
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: None,
+            },
+        },
+        policy_revision: "revision-1".to_string(),
+        thread_id: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    for (id, role, text, created_at) in [
+        (
+            "operator-1",
+            ConversationRole::Operator,
+            "Inspect the authorized target.",
+            2,
+        ),
+        (
+            "agent-1",
+            ConversationRole::Agent,
+            "The first pass is complete.",
+            3,
+        ),
+    ] {
+        state
+            .store
+            .append_conversation_entry(&ConversationEntryDraft {
+                id: id.to_string(),
+                engagement_id: engagement.id.clone(),
+                turn_id: Some("turn-1".to_string()),
+                role,
+                kind: ConversationKind::Message,
+                text: text.to_string(),
+                created_at,
+            })
+            .await
+            .expect("store conversation entry");
+    }
+    let app = build_router(state);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/engagements/{}/conversation?limit=1",
+                    engagement.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("conversation page");
+    assert_eq!(page["data"][0]["id"], "agent-1");
+    let cursor = page["nextCursor"].as_str().expect("older cursor");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/engagements/{}/conversation?limit=1&cursor={cursor}",
+                    engagement.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let page: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("older conversation page");
+    assert_eq!(page["data"][0]["id"], "operator-1");
 }
 
 #[tokio::test]

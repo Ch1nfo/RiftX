@@ -229,6 +229,34 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         artifact["sizeBytes"] == "native-artifact".len() as u64,
         "artifact size mismatch: {artifact}"
     );
+    let conversation_response = client
+        .get(&format!(
+            "/v1/engagements/{}/conversation?limit=200",
+            engagement.id
+        ))
+        .await?;
+    anyhow::ensure!(
+        conversation_response.status() == StatusCode::OK,
+        "conversation query returned {}",
+        conversation_response.status()
+    );
+    let conversation: Value = serde_json::from_slice(&conversation_response.bytes().await?)?;
+    let entries = conversation["data"]
+        .as_array()
+        .context("conversation data missing")?;
+    anyhow::ensure!(
+        entries.iter().any(|entry| {
+            entry["role"] == "operator"
+                && entry["text"] == "Run the deterministic acceptance command."
+        }),
+        "operator message missing from conversation: {conversation}"
+    );
+    anyhow::ensure!(
+        entries.iter().any(|entry| {
+            entry["role"] == "agent" && entry["text"] == "Native execution complete."
+        }),
+        "agent message missing from conversation: {conversation}"
+    );
     anyhow::ensure!(audit.contains("execution/completed"));
     anyhow::ensure!(audit.contains("artifact/captured"));
     anyhow::ensure!(!audit.contains(API_KEY));

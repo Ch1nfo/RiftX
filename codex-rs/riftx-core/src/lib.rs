@@ -3,6 +3,7 @@
 mod audit;
 mod authorization;
 mod config;
+mod conversation;
 mod credential;
 mod model;
 mod objective;
@@ -12,6 +13,7 @@ mod target_state;
 
 pub use authorization::*;
 pub use config::*;
+pub use conversation::*;
 pub use credential::*;
 pub use model::*;
 pub use objective::*;
@@ -23,3 +25,7 @@ pub use target_state::*;
 #[path = "config_tests.rs"]
 mod tests;
 pub use audit::*;
+
+#[cfg(test)]
+#[path = "conversation_tests.rs"]
+mod conversation_tests;

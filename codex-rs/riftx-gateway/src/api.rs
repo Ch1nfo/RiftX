@@ -19,11 +19,16 @@ use axum::routing::get;
 use axum::routing::post;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
+use codex_riftx_core::ConversationEntry;
+use codex_riftx_core::ConversationEntryDraft;
+use codex_riftx_core::ConversationKind;
+use codex_riftx_core::ConversationRole;
 use codex_riftx_core::EffectivePolicy;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
+use codex_riftx_core::MAX_CONVERSATION_PAGE_SIZE;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
@@ -76,6 +81,13 @@ struct ReportQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConversationQuery {
+    cursor: Option<i64>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ReportFormat {
     Markdown,
@@ -87,6 +99,13 @@ enum ReportFormat {
 struct TurnAccepted {
     task_id: String,
     status: TaskStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationPage {
+    data: Vec<ConversationEntry>,
+    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,6 +161,8 @@ impl From<StateError> for ApiError {
             StateError::EngagementNotFound(_) => StatusCode::NOT_FOUND,
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
             StateError::InvalidTargetState(_)
+            | StateError::InvalidConversationEntry(_)
+            | StateError::InvalidConversationQuery(_)
             | StateError::MissingChainReference { .. }
             | StateError::BrokenChainReference { .. } => StatusCode::BAD_REQUEST,
             StateError::Database(_) | StateError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -183,6 +204,10 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/approvals/{id}/decision", post(decide_approval))
         .route("/v1/engagements/{id}/interrupt", post(interrupt_engagement))
         .route("/v1/engagements/{id}/events", get(events))
+        .route(
+            "/v1/engagements/{id}/conversation",
+            get(conversation_history),
+        )
         .route("/v1/engagements/{id}/report", get(report))
         .route(
             "/v1/engagements/{id}/artifacts",
@@ -412,8 +437,29 @@ async fn start_turn(
         error: None,
     };
     state.store.put_task(&task).await?;
+    let operator_entry = state
+        .store
+        .append_conversation_entry(&ConversationEntryDraft {
+            id: Uuid::new_v4().to_string(),
+            engagement_id: id.clone(),
+            turn_id: None,
+            role: ConversationRole::Operator,
+            kind: ConversationKind::Message,
+            text: operator_request.clone(),
+            created_at: unix_timestamp(),
+        })
+        .await?;
     state
-        .publish(&id, "operator/message", json!({"text": operator_request}))
+        .publish(
+            &id,
+            "operator/message",
+            json!({
+                "entryId": operator_entry.id,
+                "role": operator_entry.role,
+                "kind": operator_entry.kind,
+                "text": operator_entry.text,
+            }),
+        )
         .await;
     let input = operational_agent_input(&state, &id, operator_request).await?;
     let turn_result = app_server
@@ -610,6 +656,22 @@ async fn events(
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn conversation_history(
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+    Query(query): Query<ConversationQuery>,
+) -> Result<Json<ConversationPage>, ApiError> {
+    let limit = query.limit.unwrap_or(MAX_CONVERSATION_PAGE_SIZE);
+    let data = state
+        .store
+        .conversation_entries_before(&id, query.cursor, limit)
+        .await?;
+    let next_cursor = (data.len() == limit as usize)
+        .then(|| data.first().map(|entry| entry.sequence.to_string()))
+        .flatten();
+    Ok(Json(ConversationPage { data, next_cursor }))
 }
 
 async fn report(

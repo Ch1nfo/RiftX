@@ -33,6 +33,10 @@ pub enum StateError {
     },
     #[error(transparent)]
     InvalidTargetState(#[from] TargetStateError),
+    #[error("invalid conversation entry: {0}")]
+    InvalidConversationEntry(String),
+    #[error("invalid conversation query: {0}")]
+    InvalidConversationQuery(String),
     #[error("{entity_kind} {entity_id} is missing required {reference_kind} reference")]
     MissingChainReference {
         entity_kind: &'static str,
@@ -129,6 +133,24 @@ impl StateStore {
     async fn initialize(&self) -> Result<(), StateError> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS engagements (id TEXT PRIMARY KEY, data TEXT NOT NULL)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS conversation_entries (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL,
+                engagement_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                UNIQUE(engagement_id, id),
+                FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS conversation_entries_engagement_sequence
+             ON conversation_entries(engagement_id, sequence)",
         )
         .execute(&self.pool)
         .await?;
@@ -345,6 +367,9 @@ impl StateStore {
 
 #[path = "state_target.rs"]
 mod target;
+
+#[path = "state_conversation.rs"]
+mod conversation;
 
 #[cfg(test)]
 #[path = "state_tests.rs"]

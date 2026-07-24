@@ -13,6 +13,7 @@ pub(crate) async fn process(state: &GatewayState, event: RiftxAppServerEvent) {
     match event {
         RiftxAppServerEvent::Notification(notification) => {
             crate::execution_events::process_notification(state, &notification).await;
+            crate::conversation::process_notification(state, &notification).await;
             forward_event(state, RiftxAppServerEvent::Notification(notification)).await;
         }
         RiftxAppServerEvent::CommandApproval(pending) => command_approval(state, pending).await,
