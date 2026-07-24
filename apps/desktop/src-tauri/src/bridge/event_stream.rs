@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri::async_runtime::JoinHandle;
 
 const ENGAGEMENT_EVENT_NAME: &str = "riftx://engagement-event";
@@ -108,6 +109,9 @@ async fn stream_engagement_events(
                             }
                             match serde_json::from_str::<EngagementEvent>(&frame.data) {
                                 Ok(event) if event.engagement_id == engagement_id => {
+                                    app.state::<DesktopState>()
+                                        .notifications
+                                        .notify(&app, &event);
                                     let _ = app.emit(ENGAGEMENT_EVENT_NAME, event);
                                 }
                                 Ok(_) => {

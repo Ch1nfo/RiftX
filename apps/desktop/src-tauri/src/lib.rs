@@ -1,11 +1,13 @@
 mod background;
 mod bridge;
 mod daemon;
+mod notifications;
 mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             background::install(app)?;
@@ -32,6 +34,8 @@ pub fn run() {
             settings::llm_settings,
             settings::save_llm_api_key,
             settings::delete_llm_api_key,
+            notifications::notification_settings,
+            notifications::request_notification_permission,
         ])
         .build(tauri::generate_context!())
         .expect("RiftX desktop runtime failed");

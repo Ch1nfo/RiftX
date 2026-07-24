@@ -12,6 +12,7 @@ import type {
   EngagementReport,
   EngagementStreamStatus,
   LlmSettings,
+  NotificationSettings,
   PendingApproval,
   TurnAccepted,
 } from "./models";
@@ -47,6 +48,14 @@ export function saveLlmApiKey(apiKey: string): Promise<LlmSettings> {
 
 export function deleteLlmApiKey(): Promise<LlmSettings> {
   return desktopInvoke("delete_llm_api_key");
+}
+
+export function notificationSettings(): Promise<NotificationSettings> {
+  return desktopInvoke("notification_settings");
+}
+
+export function requestNotificationPermission(): Promise<NotificationSettings> {
+  return desktopInvoke("request_notification_permission");
 }
 
 export function listEngagements(): Promise<Engagement[]> {

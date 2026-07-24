@@ -26,6 +26,10 @@ export interface LlmSettings {
   daemonRestartRequired: boolean;
 }
 
+export interface NotificationSettings {
+  permission: "granted" | "denied" | "prompt" | "promptWithRationale";
+}
+
 export interface Engagement {
   id: string;
   name: string;

@@ -15,6 +15,7 @@ import {
   saveLlmApiKey,
 } from "../bridge";
 import type { DesktopBridgeError, LlmSettings } from "../models";
+import { NotificationControls } from "./NotificationControls";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -258,6 +259,7 @@ export function SettingsDialog({
             )}
 
             {notice && <p className="settings-notice">{notice}</p>}
+            <NotificationControls open={open} onError={onError} />
           </form>
         ) : loadFailed ? (
           <div className="settings-loading">

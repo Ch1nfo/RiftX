@@ -39,6 +39,9 @@ Named Pipe 提供本地服务。
 - Desktop 顶栏和系统托盘提供全局 Pause、Resume 与 Kill Switch；暂停会关闭新执行入口、
   拒绝待执行批准并中断活动 Engagement，恢复不会自动重放命令；控制状态持久化到
   SQLite，Kill Switch 和活动任务的重启暂停不能通过重启 daemon 绕过。
+- Desktop 在窗口隐藏或失焦时发送原生后台通知，覆盖命令审批、当前 turn 完成、
+  execution interrupt 和 Agent Runtime 断连；通知使用固定的隐私安全文案，不包含
+  目标、命令、路径、证据或错误详情，系统通知权限只在设置页由操作员显式申请。
 - IPC v4 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
   待审批请求；运行态变化写入 append-only JSONL 审计。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、
@@ -52,7 +55,7 @@ Named Pipe 提供本地服务。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成完整 Provider/Profile 设置、完整审批矩阵、通知、Linux TUI、
+尚未完成完整 Provider/Profile 设置、完整审批矩阵、Linux TUI、
 加密案件存储、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何

@@ -26,6 +26,7 @@ pub(crate) struct DesktopState {
     config_path: Option<PathBuf>,
     startup_error: Option<DesktopError>,
     subscriptions: event_stream::SubscriptionRegistry,
+    pub(crate) notifications: crate::notifications::NotificationManager,
     pub(crate) daemon: crate::daemon::DaemonSupervisor,
 }
 
@@ -37,6 +38,7 @@ impl DesktopState {
                 config_path: Some(config_path),
                 startup_error: None,
                 subscriptions: event_stream::SubscriptionRegistry::default(),
+                notifications: crate::notifications::NotificationManager::default(),
                 daemon: crate::daemon::DaemonSupervisor::default(),
             },
             Err(error) => Self {
@@ -44,6 +46,7 @@ impl DesktopState {
                 config_path: None,
                 startup_error: Some(error),
                 subscriptions: event_stream::SubscriptionRegistry::default(),
+                notifications: crate::notifications::NotificationManager::default(),
                 daemon: crate::daemon::DaemonSupervisor::default(),
             },
         }
