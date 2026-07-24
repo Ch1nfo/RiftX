@@ -39,7 +39,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          workspaces: |
+            apps/desktop/src-tauri
+            codex-rs
 
       - name: Install desktop dependencies
         run: >-
@@ -49,6 +51,13 @@ jobs:
 
       - name: Build desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Prepare daemon sidecar
+        env:
+          RIFTX_SIDECAR_PROFILE: debug
+        run: >-
+          conda run -n agent pnpm
+          --filter @riftx/desktop prepare:sidecar
 
       - name: Check Tauri bridge
         run: >-
