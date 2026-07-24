@@ -154,21 +154,24 @@ pub(crate) async fn execute(
                 },
             )
             .await?;
-            let has_grant_history = grants.as_array().is_some_and(|grants| {
-                grants.iter().any(|grant| {
-                    grant.get("credentialId").and_then(Value::as_str)
-                        == Some(credential_id.as_str())
-                })
-            });
+            let matching_grants = grants_for_credential(&grants, &credential_id);
+            for grant in &matching_grants {
+                let grant_id = response_id(grant, "credential grant")?;
+                request_json(
+                    client,
+                    Request::Post {
+                        path: format!("/v1/engagements/{id}/credential-grants/{grant_id}/revoke"),
+                    },
+                )
+                .await?;
+            }
             let locator = CredentialLocator::new(&id, &credential_id)?;
             tokio::task::spawn_blocking(move || {
                 AssessmentCredentialStore::default().delete(&locator)
             })
             .await
             .context("credential store task failed")??;
-            let reference = if has_grant_history {
-                reference
-            } else {
+            let reference = if matching_grants.is_empty() {
                 request_json(
                     client,
                     Request::Post {
@@ -176,6 +179,8 @@ pub(crate) async fn execute(
                     },
                 )
                 .await?
+            } else {
+                reference
             };
             print_json(&reference)?;
         }
@@ -303,6 +308,15 @@ fn entity_by_id(value: &Value, id: &str, kind: &str) -> anyhow::Result<Value> {
         })
         .cloned()
         .with_context(|| format!("{kind} {id:?} was not found"))
+}
+
+fn grants_for_credential<'a>(value: &'a Value, credential_id: &str) -> Vec<&'a Value> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|grant| grant.get("credentialId").and_then(Value::as_str) == Some(credential_id))
+        .collect()
 }
 
 fn print_json(value: &Value) -> anyhow::Result<()> {

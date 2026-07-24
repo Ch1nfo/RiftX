@@ -266,7 +266,7 @@ export function CredentialDialog({
                     aria-label={`Delete ${reference.label}`}
                     title={
                       grantHistory.has(reference.id)
-                        ? "Remove secret and retain grant history"
+                        ? "Remove secret and revoke grants"
                         : "Delete credential and secret"
                     }
                     disabled={busy || !mutable || !reference.configured}

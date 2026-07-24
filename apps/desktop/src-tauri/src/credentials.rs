@@ -134,18 +134,26 @@ pub(crate) async fn delete_assessment_credential(
             .await,
     )
     .await?;
-    let has_grant_history = grants.as_array().is_some_and(|grants| {
-        grants.iter().any(|grant| {
-            grant.get("credentialId").and_then(Value::as_str) == Some(input.credential_id.as_str())
-        })
-    });
+    let matching_grants = grants_for_credential(&grants, &input.credential_id);
+    for grant in &matching_grants {
+        let grant_id = response_id(grant, "credential grant")?;
+        let _: Value = json_response(
+            client
+                .post(&format!(
+                    "/v1/engagements/{}/credential-grants/{grant_id}/revoke",
+                    input.engagement_id
+                ))
+                .await,
+        )
+        .await?;
+    }
     let locator = CredentialLocator::new(&input.engagement_id, &input.credential_id)
         .map_err(credential_error)?;
     tokio::task::spawn_blocking(move || AssessmentCredentialStore::default().delete(&locator))
         .await
         .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
         .map_err(credential_error)?;
-    if !has_grant_history {
+    if matching_grants.is_empty() {
         reference = json_response(
             client
                 .post(&format!(
@@ -300,6 +308,15 @@ fn entity_by_id(value: &Value, id: &str, kind: &str) -> Result<Value, DesktopErr
                 format!("{kind} {id:?} was not found"),
             )
         })
+}
+
+fn grants_for_credential<'a>(value: &'a Value, credential_id: &str) -> Vec<&'a Value> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|grant| grant.get("credentialId").and_then(Value::as_str) == Some(credential_id))
+        .collect()
 }
 
 fn set_configured(value: &mut Value, configured: bool) -> Result<(), DesktopError> {

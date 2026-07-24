@@ -97,3 +97,20 @@ fn configured_state_is_added_without_changing_gateway_metadata() {
         })
     );
 }
+
+#[test]
+fn secret_removal_selects_all_historical_grants_for_revocation() {
+    let grants = json!([
+        {"id": "grant-1", "credentialId": "credential-1", "revokedAt": null},
+        {"id": "grant-2", "credentialId": "credential-2", "revokedAt": null},
+        {"id": "grant-3", "credentialId": "credential-1", "revokedAt": 123},
+    ]);
+
+    assert_eq!(
+        grants_for_credential(&grants, "credential-1")
+            .iter()
+            .map(|grant| grant["id"].as_str().expect("grant id"))
+            .collect::<Vec<_>>(),
+        vec!["grant-1", "grant-3"]
+    );
+}
