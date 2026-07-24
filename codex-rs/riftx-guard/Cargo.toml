@@ -12,6 +12,10 @@ doctest = false
 [lints]
 workspace = true
 
+[dependencies]
+# exec.rs uses tokio::process::Command::pre_exec on all targets.
+tokio = { workspace = true, features = ["process"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
 landlock = { workspace = true }

@@ -1,4 +1,5 @@
 use crate::GuardCapabilities;
+use crate::GuardExecPolicy;
 use crate::GuardPreflightReport;
 use crate::GuardPreflightStatus;
 use crate::PlatformGuard;
@@ -62,6 +63,11 @@ impl PlatformGuard for LinuxPlatformGuard {
     }
 }
 
+pub(crate) fn apply_hardened_isolation(policy: &GuardExecPolicy) -> io::Result<()> {
+    enter_network_namespace()?;
+    enforce_landlock_policy(policy)
+}
+
 fn probe_process_group() -> io::Result<()> {
     let pgid = unsafe { libc::getpgid(0) };
     if pgid < 0 {
@@ -116,11 +122,14 @@ fn probe_file_rules(work_root: &Path) -> io::Result<()> {
     let denied = denied_parent.join(format!("riftx-guard-denied-{}", std::process::id()));
     fs::write(&denied, b"secret")?;
 
-    let allowed_for_child = allowed.clone();
+    let policy = GuardExecPolicy {
+        work_root: allowed.clone(),
+        readable_roots: Vec::new(),
+    };
     let denied_for_child = denied.clone();
     let marker = allowed.join("landlock-ok");
     let result = run_in_child(move || {
-        if let Err(error) = enforce_landlock_work_root(&allowed_for_child) {
+        if let Err(error) = enforce_landlock_policy(&policy) {
             return ChildProbeExit::Failed(error);
         }
         if fs::read(&denied_for_child).is_ok() {
@@ -139,17 +148,46 @@ fn probe_file_rules(work_root: &Path) -> io::Result<()> {
     result
 }
 
-fn enforce_landlock_work_root(work_root: &Path) -> io::Result<()> {
+fn probe_network_rules() -> io::Result<()> {
+    run_in_child(|| match enter_network_namespace() {
+        Ok(()) => ChildProbeExit::Ok,
+        Err(error) => ChildProbeExit::Failed(error),
+    })
+}
+
+fn enter_network_namespace() -> io::Result<()> {
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNET;
+    if unsafe { libc::unshare(flags) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    fs::write("/proc/self/setgroups", b"deny")?;
+    fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))?;
+    fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))?;
+    Ok(())
+}
+
+fn enforce_landlock_policy(policy: &GuardExecPolicy) -> io::Result<()> {
     let abi = ABI::V3;
     let access_all = AccessFs::from_all(abi);
-    let paths: [&Path; 1] = [work_root];
+    let access_read = AccessFs::from_read(abi);
+    let work_root = policy.work_root.as_path();
+    let readable: Vec<&Path> = policy
+        .readable_roots
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .filter(|path| path.exists())
+        .collect();
     let status = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(access_all)
         .map_err(landlock_io_error)?
         .create()
         .map_err(landlock_io_error)?
-        .add_rules(path_beneath_rules(paths, access_all))
+        .add_rules(path_beneath_rules([work_root], access_all))
+        .map_err(landlock_io_error)?
+        .add_rules(path_beneath_rules(readable, access_read))
         .map_err(landlock_io_error)?
         .restrict_self()
         .map_err(landlock_io_error)?;
@@ -164,19 +202,6 @@ fn enforce_landlock_work_root(work_root: &Path) -> io::Result<()> {
             "Landlock is not enforced by the kernel",
         )),
     }
-}
-
-fn probe_network_rules() -> io::Result<()> {
-    run_in_child(|| {
-        // Prefer an unprivileged user+net namespace pair so Lab hosts without
-        // CAP_NET_ADMIN can still prove network isolation is available.
-        let flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNET;
-        let result = unsafe { libc::unshare(flags) };
-        if result != 0 {
-            return ChildProbeExit::Failed(io::Error::last_os_error());
-        }
-        ChildProbeExit::Ok
-    })
 }
 
 enum ChildProbeExit {

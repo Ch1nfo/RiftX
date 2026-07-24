@@ -83,3 +83,23 @@ fn refusal_message_lists_missing_capabilities() {
     assert!(message.contains("file_rules"));
     assert!(message.contains("network_rules"));
 }
+
+#[test]
+fn tool_exec_policy_requires_absolute_paths_and_includes_program_root() {
+    let err = GuardExecPolicy::for_tool("relative-work", Path::new("/usr/bin/true"))
+        .expect_err("relative work root");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+    let policy =
+        GuardExecPolicy::for_tool(PathBuf::from("/tmp/riftx-work"), Path::new("/usr/bin/true"))
+            .expect("absolute policy");
+    assert_eq!(policy.work_root, PathBuf::from("/tmp/riftx-work"));
+    assert!(
+        policy
+            .readable_roots
+            .iter()
+            .any(|path| path.ends_with("bin")
+                || path.as_path() == Path::new("/usr/bin/true")
+                || path.ends_with("true"))
+    );
+}

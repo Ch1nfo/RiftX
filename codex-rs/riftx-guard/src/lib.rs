@@ -4,10 +4,14 @@
 //! refuse to start unless every required capability is present. Missing file or
 //! network rules keep the mode fail-closed even when lighter probes succeed.
 
+mod exec;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(not(target_os = "linux"))]
 mod unsupported;
+
+pub use exec::GuardExecPolicy;
+pub use exec::apply_hardened_launch;
 
 use std::path::Path;
 use std::sync::Arc;
