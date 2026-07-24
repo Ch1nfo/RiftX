@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use codex_riftx_guard::GuardExecPolicy;
 use pretty_assertions::assert_eq;
 use std::io::Read;
 use std::path::Path;
@@ -224,6 +226,7 @@ async fn helper_request(injection: CredentialInjection) -> CredentialProcessRequ
         cwd: std::env::current_dir().expect("current directory"),
         environment: BTreeMap::new(),
         injection,
+        guard: None,
     }
 }
 
@@ -233,4 +236,26 @@ fn runner() -> CredentialProcessRunner {
 
 fn secret() -> AssessmentSecret {
     AssessmentSecret::new(SECRET.to_string()).expect("secret")
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn hardened_guard_launch_is_applied_or_fails_closed() {
+    let runner = runner();
+    let work = tempfile::tempdir().expect("work root");
+    let mut request = helper_request(CredentialInjection::Stdin).await;
+    request
+        .environment
+        .insert(HELPER_MODE.to_string(), "stdin".into());
+    request.cwd = work.path().to_path_buf();
+    request.guard =
+        Some(GuardExecPolicy::for_tool(work.path(), &request.program).expect("hardened policy"));
+    match runner.run(request, secret()).await {
+        Ok(output) => assert_eq!(
+            output.termination,
+            CredentialProcessTermination::Exited { code: Some(0) }
+        ),
+        Err(CredentialProcessError::Guard(_)) | Err(CredentialProcessError::Spawn(_)) => {}
+        Err(error) => panic!("unexpected hardened launch error: {error}"),
+    }
 }

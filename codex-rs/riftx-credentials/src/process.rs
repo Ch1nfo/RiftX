@@ -1,4 +1,6 @@
 use crate::AssessmentSecret;
+use codex_riftx_guard::GuardExecPolicy;
+use codex_riftx_guard::apply_hardened_launch;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -38,6 +40,7 @@ pub struct CredentialProcessRequest {
     pub cwd: PathBuf,
     pub environment: BTreeMap<String, OsString>,
     pub injection: CredentialInjection,
+    pub guard: Option<GuardExecPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +124,9 @@ impl CredentialProcessRunner {
                     .ok_or(CredentialProcessError::MissingCredentialFile)?;
                 command.env(variable, file.path());
             }
+        }
+        if let Some(policy) = request.guard.clone() {
+            apply_hardened_launch(&mut command, policy).map_err(CredentialProcessError::Guard)?;
         }
         let mut child = command.spawn().map_err(CredentialProcessError::Spawn)?;
         let stdout = child
@@ -220,6 +226,8 @@ pub enum CredentialProcessError {
     Inspect(#[source] std::io::Error),
     #[error("credential process temporary file failed: {0}")]
     TemporaryFile(#[source] std::io::Error),
+    #[error("credential process guard launch failed: {0}")]
+    Guard(#[source] std::io::Error),
     #[error("credential process failed to start: {0}")]
     Spawn(#[source] std::io::Error),
     #[error("credential process output pipe was unavailable")]

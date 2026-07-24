@@ -21,6 +21,7 @@ use codex_riftx_credentials::CredentialProcessOutput;
 use codex_riftx_credentials::CredentialProcessRequest;
 use codex_riftx_credentials::CredentialProcessRunner;
 use codex_riftx_credentials::CredentialProcessTermination;
+use codex_riftx_guard::GuardExecPolicy;
 use codex_riftx_ipc::CredentialExecutionParams;
 use codex_riftx_ipc::CredentialExecutionResponse;
 use codex_riftx_ipc::CredentialGrantUse;
@@ -130,6 +131,14 @@ pub(crate) async fn execute_inner(
         cwd: workspace.clone(),
         environment,
         injection,
+        guard: if engagement.mode.requires_guard() {
+            Some(
+                GuardExecPolicy::for_tool(&workspace, &tool.path)
+                    .map_err(|error| ApiError::internal(error.to_string()))?,
+            )
+        } else {
+            None
+        },
     };
     let cancellation = CancellationToken::new();
     state.credential_processes.write().await.insert(
