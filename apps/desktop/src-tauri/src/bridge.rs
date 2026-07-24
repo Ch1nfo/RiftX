@@ -442,14 +442,16 @@ pub(crate) async fn engagement_report(
     engagement_id: String,
 ) -> Result<Value, DesktopError> {
     let client = state.client()?;
-    json_response(
-        client
-            .get(&format!(
-                "/v1/engagements/{engagement_id}/report?format=json"
-            ))
-            .await,
-    )
-    .await
+    json_response(client.get(&report_path(&engagement_id, "json")?).await).await
+}
+
+#[tauri::command]
+pub(crate) async fn engagement_report_markdown(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<String, DesktopError> {
+    let client = state.client()?;
+    text_response(client.get(&report_path(&engagement_id, "markdown")?).await).await
 }
 
 #[tauri::command]
@@ -511,6 +513,33 @@ async fn empty_response(
         message: format!("riftxd returned HTTP {status}"),
     });
     Err(DesktopError::new(error.code, error.message))
+}
+
+async fn text_response(
+    response: Result<LocalIpcResponse, LocalIpcError>,
+) -> Result<String, DesktopError> {
+    let response =
+        response.map_err(|error| DesktopError::new("daemon_unavailable", error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| DesktopError::new("daemon_unavailable", error.to_string()))?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(DesktopError::new(
+            "response_too_large",
+            "riftxd returned a response larger than the desktop limit",
+        ));
+    }
+    if !status.is_success() {
+        let error = serde_json::from_slice::<ApiErrorBody>(&bytes).unwrap_or(ApiErrorBody {
+            code: "daemon_error".to_string(),
+            message: format!("riftxd returned HTTP {status}"),
+        });
+        return Err(DesktopError::new(error.code, error.message));
+    }
+    String::from_utf8(bytes.to_vec())
+        .map_err(|error| DesktopError::new("invalid_daemon_response", error.to_string()))
 }
 
 async fn update_runtime(
@@ -601,6 +630,13 @@ fn mode_change_request(input: ChangeModeInput) -> Result<(String, Vec<u8>), Desk
     }))
     .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
     Ok((path, body))
+}
+
+fn report_path(engagement_id: &str, format: &str) -> Result<String, DesktopError> {
+    validate_engagement_id(engagement_id)?;
+    Ok(format!(
+        "/v1/engagements/{engagement_id}/report?format={format}"
+    ))
 }
 
 fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {

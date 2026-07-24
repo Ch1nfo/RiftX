@@ -178,6 +178,12 @@ export function engagementReport(
   return desktopInvoke("engagement_report", { engagementId });
 }
 
+export function engagementReportMarkdown(
+  engagementId: string,
+): Promise<string> {
+  return desktopInvoke("engagement_report_markdown", { engagementId });
+}
+
 export function conversationHistory(
   engagementId: string,
   cursor: number | null = null,

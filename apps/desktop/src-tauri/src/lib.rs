@@ -31,6 +31,7 @@ pub fn run() {
             bridge::event_stream::engagement_stream_status,
             bridge::interrupt_engagement,
             bridge::engagement_report,
+            bridge::engagement_report_markdown,
             bridge::conversation_history,
             extensions::tool_inventory,
             extensions::skill_catalog,

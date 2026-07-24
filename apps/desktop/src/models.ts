@@ -221,6 +221,29 @@ export interface ReportArtifact {
   sizeBytes: number;
 }
 
+export interface ToolReportSnapshot {
+  snapshotSha256: string;
+  tools: {
+    name: string;
+    sha256: string;
+    metadataSha256: string | null;
+    capabilities: string[];
+    risk: "low" | "medium" | "high" | "critical" | null;
+    managed: boolean;
+    shadowed: boolean;
+  }[];
+}
+
+export interface SkillReportSnapshot {
+  snapshotSha256: string;
+  skills: {
+    name: string;
+    source: "builtIn" | "user";
+    enabled: boolean;
+    sha256: string;
+  }[];
+}
+
 export interface EngagementReport {
   engagement: Engagement;
   assets: unknown[];
@@ -234,6 +257,8 @@ export interface EngagementReport {
   coverage: unknown[];
   tasks: ReportTask[];
   artifacts: ReportArtifact[];
+  toolSnapshot: ToolReportSnapshot;
+  skillSnapshot: SkillReportSnapshot;
 }
 
 export interface DesktopBridgeError {

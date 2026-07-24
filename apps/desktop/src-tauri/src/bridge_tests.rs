@@ -78,3 +78,18 @@ fn mode_change_request_is_typed_and_rejects_path_injection() {
         ))
     );
 }
+
+#[test]
+fn report_path_rejects_path_injection() {
+    assert_eq!(
+        report_path("engagement-1", "markdown"),
+        Ok("/v1/engagements/engagement-1/report?format=markdown".to_string())
+    );
+    assert_eq!(
+        report_path("../system/kill", "json"),
+        Err(DesktopError::new(
+            "invalid_identifier",
+            "engagement identifier is invalid",
+        ))
+    );
+}
