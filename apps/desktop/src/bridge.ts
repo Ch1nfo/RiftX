@@ -96,12 +96,10 @@ export function decideApproval(
   return desktopInvoke("decide_approval", { approvalId, decision });
 }
 
-export function subscribeEngagement(engagementId: string): Promise<void> {
-  return desktopInvoke("subscribe_engagement", { engagementId });
-}
-
-export function unsubscribeEngagement(engagementId: string): Promise<void> {
-  return desktopInvoke("unsubscribe_engagement", { engagementId });
+export function engagementStreamStatus(
+  engagementId: string,
+): Promise<EngagementStreamStatus> {
+  return desktopInvoke("engagement_stream_status", { engagementId });
 }
 
 export function onEngagementEvent(

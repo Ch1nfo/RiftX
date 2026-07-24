@@ -19,6 +19,7 @@ import {
   daemonInfo,
   decideApproval,
   engagementReport,
+  engagementStreamStatus,
   interruptEngagement,
   killRuntime,
   listApprovals,
@@ -30,8 +31,6 @@ import {
   pauseRuntime,
   resumeRuntime,
   startTurn,
-  subscribeEngagement,
-  unsubscribeEngagement,
 } from "./bridge";
 import riftxIcon from "./assets/riftx-icon.png";
 import { ActivityTimeline } from "./components/ActivityTimeline";
@@ -288,7 +287,11 @@ export default function App() {
         }
         stopEvents = eventListener;
         stopStream = streamListener;
-        return subscribeEngagement(selectedId);
+        return engagementStreamStatus(selectedId).then((status) => {
+          if (!disposed) {
+            setStreamState(status.state);
+          }
+        });
       })
       .catch((cause) => {
         if (!disposed) {
@@ -301,7 +304,6 @@ export default function App() {
       disposed = true;
       stopEvents();
       stopStream();
-      void unsubscribeEngagement(selectedId);
     };
   }, [loadApprovals, loadConversation, loadReport, refresh, selectedId]);
 

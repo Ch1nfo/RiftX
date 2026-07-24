@@ -272,10 +272,21 @@ pub(crate) async fn kill_runtime(
 
 #[tauri::command]
 pub(crate) async fn list_engagements(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<EngagementView>, DesktopError> {
     let client = state.client()?;
-    json_response(client.get("/v1/engagements").await).await
+    let engagements: Vec<EngagementView> =
+        json_response(client.get("/v1/engagements").await).await?;
+    state.subscriptions.sync_active(
+        &app,
+        client,
+        engagements
+            .iter()
+            .filter(|engagement| engagement.status == "active")
+            .map(|engagement| engagement.id.clone()),
+    )?;
+    Ok(engagements)
 }
 
 #[tauri::command]
@@ -315,16 +326,21 @@ pub(crate) async fn create_engagement(
 
 #[tauri::command]
 pub(crate) async fn activate_engagement(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
     engagement_id: String,
 ) -> Result<EngagementView, DesktopError> {
     let client = state.client()?;
-    json_response(
+    let engagement: EngagementView = json_response(
         client
             .post(&format!("/v1/engagements/{engagement_id}/activate"))
             .await,
     )
-    .await
+    .await?;
+    state
+        .subscriptions
+        .ensure_active(&app, client, engagement.id.clone())?;
+    Ok(engagement)
 }
 
 #[tauri::command]

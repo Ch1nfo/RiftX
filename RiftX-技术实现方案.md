@@ -845,6 +845,10 @@ Test Mock
 - 崩溃恢复不自动重放最后一个命令。
 - Desktop 只在主窗口隐藏或失焦时发送原生通知，当前覆盖命令审批、turn 完成、
   execution interrupt 和 Agent Runtime 断连。
+- Desktop 后台服务同时维护全部 Active Engagement 的事件订阅；当前选中的任务只
+  影响窗口内容，不影响其他任务的通知、审批等待或断线状态采集。
+- 托盘任务状态按 Risk、Waiting approval、Running、Ready 的顺序聚合，优先显示最
+  需要操作员介入的状态。
 - 通知只使用固定状态文案，不显示目标、命令、参数、路径、证据、模型输出或错误详情。
 - Desktop 不自动请求系统通知权限；操作员只能在设置页显式启用，拒绝后由操作系统
   设置管理。

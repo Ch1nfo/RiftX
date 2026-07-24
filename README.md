@@ -42,6 +42,9 @@ Named Pipe 提供本地服务。
 - Desktop 在窗口隐藏或失焦时发送原生后台通知，覆盖命令审批、当前 turn 完成、
   execution interrupt 和 Agent Runtime 断连；通知使用固定的隐私安全文案，不包含
   目标、命令、路径、证据或错误详情，系统通知权限只在设置页由操作员显式申请。
+- Desktop Rust bridge 同时订阅全部 Active Engagement 的事件流，切换当前任务不会
+  停止其他任务的后台监听；系统托盘按 Risk、Waiting approval、Running、Ready 的
+  优先级聚合显示任务状态。
 - IPC v4 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
   待审批请求；运行态变化写入 append-only JSONL 审计。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、
