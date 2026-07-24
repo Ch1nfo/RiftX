@@ -17,7 +17,6 @@ fn endpoint_is_derived_from_runtime_directory() {
     assert!(endpoint.pipe_name().starts_with(r"\\.\pipe\riftx-"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn local_http_round_trip_and_streaming() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -73,7 +72,6 @@ async fn local_http_round_trip_and_streaming() {
     server.abort();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn typed_json_request_and_response_round_trip() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -124,7 +122,6 @@ async fn typed_json_request_and_response_round_trip() {
     server.abort();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn local_sse_stream_decodes_events_and_ignores_keep_alive_frames() {
     let temp = tempfile::tempdir().expect("tempdir");
