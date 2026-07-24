@@ -10,6 +10,7 @@ import type {
   EngagementEvent,
   EngagementReport,
   EngagementStreamStatus,
+  LlmSettings,
   PendingApproval,
   TurnAccepted,
 } from "./models";
@@ -19,6 +20,18 @@ const ENGAGEMENT_STREAM_NAME = "riftx://engagement-stream";
 
 export function daemonInfo(): Promise<DesktopDaemonInfo> {
   return desktopInvoke("daemon_info");
+}
+
+export function llmSettings(): Promise<LlmSettings> {
+  return desktopInvoke("llm_settings");
+}
+
+export function saveLlmApiKey(apiKey: string): Promise<LlmSettings> {
+  return desktopInvoke("save_llm_api_key", { input: { apiKey } });
+}
+
+export function deleteLlmApiKey(): Promise<LlmSettings> {
+  return desktopInvoke("delete_llm_api_key");
 }
 
 export function listEngagements(): Promise<Engagement[]> {

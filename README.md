@@ -149,18 +149,28 @@ api_key = { source = "environment", variable = "RIFTX_LLM_API_KEY" }
 ```bash
 conda run -n agent sh -lc \
   'cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli'
-
-export RIFTX_LLM_API_KEY="<your-api-key>"
-./codex-rs/target/debug/riftxd --config riftx.toml
 ```
 
-启动桌面端：
+先启动桌面端。即使 daemon 尚未运行，也可以通过右上角设置按钮将 API Key 保存到
+系统安全存储：
 
 ```bash
 conda run -n agent pnpm install
 RIFTX_CONFIG="$PWD/riftx.toml" \
   conda run --no-capture-output -n agent \
   pnpm --filter @riftx/desktop tauri dev
+```
+
+另一个终端启动 daemon；保存或删除 API Key 后需要重启 daemon：
+
+```bash
+./codex-rs/target/debug/riftxd --config riftx.toml
+```
+
+仅当 `llm.api_key.source = "environment"` 时，启动前设置对应变量：
+
+```bash
+export RIFTX_LLM_API_KEY="<your-api-key>"
 ```
 
 macOS 调试 `.app` 构建：

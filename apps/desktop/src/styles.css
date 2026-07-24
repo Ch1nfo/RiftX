@@ -95,6 +95,12 @@ button:disabled {
   font-weight: 680;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .daemon-state {
   display: flex;
   align-items: center;
@@ -826,7 +832,7 @@ button:disabled {
   color: #ffd4d1;
   background: #3b2523;
   box-shadow: 0 14px 34px rgb(0 0 0 / 30%);
-  z-index: 30;
+  z-index: 50;
 }
 
 .error-banner > div {
@@ -989,6 +995,239 @@ button:disabled {
   border-top: 1px solid var(--border);
 }
 
+.settings-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 45%);
+}
+
+.dialog-heading {
+  display: flex;
+  padding: 14px 18px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.dialog-heading h2 {
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.settings-body {
+  display: grid;
+  padding: 18px;
+  gap: 18px;
+}
+
+.settings-summary {
+  display: grid;
+  margin: 0;
+  gap: 10px;
+}
+
+.settings-summary > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  min-width: 0;
+  gap: 12px;
+}
+
+.settings-summary dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.credential-heading,
+.credential-title,
+.settings-actions {
+  display: flex;
+  align-items: center;
+}
+
+.credential-heading {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.credential-title {
+  min-width: 0;
+  gap: 9px;
+}
+
+.credential-title > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.credential-title strong {
+  font-size: 12px;
+}
+
+.credential-title span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credential-status {
+  display: inline-flex;
+  min-height: 22px;
+  padding: 0 8px;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.credential-status.configured {
+  border-color: #39745f;
+  color: #b9efd9;
+  background: #203d33;
+}
+
+.credential-status.missing {
+  border-color: #72453f;
+  color: #f0b8b3;
+  background: #3a2825;
+}
+
+.key-field {
+  display: grid;
+  gap: 6px;
+}
+
+.key-field > span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.key-field > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.key-field > div:focus-within {
+  border-color: #4c9879;
+}
+
+.key-field input {
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.settings-actions {
+  min-height: 34px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-actions .primary-button,
+.danger-text-button,
+.danger-button,
+.remove-confirmation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remove-confirmation {
+  margin-right: auto;
+}
+
+.remove-confirmation > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.remove-confirmation .secondary-button,
+.danger-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.danger-button {
+  border: 1px solid #9d4b45;
+  border-radius: 5px;
+  color: #ffd0cc;
+  background: #71332e;
+}
+
+.danger-text-button {
+  min-height: 32px;
+  padding: 0 8px;
+  margin-right: auto;
+  border: 0;
+  color: #efaaa5;
+  background: transparent;
+  font-size: 11px;
+}
+
+.danger-text-button:hover:not(:disabled) {
+  color: #ffd0cc;
+  background: #382523;
+}
+
+.settings-notice,
+.settings-readonly {
+  margin: -6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-notice {
+  color: #b9efd9;
+}
+
+.settings-loading {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -1050,6 +1289,37 @@ button:disabled {
 
   .new-engagement-dialog {
     background: #f5f7f6;
+  }
+
+  .credential-status.configured {
+    border-color: #78ad98;
+    color: #195f49;
+    background: #e4f4ed;
+  }
+
+  .credential-status.missing {
+    border-color: #c8918b;
+    color: #8d312b;
+    background: #f9e8e6;
+  }
+
+  .danger-text-button {
+    color: #a33e37;
+  }
+
+  .danger-button {
+    border-color: #b75d55;
+    color: #ffffff;
+    background: #a84039;
+  }
+
+  .danger-text-button:hover:not(:disabled) {
+    color: #7e211b;
+    background: #fae9e7;
+  }
+
+  .settings-notice {
+    color: #1d6f54;
   }
 
   .approval-entry {

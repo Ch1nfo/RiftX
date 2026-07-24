@@ -50,6 +50,10 @@ impl DesktopState {
             .clone()
             .ok_or_else(|| self.startup_error.clone().unwrap_or_else(unavailable))
     }
+
+    pub(crate) fn config_path(&self) -> Result<&Path, DesktopError> {
+        self.config_path.as_deref().ok_or_else(unavailable)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -60,7 +64,7 @@ pub(crate) struct DesktopError {
 }
 
 impl DesktopError {
-    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -453,10 +457,7 @@ fn validate_engagement_id(engagement_id: &str) -> Result<(), DesktopError> {
     validate_opaque_id("engagement", engagement_id)
 }
 
-fn conversation_path(
-    engagement_id: &str,
-    cursor: Option<i64>,
-) -> Result<String, DesktopError> {
+fn conversation_path(engagement_id: &str, cursor: Option<i64>) -> Result<String, DesktopError> {
     validate_engagement_id(engagement_id)?;
     match cursor {
         Some(cursor) if cursor <= 0 => Err(DesktopError::new(

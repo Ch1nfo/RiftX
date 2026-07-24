@@ -4,9 +4,10 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn api_key_debug_output_is_redacted() {
-    let api_key = LlmApiKey::new("riftx-secret".to_string()).expect("API key");
+    let api_key = LlmApiKey::new("  riftx-secret\n".to_string()).expect("API key");
     let debug = format!("{api_key:?}");
 
+    assert_eq!(api_key.into_inner(), "riftx-secret");
     assert!(debug.contains("[REDACTED]"));
     assert!(!debug.contains("riftx-secret"));
 }

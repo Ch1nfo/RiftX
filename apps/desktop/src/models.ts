@@ -8,6 +8,14 @@ export interface DesktopDaemonInfo {
   configPath: string;
 }
 
+export interface LlmSettings {
+  model: string;
+  baseUrl: string;
+  credentialSource: "keyring" | "environment";
+  credentialName: string;
+  configured: boolean;
+}
+
 export interface Engagement {
   id: string;
   name: string;

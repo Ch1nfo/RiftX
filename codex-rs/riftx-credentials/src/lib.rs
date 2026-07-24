@@ -13,7 +13,8 @@ pub struct LlmApiKey(String);
 
 impl LlmApiKey {
     pub fn new(value: String) -> Result<Self, CredentialError> {
-        if value.trim().is_empty() {
+        let value = value.trim().to_string();
+        if value.is_empty() {
             return Err(CredentialError::EmptySecret);
         }
         if value.len() > MAX_SECRET_BYTES {

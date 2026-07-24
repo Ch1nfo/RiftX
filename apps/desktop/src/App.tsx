@@ -3,6 +3,7 @@ import {
   Command,
   PanelRight,
   Send,
+  Settings,
   Square,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import riftxIcon from "./assets/riftx-icon.png";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { EngagementInspector } from "./components/EngagementInspector";
 import { NewEngagementDialog } from "./components/NewEngagementDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { TaskSidebar } from "./components/TaskSidebar";
 import type {
   ApprovalDecision,
@@ -62,6 +64,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
 
   const selected = useMemo(
@@ -371,12 +374,23 @@ export default function App() {
           <img src={riftxIcon} alt="" />
           <strong>RiftX</strong>
         </div>
-        <div
-          className={`daemon-state ${daemon ? "connected" : "disconnected"}`}
-          title={daemon?.configPath}
-        >
-          <span />
-          {daemon ? `Daemon ${daemon.daemonVersion}` : "Daemon offline"}
+        <div className="topbar-actions">
+          <div
+            className={`daemon-state ${daemon ? "connected" : "disconnected"}`}
+            title={daemon?.configPath}
+          >
+            <span />
+            {daemon ? `Daemon ${daemon.daemonVersion}` : "Daemon offline"}
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Open settings"
+            title="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings size={16} />
+          </button>
         </div>
       </header>
 
@@ -510,6 +524,11 @@ export default function App() {
         busy={submitting}
         onClose={() => setCreateOpen(false)}
         onCreate={create}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onError={setError}
       />
     </div>
   );

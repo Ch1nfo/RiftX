@@ -1,4 +1,5 @@
 mod bridge;
+mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +18,9 @@ pub fn run() {
             bridge::interrupt_engagement,
             bridge::engagement_report,
             bridge::conversation_history,
+            settings::llm_settings,
+            settings::save_llm_api_key,
+            settings::delete_llm_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("RiftX desktop runtime failed");
