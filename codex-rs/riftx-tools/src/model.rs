@@ -21,13 +21,15 @@ pub struct ToolMetadata {
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub risk: Option<ToolRisk>,
-    #[serde(default)]
+    #[serde(default, alias = "help_args")]
     pub help_args: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "version_args")]
     pub version_args: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "health_check_args")]
     pub health_check_args: Vec<String>,
+    #[serde(alias = "input_target_field")]
     pub input_target_field: Option<String>,
+    #[serde(alias = "output_format")]
     pub output_format: Option<String>,
     pub parser: Option<String>,
 }

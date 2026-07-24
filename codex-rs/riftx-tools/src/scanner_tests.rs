@@ -24,7 +24,16 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
     write_executable(&ignored, b"#!/bin/sh\nexit 0\n").await;
     tokio::fs::write(
         root.join("probe.riftx.toml"),
-        "capabilities = [\"network.discovery\"]\nrisk = \"low\"\n",
+        concat!(
+            "capabilities = [\"network.discovery\"]\n",
+            "risk = \"low\"\n",
+            "help_args = [\"--help\"]\n",
+            "version_args = [\"--version\"]\n",
+            "health_check_args = [\"doctor\"]\n",
+            "input_target_field = \"target\"\n",
+            "output_format = \"json\"\n",
+            "parser = \"json\"\n",
+        ),
     )
     .await
     .expect("metadata");
@@ -49,12 +58,17 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
         vec!["probe", "probe", "deep-probe"]
     );
     assert_eq!(
-        inventory.tools[0]
-            .metadata
-            .as_ref()
-            .expect("metadata")
-            .capabilities,
-        vec!["network.discovery"]
+        inventory.tools[0].metadata.as_ref().expect("metadata"),
+        &ToolMetadata {
+            capabilities: vec!["network.discovery".to_string()],
+            risk: Some(ToolRisk::Low),
+            help_args: vec!["--help".to_string()],
+            version_args: vec!["--version".to_string()],
+            health_check_args: vec!["doctor".to_string()],
+            input_target_field: Some("target".to_string()),
+            output_format: Some("json".to_string()),
+            parser: Some("json".to_string()),
+        }
     );
     assert_eq!(inventory.tools[1].shadowed_by, Some(root.join("probe")));
     assert!(!inventory.tools.iter().any(|tool| tool.path == ignored));
