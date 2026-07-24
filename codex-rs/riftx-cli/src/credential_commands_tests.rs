@@ -86,3 +86,17 @@ fn credential_locator_matches_gateway_storage_key() {
         "engagement/engagement-1/credential/credential-1"
     );
 }
+
+#[test]
+fn entity_lookup_returns_only_the_requested_credential() {
+    let references = json!([
+        {"id": "credential-1", "label": "first"},
+        {"id": "credential-2", "label": "second"},
+    ]);
+
+    assert_eq!(
+        entity_by_id(&references, "credential-2", "credential").expect("credential"),
+        json!({"id": "credential-2", "label": "second"})
+    );
+    assert!(entity_by_id(&references, "../credential", "credential").is_err());
+}

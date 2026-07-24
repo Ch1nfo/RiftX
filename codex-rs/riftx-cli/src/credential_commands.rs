@@ -6,6 +6,7 @@ use codex_riftx_credentials::CredentialLocator;
 use codex_riftx_ipc::LocalIpcClient;
 use serde_json::Value;
 use serde_json::json;
+use std::io::IsTerminal;
 use std::io::Read;
 
 #[derive(Debug, Subcommand)]
@@ -138,25 +139,44 @@ pub(crate) async fn execute(
             )?;
         }
         CredentialCommand::Delete { id, credential_id } => {
-            let locator = CredentialLocator::new(&id, &credential_id)?;
-            let locator_for_load = locator.clone();
-            tokio::task::spawn_blocking(move || {
-                AssessmentCredentialStore::default().load(&locator_for_load)
-            })
-            .await
-            .context("credential store task failed")??;
-            let reference = request_json(
+            let references = request_json(
                 client,
-                Request::Post {
-                    path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
+                Request::Get {
+                    path: format!("/v1/engagements/{id}/credentials"),
                 },
             )
             .await?;
+            let reference = entity_by_id(&references, &credential_id, "credential")?;
+            let grants = request_json(
+                client,
+                Request::Get {
+                    path: format!("/v1/engagements/{id}/credential-grants"),
+                },
+            )
+            .await?;
+            let has_grant_history = grants.as_array().is_some_and(|grants| {
+                grants.iter().any(|grant| {
+                    grant.get("credentialId").and_then(Value::as_str)
+                        == Some(credential_id.as_str())
+                })
+            });
+            let locator = CredentialLocator::new(&id, &credential_id)?;
             tokio::task::spawn_blocking(move || {
                 AssessmentCredentialStore::default().delete(&locator)
             })
             .await
             .context("credential store task failed")??;
+            let reference = if has_grant_history {
+                reference
+            } else {
+                request_json(
+                    client,
+                    Request::Post {
+                        path: format!("/v1/engagements/{id}/credentials/{credential_id}/delete"),
+                    },
+                )
+                .await?
+            };
             print_json(&reference)?;
         }
         CredentialCommand::Grant {
@@ -222,6 +242,10 @@ pub(crate) async fn execute(
 
 async fn read_secret(secret_stdin: bool) -> anyhow::Result<AssessmentSecret> {
     let value = if secret_stdin {
+        anyhow::ensure!(
+            !std::io::stdin().is_terminal(),
+            "--secret-stdin requires redirected or piped input"
+        );
         tokio::task::spawn_blocking(|| {
             let mut value = String::new();
             std::io::stdin().read_to_string(&mut value)?;
@@ -267,6 +291,18 @@ fn response_id<'a>(value: &'a Value, kind: &str) -> anyhow::Result<&'a str> {
         .get("id")
         .and_then(Value::as_str)
         .with_context(|| format!("riftxd returned a credential response without a valid {kind} id"))
+}
+
+fn entity_by_id(value: &Value, id: &str, kind: &str) -> anyhow::Result<Value> {
+    value
+        .as_array()
+        .and_then(|entities| {
+            entities
+                .iter()
+                .find(|entity| entity.get("id").and_then(Value::as_str) == Some(id))
+        })
+        .cloned()
+        .with_context(|| format!("{kind} {id:?} was not found"))
 }
 
 fn print_json(value: &Value) -> anyhow::Result<()> {

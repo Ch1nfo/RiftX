@@ -79,3 +79,21 @@ fn credential_kind_is_closed_and_typed() {
         ))
     );
 }
+
+#[test]
+fn configured_state_is_added_without_changing_gateway_metadata() {
+    let mut reference = json!({
+        "id": "credential-1",
+        "label": "Domain admin",
+    });
+
+    set_configured(&mut reference, false).expect("configured state");
+    assert_eq!(
+        reference,
+        json!({
+            "id": "credential-1",
+            "label": "Domain admin",
+            "configured": false,
+        })
+    );
+}
