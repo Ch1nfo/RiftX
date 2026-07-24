@@ -60,6 +60,32 @@ export interface TurnAccepted {
   status: string;
 }
 
+export interface EngagementEvent {
+  engagementId: string;
+  kind: string;
+  timestamp: number;
+  data: unknown;
+}
+
+export type ApprovalDecision = "approve" | "deny";
+
+export interface PendingApproval {
+  id: string;
+  engagementId: string;
+  policyRevision: string;
+  kind: "command";
+  requestedAt: number;
+  command: string | null;
+  cwd: string | null;
+  reason: string | null;
+}
+
+export interface EngagementStreamStatus {
+  engagementId: string;
+  state: "connecting" | "connected" | "disconnected";
+  message: string | null;
+}
+
 export interface ReportTask {
   id: string;
   kind: string;

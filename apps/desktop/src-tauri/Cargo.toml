@@ -19,6 +19,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 thiserror = "2"
+tokio = { version = "1", features = ["sync", "time"] }
 toml = "0.9"
 
 [workspace]
+
+[dev-dependencies]
+pretty_assertions = "1"

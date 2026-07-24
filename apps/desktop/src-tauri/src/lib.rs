@@ -10,6 +10,10 @@ pub fn run() {
             bridge::create_engagement,
             bridge::activate_engagement,
             bridge::start_turn,
+            bridge::list_approvals,
+            bridge::decide_approval,
+            bridge::event_stream::subscribe_engagement,
+            bridge::event_stream::unsubscribe_engagement,
             bridge::interrupt_engagement,
             bridge::engagement_report,
         ])

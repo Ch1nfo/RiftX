@@ -1,12 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ApprovalDecision,
   CreateEngagementInput,
   DesktopBridgeError,
   DesktopDaemonInfo,
   Engagement,
+  EngagementEvent,
   EngagementReport,
+  EngagementStreamStatus,
+  PendingApproval,
   TurnAccepted,
 } from "./models";
+
+const ENGAGEMENT_EVENT_NAME = "riftx://engagement-event";
+const ENGAGEMENT_STREAM_NAME = "riftx://engagement-stream";
 
 export function daemonInfo(): Promise<DesktopDaemonInfo> {
   return desktopInvoke("daemon_info");
@@ -37,6 +45,49 @@ export function interruptEngagement(engagementId: string): Promise<Engagement> {
   return desktopInvoke("interrupt_engagement", { engagementId });
 }
 
+export function listApprovals(
+  engagementId: string,
+): Promise<PendingApproval[]> {
+  return desktopInvoke("list_approvals", { engagementId });
+}
+
+export function decideApproval(
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<void> {
+  return desktopInvoke("decide_approval", { approvalId, decision });
+}
+
+export function subscribeEngagement(engagementId: string): Promise<void> {
+  return desktopInvoke("subscribe_engagement", { engagementId });
+}
+
+export function unsubscribeEngagement(engagementId: string): Promise<void> {
+  return desktopInvoke("unsubscribe_engagement", { engagementId });
+}
+
+export function onEngagementEvent(
+  handler: (event: EngagementEvent) => void,
+): Promise<UnlistenFn> {
+  if (!isDesktopRuntime()) {
+    return Promise.resolve(() => undefined);
+  }
+  return listen<EngagementEvent>(ENGAGEMENT_EVENT_NAME, (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onEngagementStream(
+  handler: (status: EngagementStreamStatus) => void,
+): Promise<UnlistenFn> {
+  if (!isDesktopRuntime()) {
+    return Promise.resolve(() => undefined);
+  }
+  return listen<EngagementStreamStatus>(ENGAGEMENT_STREAM_NAME, (event) =>
+    handler(event.payload),
+  );
+}
+
 export function engagementReport(
   engagementId: string,
 ): Promise<EngagementReport> {
@@ -47,13 +98,17 @@ function desktopInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopRuntime()) {
     return Promise.reject({
       code: "desktop_runtime_unavailable",
       message: "Open this interface through the RiftX desktop application.",
     });
   }
   return invoke(command, args);
+}
+
+function isDesktopRuntime(): boolean {
+  return "__TAURI_INTERNALS__" in window;
 }
 
 export function bridgeError(error: unknown): DesktopBridgeError {

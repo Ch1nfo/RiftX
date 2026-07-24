@@ -1,8 +1,11 @@
+use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcError;
 use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_ipc::PendingApproval;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -15,11 +18,13 @@ use std::path::PathBuf;
 const CONFIG_ENV: &str = "RIFTX_CONFIG";
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Clone)]
+pub(crate) mod event_stream;
+
 pub(crate) struct DesktopState {
     client: Option<LocalIpcClient>,
     config_path: Option<PathBuf>,
     startup_error: Option<DesktopError>,
+    subscriptions: event_stream::SubscriptionRegistry,
 }
 
 impl DesktopState {
@@ -29,11 +34,13 @@ impl DesktopState {
                 client: Some(LocalIpcClient::new(endpoint)),
                 config_path: Some(config_path),
                 startup_error: None,
+                subscriptions: event_stream::SubscriptionRegistry::default(),
             },
             Err(error) => Self {
                 client: None,
                 config_path: None,
                 startup_error: Some(error),
+                subscriptions: event_stream::SubscriptionRegistry::default(),
             },
         }
     }
@@ -45,7 +52,7 @@ impl DesktopState {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopError {
     code: String,
@@ -172,6 +179,7 @@ pub(crate) async fn daemon_info(
 ) -> Result<DesktopDaemonInfo, DesktopError> {
     let client = state.client()?;
     let info: DaemonInfo = json_response(client.get("/v1/system/info").await).await?;
+    validate_protocol_version(info.protocol_version)?;
     Ok(DesktopDaemonInfo {
         protocol_version: info.protocol_version,
         daemon_version: info.daemon_version,
@@ -254,6 +262,39 @@ pub(crate) async fn start_turn(
 }
 
 #[tauri::command]
+pub(crate) async fn list_approvals(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<Vec<PendingApproval>, DesktopError> {
+    validate_engagement_id(&engagement_id)?;
+    let client = state.client()?;
+    json_response(
+        client
+            .get(&format!("/v1/engagements/{engagement_id}/approvals"))
+            .await,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn decide_approval(
+    state: tauri::State<'_, DesktopState>,
+    approval_id: String,
+    decision: ApprovalDecision,
+) -> Result<(), DesktopError> {
+    validate_opaque_id("approval", &approval_id)?;
+    let client = state.client()?;
+    let body = serde_json::to_vec(&json!({"decision": decision}))
+        .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
+    empty_response(
+        client
+            .post_json(&format!("/v1/approvals/{approval_id}/decision"), body)
+            .await,
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn interrupt_engagement(
     state: tauri::State<'_, DesktopState>,
     engagement_id: String,
@@ -313,6 +354,26 @@ where
         .map_err(|error| DesktopError::new("invalid_daemon_response", error.to_string()))
 }
 
+async fn empty_response(
+    response: Result<LocalIpcResponse, LocalIpcError>,
+) -> Result<(), DesktopError> {
+    let response =
+        response.map_err(|error| DesktopError::new("daemon_unavailable", error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| DesktopError::new("daemon_unavailable", error.to_string()))?;
+    if status.is_success() {
+        return Ok(());
+    }
+    let error = serde_json::from_slice::<ApiErrorBody>(&bytes).unwrap_or(ApiErrorBody {
+        code: "daemon_error".to_string(),
+        message: format!("riftxd returned HTTP {status}"),
+    });
+    Err(DesktopError::new(error.code, error.message))
+}
+
 fn load_endpoint() -> Result<(PathBuf, LocalIpcEndpoint), DesktopError> {
     let config_path = find_config_path()?;
     let content = std::fs::read_to_string(&config_path).map_err(|error| {
@@ -356,3 +417,38 @@ fn unavailable() -> DesktopError {
         "RiftX daemon connection is unavailable",
     )
 }
+
+fn validate_engagement_id(engagement_id: &str) -> Result<(), DesktopError> {
+    validate_opaque_id("engagement", engagement_id)
+}
+
+fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {
+    if !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Ok(());
+    }
+    Err(DesktopError::new(
+        "invalid_identifier",
+        format!("{kind} identifier is invalid"),
+    ))
+}
+
+fn validate_protocol_version(protocol_version: u32) -> Result<(), DesktopError> {
+    if protocol_version == IPC_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(DesktopError::new(
+        "protocol_mismatch",
+        format!(
+            "RiftX Desktop requires IPC protocol {IPC_PROTOCOL_VERSION}, but riftxd provides {protocol_version}"
+        ),
+    ))
+}
+
+#[cfg(test)]
+#[path = "bridge_tests.rs"]
+mod tests;
