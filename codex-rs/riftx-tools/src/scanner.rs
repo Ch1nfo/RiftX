@@ -342,6 +342,7 @@ async fn read_tool_metadata(
     match std::str::from_utf8(&bytes)
         .ok()
         .and_then(|content| toml::from_str::<ToolMetadata>(content).ok())
+        .filter(ToolMetadata::is_valid)
     {
         Some(metadata) => (Some(metadata_path), Some(metadata_sha256), Some(metadata)),
         None => {

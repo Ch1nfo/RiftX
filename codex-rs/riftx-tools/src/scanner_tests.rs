@@ -33,6 +33,10 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
             "input_target_field = \"target\"\n",
             "output_format = \"json\"\n",
             "parser = \"json\"\n",
+            "\n",
+            "[credential]\n",
+            "capability = \"network.discovery\"\n",
+            "injection = \"stdin\"\n",
         ),
     )
     .await
@@ -68,12 +72,53 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
             input_target_field: Some("target".to_string()),
             output_format: Some("json".to_string()),
             parser: Some("json".to_string()),
+            credential: Some(ToolCredentialMetadata {
+                capability: "network.discovery".to_string(),
+                injection: ToolCredentialInjection::Stdin,
+                environment_variable: None,
+            }),
         }
     );
     assert_eq!(inventory.tools[1].shadowed_by, Some(root.join("probe")));
     assert!(!inventory.tools.iter().any(|tool| tool.path == ignored));
     assert!(inventory.is_healthy());
     assert_eq!(inventory.snapshot_sha256.len(), 64);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scanner_rejects_unsafe_credential_metadata() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    write_executable(&root.join("probe"), b"#!/bin/sh\nexit 0\n").await;
+    tokio::fs::write(
+        root.join("probe.riftx.toml"),
+        concat!(
+            "capabilities = [\"credential.testing\"]\n",
+            "[credential]\n",
+            "capability = \"credential.testing\"\n",
+            "injection = \"environment\"\n",
+            "environment_variable = \"PATH\"\n",
+        ),
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(inventory.tools[0].metadata, None);
+    assert!(
+        inventory
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadataInvalid")
+    );
 }
 
 #[cfg(unix)]

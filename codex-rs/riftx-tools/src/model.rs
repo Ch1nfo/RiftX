@@ -32,6 +32,56 @@ pub struct ToolMetadata {
     #[serde(alias = "output_format")]
     pub output_format: Option<String>,
     pub parser: Option<String>,
+    pub credential: Option<ToolCredentialMetadata>,
+}
+
+impl ToolMetadata {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.capabilities
+            .iter()
+            .all(|capability| valid_capability(capability))
+            && bounded_arguments(&self.help_args)
+            && bounded_arguments(&self.version_args)
+            && bounded_arguments(&self.health_check_args)
+            && [&self.input_target_field, &self.output_format, &self.parser]
+                .into_iter()
+                .flatten()
+                .all(|value| valid_text(value, 128))
+            && self.credential.as_ref().is_none_or(|credential| {
+                valid_capability(&credential.capability)
+                    && self.capabilities.contains(&credential.capability)
+                    && credential.is_valid()
+            })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolCredentialMetadata {
+    pub capability: String,
+    pub injection: ToolCredentialInjection,
+    #[serde(alias = "environment_variable")]
+    pub environment_variable: Option<String>,
+}
+
+impl ToolCredentialMetadata {
+    fn is_valid(&self) -> bool {
+        match self.injection {
+            ToolCredentialInjection::Stdin => self.environment_variable.is_none(),
+            ToolCredentialInjection::Environment | ToolCredentialInjection::FileEnvironment => self
+                .environment_variable
+                .as_deref()
+                .is_some_and(valid_credential_variable),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolCredentialInjection {
+    Stdin,
+    Environment,
+    FileEnvironment,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +165,54 @@ pub enum DiagnosticLevel {
 pub enum ToolPathError {
     #[error("failed to construct process PATH: {0}")]
     Join(#[source] std::env::JoinPathsError),
+}
+
+fn bounded_arguments(arguments: &[String]) -> bool {
+    arguments.len() <= 64
+        && arguments
+            .iter()
+            .all(|argument| valid_text(argument, 4 * 1024))
+}
+
+fn valid_capability(value: &str) -> bool {
+    valid_text(value, 128)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn valid_credential_variable(value: &str) -> bool {
+    valid_environment_variable(value)
+        && !matches!(
+            value.to_ascii_uppercase().as_str(),
+            "PATH"
+                | "PATHEXT"
+                | "HOME"
+                | "USERPROFILE"
+                | "TMP"
+                | "TEMP"
+                | "TMPDIR"
+                | "SHELL"
+                | "COMSPEC"
+        )
+        && !value.to_ascii_uppercase().starts_with("LD_")
+        && !value.to_ascii_uppercase().starts_with("DYLD_")
+}
+
+fn valid_environment_variable(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| !byte.is_ascii_digit())
+}
+
+fn valid_text(value: &str, max_bytes: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
 }
 
 pub(crate) fn hex_digest(digest: impl AsRef<[u8]>) -> String {
