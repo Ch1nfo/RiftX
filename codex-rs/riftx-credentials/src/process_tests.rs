@@ -146,6 +146,35 @@ async fn timeout_terminates_the_process_and_io_tasks() {
     );
 }
 
+#[tokio::test]
+async fn cancellation_terminates_the_process_and_io_tasks() {
+    let runner = runner();
+    let mut request = helper_request(CredentialInjection::Stdin).await;
+    request
+        .environment
+        .insert(HELPER_MODE.to_string(), "timeout".into());
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let output = runner
+        .run_cancellable(request, secret(), cancellation)
+        .await
+        .expect("cancelled process");
+
+    assert_eq!(
+        output,
+        CredentialProcessOutput {
+            termination: CredentialProcessTermination::Cancelled,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdout_sha256: digest(&[]),
+            stderr_sha256: digest(&[]),
+            stdout_truncated: true,
+            stderr_truncated: true,
+        }
+    );
+}
+
 #[test]
 fn credential_process_helper() {
     let Ok(mode) = std::env::var(HELPER_MODE) else {

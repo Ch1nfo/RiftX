@@ -15,6 +15,7 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
@@ -43,6 +44,7 @@ pub struct CredentialProcessRequest {
 pub enum CredentialProcessTermination {
     Exited { code: Option<i32> },
     TimedOut,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +82,16 @@ impl CredentialProcessRunner {
         &self,
         request: CredentialProcessRequest,
         secret: AssessmentSecret,
+    ) -> Result<CredentialProcessOutput, CredentialProcessError> {
+        self.run_cancellable(request, secret, CancellationToken::new())
+            .await
+    }
+
+    pub async fn run_cancellable(
+        &self,
+        request: CredentialProcessRequest,
+        secret: AssessmentSecret,
+        cancellation: CancellationToken,
     ) -> Result<CredentialProcessOutput, CredentialProcessError> {
         validate_request(&request, &secret)?;
         verify_program(&request.program, &request.expected_sha256).await?;
@@ -134,24 +146,32 @@ impl CredentialProcessRunner {
         } else {
             None
         };
-        let status = match tokio::time::timeout(self.timeout, child.wait()).await {
-            Ok(status) => Some(status.map_err(CredentialProcessError::Wait)?),
-            Err(_) => {
+        let wait_outcome = tokio::select! {
+            status = child.wait() => WaitOutcome::Exited(
+                status.map_err(CredentialProcessError::Wait)?
+            ),
+            () = tokio::time::sleep(self.timeout) => WaitOutcome::Stopped(
+                CredentialProcessTermination::TimedOut
+            ),
+            () = cancellation.cancelled() => WaitOutcome::Stopped(
+                CredentialProcessTermination::Cancelled
+            ),
+        };
+        let status = match wait_outcome {
+            WaitOutcome::Exited(status) => status,
+            WaitOutcome::Stopped(termination) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                None
+                if let Some(stdin_task) = stdin_task {
+                    stdin_task.abort();
+                    let _ = stdin_task.await;
+                }
+                stdout_task.abort();
+                stderr_task.abort();
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return Ok(stopped_output(termination));
             }
-        };
-        let Some(status) = status else {
-            if let Some(stdin_task) = stdin_task {
-                stdin_task.abort();
-                let _ = stdin_task.await;
-            }
-            stdout_task.abort();
-            stderr_task.abort();
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            return Ok(timeout_output());
         };
         if let Some(stdin_task) = stdin_task {
             stdin_task
@@ -323,6 +343,11 @@ struct CapturedOutput {
     truncated: bool,
 }
 
+enum WaitOutcome {
+    Exited(ExitStatus),
+    Stopped(CredentialProcessTermination),
+}
+
 async fn capture(
     mut stream: impl AsyncRead + Unpin,
     limit: usize,
@@ -350,10 +375,10 @@ async fn capture(
     })
 }
 
-fn timeout_output() -> CredentialProcessOutput {
+fn stopped_output(termination: CredentialProcessTermination) -> CredentialProcessOutput {
     let empty_digest = digest(&[]);
     CredentialProcessOutput {
-        termination: CredentialProcessTermination::TimedOut,
+        termination,
         stdout: Vec::new(),
         stderr: Vec::new(),
         stdout_sha256: empty_digest.clone(),

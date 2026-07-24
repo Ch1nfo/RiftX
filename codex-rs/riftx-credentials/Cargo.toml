@@ -12,7 +12,8 @@ codex-keyring-store = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "process", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
