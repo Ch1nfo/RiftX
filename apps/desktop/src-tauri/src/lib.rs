@@ -16,6 +16,7 @@ pub fn run() {
             bridge::event_stream::unsubscribe_engagement,
             bridge::interrupt_engagement,
             bridge::engagement_report,
+            bridge::conversation_history,
         ])
         .run(tauri::generate_context!())
         .expect("RiftX desktop runtime failed");

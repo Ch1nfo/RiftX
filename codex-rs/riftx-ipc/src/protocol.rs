@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 2;
+pub const IPC_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

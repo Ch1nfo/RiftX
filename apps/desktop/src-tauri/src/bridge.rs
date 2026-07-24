@@ -157,6 +157,26 @@ pub(crate) struct TurnAccepted {
     status: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationEntryView {
+    sequence: i64,
+    id: String,
+    engagement_id: String,
+    turn_id: Option<String>,
+    role: String,
+    kind: String,
+    text: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationPageView {
+    data: Vec<ConversationEntryView>,
+    next_cursor: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct EndpointConfig {
     daemon: EndpointDaemonConfig,
@@ -324,6 +344,17 @@ pub(crate) async fn engagement_report(
     .await
 }
 
+#[tauri::command]
+pub(crate) async fn conversation_history(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+    cursor: Option<i64>,
+) -> Result<ConversationPageView, DesktopError> {
+    let path = conversation_path(&engagement_id, cursor)?;
+    let client = state.client()?;
+    json_response(client.get(&path).await).await
+}
+
 async fn json_response<T>(
     response: Result<LocalIpcResponse, LocalIpcError>,
 ) -> Result<T, DesktopError>
@@ -420,6 +451,25 @@ fn unavailable() -> DesktopError {
 
 fn validate_engagement_id(engagement_id: &str) -> Result<(), DesktopError> {
     validate_opaque_id("engagement", engagement_id)
+}
+
+fn conversation_path(
+    engagement_id: &str,
+    cursor: Option<i64>,
+) -> Result<String, DesktopError> {
+    validate_engagement_id(engagement_id)?;
+    match cursor {
+        Some(cursor) if cursor <= 0 => Err(DesktopError::new(
+            "invalid_cursor",
+            "conversation cursor must be positive",
+        )),
+        Some(cursor) => Ok(format!(
+            "/v1/engagements/{engagement_id}/conversation?limit=200&cursor={cursor}"
+        )),
+        None => Ok(format!(
+            "/v1/engagements/{engagement_id}/conversation?limit=200"
+        )),
+    }
 }
 
 fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {

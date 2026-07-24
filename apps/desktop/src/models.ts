@@ -67,6 +67,22 @@ export interface EngagementEvent {
   data: unknown;
 }
 
+export interface ConversationEntry {
+  sequence: number;
+  id: string;
+  engagementId: string;
+  turnId: string | null;
+  role: "operator" | "agent";
+  kind: "message" | "plan";
+  text: string;
+  createdAt: number;
+}
+
+export interface ConversationPage {
+  data: ConversationEntry[];
+  nextCursor: string | null;
+}
+
 export type ApprovalDecision = "approve" | "deny";
 
 export interface PendingApproval {

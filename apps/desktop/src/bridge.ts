@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ApprovalDecision,
+  ConversationPage,
   CreateEngagementInput,
   DesktopBridgeError,
   DesktopDaemonInfo,
@@ -92,6 +93,13 @@ export function engagementReport(
   engagementId: string,
 ): Promise<EngagementReport> {
   return desktopInvoke("engagement_report", { engagementId });
+}
+
+export function conversationHistory(
+  engagementId: string,
+  cursor: number | null = null,
+): Promise<ConversationPage> {
+  return desktopInvoke("conversation_history", { engagementId, cursor });
 }
 
 function desktopInvoke<T>(

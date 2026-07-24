@@ -11,6 +11,7 @@ import {
   activateEngagement,
   bridgeError,
   createEngagement,
+  conversationHistory,
   daemonInfo,
   decideApproval,
   engagementReport,
@@ -30,6 +31,7 @@ import { NewEngagementDialog } from "./components/NewEngagementDialog";
 import { TaskSidebar } from "./components/TaskSidebar";
 import type {
   ApprovalDecision,
+  ConversationEntry,
   CreateEngagementInput,
   DesktopBridgeError,
   DesktopDaemonInfo,
@@ -46,6 +48,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [report, setReport] = useState<EngagementReport | null>(null);
   const [events, setEvents] = useState<EngagementEvent[]>([]);
+  const [history, setHistory] = useState<ConversationEntry[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [streamState, setStreamState] =
     useState<EngagementStreamStatus["state"]>("disconnected");
@@ -95,6 +100,23 @@ export default function App() {
     }
   }, []);
 
+  const loadConversation = useCallback(
+    async (engagementId: string, replace = false) => {
+      try {
+        const page = await conversationHistory(engagementId);
+        setHistory((current) =>
+          replace ? page.data : mergeConversationEntries(current, page.data),
+        );
+        setHistoryCursor((current) =>
+          replace || current === null ? page.nextCursor : current,
+        );
+      } catch (cause) {
+        setError(bridgeError(cause));
+      }
+    },
+    [],
+  );
+
   const refresh = useCallback(async (showLoading = true) => {
     if (showLoading) {
       setLoading(true);
@@ -131,6 +153,8 @@ export default function App() {
     if (!selectedId) {
       setReport(null);
       setEvents([]);
+      setHistory([]);
+      setHistoryCursor(null);
       setApprovals([]);
       setTurnRunning(false);
       setStreamState("disconnected");
@@ -138,10 +162,16 @@ export default function App() {
     }
     setReport(null);
     setEvents([]);
+    setHistory([]);
+    setHistoryCursor(null);
     setApprovals([]);
     setTurnRunning(false);
     setStreamState("connecting");
-    void Promise.all([loadReport(selectedId), loadApprovals(selectedId)]);
+    void Promise.all([
+      loadReport(selectedId),
+      loadApprovals(selectedId),
+      loadConversation(selectedId, true),
+    ]);
 
     let disposed = false;
     let stopEvents: () => void = () => undefined;
@@ -180,6 +210,9 @@ export default function App() {
         ) {
           void Promise.all([loadReport(selectedId), refresh(false)]);
         }
+        if (event.kind === "item/completed") {
+          void loadConversation(selectedId);
+        }
       }),
       onEngagementStream((status) => {
         if (!disposed && status.engagementId === selectedId) {
@@ -210,7 +243,7 @@ export default function App() {
       stopStream();
       void unsubscribeEngagement(selectedId);
     };
-  }, [loadApprovals, loadReport, refresh, selectedId]);
+  }, [loadApprovals, loadConversation, loadReport, refresh, selectedId]);
 
   useEffect(() => {
     if (!selected || selected.status !== "active") {
@@ -220,11 +253,12 @@ export default function App() {
       void Promise.all([
         loadReport(selected.id),
         loadApprovals(selected.id),
+        loadConversation(selected.id),
         refresh(false),
       ]);
     }, 15_000);
     return () => window.clearInterval(timer);
-  }, [loadApprovals, loadReport, refresh, selected]);
+  }, [loadApprovals, loadConversation, loadReport, refresh, selected]);
 
   const reportHasRunningTask =
     report?.tasks.some(
@@ -308,6 +342,28 @@ export default function App() {
     }
   };
 
+  const loadOlder = async () => {
+    if (!selectedId || !historyCursor || loadingOlder) {
+      return;
+    }
+    setLoadingOlder(true);
+    try {
+      const page = await conversationHistory(
+        selectedId,
+        Number(historyCursor),
+      );
+      setHistory((current) =>
+        mergeConversationEntries(page.data, current),
+      );
+      setHistoryCursor(page.nextCursor);
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -356,10 +412,14 @@ export default function App() {
               <ActivityTimeline
                 engagement={selected}
                 report={report}
+                history={history}
                 events={events}
                 approvals={approvals}
                 loading={loading}
                 decidingApprovalId={decidingApprovalId}
+                canLoadOlder={historyCursor !== null}
+                loadingOlder={loadingOlder}
+                onLoadOlder={() => void loadOlder()}
                 onApproval={(approvalId, decision) =>
                   void decide(approvalId, decision)
                 }
@@ -452,5 +512,16 @@ export default function App() {
         onCreate={create}
       />
     </div>
+  );
+}
+
+function mergeConversationEntries(
+  first: ConversationEntry[],
+  second: ConversationEntry[],
+): ConversationEntry[] {
+  const entries = new Map<string, ConversationEntry>();
+  [...first, ...second].forEach((entry) => entries.set(entry.id, entry));
+  return [...entries.values()].sort(
+    (left, right) => left.sequence - right.sequence,
   );
 }

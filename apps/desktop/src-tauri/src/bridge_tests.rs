@@ -30,3 +30,25 @@ fn desktop_rejects_an_incompatible_daemon_protocol() {
         ))
     );
 }
+
+#[test]
+fn conversation_path_validates_the_cursor() {
+    assert_eq!(
+        conversation_path("engagement-1", None),
+        Ok("/v1/engagements/engagement-1/conversation?limit=200".to_string())
+    );
+    assert_eq!(
+        conversation_path("engagement-1", Some(42)),
+        Ok(
+            "/v1/engagements/engagement-1/conversation?limit=200&cursor=42"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        conversation_path("engagement-1", Some(0)),
+        Err(DesktopError::new(
+            "invalid_cursor",
+            "conversation cursor must be positive",
+        ))
+    );
+}

@@ -854,6 +854,8 @@ IPC 要求：
 - 敏感字段使用专用脱敏类型。
 - Desktop 和 CLI 共用 typed protocol。
 - 协议版本协商。
+- 对话历史按 Engagement 分页读取；只持久化操作员消息、最终回复和计划，不持久化
+  推理、token 增量或原始 Agent Runtime 事件。
 - 支持事件流、interrupt、pause、resume 和 shutdown。
 
 ## 20. CLI 与 TUI

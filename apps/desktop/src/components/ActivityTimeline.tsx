@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type {
   ApprovalDecision,
+  ConversationEntry,
   Engagement,
   EngagementEvent,
   EngagementReport,
@@ -19,23 +20,31 @@ import type {
 interface ActivityTimelineProps {
   engagement: Engagement;
   report: EngagementReport | null;
+  history: ConversationEntry[];
   events: EngagementEvent[];
   approvals: PendingApproval[];
   loading: boolean;
   decidingApprovalId: string | null;
+  canLoadOlder: boolean;
+  loadingOlder: boolean;
   onApproval: (approvalId: string, decision: ApprovalDecision) => void;
+  onLoadOlder: () => void;
 }
 
 export function ActivityTimeline({
   engagement,
   report,
+  history,
   events,
   approvals,
   loading,
   decidingApprovalId,
+  canLoadOlder,
+  loadingOlder,
   onApproval,
+  onLoadOlder,
 }: ActivityTimelineProps) {
-  const messages = timelineMessages(events);
+  const messages = timelineMessages(history, events);
   const hasActivity =
     messages.length > 0 ||
     approvals.length > 0 ||
@@ -60,6 +69,17 @@ export function ActivityTimeline({
         </div>
       </article>
 
+      {canLoadOlder && (
+        <button
+          className="history-loader"
+          type="button"
+          disabled={loadingOlder}
+          onClick={onLoadOlder}
+        >
+          {loadingOlder ? "Loading..." : "Load older messages"}
+        </button>
+      )}
+
       {messages.map((message) => (
         <article
           className={`timeline-entry message-entry ${message.role}`}
@@ -74,7 +94,9 @@ export function ActivityTimeline({
           </span>
           <div>
             <header>
-              <strong>{message.role}</strong>
+              <strong>
+                {message.kind === "plan" ? "agent plan" : message.role}
+              </strong>
               <span>{formatTime(message.timestamp)}</span>
             </header>
             <p>{message.text}</p>
@@ -194,21 +216,40 @@ export function ActivityTimeline({
 interface TimelineMessage {
   id: string;
   role: "operator" | "agent";
+  kind: "message" | "plan";
   text: string;
   timestamp: number;
 }
 
-function timelineMessages(events: EngagementEvent[]): TimelineMessage[] {
-  const messages: TimelineMessage[] = [];
-  const agentItems = new Map<string, number>();
+function timelineMessages(
+  history: ConversationEntry[],
+  events: EngagementEvent[],
+): TimelineMessage[] {
+  const messages: TimelineMessage[] = history.map((entry) => ({
+    id: entry.id,
+    role: entry.role,
+    kind: entry.kind,
+    text: entry.text,
+    timestamp: entry.createdAt,
+  }));
+  const itemIndexes = new Map(
+    messages.map((message, index) => [message.id, index]),
+  );
   events.forEach((event, index) => {
     const data = record(event.data);
     if (event.kind === "operator/message") {
       const text = stringValue(data?.text);
       if (text) {
+        const id =
+          stringValue(data?.entryId) ?? `operator-${event.timestamp}-${index}`;
+        if (itemIndexes.has(id)) {
+          return;
+        }
+        itemIndexes.set(id, messages.length);
         messages.push({
-          id: `operator-${event.timestamp}-${index}`,
+          id,
           role: "operator",
+          kind: "message",
           text,
           timestamp: event.timestamp,
         });
@@ -223,12 +264,13 @@ function timelineMessages(events: EngagementEvent[]): TimelineMessage[] {
       if (!delta) {
         return;
       }
-      const existing = agentItems.get(itemId);
+      const existing = itemIndexes.get(itemId);
       if (existing === undefined) {
-        agentItems.set(itemId, messages.length);
+        itemIndexes.set(itemId, messages.length);
         messages.push({
-          id: `agent-${itemId}`,
+          id: itemId,
           role: "agent",
+          kind: "message",
           text: delta,
           timestamp: event.timestamp,
         });
@@ -253,15 +295,16 @@ function timelineMessages(events: EngagementEvent[]): TimelineMessage[] {
     if (!text || !completedId) {
       return;
     }
-    const existing = agentItems.get(completedId);
+    const existing = itemIndexes.get(completedId);
     const completed: TimelineMessage = {
-      id: `agent-${completedId}`,
+      id: completedId,
       role: "agent",
+      kind: item.type === "plan" ? "plan" : "message",
       text,
       timestamp: event.timestamp,
     };
     if (existing === undefined) {
-      agentItems.set(completedId, messages.length);
+      itemIndexes.set(completedId, messages.length);
       messages.push(completed);
     } else {
       messages[existing] = completed;

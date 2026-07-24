@@ -489,6 +489,20 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.history-loader {
+  min-height: 30px;
+  margin: 4px auto 10px;
+  padding: 0 10px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+
+.history-loader:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .approval-entry {
   margin: 6px 0;
   padding: 14px 10px;
