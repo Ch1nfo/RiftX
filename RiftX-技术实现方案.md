@@ -1067,6 +1067,10 @@ RiftX/
 - 建立跨平台 CI。
 - 建立行为基线测试。
 
+当前 CI 已在 macOS、Windows 和 Linux 直接运行全部 RiftX Rust crate 的合同测试，并在 macOS、
+Windows 构建前端、准备 `riftxd` sidecar 和运行 Tauri bridge 测试。跨平台实现仍以 CI 结果为最终
+验收证据，本机 macOS 通过不能替代 Windows Named Pipe 与 Linux UDS 的矩阵结果。
+
 ### P1：领域模型与加密状态，3-5 周
 
 - 实现多维 Scope。

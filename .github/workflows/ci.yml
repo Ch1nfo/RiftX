@@ -59,9 +59,9 @@ jobs:
           conda run -n agent pnpm
           --filter @riftx/desktop prepare:sidecar
 
-      - name: Check Tauri bridge
+      - name: Test Tauri bridge
         run: >-
-          conda run -n agent cargo check
+          conda run -n agent cargo test
           --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   local-contracts:
@@ -97,7 +97,11 @@ jobs:
           -p codex-riftx-artifacts
           -p codex-riftx-cli
           -p codex-riftx-core
+          -p codex-riftx-credentials
+          -p codex-riftx-crypto
+          -p codex-riftx-domain
           -p codex-riftx-ipc
+          -p codex-riftx-report
           -p codex-riftx-skills
           -p codex-riftx-tools
 
@@ -139,8 +143,11 @@ jobs:
         run: >-
           conda run -n agent sh -lc
           'cd codex-rs && cargo check -p codex-app-server
-          -p codex-riftx-app-server-adapter -p codex-riftx-core
-          -p codex-riftx-ipc -p codex-riftx-tools
+          -p codex-riftx-app-server-adapter -p codex-riftx-artifacts
+          -p codex-riftx-core -p codex-riftx-credentials
+          -p codex-riftx-crypto -p codex-riftx-domain
+          -p codex-riftx-ipc -p codex-riftx-report
+          -p codex-riftx-skills -p codex-riftx-tools
           -p codex-riftx-gateway -p codex-riftx-cli'
 
       - name: Test App Server protocol fixtures
