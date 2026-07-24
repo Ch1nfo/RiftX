@@ -87,6 +87,7 @@ members = [
     "riftx-cli",
     "riftx-core",
     "riftx-credentials",
+    "riftx-crypto",
     "riftx-gateway",
     "riftx-ipc",
     "riftx-skills",
@@ -233,6 +234,7 @@ codex-riftx-artifacts = { path = "riftx-artifacts" }
 codex-riftx-cli = { path = "riftx-cli" }
 codex-riftx-core = { path = "riftx-core" }
 codex-riftx-credentials = { path = "riftx-credentials" }
+codex-riftx-crypto = { path = "riftx-crypto" }
 codex-riftx-gateway = { path = "riftx-gateway" }
 codex-riftx-ipc = { path = "riftx-ipc" }
 codex-riftx-skills = { path = "riftx-skills" }
@@ -282,6 +284,7 @@ core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
 
 # External
+aes-gcm = "0.10.3"
 age = "0.11.1"
 ansi-to-tui = "7.0.0"
 anyhow = "1"

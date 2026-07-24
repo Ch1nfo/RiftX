@@ -763,6 +763,21 @@ RiftX Data
 - 临时解密文件使用最小权限并及时删除。
 - 用户手动删除 Engagement。
 
+P1 加密基础固定为：
+
+- 每个 Engagement 生成独立 256-bit 随机数据密钥，仅保存在操作系统安全存储。
+- 记录 envelope v1 使用 AES-256-GCM、每次随机 96-bit nonce 和 128-bit
+  authentication tag。
+- AAD 同时绑定 `engagementId`、记录类型和记录 ID，禁止跨 Engagement 或跨记录替换
+  密文。
+- 单条 SQLite 状态记录明文上限为 16 MiB；Artifact 使用后续独立的流式加密格式，不
+  复用内存 envelope。
+- 密钥、解密缓冲区和 Keyring 编码缓冲区在释放时清零；密钥 Debug 输出固定脱敏。
+- envelope 认证失败必须作为数据完整性错误停止读取，不允许返回部分明文或静默降级。
+
+当前 `riftx-crypto` 先固定密钥与 envelope API；SQLite、Audit 和 Artifact 按独立提交
+接入，未接入前不得宣称案件数据已完成静态加密。
+
 ### 15.3 `.riftxcase`
 
 加密案件包包含：

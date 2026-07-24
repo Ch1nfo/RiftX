@@ -3882,6 +3882,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-riftx-crypto"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "codex-keyring-store",
+ "pretty_assertions",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "codex-riftx-gateway"
 version = "0.0.0"
 dependencies = [
