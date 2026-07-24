@@ -58,13 +58,22 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .process_path(std::env::var_os("PATH"))?
         .into_string()
         .map_err(|_| anyhow::anyhow!("the effective tool PATH is not valid UTF-8"))?;
+    let excluded_api_key_envs = config
+        .llm
+        .profiles
+        .values()
+        .filter_map(|profile| match &profile.api_key {
+            LlmApiKeySource::Environment { variable } => Some(variable.clone()),
+            LlmApiKeySource::Keyring { .. } => None,
+        })
+        .collect::<Vec<_>>();
     let mut runtimes = Vec::with_capacity(config.llm.profiles.len());
     let mut skills_entry = None;
     for (profile_name, profile) in &config.llm.profiles {
         let injected_api_key = stdin_api_keys
             .as_mut()
             .and_then(|api_keys| api_keys.remove(profile_name));
-        let (api_key, excluded_api_key_env) = load_llm_api_key(
+        let api_key = load_llm_api_key(
             profile_name,
             &profile.api_key,
             injected_api_key,
@@ -79,7 +88,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 .join(profile_name),
             model: profile.model.clone(),
             base_url: profile.base_url.clone(),
-            excluded_api_key_env,
+            excluded_api_key_envs: excluded_api_key_envs.clone(),
             api_key,
             process_path: process_path.clone(),
         };
@@ -134,15 +143,15 @@ async fn load_llm_api_key(
     source: &LlmApiKeySource,
     stdin_api_key: Option<LlmApiKey>,
     stdin_bundle_supplied: bool,
-) -> anyhow::Result<(RiftxApiKey, Option<String>)> {
+) -> anyhow::Result<RiftxApiKey> {
     if let Some(api_key) = stdin_api_key {
         anyhow::ensure!(
             matches!(source, LlmApiKeySource::Keyring { .. }),
             "stdin LLM API key injection for profile {profile_name:?} requires a keyring-backed configuration"
         );
-        return Ok((RiftxApiKey::new(api_key.into_inner())?, None));
+        return Ok(RiftxApiKey::new(api_key.into_inner())?);
     }
-    let (api_key, excluded_variable) = match source {
+    let api_key = match source {
         LlmApiKeySource::Keyring { credential } => {
             anyhow::ensure!(
                 !stdin_bundle_supplied,
@@ -150,22 +159,20 @@ async fn load_llm_api_key(
             );
             let credential = credential.clone();
             let missing_credential = credential.clone();
-            let api_key = tokio::task::spawn_blocking(move || {
-                LlmCredentialStore::default().load(&credential)
-            })
-            .await
-            .context("join operating system credential store task")??
-            .with_context(|| {
-                format!("LLM API key credential {missing_credential:?} is not configured")
-            })?;
-            (api_key, None)
+
+            tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&credential))
+                .await
+                .context("join operating system credential store task")??
+                .with_context(|| {
+                    format!("LLM API key credential {missing_credential:?} is not configured")
+                })?
         }
         LlmApiKeySource::Environment { variable } => {
             let value = std::env::var(variable).with_context(|| format!("missing {variable}"))?;
-            (LlmApiKey::new(value)?, Some(variable.clone()))
+            LlmApiKey::new(value)?
         }
     };
-    Ok((RiftxApiKey::new(api_key.into_inner())?, excluded_variable))
+    Ok(RiftxApiKey::new(api_key.into_inner())?)
 }
 
 fn read_llm_api_keys_stdin() -> anyhow::Result<BTreeMap<String, LlmApiKey>> {

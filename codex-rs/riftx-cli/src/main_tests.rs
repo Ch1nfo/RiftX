@@ -22,6 +22,8 @@ fn create_command_accepts_repeated_scope_arguments() {
         "80",
         "--mode",
         "native",
+        "--llm-profile",
+        "red-team",
         "--environment",
         "lab",
         "--capability",
@@ -36,6 +38,7 @@ fn create_command_accepts_repeated_scope_arguments() {
         domains,
         ports,
         mode,
+        llm_profile,
         environment,
         capabilities,
         ..
@@ -50,6 +53,7 @@ fn create_command_accepts_repeated_scope_arguments() {
     assert_eq!(domains, vec!["juice.local"]);
     assert_eq!(ports, vec![80]);
     assert!(matches!(mode, ExecutionModeArg::Native));
+    assert_eq!(llm_profile.as_deref(), Some("red-team"));
     assert!(matches!(environment, EnvironmentClassArg::Lab));
     assert_eq!(capabilities, vec!["web.discovery"]);
 }

@@ -106,6 +106,7 @@ fn engagement() -> Engagement {
         },
         entry_points: vec!["127.0.0.1".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],

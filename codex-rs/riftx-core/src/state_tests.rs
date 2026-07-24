@@ -22,6 +22,7 @@ fn engagement() -> Engagement {
         },
         entry_points: vec!["juice.local".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],

@@ -49,19 +49,34 @@ async fn test_state(temp: &TempDir) -> GatewayState {
         },
         llm: LlmConfig {
             default_profile: "default".to_string(),
-            profiles: BTreeMap::from([(
-                "default".to_string(),
-                LlmProfileConfig {
-                    model: "riftx-test-model".to_string(),
-                    base_url: "http://127.0.0.1:8766/v1".to_string(),
-                    api_key: LlmApiKeySource::Environment {
-                        variable: "RIFTX_TEST_API_KEY".to_string(),
+            profiles: BTreeMap::from([
+                (
+                    "alternate".to_string(),
+                    LlmProfileConfig {
+                        model: "riftx-alternate-test-model".to_string(),
+                        base_url: "http://127.0.0.1:8766/v1".to_string(),
+                        api_key: LlmApiKeySource::Environment {
+                            variable: "RIFTX_ALTERNATE_TEST_API_KEY".to_string(),
+                        },
+                        timeout_seconds: 300,
+                        reasoning_level: LlmReasoningLevel::High,
+                        context_budget: 200_000,
                     },
-                    timeout_seconds: 300,
-                    reasoning_level: LlmReasoningLevel::High,
-                    context_budget: 200_000,
-                },
-            )]),
+                ),
+                (
+                    "default".to_string(),
+                    LlmProfileConfig {
+                        model: "riftx-test-model".to_string(),
+                        base_url: "http://127.0.0.1:8766/v1".to_string(),
+                        api_key: LlmApiKeySource::Environment {
+                            variable: "RIFTX_TEST_API_KEY".to_string(),
+                        },
+                        timeout_seconds: 300,
+                        reasoning_level: LlmReasoningLevel::High,
+                        context_budget: 200_000,
+                    },
+                ),
+            ]),
         },
         policy: ManagedPolicyConfig {
             allowed_capabilities: vec![
@@ -178,6 +193,7 @@ fn native_engagement(state: &GatewayState, id: &str, status: EngagementStatus) -
         },
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization,
         policy_revision,
         thread_id: None,
@@ -225,6 +241,7 @@ async fn restart_reconciliation_interrupts_active_engagements() {
         },
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
@@ -472,7 +489,7 @@ async fn engagement_can_be_created_and_read() {
                 .uri("/v1/engagements")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"],"structuredCriteria":[]},"entryPoints":["juice.local"],"mode":"native","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                    r#"{"name":"Juice Shop","objective":{"summary":"Validate exploitable web risks","successCriteria":["Record evidence"],"structuredCriteria":[]},"entryPoints":["juice.local"],"mode":"native","llmProfile":"alternate","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":["juice.local"],"ports":[80]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
                 ))
                 .expect("request"),
         )
@@ -489,6 +506,7 @@ async fn engagement_can_be_created_and_read() {
     )
     .expect("engagement JSON");
     assert_eq!(engagement.status, EngagementStatus::Draft);
+    assert_eq!(engagement.llm_profile, "alternate");
     assert_eq!(
         engagement.objective,
         AssessmentObjective {
@@ -555,6 +573,27 @@ async fn engagement_can_be_created_and_read() {
 }
 
 #[tokio::test]
+async fn engagement_rejects_an_unknown_llm_profile() {
+    let temp = TempDir::new().expect("temp dir");
+    let app = test_router(&temp).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Unknown runtime","objective":{"summary":"Reject an unknown runtime","successCriteria":[],"structuredCriteria":[]},"entryPoints":[],"mode":"native","llmProfile":"missing","authorization":{"network":{"cidrs":[],"domains":[],"ports":[]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn conversation_endpoint_returns_latest_entries_with_an_older_cursor() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
@@ -569,6 +608,7 @@ async fn conversation_endpoint_returns_latest_entries_with_an_older_cursor() {
         },
         entry_points: vec!["127.0.0.1".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
@@ -687,6 +727,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
         },
         entry_points: vec!["127.0.0.1".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
@@ -934,6 +975,7 @@ async fn operational_turn_context_includes_objective_and_multi_asset_graph() {
         },
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Native,
+        llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],

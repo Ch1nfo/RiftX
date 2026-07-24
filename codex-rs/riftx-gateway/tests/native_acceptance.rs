@@ -26,6 +26,8 @@ use tempfile::TempDir;
 
 const API_KEY_ENV: &str = "RIFTX_NATIVE_ACCEPTANCE_API_KEY";
 const API_KEY: &str = "native-acceptance-secret";
+const SECONDARY_API_KEY_ENV: &str = "RIFTX_NATIVE_ACCEPTANCE_SECONDARY_API_KEY";
+const SECONDARY_API_KEY: &str = "native-acceptance-secondary-secret";
 const STARTUP_ATTEMPTS: usize = 200;
 const COMPLETION_ATTEMPTS: usize = 100;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -78,6 +80,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
             .arg("--config")
             .arg(&config_path)
             .env(API_KEY_ENV, API_KEY)
+            .env(SECONDARY_API_KEY_ENV, SECONDARY_API_KEY)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -110,6 +113,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
                 },
                 "entryPoints": ["10.10.10.1"],
                 "mode": "native",
+                "llmProfile": "secondary",
                 "authorization": {
                     "network": {
                         "cidrs": ["10.10.10.0/24"],
@@ -134,6 +138,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         String::from_utf8_lossy(&response.bytes().await?)
     );
     let engagement: Engagement = serde_json::from_slice(&response.bytes().await?)?;
+    anyhow::ensure!(engagement.llm_profile == "secondary");
 
     let response = client
         .post(&format!("/v1/engagements/{}/activate", engagement.id))
@@ -275,6 +280,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
     anyhow::ensure!(audit.contains("execution/completed"));
     anyhow::ensure!(audit.contains("artifact/captured"));
     anyhow::ensure!(!audit.contains(API_KEY));
+    anyhow::ensure!(!audit.contains(SECONDARY_API_KEY));
     let event_kinds = tokio::time::timeout(Duration::from_secs(10), event_collector)
         .await
         .context("event stream did not observe turn completion")?
@@ -284,10 +290,11 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
     let requests = response_mock.requests();
     anyhow::ensure!(requests.len() == 2);
     anyhow::ensure!(
-        requests
-            .iter()
-            .all(|request| request.header("authorization") == Some(format!("Bearer {API_KEY}"))),
-        "model requests did not use the in-memory API key"
+        requests.iter().all(|request| {
+            request.header("authorization") == Some(format!("Bearer {SECONDARY_API_KEY}"))
+                && request.body_json()["model"] == "gpt-5.2-secondary"
+        }),
+        "model requests did not use the selected profile"
     );
     Ok(())
 }
@@ -322,7 +329,7 @@ fn test_config(root: &std::path::Path, base_url: String) -> RiftxConfig {
                         model: "gpt-5.2-secondary".to_string(),
                         base_url,
                         api_key: LlmApiKeySource::Environment {
-                            variable: API_KEY_ENV.to_string(),
+                            variable: SECONDARY_API_KEY_ENV.to_string(),
                         },
                         timeout_seconds: 120,
                         reasoning_level: LlmReasoningLevel::Medium,
@@ -441,10 +448,10 @@ async fn ensure_status(
 
 #[cfg(not(windows))]
 fn native_command() -> &'static str {
-    "test -z \"${RIFTX_NATIVE_ACCEPTANCE_API_KEY+x}\" || exit 97; printf 'stdout-marker'; printf 'stderr-marker' >&2; printf 'native-artifact' > artifacts/native.txt"
+    "test -z \"${RIFTX_NATIVE_ACCEPTANCE_API_KEY+x}\" || exit 97; test -z \"${RIFTX_NATIVE_ACCEPTANCE_SECONDARY_API_KEY+x}\" || exit 98; printf 'stdout-marker'; printf 'stderr-marker' >&2; printf 'native-artifact' > artifacts/native.txt"
 }
 
 #[cfg(windows)]
 fn native_command() -> &'static str {
-    "if (Test-Path Env:RIFTX_NATIVE_ACCEPTANCE_API_KEY) { exit 97 }; [Console]::Out.Write('stdout-marker'); [Console]::Error.Write('stderr-marker'); [IO.File]::WriteAllText('artifacts/native.txt', 'native-artifact')"
+    "if (Test-Path Env:RIFTX_NATIVE_ACCEPTANCE_API_KEY) { exit 97 }; if (Test-Path Env:RIFTX_NATIVE_ACCEPTANCE_SECONDARY_API_KEY) { exit 98 }; [Console]::Out.Write('stdout-marker'); [Console]::Error.Write('stderr-marker'); [IO.File]::WriteAllText('artifacts/native.txt', 'native-artifact')"
 }

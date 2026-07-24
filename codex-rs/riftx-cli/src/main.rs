@@ -48,6 +48,8 @@ enum Command {
         ports: Vec<u16>,
         #[arg(long, value_enum)]
         mode: ExecutionModeArg,
+        #[arg(long = "llm-profile")]
+        llm_profile: Option<String>,
         #[arg(long, value_enum)]
         environment: EnvironmentClassArg,
         #[arg(long = "capability", required = true)]
@@ -203,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
             domains,
             ports,
             mode,
+            llm_profile,
             environment,
             capabilities,
             identity_selectors,
@@ -226,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
                     },
                     "entryPoints": entry_points,
                     "mode": mode.as_str(),
+                    "llmProfile": llm_profile,
                     "authorization": {
                         "network": {"cidrs": cidrs, "domains": domains, "ports": ports},
                         "identities": identity_selectors,

@@ -25,6 +25,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             },
             entry_points: vec!["10.10.20.10".to_string()],
             mode: ExecutionMode::Native,
+            llm_profile: "default".to_string(),
             authorization: AuthorizationScope {
                 network: Scope {
                     cidrs: vec!["10.10.20.0/24".parse().expect("CIDR")],

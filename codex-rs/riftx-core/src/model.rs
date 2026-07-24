@@ -39,6 +39,7 @@ pub struct Engagement {
     #[serde(default)]
     pub entry_points: Vec<String>,
     pub mode: crate::ExecutionMode,
+    pub llm_profile: String,
     pub authorization: crate::AuthorizationScope,
     pub policy_revision: String,
     pub thread_id: Option<String>,

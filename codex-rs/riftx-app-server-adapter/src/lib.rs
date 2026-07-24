@@ -106,7 +106,7 @@ pub struct RiftxLlmRuntimeConfig {
     pub runtime_home: PathBuf,
     pub model: String,
     pub base_url: String,
-    pub excluded_api_key_env: Option<String>,
+    pub excluded_api_key_envs: Vec<String>,
     pub api_key: RiftxApiKey,
     pub process_path: String,
 }
@@ -376,18 +376,15 @@ async fn build_runtime_config(
         .r#set
         .get("PATH")
         .is_some_and(|path| path == &runtime.process_path);
-    let api_key_is_excluded = runtime
-        .excluded_api_key_env
-        .as_ref()
-        .is_none_or(|variable| {
-            config
-                .permissions
-                .shell_environment_policy
-                .exclude
-                .iter()
-                .any(|name| *name == variable.as_str())
-        });
-    if !enforced || !path_is_enforced || !api_key_is_excluded {
+    let api_keys_are_excluded = runtime.excluded_api_key_envs.iter().all(|variable| {
+        config
+            .permissions
+            .shell_environment_policy
+            .exclude
+            .iter()
+            .any(|name| *name == variable.as_str())
+    });
+    if !enforced || !path_is_enforced || !api_keys_are_excluded {
         return Err(AdapterError::UnsafeRuntimeConfig(
             "API-key-only provider, isolated runtime home, and ephemeral auth are required"
                 .to_string(),
@@ -442,10 +439,17 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
             toml::Value::Boolean(false),
         ),
     ];
-    if let Some(variable) = &runtime.excluded_api_key_env {
+    if !runtime.excluded_api_key_envs.is_empty() {
         overrides.push((
             "shell_environment_policy.exclude".to_string(),
-            toml::Value::Array(vec![toml::Value::String(variable.clone())]),
+            toml::Value::Array(
+                runtime
+                    .excluded_api_key_envs
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
         ));
     }
     overrides

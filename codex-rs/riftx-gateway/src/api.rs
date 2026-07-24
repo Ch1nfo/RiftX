@@ -62,6 +62,8 @@ struct CreateEngagementParams {
     #[serde(default)]
     entry_points: Vec<String>,
     mode: ExecutionMode,
+    #[serde(default)]
+    llm_profile: Option<String>,
     authorization: AuthorizationScope,
 }
 
@@ -325,6 +327,14 @@ async fn create_engagement(
             .map_err(|error| ApiError::bad_request(error.to_string()))?;
     }
     let now = unix_timestamp();
+    let llm_profile = params
+        .llm_profile
+        .unwrap_or_else(|| state.config.llm.default_profile.clone());
+    if !state.config.llm.profiles.contains_key(&llm_profile) {
+        return Err(ApiError::bad_request(format!(
+            "LLM profile {llm_profile:?} is not configured"
+        )));
+    }
     let engagement = Engagement {
         id: Uuid::new_v4().to_string(),
         name: params.name,
@@ -332,6 +342,7 @@ async fn create_engagement(
         objective: params.objective,
         entry_points: params.entry_points,
         mode: params.mode,
+        llm_profile,
         authorization: params.authorization,
         policy_revision: policy.revision,
         thread_id: None,
@@ -451,7 +462,7 @@ async fn start_turn(
             "turn input cannot exceed {MAX_OPERATOR_REQUEST_BYTES} bytes"
         )));
     }
-    let profile_name = state.config.llm.default_profile.clone();
+    let profile_name = engagement.llm_profile.clone();
     let app_server = state
         .app_server(&profile_name)
         .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
