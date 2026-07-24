@@ -12,10 +12,16 @@ import {
   bridgeError,
   createEngagement,
   daemonInfo,
+  decideApproval,
   engagementReport,
   interruptEngagement,
+  listApprovals,
   listEngagements,
+  onEngagementEvent,
+  onEngagementStream,
   startTurn,
+  subscribeEngagement,
+  unsubscribeEngagement,
 } from "./bridge";
 import riftxIcon from "./assets/riftx-icon.png";
 import { ActivityTimeline } from "./components/ActivityTimeline";
@@ -23,11 +29,15 @@ import { EngagementInspector } from "./components/EngagementInspector";
 import { NewEngagementDialog } from "./components/NewEngagementDialog";
 import { TaskSidebar } from "./components/TaskSidebar";
 import type {
+  ApprovalDecision,
   CreateEngagementInput,
   DesktopBridgeError,
   DesktopDaemonInfo,
   Engagement,
+  EngagementEvent,
   EngagementReport,
+  EngagementStreamStatus,
+  PendingApproval,
 } from "./models";
 
 export default function App() {
@@ -35,6 +45,14 @@ export default function App() {
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [report, setReport] = useState<EngagementReport | null>(null);
+  const [events, setEvents] = useState<EngagementEvent[]>([]);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [streamState, setStreamState] =
+    useState<EngagementStreamStatus["state"]>("disconnected");
+  const [turnRunning, setTurnRunning] = useState(false);
+  const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(
+    null,
+  );
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -56,16 +74,31 @@ export default function App() {
     });
   }, []);
 
-  const loadReport = useCallback(async (engagementId: string) => {
+  const loadReport = useCallback(
+    async (engagementId: string) => {
+      try {
+        const nextReport = await engagementReport(engagementId);
+        setReport(nextReport);
+        updateEngagement(nextReport.engagement);
+      } catch (cause) {
+        setError(bridgeError(cause));
+      }
+    },
+    [updateEngagement],
+  );
+
+  const loadApprovals = useCallback(async (engagementId: string) => {
     try {
-      setReport(await engagementReport(engagementId));
+      setApprovals(await listApprovals(engagementId));
     } catch (cause) {
       setError(bridgeError(cause));
     }
   }, []);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+    }
     try {
       const [daemonState, taskList] = await Promise.all([
         daemonInfo(),
@@ -84,7 +117,9 @@ export default function App() {
       setDaemon(null);
       setError(bridgeError(cause));
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -95,20 +130,107 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) {
       setReport(null);
+      setEvents([]);
+      setApprovals([]);
+      setTurnRunning(false);
+      setStreamState("disconnected");
       return;
     }
-    void loadReport(selectedId);
-  }, [loadReport, selectedId]);
+    setReport(null);
+    setEvents([]);
+    setApprovals([]);
+    setTurnRunning(false);
+    setStreamState("connecting");
+    void Promise.all([loadReport(selectedId), loadApprovals(selectedId)]);
+
+    let disposed = false;
+    let stopEvents: () => void = () => undefined;
+    let stopStream: () => void = () => undefined;
+    void Promise.all([
+      onEngagementEvent((event) => {
+        if (disposed || event.engagementId !== selectedId) {
+          return;
+        }
+        setEvents((current) => [...current, event].slice(-300));
+        if (event.kind === "turnStarted") {
+          setTurnRunning(true);
+        }
+        if (
+          event.kind === "turn/completed" ||
+          event.kind === "engagementInterrupted" ||
+          event.kind === "appServer/closed"
+        ) {
+          setTurnRunning(false);
+        }
+        if (
+          event.kind.startsWith("approval/") ||
+          event.kind === "approvalDecided" ||
+          event.kind === "appServer/closed"
+        ) {
+          void loadApprovals(selectedId);
+        }
+        if (
+          event.kind === "turn/completed" ||
+          event.kind === "engagementInterrupted" ||
+          event.kind === "appServer/closed" ||
+          event.kind === "approvalDecided" ||
+          event.kind === "item/completed" ||
+          event.kind.startsWith("execution/") ||
+          event.kind.startsWith("artifact/")
+        ) {
+          void Promise.all([loadReport(selectedId), refresh(false)]);
+        }
+      }),
+      onEngagementStream((status) => {
+        if (!disposed && status.engagementId === selectedId) {
+          setStreamState(status.state);
+        }
+      }),
+    ])
+      .then(([eventListener, streamListener]) => {
+        if (disposed) {
+          eventListener();
+          streamListener();
+          return;
+        }
+        stopEvents = eventListener;
+        stopStream = streamListener;
+        return subscribeEngagement(selectedId);
+      })
+      .catch((cause) => {
+        if (!disposed) {
+          setStreamState("disconnected");
+          setError(bridgeError(cause));
+        }
+      });
+
+    return () => {
+      disposed = true;
+      stopEvents();
+      stopStream();
+      void unsubscribeEngagement(selectedId);
+    };
+  }, [loadApprovals, loadReport, refresh, selectedId]);
 
   useEffect(() => {
     if (!selected || selected.status !== "active") {
       return;
     }
     const timer = window.setInterval(() => {
-      void Promise.all([loadReport(selected.id), refresh()]);
-    }, 2500);
+      void Promise.all([
+        loadReport(selected.id),
+        loadApprovals(selected.id),
+        refresh(false),
+      ]);
+    }, 15_000);
     return () => window.clearInterval(timer);
-  }, [loadReport, refresh, selected]);
+  }, [loadApprovals, loadReport, refresh, selected]);
+
+  const reportHasRunningTask =
+    report?.tasks.some(
+      (task) => task.status === "pending" || task.status === "running",
+    ) ?? false;
+  const isRunning = turnRunning || reportHasRunningTask;
 
   const create = async (newEngagement: CreateEngagementInput) => {
     setSubmitting(true);
@@ -128,7 +250,7 @@ export default function App() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const instruction = input.trim();
-    if (!selected || !instruction || submitting) {
+    if (!selected || !instruction || submitting || isRunning) {
       return;
     }
     setSubmitting(true);
@@ -139,10 +261,12 @@ export default function App() {
         updateEngagement(active);
       }
       await startTurn(active.id, instruction);
+      setTurnRunning(true);
       setInput("");
       setError(null);
       window.setTimeout(() => void loadReport(active.id), 300);
     } catch (cause) {
+      setTurnRunning(false);
       setError(bridgeError(cause));
     } finally {
       setSubmitting(false);
@@ -156,12 +280,31 @@ export default function App() {
     setSubmitting(true);
     try {
       updateEngagement(await interruptEngagement(selected.id));
+      setTurnRunning(false);
       await loadReport(selected.id);
       setError(null);
     } catch (cause) {
       setError(bridgeError(cause));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const decide = async (approvalId: string, decision: ApprovalDecision) => {
+    setDecidingApprovalId(approvalId);
+    try {
+      await decideApproval(approvalId, decision);
+      setApprovals((current) =>
+        current.filter((approval) => approval.id !== approvalId),
+      );
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+      if (selectedId) {
+        await loadApprovals(selectedId);
+      }
+    } finally {
+      setDecidingApprovalId(null);
     }
   };
 
@@ -203,6 +346,9 @@ export default function App() {
                   <span className={`mode-label ${selected.mode}`}>
                     {selected.mode}
                   </span>
+                  <span className={`stream-state ${streamState}`}>
+                    {streamState === "connected" ? "live" : streamState}
+                  </span>
                   <span>{selected.status}</span>
                 </div>
               </header>
@@ -210,7 +356,13 @@ export default function App() {
               <ActivityTimeline
                 engagement={selected}
                 report={report}
+                events={events}
+                approvals={approvals}
                 loading={loading}
+                decidingApprovalId={decidingApprovalId}
+                onApproval={(approvalId, decision) =>
+                  void decide(approvalId, decision)
+                }
               />
 
               <form className="composer" onSubmit={submit}>
@@ -222,7 +374,9 @@ export default function App() {
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   placeholder="Give the next authorized instruction..."
-                  disabled={selected.status === "completed" || submitting}
+                  disabled={
+                    selected.status === "completed" || submitting || isRunning
+                  }
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
@@ -230,7 +384,7 @@ export default function App() {
                     }
                   }}
                 />
-                {selected.status === "active" ? (
+                {isRunning ? (
                   <button
                     className="stop-button"
                     type="button"
@@ -247,7 +401,7 @@ export default function App() {
                     type="submit"
                     title="Run instruction"
                     aria-label="Run instruction"
-                    disabled={!input.trim() || submitting}
+                    disabled={!input.trim() || submitting || isRunning}
                   >
                     <Send size={17} />
                   </button>

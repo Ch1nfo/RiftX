@@ -377,6 +377,29 @@ button:disabled {
   text-transform: capitalize;
 }
 
+.stream-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px !important;
+}
+
+.stream-state::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber);
+  content: "";
+}
+
+.stream-state.connected::before {
+  background: var(--mint);
+}
+
+.stream-state.disconnected::before {
+  background: var(--red);
+}
+
 .timeline {
   min-height: 0;
   overflow: auto;
@@ -451,6 +474,52 @@ button:disabled {
 
 .evidence-entry .timeline-icon {
   color: var(--blue);
+}
+
+.message-entry.operator .timeline-icon {
+  color: var(--blue);
+}
+
+.message-entry.agent .timeline-icon {
+  color: var(--mint);
+}
+
+.message-entry p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-entry {
+  margin: 6px 0;
+  padding: 14px 10px;
+  border: 1px solid #76512a;
+  border-radius: 7px;
+  background: #241e17;
+}
+
+.approval-entry .timeline-icon {
+  color: var(--amber);
+  border-color: #76512a;
+}
+
+.approval-cwd {
+  overflow: hidden;
+  color: var(--faint) !important;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-actions {
+  display: flex;
+  margin-top: 10px;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.approval-actions button {
+  min-height: 30px;
 }
 
 .error-copy {
@@ -967,5 +1036,10 @@ button:disabled {
 
   .new-engagement-dialog {
     background: #f5f7f6;
+  }
+
+  .approval-entry {
+    border-color: #d8b784;
+    background: #fff8ed;
   }
 }
