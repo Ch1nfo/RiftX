@@ -178,26 +178,38 @@ fn read_only_source() -> DesktopError {
     )
 }
 
-pub(crate) async fn sidecar_api_key(path: &Path) -> Result<Option<LlmApiKey>, DesktopError> {
+pub(crate) async fn sidecar_api_keys(
+    path: &Path,
+) -> Result<BTreeMap<String, LlmApiKey>, DesktopError> {
     let config = load_config(path).await?;
-    let (_, profile) = default_profile(&config)?;
-    let SettingsApiKeySource::Keyring { credential } = &profile.api_key else {
-        return Ok(None);
-    };
-    let credential = credential.clone();
-    let missing_credential = credential.clone();
-    let api_key =
-        tokio::task::spawn_blocking(move || LlmCredentialStore::default().load(&credential))
-            .await
-            .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
-            .map_err(credential_error)?
-            .ok_or_else(|| {
-                DesktopError::new(
-                    "credential_missing",
-                    format!("LLM API key credential {missing_credential:?} is not configured"),
-                )
-            })?;
-    Ok(Some(api_key))
+    let keyring_profiles = config
+        .llm
+        .profiles
+        .into_iter()
+        .filter_map(|(profile_name, profile)| match profile.api_key {
+            SettingsApiKeySource::Keyring { credential } => Some((profile_name, credential)),
+            SettingsApiKeySource::Environment { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || {
+        let store = LlmCredentialStore::default();
+        let mut api_keys = BTreeMap::new();
+        for (profile_name, credential) in keyring_profiles {
+            let api_key = store
+                .load(&credential)
+                .map_err(credential_error)?
+                .ok_or_else(|| {
+                    DesktopError::new(
+                        "credential_missing",
+                        format!("LLM API key credential {credential:?} is not configured"),
+                    )
+                })?;
+            api_keys.insert(profile_name, api_key);
+        }
+        Ok(api_keys)
+    })
+    .await
+    .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
 }
 
 #[cfg(test)]

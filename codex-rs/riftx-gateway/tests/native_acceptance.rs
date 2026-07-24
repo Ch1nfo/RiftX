@@ -86,6 +86,17 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
     };
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
     wait_for_daemon(&client, &mut daemon.child).await?;
+    for profile_name in ["default", "secondary"] {
+        anyhow::ensure!(
+            config
+                .daemon
+                .runtime_home
+                .join("profiles")
+                .join(profile_name)
+                .is_dir(),
+            "LLM profile {profile_name:?} runtime home was not created"
+        );
+    }
 
     let response = client
         .post_json(
@@ -291,19 +302,34 @@ fn test_config(root: &std::path::Path, base_url: String) -> RiftxConfig {
         },
         llm: LlmConfig {
             default_profile: "default".to_string(),
-            profiles: BTreeMap::from([(
-                "default".to_string(),
-                LlmProfileConfig {
-                    model: "gpt-5.2".to_string(),
-                    base_url,
-                    api_key: LlmApiKeySource::Environment {
-                        variable: API_KEY_ENV.to_string(),
+            profiles: BTreeMap::from([
+                (
+                    "default".to_string(),
+                    LlmProfileConfig {
+                        model: "gpt-5.2".to_string(),
+                        base_url: base_url.clone(),
+                        api_key: LlmApiKeySource::Environment {
+                            variable: API_KEY_ENV.to_string(),
+                        },
+                        timeout_seconds: 300,
+                        reasoning_level: LlmReasoningLevel::High,
+                        context_budget: 200_000,
                     },
-                    timeout_seconds: 300,
-                    reasoning_level: LlmReasoningLevel::High,
-                    context_budget: 200_000,
-                },
-            )]),
+                ),
+                (
+                    "secondary".to_string(),
+                    LlmProfileConfig {
+                        model: "gpt-5.2-secondary".to_string(),
+                        base_url,
+                        api_key: LlmApiKeySource::Environment {
+                            variable: API_KEY_ENV.to_string(),
+                        },
+                        timeout_seconds: 120,
+                        reasoning_level: LlmReasoningLevel::Medium,
+                        context_budget: 100_000,
+                    },
+                ),
+            ]),
         },
         policy: ManagedPolicyConfig {
             allowed_capabilities: vec!["evidence.capture".to_string()],

@@ -158,10 +158,12 @@ context_budget = 200000
 api_key = { source = "environment", variable = "RIFTX_LLM_API_KEY" }
 ```
 
-Desktop 从系统安全存储读取 API Key，并通过继承的 stdin 向自己启动的 `riftxd` 发送
-一次性长度前缀内存帧；独立启动的 `riftxd` 仍可直接读取系统安全存储。环境变量来源会被
-强制从 Agent 工具进程环境中排除。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、
-命令行、环境变量或普通日志。
+最多可配置 16 个 LLM Profile。`riftxd` 为每个 Profile 创建独立的 App Server 和
+`runtime/profiles/<name>` runtime home。Desktop 从系统安全存储读取所有 Keyring
+Profile 的 API Key，并通过继承的 stdin 发送一次性、长度前缀的 Profile-Key 内存帧；
+独立启动的 `riftxd` 仍可直接读取系统安全存储。环境变量来源会被强制从 Agent 工具
+进程环境中排除。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、命令行、环境变量
+或普通日志。
 
 ## 开发运行
 

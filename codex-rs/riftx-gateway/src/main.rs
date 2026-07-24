@@ -17,10 +17,11 @@ use codex_riftx_ipc::LocalIpcListener;
 use codex_riftx_skills::SkillCatalogBuilder;
 use codex_riftx_skills::default_skills_root;
 use codex_riftx_tools::ToolScanner;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::PathBuf;
 
-const MAX_STDIN_API_KEY_BYTES: usize = 64 * 1024;
+const MAX_STDIN_API_KEY_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -37,18 +38,12 @@ fn main() -> anyhow::Result<()> {
 async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let args = Args::parse();
     let config = RiftxConfig::load_resolved(&args.config).await?;
-    let stdin_api_key = args
+    let mut stdin_api_keys = args
         .llm_api_key_stdin
-        .then(read_llm_api_key_stdin)
+        .then(read_llm_api_keys_stdin)
         .transpose()?;
-    let llm_profile = config
-        .llm
-        .default_profile()
-        .context("default LLM profile is missing after config validation")?
-        .clone();
+    let stdin_bundle_supplied = stdin_api_keys.is_some();
     let default_profile_name = config.llm.default_profile.clone();
-    let (llm_api_key, excluded_api_key_env) =
-        load_llm_api_key(&llm_profile.api_key, stdin_api_key).await?;
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -63,36 +58,69 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .process_path(std::env::var_os("PATH"))?
         .into_string()
         .map_err(|_| anyhow::anyhow!("the effective tool PATH is not valid UTF-8"))?;
-    let runtime = RiftxLlmRuntimeConfig {
-        runtime_home: config.daemon.runtime_home.clone(),
-        model: llm_profile.model,
-        base_url: llm_profile.base_url,
-        excluded_api_key_env,
-        api_key: llm_api_key,
-        process_path,
-    };
-    let app_server = RiftxAppServerAdapter::start_embedded(runtime, arg0_paths)
-        .await
-        .context("start RiftX model runtime")?;
-    let app_server_handle = app_server.request_handle();
-    app_server_handle
-        .set_exclusive_skill_root(&skills_root)
-        .await
-        .context("configure exclusive RiftX Skills Directory")?;
-    let skills_entry = app_server_handle
-        .list_skills(&config.daemon.workspace_root, /*force_reload*/ true)
-        .await
-        .context("load RiftX Skills Directory")?;
+    let mut runtimes = Vec::with_capacity(config.llm.profiles.len());
+    let mut skills_entry = None;
+    for (profile_name, profile) in &config.llm.profiles {
+        let injected_api_key = stdin_api_keys
+            .as_mut()
+            .and_then(|api_keys| api_keys.remove(profile_name));
+        let (api_key, excluded_api_key_env) = load_llm_api_key(
+            profile_name,
+            &profile.api_key,
+            injected_api_key,
+            stdin_bundle_supplied,
+        )
+        .await?;
+        let runtime = RiftxLlmRuntimeConfig {
+            runtime_home: config
+                .daemon
+                .runtime_home
+                .join("profiles")
+                .join(profile_name),
+            model: profile.model.clone(),
+            base_url: profile.base_url.clone(),
+            excluded_api_key_env,
+            api_key,
+            process_path: process_path.clone(),
+        };
+        let app_server = RiftxAppServerAdapter::start_embedded(runtime, arg0_paths.clone())
+            .await
+            .with_context(|| format!("start LLM profile {profile_name:?} runtime"))?;
+        let app_server_handle = app_server.request_handle();
+        app_server_handle
+            .set_exclusive_skill_root(&skills_root)
+            .await
+            .with_context(|| format!("configure LLM profile {profile_name:?} Skills Directory"))?;
+        if profile_name == &default_profile_name {
+            skills_entry = Some(
+                app_server_handle
+                    .list_skills(&config.daemon.workspace_root, /*force_reload*/ true)
+                    .await
+                    .context("load RiftX Skills Directory")?,
+            );
+        }
+        runtimes.push((profile_name.clone(), app_server_handle, app_server));
+    }
+    if let Some(api_keys) = stdin_api_keys {
+        anyhow::ensure!(
+            api_keys.is_empty(),
+            "stdin LLM API key bundle contains unknown profiles"
+        );
+    }
     let skills = SkillCatalogBuilder::new(skills_root)
-        .build(skills_entry)
+        .build(skills_entry.context("default LLM profile did not provide a skill catalog")?)
         .await;
-    let state = GatewayState::new(config, store, skills, tools)
-        .with_app_server(default_profile_name.clone(), app_server_handle);
+    let mut state = GatewayState::new(config, store, skills, tools);
+    for (profile_name, app_server_handle, _) in &runtimes {
+        state = state.with_app_server(profile_name.clone(), app_server_handle.clone());
+    }
     state
         .reconcile_after_restart()
         .await
         .context("reconcile active engagements after Gateway restart")?;
-    state.spawn_app_server_event_pump(default_profile_name, app_server);
+    for (profile_name, _, app_server) in runtimes {
+        state.spawn_app_server_event_pump(profile_name, app_server);
+    }
     let endpoint = LocalIpcEndpoint::new(&state.config.daemon.ipc_dir);
     let app = build_router(state);
     let listener = LocalIpcListener::bind(endpoint.clone()).await?;
@@ -102,18 +130,24 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
 }
 
 async fn load_llm_api_key(
+    profile_name: &str,
     source: &LlmApiKeySource,
     stdin_api_key: Option<LlmApiKey>,
+    stdin_bundle_supplied: bool,
 ) -> anyhow::Result<(RiftxApiKey, Option<String>)> {
     if let Some(api_key) = stdin_api_key {
         anyhow::ensure!(
             matches!(source, LlmApiKeySource::Keyring { .. }),
-            "stdin LLM API key injection requires a keyring-backed configuration"
+            "stdin LLM API key injection for profile {profile_name:?} requires a keyring-backed configuration"
         );
         return Ok((RiftxApiKey::new(api_key.into_inner())?, None));
     }
     let (api_key, excluded_variable) = match source {
         LlmApiKeySource::Keyring { credential } => {
+            anyhow::ensure!(
+                !stdin_bundle_supplied,
+                "stdin LLM API key bundle is missing profile {profile_name:?}"
+            );
             let credential = credential.clone();
             let missing_credential = credential.clone();
             let api_key = tokio::task::spawn_blocking(move || {
@@ -134,26 +168,33 @@ async fn load_llm_api_key(
     Ok((RiftxApiKey::new(api_key.into_inner())?, excluded_variable))
 }
 
-fn read_llm_api_key_stdin() -> anyhow::Result<LlmApiKey> {
-    read_llm_api_key(&mut std::io::stdin())
+fn read_llm_api_keys_stdin() -> anyhow::Result<BTreeMap<String, LlmApiKey>> {
+    read_llm_api_keys(&mut std::io::stdin())
 }
 
-fn read_llm_api_key(reader: &mut impl Read) -> anyhow::Result<LlmApiKey> {
+fn read_llm_api_keys(reader: &mut impl Read) -> anyhow::Result<BTreeMap<String, LlmApiKey>> {
     let mut length = [0_u8; 4];
     reader
         .read_exact(&mut length)
-        .context("read LLM API key frame length from stdin")?;
+        .context("read LLM API key bundle frame length from stdin")?;
     let length = u32::from_be_bytes(length) as usize;
     anyhow::ensure!(
-        (1..=MAX_STDIN_API_KEY_BYTES).contains(&length),
-        "invalid LLM API key frame length"
+        (1..=MAX_STDIN_API_KEY_BUNDLE_BYTES).contains(&length),
+        "invalid LLM API key bundle frame length"
     );
     let mut secret = vec![0_u8; length];
     reader
         .read_exact(&mut secret)
-        .context("read LLM API key frame from stdin")?;
-    LlmApiKey::new(String::from_utf8(secret).context("LLM API key frame is not UTF-8")?)
-        .map_err(Into::into)
+        .context("read LLM API key bundle frame from stdin")?;
+    let api_keys = serde_json::from_slice::<BTreeMap<String, String>>(&secret)
+        .context("decode LLM API key bundle");
+    secret.fill(0);
+    let api_keys = api_keys?;
+    anyhow::ensure!(!api_keys.is_empty(), "LLM API key bundle cannot be empty");
+    api_keys
+        .into_iter()
+        .map(|(profile_name, api_key)| Ok((profile_name, LlmApiKey::new(api_key)?)))
+        .collect()
 }
 
 fn resolve_skills_root(configured: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {

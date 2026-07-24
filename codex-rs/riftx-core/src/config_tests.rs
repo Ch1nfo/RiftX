@@ -176,6 +176,35 @@ fn llm_config_requires_an_existing_default_profile() {
 }
 
 #[test]
+fn llm_config_bounds_the_number_of_runtime_profiles() {
+    let profile = LlmProfileConfig {
+        model: "riftx-model".to_string(),
+        base_url: "https://llm.example.test/v1".to_string(),
+        api_key: LlmApiKeySource::Environment {
+            variable: "RIFTX_LLM_API_KEY".to_string(),
+        },
+        timeout_seconds: 300,
+        reasoning_level: LlmReasoningLevel::Medium,
+        context_budget: 200_000,
+    };
+    let profiles = (0..17)
+        .map(|index| (format!("profile-{index}"), profile.clone()))
+        .collect();
+    let config = LlmConfig {
+        default_profile: "profile-0".to_string(),
+        profiles,
+    };
+
+    assert_eq!(
+        config
+            .validate()
+            .expect_err("too many profiles")
+            .to_string(),
+        "invalid RiftX config: llm.profiles must define between 1 and 16 profiles"
+    );
+}
+
+#[test]
 fn policy_layers_only_reduce_access() {
     let managed = ManagedPolicyConfig {
         allowed_capabilities: vec![

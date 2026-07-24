@@ -1,28 +1,39 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 #[test]
-fn reads_a_length_prefixed_api_key() {
-    let mut frame = Cursor::new([0, 0, 0, 6, b's', b'e', b'c', b'r', b'e', b't']);
+fn reads_a_length_prefixed_api_key_bundle() {
+    let payload = br#"{"profile-a":"secret-a","profile-b":"secret-b"}"#;
+    let mut frame = u32::try_from(payload.len())
+        .expect("payload length")
+        .to_be_bytes()
+        .to_vec();
+    frame.extend_from_slice(payload);
 
     assert_eq!(
-        read_llm_api_key(&mut frame)
-            .expect("valid framed API key")
-            .into_inner(),
-        "secret"
+        read_llm_api_keys(&mut Cursor::new(frame))
+            .expect("valid framed API keys")
+            .into_iter()
+            .map(|(profile, api_key)| (profile, api_key.into_inner()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([
+            ("profile-a".to_string(), "secret-a".to_string()),
+            ("profile-b".to_string(), "secret-b".to_string()),
+        ])
     );
 }
 
 #[test]
-fn rejects_an_oversized_api_key_before_allocating_it() {
-    let length = u32::try_from(MAX_STDIN_API_KEY_BYTES + 1).expect("test length fits");
+fn rejects_an_oversized_api_key_bundle_before_allocating_it() {
+    let length = u32::try_from(MAX_STDIN_API_KEY_BUNDLE_BYTES + 1).expect("test length fits");
     let mut frame = Cursor::new(length.to_be_bytes());
 
     assert_eq!(
-        read_llm_api_key(&mut frame)
-            .expect_err("oversized key must fail")
+        read_llm_api_keys(&mut frame)
+            .expect_err("oversized API key bundle must fail")
             .to_string(),
-        "invalid LLM API key frame length"
+        "invalid LLM API key bundle frame length"
     );
 }

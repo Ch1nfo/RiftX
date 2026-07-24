@@ -1,5 +1,6 @@
 use crate::bridge::DesktopError;
 use crate::bridge::DesktopState;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -50,19 +51,19 @@ impl DaemonSupervisor {
         self.stop_owned();
 
         let config_path = state.config_path()?.to_path_buf();
-        let api_key = crate::settings::sidecar_api_key(&config_path).await?;
+        let api_keys = crate::settings::sidecar_api_keys(&config_path).await?;
         let mut command = app
             .shell()
             .sidecar("riftxd")
             .map_err(start_error)?
             .arg("--config")
             .arg(config_path);
-        if api_key.is_some() {
+        if !api_keys.is_empty() {
             command = command.arg("--llm-api-key-stdin");
         }
         let (mut events, mut child) = command.spawn().map_err(start_error)?;
-        if let Some(api_key) = api_key
-            && let Err(error) = write_api_key(&mut child, api_key)
+        if !api_keys.is_empty()
+            && let Err(error) = write_api_keys(&mut child, api_keys)
         {
             let _ = child.kill();
             return Err(error);
@@ -202,20 +203,27 @@ fn start_error(error: impl std::fmt::Display) -> DesktopError {
     DesktopError::new("daemon_start_failed", error.to_string())
 }
 
-fn write_api_key(
+fn write_api_keys(
     child: &mut CommandChild,
-    api_key: codex_riftx_credentials::LlmApiKey,
+    api_keys: BTreeMap<String, codex_riftx_credentials::LlmApiKey>,
 ) -> Result<(), DesktopError> {
-    let mut frame = frame_api_key(api_key)?;
+    let mut frame = frame_api_keys(api_keys)?;
     let result = child.write(&frame).map_err(start_error);
     frame.fill(0);
     result
 }
 
-fn frame_api_key(api_key: codex_riftx_credentials::LlmApiKey) -> Result<Vec<u8>, DesktopError> {
-    let mut frame = api_key.into_bytes();
+fn frame_api_keys(
+    api_keys: BTreeMap<String, codex_riftx_credentials::LlmApiKey>,
+) -> Result<Vec<u8>, DesktopError> {
+    let api_keys = api_keys
+        .into_iter()
+        .map(|(profile_name, api_key)| (profile_name, api_key.into_inner()))
+        .collect::<BTreeMap<_, _>>();
+    let mut frame = serde_json::to_vec(&api_keys)
+        .map_err(|error| DesktopError::new("credential_store", error.to_string()))?;
     let length = u32::try_from(frame.len())
-        .map_err(|_| DesktopError::new("credential_store", "LLM API key is too large"))?;
+        .map_err(|_| DesktopError::new("credential_store", "LLM API key bundle is too large"))?;
     frame.reserve(4);
     frame.resize(frame.len() + 4, 0);
     frame.copy_within(0..length as usize, 4);

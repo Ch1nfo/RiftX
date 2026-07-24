@@ -7,6 +7,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
 
+const MAX_LLM_PROFILES: usize = 16;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read RiftX config {path}: {source}")]
@@ -141,9 +143,9 @@ impl LlmConfig {
                     .to_string(),
             ));
         }
-        if self.profiles.is_empty() {
+        if self.profiles.is_empty() || self.profiles.len() > MAX_LLM_PROFILES {
             return Err(ConfigError::Invalid(
-                "llm.profiles must define at least one profile".to_string(),
+                "llm.profiles must define between 1 and 16 profiles".to_string(),
             ));
         }
         if !self.profiles.contains_key(&self.default_profile) {

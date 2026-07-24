@@ -801,6 +801,12 @@ context_budget = 200000
 
 每个 Engagement 选择一个 Profile。
 
+- 第一阶段单机最多启用 16 个 Profile。
+- `riftxd` 为每个 Profile 创建独立 App Server、API Key 上下文和 runtime home。
+- Desktop sidecar 启动协议使用有总大小上限的 Profile-Key 内存帧一次性注入所有
+  Keyring 凭据；帧只通过继承 stdin 传递并在写入/解析后清零缓冲区。
+- Environment 凭据按 Profile 读取，并从该 Profile 的 Agent 工具进程环境中排除。
+
 配置包括：
 
 - Profile Name。
