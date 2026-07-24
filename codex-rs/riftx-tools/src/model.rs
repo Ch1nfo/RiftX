@@ -64,6 +64,8 @@ pub struct ToolCredentialMetadata {
     pub environment_variable: Option<String>,
     #[serde(default)]
     pub arguments: Vec<String>,
+    #[serde(default, alias = "authentication_failure_exit_codes")]
+    pub authentication_failure_exit_codes: Vec<i32>,
 }
 
 impl ToolCredentialMetadata {
@@ -88,10 +90,21 @@ impl ToolCredentialMetadata {
                 let without_target = argument.replace("{target}", "");
                 !without_target.replace("{port}", "").contains(['{', '}'])
             })
+            && self.authentication_failure_exit_codes.len() <= 16
+            && self
+                .authentication_failure_exit_codes
+                .iter()
+                .all(|code| *code != 0)
     }
 
     pub fn render_arguments(&self, host: &str, port: Option<u16>) -> Option<Vec<String>> {
-        self.is_valid().then(|| {
+        (self.is_valid()
+            && (port.is_some()
+                || !self
+                    .arguments
+                    .iter()
+                    .any(|argument| argument.contains("{port}"))))
+        .then(|| {
             self.arguments
                 .iter()
                 .map(|argument| {

@@ -235,6 +235,7 @@ fn report_snapshots_exclude_local_extension_paths() {
                 input_target_field: None,
                 output_format: None,
                 parser: None,
+                credential: None,
             }),
             shadowed_by: Some(PathBuf::from("/usr/local/bin/scanner")),
         }],

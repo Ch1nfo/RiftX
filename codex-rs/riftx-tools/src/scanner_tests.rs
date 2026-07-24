@@ -38,6 +38,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
             "capability = \"network.discovery\"\n",
             "injection = \"stdin\"\n",
             "arguments = [\"--target\", \"{target}\"]\n",
+            "authentication_failure_exit_codes = [3]\n",
         ),
     )
     .await
@@ -78,6 +79,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
                 injection: ToolCredentialInjection::Stdin,
                 environment_variable: None,
                 arguments: vec!["--target".to_string(), "{target}".to_string()],
+                authentication_failure_exit_codes: vec![3],
             }),
         }
     );
@@ -134,6 +136,7 @@ fn credential_argument_template_binds_the_authorized_target() {
             "--endpoint".to_string(),
             "smb://{target}:{port}".to_string(),
         ],
+        authentication_failure_exit_codes: vec![3],
     };
 
     assert_eq!(
