@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   Command,
+  FileText,
   OctagonX,
   PanelRight,
   Pause,
@@ -20,6 +21,7 @@ import {
   daemonInfo,
   decideApproval,
   engagementReport,
+  engagementReportMarkdown,
   engagementStreamStatus,
   interruptEngagement,
   killRuntime,
@@ -37,6 +39,7 @@ import riftxIcon from "./assets/riftx-icon.png";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { EngagementInspector } from "./components/EngagementInspector";
 import { NewEngagementDialog } from "./components/NewEngagementDialog";
+import { ReportDialog } from "./components/ReportDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { TaskSidebar } from "./components/TaskSidebar";
 import type {
@@ -77,6 +80,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
 
   const selected = useMemo(
@@ -214,6 +220,8 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) {
       setReport(null);
+      setReportOpen(false);
+      setReportMarkdown(null);
       setEvents([]);
       setHistory([]);
       setHistoryCursor(null);
@@ -223,6 +231,8 @@ export default function App() {
       return;
     }
     setReport(null);
+    setReportOpen(false);
+    setReportMarkdown(null);
     setEvents([]);
     setHistory([]);
     setHistoryCursor(null);
@@ -461,6 +471,28 @@ export default function App() {
     }
   };
 
+  const openReport = async () => {
+    if (!selected || reportLoading) {
+      return;
+    }
+    setReportOpen(true);
+    setReportLoading(true);
+    try {
+      const [nextReport, markdown] = await Promise.all([
+        engagementReport(selected.id),
+        engagementReportMarkdown(selected.id),
+      ]);
+      setReport(nextReport);
+      setReportMarkdown(markdown);
+      updateEngagement(nextReport.engagement);
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   const loadOlder = async () => {
     if (!selectedId || !historyCursor || loadingOlder) {
       return;
@@ -571,6 +603,15 @@ export default function App() {
                   <h1>{selected.name}</h1>
                 </div>
                 <div className="conversation-status">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Open report"
+                    title="Report"
+                    onClick={() => void openReport()}
+                  >
+                    <FileText size={15} />
+                  </button>
                   <span className={`mode-label ${selected.mode}`}>
                     {selected.mode}
                   </span>
@@ -668,6 +709,7 @@ export default function App() {
           onModeChange={(mode, confirmation) =>
             void changeMode(mode, confirmation)
           }
+          onOpenReport={() => void openReport()}
         />
       </div>
 
@@ -709,6 +751,13 @@ export default function App() {
             setError(null);
           }
         }}
+      />
+      <ReportDialog
+        open={reportOpen}
+        report={report}
+        markdown={reportMarkdown}
+        loading={reportLoading}
+        onClose={() => setReportOpen(false)}
       />
     </div>
   );

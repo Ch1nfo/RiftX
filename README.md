@@ -38,6 +38,9 @@ Named Pipe 提供本地服务。
   请求存在时拒绝切换；每次有效切换重新固化 Policy Revision 并写入不可变审计。
   Native 降级显示强制边界风险，Auto 要求输入固定确认短语；Hardened/Auto 在平台
   Guard 实现前以 `guard_unavailable` 明确拒绝，不会伪装为已启用。
+- Desktop 提供 Overview、Findings、Evidence 和 Markdown 报告视图；报告包含 Objective、
+  Scope、执行状态、artifact 哈希清单，以及脱敏的 Tools/Skills 启动快照。扩展快照只
+  输出名称、内容哈希和安全元数据，不输出本机安装路径。
 - Desktop 原生打包携带当前平台的 `riftxd` sidecar，并负责自动启动、健康检查、
   Key 变更重启和显式退出清理；普通关闭窗口会隐藏到系统托盘并保持后台任务运行。
 - Desktop 顶栏和系统托盘提供全局 Pause、Resume 与 Kill Switch；暂停会关闭新执行入口、

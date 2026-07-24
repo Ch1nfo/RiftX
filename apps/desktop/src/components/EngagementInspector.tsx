@@ -1,4 +1,4 @@
-import { ChevronRight, ShieldCheck } from "lucide-react";
+import { ChevronRight, FileText, ShieldCheck } from "lucide-react";
 import type {
   Engagement,
   EngagementReport,
@@ -12,6 +12,7 @@ interface EngagementInspectorProps {
   modeBusy: boolean;
   modeBlocked: boolean;
   onModeChange: (mode: ExecutionMode, confirmation: string | null) => void;
+  onOpenReport: () => void;
 }
 
 export function EngagementInspector({
@@ -20,6 +21,7 @@ export function EngagementInspector({
   modeBusy,
   modeBlocked,
   onModeChange,
+  onOpenReport,
 }: EngagementInspectorProps) {
   if (!engagement) {
     return (
@@ -35,7 +37,18 @@ export function EngagementInspector({
     <aside className="inspector" aria-label="Engagement details">
       <div className="inspector-heading">
         <span>Engagement</span>
-        <strong>{engagement.status}</strong>
+        <div className="inspector-heading-actions">
+          <strong>{engagement.status}</strong>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Open report"
+            title="Report"
+            onClick={onOpenReport}
+          >
+            <FileText size={15} />
+          </button>
+        </div>
       </div>
 
       <section>
