@@ -194,6 +194,22 @@ pub(crate) struct CreateEngagementInput {
     expires_at: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChangeModeInput {
+    engagement_id: String,
+    mode: ExecutionModeInput,
+    confirmation: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ExecutionModeInput {
+    Native,
+    Hardened,
+    Auto,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TurnAccepted {
@@ -344,6 +360,16 @@ pub(crate) async fn activate_engagement(
         .subscriptions
         .ensure_active(&app, client, engagement.id.clone())?;
     Ok(engagement)
+}
+
+#[tauri::command]
+pub(crate) async fn change_engagement_mode(
+    state: tauri::State<'_, DesktopState>,
+    input: ChangeModeInput,
+) -> Result<EngagementView, DesktopError> {
+    let client = state.client()?;
+    let (path, body) = mode_change_request(input)?;
+    json_response(client.post_json(&path, body).await).await
 }
 
 #[tauri::command]
@@ -564,6 +590,17 @@ fn conversation_path(engagement_id: &str, cursor: Option<i64>) -> Result<String,
             "/v1/engagements/{engagement_id}/conversation?limit=200"
         )),
     }
+}
+
+fn mode_change_request(input: ChangeModeInput) -> Result<(String, Vec<u8>), DesktopError> {
+    validate_engagement_id(&input.engagement_id)?;
+    let path = format!("/v1/engagements/{}/mode", input.engagement_id);
+    let body = serde_json::to_vec(&json!({
+        "mode": input.mode,
+        "confirmation": input.confirmation,
+    }))
+    .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
+    Ok((path, body))
 }
 
 fn validate_opaque_id(kind: &str, id: &str) -> Result<(), DesktopError> {

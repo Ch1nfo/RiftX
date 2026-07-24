@@ -24,6 +24,7 @@ pub fn run() {
             bridge::list_engagements,
             bridge::create_engagement,
             bridge::activate_engagement,
+            bridge::change_engagement_mode,
             bridge::start_turn,
             bridge::list_approvals,
             bridge::decide_approval,

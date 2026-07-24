@@ -11,6 +11,7 @@ import type {
   EngagementEvent,
   EngagementReport,
   EngagementStreamStatus,
+  ExecutionMode,
   LlmSettings,
   NotificationSettings,
   PendingApproval,
@@ -85,6 +86,16 @@ export function createEngagement(
 
 export function activateEngagement(engagementId: string): Promise<Engagement> {
   return desktopInvoke("activate_engagement", { engagementId });
+}
+
+export function changeEngagementMode(
+  engagementId: string,
+  mode: ExecutionMode,
+  confirmation: string | null,
+): Promise<Engagement> {
+  return desktopInvoke("change_engagement_mode", {
+    input: { engagementId, mode, confirmation },
+  });
 }
 
 export function startTurn(

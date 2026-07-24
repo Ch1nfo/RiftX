@@ -1,14 +1,25 @@
 import { ChevronRight, ShieldCheck } from "lucide-react";
-import type { Engagement, EngagementReport } from "../models";
+import type {
+  Engagement,
+  EngagementReport,
+  ExecutionMode,
+} from "../models";
+import { ModeControl } from "./ModeControl";
 
 interface EngagementInspectorProps {
   engagement: Engagement | null;
   report: EngagementReport | null;
+  modeBusy: boolean;
+  modeBlocked: boolean;
+  onModeChange: (mode: ExecutionMode, confirmation: string | null) => void;
 }
 
 export function EngagementInspector({
   engagement,
   report,
+  modeBusy,
+  modeBlocked,
+  onModeChange,
 }: EngagementInspectorProps) {
   if (!engagement) {
     return (
@@ -37,6 +48,13 @@ export function EngagementInspector({
           </div>
         ))}
       </section>
+
+      <ModeControl
+        engagement={engagement}
+        busy={modeBusy}
+        blocked={modeBlocked}
+        onChange={onModeChange}
+      />
 
       <section>
         <h3>Scope</h3>

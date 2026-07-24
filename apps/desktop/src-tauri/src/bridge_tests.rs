@@ -49,3 +49,32 @@ fn conversation_path_validates_the_cursor() {
         ))
     );
 }
+
+#[test]
+fn mode_change_request_is_typed_and_rejects_path_injection() {
+    let (path, body) = mode_change_request(ChangeModeInput {
+        engagement_id: "engagement-1".to_string(),
+        mode: ExecutionModeInput::Auto,
+        confirmation: Some("AUTO MODE - TEST ENVIRONMENT ONLY".to_string()),
+    })
+    .expect("mode request");
+    assert_eq!(path, "/v1/engagements/engagement-1/mode");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).expect("request JSON"),
+        json!({
+            "mode": "auto",
+            "confirmation": "AUTO MODE - TEST ENVIRONMENT ONLY",
+        })
+    );
+    assert_eq!(
+        mode_change_request(ChangeModeInput {
+            engagement_id: "../system/kill".to_string(),
+            mode: ExecutionModeInput::Native,
+            confirmation: None,
+        }),
+        Err(DesktopError::new(
+            "invalid_identifier",
+            "engagement identifier is invalid",
+        ))
+    );
+}

@@ -712,6 +712,115 @@ button:disabled {
   line-height: 1.5;
 }
 
+.mode-control .segmented-control {
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.mode-control .mode-status {
+  margin-top: 9px;
+  color: #d1a64d;
+  font-size: 10px;
+}
+
+.mode-warning {
+  display: flex;
+  margin-top: 10px;
+  padding: 9px;
+  align-items: flex-start;
+  gap: 7px;
+  border-left: 2px solid #d1a64d;
+  color: #d8c391;
+  background: #29251d;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.mode-warning.critical {
+  border-left-color: #d35d57;
+  color: #efaaa5;
+  background: #30201f;
+}
+
+.mode-warning svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.auto-mode-confirmation dl {
+  display: grid;
+  margin: 10px 0 0;
+  gap: 6px;
+}
+
+.auto-mode-confirmation dl > div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 10px;
+}
+
+.auto-mode-confirmation dt {
+  color: var(--muted);
+}
+
+.auto-mode-confirmation dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.auto-mode-confirmation label {
+  display: grid;
+  margin-top: 10px;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.auto-mode-confirmation code {
+  color: #efaaa5;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.auto-mode-confirmation input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--text);
+  background: #151817;
+  font: 10px ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.auto-mode-confirmation input:focus {
+  border-color: #4c9879;
+  outline: none;
+}
+
+.mode-apply-button {
+  display: flex;
+  width: 100%;
+  height: 31px;
+  margin-top: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #3c8069;
+  border-radius: 5px;
+  color: #dff8ed;
+  background: #225a48;
+  font-size: 11px;
+  font-weight: 620;
+  text-transform: capitalize;
+}
+
+.mode-apply-button:hover:not(:disabled) {
+  background: #286b55;
+}
+
 .criterion {
   display: flex;
   margin-top: 9px;

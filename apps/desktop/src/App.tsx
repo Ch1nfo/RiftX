@@ -14,6 +14,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   activateEngagement,
   bridgeError,
+  changeEngagementMode,
   createEngagement,
   conversationHistory,
   daemonInfo,
@@ -49,6 +50,7 @@ import type {
   EngagementEvent,
   EngagementReport,
   EngagementStreamStatus,
+  ExecutionMode,
   PendingApproval,
 } from "./models";
 
@@ -74,6 +76,7 @@ export default function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
+  const [modeBusy, setModeBusy] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
 
   const selected = useMemo(
@@ -261,6 +264,7 @@ export default function App() {
         if (
           event.kind === "turn/completed" ||
           event.kind === "engagementInterrupted" ||
+          event.kind === "engagement/modeChanged" ||
           event.kind === "appServer/closed" ||
           event.kind === "approvalDecided" ||
           event.kind === "item/completed" ||
@@ -428,6 +432,32 @@ export default function App() {
       setError(bridgeError(cause));
     } finally {
       setControlBusy(false);
+    }
+  };
+
+  const changeMode = async (
+    mode: ExecutionMode,
+    confirmation: string | null,
+  ) => {
+    if (!selected || modeBusy || isRunning || approvals.length > 0) {
+      return;
+    }
+    setModeBusy(true);
+    try {
+      const updated = await changeEngagementMode(
+        selected.id,
+        mode,
+        confirmation,
+      );
+      updateEngagement(updated);
+      setReport((current) =>
+        current ? { ...current, engagement: updated } : current,
+      );
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+    } finally {
+      setModeBusy(false);
     }
   };
 
@@ -630,7 +660,15 @@ export default function App() {
           )}
         </main>
 
-        <EngagementInspector engagement={selected} report={report} />
+        <EngagementInspector
+          engagement={selected}
+          report={report}
+          modeBusy={modeBusy}
+          modeBlocked={isRunning || approvals.length > 0}
+          onModeChange={(mode, confirmation) =>
+            void changeMode(mode, confirmation)
+          }
+        />
       </div>
 
       {error && (
