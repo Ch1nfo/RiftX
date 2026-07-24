@@ -37,6 +37,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
             "[credential]\n",
             "capability = \"network.discovery\"\n",
             "injection = \"stdin\"\n",
+            "arguments = [\"--target\", \"{target}\"]\n",
         ),
     )
     .await
@@ -76,6 +77,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
                 capability: "network.discovery".to_string(),
                 injection: ToolCredentialInjection::Stdin,
                 environment_variable: None,
+                arguments: vec!["--target".to_string(), "{target}".to_string()],
             }),
         }
     );
@@ -100,6 +102,7 @@ async fn scanner_rejects_unsafe_credential_metadata() {
             "capability = \"credential.testing\"\n",
             "injection = \"environment\"\n",
             "environment_variable = \"PATH\"\n",
+            "arguments = [\"{target}\"]\n",
         ),
     )
     .await
@@ -118,6 +121,27 @@ async fn scanner_rejects_unsafe_credential_metadata() {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "metadataInvalid")
+    );
+}
+
+#[test]
+fn credential_argument_template_binds_the_authorized_target() {
+    let metadata = ToolCredentialMetadata {
+        capability: "credential.testing".to_string(),
+        injection: ToolCredentialInjection::Stdin,
+        environment_variable: None,
+        arguments: vec![
+            "--endpoint".to_string(),
+            "smb://{target}:{port}".to_string(),
+        ],
+    };
+
+    assert_eq!(
+        metadata.render_arguments("dc.lab.example", Some(445)),
+        Some(vec![
+            "--endpoint".to_string(),
+            "smb://dc.lab.example:445".to_string(),
+        ])
     );
 }
 

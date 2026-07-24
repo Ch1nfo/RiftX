@@ -62,17 +62,46 @@ pub struct ToolCredentialMetadata {
     pub injection: ToolCredentialInjection,
     #[serde(alias = "environment_variable")]
     pub environment_variable: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<String>,
 }
 
 impl ToolCredentialMetadata {
     fn is_valid(&self) -> bool {
-        match self.injection {
+        let injection_is_valid = match self.injection {
             ToolCredentialInjection::Stdin => self.environment_variable.is_none(),
             ToolCredentialInjection::Environment | ToolCredentialInjection::FileEnvironment => self
                 .environment_variable
                 .as_deref()
                 .is_some_and(valid_credential_variable),
-        }
+        };
+        injection_is_valid
+            && !self.arguments.is_empty()
+            && bounded_arguments(&self.arguments)
+            && self
+                .arguments
+                .iter()
+                .map(|argument| argument.matches("{target}").count())
+                .sum::<usize>()
+                == 1
+            && self.arguments.iter().all(|argument| {
+                let without_target = argument.replace("{target}", "");
+                !without_target.replace("{port}", "").contains(['{', '}'])
+            })
+    }
+
+    pub fn render_arguments(&self, host: &str, port: Option<u16>) -> Option<Vec<String>> {
+        self.is_valid().then(|| {
+            self.arguments
+                .iter()
+                .map(|argument| {
+                    argument.replace("{target}", host).replace(
+                        "{port}",
+                        &port.map_or_else(String::new, |port| port.to_string()),
+                    )
+                })
+                .collect()
+        })
     }
 }
 
