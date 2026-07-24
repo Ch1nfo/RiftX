@@ -14,7 +14,46 @@ use codex_riftx_core::Service;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::Task;
 use codex_riftx_core::TestCase;
+use codex_riftx_skills::SkillCatalog;
+use codex_riftx_skills::SkillSource;
+use codex_riftx_tools::ToolInventory;
+use codex_riftx_tools::ToolRisk;
 use serde::Serialize;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolReportSnapshot {
+    pub snapshot_sha256: String,
+    pub tools: Vec<ReportTool>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportTool {
+    pub name: String,
+    pub sha256: String,
+    pub metadata_sha256: Option<String>,
+    pub capabilities: Vec<String>,
+    pub risk: Option<ToolRisk>,
+    pub managed: bool,
+    pub shadowed: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillReportSnapshot {
+    pub snapshot_sha256: String,
+    pub skills: Vec<ReportSkill>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportSkill {
+    pub name: String,
+    pub source: SkillSource,
+    pub enabled: bool,
+    pub sha256: String,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +73,8 @@ pub struct EngagementReport {
     pub coverage: Vec<Coverage>,
     pub tasks: Vec<Task>,
     pub artifacts: Vec<Artifact>,
+    pub tool_snapshot: ToolReportSnapshot,
+    pub skill_snapshot: SkillReportSnapshot,
 }
 
 impl EngagementReport {
@@ -241,6 +282,36 @@ impl EngagementReport {
                 output.push_str(&format!("- {}\n", evidence.summary));
             }
         }
+        output.push_str("\n## Tool Snapshot\n\n");
+        output.push_str(&format!(
+            "- Inventory SHA-256: `{}`\n",
+            self.tool_snapshot.snapshot_sha256
+        ));
+        if self.tool_snapshot.tools.is_empty() {
+            output.push_str("- No Tools Directory entries recorded.\n");
+        } else {
+            for tool in &self.tool_snapshot.tools {
+                output.push_str(&format!(
+                    "- `{}`: `{}` (managed={}, shadowed={})\n",
+                    tool.name, tool.sha256, tool.managed, tool.shadowed
+                ));
+            }
+        }
+        output.push_str("\n## Skill Snapshot\n\n");
+        output.push_str(&format!(
+            "- Catalog SHA-256: `{}`\n",
+            self.skill_snapshot.snapshot_sha256
+        ));
+        if self.skill_snapshot.skills.is_empty() {
+            output.push_str("- No Skills Directory entries recorded.\n");
+        } else {
+            for skill in &self.skill_snapshot.skills {
+                output.push_str(&format!(
+                    "- `{}`: `{}` ({:?}, enabled={})\n",
+                    skill.name, skill.sha256, skill.source, skill.enabled
+                ));
+            }
+        }
         output.push_str("\n## Artifacts\n\n");
         if self.artifacts.is_empty() {
             output.push_str("No artifacts recorded.\n");
@@ -257,6 +328,49 @@ impl EngagementReport {
             output.push_str(&format!("{}  {}\n", artifact.sha256, artifact.path));
         }
         output
+    }
+}
+
+impl ToolReportSnapshot {
+    pub fn from_inventory(inventory: &ToolInventory) -> Self {
+        Self {
+            snapshot_sha256: inventory.snapshot_sha256.clone(),
+            tools: inventory
+                .tools
+                .iter()
+                .map(|tool| ReportTool {
+                    name: tool.name.clone(),
+                    sha256: tool.sha256.clone(),
+                    metadata_sha256: tool.metadata_sha256.clone(),
+                    capabilities: tool
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.capabilities.clone())
+                        .unwrap_or_default(),
+                    risk: tool.metadata.as_ref().and_then(|metadata| metadata.risk),
+                    managed: tool.metadata.is_some(),
+                    shadowed: tool.shadowed_by.is_some(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl SkillReportSnapshot {
+    pub fn from_catalog(catalog: &SkillCatalog) -> Self {
+        Self {
+            snapshot_sha256: catalog.snapshot_sha256.clone(),
+            skills: catalog
+                .skills
+                .iter()
+                .map(|skill| ReportSkill {
+                    name: skill.name.clone(),
+                    source: skill.source,
+                    enabled: skill.enabled,
+                    sha256: skill.sha256.clone(),
+                })
+                .collect(),
+        }
     }
 }
 

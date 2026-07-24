@@ -3,6 +3,8 @@ use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::unix_timestamp;
 use crate::report::EngagementReport;
+use crate::report::SkillReportSnapshot;
+use crate::report::ToolReportSnapshot;
 use axum::Json;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -950,6 +952,8 @@ async fn report(
         coverage: state.store.coverage(&id).await?,
         tasks: state.store.tasks(&id).await?,
         artifacts: state.store.artifacts(&id).await?,
+        tool_snapshot: ToolReportSnapshot::from_inventory(&state.tools),
+        skill_snapshot: SkillReportSnapshot::from_catalog(&state.skills),
     };
     match query.format {
         ReportFormat::Markdown => Ok((
