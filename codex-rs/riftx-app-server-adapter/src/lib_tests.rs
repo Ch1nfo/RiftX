@@ -159,9 +159,22 @@ async fn local_workspace_starts_a_single_main_agent_thread() {
     let test = start_test_adapter().await;
     let thread_id = test
         .adapter
-        .start_local_thread(test.workspace.path())
+        .start_local_thread(test.workspace.path(), /*guard_work_root*/ None)
         .await
         .expect("local thread should start");
+
+    assert!(!thread_id.is_empty());
+    test.adapter.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn hardened_thread_accepts_guard_work_root_override() {
+    let test = start_test_adapter().await;
+    let thread_id = test
+        .adapter
+        .start_local_thread(test.workspace.path(), Some(test.workspace.path()))
+        .await
+        .expect("hardened local thread should start");
 
     assert!(!thread_id.is_empty());
     test.adapter.shutdown().await.expect("shutdown");

@@ -9,11 +9,13 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+codex-riftx-guard = { workspace = true }
 portable-pty = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 filedescriptor = "0.8.3"

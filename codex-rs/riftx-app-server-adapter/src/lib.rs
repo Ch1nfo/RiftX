@@ -52,7 +52,9 @@ use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::protocol::SessionSource;
+use codex_riftx_guard::RIFTX_GUARD_WORK_ROOT_ENV;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -221,8 +223,14 @@ impl RiftxAppServerAdapter {
         self.request_handle.clone()
     }
 
-    pub async fn start_local_thread(&self, cwd: &Path) -> Result<String, AdapterError> {
-        self.request_handle.start_local_thread(cwd).await
+    pub async fn start_local_thread(
+        &self,
+        cwd: &Path,
+        guard_work_root: Option<&Path>,
+    ) -> Result<String, AdapterError> {
+        self.request_handle
+            .start_local_thread(cwd, guard_work_root)
+            .await
     }
 
     pub async fn start_local_turn(
@@ -502,7 +510,19 @@ impl RiftxAppServerRequestHandle {
             .ok_or_else(|| AdapterError::MissingSkillCatalog(cwd.to_path_buf()))
     }
 
-    pub async fn start_local_thread(&self, cwd: &Path) -> Result<String, AdapterError> {
+    pub async fn start_local_thread(
+        &self,
+        cwd: &Path,
+        guard_work_root: Option<&Path>,
+    ) -> Result<String, AdapterError> {
+        let mut config = HashMap::new();
+        if let Some(work_root) = guard_work_root {
+            let work_root = workspace_string(work_root)?;
+            config.insert(
+                format!("shell_environment_policy.set.{RIFTX_GUARD_WORK_ROOT_ENV}"),
+                serde_json::Value::String(work_root),
+            );
+        }
         let response: ThreadStartResponse = self
             .client
             .request_typed(ClientRequest::ThreadStart {
@@ -514,6 +534,7 @@ impl RiftxAppServerRequestHandle {
                     developer_instructions: Some(MAIN_AGENT_INSTRUCTIONS.to_string()),
                     environments: None,
                     dynamic_tools: Some(riftx_dynamic_tools()),
+                    config: (!config.is_empty()).then_some(config),
                     ..Default::default()
                 },
             })

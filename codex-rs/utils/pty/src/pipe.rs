@@ -155,6 +155,7 @@ async fn spawn_process_with_stdin_mode(
             Ok(())
         });
     }
+    crate::riftx_guard_spawn::apply_guard_to_tokio_command(&mut command, env, program)?;
     #[cfg(not(unix))]
     let _ = arg0;
     command.current_dir(cwd);

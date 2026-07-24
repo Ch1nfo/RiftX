@@ -466,6 +466,10 @@ async fn change_mode(
     engagement.mode = params.mode;
     engagement.policy_revision = policy.revision;
     engagement.updated_at = unix_timestamp();
+    // Mode changes can enable or disable Guard spawn env; drop the cached
+    // thread so the next turn starts with matching isolation settings.
+    state.agent_threads.write().await.remove(&id);
+    engagement.thread_id = None;
     state.store.put_engagement(&engagement).await?;
     state
         .publish(
@@ -613,8 +617,12 @@ async fn start_turn(
     let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
         None => {
+            let guard_work_root = engagement
+                .mode
+                .requires_guard()
+                .then_some(workspace.as_path());
             let thread_id = app_server
-                .start_local_thread(&workspace)
+                .start_local_thread(&workspace, guard_work_root)
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
             state

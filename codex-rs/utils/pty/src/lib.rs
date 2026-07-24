@@ -2,6 +2,10 @@ pub mod pipe;
 mod process;
 pub mod process_group;
 pub mod pty;
+mod riftx_guard_spawn;
+#[cfg(test)]
+#[path = "riftx_guard_spawn_tests.rs"]
+mod riftx_guard_spawn_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]

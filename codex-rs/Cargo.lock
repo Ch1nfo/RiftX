@@ -3805,6 +3805,7 @@ dependencies = [
  "codex-core",
  "codex-feedback",
  "codex-protocol",
+ "codex-riftx-guard",
  "codex-utils-absolute-path",
  "pretty_assertions",
  "serde",
@@ -4623,6 +4624,7 @@ name = "codex-utils-pty"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-riftx-guard",
  "filedescriptor",
  "lazy_static",
  "libc",
@@ -4630,6 +4632,7 @@ dependencies = [
  "portable-pty",
  "pretty_assertions",
  "shared_library",
+ "tempfile",
  "tokio",
  "winapi",
 ]

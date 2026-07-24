@@ -140,8 +140,15 @@ pub async fn spawn_process(
     #[cfg(not(unix))]
     let _ = inherited_fds;
 
+    #[cfg(not(unix))]
+    if crate::riftx_guard_spawn::guard_requested(env) {
+        anyhow::bail!("Hardened process launch requires the Linux RiftX Guard");
+    }
+
+    // Hardened Guard needs `pre_exec`, which the portable-pty path does not
+    // expose. Prefer the StdCommand PTY path whenever Guard is requested.
     #[cfg(unix)]
-    if !inherited_fds.is_empty() {
+    if !inherited_fds.is_empty() || crate::riftx_guard_spawn::guard_requested(env) {
         return spawn_process_preserving_fds(program, args, cwd, env, arg0, size, inherited_fds)
             .await;
     }
@@ -337,6 +344,7 @@ async fn spawn_process_preserving_fds(
                 Ok(())
             });
     }
+    crate::riftx_guard_spawn::apply_guard_to_std_command(&mut command, env, program)?;
 
     let mut child = command.spawn()?;
     drop(slave);

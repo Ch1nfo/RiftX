@@ -103,3 +103,35 @@ fn tool_exec_policy_requires_absolute_paths_and_includes_program_root() {
                 || path.ends_with("true"))
     );
 }
+
+#[test]
+fn spawn_env_policy_is_absent_without_marker() {
+    let env = std::collections::HashMap::new();
+    assert_eq!(
+        GuardExecPolicy::from_spawn_env(&env, "/usr/bin/true").expect("no guard"),
+        None
+    );
+}
+
+#[test]
+fn spawn_env_policy_requires_absolute_work_root() {
+    let env = std::collections::HashMap::from([(
+        RIFTX_GUARD_WORK_ROOT_ENV.to_string(),
+        "relative-work".to_string(),
+    )]);
+    let err = GuardExecPolicy::from_spawn_env(&env, "/usr/bin/true").expect_err("relative");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn spawn_env_policy_allows_bare_program_names() {
+    let env = std::collections::HashMap::from([(
+        RIFTX_GUARD_WORK_ROOT_ENV.to_string(),
+        "/tmp/riftx-work".to_string(),
+    )]);
+    let policy = GuardExecPolicy::from_spawn_env(&env, "bash")
+        .expect("policy")
+        .expect("present");
+    assert_eq!(policy.work_root, PathBuf::from("/tmp/riftx-work"));
+    assert!(!policy.readable_roots.is_empty());
+}
