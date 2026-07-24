@@ -202,6 +202,12 @@ impl ApiError {
 
 impl From<StateError> for ApiError {
     fn from(error: StateError) -> Self {
+        let message = match &error {
+            StateError::Crypto(_) | StateError::CryptoTask(_) => {
+                "encrypted engagement state is unavailable".to_string()
+            }
+            _ => error.to_string(),
+        };
         let status = match error {
             StateError::EngagementNotFound(_) => StatusCode::NOT_FOUND,
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
@@ -224,14 +230,16 @@ impl From<StateError> for ApiError {
             | StateError::CredentialFailureLimitExceeded
             | StateError::CredentialUseInProgress
             | StateError::InvalidCredentialUseTransition { .. } => StatusCode::CONFLICT,
-            StateError::Database(_) | StateError::Json(_) | StateError::SystemStateUnavailable => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            StateError::Database(_)
+            | StateError::Json(_)
+            | StateError::Crypto(_)
+            | StateError::CryptoTask(_)
+            | StateError::SystemStateUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self {
             status,
             code: "state_error",
-            message: error.to_string(),
+            message,
         }
     }
 }

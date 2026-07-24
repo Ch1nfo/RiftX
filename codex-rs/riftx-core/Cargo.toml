@@ -13,6 +13,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-riftx-crypto = { workspace = true }
 codex-riftx-skills = { workspace = true }
 codex-riftx-tools = { workspace = true }
 ipnet = { workspace = true, features = ["serde"] }
@@ -21,11 +22,13 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 toml = { workspace = true }
 url = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
+codex-keyring-store = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

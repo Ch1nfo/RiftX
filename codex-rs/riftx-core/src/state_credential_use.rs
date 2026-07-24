@@ -18,7 +18,7 @@ impl StateStore {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *connection)
             .await?;
-        let result = reserve(&mut connection, request).await;
+        let result = reserve(self, &mut connection, request).await;
         finish_transaction(&mut connection, result).await
     }
 
@@ -34,6 +34,7 @@ impl StateStore {
             .execute(&mut *connection)
             .await?;
         let result = complete(
+            self,
             &mut connection,
             engagement_id,
             use_id,
@@ -49,19 +50,31 @@ impl StateStore {
         engagement_id: &str,
     ) -> Result<Vec<CredentialGrantUse>, StateError> {
         let rows = sqlx::query(
-            "SELECT data FROM credential_grant_uses
+            "SELECT id, data FROM credential_grant_uses
              WHERE engagement_id = ? ORDER BY started_at, id",
         )
         .bind(engagement_id)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter()
-            .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
-            .collect()
+        let mut usages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            usages.push(
+                self.open_value(
+                    "credential_grant_uses",
+                    engagement_id,
+                    &id,
+                    row.try_get::<Vec<u8>, _>("data")?,
+                )
+                .await?,
+            );
+        }
+        Ok(usages)
     }
 }
 
 async fn reserve(
+    store: &StateStore,
     connection: &mut PoolConnection<Sqlite>,
     request: &CredentialUseRequest,
 ) -> Result<CredentialGrantUse, StateError> {
@@ -70,7 +83,14 @@ async fn reserve(
         .fetch_optional(&mut **connection)
         .await?
         .ok_or_else(|| StateError::EngagementNotFound(request.engagement_id.clone()))?;
-    let engagement: Engagement = serde_json::from_str(engagement.get("data"))?;
+    let engagement: Engagement = store
+        .open_value(
+            "engagements",
+            &request.engagement_id,
+            &request.engagement_id,
+            engagement.try_get("data")?,
+        )
+        .await?;
     if engagement.policy_revision != request.policy_revision {
         return Err(StateError::CredentialPolicyRevisionMismatch);
     }
@@ -81,7 +101,14 @@ async fn reserve(
             .fetch_optional(&mut **connection)
             .await?
             .ok_or_else(|| StateError::CredentialGrantNotFound(request.grant_id.clone()))?;
-    let grant: CredentialGrant = serde_json::from_str(grant.get("data"))?;
+    let grant: CredentialGrant = store
+        .open_value(
+            EntityTable::CredentialGrants.name(),
+            &request.engagement_id,
+            &request.grant_id,
+            grant.try_get("data")?,
+        )
+        .await?;
     grant.validate()?;
     if !grant.is_active_at(request.requested_at) {
         return Err(StateError::CredentialGrantInactive);
@@ -108,7 +135,14 @@ async fn reserve(
             .fetch_optional(&mut **connection)
             .await?
             .ok_or_else(|| StateError::CredentialReferenceNotFound(grant.credential_id.clone()))?;
-    let reference: CredentialReference = serde_json::from_str(reference.get("data"))?;
+    let reference: CredentialReference = store
+        .open_value(
+            EntityTable::CredentialReferences.name(),
+            &request.engagement_id,
+            &grant.credential_id,
+            reference.try_get("data")?,
+        )
+        .await?;
     if !reference.configured {
         return Err(StateError::CredentialSecretUnavailable(reference.id));
     }
@@ -156,6 +190,14 @@ async fn reserve(
         started_at: request.requested_at,
         completed_at: None,
     };
+    let data = store
+        .seal_value(
+            "credential_grant_uses",
+            &usage.engagement_id,
+            &usage.id,
+            &usage,
+        )
+        .await?;
     sqlx::query(
         "INSERT INTO credential_grant_uses(
             id, engagement_id, grant_id, credential_id, identity_hash,
@@ -170,13 +212,14 @@ async fn reserve(
     .bind(usage.status.as_database_value())
     .bind(usage.started_at)
     .bind(usage.completed_at)
-    .bind(serde_json::to_string(&usage)?)
+    .bind(data)
     .execute(&mut **connection)
     .await?;
     Ok(usage)
 }
 
 async fn complete(
+    store: &StateStore,
     connection: &mut PoolConnection<Sqlite>,
     engagement_id: &str,
     use_id: &str,
@@ -190,7 +233,14 @@ async fn complete(
             .fetch_optional(&mut **connection)
             .await?
             .ok_or_else(|| StateError::CredentialUseNotFound(use_id.to_string()))?;
-    let mut usage: CredentialGrantUse = serde_json::from_str(row.get("data"))?;
+    let mut usage: CredentialGrantUse = store
+        .open_value(
+            "credential_grant_uses",
+            engagement_id,
+            use_id,
+            row.try_get("data")?,
+        )
+        .await?;
     let status = CredentialUseStatus::from(outcome);
     if usage.status != CredentialUseStatus::Reserved {
         if usage.status == status {
@@ -207,6 +257,9 @@ async fn complete(
     }
     usage.status = status;
     usage.completed_at = Some(completed_at);
+    let data = store
+        .seal_value("credential_grant_uses", engagement_id, use_id, &usage)
+        .await?;
     sqlx::query(
         "UPDATE credential_grant_uses
          SET status = ?, completed_at = ?, data = ?
@@ -214,7 +267,7 @@ async fn complete(
     )
     .bind(status.as_database_value())
     .bind(completed_at)
-    .bind(serde_json::to_string(&usage)?)
+    .bind(data)
     .bind(engagement_id)
     .bind(use_id)
     .execute(&mut **connection)

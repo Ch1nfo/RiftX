@@ -22,6 +22,14 @@ async fn reservation_enforces_concurrency_use_and_failure_limits() {
         .await
         .expect("first reservation");
     assert_eq!(reserved.status, CredentialUseStatus::Reserved);
+    let payload: Vec<u8> =
+        sqlx::query_scalar("SELECT data FROM credential_grant_uses WHERE id = ?")
+            .bind(&reserved.id)
+            .fetch_one(&store.pool)
+            .await
+            .expect("raw credential use");
+    assert!(payload.starts_with(b"RXE1"));
+    assert!(!String::from_utf8_lossy(&payload).contains(&first.target.host));
     assert!(matches!(
         store.reserve_credential_use(&second).await,
         Err(StateError::CredentialUseInProgress)
@@ -152,7 +160,7 @@ async fn concurrent_reservations_allow_only_one_use_per_identity() {
 
 async fn fixture(max_uses: u32, max_failures: u32) -> (TempDir, StateStore, CredentialGrant) {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     let engagement = Engagement {

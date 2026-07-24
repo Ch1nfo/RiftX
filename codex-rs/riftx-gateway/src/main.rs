@@ -10,6 +10,8 @@ use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateStore;
 use codex_riftx_credentials::LlmApiKey;
 use codex_riftx_credentials::LlmCredentialStore;
+#[cfg(debug_assertions)]
+use codex_riftx_crypto::KeyringEngagementCipher;
 use codex_riftx_gateway::GatewayState;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
@@ -20,8 +22,12 @@ use codex_riftx_tools::ToolScanner;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::PathBuf;
+#[cfg(debug_assertions)]
+use std::sync::Arc;
 
 const MAX_STDIN_API_KEY_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(debug_assertions)]
+const TEST_EPHEMERAL_ENGAGEMENT_KEYS_ENV: &str = "RIFTX_TEST_EPHEMERAL_ENGAGEMENT_KEYS";
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -52,6 +58,19 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&skills_root)
         .await
         .with_context(|| format!("create Skills Directory {}", skills_root.display()))?;
+    #[cfg(debug_assertions)]
+    let store = if std::env::var(TEST_EPHEMERAL_ENGAGEMENT_KEYS_ENV).as_deref() == Ok("1") {
+        StateStore::open_with_cipher(
+            &config.daemon.state_db,
+            Arc::new(KeyringEngagementCipher::new(
+                codex_keyring_store::tests::MockKeyringStore::default(),
+            )),
+        )
+        .await?
+    } else {
+        StateStore::open(&config.daemon.state_db).await?
+    };
+    #[cfg(not(debug_assertions))]
     let store = StateStore::open(&config.daemon.state_db).await?;
     let tools = ToolScanner::new(config.tools.clone()).scan().await;
     let process_path = tools

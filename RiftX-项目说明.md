@@ -166,7 +166,8 @@ Markdown 和 JSON。
 - Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
 - 单一 Skills Directory、独占 Runtime 根目录、内容快照和 doctor。
 - Scope、Policy Revision、Approval 及三模式领域约束。
-- 目标导向状态模型、Evidence 引用验证和 SQLite 持久化。
+- 目标导向状态模型、Evidence 引用验证，以及按 Engagement 数据密钥加密的 SQLite
+  持久化。
 - append-only JSONL 审计。
 - 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
 - workspace Artifact 内容寻址采集、容量限制、哈希复验和受控导出。
@@ -177,9 +178,9 @@ Markdown 和 JSON。
 
 尚未实现：
 
-- 桌面设置、完整审批矩阵、通知、持久对话历史和 Linux 全屏 TUI。
+- Provider/Profile 定义增删与端点编辑、完整审批矩阵和 Linux 全屏 TUI。
 - 完整的 typed IPC 业务消息。
-- 案件数据加密、OS credential store 和 `.riftxcase`。
+- Audit、Artifact 和 `.riftxcase` 加密；SQLite Engagement 数据已经加密。
 - macOS、Windows、Linux `riftx-guard`。
 - Auto planner loop、Evidence Evaluator 和恢复机制。
 - HTML/PDF 报告及正式安装包。

@@ -775,8 +775,9 @@ P1 加密基础固定为：
 - 密钥、解密缓冲区和 Keyring 编码缓冲区在释放时清零；密钥 Debug 输出固定脱敏。
 - envelope 认证失败必须作为数据完整性错误停止读取，不允许返回部分明文或静默降级。
 
-当前 `riftx-crypto` 先固定密钥与 envelope API；SQLite、Audit 和 Artifact 按独立提交
-接入，未接入前不得宣称案件数据已完成静态加密。
+当前 `riftx-crypto` 已固定密钥与 envelope API，Engagement 所属 SQLite 记录已按该格式
+加密；Audit 和 Artifact 仍按独立提交接入。在三者全部接入前不得宣称案件数据已完成
+静态加密。
 
 ### 15.3 `.riftxcase`
 

@@ -135,7 +135,7 @@ async fn invalid_target_state_is_rejected_before_persistence() {
 
 async fn store() -> (TempDir, StateStore) {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     store

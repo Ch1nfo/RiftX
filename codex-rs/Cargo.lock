@@ -3852,6 +3852,8 @@ dependencies = [
 name = "codex-riftx-core"
 version = "0.0.0"
 dependencies = [
+ "codex-keyring-store",
+ "codex-riftx-crypto",
  "codex-riftx-skills",
  "codex-riftx-tools",
  "ipnet",
@@ -3865,6 +3867,7 @@ dependencies = [
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -3901,10 +3904,12 @@ dependencies = [
  "axum",
  "clap",
  "codex-arg0",
+ "codex-keyring-store",
  "codex-riftx-app-server-adapter",
  "codex-riftx-artifacts",
  "codex-riftx-core",
  "codex-riftx-credentials",
+ "codex-riftx-crypto",
  "codex-riftx-ipc",
  "codex-riftx-skills",
  "codex-riftx-tools",

@@ -22,6 +22,7 @@ use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
+use codex_riftx_crypto::KeyringEngagementCipher;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillDirectoryConfig;
 use codex_riftx_tools::ToolInventory;
@@ -29,6 +30,7 @@ use codex_riftx_tools::ToolScanConfig;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -283,7 +285,10 @@ async fn test_state(temp: &TempDir) -> GatewayState {
             extra_paths: Vec::new(),
         },
     };
-    let store = StateStore::open(&config.daemon.state_db)
+    let cipher = Arc::new(KeyringEngagementCipher::new(
+        codex_keyring_store::tests::MockKeyringStore::default(),
+    ));
+    let store = StateStore::open_with_cipher(&config.daemon.state_db, cipher)
         .await
         .expect("state store");
     GatewayState::new(

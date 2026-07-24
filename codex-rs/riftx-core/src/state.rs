@@ -12,6 +12,9 @@ use crate::Finding;
 use crate::Service;
 use crate::TargetStateError;
 use crate::Task;
+use codex_riftx_crypto::CryptoError;
+use codex_riftx_crypto::EngagementRecordCipher;
+use codex_riftx_crypto::KeyringEngagementCipher;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
@@ -19,7 +22,9 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -27,6 +32,10 @@ pub enum StateError {
     Database(#[from] sqlx::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Crypto(#[from] CryptoError),
+    #[error("engagement encryption task failed: {0}")]
+    CryptoTask(String),
     #[error("engagement {0} was not found")]
     EngagementNotFound(String),
     #[error("engagement {id} cannot transition from {from:?} to {to:?}")]
@@ -93,6 +102,7 @@ pub enum StateError {
 #[derive(Clone)]
 pub struct StateStore {
     pool: SqlitePool,
+    cipher: Arc<dyn EngagementRecordCipher>,
 }
 
 macro_rules! entity_tables {
@@ -103,12 +113,18 @@ macro_rules! entity_tables {
         }
 
         impl EntityTable {
+            fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $table),+
+                }
+            }
+
             fn create_sql(self) -> &'static str {
                 match self {
                     $(Self::$variant => concat!(
                         "CREATE TABLE IF NOT EXISTS ",
                         $table,
-                        " (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data TEXT NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
+                        " (id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL, data BLOB NOT NULL, FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE)"
                     )),+
                 }
             }
@@ -126,7 +142,7 @@ macro_rules! entity_tables {
             fn list_sql(self) -> &'static str {
                 match self {
                     $(Self::$variant => concat!(
-                        "SELECT data FROM ",
+                        "SELECT id, data FROM ",
                         $table,
                         " WHERE engagement_id = ? ORDER BY id"
                     )),+
@@ -177,6 +193,13 @@ entity_tables!(
 
 impl StateStore {
     pub async fn open(path: &Path) -> Result<Self, StateError> {
+        Self::open_with_cipher(path, Arc::new(KeyringEngagementCipher::default())).await
+    }
+
+    pub async fn open_with_cipher(
+        path: &Path,
+        cipher: Arc<dyn EngagementRecordCipher>,
+    ) -> Result<Self, StateError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -185,14 +208,15 @@ impl StateStore {
             .max_connections(5)
             .connect_with(options)
             .await?;
-        let store = Self { pool };
+        let store = Self { pool, cipher };
         store.initialize().await?;
+        store.prepare_existing_engagements().await?;
         Ok(store)
     }
 
     async fn initialize(&self) -> Result<(), StateError> {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS engagements (id TEXT PRIMARY KEY, data TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS engagements (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
         )
         .execute(&self.pool)
         .await?;
@@ -201,7 +225,7 @@ impl StateStore {
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 id TEXT NOT NULL,
                 engagement_id TEXT NOT NULL,
-                data TEXT NOT NULL,
+                data BLOB NOT NULL,
                 UNIQUE(engagement_id, id),
                 FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
             )",
@@ -232,7 +256,7 @@ impl StateStore {
                 status TEXT NOT NULL,
                 started_at INTEGER NOT NULL,
                 completed_at INTEGER,
-                data TEXT NOT NULL,
+                data BLOB NOT NULL,
                 FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
             )",
         )
@@ -268,13 +292,36 @@ impl StateStore {
     }
 
     pub async fn put_engagement(&self, engagement: &Engagement) -> Result<(), StateError> {
-        sqlx::query(
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engagements WHERE id = ?)")
+                .bind(&engagement.id)
+                .fetch_one(&self.pool)
+                .await?;
+        let created_key = !exists;
+        if created_key {
+            self.create_engagement_key(&engagement.id).await?;
+        }
+        let data = match self
+            .seal_value("engagements", &engagement.id, &engagement.id, engagement)
+            .await
+        {
+            Ok(data) => data,
+            Err(error) => {
+                self.cleanup_new_key(created_key, &engagement.id).await;
+                return Err(error);
+            }
+        };
+        let result = sqlx::query(
             "INSERT INTO engagements(id, data) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         )
         .bind(&engagement.id)
-        .bind(serde_json::to_string(engagement)?)
+        .bind(data)
         .execute(&self.pool)
-        .await?;
+        .await;
+        if let Err(error) = result {
+            self.cleanup_new_key(created_key, &engagement.id).await;
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -284,16 +331,23 @@ impl StateStore {
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| StateError::EngagementNotFound(id.to_string()))?;
-        Ok(serde_json::from_str(row.try_get("data")?)?)
+        self.open_value("engagements", id, id, row.try_get::<Vec<u8>, _>("data")?)
+            .await
     }
 
     pub async fn engagements(&self) -> Result<Vec<Engagement>, StateError> {
-        let rows = sqlx::query("SELECT data FROM engagements ORDER BY id")
+        let rows = sqlx::query("SELECT id, data FROM engagements ORDER BY id")
             .fetch_all(&self.pool)
             .await?;
-        rows.into_iter()
-            .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
-            .collect()
+        let mut engagements = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            engagements.push(
+                self.open_value("engagements", &id, &id, row.try_get::<Vec<u8>, _>("data")?)
+                    .await?,
+            );
+        }
+        Ok(engagements)
     }
 
     pub async fn system_state<T: DeserializeOwned>(
@@ -462,10 +516,13 @@ impl StateStore {
         engagement_id: &str,
         value: &T,
     ) -> Result<(), StateError> {
+        let data = self
+            .seal_value(table.name(), engagement_id, id, value)
+            .await?;
         sqlx::query(table.upsert_sql())
             .bind(id)
             .bind(engagement_id)
-            .bind(serde_json::to_string(value)?)
+            .bind(data)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -480,9 +537,20 @@ impl StateStore {
             .bind(engagement_id)
             .fetch_all(&self.pool)
             .await?;
-        rows.into_iter()
-            .map(|row| serde_json::from_str(row.get("data")).map_err(StateError::from))
-            .collect()
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            values.push(
+                self.open_value(
+                    table.name(),
+                    engagement_id,
+                    &id,
+                    row.try_get::<Vec<u8>, _>("data")?,
+                )
+                .await?,
+            );
+        }
+        Ok(values)
     }
 
     async fn entity<T: DeserializeOwned>(
@@ -496,9 +564,18 @@ impl StateStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
-        row.map(|row| serde_json::from_str(row.get("data")))
-            .transpose()
-            .map_err(StateError::from)
+        match row {
+            Some(row) => self
+                .open_value(
+                    table.name(),
+                    engagement_id,
+                    id,
+                    row.try_get::<Vec<u8>, _>("data")?,
+                )
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn delete_entity(
@@ -515,6 +592,87 @@ impl StateStore {
             .rows_affected()
             > 0)
     }
+
+    async fn prepare_existing_engagements(&self) -> Result<(), StateError> {
+        let ids = sqlx::query_scalar::<_, String>("SELECT id FROM engagements ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        for id in ids {
+            let cipher = self.cipher.clone();
+            tokio::task::spawn_blocking(move || cipher.prepare_engagement(&id))
+                .await
+                .map_err(|error| StateError::CryptoTask(error.to_string()))??;
+        }
+        Ok(())
+    }
+
+    async fn create_engagement_key(&self, engagement_id: &str) -> Result<(), StateError> {
+        let cipher = self.cipher.clone();
+        let engagement_id = engagement_id.to_string();
+        tokio::task::spawn_blocking(move || cipher.create_engagement(&engagement_id))
+            .await
+            .map_err(|error| StateError::CryptoTask(error.to_string()))??;
+        Ok(())
+    }
+
+    async fn cleanup_new_key(&self, created: bool, engagement_id: &str) {
+        if !created {
+            return;
+        }
+        let cipher = self.cipher.clone();
+        let engagement_id = engagement_id.to_string();
+        let _ = tokio::task::spawn_blocking(move || cipher.delete_engagement(&engagement_id)).await;
+    }
+
+    async fn seal_value<T: Serialize>(
+        &self,
+        record_kind: &str,
+        engagement_id: &str,
+        record_id: &str,
+        value: &T,
+    ) -> Result<Vec<u8>, StateError> {
+        let plaintext = Zeroizing::new(serde_json::to_vec(value)?);
+        let cipher = self.cipher.clone();
+        let engagement_id = engagement_id.to_string();
+        let record_kind = record_kind.to_string();
+        let record_id = record_id.to_string();
+        Ok(tokio::task::spawn_blocking(move || {
+            cipher.seal_record(&engagement_id, &record_kind, &record_id, &plaintext)
+        })
+        .await
+        .map_err(|error| StateError::CryptoTask(error.to_string()))??)
+    }
+
+    async fn open_value<T: DeserializeOwned>(
+        &self,
+        record_kind: &str,
+        engagement_id: &str,
+        record_id: &str,
+        envelope: Vec<u8>,
+    ) -> Result<T, StateError> {
+        let cipher = self.cipher.clone();
+        let engagement_id = engagement_id.to_string();
+        let record_kind = record_kind.to_string();
+        let record_id = record_id.to_string();
+        let plaintext = tokio::task::spawn_blocking(move || {
+            cipher.open_record(&engagement_id, &record_kind, &record_id, &envelope)
+        })
+        .await
+        .map_err(|error| StateError::CryptoTask(error.to_string()))??;
+        Ok(serde_json::from_slice(&plaintext)?)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_record_cipher() -> Arc<dyn EngagementRecordCipher> {
+    Arc::new(KeyringEngagementCipher::new(
+        codex_keyring_store::tests::MockKeyringStore::default(),
+    ))
+}
+
+#[cfg(test)]
+pub(crate) async fn open_test_store(path: &Path) -> Result<StateStore, StateError> {
+    StateStore::open_with_cipher(path, test_record_cipher()).await
 }
 
 #[path = "state_target.rs"]

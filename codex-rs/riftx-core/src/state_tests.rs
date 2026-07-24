@@ -2,6 +2,9 @@ use super::*;
 use crate::AssessmentObjective;
 use crate::AuthorizationScope;
 use crate::AuthorizationWindow;
+use crate::ConversationEntryDraft;
+use crate::ConversationKind;
+use crate::ConversationRole;
 use crate::EnvironmentClass;
 use crate::ExecutionMode;
 use crate::Scope;
@@ -47,7 +50,7 @@ fn engagement() -> Engagement {
 #[tokio::test]
 async fn engagement_lifecycle_is_persisted() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     let draft = engagement();
@@ -83,7 +86,7 @@ async fn engagement_lifecycle_is_persisted() {
 #[tokio::test]
 async fn task_is_resolved_by_turn_id() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     store
@@ -111,7 +114,7 @@ async fn task_is_resolved_by_turn_id() {
 #[tokio::test]
 async fn multi_asset_relationship_is_persisted() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     store
@@ -144,7 +147,7 @@ async fn multi_asset_relationship_is_persisted() {
 #[tokio::test]
 async fn invalid_engagement_transition_is_rejected() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     store
@@ -162,7 +165,10 @@ async fn invalid_engagement_transition_is_rejected() {
 async fn system_state_survives_store_reopen() {
     let temp = TempDir::new().expect("temp dir");
     let path = temp.path().join("state.sqlite");
-    let store = StateStore::open(&path).await.expect("state store");
+    let cipher = test_record_cipher();
+    let store = StateStore::open_with_cipher(&path, cipher.clone())
+        .await
+        .expect("state store");
     let expected = serde_json::json!({
         "state": "paused",
         "reason": "killSwitch",
@@ -174,7 +180,9 @@ async fn system_state_survives_store_reopen() {
         .expect("put system state");
     drop(store);
 
-    let reopened = StateStore::open(&path).await.expect("reopen state store");
+    let reopened = StateStore::open_with_cipher(&path, cipher)
+        .await
+        .expect("reopen state store");
     assert_eq!(
         reopened
             .system_state::<serde_json::Value>("daemonControl")
@@ -182,4 +190,109 @@ async fn system_state_survives_store_reopen() {
             .expect("read system state"),
         Some(expected)
     );
+}
+
+#[tokio::test]
+async fn encrypted_engagement_state_survives_store_reopen() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("state.sqlite");
+    let keyring = codex_keyring_store::tests::MockKeyringStore::default();
+    let store = StateStore::open_with_cipher(
+        &path,
+        Arc::new(KeyringEngagementCipher::new(keyring.clone())),
+    )
+    .await
+    .expect("state store");
+    let expected = engagement();
+    store
+        .put_engagement(&expected)
+        .await
+        .expect("store engagement");
+    drop(store);
+
+    let reopened =
+        StateStore::open_with_cipher(&path, Arc::new(KeyringEngagementCipher::new(keyring)))
+            .await
+            .expect("reopen state store");
+
+    assert_eq!(
+        reopened
+            .engagement(&expected.id)
+            .await
+            .expect("read engagement"),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn engagement_owned_payloads_are_encrypted_and_tampering_is_rejected() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = open_test_store(&temp.path().join("state.sqlite"))
+        .await
+        .expect("state store");
+    let mut engagement = engagement();
+    engagement.name = "plaintext-engagement-marker".to_string();
+    store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let asset = Asset {
+        id: "asset-1".to_string(),
+        engagement_id: engagement.id.clone(),
+        kind: "host".to_string(),
+        value: "plaintext-asset-marker".to_string(),
+        discovered_at: 2,
+    };
+    store.put_asset(&asset).await.expect("store asset");
+    let conversation = ConversationEntryDraft {
+        id: "message-1".to_string(),
+        engagement_id: engagement.id.clone(),
+        turn_id: Some("turn-1".to_string()),
+        role: ConversationRole::Operator,
+        kind: ConversationKind::Message,
+        text: "plaintext-conversation-marker".to_string(),
+        created_at: 3,
+    };
+    store
+        .append_conversation_entry(&conversation)
+        .await
+        .expect("store conversation");
+
+    for (query, marker) in [
+        (
+            "SELECT data FROM engagements LIMIT 1",
+            "plaintext-engagement-marker",
+        ),
+        ("SELECT data FROM assets LIMIT 1", "plaintext-asset-marker"),
+        (
+            "SELECT data FROM conversation_entries LIMIT 1",
+            "plaintext-conversation-marker",
+        ),
+    ] {
+        let payload: Vec<u8> = sqlx::query_scalar(query)
+            .fetch_one(&store.pool)
+            .await
+            .expect("raw encrypted payload");
+        assert!(payload.starts_with(b"RXE1"));
+        assert!(!String::from_utf8_lossy(&payload).contains(marker));
+    }
+
+    let mut tampered: Vec<u8> = sqlx::query_scalar("SELECT data FROM assets WHERE id = ?")
+        .bind(&asset.id)
+        .fetch_one(&store.pool)
+        .await
+        .expect("asset envelope");
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    sqlx::query("UPDATE assets SET data = ? WHERE id = ?")
+        .bind(tampered)
+        .bind(&asset.id)
+        .execute(&store.pool)
+        .await
+        .expect("tamper asset envelope");
+
+    assert!(matches!(
+        store.assets(&engagement.id).await,
+        Err(StateError::Crypto(CryptoError::AuthenticationFailed))
+    ));
 }

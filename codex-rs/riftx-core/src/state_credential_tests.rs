@@ -14,7 +14,7 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn credential_references_and_grants_are_engagement_scoped() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     let engagement = engagement();

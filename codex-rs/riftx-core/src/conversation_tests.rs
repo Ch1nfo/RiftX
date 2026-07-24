@@ -9,14 +9,14 @@ use crate::EngagementStatus;
 use crate::EnvironmentClass;
 use crate::ExecutionMode;
 use crate::Scope;
-use crate::StateStore;
+use crate::state::open_test_store;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 #[tokio::test]
 async fn conversation_history_is_ordered_deduplicated_and_paginated() {
     let temp = TempDir::new().expect("temp dir");
-    let store = StateStore::open(&temp.path().join("state.sqlite"))
+    let store = open_test_store(&temp.path().join("state.sqlite"))
         .await
         .expect("state store");
     store

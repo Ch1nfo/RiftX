@@ -28,6 +28,7 @@ const API_KEY_ENV: &str = "RIFTX_NATIVE_ACCEPTANCE_API_KEY";
 const API_KEY: &str = "native-acceptance-secret";
 const SECONDARY_API_KEY_ENV: &str = "RIFTX_NATIVE_ACCEPTANCE_SECONDARY_API_KEY";
 const SECONDARY_API_KEY: &str = "native-acceptance-secondary-secret";
+const TEST_EPHEMERAL_ENGAGEMENT_KEYS_ENV: &str = "RIFTX_TEST_EPHEMERAL_ENGAGEMENT_KEYS";
 const STARTUP_ATTEMPTS: usize = 200;
 const COMPLETION_ATTEMPTS: usize = 100;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -81,6 +82,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
             .arg(&config_path)
             .env(API_KEY_ENV, API_KEY)
             .env(SECONDARY_API_KEY_ENV, SECONDARY_API_KEY)
+            .env(TEST_EPHEMERAL_ENGAGEMENT_KEYS_ENV, "1")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

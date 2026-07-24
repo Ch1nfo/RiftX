@@ -29,7 +29,8 @@ Named Pipe 提供本地服务。
 - API-Key-only 的内嵌 Agent Runtime，不读取账号登录状态。
 - 本机 engagement workspace 与单一持续主 Agent。
 - Objective、Scope、Policy Revision、Approval 和三模式领域约束。
-- 多资产 Target State、Evidence 链、SQLite 状态、JSONL 审计和 Markdown/JSON 报告。
+- 多资产 Target State、Evidence 链、按 Engagement 数据密钥加密的 SQLite 状态、JSONL
+  审计和 Markdown/JSON 报告。
 - `riftxd` 本地 IPC API 和 Operator CLI。
 - Tauri 2 + React 桌面壳，已具备 Engagement 列表、创建、选择、Native 指令提交、
   interrupt、实时对话事件、单次命令审批和状态报告工作台；前端只通过 Rust bridge
@@ -66,8 +67,8 @@ Named Pipe 提供本地服务。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、
-加密案件存储、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
+尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、Audit/Artifact
+与 `.riftxcase` 加密、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。

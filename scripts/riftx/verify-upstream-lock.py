@@ -22,7 +22,9 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate codex-upstream.lock")
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parents[2]
+    )
     parser.add_argument(
         "--expected-commit",
         default=os.environ.get("RIFTX_EXPECTED_CODEX_COMMIT"),
@@ -44,7 +46,9 @@ def validate(root: Path, expected_commit: str | None) -> dict[str, object]:
     if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
         raise ValueError("commit must be a lowercase 40-character SHA-1")
     if expected_commit is not None and commit != expected_commit:
-        raise ValueError(f"locked commit {commit} does not match expected {expected_commit}")
+        raise ValueError(
+            f"locked commit {commit} does not match expected {expected_commit}"
+        )
 
     excluded_paths = lock.get("excluded_paths")
     if excluded_paths != [".git", ".codex"]:
@@ -94,4 +98,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

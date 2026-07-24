@@ -26,6 +26,8 @@ use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
 use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
+use codex_riftx_crypto::CryptoError;
+use codex_riftx_crypto::KeyringEngagementCipher;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -36,6 +38,7 @@ use codex_riftx_tools::ToolScanConfig;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -101,7 +104,10 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
             extra_paths: Vec::new(),
         },
     };
-    let store = StateStore::open(&config.daemon.state_db)
+    let cipher = Arc::new(KeyringEngagementCipher::new(
+        codex_keyring_store::tests::MockKeyringStore::default(),
+    ));
+    let store = StateStore::open_with_cipher(&config.daemon.state_db, cipher)
         .await
         .expect("state store");
     GatewayState::new(
@@ -1247,4 +1253,18 @@ fn invalid_target_state_maps_to_bad_request() {
     ));
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn encrypted_state_errors_are_redacted() {
+    let error = ApiError::from(StateError::Crypto(CryptoError::KeyStore(
+        "sensitive operating-system detail".to_string(),
+    )));
+
+    assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(error.code, "state_error");
+    assert_eq!(
+        error.message,
+        "encrypted engagement state is unavailable".to_string()
+    );
 }
