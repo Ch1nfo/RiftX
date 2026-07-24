@@ -1036,7 +1036,7 @@ button:disabled {
 }
 
 .settings-dialog {
-  width: min(520px, 100%);
+  width: min(640px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
   border: 1px solid var(--border-strong);
@@ -1069,6 +1069,206 @@ button:disabled {
   display: grid;
   padding: 18px;
   gap: 18px;
+}
+
+.settings-tabs {
+  display: flex;
+  padding: 0 18px;
+  gap: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tabs button {
+  height: 38px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.settings-tabs button.active {
+  border-bottom-color: var(--mint-strong);
+  color: var(--text);
+}
+
+.extension-settings {
+  display: grid;
+  padding: 16px 18px 20px;
+  gap: 16px;
+}
+
+.extension-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  gap: 12px 18px;
+}
+
+.extension-summary > div {
+  min-width: 0;
+}
+
+.extension-summary dt {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.extension-summary dd {
+  min-width: 0;
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+
+.extension-summary .extension-location {
+  grid-column: 1 / -1;
+}
+
+.extension-location dd {
+  display: grid;
+  gap: 4px;
+}
+
+.extension-location code {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-ok {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  color: #9edcc4;
+  font-size: 11px;
+}
+
+.diagnostic-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.diagnostic-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  padding: 9px 0;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--amber);
+}
+
+.diagnostic-row.error {
+  color: var(--red);
+}
+
+.diagnostic-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.diagnostic-row strong {
+  color: var(--text);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.diagnostic-row span,
+.diagnostic-row code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.extension-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.extension-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 11px 0;
+  align-items: start;
+  gap: 9px;
+  border-bottom: 1px solid var(--border);
+}
+
+.extension-row > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.extension-row strong {
+  font-size: 12px;
+}
+
+.extension-row span,
+.extension-row code {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extension-tags {
+  display: flex;
+  max-width: 210px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.extension-tags span {
+  min-height: 20px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--surface);
+  line-height: 12px;
+  text-transform: uppercase;
+}
+
+.extension-tags .tag-enabled,
+.extension-tags .risk-low {
+  border-color: #39745f;
+  color: #b9efd9;
+  background: #203d33;
+}
+
+.extension-tags .risk-high,
+.extension-tags .risk-critical,
+.extension-tags .tag-warning {
+  border-color: #72453f;
+  color: #f0b8b3;
+  background: #3a2825;
+}
+
+.extension-tags .risk-medium {
+  border-color: #76512a;
+  color: #f2c995;
+  background: #37291c;
+}
+
+.extension-empty {
+  display: flex;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .settings-summary {

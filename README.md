@@ -49,16 +49,17 @@ Named Pipe 提供本地服务。
   待审批请求；运行态变化写入 append-only JSONL 审计。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、
   token 增量或原始 App Server 事件。
-- 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入和
-  `riftx tools doctor`。
-- 单一 Skills Directory、独占 Runtime 根目录、内容快照和 `riftx skills doctor`。
+- 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入、
+  `riftx tools doctor`，以及 Desktop 中的工具、风险、遮蔽关系和诊断视图。
+- 单一 Skills Directory、独占 Runtime 根目录、内容快照、`riftx skills doctor`，
+  以及 Desktop 中的 Skill 来源、启用状态和诊断视图。
 - 本机命令 Execution 审计，包括脱敏 argv、resolved path、工具/快照哈希、
   stdout/stderr/stdin 哈希、退出状态和 interrupt 恢复。
 - workspace artifact 的内容寻址采集、容量限制、哈希清单和受控流式导出。
 - macOS、Windows、Linux 共用的确定性 Native daemon 端到端验收；macOS 调试
   `.app` 已完成本地实际运行验证。
 
-尚未完成完整 Provider/Profile 设置、完整审批矩阵、Linux TUI、
+尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、
 加密案件存储、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何

@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { DesktopBridgeError } from "../models";
+import { SkillsSettingsView, ToolsSettingsView } from "./ExtensionDiagnostics";
 import { ModelSettingsView } from "./ModelSettingsView";
 
 interface SettingsDialogProps {
@@ -10,13 +11,29 @@ interface SettingsDialogProps {
   onRuntimeChanged: (available: boolean) => void;
 }
 
+type SettingsTab = "model" | "tools" | "skills";
+
+const TAB_TITLES: Record<SettingsTab, string> = {
+  model: "Model access",
+  tools: "Tools snapshot",
+  skills: "Skills snapshot",
+};
+
 export function SettingsDialog({
   open,
   onClose,
   onError,
   onRuntimeChanged,
 }: SettingsDialogProps) {
+  const [tab, setTab] = useState<SettingsTab>("model");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setTab("model");
+      setBusy(false);
+    }
+  }, [open]);
 
   if (!open) {
     return null;
@@ -40,7 +57,7 @@ export function SettingsDialog({
         <header className="dialog-heading">
           <div>
             <span>Settings</span>
-            <h2 id="settings-title">Model access</h2>
+            <h2 id="settings-title">{TAB_TITLES[tab]}</h2>
           </div>
           <button
             type="button"
@@ -54,11 +71,31 @@ export function SettingsDialog({
           </button>
         </header>
 
-        <ModelSettingsView
-          onBusyChange={setBusy}
-          onError={onError}
-          onRuntimeChanged={onRuntimeChanged}
-        />
+        <div className="settings-tabs" role="tablist" aria-label="Settings">
+          {(["model", "tools", "skills"] as SettingsTab[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={tab === value}
+              className={tab === value ? "active" : undefined}
+              onClick={() => setTab(value)}
+              disabled={busy}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+
+        {tab === "model" && (
+          <ModelSettingsView
+            onBusyChange={setBusy}
+            onError={onError}
+            onRuntimeChanged={onRuntimeChanged}
+          />
+        )}
+        {tab === "tools" && <ToolsSettingsView onError={onError} />}
+        {tab === "skills" && <SkillsSettingsView onError={onError} />}
       </section>
     </div>
   );
