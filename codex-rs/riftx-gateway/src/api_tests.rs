@@ -432,6 +432,53 @@ async fn kill_switch_survives_gateway_restart() {
 }
 
 #[tokio::test]
+async fn operator_pause_survives_gateway_restart() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let expected = state
+        .set_control(
+            DaemonRunState::Paused,
+            Some(DaemonPauseReason::OperatorPause),
+        )
+        .await
+        .expect("pause");
+    let restarted = GatewayState::new(
+        state.config.as_ref().clone(),
+        state.store.clone(),
+        state.skills.as_ref().clone(),
+        state.tools.as_ref().clone(),
+    );
+    restarted
+        .reconcile_after_restart()
+        .await
+        .expect("restore runtime state");
+
+    assert_eq!(restarted.control_status().await, expected);
+}
+
+#[tokio::test]
+async fn clean_running_state_without_active_engagements_restores_as_running() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let expected = state
+        .set_control(DaemonRunState::Running, None)
+        .await
+        .expect("mark running");
+    let restarted = GatewayState::new(
+        state.config.as_ref().clone(),
+        state.store.clone(),
+        state.skills.as_ref().clone(),
+        state.tools.as_ref().clone(),
+    );
+    restarted
+        .reconcile_after_restart()
+        .await
+        .expect("restore runtime state");
+
+    assert_eq!(restarted.control_status().await, expected);
+}
+
+#[tokio::test]
 async fn pause_interrupts_active_work_and_resume_never_replays_it() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
