@@ -75,6 +75,57 @@ async fn local_http_round_trip_and_streaming() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn typed_json_request_and_response_round_trip() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let endpoint = LocalIpcEndpoint::new(temp.path().join("ipc"));
+    let listener = LocalIpcListener::bind(endpoint.clone())
+        .await
+        .expect("bind");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/turn",
+                post(|body: axum::body::Bytes| async move {
+                    let params: StartTurnParams =
+                        serde_json::from_slice(&body).expect("typed request JSON");
+                    serde_json::to_vec(&TurnAccepted {
+                        task_id: params.input.unwrap_or_default(),
+                        status: codex_riftx_domain::TaskStatus::Pending,
+                    })
+                    .expect("typed response JSON")
+                }),
+            ),
+        )
+        .await
+        .expect("serve");
+    });
+
+    let response = LocalIpcClient::new(endpoint)
+        .post_typed(
+            "/turn",
+            &StartTurnParams {
+                input: Some("task-1".to_string()),
+            },
+        )
+        .await
+        .expect("typed request");
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(
+        response
+            .json::<TurnAccepted>()
+            .await
+            .expect("typed response"),
+        TurnAccepted {
+            task_id: "task-1".to_string(),
+            status: codex_riftx_domain::TaskStatus::Pending,
+        }
+    );
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn local_sse_stream_decodes_events_and_ignores_keep_alive_frames() {
     let temp = tempfile::tempdir().expect("tempdir");
     let endpoint = LocalIpcEndpoint::new(temp.path().join("ipc"));

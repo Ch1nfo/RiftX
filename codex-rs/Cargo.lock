@@ -3847,6 +3847,7 @@ dependencies = [
  "futures",
  "pretty_assertions",
  "rpassword",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -3858,6 +3859,7 @@ dependencies = [
  "base64 0.22.1",
  "codex-keyring-store",
  "codex-riftx-crypto",
+ "codex-riftx-domain",
  "codex-riftx-skills",
  "codex-riftx-tools",
  "ipnet",
@@ -3902,6 +3904,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-riftx-domain"
+version = "0.0.0"
+dependencies = [
+ "ipnet",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "codex-riftx-gateway"
 version = "0.0.0"
 dependencies = [
@@ -3943,6 +3956,7 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "bytes",
+ "codex-riftx-domain",
  "futures",
  "http 1.4.0",
  "http-body-util",

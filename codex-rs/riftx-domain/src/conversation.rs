@@ -44,7 +44,8 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
-    pub(crate) fn from_draft(sequence: i64, draft: ConversationEntryDraft) -> Self {
+    /// Adds the persistent sequence assigned to a validated draft.
+    pub fn from_draft(sequence: i64, draft: ConversationEntryDraft) -> Self {
         Self {
             sequence,
             id: draft.id,

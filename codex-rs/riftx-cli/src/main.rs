@@ -2,16 +2,31 @@ use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
 use codex_riftx_core::RiftxConfig;
+use codex_riftx_ipc::ApprovalDecision;
+use codex_riftx_ipc::ApprovalDecisionParams;
+use codex_riftx_ipc::AssessmentObjective;
+use codex_riftx_ipc::AuthorizationScope;
+use codex_riftx_ipc::AuthorizationWindow;
+use codex_riftx_ipc::ChangeModeParams;
+use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::EnvironmentClass;
+use codex_riftx_ipc::ExecutionMode;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
+use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
+use codex_riftx_ipc::Scope;
+use codex_riftx_ipc::StartTurnParams;
+use codex_riftx_ipc::StructuredSuccessCriterion;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillDiagnosticLevel;
 use codex_riftx_tools::DiagnosticLevel;
 use codex_riftx_tools::ToolInventory;
 use futures::StreamExt;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use serde_json::json;
 use std::path::PathBuf;
@@ -165,12 +180,12 @@ enum ExecutionModeArg {
     Auto,
 }
 
-impl ExecutionModeArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Hardened => "hardened",
-            Self::Auto => "auto",
+impl From<ExecutionModeArg> for ExecutionMode {
+    fn from(mode: ExecutionModeArg) -> Self {
+        match mode {
+            ExecutionModeArg::Native => Self::Native,
+            ExecutionModeArg::Hardened => Self::Hardened,
+            ExecutionModeArg::Auto => Self::Auto,
         }
     }
 }
@@ -182,12 +197,12 @@ enum EnvironmentClassArg {
     Production,
 }
 
-impl EnvironmentClassArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Lab => "lab",
-            Self::Staging => "staging",
-            Self::Production => "production",
+impl From<EnvironmentClassArg> for EnvironmentClass {
+    fn from(environment: EnvironmentClassArg) -> Self {
+        match environment {
+            EnvironmentClassArg::Lab => Self::Lab,
+            EnvironmentClassArg::Staging => Self::Staging,
+            EnvironmentClassArg::Production => Self::Production,
         }
     }
 }
@@ -225,32 +240,45 @@ async fn main() -> anyhow::Result<()> {
             starts_at,
             expires_at,
         } => {
-            let identity_selectors =
+            let identities: Vec<IdentitySelector> =
                 parse_json_arguments(&identity_selectors, "identity selector")?;
-            let structured_criteria =
+            let structured_criteria: Vec<StructuredSuccessCriterion> =
                 parse_json_arguments(&structured_criteria, "structured criterion")?;
-            send(
+            let cidrs = cidrs
+                .into_iter()
+                .map(|cidr| {
+                    cidr.parse()
+                        .with_context(|| format!("invalid CIDR: {cidr}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            send_typed(
                 &client,
-                RequestKind::PostJson,
-                "/v1/engagements".to_string(),
-                Some(json!({
-                    "name": name,
-                    "objective": {
-                        "summary": objective,
-                        "successCriteria": success_criteria,
-                        "structuredCriteria": structured_criteria,
+                "/v1/engagements",
+                &CreateEngagementParams {
+                    name,
+                    objective: AssessmentObjective {
+                        summary: objective,
+                        success_criteria,
+                        structured_criteria,
                     },
-                    "entryPoints": entry_points,
-                    "mode": mode.as_str(),
-                    "llmProfile": llm_profile,
-                    "authorization": {
-                        "network": {"cidrs": cidrs, "domains": domains, "ports": ports},
-                        "identities": identity_selectors,
-                        "capabilities": capabilities,
-                        "environment": environment.as_str(),
-                        "window": {"startsAt": starts_at, "expiresAt": expires_at},
+                    entry_points,
+                    mode: mode.into(),
+                    llm_profile,
+                    authorization: AuthorizationScope {
+                        network: Scope {
+                            cidrs,
+                            domains,
+                            ports,
+                        },
+                        identities,
+                        capabilities,
+                        environment: environment.into(),
+                        window: AuthorizationWindow {
+                            starts_at,
+                            expires_at,
+                        },
                     },
-                })),
+                },
             )
             .await?;
         }
@@ -277,31 +305,29 @@ async fn main() -> anyhow::Result<()> {
             mode,
             confirmation,
         } => {
-            send(
+            send_typed(
                 &client,
-                RequestKind::PostJson,
-                format!("/v1/engagements/{id}/mode"),
-                Some(json!({
-                    "mode": mode.as_str(),
-                    "confirmation": confirmation,
-                })),
+                &format!("/v1/engagements/{id}/mode"),
+                &ChangeModeParams {
+                    mode: mode.into(),
+                    confirmation,
+                },
             )
             .await?;
         }
         Command::Turn { id, input } => {
-            send(
+            send_typed(
                 &client,
-                RequestKind::PostJson,
-                format!("/v1/engagements/{id}/turns"),
-                Some(json!({"input": input})),
+                &format!("/v1/engagements/{id}/turns"),
+                &StartTurnParams { input },
             )
             .await?;
         }
         Command::Approve { id } => {
-            decide(&client, &id, "approve").await?;
+            decide(&client, &id, ApprovalDecision::Approve).await?;
         }
         Command::Deny { id } => {
-            decide(&client, &id, "deny").await?;
+            decide(&client, &id, ApprovalDecision::Deny).await?;
         }
         Command::Interrupt { id } => {
             send(
@@ -385,24 +411,42 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_json_arguments(arguments: &[String], kind: &str) -> anyhow::Result<Vec<Value>> {
+fn parse_json_arguments<T: DeserializeOwned>(
+    arguments: &[String],
+    kind: &str,
+) -> anyhow::Result<Vec<T>> {
     arguments
         .iter()
         .map(|argument| {
-            serde_json::from_str::<Value>(argument)
+            serde_json::from_str::<T>(argument)
                 .with_context(|| format!("invalid {kind} JSON: {argument}"))
         })
         .collect()
 }
 
-async fn decide(client: &LocalIpcClient, id: &str, decision: &str) -> anyhow::Result<()> {
-    send(
+async fn decide(
+    client: &LocalIpcClient,
+    id: &str,
+    decision: ApprovalDecision,
+) -> anyhow::Result<()> {
+    send_typed(
         client,
-        RequestKind::PostJson,
-        format!("/v1/approvals/{id}/decision"),
-        Some(json!({"decision": decision})),
+        &format!("/v1/approvals/{id}/decision"),
+        &ApprovalDecisionParams { decision },
     )
     .await
+}
+
+async fn send_typed<T: Serialize + ?Sized>(
+    client: &LocalIpcClient,
+    path: &str,
+    body: &T,
+) -> anyhow::Result<()> {
+    let response = client
+        .post_typed(path, body)
+        .await
+        .context("riftxd request failed")?;
+    print_response(response).await
 }
 
 async fn send(
@@ -420,6 +464,10 @@ async fn send(
         }
     }
     .context("riftxd request failed")?;
+    print_response(response).await
+}
+
+async fn print_response(response: LocalIpcResponse) -> anyhow::Result<()> {
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(

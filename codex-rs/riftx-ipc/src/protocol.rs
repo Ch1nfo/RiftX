@@ -1,3 +1,17 @@
+pub use codex_riftx_domain::AssessmentObjective;
+pub use codex_riftx_domain::AuthorizationScope;
+pub use codex_riftx_domain::AuthorizationWindow;
+pub use codex_riftx_domain::ConversationEntry;
+pub use codex_riftx_domain::ConversationKind;
+pub use codex_riftx_domain::ConversationRole;
+pub use codex_riftx_domain::Engagement;
+pub use codex_riftx_domain::EngagementStatus;
+pub use codex_riftx_domain::EnvironmentClass;
+pub use codex_riftx_domain::ExecutionMode;
+pub use codex_riftx_domain::IdentitySelector;
+pub use codex_riftx_domain::Scope;
+pub use codex_riftx_domain::StructuredSuccessCriterion;
+pub use codex_riftx_domain::TaskStatus;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -75,4 +89,51 @@ pub struct PendingApproval {
 pub enum ApprovalDecision {
     Approve,
     Deny,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateEngagementParams {
+    pub name: String,
+    pub objective: AssessmentObjective,
+    #[serde(default)]
+    pub entry_points: Vec<String>,
+    pub mode: ExecutionMode,
+    #[serde(default)]
+    pub llm_profile: Option<String>,
+    pub authorization: AuthorizationScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartTurnParams {
+    #[serde(default)]
+    pub input: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeModeParams {
+    pub mode: ExecutionMode,
+    pub confirmation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDecisionParams {
+    pub decision: ApprovalDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnAccepted {
+    pub task_id: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationPage {
+    pub data: Vec<ConversationEntry>,
+    pub next_cursor: Option<String>,
 }

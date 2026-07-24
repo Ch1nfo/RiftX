@@ -54,7 +54,9 @@ Named Pipe 提供本地服务。
   停止其他任务的后台监听；系统托盘按 Risk、Waiting approval、Running、Ready 的
   优先级聚合显示任务状态。
 - IPC v4 协议协商、有大小上限的 SSE 解码、断线重连，以及按 Engagement 查询和决策
-  待审批请求；运行态变化写入 append-only JSONL 审计。
+  待审批请求；运行态变化写入 append-only JSONL 审计。轻量 `riftx-domain` 现在承载
+  Engagement、Scope、授权、对话和任务状态类型，Gateway、CLI 与 Desktop 共用创建、模式
+  切换、turn、审批和对话分页消息，不再让 Desktop 通过 IPC 间接链接完整状态引擎。
 - 可分页恢复的持久对话历史；只保存操作员消息、最终 Agent 回复和计划，不保存推理、
   token 增量或原始 App Server 事件。
 - 跨平台 Tools Directory 扫描、可选元数据、SHA-256 快照、PATH 注入、
@@ -68,7 +70,8 @@ Named Pipe 提供本地服务。
   `.app` 已完成本地实际运行验证。
 
 尚未完成 Provider/Profile 定义增删与端点编辑、完整审批矩阵、Linux TUI、加密
-`.riftxcase`、三平台 Guard、Auto planner loop，以及完整的 typed IPC 业务消息。
+`.riftxcase`、三平台 Guard、Auto planner loop，以及 Credential、Artifact、Report 等剩余
+typed IPC 业务消息。
 
 项目不包含容器执行后端、固定渗透工具、固定 Recon/Exploit/Report Agent，也不预装任何
 安全工具。

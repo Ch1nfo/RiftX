@@ -1,17 +1,31 @@
 use codex_riftx_ipc::ApprovalDecision;
+use codex_riftx_ipc::ApprovalDecisionParams;
+use codex_riftx_ipc::ChangeModeParams;
 use codex_riftx_ipc::DaemonControlStatus;
+use codex_riftx_ipc::AssessmentObjective;
+use codex_riftx_ipc::AuthorizationScope;
+use codex_riftx_ipc::AuthorizationWindow;
+use codex_riftx_ipc::ConversationPage;
+use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
+use codex_riftx_ipc::Engagement;
+use codex_riftx_ipc::EngagementStatus;
+use codex_riftx_ipc::EnvironmentClass;
+use codex_riftx_ipc::ExecutionMode;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
+use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcError;
 use codex_riftx_ipc::LocalIpcResponse;
 use codex_riftx_ipc::PendingApproval;
+use codex_riftx_ipc::Scope;
+use codex_riftx_ipc::StartTurnParams;
+use codex_riftx_ipc::TurnAccepted;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use serde_json::json;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -118,56 +132,7 @@ pub(crate) struct DesktopDaemonInfo {
     runtime: DaemonControlStatus,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EngagementView {
-    id: String,
-    name: String,
-    status: String,
-    objective: ObjectiveView,
-    #[serde(default)]
-    entry_points: Vec<String>,
-    mode: String,
-    llm_profile: String,
-    authorization: AuthorizationView,
-    policy_revision: String,
-    thread_id: Option<String>,
-    created_at: i64,
-    updated_at: i64,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObjectiveView {
-    summary: String,
-    success_criteria: Vec<String>,
-    structured_criteria: Vec<Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthorizationView {
-    network: NetworkScopeView,
-    identities: Vec<Value>,
-    capabilities: Vec<String>,
-    environment: String,
-    window: AuthorizationWindowView,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NetworkScopeView {
-    cidrs: Vec<String>,
-    domains: Vec<String>,
-    ports: Vec<u16>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthorizationWindowView {
-    starts_at: Option<i64>,
-    expires_at: Option<i64>,
-}
+pub(crate) type EngagementView = Engagement;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -183,13 +148,13 @@ pub(crate) struct CreateEngagementInput {
     domains: Vec<String>,
     #[serde(default)]
     ports: Vec<u16>,
-    mode: String,
+    mode: ExecutionMode,
     llm_profile: Option<String>,
-    environment: String,
+    environment: EnvironmentClass,
     #[serde(default)]
     capabilities: Vec<String>,
     #[serde(default)]
-    identities: Vec<Value>,
+    identities: Vec<IdentitySelector>,
     starts_at: Option<i64>,
     expires_at: Option<i64>,
 }
@@ -198,44 +163,11 @@ pub(crate) struct CreateEngagementInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ChangeModeInput {
     engagement_id: String,
-    mode: ExecutionModeInput,
+    mode: ExecutionMode,
     confirmation: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum ExecutionModeInput {
-    Native,
-    Hardened,
-    Auto,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TurnAccepted {
-    task_id: String,
-    status: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ConversationEntryView {
-    sequence: i64,
-    id: String,
-    engagement_id: String,
-    turn_id: Option<String>,
-    role: String,
-    kind: String,
-    text: String,
-    created_at: i64,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ConversationPageView {
-    data: Vec<ConversationEntryView>,
-    next_cursor: Option<String>,
-}
+pub(crate) type ConversationPageView = ConversationPage;
 
 #[derive(Debug, Deserialize)]
 struct EndpointConfig {
@@ -301,7 +233,7 @@ pub(crate) async fn list_engagements(
         client,
         engagements
             .iter()
-            .filter(|engagement| engagement.status == "active")
+            .filter(|engagement| engagement.status == EngagementStatus::Active)
             .map(|engagement| engagement.id.clone()),
     )?;
     Ok(engagements)
@@ -313,34 +245,40 @@ pub(crate) async fn create_engagement(
     input: CreateEngagementInput,
 ) -> Result<EngagementView, DesktopError> {
     let client = state.client()?;
-    let body = json!({
-        "name": input.name,
-        "objective": {
-            "summary": input.objective,
-            "successCriteria": input.success_criteria,
-            "structuredCriteria": [],
+    let cidrs = input
+        .cidrs
+        .into_iter()
+        .map(|cidr| {
+            cidr.parse()
+                .map_err(|error| DesktopError::new("invalid_cidr", format!("{cidr}: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let params = CreateEngagementParams {
+        name: input.name,
+        objective: AssessmentObjective {
+            summary: input.objective,
+            success_criteria: input.success_criteria,
+            structured_criteria: Vec::new(),
         },
-        "entryPoints": input.entry_points,
-        "mode": input.mode,
-        "llmProfile": input.llm_profile,
-        "authorization": {
-            "network": {
-                "cidrs": input.cidrs,
-                "domains": input.domains,
-                "ports": input.ports,
+        entry_points: input.entry_points,
+        mode: input.mode,
+        llm_profile: input.llm_profile,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs,
+                domains: input.domains,
+                ports: input.ports,
             },
-            "identities": input.identities,
-            "capabilities": input.capabilities,
-            "environment": input.environment,
-            "window": {
-                "startsAt": input.starts_at,
-                "expiresAt": input.expires_at,
+            identities: input.identities,
+            capabilities: input.capabilities,
+            environment: input.environment,
+            window: AuthorizationWindow {
+                starts_at: input.starts_at,
+                expires_at: input.expires_at,
             },
         },
-    });
-    let body = serde_json::to_vec(&body)
-        .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
-    json_response(client.post_json("/v1/engagements", body).await).await
+    };
+    json_response(client.post_typed("/v1/engagements", &params).await).await
 }
 
 #[tauri::command]
@@ -368,8 +306,8 @@ pub(crate) async fn change_engagement_mode(
     input: ChangeModeInput,
 ) -> Result<EngagementView, DesktopError> {
     let client = state.client()?;
-    let (path, body) = mode_change_request(input)?;
-    json_response(client.post_json(&path, body).await).await
+    let (path, params) = mode_change_request(input)?;
+    json_response(client.post_typed(&path, &params).await).await
 }
 
 #[tauri::command]
@@ -379,11 +317,12 @@ pub(crate) async fn start_turn(
     input: String,
 ) -> Result<TurnAccepted, DesktopError> {
     let client = state.client()?;
-    let body = serde_json::to_vec(&json!({"input": input}))
-        .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
     json_response(
         client
-            .post_json(&format!("/v1/engagements/{engagement_id}/turns"), body)
+            .post_typed(
+                &format!("/v1/engagements/{engagement_id}/turns"),
+                &StartTurnParams { input: Some(input) },
+            )
             .await,
     )
     .await
@@ -412,11 +351,12 @@ pub(crate) async fn decide_approval(
 ) -> Result<(), DesktopError> {
     validate_opaque_id("approval", &approval_id)?;
     let client = state.client()?;
-    let body = serde_json::to_vec(&json!({"decision": decision}))
-        .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
     empty_response(
         client
-            .post_json(&format!("/v1/approvals/{approval_id}/decision"), body)
+            .post_typed(
+                &format!("/v1/approvals/{approval_id}/decision"),
+                &ApprovalDecisionParams { decision },
+            )
             .await,
     )
     .await
@@ -621,15 +561,18 @@ fn conversation_path(engagement_id: &str, cursor: Option<i64>) -> Result<String,
     }
 }
 
-fn mode_change_request(input: ChangeModeInput) -> Result<(String, Vec<u8>), DesktopError> {
+fn mode_change_request(
+    input: ChangeModeInput,
+) -> Result<(String, ChangeModeParams), DesktopError> {
     validate_engagement_id(&input.engagement_id)?;
     let path = format!("/v1/engagements/{}/mode", input.engagement_id);
-    let body = serde_json::to_vec(&json!({
-        "mode": input.mode,
-        "confirmation": input.confirmation,
-    }))
-    .map_err(|error| DesktopError::new("encode_request", error.to_string()))?;
-    Ok((path, body))
+    Ok((
+        path,
+        ChangeModeParams {
+            mode: input.mode,
+            confirmation: input.confirmation,
+        },
+    ))
 }
 
 fn report_path(engagement_id: &str, format: &str) -> Result<String, DesktopError> {

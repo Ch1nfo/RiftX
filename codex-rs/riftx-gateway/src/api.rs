@@ -21,7 +21,6 @@ use axum::routing::get;
 use axum::routing::post;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
-use codex_riftx_core::ConversationEntry;
 use codex_riftx_core::ConversationEntryDraft;
 use codex_riftx_core::ConversationKind;
 use codex_riftx_core::ConversationRole;
@@ -35,11 +34,17 @@ use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_ipc::ApprovalDecision;
+use codex_riftx_ipc::ApprovalDecisionParams;
+use codex_riftx_ipc::ChangeModeParams;
+use codex_riftx_ipc::ConversationPage;
+use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::PendingApproval;
+use codex_riftx_ipc::StartTurnParams;
+use codex_riftx_ipc::TurnAccepted;
 use codex_riftx_tools::ToolInventory;
 use futures::Stream;
 use futures::stream;
@@ -58,39 +63,6 @@ const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
 const AUTO_MODE_CONFIRMATION: &str = "AUTO MODE - TEST ENVIRONMENT ONLY";
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateEngagementParams {
-    name: String,
-    objective: AssessmentObjective,
-    #[serde(default)]
-    entry_points: Vec<String>,
-    mode: ExecutionMode,
-    #[serde(default)]
-    llm_profile: Option<String>,
-    authorization: AuthorizationScope,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StartTurnParams {
-    #[serde(default)]
-    input: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ChangeModeParams {
-    mode: ExecutionMode,
-    confirmation: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ApprovalDecisionParams {
-    decision: ApprovalDecision,
-}
-
-#[derive(Debug, Deserialize)]
 struct ReportQuery {
     format: ReportFormat,
 }
@@ -107,20 +79,6 @@ struct ConversationQuery {
 enum ReportFormat {
     Markdown,
     Json,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TurnAccepted {
-    task_id: String,
-    status: TaskStatus,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConversationPage {
-    data: Vec<ConversationEntry>,
-    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

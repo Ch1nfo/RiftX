@@ -8,6 +8,8 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::pin::Pin;
 use thiserror::Error;
 
@@ -23,6 +25,10 @@ pub enum LocalIpcError {
     Request(#[from] http::Error),
     #[error("invalid local IPC event stream: {0}")]
     EventStream(String),
+    #[error("failed to encode local IPC JSON: {0}")]
+    EncodeJson(#[source] serde_json::Error),
+    #[error("failed to decode local IPC JSON: {0}")]
+    DecodeJson(#[source] serde_json::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +56,15 @@ impl LocalIpcClient {
     ) -> Result<LocalIpcResponse, LocalIpcError> {
         self.request(Method::POST, path, RequestBody::Json(json))
             .await
+    }
+
+    pub async fn post_typed<T: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        value: &T,
+    ) -> Result<LocalIpcResponse, LocalIpcError> {
+        let json = serde_json::to_vec(value).map_err(LocalIpcError::EncodeJson)?;
+        self.post_json(path, json).await
     }
 
     pub async fn post_bytes(
@@ -110,6 +125,11 @@ impl LocalIpcResponse {
 
     pub async fn bytes(self) -> Result<Bytes, LocalIpcError> {
         Ok(self.inner.into_body().collect().await?.to_bytes())
+    }
+
+    pub async fn json<T: DeserializeOwned>(self) -> Result<T, LocalIpcError> {
+        let bytes = self.bytes().await?;
+        serde_json::from_slice(&bytes).map_err(LocalIpcError::DecodeJson)
     }
 
     pub fn into_data_stream(

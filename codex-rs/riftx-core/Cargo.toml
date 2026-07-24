@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 codex-riftx-crypto = { workspace = true }
+codex-riftx-domain = { workspace = true }
 codex-riftx-skills = { workspace = true }
 codex-riftx-tools = { workspace = true }
 ipnet = { workspace = true, features = ["serde"] }
