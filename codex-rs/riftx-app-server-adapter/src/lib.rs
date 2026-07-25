@@ -3,8 +3,10 @@
 //! The facade deliberately exposes no raw request API. Every thread and turn is
 //! bound to an explicitly selected local workspace.
 
+mod approval_policy;
 mod events;
 
+pub use approval_policy::approval_policy_for_mode;
 pub use events::*;
 
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
@@ -15,7 +17,6 @@ use codex_app_server_client::InProcessAppServerRequestHandle;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_client::TypedRequestError;
-use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
@@ -52,6 +53,7 @@ use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::protocol::SessionSource;
+use codex_riftx_domain::ExecutionMode;
 use codex_riftx_guard::GuardNetworkPolicy;
 use codex_riftx_guard::RIFTX_GUARD_NET_ENV;
 use codex_riftx_guard::RIFTX_GUARD_WORK_ROOT_ENV;
@@ -236,8 +238,11 @@ impl RiftxAppServerAdapter {
         &self,
         cwd: &Path,
         hardened: Option<HardenedThreadGuard>,
+        mode: ExecutionMode,
     ) -> Result<String, AdapterError> {
-        self.request_handle.start_local_thread(cwd, hardened).await
+        self.request_handle
+            .start_local_thread(cwd, hardened, mode)
+            .await
     }
 
     pub async fn start_local_turn(
@@ -521,6 +526,7 @@ impl RiftxAppServerRequestHandle {
         &self,
         cwd: &Path,
         hardened: Option<HardenedThreadGuard>,
+        mode: ExecutionMode,
     ) -> Result<String, AdapterError> {
         let mut config = HashMap::new();
         if let Some(guard) = hardened {
@@ -540,7 +546,7 @@ impl RiftxAppServerRequestHandle {
                 request_id: self.next_request_id(),
                 params: ThreadStartParams {
                     cwd: Some(workspace_string(cwd)?),
-                    approval_policy: Some(AskForApproval::OnRequest),
+                    approval_policy: Some(approval_policy_for_mode(mode)),
                     sandbox: Some(SandboxMode::DangerFullAccess),
                     developer_instructions: Some(MAIN_AGENT_INSTRUCTIONS.to_string()),
                     environments: None,

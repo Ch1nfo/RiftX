@@ -595,7 +595,7 @@ async fn start_turn(
         Some(thread_id) => thread_id,
         None => {
             let thread_id = app_server
-                .start_local_thread(&workspace, /*hardened*/ None)
+                .start_local_thread(&workspace, /*hardened*/ None, engagement.mode)
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
             state
@@ -753,6 +753,9 @@ async fn decide_approval(
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
         }
+        PendingApprovalKind::Tool { decision_tx } => {
+            let _ = decision_tx.send(approved);
+        }
     }
     state
         .publish(
@@ -825,6 +828,9 @@ async fn interrupt_engagement_inner(
                             codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
                         )
                         .await;
+                }
+                PendingApprovalKind::Tool { decision_tx } => {
+                    let _ = decision_tx.send(false);
                 }
             }
         }

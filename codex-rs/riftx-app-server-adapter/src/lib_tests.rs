@@ -159,7 +159,11 @@ async fn local_workspace_starts_a_single_main_agent_thread() {
     let test = start_test_adapter().await;
     let thread_id = test
         .adapter
-        .start_local_thread(test.workspace.path(), /*hardened*/ None)
+        .start_local_thread(
+            test.workspace.path(),
+            /*hardened*/ None,
+            codex_riftx_domain::ExecutionMode::Pentest,
+        )
         .await
         .expect("local thread should start");
 
@@ -184,6 +188,7 @@ async fn hardened_thread_accepts_guard_work_root_override() {
                     vec![443],
                 ),
             }),
+            codex_riftx_domain::ExecutionMode::RedTeam,
         )
         .await
         .expect("hardened local thread should start");

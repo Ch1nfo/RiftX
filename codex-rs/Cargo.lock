@@ -3805,6 +3805,7 @@ dependencies = [
  "codex-core",
  "codex-feedback",
  "codex-protocol",
+ "codex-riftx-domain",
  "codex-riftx-guard",
  "codex-utils-absolute-path",
  "pretty_assertions",
