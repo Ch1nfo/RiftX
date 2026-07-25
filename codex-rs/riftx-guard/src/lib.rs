@@ -1,8 +1,13 @@
-//! Platform Guard preflight for Hardened and Auto modes.
+//! Legacy OS Guard helpers (v0.8).
 //!
-//! This crate probes OS-native enforcement capabilities. Hardened/Auto must
-//! refuse to start unless every required capability is present. Missing file or
-//! network rules keep the mode fail-closed even when lighter probes succeed.
+//! **Product path:** RiftX v0.8 does not fail-close RedTeam / Pentest / Auto on
+//! OS Guard preflight. Modes are enforced with application-layer approval
+//! policy, Kill Switch, and audit — not Seatbelt/Landlock readiness.
+//!
+//! This crate remains for experimental hardened-launch helpers
+//! (`apply_hardened_launch`, env policy encoding) used by optional spawn paths.
+//! It is **out of feature schedule**; do not add new Guard product requirements
+//! here. See `architecture/adr/0002-v0.8-legacy-guard.md`.
 
 mod exec;
 #[cfg(target_os = "linux")]
@@ -20,7 +25,9 @@ pub use exec::apply_hardened_launch_std;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Capability checklist required before Hardened or Auto may start.
+/// Capability checklist historically required before Hardened/Auto start.
+///
+/// Unused on the v0.8 product activate path; retained for legacy preflight APIs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GuardCapabilities {
     pub process_group: bool,
@@ -68,7 +75,7 @@ pub enum GuardPreflightStatus {
     UnsupportedPlatform,
 }
 
-/// Structured preflight result consumed by `riftxd`.
+/// Structured preflight result (legacy; not consulted by `riftxd` activate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardPreflightReport {
     pub status: GuardPreflightStatus,

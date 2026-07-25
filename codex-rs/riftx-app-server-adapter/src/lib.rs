@@ -70,7 +70,10 @@ use thiserror::Error;
 const UNSUPPORTED_REQUEST_CODE: i64 = -32601;
 pub const RIFTX_CREDENTIAL_TOOL_NAME: &str = "riftx_credential_tool";
 
-/// Hardened/Auto isolation settings injected into a local agent thread.
+/// Optional OS-isolation settings for a local agent thread.
+///
+/// Legacy: `riftxd` starts threads with `None`. Retained for adapter tests and
+/// experimental hardened launch wiring — not a v0.8 product requirement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardenedThreadGuard {
     pub work_root: PathBuf,

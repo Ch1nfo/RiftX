@@ -3929,7 +3929,6 @@ dependencies = [
  "codex-riftx-core",
  "codex-riftx-credentials",
  "codex-riftx-crypto",
- "codex-riftx-guard",
  "codex-riftx-ipc",
  "codex-riftx-report",
  "codex-riftx-skills",

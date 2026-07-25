@@ -11,8 +11,6 @@ use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_credentials::AssessmentCredentialStore;
 use codex_riftx_credentials::AssessmentSecretProvider;
-use codex_riftx_guard::PlatformGuard;
-use codex_riftx_guard::native_platform_guard;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -51,7 +49,6 @@ pub struct GatewayState {
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
     pub(crate) credential_processes: Arc<RwLock<HashMap<String, ActiveCredentialProcess>>>,
     pub(crate) assessment_credentials: Arc<dyn AssessmentSecretProvider>,
-    pub(crate) guard: Arc<dyn PlatformGuard>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
     pub(crate) control_slot: Arc<Semaphore>,
@@ -117,7 +114,6 @@ impl GatewayState {
             active_executions: Arc::new(RwLock::new(HashMap::new())),
             credential_processes: Arc::new(RwLock::new(HashMap::new())),
             assessment_credentials: Arc::new(AssessmentCredentialStore::default()),
-            guard: native_platform_guard(),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
             control_slot: Arc::new(Semaphore::new(1)),
@@ -135,11 +131,6 @@ impl GatewayState {
         provider: Arc<dyn AssessmentSecretProvider>,
     ) -> Self {
         self.assessment_credentials = provider;
-        self
-    }
-
-    pub fn with_guard(mut self, guard: Arc<dyn PlatformGuard>) -> Self {
-        self.guard = guard;
         self
     }
 
