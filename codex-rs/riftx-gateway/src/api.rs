@@ -21,7 +21,6 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
-use codex_riftx_app_server_adapter::HardenedThreadGuard;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::ConversationEntryDraft;
@@ -36,7 +35,6 @@ use codex_riftx_core::MAX_CONVERSATION_PAGE_SIZE;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
-use codex_riftx_guard::GuardNetworkPolicy;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::ChangeModeParams;
@@ -460,16 +458,13 @@ async fn change_mode(
     let policy =
         crate::credential_api::resolve_engagement_policy(&state, &engagement, params.mode).await?;
     validate_managed_capabilities(&engagement.authorization, &policy)?;
-    if params.mode.requires_guard() {
-        require_guard_ready(&state, params.mode)?;
-    }
     let previous_mode = engagement.mode;
     let previous_revision = engagement.policy_revision.clone();
     engagement.mode = params.mode;
     engagement.policy_revision = policy.revision;
     engagement.updated_at = unix_timestamp();
-    // Mode changes can enable or disable Guard spawn env; drop the cached
-    // thread so the next turn starts with matching isolation settings.
+    // Mode changes may alter approval/policy; drop the cached thread so the
+    // next turn starts with matching settings.
     state.agent_threads.write().await.remove(&id);
     engagement.thread_id = None;
     state.store.put_engagement(&engagement).await?;
@@ -501,9 +496,6 @@ async fn activate_engagement(
         return Err(ApiError::bad_request(
             "only draft or interrupted engagements can be activated",
         ));
-    }
-    if engagement.mode.requires_guard() {
-        require_guard_ready(&state, engagement.mode)?;
     }
     validate_authorization_time(&engagement.authorization, unix_timestamp())?;
     let policy =
@@ -544,23 +536,6 @@ fn validate_managed_capabilities(
         ));
     }
     Ok(())
-}
-
-fn require_guard_ready(state: &GatewayState, mode: ExecutionMode) -> Result<(), ApiError> {
-    let work_root = state.config.daemon.runtime_home.join("guard");
-    let report = state.guard.preflight(&work_root);
-    if report.allows_hardened() {
-        return Ok(());
-    }
-    Err(ApiError {
-        status: StatusCode::NOT_IMPLEMENTED,
-        code: "guard_unavailable",
-        message: report.refusal_message(match mode {
-            ExecutionMode::Hardened => "Hardened",
-            ExecutionMode::Auto => "Auto",
-            ExecutionMode::Native => "Native",
-        }),
-    })
 }
 
 fn mode_switch_conflict(message: impl Into<String>) -> ApiError {
@@ -619,18 +594,8 @@ async fn start_turn(
     let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
         None => {
-            let hardened = engagement
-                .mode
-                .requires_guard()
-                .then(|| HardenedThreadGuard {
-                    work_root: workspace.clone(),
-                    network: GuardNetworkPolicy::from_cidrs_and_ports(
-                        engagement.authorization.network.cidrs.clone(),
-                        engagement.authorization.network.ports.clone(),
-                    ),
-                });
             let thread_id = app_server
-                .start_local_thread(&workspace, hardened)
+                .start_local_thread(&workspace, /*hardened*/ None)
                 .await
                 .map_err(|error| ApiError::app_server(error.to_string()))?;
             state

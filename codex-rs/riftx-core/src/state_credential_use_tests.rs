@@ -173,7 +173,7 @@ async fn fixture(max_uses: u32, max_failures: u32) -> (TempDir, StateStore, Cred
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {

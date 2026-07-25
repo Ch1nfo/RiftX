@@ -24,7 +24,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
                 structured_criteria: Vec::new(),
             },
             entry_points: vec!["10.10.20.10".to_string()],
-            mode: ExecutionMode::Native,
+            mode: ExecutionMode::Pentest,
             llm_profile: "default".to_string(),
             authorization: AuthorizationScope {
                 network: Scope {
@@ -167,7 +167,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         "Credential reuse may reach domain control",
         "credentialValidation",
         "native-tool",
-        "Mode: `Native`",
+        "Mode: `Pentest`",
         "attack_path.analysis",
         "domainController",
         "authorizedAssets`: 3/4",

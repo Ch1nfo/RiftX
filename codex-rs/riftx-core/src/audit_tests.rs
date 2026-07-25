@@ -42,7 +42,7 @@ async fn engagement_records_are_encrypted_and_system_records_remain_readable() {
         thread_id: None,
         turn_id: None,
         tool_call_id: None,
-        mode: Some(ExecutionMode::Native),
+        mode: Some(ExecutionMode::Pentest),
         policy_revision: Some("policy-1".to_string()),
         outcome: Some("success".to_string()),
         details: Some(serde_json::json!({"marker": "sensitive-audit-detail"})),
@@ -118,7 +118,7 @@ async fn tampered_encrypted_audit_record_is_rejected() {
             thread_id: None,
             turn_id: None,
             tool_call_id: None,
-            mode: Some(ExecutionMode::Native),
+            mode: Some(ExecutionMode::Pentest),
             policy_revision: None,
             outcome: Some("success".to_string()),
             details: None,
@@ -162,7 +162,7 @@ fn engagement() -> Engagement {
         },
         status: EngagementStatus::Draft,
         entry_points: Vec::new(),
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {

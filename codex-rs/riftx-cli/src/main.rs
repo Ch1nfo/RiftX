@@ -174,16 +174,16 @@ enum ReportFormatArg {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum ExecutionModeArg {
-    Native,
-    Hardened,
+    RedTeam,
+    Pentest,
     Auto,
 }
 
 impl From<ExecutionModeArg> for ExecutionMode {
     fn from(mode: ExecutionModeArg) -> Self {
         match mode {
-            ExecutionModeArg::Native => Self::Native,
-            ExecutionModeArg::Hardened => Self::Hardened,
+            ExecutionModeArg::RedTeam => Self::RedTeam,
+            ExecutionModeArg::Pentest => Self::Pentest,
             ExecutionModeArg::Auto => Self::Auto,
         }
     }

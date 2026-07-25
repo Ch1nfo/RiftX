@@ -37,7 +37,7 @@ export function NewEngagementDialog({
   const [cidrs, setCidrs] = useState("");
   const [domains, setDomains] = useState("");
   const [capabilities, setCapabilities] = useState("network.discovery");
-  const [mode, setMode] = useState<ExecutionMode>("native");
+  const [mode, setMode] = useState<ExecutionMode>("pentest");
   const [environment, setEnvironment] = useState<EnvironmentClass>("lab");
   const [profiles, setProfiles] = useState<LlmProfileSettings[]>([]);
   const [llmProfile, setLlmProfile] = useState("");
@@ -171,18 +171,22 @@ export function NewEngagementDialog({
           <fieldset>
             <legend>Mode</legend>
             <div className="segmented-control">
-              {(["native", "hardened", "auto"] as ExecutionMode[]).map(
-                (value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={mode === value ? "active" : undefined}
-                    onClick={() => setMode(value)}
-                  >
-                    {value}
-                  </button>
-                ),
-              )}
+              {(
+                [
+                  { id: "redTeam", label: "RedTeam" },
+                  { id: "pentest", label: "Pentest" },
+                  { id: "auto", label: "Auto" },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={mode === option.id ? "active" : undefined}
+                  onClick={() => setMode(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
           </fieldset>
           <label>
@@ -218,7 +222,10 @@ export function NewEngagementDialog({
         {mode === "auto" && (
           <div className="auto-warning">
             <AlertTriangle size={17} />
-            <span>Auto Mode is restricted to authorized test labs.</span>
+            <span>
+              Auto is for lab / range targets. Confirm risk before letting RiftX
+              run with fewer interruptions.
+            </span>
           </div>
         )}
 

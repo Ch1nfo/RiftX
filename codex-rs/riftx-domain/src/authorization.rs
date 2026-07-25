@@ -6,14 +6,19 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ExecutionMode {
-    Native,
-    Hardened,
+    /// Guarded-pace red-team / exercise mode (was `Hardened` in v0.7).
+    #[serde(alias = "hardened")]
+    RedTeam,
+    /// Operator-led pentest / inspection mode (was `Native` in v0.7).
+    #[serde(alias = "native")]
+    Pentest,
     Auto,
 }
 
 impl ExecutionMode {
+    /// v0.8 does not require OS Guard for any mode.
     pub fn requires_guard(self) -> bool {
-        matches!(self, Self::Hardened | Self::Auto)
+        false
     }
 }
 

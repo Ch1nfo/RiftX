@@ -231,8 +231,9 @@ fn policy_layers_only_reduce_access() {
             expires_at: Some(200),
         },
     };
-    let effective = EffectivePolicy::resolve(&managed, ExecutionMode::Native, &authorization, None)
-        .expect("valid policy");
+    let effective =
+        EffectivePolicy::resolve(&managed, ExecutionMode::Pentest, &authorization, None)
+            .expect("valid policy");
     assert_eq!(
         effective.allowed_capabilities,
         ["network.discovery".to_string()].into()

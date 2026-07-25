@@ -21,7 +21,7 @@ fn create_command_accepts_repeated_scope_arguments() {
         "--port",
         "80",
         "--mode",
-        "native",
+        "pentest",
         "--llm-profile",
         "red-team",
         "--environment",
@@ -52,7 +52,7 @@ fn create_command_accepts_repeated_scope_arguments() {
     assert_eq!(cidrs, vec!["10.10.0.0/24"]);
     assert_eq!(domains, vec!["juice.local"]);
     assert_eq!(ports, vec![80]);
-    assert!(matches!(mode, ExecutionModeArg::Native));
+    assert!(matches!(mode, ExecutionModeArg::Pentest));
     assert_eq!(llm_profile.as_deref(), Some("red-team"));
     assert!(matches!(environment, EnvironmentClassArg::Lab));
     assert_eq!(capabilities, vec!["web.discovery"]);

@@ -24,7 +24,7 @@ fn engagement() -> Engagement {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["juice.local".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {

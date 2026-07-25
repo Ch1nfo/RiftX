@@ -3,7 +3,12 @@ import { useEffect, useState } from "react";
 import type { CredentialGrant, Engagement, ExecutionMode } from "../models";
 
 const AUTO_CONFIRMATION = "AUTO MODE - TEST ENVIRONMENT ONLY";
-const MODES: ExecutionMode[] = ["native", "hardened", "auto"];
+
+const MODES: { id: ExecutionMode; label: string }[] = [
+  { id: "redTeam", label: "RedTeam" },
+  { id: "pentest", label: "Pentest" },
+  { id: "auto", label: "Auto" },
+];
 
 interface ModeControlProps {
   engagement: Engagement;
@@ -46,16 +51,16 @@ export function ModeControl({
         {MODES.map((mode) => (
           <button
             type="button"
-            className={target === mode ? "active" : ""}
+            className={target === mode.id ? "active" : ""}
             disabled={controlsDisabled}
-            aria-pressed={target === mode}
+            aria-pressed={target === mode.id}
             onClick={() => {
-              setTarget(mode);
+              setTarget(mode.id);
               setConfirmation("");
             }}
-            key={mode}
+            key={mode.id}
           >
-            {mode}
+            {mode.label}
           </button>
         ))}
       </div>
@@ -67,22 +72,22 @@ export function ModeControl({
         </p>
       )}
 
-      {changing && target === "native" && (
+      {changing && target === "redTeam" && (
         <div className="mode-warning">
           <ShieldAlert size={16} />
           <span>
-            Native Mode trusts the operator and does not provide an enforced OS
-            network boundary.
+            RedTeam is for exercise-style attack work. Dangerous commands and
+            high-risk tools require human approval.
           </span>
         </div>
       )}
 
-      {changing && target === "hardened" && (
+      {changing && target === "pentest" && (
         <div className="mode-warning">
           <ShieldAlert size={16} />
           <span>
-            Hardened Mode requires a passing platform Guard preflight. This
-            build rejects the switch until that Guard is installed.
+            Pentest is for operator-led inspections. Most actions can run;
+            dangerous commands still require approval.
           </span>
         </div>
       )}
@@ -92,9 +97,9 @@ export function ModeControl({
           <div className="mode-warning critical">
             <ShieldAlert size={16} />
             <span>
-              Auto Mode is for authorized lab testing only. It remains
-              unavailable until Guard and the full autonomous preflight are
-              installed.
+              Auto is for lab / range targets only. Confirm risk once before
+              start; RiftX will interrupt less often while running. Kill Switch
+              remains available.
             </span>
           </div>
           <dl>
@@ -163,7 +168,7 @@ export function ModeControl({
           }
         >
           {busy && <LoaderCircle className="spin" size={14} />}
-          Apply {target} mode
+          Apply {MODES.find((mode) => mode.id === target)?.label ?? target} mode
         </button>
       )}
     </section>

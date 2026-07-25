@@ -69,7 +69,7 @@ fn mode_change_request_is_typed_and_rejects_path_injection() {
     assert_eq!(
         mode_change_request(ChangeModeInput {
             engagement_id: "../system/kill".to_string(),
-            mode: ExecutionMode::Native,
+            mode: ExecutionMode::Pentest,
             confirmation: None,
         }),
         Err(DesktopError::new(

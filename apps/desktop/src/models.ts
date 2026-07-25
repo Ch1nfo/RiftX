@@ -1,4 +1,4 @@
-export type ExecutionMode = "native" | "hardened" | "auto";
+export type ExecutionMode = "redTeam" | "pentest" | "auto";
 export type EnvironmentClass = "lab" | "staging" | "production";
 export type EngagementStatus = "draft" | "active" | "interrupted" | "completed";
 export type DaemonRunState = "running" | "paused";

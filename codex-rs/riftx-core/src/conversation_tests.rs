@@ -105,7 +105,7 @@ fn engagement() -> Engagement {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["127.0.0.1".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {

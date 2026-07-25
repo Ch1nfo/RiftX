@@ -4,7 +4,7 @@ use crate::Scope;
 #[test]
 fn effective_policy_checks_ip_domain_and_port_scope() {
     let policy = EffectivePolicy {
-        execution_mode: ExecutionMode::Native,
+        execution_mode: ExecutionMode::Pentest,
         environment: EnvironmentClass::Lab,
         authorization_window: AuthorizationWindow {
             starts_at: None,
@@ -61,7 +61,7 @@ fn credential_grants_are_order_independent_policy_inputs() {
         created_at: 100,
         revoked_at: None,
     };
-    let base = EffectivePolicy::resolve(&managed, ExecutionMode::Native, &authorization, None)
+    let base = EffectivePolicy::resolve(&managed, ExecutionMode::Pentest, &authorization, None)
         .expect("base policy");
     let left = base
         .clone()

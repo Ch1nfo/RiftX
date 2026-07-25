@@ -40,14 +40,34 @@ fn auto_requires_a_lab_scope_with_expiry() {
 }
 
 #[test]
-fn hardened_requires_guard_but_native_does_not() {
+fn no_mode_requires_os_guard_in_v0_8() {
     assert_eq!(
         [
-            ExecutionMode::Native.requires_guard(),
-            ExecutionMode::Hardened.requires_guard(),
+            ExecutionMode::RedTeam.requires_guard(),
+            ExecutionMode::Pentest.requires_guard(),
             ExecutionMode::Auto.requires_guard(),
         ],
-        [false, true, true]
+        [false, false, false]
+    );
+}
+
+#[test]
+fn execution_mode_accepts_legacy_wire_names() {
+    assert_eq!(
+        serde_json::from_str::<ExecutionMode>(r#""hardened""#).expect("hardened"),
+        ExecutionMode::RedTeam
+    );
+    assert_eq!(
+        serde_json::from_str::<ExecutionMode>(r#""native""#).expect("native"),
+        ExecutionMode::Pentest
+    );
+    assert_eq!(
+        serde_json::to_string(&ExecutionMode::RedTeam).expect("serialize"),
+        r#""redTeam""#
+    );
+    assert_eq!(
+        serde_json::to_string(&ExecutionMode::Pentest).expect("serialize"),
+        r#""pentest""#
     );
 }
 
@@ -64,7 +84,7 @@ fn authorization_requires_explicit_capabilities() {
     let mut authorization = scope(EnvironmentClass::Lab, Some(200));
     authorization.capabilities.clear();
     assert_eq!(
-        authorization.validate_for(ExecutionMode::Native),
+        authorization.validate_for(ExecutionMode::Pentest),
         Err(AuthorizationError::MissingCapabilities)
     );
 }

@@ -215,7 +215,7 @@ pub(crate) fn native_engagement(
     };
     let policy_revision = EffectivePolicy::resolve(
         &state.config.policy,
-        ExecutionMode::Native,
+        ExecutionMode::Pentest,
         &authorization,
         None,
     )
@@ -231,7 +231,7 @@ pub(crate) fn native_engagement(
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization,
         policy_revision,
@@ -383,7 +383,7 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
@@ -797,7 +797,7 @@ async fn conversation_endpoint_returns_latest_entries_with_an_older_cursor() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["127.0.0.1".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
@@ -916,7 +916,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["127.0.0.1".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
@@ -1035,7 +1035,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
 }
 
 #[tokio::test]
-async fn guarded_modes_cannot_activate_before_guard_is_available() {
+async fn red_team_mode_can_activate_without_os_guard() {
     let temp = TempDir::new().expect("temp dir");
     let app = test_router(&temp).await;
     let response = app
@@ -1046,7 +1046,7 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
                 .uri("/v1/engagements")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Guarded lab","objective":{"summary":"Validate the guarded path","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"hardened","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                    r#"{"name":"Red team lab","objective":{"summary":"Validate red-team path","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"redTeam","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
                 ))
                 .expect("request"),
         )
@@ -1061,6 +1061,7 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
             .to_bytes(),
     )
     .expect("engagement JSON");
+    assert_eq!(engagement.mode, ExecutionMode::RedTeam);
 
     let response = app
         .oneshot(
@@ -1073,8 +1074,8 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let error: serde_json::Value = serde_json::from_slice(
+    assert_eq!(response.status(), StatusCode::OK);
+    let activated: Engagement = serde_json::from_slice(
         &response
             .into_body()
             .collect()
@@ -1082,23 +1083,24 @@ async fn guarded_modes_cannot_activate_before_guard_is_available() {
             .expect("body")
             .to_bytes(),
     )
-    .expect("error JSON");
-    assert_eq!(error["code"], "guard_unavailable");
+    .expect("engagement JSON");
+    assert_eq!(activated.status, EngagementStatus::Active);
+    assert_eq!(activated.mode, ExecutionMode::RedTeam);
 }
 
 #[tokio::test]
-async fn hardened_mode_can_activate_when_guard_preflight_is_ready() {
+async fn red_team_mode_can_activate_when_legacy_guard_preflight_is_ready() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await.with_guard(Arc::new(ReadyGuard));
     let mut engagement = native_engagement(&state, "eng-guard-ready", EngagementStatus::Draft);
-    engagement.mode = ExecutionMode::Hardened;
+    engagement.mode = ExecutionMode::RedTeam;
     engagement.policy_revision = EffectivePolicy::resolve(
         &state.config.policy,
         engagement.mode,
         &engagement.authorization,
         None,
     )
-    .expect("hardened policy")
+    .expect("red-team policy")
     .revision;
     state
         .store
@@ -1127,22 +1129,22 @@ async fn hardened_mode_can_activate_when_guard_preflight_is_ready() {
     )
     .expect("engagement JSON");
     assert_eq!(activated.status, EngagementStatus::Active);
-    assert_eq!(activated.mode, ExecutionMode::Hardened);
+    assert_eq!(activated.mode, ExecutionMode::RedTeam);
 }
 
 #[tokio::test]
-async fn guarded_draft_can_switch_to_native_with_a_new_audited_policy() {
+async fn red_team_draft_can_switch_to_pentest_with_a_new_audited_policy() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
-    let mut engagement = native_engagement(&state, "eng-mode-native", EngagementStatus::Draft);
-    engagement.mode = ExecutionMode::Hardened;
+    let mut engagement = native_engagement(&state, "eng-mode-pentest", EngagementStatus::Draft);
+    engagement.mode = ExecutionMode::RedTeam;
     engagement.policy_revision = EffectivePolicy::resolve(
         &state.config.policy,
         engagement.mode,
         &engagement.authorization,
         None,
     )
-    .expect("hardened policy")
+    .expect("red-team policy")
     .revision;
     let previous_revision = engagement.policy_revision.clone();
     state
@@ -1157,7 +1159,7 @@ async fn guarded_draft_can_switch_to_native_with_a_new_audited_policy() {
                 .method("POST")
                 .uri(format!("/v1/engagements/{}/mode", engagement.id))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"mode":"native","confirmation":null}"#))
+                .body(Body::from(r#"{"mode":"pentest","confirmation":null}"#))
                 .expect("request"),
         )
         .await
@@ -1173,7 +1175,7 @@ async fn guarded_draft_can_switch_to_native_with_a_new_audited_policy() {
             .to_bytes(),
     )
     .expect("engagement JSON");
-    assert_eq!(changed.mode, ExecutionMode::Native);
+    assert_eq!(changed.mode, ExecutionMode::Pentest);
     assert_ne!(changed.policy_revision, previous_revision);
     assert_eq!(
         state
@@ -1222,7 +1224,7 @@ async fn mode_switch_rejects_active_turns_and_preserves_policy() {
                 .method("POST")
                 .uri(format!("/v1/engagements/{}/mode", engagement.id))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"mode":"hardened","confirmation":null}"#))
+                .body(Body::from(r#"{"mode":"redTeam","confirmation":null}"#))
                 .expect("request"),
         )
         .await
@@ -1250,7 +1252,7 @@ async fn mode_switch_rejects_active_turns_and_preserves_policy() {
 }
 
 #[tokio::test]
-async fn auto_mode_requires_exact_confirmation_before_guard_preflight() {
+async fn auto_mode_requires_exact_confirmation_phrase() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
     let engagement = native_engagement(&state, "eng-mode-auto", EngagementStatus::Draft);
@@ -1289,15 +1291,17 @@ async fn auto_mode_requires_exact_confirmation_before_guard_preflight() {
         )
         .await
         .expect("response");
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(
-        state
-            .store
-            .engagement(&engagement.id)
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed: Engagement = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
             .await
-            .expect("stored engagement"),
-        engagement
-    );
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+    assert_eq!(changed.mode, ExecutionMode::Auto);
 }
 
 #[tokio::test]
@@ -1398,7 +1402,7 @@ async fn operational_turn_context_includes_objective_and_multi_asset_graph() {
             structured_criteria: Vec::new(),
         },
         entry_points: vec!["10.10.0.10".to_string()],
-        mode: ExecutionMode::Native,
+        mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
         authorization: AuthorizationScope {
             network: Scope {
