@@ -1,12 +1,12 @@
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
-use codex_riftx_ipc::ChangeModeParams;
-use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::AssessmentObjective;
 use codex_riftx_ipc::AuthorizationScope;
 use codex_riftx_ipc::AuthorizationWindow;
+use codex_riftx_ipc::ChangeModeParams;
 use codex_riftx_ipc::ConversationPage;
 use codex_riftx_ipc::CreateEngagementParams;
+use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::Engagement;
 use codex_riftx_ipc::EngagementReport;
@@ -383,7 +383,12 @@ pub(crate) async fn engagement_report(
     engagement_id: String,
 ) -> Result<EngagementReport, DesktopError> {
     let client = state.client()?;
-    json_response(client.get(&report_path(&engagement_id, ReportFormat::Json)?).await).await
+    json_response(
+        client
+            .get(&report_path(&engagement_id, ReportFormat::Json)?)
+            .await,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -392,7 +397,12 @@ pub(crate) async fn engagement_report_markdown(
     engagement_id: String,
 ) -> Result<String, DesktopError> {
     let client = state.client()?;
-    text_response(client.get(&report_path(&engagement_id, ReportFormat::Markdown)?).await).await
+    text_response(
+        client
+            .get(&report_path(&engagement_id, ReportFormat::Markdown)?)
+            .await,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -562,9 +572,7 @@ fn conversation_path(engagement_id: &str, cursor: Option<i64>) -> Result<String,
     }
 }
 
-fn mode_change_request(
-    input: ChangeModeInput,
-) -> Result<(String, ChangeModeParams), DesktopError> {
+fn mode_change_request(input: ChangeModeInput) -> Result<(String, ChangeModeParams), DesktopError> {
     validate_engagement_id(&input.engagement_id)?;
     let path = format!("/v1/engagements/{}/mode", input.engagement_id);
     Ok((
@@ -576,10 +584,7 @@ fn mode_change_request(
     ))
 }
 
-fn report_path(
-    engagement_id: &str,
-    format: ReportFormat,
-) -> Result<String, DesktopError> {
+fn report_path(engagement_id: &str, format: ReportFormat) -> Result<String, DesktopError> {
     validate_engagement_id(engagement_id)?;
     Ok(format!(
         "/v1/engagements/{engagement_id}/report?format={}",

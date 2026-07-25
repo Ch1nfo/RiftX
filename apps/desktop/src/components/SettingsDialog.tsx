@@ -14,9 +14,15 @@ interface SettingsDialogProps {
 type SettingsTab = "model" | "tools" | "skills";
 
 const TAB_TITLES: Record<SettingsTab, string> = {
-  model: "Model access",
-  tools: "Tools snapshot",
-  skills: "Skills snapshot",
+  model: "Model",
+  tools: "Tools",
+  skills: "Skills",
+};
+
+const TAB_LABELS: Record<SettingsTab, string> = {
+  model: "Model",
+  tools: "Tools",
+  skills: "Skills",
 };
 
 export function SettingsDialog({
@@ -82,7 +88,7 @@ export function SettingsDialog({
               onClick={() => setTab(value)}
               disabled={busy}
             >
-              {value}
+              {TAB_LABELS[value]}
             </button>
           ))}
         </div>

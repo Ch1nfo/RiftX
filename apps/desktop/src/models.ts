@@ -23,6 +23,18 @@ export interface LlmSettings {
   daemonRestartRequired: boolean;
 }
 
+export interface ToolsSettings {
+  directories: string[];
+  daemonRestartRequired: boolean;
+}
+
+export interface UpsertLlmProfileInput {
+  profileName: string;
+  model: string;
+  baseUrl: string;
+  makeDefault?: boolean;
+}
+
 export interface LlmProfileSettings {
   profileName: string;
   model: string;

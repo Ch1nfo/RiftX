@@ -10,6 +10,8 @@ import {
 import { useEffect, useState } from "react";
 import {
   bridgeError,
+  getToolsSettings,
+  saveToolsSettings,
   skillCatalog as loadSkillCatalog,
   skillDoctor,
   toolDoctor,
@@ -20,6 +22,7 @@ import type {
   ExtensionDiagnostic,
   SkillCatalog,
   ToolInventory,
+  ToolsSettings,
 } from "../models";
 
 interface ExtensionDiagnosticsProps {
@@ -28,12 +31,22 @@ interface ExtensionDiagnosticsProps {
 
 export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   const [inventory, setInventory] = useState<ToolInventory | null>(null);
+  const [toolsSettings, setToolsSettings] = useState<ToolsSettings | null>(
+    null,
+  );
+  const [directoriesText, setDirectoriesText] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    void loadToolInventory()
-      .then(setInventory)
+    void Promise.all([loadToolInventory(), getToolsSettings()])
+      .then(([loadedInventory, loadedSettings]) => {
+        setInventory(loadedInventory);
+        setToolsSettings(loadedSettings);
+        setDirectoriesText(loadedSettings.directories.join("\n"));
+      })
       .catch((cause) => {
         setLoadFailed(true);
         onError(bridgeError(cause));
@@ -52,7 +65,31 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
     }
   };
 
-  if (!inventory) {
+  const saveDirectories = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const directories = directoriesText
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const updated = await saveToolsSettings(directories);
+      setToolsSettings(updated);
+      setDirectoriesText(updated.directories.join("\n"));
+      setInventory(await toolDoctor());
+      setNotice(
+        updated.daemonRestartRequired
+          ? "Directories saved. Restart the externally managed daemon to apply."
+          : "Directories saved. Tool inventory refreshed.",
+      );
+    } catch (cause) {
+      onError(bridgeError(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!inventory || !toolsSettings) {
     return (
       <SettingsLoading
         failed={loadFailed}
@@ -63,19 +100,51 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
 
   return (
     <div className="extension-settings">
+      <label className="tools-directories">
+        <span>Tools directories</span>
+        <textarea
+          value={directoriesText}
+          onChange={(event) => {
+            setDirectoriesText(event.target.value);
+            setNotice(null);
+          }}
+          rows={4}
+          spellCheck={false}
+          disabled={saving || checking}
+          placeholder={"One path per line\nLeave empty to use the platform default"}
+        />
+        <span className="tools-directories-hint">
+          Empty list uses the platform default Tools Directory. Changes write to
+          riftx.toml and reload the local daemon.
+        </span>
+      </label>
+      <div className="settings-actions">
+        <button
+          className="primary-button"
+          disabled={saving || checking}
+          type="button"
+          onClick={() => void saveDirectories()}
+        >
+          {saving && <LoaderCircle className="spin" size={14} />}
+          Save directories
+        </button>
+      </div>
+      {notice && <p className="settings-notice">{notice}</p>}
       <ExtensionSummary
         count={inventory.tools.length}
         countLabel="Tools"
         locations={inventory.roots}
-        locationLabel="Roots"
+        locationLabel="Resolved roots"
         pathCount={inventory.pathEntries.length}
         snapshot={inventory.snapshotSha256}
       />
       <div className="extension-actions">
-        <span>Doctor performs a fresh scan without changing active snapshots.</span>
+        <span>
+          Doctor performs a fresh scan without changing active snapshots.
+        </span>
         <button
           className="secondary-button"
-          disabled={checking}
+          disabled={checking || saving}
           type="button"
           onClick={() => void runDoctor()}
         >
@@ -107,7 +176,9 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         {inventory.tools.length === 0 && (
           <div className="extension-empty">
             <Wrench size={18} />
-            <span>No tools discovered</span>
+            <span>
+              No tools discovered. Add a Tools Directory above, then run doctor.
+            </span>
           </div>
         )}
       </div>
@@ -192,7 +263,7 @@ export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
         {catalog.skills.length === 0 && (
           <div className="extension-empty">
             <BookOpen size={18} />
-            <span>No skills discovered</span>
+            <span>No skills discovered in the configured Skills Directory.</span>
           </div>
         )}
       </div>

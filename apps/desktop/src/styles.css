@@ -1678,6 +1678,89 @@ button:disabled {
   gap: 16px;
 }
 
+.tools-directories {
+  display: grid;
+  gap: 8px;
+}
+
+.tools-directories > span:first-child {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.tools-directories textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.tools-directories textarea:focus {
+  outline: 1px solid var(--accent);
+}
+
+.tools-directories-hint {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.settings-profile-fields,
+.settings-new-profile {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-profile-fields label,
+.settings-new-profile label {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-profile-fields label > span,
+.settings-new-profile label > span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.settings-profile-fields input,
+.settings-new-profile input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-profile-fields input:focus,
+.settings-new-profile input:focus {
+  outline: 1px solid var(--accent);
+}
+
+.settings-summary.compact {
+  margin-top: 4px;
+}
+
+.settings-new-profile-toggle {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
 .extension-actions {
   display: flex;
   min-height: 32px;

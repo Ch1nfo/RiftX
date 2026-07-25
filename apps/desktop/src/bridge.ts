@@ -21,7 +21,9 @@ import type {
   PendingApproval,
   SkillCatalog,
   ToolInventory,
+  ToolsSettings,
   TurnAccepted,
+  UpsertLlmProfileInput,
 } from "./models";
 
 const ENGAGEMENT_EVENT_NAME = "riftx://engagement-event";
@@ -47,6 +49,36 @@ export function killRuntime(): Promise<DaemonControlStatus> {
 
 export function llmSettings(): Promise<LlmSettings> {
   return desktopInvoke("llm_settings");
+}
+
+export function getToolsSettings(): Promise<ToolsSettings> {
+  return desktopInvoke("get_tools_settings");
+}
+
+export function saveToolsSettings(
+  directories: string[],
+): Promise<ToolsSettings> {
+  return desktopInvoke("save_tools_settings", { input: { directories } });
+}
+
+export function upsertLlmProfile(
+  input: UpsertLlmProfileInput,
+): Promise<LlmSettings> {
+  return desktopInvoke("upsert_llm_profile", { input });
+}
+
+export function deleteLlmProfile(profileName: string): Promise<LlmSettings> {
+  return desktopInvoke("delete_llm_profile", {
+    input: { profileName },
+  });
+}
+
+export function setDefaultLlmProfile(
+  profileName: string,
+): Promise<LlmSettings> {
+  return desktopInvoke("set_default_llm_profile", {
+    input: { profileName },
+  });
 }
 
 export function saveLlmApiKey(
