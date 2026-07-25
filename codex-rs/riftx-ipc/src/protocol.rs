@@ -82,6 +82,7 @@ pub struct EngagementEvent {
 #[serde(rename_all = "camelCase")]
 pub enum ApprovalKind {
     Command,
+    Tool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

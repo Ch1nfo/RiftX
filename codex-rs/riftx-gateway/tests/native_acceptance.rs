@@ -273,6 +273,7 @@ async fn wait_for_completed_report(
     let path = format!("/v1/engagements/{engagement_id}/report?format=json");
     let mut last_report = Value::Null;
     for _ in 0..COMPLETION_ATTEMPTS {
+        approve_pending_approvals(client, engagement_id).await?;
         let response = client.get(&path).await?;
         if response.status() == StatusCode::OK {
             last_report = serde_json::from_slice(&response.bytes().await?)?;
@@ -298,6 +299,36 @@ async fn wait_for_completed_report(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("Native turn did not complete with an artifact: {last_report}")
+}
+
+async fn approve_pending_approvals(
+    client: &LocalIpcClient,
+    engagement_id: &str,
+) -> anyhow::Result<()> {
+    let response = client
+        .get(&format!("/v1/engagements/{engagement_id}/approvals"))
+        .await?;
+    if response.status() != StatusCode::OK {
+        return Ok(());
+    }
+    let approvals: Vec<Value> = serde_json::from_slice(&response.bytes().await?)?;
+    for approval in approvals {
+        let Some(approval_id) = approval["id"].as_str() else {
+            continue;
+        };
+        let decision = client
+            .post_json(
+                &format!("/v1/approvals/{approval_id}/decision"),
+                serde_json::to_vec(&json!({ "decision": "approve" }))?,
+            )
+            .await?;
+        anyhow::ensure!(
+            decision.status() == StatusCode::NO_CONTENT || decision.status() == StatusCode::OK,
+            "approve pending command returned {}",
+            decision.status()
+        );
+    }
+    Ok(())
 }
 
 async fn collect_events_until_turn_completion(

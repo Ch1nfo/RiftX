@@ -66,7 +66,6 @@ pub(crate) struct ActiveTurn {
     pub(crate) turn_id: String,
 }
 
-#[derive(Clone)]
 pub(crate) struct PendingApprovalRequest {
     pub(crate) profile_name: String,
     pub(crate) engagement_id: String,
@@ -74,9 +73,11 @@ pub(crate) struct PendingApprovalRequest {
     pub(crate) kind: PendingApprovalKind,
 }
 
-#[derive(Clone)]
 pub(crate) enum PendingApprovalKind {
     Command(PendingCommandApproval),
+    Tool {
+        decision_tx: tokio::sync::oneshot::Sender<bool>,
+    },
 }
 
 #[derive(Clone)]

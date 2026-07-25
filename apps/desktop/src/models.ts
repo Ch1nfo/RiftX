@@ -233,13 +233,15 @@ export interface ConversationPage {
   nextCursor: string | null;
 }
 
+export type ApprovalKind = "command" | "tool";
+
 export type ApprovalDecision = "approve" | "deny";
 
 export interface PendingApproval {
   id: string;
   engagementId: string;
   policyRevision: string;
-  kind: "command";
+  kind: ApprovalKind;
   requestedAt: number;
   command: string | null;
   cwd: string | null;

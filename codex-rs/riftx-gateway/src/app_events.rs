@@ -1,15 +1,20 @@
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::PendingApprovalRequest;
+use crate::gateway_state::unix_timestamp;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RIFTX_CREDENTIAL_TOOL_NAME;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
+use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_ipc::ApprovalKind;
 use codex_riftx_ipc::PendingApproval;
+use codex_riftx_tools::DiscoveredTool;
+use codex_riftx_tools::ToolRisk;
 use serde_json::Value;
 use serde_json::json;
+use uuid::Uuid;
 
 pub(crate) async fn process(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {
     match event {
@@ -90,6 +95,15 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
             .await;
         return;
     };
+    let Ok(engagement) = state.store.engagement(&engagement_id).await else {
+        let _ = app_server
+            .reject_dynamic_tool(
+                pending,
+                "RiftX could not load the engagement for this tool call".to_string(),
+            )
+            .await;
+        return;
+    };
     let params = match serde_json::from_value::<codex_riftx_ipc::CredentialExecutionParams>(
         pending.params.arguments.clone(),
     ) {
@@ -105,6 +119,31 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
             return;
         }
     };
+    if engagement.mode == ExecutionMode::RedTeam
+        && let Some(tool) = lookup_tool(state, &params.tool)
+        && tool_is_high_risk(tool)
+        && !await_red_team_tool_approval(
+            state,
+            profile_name,
+            &engagement_id,
+            &engagement.policy_revision,
+            tool,
+            &params.tool,
+        )
+        .await
+    {
+        let _ = app_server
+            .resolve_dynamic_tool_text(
+                pending,
+                format!(
+                    "RiftX denied high-risk tool {:?} under RedTeam approval policy",
+                    params.tool
+                ),
+                false,
+            )
+            .await;
+        return;
+    }
     state
         .publish(
             &engagement_id,
@@ -147,6 +186,72 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
     let _ = app_server
         .resolve_dynamic_tool_text(pending, text, success)
         .await;
+}
+
+fn lookup_tool<'a>(state: &'a GatewayState, tool_name: &str) -> Option<&'a DiscoveredTool> {
+    state
+        .tools
+        .tools
+        .iter()
+        .find(|tool| tool.name == tool_name && tool.shadowed_by.is_none())
+}
+
+pub(crate) fn tool_is_high_risk(tool: &DiscoveredTool) -> bool {
+    matches!(
+        tool.metadata.as_ref().and_then(|metadata| metadata.risk),
+        Some(ToolRisk::High | ToolRisk::Critical)
+    )
+}
+
+async fn await_red_team_tool_approval(
+    state: &GatewayState,
+    profile_name: &str,
+    engagement_id: &str,
+    policy_revision: &str,
+    tool: &DiscoveredTool,
+    tool_name: &str,
+) -> bool {
+    let approval_id = Uuid::new_v4().to_string();
+    let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+    let risk = tool
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.risk)
+        .map(|risk| format!("{risk:?}").to_ascii_lowercase())
+        .unwrap_or_else(|| "high".to_string());
+    state.pending_approvals.write().await.insert(
+        approval_id.clone(),
+        PendingApprovalRequest {
+            profile_name: profile_name.to_string(),
+            engagement_id: engagement_id.to_string(),
+            view: PendingApproval {
+                id: approval_id.clone(),
+                engagement_id: engagement_id.to_string(),
+                policy_revision: policy_revision.to_string(),
+                kind: ApprovalKind::Tool,
+                requested_at: unix_timestamp(),
+                command: Some(tool_name.to_string()),
+                cwd: tool.path.parent().map(|path| path.display().to_string()),
+                reason: Some(format!(
+                    "RedTeam requires approval for {risk}-risk credential tool `{tool_name}`"
+                )),
+            },
+            kind: PendingApprovalKind::Tool { decision_tx },
+        },
+    );
+    state
+        .publish(
+            engagement_id,
+            "approval/tool",
+            json!({
+                "approvalId": approval_id,
+                "tool": tool_name,
+                "risk": risk,
+                "path": tool.path,
+            }),
+        )
+        .await;
+    decision_rx.await.unwrap_or(false)
 }
 
 async fn command_approval(
@@ -254,3 +359,7 @@ async fn engagement_for_thread(state: &GatewayState, thread_id: &str) -> Option<
         .get(thread_id)
         .cloned()
 }
+
+#[cfg(test)]
+#[path = "app_events_tests.rs"]
+mod tests;

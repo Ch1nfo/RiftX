@@ -111,7 +111,11 @@ export function ActivityTimeline({
           </span>
           <div>
             <header>
-              <strong>Command approval</strong>
+              <strong>
+                {approval.kind === "tool"
+                  ? "High-risk tool approval"
+                  : "Command approval"}
+              </strong>
               <span>{formatTime(approval.requestedAt)}</span>
             </header>
             {approval.reason && <p>{approval.reason}</p>}
