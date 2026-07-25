@@ -1,100 +1,48 @@
 # RiftX 项目说明
 
-> 当前版本：v0.7 开发基线
-> 文档日期：2026-07-23
+> 当前版本：v0.8 产品基线  
+> 文档日期：2026-07-25  
+> 配套实施计划：[RiftX-技术实现方案.md](./RiftX-技术实现方案.md)
 
-## 1. 产品定位
+## 1. 一句话定位
 
-RiftX 是全平台、本机运行、对话驱动、目标导向的 AI 红队工作台。它面向具有明确书面
-授权的安全评估，不把一次任务限制在单个目标，而是允许 Agent 在授权 Scope 内持续发现
-资产、建立关系、验证攻击路径，直到满足结构化成功条件或被操作者停止。
+RiftX 是以开源 Agent Runtime（固定版本、源码内嵌）为底座的 **Win / Mac 桌面应用**：把安全工具放进指定文件夹就能当手脚用，自己配置大模型，用三种模式把红队 / 渗透工作流整合得更好用。边界主要靠提示词和分档人工审批，不做重型 OS 隔离平台。
 
-一次任务称为 `Engagement`：
+本质：单靠该 runtime 也能做这些事；RiftX 把它们收成一个独立程序，界面、任务、工具、审批都更顺手。
 
-- `objective`：要达成的安全测试目标。
-- `successCriteria`：可验证的完成条件。
-- `entryPoints`：初始调查线索，不是目标上限。
-- `scope`：不可突破的授权边界。
-- `mode`：Native、Hardened 或 Auto。
-- `policyRevision`：本次任务绑定的不可变策略版本。
+## 2. 三种模式（从紧到松）
 
-例如，目标可以是“验证授权域环境中是否存在到达域控的攻击路径”。Agent 可以从一台
-工作站开始，继续分析 Scope 内发现的域成员、身份、信任关系和域控，而不是只测试初始 IP。
+| 模式 | 场景 | 审批节奏 |
+| --- | --- | --- |
+| **RedTeam** | 护网等对抗演练中的 AI 攻击队 | 最紧：危险命令 + 高风险工具都要人批 |
+| **Pentest** | 企业内对指定目标做巡检 / 评估 | 中等：多数操作可跑，危险命令要批 |
+| **Auto** | 靶场 / Lab 全自动推进直至目标 | 最松：启动前一次性确认风险，运行中尽量少打断；保留 Kill Switch |
 
-## 2. 三种模式
-
-### Native Mode
-
-面向专业红队，直接使用当前用户的本机权限、shell、PATH、代理、VPN、自定义脚本和工具。
-RiftX 提供 Scope 提示、审批、状态、证据和审计，但不声明具备强制安全隔离。
-
-### Hardened Mode
-
-仍在本机运行，由各平台 `riftx-guard` 强制进程树、文件、资源和网络边界。Guard 不可用、
-策略无法安装或边界验证失败时，任务拒绝启动，不自动降级到 Native。
-
-### Auto Mode
-
-在无人监督情况下循环执行“观察、形成假设、设计测试、执行、验证证据、判断目标”。该模式
-仅允许用于 Lab，且必须具备：
-
-- 明确的授权过期时间和固定 Scope。
-- 正常工作的 `riftx-guard`。
-- Tools 与 Skills 哈希快照。
-- 完整审计、状态快照和 Kill Switch。
-- 逐任务风险确认。
-
-Auto Mode 不得用于生产环境。
+人会在提示词里说明目标与边界；产品不靠堆强制隔离来“替人负责”。敏感操作需要人类批准即可。
 
 ## 3. 产品形态
 
-| 平台    | 首发形态                     |
-| ------- | ---------------------------- |
-| macOS   | Apple Silicon arm64 DMG      |
-| Windows | x86_64 签名 EXE 安装程序     |
-| Linux   | x86_64 单文件 CLI 与全屏 TUI |
+| 平台 | 形态 |
+| --- | --- |
+| macOS | 桌面应用（Apple Silicon 优先） |
+| Windows | 桌面应用 |
+| Linux | **暂不考虑** |
 
-macOS 和 Windows 桌面端采用 Tauri + React/TypeScript，界面是对话优先的三栏工作台：
+- 必须有自己的应用 UI，**不照抄**上游 Agent 产品的界面与交互品牌。
+- 所有面向用户的展示（窗口标题、关于页、安装包名、进程名、报告抬头、设置文案等）使用 **RiftX** 品牌。
+- 上游产品标识不出现在 UI / 安装包 / 报告等展示面；源码、许可证与技术归属可保留在开发者可见位置。
+- 只靠用户自己配置大模型（Responses-compatible Profile + API Key），**不提供**上游账号登录 / 设备码登录。
+- 后台为本机 `riftxd`，经本地 IPC（macOS UDS / Windows Named Pipe）与桌面通信，不公开 TCP 控制面。
 
-- 左侧：Engagement 列表。
-- 中间：对话、计划、工具调用、审批和执行时间线。
-- 右侧：Objective、Scope、资产、攻击路径、Coverage 和证据。
-- 底部：模式、输入、运行、暂停和 Kill Switch。
+## 4. 核心能力
 
-后台 `riftxd` 独立运行。最终产品使用 Unix Domain Socket（macOS/Linux）或 Named Pipe
-（Windows），不公开 TCP 控制面。
+### 4.1 Agent 底座
 
-## 4. 目标架构
+复用固定版本的开源 Agent Runtime：对话、工具调用、Skill、shell、流式事件、中断。RiftX 不重写通用 Agent，而聚焦整合体验。
 
-```mermaid
-flowchart LR
-    Desktop["RiftX Desktop"] --> IPC["Local IPC"]
-    CLI["RiftX CLI / TUI"] --> IPC
-    IPC --> Daemon["riftxd"]
-    Daemon --> Agent["Agent Runtime"]
-    Daemon --> State["Encrypted Pentest State"]
-    Daemon --> Audit["Encrypted Audit and Evidence"]
-    Daemon --> Runner["Native Tool Runner"]
-    Daemon --> Guard["riftx-guard"]
-    Runner --> Tools["Tools Directory and System PATH"]
-    Guard --> Controls["OS Native Security Controls"]
-    Runner --> Targets["Authorized Targets"]
-```
+### 4.2 Tools Directory（手脚）
 
-RiftX 不使用 Docker、Podman、Kubernetes、虚拟机或远程 Worker 作为执行环境。所有模式
-均在本机运行，macOS、Windows 和 Linux 是一等支持平台。
-
-## 5. Agent 与工具
-
-### 5.1 单一主 Agent
-
-产品不固定 Recon、Exploit、Report 三套常驻角色。每个 Engagement 使用一个持续主 Agent，
-按任务需要调用 Skill、subagent、MCP 和 shell。这样可以支持 Web、内网、AD、云和自定义
-研究流程，而不会被预设阶段限制。
-
-### 5.2 Tools Directory
-
-RiftX 初期不预装任何渗透测试工具。用户配置一个或多个 Tools Directory：
+初期不预装渗透工具。用户配置一个或多个工具目录，例如：
 
 ```text
 ~/.riftx/tools/
@@ -104,182 +52,99 @@ RiftX 初期不预装任何渗透测试工具。用户配置一个或多个 Tool
 └── team-script
 ```
 
-目录中的文件只要能由当前用户在本机执行，就可以进入 Agent 的任务 PATH。RiftX 负责：
+放入或安装到该目录、当前用户可执行的文件，即可进入 Agent 任务 PATH。RiftX 负责扫描、兼容性提示、`tools doctor`、可选元数据（风险等级等），**不要求**为每个二进制写死适配器。
 
-- 扫描可执行文件和平台兼容性。
-- 记录路径、版本和哈希。
-- 提供 `riftx tools doctor` 健康检查。
-- 在 Auto Mode 启动时固定哈希快照。
-- 把 stdout、stderr、退出状态和生成文件绑定到 Execution。
+### 4.3 Skills Directory
 
-可选的伴随元数据可以描述工具名称、Capability、风险等级、版本命令和健康检查，但不是
-接入工具的强制条件。RiftX 不要求为每个二进制开发固定适配器。
+单一用户 Skills 目录，用于工作流、提示与脚本扩展。
 
-### 5.3 Skills Directory
+### 4.4 LLM 与密钥
 
-Skill 使用单一用户目录，可定义工作流、提示、脚本和所需 Capability。Skill 不会扩大
-Scope，也不能绕过审批、Credential Grant 或 Guard。
+本机配置多个 Profile（模型、base URL）。API Key 与目标类凭据存放在**操作系统钥匙串 / 凭据库**，不进入对话明文、报告或普通日志。
 
-## 6. LLM 与凭据
+### 4.5 桌面工作台
 
-RiftX 不提供 GPT 账号登录、浏览器授权或设备码登录。用户在本机配置一个或多个
-Responses-compatible LLM Profile，API Key 保存在操作系统安全存储：
+自有三栏（或等价）布局：任务列表、对话与执行时间线、任务信息与审批。底部支持模式切换、输入、暂停与 Kill Switch。视觉与文案按 RiftX 设计，不沿用上游产品壳。
 
-```toml
-[llm]
-model = "gpt-5.2"
-base_url = "https://api.openai.com/v1"
-api_key = { source = "keyring", profile = "default" }
-```
+## 5. 安全底线（保留）与明确不做
 
-模型 API Key、目标凭据和代理凭据不得进入 prompt、SQLite 明文字段、审计 payload、
-报告、命令行或普通日志。Agent 只看到 Credential Reference；执行前由 daemon 按目标、
-Capability、使用次数和有效期发放短期 Credential Grant。
+### 保留
 
-## 7. 状态与证据
+- API Key / 目标凭据进系统安全存储。
+- 分档人工审批（见第 2 节）。
+- Kill Switch / 暂停。
+- 不实现遥测。
 
-核心状态对象包括：
+### 明确不做（v0.8 非目标；远期若企业强需求再议）
 
-- Engagement、Asset、AssetRelation、Service、Identity。
-- Observation、Hypothesis、TestCase、Execution。
-- Finding、Evidence、AttackPath、Coverage。
-- Task、Artifact。
+- OS 级 Guard（Landlock / netns / Seatbelt / WFP 等强制隔离）。
+- 多维强制 Scope / Policy Revision 作为主安全边界。
+- 全库案件加密、加密 `.riftxcase` 容器。
+- 独立 Evidence Evaluator 作为成功硬门槛。
+- Linux CLI/TUI、三平台签名公证与自动更新工程（可晚于产品好用之后）。
 
-工具输出必须先成为 `Observation`，不能直接成为 `Finding`。Finding 必须引用可验证 Evidence；
-AttackPath 的每一跳都需要证据。独立只读 Evidence Evaluator 负责判断结构化成功条件，主
-Agent 不能自行宣布任务完成。
+仓库中若仍有上述相关代码，视为**遗留实现**，产品路线不再加功能；后续按需收敛或删除。
 
-报告目标格式包括 HTML、PDF、Markdown、JSON 和加密 `.riftxcase`。当前基线已实现
-Markdown 和 JSON。
+## 6. 当前实现对照（摘要）
 
-## 8. 当前实现状态
+已有且继续用：
 
-已经实现：
+- 内嵌 Agent Runtime、`riftxd`、本地 IPC、Tauri 桌面壳。
+- Tools / Skills 目录扫描与 doctor。
+- 自配 LLM Profile、钥匙串存 Key。
+- 任务创建、对话、中断、单次命令审批、模式切换 UI（命名将收敛为 RedTeam / Pentest / Auto）。
+- Markdown / JSON 报告。
 
-- API-Key-only 内嵌 Agent Runtime。
-- 本机 engagement workspace 和单一持续主 Agent。
-- `riftxd` 本地 IPC API 与 Operator CLI。
-- Tauri 2 + React 桌面壳，以及只访问本地 IPC 的 Rust bridge。
-- 桌面 Engagement 列表、创建、选择、Native 指令提交、interrupt、实时消息、单次命令
-  审批和报告状态面板。
-- IPC v4 协议协商、有大小上限的 SSE 解码、断线重连和待审批查询/决策。
-- 轻量 `riftx-domain` 共享 Engagement、Scope、授权、对话、凭据、Artifact 和任务状态；
-  Gateway、CLI 与 Desktop 的创建、模式切换、turn、审批、对话分页、凭据授权和 Artifact
-  捕获已经使用共享 typed IPC 消息。
-- Tools Directory 扫描、元数据、SHA-256 快照、PATH 注入和 doctor。
-- 单一 Skills Directory、独占 Runtime 根目录、内容快照和 doctor。
-- Scope、Policy Revision、Approval 及三模式领域约束。
-- 目标导向状态模型、Evidence 引用验证，以及按 Engagement 数据密钥加密的 SQLite
-  持久化。
-- 按 Engagement 数据密钥加密的 append-only Audit；全局 daemon 控制记录只保留隐私安全
-  的系统元数据。
-- 本机命令 Execution 审计，记录脱敏 argv、工具路径/哈希、输出流哈希、退出状态和中断。
-- workspace Artifact 内容寻址采集、容量限制、分块认证加密、哈希复验和受控导出。
-- Markdown/JSON 报告。
-- macOS、Windows、Linux 的核心领域契约和确定性 Native daemon 验收 CI。
-- macOS 调试 `.app` 的实际 IPC、列表、创建、实时事件、interrupt、连续指令和报告
-  工作流验证。
+遗留或偏离、需按 v0.8 收敛：
 
-尚未实现：
+- 旧模式名 Native / Hardened / Auto 与 OS Guard 路径。
+- 过重的凭据租约 / 全库加密 / 案件包叙事。
+- Linux 与发布签名排期。
+- 展示面若残留上游产品名，改为 RiftX。
 
-- Provider/Profile 定义增删与端点编辑、完整审批矩阵和 Linux 全屏 TUI。
-- Report snapshot 等剩余 typed IPC 业务消息。
-- 加密 `.riftxcase`；SQLite、Engagement Audit 和 Artifact 数据已经加密。
-- macOS、Windows、Linux `riftx-guard`。
-- Auto planner loop、Evidence Evaluator 和恢复机制。
-- HTML/PDF 报告及正式安装包。
+细节与阶段计划见 [RiftX-技术实现方案.md](./RiftX-技术实现方案.md)。本地进度见 [当前项目进度.md](./当前项目进度.md)（不提交）。
 
-`riftxd` 默认不监听 TCP；macOS/Linux 使用 UDS，Windows 使用 Named Pipe。项目不包含
-容器执行后端、固定动态工具或预装渗透工具。
+## 7. 当前运行方式
 
-## 9. 当前运行方式
-
-构建：
+构建 Gateway / CLI：
 
 ```bash
-conda run -n agent sh -lc \
-  'cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli'
+cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli
 ```
 
-启动：
+启动 daemon（需自备 API Key）：
 
 ```bash
 export RIFTX_LLM_API_KEY="<your-api-key>"
 ./codex-rs/target/debug/riftxd --config riftx.toml
 ```
 
-启动 Tauri Desktop：
+启动桌面：
 
 ```bash
-conda run -n agent pnpm install
-RIFTX_CONFIG="$PWD/riftx.toml" \
-  conda run --no-capture-output -n agent \
-  pnpm --filter @riftx/desktop tauri dev
+pnpm install
+RIFTX_CONFIG="$PWD/riftx.toml" pnpm --filter @riftx/desktop tauri dev
 ```
 
-macOS 调试应用包：
-
-```bash
-conda run -n agent pnpm --filter @riftx/desktop \
-  tauri build --debug --bundles app
-```
-
-创建并运行任务：
-
-```bash
-./codex-rs/target/debug/riftx create \
-  --name "Authorized Lab" \
-  --objective "验证授权范围内是否存在到达域控的攻击路径" \
-  --success-criterion "每一跳都有可复现证据" \
-  --structured-criterion '{"id":"reach-dc","description":"验证到达域控的攻击路径","predicate":{"type":"attackPath","destinationRole":"domainController","accessLevel":"domainAdminEquivalent","minimumConfidenceBasisPoints":9000,"reproducibleEvidence":true}}' \
-  --entry-point "10.10.20.15" \
-  --cidr "10.10.0.0/16" \
-  --mode native \
-  --environment lab \
-  --capability network.discovery \
-  --capability attack_path.analysis \
-  --identity-selector '{"domain":"lab.example"}'
-
-./codex-rs/target/debug/riftx activate <engagement-id>
-./codex-rs/target/debug/riftx turn <engagement-id> "执行下一步授权测试"
-./codex-rs/target/debug/riftx events <engagement-id>
-```
-
-## 10. 源码布局
+## 8. 源码布局（产品相关）
 
 ```text
 RiftX/
-├── apps/
-│   └── desktop/                    # Tauri 2 + React 桌面工作台
+├── apps/desktop/                 # Tauri + React 桌面（RiftX UI）
 ├── codex-rs/
-│   ├── riftx-core/                 # 当前领域、状态、策略和审计
-│   ├── riftx-gateway/              # riftxd API 与业务编排
-│   ├── riftx-ipc/                  # UDS / Named Pipe 本地传输
-│   ├── riftx-tools/                # Tools Directory、元数据和快照
-│   ├── riftx-skills/               # Skills Directory、独占目录和快照
-│   ├── riftx-cli/                  # 当前 Operator CLI
-│   └── riftx-app-server-adapter/   # 受限 typed Agent Runtime facade
-├── architecture/adr/               # 架构决策
-├── deploy/demo/                    # 可选授权 Lab fixture，不是执行环境
-├── scripts/riftx/                  # 上游锁校验脚本
-├── riftx.toml                      # 当前开发配置
-├── RiftX-技术实现方案.md
-└── RiftX-项目说明.md
+│   ├── riftx-gateway/            # riftxd
+│   ├── riftx-ipc/
+│   ├── riftx-tools/
+│   ├── riftx-skills/
+│   ├── riftx-cli/
+│   ├── riftx-app-server-adapter/ # Agent Runtime 受限 facade
+│   └── …                         # 内嵌 runtime 与其它 crate
+├── RiftX-项目说明.md
+└── RiftX-技术实现方案.md
 ```
 
-目标模块拆分、桌面目录和 Guard 目录以
-[RiftX-技术实现方案.md](./RiftX-技术实现方案.md) 为准。
+目录名 `codex-rs` 等为历史/上游源码树，属开发者可见结构；**产品展示不以该名称对外品牌化**。
 
-## 11. 安全边界
+## 9. 上游归属
 
-- Native Mode 明确不提供强制隔离安全声明。
-- Hardened/Auto 的声明必须来自平台 Guard 的可验证强制边界。
-- Prompt、Scope precheck 和审批是应用层控制，不能代替 OS 强制边界。
-- Auto 仅允许 Lab，授权到期或 Guard 异常必须停止。
-- RiftX 不实现遥测。
-- 未经明确授权不得使用本项目。
-
-## 12. 上游归属
-
-RiftX 包含固定版本的 Apache-2.0 开源 Agent Runtime 源码。上游名称只保留在源码兼容、
-许可证、锁文件和技术归属中，不进入 RiftX 产品品牌或账号体系。RiftX 是独立项目。
+项目内含固定版本、Apache-2.0 许可的开源 Agent Runtime 源码。上游名称仅出现在源码兼容、许可证、锁文件与技术归属中，**不进入** RiftX 产品品牌、账号体系或用户可见主文案。RiftX 是独立项目。
