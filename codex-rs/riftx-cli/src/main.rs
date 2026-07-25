@@ -76,6 +76,8 @@ enum Command {
         starts_at: Option<i64>,
         #[arg(long)]
         expires_at: Option<i64>,
+        #[arg(long)]
+        confirmation: Option<String>,
     },
     Get {
         id: String,
@@ -238,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
             identity_selectors,
             starts_at,
             expires_at,
+            confirmation,
         } => {
             let identities: Vec<IdentitySelector> =
                 parse_json_arguments(&identity_selectors, "identity selector")?;
@@ -263,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
                     entry_points,
                     mode: mode.into(),
                     llm_profile,
+                    confirmation,
                     authorization: AuthorizationScope {
                         network: Scope {
                             cidrs,

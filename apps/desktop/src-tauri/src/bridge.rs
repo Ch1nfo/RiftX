@@ -158,6 +158,8 @@ pub(crate) struct CreateEngagementInput {
     identities: Vec<IdentitySelector>,
     starts_at: Option<i64>,
     expires_at: Option<i64>,
+    #[serde(default)]
+    confirmation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +266,7 @@ pub(crate) async fn create_engagement(
         entry_points: input.entry_points,
         mode: input.mode,
         llm_profile: input.llm_profile,
+        confirmation: input.confirmation,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs,

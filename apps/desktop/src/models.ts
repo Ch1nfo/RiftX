@@ -157,6 +157,7 @@ export interface CreateEngagementInput {
   identities: unknown[];
   startsAt: number | null;
   expiresAt: number | null;
+  confirmation?: string | null;
 }
 
 export type CredentialKind =

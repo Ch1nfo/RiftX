@@ -38,6 +38,7 @@ import {
   startTurn,
 } from "./bridge";
 import riftxIcon from "./assets/riftx-icon.png";
+import { AUTO_STALE_ACTIVITY_MS } from "./constants";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { CredentialDialog } from "./components/CredentialDialog";
 import { EngagementInspector } from "./components/EngagementInspector";
@@ -96,6 +97,8 @@ export default function App() {
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
+  const [lastActivityAt, setLastActivityAt] = useState<number | null>(null);
+  const [staleAutoHint, setStaleAutoHint] = useState(false);
 
   const selected = useMemo(
     () =>
@@ -256,6 +259,8 @@ export default function App() {
       setCredentialsOpen(false);
       setTurnRunning(false);
       setStreamState("disconnected");
+      setLastActivityAt(null);
+      setStaleAutoHint(false);
       return;
     }
     setReport(null);
@@ -270,6 +275,8 @@ export default function App() {
     setCredentialsOpen(false);
     setTurnRunning(false);
     setStreamState("connecting");
+    setLastActivityAt(null);
+    setStaleAutoHint(false);
     void Promise.all([
       loadReport(selectedId),
       loadApprovals(selectedId),
@@ -286,6 +293,8 @@ export default function App() {
           return;
         }
         setEvents((current) => [...current, event].slice(-300));
+        setLastActivityAt(Date.now());
+        setStaleAutoHint(false);
         if (event.kind === "turnStarted") {
           setTurnRunning(true);
         }
@@ -364,6 +373,24 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (
+      !selected ||
+      selected.mode !== "auto" ||
+      !turnRunning ||
+      lastActivityAt === null
+    ) {
+      setStaleAutoHint(false);
+      return;
+    }
+    const tick = () => {
+      setStaleAutoHint(Date.now() - lastActivityAt >= AUTO_STALE_ACTIVITY_MS);
+    };
+    tick();
+    const timer = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(timer);
+  }, [lastActivityAt, selected, turnRunning]);
+
+  useEffect(() => {
     if (!selected || selected.status !== "active") {
       return;
     }
@@ -430,6 +457,8 @@ export default function App() {
       }
       await startTurn(active.id, instruction);
       setTurnRunning(true);
+      setLastActivityAt(Date.now());
+      setStaleAutoHint(false);
       setInput("");
       setError(null);
       window.setTimeout(() => void loadReport(active.id), 300);
@@ -671,6 +700,28 @@ export default function App() {
                   <span>{selected.status}</span>
                 </div>
               </header>
+
+              {staleAutoHint && (
+                <div className="stale-auto-banner" role="status">
+                  <AlertCircle size={16} />
+                  <div>
+                    <strong>Auto seems stalled</strong>
+                    <span>
+                      No new activity for 5 minutes. Use Pause or Kill Switch if
+                      you want to stop the runtime.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Dismiss stale activity hint"
+                    title="Dismiss"
+                    onClick={() => setStaleAutoHint(false)}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              )}
 
               <ActivityTimeline
                 engagement={selected}

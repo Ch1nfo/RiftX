@@ -1,6 +1,7 @@
 use super::*;
 use axum::body::Body;
 use axum::http::Request;
+use codex_riftx_core::AUTO_MODE_CONFIRMATION;
 use codex_riftx_core::Artifact;
 use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::Asset;
@@ -1302,6 +1303,78 @@ async fn auto_mode_requires_exact_confirmation_phrase() {
     )
     .expect("engagement JSON");
     assert_eq!(changed.mode, ExecutionMode::Auto);
+}
+
+#[tokio::test]
+async fn create_auto_engagement_requires_exact_confirmation_phrase() {
+    let temp = TempDir::new().expect("temp dir");
+    let app = test_router(&temp).await;
+    let base = r#"{"name":"Auto lab","objective":{"summary":"Run unattended range work","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"auto","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#;
+
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("content-type", "application/json")
+                .body(Body::from(base))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+    let missing_error: serde_json::Value = serde_json::from_slice(
+        &missing
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("error JSON");
+    assert_eq!(missing_error["code"], "auto_confirmation_required");
+
+    let wrong = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Auto lab","objective":{"summary":"Run unattended range work","successCriteria":[],"structuredCriteria":[]},"entryPoints":["10.10.0.10"],"mode":"auto","confirmation":"AUTO","authorization":{"network":{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+
+    let created = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"name":"Auto lab","objective":{{"summary":"Run unattended range work","successCriteria":[],"structuredCriteria":[]}},"entryPoints":["10.10.0.10"],"mode":"auto","confirmation":"{AUTO_MODE_CONFIRMATION}","authorization":{{"network":{{"cidrs":["10.10.0.0/24"],"domains":[],"ports":[]}},"identities":[],"capabilities":["network.discovery"],"environment":"lab","window":{{"startsAt":null,"expiresAt":2000000000}}}}}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let engagement: Engagement = serde_json::from_slice(
+        &created
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("engagement JSON");
+    assert_eq!(engagement.mode, ExecutionMode::Auto);
 }
 
 #[tokio::test]

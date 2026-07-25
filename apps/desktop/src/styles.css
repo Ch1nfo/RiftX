@@ -995,6 +995,48 @@ button:disabled {
   z-index: 50;
 }
 
+.stale-auto-banner {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 30px;
+  margin: 0 18px;
+  padding: 10px 10px 10px 12px;
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #7a5b2e;
+  border-radius: 7px;
+  color: #f3d9a8;
+  background: #2f271c;
+}
+
+.stale-auto-banner > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.stale-auto-banner strong {
+  font-size: 11px;
+}
+
+.stale-auto-banner span {
+  color: #d8c19a;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.auto-create-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.create-auto-confirmation {
+  margin: 0 18px 4px;
+}
+
 .error-banner > div {
   display: grid;
   min-width: 0;

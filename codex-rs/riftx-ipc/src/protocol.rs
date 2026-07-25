@@ -116,6 +116,8 @@ pub struct CreateEngagementParams {
     #[serde(default)]
     pub llm_profile: Option<String>,
     pub authorization: AuthorizationScope,
+    #[serde(default)]
+    pub confirmation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

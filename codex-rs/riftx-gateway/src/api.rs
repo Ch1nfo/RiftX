@@ -21,6 +21,7 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
+use codex_riftx_core::AUTO_MODE_CONFIRMATION;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::ConversationEntryDraft;
@@ -64,7 +65,6 @@ const MAX_OPERATOR_REQUEST_BYTES: usize = 4 * 1024;
 const MAX_MISSION_CONTEXT_BYTES: usize = 8 * 1024;
 const MAX_OBSERVED_STATE_BYTES: usize = 16 * 1024;
 const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
-const AUTO_MODE_CONFIRMATION: &str = "AUTO MODE - TEST ENVIRONMENT ONLY";
 
 #[derive(Debug, Deserialize)]
 struct ReportQuery {
@@ -326,6 +326,7 @@ async fn create_engagement(
     State(state): State<GatewayState>,
     Json(params): Json<CreateEngagementParams>,
 ) -> Result<(StatusCode, Json<Engagement>), ApiError> {
+    require_auto_confirmation(params.mode, params.confirmation.as_deref())?;
     let policy = EffectivePolicy::resolve(
         &state.config.policy,
         params.mode,
@@ -446,15 +447,7 @@ async fn change_mode(
             "execution mode cannot change while an execution is active",
         ));
     }
-    if params.mode == ExecutionMode::Auto
-        && params.confirmation.as_deref() != Some(AUTO_MODE_CONFIRMATION)
-    {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "auto_confirmation_required",
-            message: format!("enter the exact confirmation phrase: {AUTO_MODE_CONFIRMATION}"),
-        });
-    }
+    require_auto_confirmation(params.mode, params.confirmation.as_deref())?;
     let policy =
         crate::credential_api::resolve_engagement_policy(&state, &engagement, params.mode).await?;
     validate_managed_capabilities(&engagement.authorization, &policy)?;
@@ -534,6 +527,20 @@ fn validate_managed_capabilities(
         return Err(ApiError::bad_request(
             "one or more requested capabilities are denied by managed policy",
         ));
+    }
+    Ok(())
+}
+
+fn require_auto_confirmation(
+    mode: ExecutionMode,
+    confirmation: Option<&str>,
+) -> Result<(), ApiError> {
+    if mode == ExecutionMode::Auto && confirmation != Some(AUTO_MODE_CONFIRMATION) {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "auto_confirmation_required",
+            message: format!("enter the exact confirmation phrase: {AUTO_MODE_CONFIRMATION}"),
+        });
     }
     Ok(())
 }

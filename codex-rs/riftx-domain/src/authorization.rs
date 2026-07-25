@@ -3,6 +3,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+/// Exact phrase operators must type to create or switch into Auto mode.
+pub const AUTO_MODE_CONFIRMATION: &str = "AUTO MODE - TEST ENVIRONMENT ONLY";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ExecutionMode {

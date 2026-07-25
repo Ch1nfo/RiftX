@@ -1,6 +1,7 @@
-import { AlertTriangle, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { AlertTriangle, ShieldAlert, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { bridgeError, llmSettings } from "../bridge";
+import { AUTO_MODE_CONFIRMATION } from "../constants";
 import type {
   CreateEngagementInput,
   DesktopBridgeError,
@@ -16,6 +17,8 @@ interface NewEngagementDialogProps {
   onCreate: (input: CreateEngagementInput) => Promise<void>;
   onError: (error: DesktopBridgeError) => void;
 }
+
+const AUTO_DEFAULT_TTL_SECONDS = 8 * 60 * 60;
 
 const splitLines = (value: string) =>
   value
@@ -42,6 +45,8 @@ export function NewEngagementDialog({
   const [profiles, setProfiles] = useState<LlmProfileSettings[]>([]);
   const [llmProfile, setLlmProfile] = useState("");
   const [profilesLoading, setProfilesLoading] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [autoExpiresAt, setAutoExpiresAt] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -57,12 +62,35 @@ export function NewEngagementDialog({
       .finally(() => setProfilesLoading(false));
   }, [onError, open]);
 
+  const selectMode = (next: ExecutionMode) => {
+    setMode(next);
+    setConfirmation("");
+    if (next === "auto") {
+      setEnvironment("lab");
+      setAutoExpiresAt(Math.floor(Date.now() / 1000) + AUTO_DEFAULT_TTL_SECONDS);
+    } else {
+      setAutoExpiresAt(null);
+    }
+  };
+
+  const autoConfirmed =
+    mode !== "auto" || confirmation === AUTO_MODE_CONFIRMATION;
+  const expiresLabel = useMemo(() => {
+    if (autoExpiresAt === null) {
+      return null;
+    }
+    return new Date(autoExpiresAt * 1000).toLocaleString();
+  }, [autoExpiresAt]);
+
   if (!open) {
     return null;
   }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (!autoConfirmed) {
+      return;
+    }
     await onCreate({
       name: name.trim(),
       objective: objective.trim(),
@@ -73,11 +101,12 @@ export function NewEngagementDialog({
       ports: [],
       mode,
       llmProfile,
-      environment,
+      environment: mode === "auto" ? "lab" : environment,
       capabilities: splitLines(capabilities),
       identities: [],
       startsAt: null,
-      expiresAt: null,
+      expiresAt: mode === "auto" ? autoExpiresAt : null,
+      confirmation: mode === "auto" ? confirmation : null,
     });
   };
 
@@ -182,7 +211,7 @@ export function NewEngagementDialog({
                   key={option.id}
                   type="button"
                   className={mode === option.id ? "active" : undefined}
-                  onClick={() => setMode(option.id)}
+                  onClick={() => selectMode(option.id)}
                 >
                   {option.label}
                 </button>
@@ -192,10 +221,11 @@ export function NewEngagementDialog({
           <label>
             <span>Environment</span>
             <select
-              value={environment}
+              value={mode === "auto" ? "lab" : environment}
               onChange={(event) =>
                 setEnvironment(event.target.value as EnvironmentClass)
               }
+              disabled={mode === "auto"}
             >
               <option value="lab">Lab</option>
               <option value="staging">Staging</option>
@@ -220,12 +250,40 @@ export function NewEngagementDialog({
         </div>
 
         {mode === "auto" && (
-          <div className="auto-warning">
-            <AlertTriangle size={17} />
-            <span>
-              Auto is for lab / range targets. Confirm risk before letting RiftX
-              run with fewer interruptions.
-            </span>
+          <div className="auto-mode-confirmation create-auto-confirmation">
+            <div className="mode-warning critical">
+              <ShieldAlert size={16} />
+              <span>
+                Auto is lab / range only. RiftX will ask for fewer approvals
+                while running. Pause and Kill Switch stay available. Type the
+                confirmation phrase to create this task.
+              </span>
+            </div>
+            <dl>
+              <div>
+                <dt>Environment</dt>
+                <dd>lab</dd>
+              </div>
+              <div>
+                <dt>Authorization expiry</dt>
+                <dd>{expiresLabel ?? "Not set"}</dd>
+              </div>
+            </dl>
+            <label>
+              <span>Type the confirmation phrase</span>
+              <code>{AUTO_MODE_CONFIRMATION}</code>
+              <input
+                value={confirmation}
+                disabled={busy}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setConfirmation(event.target.value)}
+              />
+            </label>
+            <div className="auto-create-hint">
+              <AlertTriangle size={14} />
+              <span>Default authorization window is 8 hours from create time.</span>
+            </div>
           </div>
         )}
 
@@ -236,7 +294,9 @@ export function NewEngagementDialog({
           <button
             type="submit"
             className="primary-button"
-            disabled={busy || profilesLoading || !llmProfile}
+            disabled={
+              busy || profilesLoading || !llmProfile || !autoConfirmed
+            }
           >
             {busy ? "Creating..." : "Create task"}
           </button>

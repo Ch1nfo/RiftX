@@ -1,8 +1,7 @@
 import { LoaderCircle, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
+import { AUTO_MODE_CONFIRMATION } from "../constants";
 import type { CredentialGrant, Engagement, ExecutionMode } from "../models";
-
-const AUTO_CONFIRMATION = "AUTO MODE - TEST ENVIRONMENT ONLY";
 
 const MODES: { id: ExecutionMode; label: string }[] = [
   { id: "redTeam", label: "RedTeam" },
@@ -37,7 +36,7 @@ export function ModeControl({
   const completed = engagement.status === "completed";
   const controlsDisabled = busy || blocked || completed;
   const autoConfirmed =
-    target !== "auto" || confirmation === AUTO_CONFIRMATION;
+    target !== "auto" || confirmation === AUTO_MODE_CONFIRMATION;
   const activeCredentialGrants = credentialGrants.filter(
     (grant) =>
       grant.revokedAt === null &&
@@ -97,9 +96,9 @@ export function ModeControl({
           <div className="mode-warning critical">
             <ShieldAlert size={16} />
             <span>
-              Auto is for lab / range targets only. Confirm risk once before
-              start; RiftX will interrupt less often while running. Kill Switch
-              remains available.
+              Switch to Auto only for lab / range targets with a valid
+              authorization expiry. RiftX will interrupt less often; use Pause
+              or Kill Switch if you need to stop.
             </span>
           </div>
           <dl>
@@ -130,7 +129,7 @@ export function ModeControl({
                   ? new Date(
                       engagement.authorization.window.expiresAt * 1000,
                     ).toLocaleString()
-                  : "Not set"}
+                  : "Not set — Auto requires an expiry"}
               </dd>
             </div>
           </dl>
@@ -146,7 +145,7 @@ export function ModeControl({
           )}
           <label>
             <span>Type the confirmation phrase</span>
-            <code>{AUTO_CONFIRMATION}</code>
+            <code>{AUTO_MODE_CONFIRMATION}</code>
             <input
               value={confirmation}
               disabled={controlsDisabled}
