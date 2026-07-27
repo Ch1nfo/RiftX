@@ -130,6 +130,8 @@ impl std::fmt::Debug for RiftxApiKey {
 pub struct RiftxLlmRuntimeConfig {
     pub runtime_home: PathBuf,
     pub model: String,
+    pub reasoning_effort: String,
+    pub context_window: u32,
     pub base_url: String,
     pub excluded_api_key_envs: Vec<String>,
     pub api_key: RiftxApiKey,
@@ -394,6 +396,11 @@ async fn build_runtime_config(
             .await?,
     );
     let enforced = config.model.as_deref() == Some(runtime.model.as_str())
+        && config
+            .model_reasoning_effort
+            .as_ref()
+            .is_some_and(|effort| effort.to_string() == runtime.reasoning_effort)
+        && config.model_context_window == Some(i64::from(runtime.context_window))
         && config.model_provider_id == "riftx"
         && config.model_provider.name == "RiftX LLM"
         && config.model_provider.base_url.as_deref() == Some(runtime.base_url.as_str())
@@ -437,6 +444,18 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
         (
             "model_provider".to_string(),
             toml::Value::String("riftx".to_string()),
+        ),
+        (
+            "model_reasoning_effort".to_string(),
+            toml::Value::String(runtime.reasoning_effort.clone()),
+        ),
+        (
+            "model_reasoning_summary".to_string(),
+            toml::Value::String("none".to_string()),
+        ),
+        (
+            "model_context_window".to_string(),
+            toml::Value::Integer(i64::from(runtime.context_window)),
         ),
         (
             "model_providers.riftx.name".to_string(),

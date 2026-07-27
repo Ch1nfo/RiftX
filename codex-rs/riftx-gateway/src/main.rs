@@ -40,6 +40,8 @@ struct Args {
     config: PathBuf,
     #[arg(long, hide = true)]
     llm_api_key_stdin: bool,
+    #[arg(long, hide = true)]
+    validate_profile: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,7 +96,11 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let mut runtimes = Vec::with_capacity(config.llm.profiles.len());
     let mut bridge_handles: Vec<BridgeHandle> = Vec::new();
     let mut skills_entry = None;
-    for (profile_name, profile) in &config.llm.profiles {
+    for (profile_name, profile) in config.llm.profiles.iter().filter(|(profile_name, _)| {
+        args.validate_profile
+            .as_ref()
+            .is_none_or(|candidate| candidate == *profile_name)
+    }) {
         let injected_api_key = stdin_api_keys
             .as_mut()
             .and_then(|api_keys| api_keys.remove(profile_name));
@@ -163,6 +169,8 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 .join("profiles")
                 .join(profile_name),
             model: profile.model.clone(),
+            reasoning_effort: profile.reasoning_level.as_str().to_string(),
+            context_window: profile.context_budget,
             base_url: runtime_base_url,
             excluded_api_key_envs: excluded_api_key_envs.clone(),
             api_key: runtime_api_key,
@@ -209,6 +217,21 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             api_keys.is_empty(),
             "stdin LLM API key bundle contains unknown profiles"
         );
+    }
+    if let Some(profile_name) = args.validate_profile {
+        anyhow::ensure!(
+            config.llm.profiles.contains_key(&profile_name),
+            "LLM profile {profile_name:?} is not configured"
+        );
+        anyhow::ensure!(
+            runtimes.iter().any(|(name, _, _)| name == &profile_name),
+            "LLM profile {profile_name:?} candidate Runtime did not become ready"
+        );
+        for (_, _, app_server) in runtimes {
+            app_server.shutdown().await?;
+        }
+        drop(bridge_handles);
+        return Ok(());
     }
     let skills = match skills_entry {
         Some(entry) => {

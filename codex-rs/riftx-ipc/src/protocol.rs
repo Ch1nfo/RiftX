@@ -397,6 +397,30 @@ pub struct LlmCapabilityMatrix {
     pub function_tools: LlmCapabilityCheck,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProfileState {
+    Unconfigured,
+    Ready,
+    Invalid,
+    Unreachable,
+    Disabled,
+    InUse,
+}
+
+impl LlmProfileState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unconfigured => "unconfigured",
+            Self::Ready => "ready",
+            Self::Invalid => "invalid",
+            Self::Unreachable => "unreachable",
+            Self::Disabled => "disabled",
+            Self::InUse => "in_use",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LlmProfileSummary {
@@ -405,6 +429,8 @@ pub struct LlmProfileSummary {
     pub model: String,
     pub base_url: String,
     pub is_default: bool,
+    pub state: LlmProfileState,
+    pub state_detail: String,
     pub configured: bool,
     pub runtime_ready: bool,
 }

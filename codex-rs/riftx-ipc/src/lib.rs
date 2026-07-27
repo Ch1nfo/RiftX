@@ -58,6 +58,7 @@ pub use protocol::LlmCapabilityMatrix;
 pub use protocol::LlmCheckStatus;
 pub use protocol::LlmConnectionTestResult;
 pub use protocol::LlmProfileList;
+pub use protocol::LlmProfileState;
 pub use protocol::LlmProfileSummary;
 pub use protocol::PendingApproval;
 pub use protocol::ReportFormat;

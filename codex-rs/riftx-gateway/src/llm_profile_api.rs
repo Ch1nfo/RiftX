@@ -13,6 +13,7 @@ use codex_riftx_ipc::LlmCapabilityMatrix;
 use codex_riftx_ipc::LlmCheckStatus;
 use codex_riftx_ipc::LlmConnectionTestResult;
 use codex_riftx_ipc::LlmProfileList;
+use codex_riftx_ipc::LlmProfileState;
 use codex_riftx_ipc::LlmProfileSummary;
 use codex_riftx_llm_bridge::ProbeProtocol;
 use codex_riftx_llm_bridge::ProbeTarget;
@@ -20,7 +21,10 @@ use codex_riftx_llm_bridge::probe_connection;
 use codex_riftx_llm_bridge::sanitize_error;
 use std::time::Duration;
 
-pub(crate) async fn list_profiles(State(state): State<GatewayState>) -> Json<LlmProfileList> {
+pub(crate) async fn list_profiles(
+    State(state): State<GatewayState>,
+) -> Result<Json<LlmProfileList>, ApiError> {
+    let engagements = state.store.engagements().await?;
     let profiles = state
         .config
         .llm
@@ -28,21 +32,42 @@ pub(crate) async fn list_profiles(State(state): State<GatewayState>) -> Json<Llm
         .iter()
         .map(|(name, profile)| {
             let configured = key_is_configured(name, &profile.api_key);
+            let runtime_ready = state.app_servers.contains_key(name);
+            let in_use = engagements
+                .iter()
+                .any(|engagement| engagement.llm_profile == *name);
+            let (profile_state, state_detail) = if in_use {
+                (
+                    LlmProfileState::InUse,
+                    "referenced by an existing engagement",
+                )
+            } else if !configured {
+                (LlmProfileState::Unconfigured, "API key is not configured")
+            } else if runtime_ready {
+                (LlmProfileState::Ready, "Runtime is ready")
+            } else {
+                (
+                    LlmProfileState::Invalid,
+                    "Runtime is not ready; run the connection test for details",
+                )
+            };
             LlmProfileSummary {
                 name: name.clone(),
                 protocol: profile.protocol.as_str().to_string(),
                 model: profile.model.clone(),
                 base_url: profile.base_url.clone(),
                 is_default: name == &state.config.llm.default_profile,
+                state: profile_state,
+                state_detail: state_detail.to_string(),
                 configured,
-                runtime_ready: state.app_servers.contains_key(name),
+                runtime_ready,
             }
         })
         .collect();
-    Json(LlmProfileList {
+    Ok(Json(LlmProfileList {
         default_profile: state.config.llm.default_profile.clone(),
         profiles,
-    })
+    }))
 }
 
 pub(crate) async fn test_profile(

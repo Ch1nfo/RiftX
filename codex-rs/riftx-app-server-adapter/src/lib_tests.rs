@@ -61,6 +61,8 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
     let runtime = RiftxLlmRuntimeConfig {
         runtime_home: runtime_home.path().to_path_buf(),
         model: "riftx-test-model".to_string(),
+        reasoning_effort: "high".to_string(),
+        context_window: 200_000,
         base_url: "http://127.0.0.1:8766/v1".to_string(),
         excluded_api_key_envs: vec![
             "RIFTX_OTHER_API_KEY".to_string(),
@@ -82,6 +84,27 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
             config.model_provider.base_url.as_deref(),
             config.model_provider.env_key.as_deref(),
             config.model_provider.requires_openai_auth,
+            config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+            config.model_context_window,
+            config.model_reasoning_summary,
+        ),
+        (
+            Some("riftx-test-model"),
+            "riftx",
+            "RiftX LLM",
+            Some("http://127.0.0.1:8766/v1"),
+            None,
+            false,
+            Some("high".to_string()),
+            Some(200_000),
+            Some(codex_protocol::config_types::ReasoningSummary::None),
+        )
+    );
+    assert_eq!(
+        (
             config.forced_login_method,
             config.cli_auth_credentials_store_mode,
             config.bundled_skills_enabled(),
@@ -92,12 +115,6 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
                 .get("PATH"),
         ),
         (
-            Some("riftx-test-model"),
-            "riftx",
-            "RiftX LLM",
-            Some("http://127.0.0.1:8766/v1"),
-            None,
-            false,
             Some(ForcedLoginMethod::Api),
             AuthCredentialsStoreMode::Ephemeral,
             false,

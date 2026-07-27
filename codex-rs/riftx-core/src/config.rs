@@ -215,6 +215,18 @@ pub enum LlmReasoningLevel {
     XHigh,
 }
 
+impl LlmReasoningLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+}
+
 impl LlmConfig {
     /// Upgrade pre-protocol configs to `config_version = 1`.
     ///

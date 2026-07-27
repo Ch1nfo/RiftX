@@ -127,3 +127,27 @@ fn credential_execution_round_trips_without_untyped_payloads() {
         json!([params_json, response_json])
     );
 }
+
+#[test]
+fn llm_profile_state_has_closed_wire_values() {
+    use crate::protocol::LlmProfileState;
+    let states = [
+        LlmProfileState::Unconfigured,
+        LlmProfileState::Ready,
+        LlmProfileState::Invalid,
+        LlmProfileState::Unreachable,
+        LlmProfileState::Disabled,
+        LlmProfileState::InUse,
+    ];
+    assert_eq!(
+        serde_json::to_value(states).expect("serialize"),
+        serde_json::json!([
+            "unconfigured",
+            "ready",
+            "invalid",
+            "unreachable",
+            "disabled",
+            "in_use"
+        ])
+    );
+}

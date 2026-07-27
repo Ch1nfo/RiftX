@@ -54,21 +54,14 @@ async fn list_profiles(client: &LocalIpcClient, json: bool) -> anyhow::Result<()
     println!("Default profile: {}", list.default_profile);
     for profile in &list.profiles {
         let marker = if profile.is_default { "*" } else { " " };
-        let key = if profile.configured {
-            "key=configured"
-        } else {
-            "key=missing"
-        };
-        let runtime = if profile.runtime_ready {
-            "runtime=ready"
-        } else {
-            "runtime=not-ready"
-        };
         println!(
-            "{marker} {}  protocol={}  model={}  {}  {}",
-            profile.name, profile.protocol, profile.model, key, runtime
+            "{marker} {}  protocol={}  model={}  state={}",
+            profile.name,
+            profile.protocol,
+            profile.model,
+            profile.state.as_str()
         );
-        println!("    {}", profile.base_url);
+        println!("    {}  ({})", profile.base_url, profile.state_detail);
     }
     Ok(())
 }
