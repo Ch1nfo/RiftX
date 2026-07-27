@@ -5,6 +5,7 @@ use codex_riftx_core::AutoProgressCategory;
 use codex_riftx_core::AutoProgressSignal;
 use codex_riftx_core::AutoProgressSnapshot;
 use codex_riftx_core::AutoRun;
+use codex_riftx_core::EvidencePurpose;
 use codex_riftx_core::StateError;
 use serde::Serialize;
 use sha2::Digest;
@@ -21,7 +22,15 @@ pub(crate) async fn snapshot(
         services: fingerprint(state.store.services(engagement_id).await?)?,
         identities: fingerprint(state.store.identities(engagement_id).await?)?,
         findings: fingerprint(state.store.findings(engagement_id).await?)?,
-        evidence: fingerprint(state.store.evidence(engagement_id).await?)?,
+        evidence: fingerprint(
+            state
+                .store
+                .evidence(engagement_id)
+                .await?
+                .into_iter()
+                .filter(|evidence| evidence.purpose == EvidencePurpose::Objective)
+                .collect::<Vec<_>>(),
+        )?,
         artifacts: fingerprint(state.store.artifacts(engagement_id).await?)?,
         attack_paths: fingerprint(state.store.attack_paths(engagement_id).await?)?,
         coverage: fingerprint(state.store.coverage(engagement_id).await?)?,

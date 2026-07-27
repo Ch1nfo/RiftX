@@ -99,6 +99,7 @@ fn engagement() -> Engagement {
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],

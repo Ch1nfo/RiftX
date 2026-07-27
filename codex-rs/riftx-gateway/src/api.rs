@@ -363,6 +363,7 @@ async fn create_engagement(
     Json(params): Json<CreateEngagementParams>,
 ) -> Result<(StatusCode, Json<Engagement>), ApiError> {
     require_auto_confirmation(params.mode, params.confirmation.as_deref())?;
+    validate_auto_limits(params.mode, params.auto_limits.as_ref())?;
     let policy = EffectivePolicy::resolve(
         &state.config.policy,
         params.mode,
@@ -407,6 +408,7 @@ async fn create_engagement(
         entry_points: params.entry_points,
         mode: params.mode,
         llm_profile,
+        auto_limits: params.auto_limits,
         authorization: params.authorization,
         policy_revision: policy.revision,
         thread_id: None,
@@ -418,6 +420,42 @@ async fn create_engagement(
         .publish(&engagement.id, "engagementCreated", json!({}))
         .await;
     Ok((StatusCode::CREATED, Json(engagement)))
+}
+
+fn validate_auto_limits(
+    mode: ExecutionMode,
+    limits: Option<&codex_riftx_core::AutoRunLimits>,
+) -> Result<(), ApiError> {
+    let Some(limits) = limits else {
+        return Ok(());
+    };
+    if mode != ExecutionMode::Auto {
+        return Err(ApiError::bad_request(
+            "autoLimits may only be set for Auto engagements",
+        ));
+    }
+    let defaults = codex_riftx_core::AutoRunLimits::default();
+    if limits.max_turns == 0
+        || limits.max_turns > defaults.max_turns
+        || limits.max_tool_calls == 0
+        || limits.max_tool_calls > defaults.max_tool_calls
+        || limits.max_wall_clock_seconds == 0
+        || limits.max_wall_clock_seconds > defaults.max_wall_clock_seconds
+        || limits.max_single_command_seconds == 0
+        || limits.max_single_command_seconds > defaults.max_single_command_seconds
+        || limits.max_single_command_seconds > limits.max_wall_clock_seconds
+        || limits.max_consecutive_failures == 0
+        || limits.max_consecutive_failures > defaults.max_consecutive_failures
+        || limits.no_progress_window == 0
+        || limits.no_progress_window > defaults.no_progress_window
+        || limits.no_progress_window > limits.max_turns
+        || limits.max_model_tokens_or_cost == Some(0)
+    {
+        return Err(ApiError::bad_request(
+            "autoLimits must be positive, internally consistent, and no greater than the conservative defaults",
+        ));
+    }
+    Ok(())
 }
 
 async fn list_engagements(

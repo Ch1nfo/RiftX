@@ -150,6 +150,7 @@ fn engagement() -> Engagement {
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Auto,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: Vec::new(),
@@ -200,6 +201,7 @@ fn auto_run(engagement: &Engagement) -> AutoRun {
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        unavailable_tools: Vec::new(),
         last_goal_assessment: None,
         progress_baseline: None,
         last_progress_assessment: None,

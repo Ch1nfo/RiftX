@@ -164,6 +164,7 @@ fn engagement() -> Engagement {
         entry_points: Vec::new(),
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],

@@ -288,6 +288,7 @@ where
                     entry_points,
                     mode: mode.into(),
                     llm_profile,
+                    auto_limits: None,
                     confirmation,
                     authorization: AuthorizationScope {
                         network: Scope {

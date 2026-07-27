@@ -267,6 +267,7 @@ pub(crate) async fn create_engagement(
         entry_points: input.entry_points,
         mode: input.mode,
         llm_profile: input.llm_profile,
+        auto_limits: None,
         confirmation: input.confirmation,
         authorization: AuthorizationScope {
             network: Scope {

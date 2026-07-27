@@ -186,6 +186,15 @@ export interface Engagement {
   entryPoints: string[];
   mode: ExecutionMode;
   llmProfile: string;
+  autoLimits: {
+    maxTurns: number;
+    maxToolCalls: number;
+    maxWallClockSeconds: number;
+    maxSingleCommandSeconds: number;
+    maxConsecutiveFailures: number;
+    noProgressWindow: number;
+    maxModelTokensOrCost: number | null;
+  } | null;
   authorization: {
     network: {
       cidrs: string[];

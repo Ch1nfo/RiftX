@@ -4,6 +4,7 @@ use codex_riftx_artifacts::ArtifactError;
 use codex_riftx_artifacts::CaptureArtifact;
 use codex_riftx_core::Artifact;
 use codex_riftx_core::Evidence;
+use codex_riftx_core::EvidencePurpose;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::StateError;
 use serde_json::json;
@@ -214,6 +215,7 @@ async fn record_artifact_evidence(state: &GatewayState, artifact: &Artifact, exe
             "Artifact {} captured from terminal execution {execution_id}",
             artifact.path
         ),
+        purpose: EvidencePurpose::Objective,
         reproducible: false,
         captured_at: unix_timestamp(),
     };

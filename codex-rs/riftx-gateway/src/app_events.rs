@@ -410,6 +410,39 @@ async fn command_approval(
         ExecutionDisposition::RequireApproval => {}
     }
     if engagement.mode == codex_riftx_core::ExecutionMode::Auto {
+        if intent.parse_status == codex_riftx_execution_policy::ExecutionParseStatus::Parsed
+            && intent.executables.len() == 1
+            && intent.executables[0].resolved_path.is_none()
+        {
+            if crate::auto_run::record_tool_call(state, &engagement)
+                .await
+                .unwrap_or(false)
+            {
+                crate::auto_tools::record_unavailable_name(
+                    state,
+                    &engagement_id,
+                    &intent.executables[0].requested_name,
+                    Some(&intent.tool_call_id),
+                )
+                .await;
+            }
+            if let Some(app_server) = state.app_server(profile_name) {
+                let _ = app_server
+                    .decide_command_approval(
+                        pending,
+                        codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                    )
+                    .await;
+            }
+            state
+                .publish(
+                    &engagement_id,
+                    "approval/commandDenied",
+                    json!({"reason": "autoToolUnavailable", "intent": intent}),
+                )
+                .await;
+            return;
+        }
         let _ = crate::auto_run::needs_input(
             state,
             &engagement,

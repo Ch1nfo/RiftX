@@ -235,6 +235,7 @@ pub(crate) fn native_engagement(
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization,
         policy_revision,
         thread_id: None,
@@ -497,6 +498,7 @@ async fn restart_reconciliation_pauses_active_engagements_without_ending_them() 
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],
@@ -1200,6 +1202,7 @@ async fn conversation_endpoint_returns_latest_entries_with_an_older_cursor() {
         entry_points: vec!["127.0.0.1".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
@@ -1319,6 +1322,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
         entry_points: vec!["127.0.0.1".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["127.0.0.0/8".parse().expect("CIDR")],
@@ -1891,6 +1895,7 @@ async fn operational_turn_context_includes_objective_and_multi_asset_graph() {
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse().expect("CIDR")],

@@ -31,6 +31,7 @@ fn engagement() -> Engagement {
         entry_points: vec!["juice.local".to_string()],
         mode: ExecutionMode::Pentest,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: vec!["10.10.0.0/24".parse::<IpNet>().expect("CIDR")],
@@ -127,6 +128,7 @@ async fn auto_run_checkpoint_round_trips_with_the_engagement_key() {
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        unavailable_tools: Vec::new(),
         last_goal_assessment: None,
         progress_baseline: None,
         last_progress_assessment: None,

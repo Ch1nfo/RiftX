@@ -27,6 +27,7 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
@@ -66,6 +67,7 @@ pub struct GatewayState {
     pub(crate) agent_threads: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApprovalRequest>>>,
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
+    pub(crate) timed_out_auto_turns: Arc<RwLock<HashSet<(String, String)>>>,
     pub(crate) credential_processes: Arc<RwLock<HashMap<String, ActiveCredentialProcess>>>,
     pub(crate) deadline_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     pub(crate) assessment_credentials: Arc<dyn AssessmentSecretProvider>,
@@ -134,6 +136,7 @@ impl GatewayState {
             agent_threads: Arc::new(RwLock::new(HashMap::new())),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             active_executions: Arc::new(RwLock::new(HashMap::new())),
+            timed_out_auto_turns: Arc::new(RwLock::new(HashSet::new())),
             credential_processes: Arc::new(RwLock::new(HashMap::new())),
             deadline_tasks: Arc::new(RwLock::new(HashMap::new())),
             assessment_credentials: Arc::new(AssessmentCredentialStore::default()),

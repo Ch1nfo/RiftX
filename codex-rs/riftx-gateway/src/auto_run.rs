@@ -10,7 +10,6 @@ use codex_riftx_core::AutoLlmProfileSnapshot;
 use codex_riftx_core::AutoProgressAction;
 use codex_riftx_core::AutoRun;
 use codex_riftx_core::AutoRunConfig;
-use codex_riftx_core::AutoRunLimits;
 use codex_riftx_core::AutoRunState;
 use codex_riftx_core::AutoStopReason;
 use codex_riftx_core::Engagement;
@@ -198,6 +197,7 @@ pub(crate) async fn prepare(
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        unavailable_tools: Vec::new(),
         last_goal_assessment: None,
         progress_baseline: None,
         last_progress_assessment: None,
@@ -493,9 +493,19 @@ async fn on_turn_completed_locked(
         return Ok(());
     }
 
+    let timed_out = if let Some(turn_id) = data.pointer("/turn/id").and_then(Value::as_str) {
+        state
+            .timed_out_auto_turns
+            .write()
+            .await
+            .remove(&(engagement_id.to_string(), turn_id.to_string()))
+    } else {
+        false
+    };
     let outcome = match data.pointer("/turn/status").and_then(Value::as_str) {
         Some("completed") => TurnOutcome::Completed,
-        Some("interrupted") => TurnOutcome::Interrupted,
+        Some("interrupted") if !timed_out => TurnOutcome::Interrupted,
+        Some("interrupted") => TurnOutcome::Failed,
         _ => TurnOutcome::Failed,
     };
     apply_turn_completion(&mut run, outcome, unix_timestamp());
@@ -807,10 +817,16 @@ fn auto_turn_prompt(run: &AutoRun) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let unavailable_tools = if run.unavailable_tools.is_empty() {
+        "none recorded".to_string()
+    } else {
+        run.unavailable_tools.join(", ")
+    };
     let prompt = format!(
-        "RiftX Auto controller turn {}/{}.\nObjective: {}\nCurrent subgoal: {}\nSuccess criteria:\n{}\n\nLoad the current structured engagement state, then take exactly one bounded and verifiable step within the declared authorization scope. Preserve evidence for material claims. Do not expand scope based only on newly discovered assets. End the turn with a concise progress summary, evidence references, unresolved ambiguity, and the safest next step. The RiftX controller—not this response—decides whether another turn runs.",
+        "RiftX Auto controller turn {}/{}.\nUnavailable tools: {}. Do not retry unavailable tools; choose another authorized strategy.\nObjective: {}\nCurrent subgoal: {}\nSuccess criteria:\n{}\n\nLoad the current structured engagement state, then take exactly one bounded and verifiable step within the declared authorization scope. Preserve evidence for material claims. Do not expand scope based only on newly discovered assets. End the turn with a concise progress summary, evidence references, unresolved ambiguity, and the safest next step. The RiftX controller—not this response—decides whether another turn runs.",
         run.turns_started,
         run.config.limits.max_turns,
+        unavailable_tools,
         run.config.objective.summary,
         run.current_subgoal.as_deref().unwrap_or("not assigned"),
         criteria,
@@ -865,7 +881,7 @@ fn snapshot_config(
         tools_snapshot_sha256: state.tools.snapshot_sha256.clone(),
         policy_revision: engagement.policy_revision.clone(),
         expires_at,
-        limits: AutoRunLimits::default(),
+        limits: engagement.auto_limits.clone().unwrap_or_default(),
     })
 }
 

@@ -2,6 +2,7 @@ use crate::gateway_state::GatewayState;
 use codex_riftx_core::AutoCriterionAssessment;
 use codex_riftx_core::AutoGoalAssessment;
 use codex_riftx_core::AutoRun;
+use codex_riftx_core::EvidencePurpose;
 use codex_riftx_core::FindingSeverity;
 use codex_riftx_core::StateError;
 use codex_riftx_core::SuccessPredicate;
@@ -59,7 +60,8 @@ pub(crate) async fn evaluate(
             },
             None => true,
         };
-        let valid = chain_valid
+        let valid = item.purpose == EvidencePurpose::Objective
+            && chain_valid
             && item.engagement_id == *engagement_id
             && !item.summary.trim().is_empty()
             && execution_valid

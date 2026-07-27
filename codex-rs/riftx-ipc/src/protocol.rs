@@ -43,7 +43,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 9;
+pub const IPC_PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -158,6 +158,8 @@ pub struct CreateEngagementParams {
     pub mode: ExecutionMode,
     #[serde(default)]
     pub llm_profile: Option<String>,
+    #[serde(default)]
+    pub auto_limits: Option<AutoRunLimits>,
     pub authorization: AuthorizationScope,
     #[serde(default)]
     pub confirmation: Option<String>,

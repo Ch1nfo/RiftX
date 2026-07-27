@@ -7,6 +7,7 @@ mod auto_evaluator;
 mod auto_progress;
 mod auto_provider;
 mod auto_run;
+mod auto_tools;
 mod conversation;
 mod credential_api;
 mod credential_execution;

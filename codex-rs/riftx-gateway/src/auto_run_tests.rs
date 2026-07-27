@@ -413,12 +413,15 @@ fn turn_budget_produces_a_machine_readable_stop_reason() {
 fn auto_prompt_is_utf8_safe_and_bounded() {
     let mut run = sample_run();
     run.config.objective.summary = "目标".repeat(3_000);
+    run.unavailable_tools = vec!["missing-scanner".to_string()];
     prepare_next_turn(&mut run, 10);
 
     let prompt = auto_turn_prompt(&run);
 
     assert!(prompt.len() <= AUTO_PROMPT_MAX_BYTES);
     assert!(std::str::from_utf8(prompt.as_bytes()).is_ok());
+    assert!(prompt.contains("Unavailable tools: missing-scanner"));
+    assert!(prompt.contains("Do not retry unavailable tools"));
 }
 
 async fn create_auto_engagement(state: &GatewayState) -> Engagement {
@@ -493,6 +496,7 @@ fn sample_run() -> AutoRun {
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        unavailable_tools: Vec::new(),
         last_goal_assessment: None,
         progress_baseline: None,
         last_progress_assessment: None,

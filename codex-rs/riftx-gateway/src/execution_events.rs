@@ -14,6 +14,7 @@ use sha2::Sha256;
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) type ExecutionKey = (String, String);
 
@@ -22,6 +23,7 @@ pub(crate) struct ActiveExecution {
     stdout: OutputDigest,
     stderr: OutputDigest,
     stdin: OutputDigest,
+    timeout_cancellation: CancellationToken,
 }
 
 #[derive(Default)]
@@ -141,22 +143,25 @@ async fn start(state: &GatewayState, payload: &ItemStartedNotification) {
     if state.store.put_execution(&execution).await.is_err() {
         return;
     }
+    let timeout_cancellation = CancellationToken::new();
     state.active_executions.write().await.insert(
-        key,
+        key.clone(),
         ActiveExecution {
             execution: execution.clone(),
             stdout: OutputDigest::default(),
             stderr: OutputDigest::default(),
             stdin: OutputDigest::default(),
+            timeout_cancellation: timeout_cancellation.clone(),
         },
     );
     state
         .publish(
             &engagement_id,
             "execution/started",
-            serde_json::to_value(execution).unwrap_or_default(),
+            serde_json::to_value(&execution).unwrap_or_default(),
         )
         .await;
+    crate::auto_tools::watch_execution(state.clone(), key, execution, timeout_cancellation).await;
 }
 
 async fn complete(state: &GatewayState, payload: &ItemCompletedNotification) {
@@ -177,6 +182,7 @@ async fn complete(state: &GatewayState, payload: &ItemCompletedNotification) {
     let Some(active) = state.active_executions.write().await.remove(&key) else {
         return;
     };
+    active.timeout_cancellation.cancel();
     let mut active = active;
     if active.stdout.bytes == 0
         && let Some(stdout) = stdout
@@ -206,6 +212,7 @@ async fn complete(state: &GatewayState, payload: &ItemCompletedNotification) {
     if state.store.put_execution(&execution).await.is_err() {
         return;
     }
+    crate::auto_tools::record_unavailable_tool(state, &execution).await;
     let engagement_id = execution.engagement_id.clone();
     state
         .publish(
@@ -236,6 +243,7 @@ pub(crate) async fn finish_turn(
         let Some(active) = state.active_executions.write().await.remove(&key) else {
             continue;
         };
+        active.timeout_cancellation.cancel();
         let mut execution = active.execution;
         execution.status = status;
         execution.completed_at = Some(unix_timestamp());

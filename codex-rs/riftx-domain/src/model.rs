@@ -41,11 +41,21 @@ pub struct Engagement {
     pub entry_points: Vec<String>,
     pub mode: crate::ExecutionMode,
     pub llm_profile: String,
+    #[serde(default)]
+    pub auto_limits: Option<crate::AutoRunLimits>,
     pub authorization: crate::AuthorizationScope,
     pub policy_revision: String,
     pub thread_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EvidencePurpose {
+    #[default]
+    Objective,
+    Operational,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +126,8 @@ pub struct Evidence {
     pub execution_id: Option<String>,
     pub artifact_id: Option<String>,
     pub summary: String,
+    #[serde(default)]
+    pub purpose: EvidencePurpose,
     #[serde(default)]
     pub reproducible: bool,
     pub captured_at: i64,

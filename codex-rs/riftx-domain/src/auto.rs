@@ -187,6 +187,8 @@ pub struct AutoRun {
     pub consecutive_failures: u32,
     pub no_progress_turns: u32,
     #[serde(default)]
+    pub unavailable_tools: Vec<String>,
+    #[serde(default)]
     pub last_goal_assessment: Option<AutoGoalAssessment>,
     #[serde(default)]
     pub progress_baseline: Option<AutoProgressSnapshot>,

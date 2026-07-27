@@ -15,6 +15,7 @@ use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::EnvironmentClass;
 use codex_riftx_core::Evidence;
+use codex_riftx_core::EvidencePurpose;
 use codex_riftx_core::Execution;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
@@ -84,6 +85,50 @@ async fn evaluator_never_accepts_a_claim_without_structured_evidence() {
     assert!(!assessment.succeeded);
     assert_eq!(assessment.evidence_ids, Vec::<String>::new());
     assert_eq!(assessment.criteria[0].satisfied, false);
+}
+
+#[tokio::test]
+async fn operational_evidence_does_not_satisfy_objective_success() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = engagement(vec![StructuredSuccessCriterion {
+        id: "evidence".to_string(),
+        description: "Capture one objective evidence item".to_string(),
+        predicate: SuccessPredicate::Evidence {
+            minimum_items: 1,
+            reproduction_required: false,
+        },
+    }]);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    put_execution_and_evidence(&state, &engagement.id).await;
+    let mut evidence = state
+        .store
+        .evidence(&engagement.id)
+        .await
+        .expect("load evidence")
+        .remove(0);
+    evidence.purpose = EvidencePurpose::Operational;
+    state
+        .store
+        .put_evidence(&evidence)
+        .await
+        .expect("store operational evidence");
+
+    let assessment = evaluate(
+        &state,
+        &auto_run(&engagement, AutoRunState::Evaluating),
+        200,
+    )
+    .await
+    .expect("evaluate goal");
+
+    assert!(!assessment.succeeded);
+    assert_eq!(assessment.evidence_ids, Vec::<String>::new());
+    assert!(!assessment.criteria[0].satisfied);
 }
 
 #[tokio::test]
@@ -305,6 +350,7 @@ async fn put_execution_and_evidence(state: &GatewayState, engagement_id: &str) {
             execution_id: Some("execution-1".to_string()),
             artifact_id: None,
             summary: "Tool-derived evidence".to_string(),
+            purpose: EvidencePurpose::Objective,
             reproducible: false,
             captured_at: 120,
         })
@@ -325,6 +371,7 @@ fn engagement(structured_criteria: Vec<StructuredSuccessCriterion>) -> Engagemen
         entry_points: vec!["10.10.0.10".to_string()],
         mode: ExecutionMode::Auto,
         llm_profile: "default".to_string(),
+        auto_limits: None,
         authorization: AuthorizationScope {
             network: Scope {
                 cidrs: Vec::new(),
@@ -375,6 +422,7 @@ fn auto_run(engagement: &Engagement, state: AutoRunState) -> AutoRun {
         tool_calls: 1,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        unavailable_tools: Vec::new(),
         last_goal_assessment: None,
         progress_baseline: None,
         last_progress_assessment: None,
