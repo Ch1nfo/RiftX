@@ -155,6 +155,31 @@ async fn auto_controller_replans_then_completes_with_artifact_backed_evidence() 
     anyhow::ensure!(report_response.status() == StatusCode::OK);
     let report: Value = serde_json::from_slice(&report_response.bytes().await?)?;
     anyhow::ensure!(
+        report["schema"] == "riftx.report/v1"
+            && report["generatedAt"]
+                .as_i64()
+                .is_some_and(|value| value > 0)
+            && report["llmProfile"]["name"] == "secondary"
+            && report["llmProfile"]["protocol"] == "chatCompletions",
+        "versioned report metadata missing: {report}"
+    );
+    anyhow::ensure!(
+        report["autoRun"]["state"] == "succeeded"
+            && report["autoRun"]["stopReason"] == "successCriteriaMet"
+            && report["autoRun"]["lastGoalAssessment"]["succeeded"] == true,
+        "Auto outcome missing from report: {report}"
+    );
+    anyhow::ensure!(
+        report["limitations"].as_array().is_some_and(|limitations| {
+            limitations.iter().any(|limitation| {
+                limitation
+                    .as_str()
+                    .is_some_and(|text| text.contains("not an OS-enforced network isolation"))
+            })
+        }),
+        "scope limitation missing from report: {report}"
+    );
+    anyhow::ensure!(
         report["executions"]
             .as_array()
             .is_some_and(|executions| executions.len() == 1

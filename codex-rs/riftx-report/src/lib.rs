@@ -4,6 +4,12 @@ use codex_riftx_domain::Artifact;
 use codex_riftx_domain::Asset;
 use codex_riftx_domain::AssetRelation;
 use codex_riftx_domain::AttackPath;
+use codex_riftx_domain::AutoGoalAssessment;
+use codex_riftx_domain::AutoProgressAssessment;
+use codex_riftx_domain::AutoRun;
+use codex_riftx_domain::AutoRunLimits;
+use codex_riftx_domain::AutoRunState;
+use codex_riftx_domain::AutoStopReason;
 use codex_riftx_domain::Coverage;
 use codex_riftx_domain::Engagement;
 use codex_riftx_domain::Evidence;
@@ -18,6 +24,79 @@ use codex_riftx_domain::Task;
 use codex_riftx_domain::TestCase;
 use serde::Deserialize;
 use serde::Serialize;
+
+pub const REPORT_SCHEMA_VERSION: &str = "riftx.report/v1";
+pub const LOCAL_EXECUTION_LIMITATION: &str = "RiftX executes tools on the local machine; review local tool and Artifact handling accordingly.";
+pub const NON_ENFORCED_SCOPE_LIMITATION: &str = "The declared target Scope is checked by RiftX policy but is not an OS-enforced network isolation boundary.";
+pub const ARTIFACT_SENSITIVITY_LIMITATION: &str = "User-provided tools may create Artifacts containing sensitive data; review them before export.";
+
+fn default_report_schema() -> String {
+    REPORT_SCHEMA_VERSION.to_string()
+}
+
+pub fn standard_report_limitations() -> Vec<String> {
+    vec![
+        LOCAL_EXECUTION_LIMITATION.to_string(),
+        NON_ENFORCED_SCOPE_LIMITATION.to_string(),
+        ARTIFACT_SENSITIVITY_LIMITATION.to_string(),
+    ]
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReportLlmProtocol {
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportLlmProfile {
+    pub name: String,
+    pub protocol: Option<ReportLlmProtocol>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportAutoRun {
+    pub state: AutoRunState,
+    pub stop_reason: Option<AutoStopReason>,
+    pub current_subgoal: Option<String>,
+    pub turns_started: u32,
+    pub turns_completed: u32,
+    pub tool_calls: u32,
+    pub consecutive_failures: u32,
+    pub no_progress_turns: u32,
+    pub unavailable_tools: Vec<String>,
+    pub limits: AutoRunLimits,
+    pub expires_at: i64,
+    pub last_goal_assessment: Option<AutoGoalAssessment>,
+    pub last_progress_assessment: Option<AutoProgressAssessment>,
+    pub started_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+impl From<&AutoRun> for ReportAutoRun {
+    fn from(run: &AutoRun) -> Self {
+        Self {
+            state: run.state,
+            stop_reason: run.stop_reason,
+            current_subgoal: run.current_subgoal.clone(),
+            turns_started: run.turns_started,
+            turns_completed: run.turns_completed,
+            tool_calls: run.tool_calls,
+            consecutive_failures: run.consecutive_failures,
+            no_progress_turns: run.no_progress_turns,
+            unavailable_tools: run.unavailable_tools.clone(),
+            limits: run.config.limits.clone(),
+            expires_at: run.config.expires_at,
+            last_goal_assessment: run.last_goal_assessment.clone(),
+            last_progress_assessment: run.last_progress_assessment.clone(),
+            started_at: run.started_at,
+            updated_at: run.updated_at,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +154,16 @@ pub struct ReportSkill {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EngagementReport {
+    #[serde(default = "default_report_schema")]
+    pub schema: String,
+    #[serde(default)]
+    pub generated_at: i64,
+    #[serde(default)]
+    pub llm_profile: Option<ReportLlmProfile>,
+    #[serde(default)]
+    pub auto_run: Option<ReportAutoRun>,
+    #[serde(default)]
+    pub limitations: Vec<String>,
     pub engagement: Engagement,
     pub assets: Vec<Asset>,
     pub asset_relations: Vec<AssetRelation>,
@@ -97,8 +186,10 @@ pub struct EngagementReport {
 impl EngagementReport {
     pub fn markdown(&self) -> String {
         let mut output = format!(
-            "# RiftX Report: {}\n\n- Engagement: `{}`\n- Objective: {}\n- Mode: `{:?}`\n- Environment: `{:?}`\n- Authorization expires: `{}`\n- Policy revision: `{}`\n- Status: `{:?}`\n\n## Success Criteria\n\n",
+            "# RiftX Report: {}\n\n- Schema: `{}`\n- Generated at: `{}`\n- Engagement: `{}`\n- Objective: {}\n- Mode: `{:?}`\n- Environment: `{:?}`\n- Authorization expires: `{}`\n- Policy revision: `{}`\n- Status: `{:?}`\n- LLM Profile: `{}`\n- LLM Protocol: `{}`\n\n## Success Criteria\n\n",
             self.engagement.name,
+            self.schema,
+            self.generated_at,
             self.engagement.id,
             self.engagement.objective.summary,
             self.engagement.mode,
@@ -109,7 +200,19 @@ impl EngagementReport {
                 .expires_at
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.engagement.policy_revision,
-            self.engagement.status
+            self.engagement.status,
+            self.llm_profile
+                .as_ref()
+                .map_or(self.engagement.llm_profile.as_str(), |profile| profile
+                    .name
+                    .as_str()),
+            self.llm_profile
+                .as_ref()
+                .and_then(|profile| profile.protocol)
+                .map_or_else(
+                    || "unavailable".to_string(),
+                    |protocol| format!("{protocol:?}")
+                ),
         );
         if self.engagement.objective.success_criteria.is_empty() {
             output.push_str("No explicit success criteria recorded.\n");
@@ -300,6 +403,31 @@ impl EngagementReport {
         } else {
             for evidence in &self.evidence {
                 output.push_str(&format!("- {}\n", evidence.summary));
+            }
+        }
+        output.push_str("\n## Auto Run\n\n");
+        if let Some(run) = &self.auto_run {
+            output.push_str(&format!(
+                "- State: `{:?}`\n- Stop reason: `{}`\n- Turns: {}/{}\n- Tool calls: {}/{}\n- Wall-clock budget: {} seconds\n- Single-command budget: {} seconds\n",
+                run.state,
+                run.stop_reason
+                    .map_or_else(|| "none".to_string(), |reason| format!("{reason:?}")),
+                run.turns_started,
+                run.limits.max_turns,
+                run.tool_calls,
+                run.limits.max_tool_calls,
+                run.limits.max_wall_clock_seconds,
+                run.limits.max_single_command_seconds,
+            ));
+        } else {
+            output.push_str("This engagement has no Auto run.\n");
+        }
+        output.push_str("\n## Known Limitations\n\n");
+        if self.limitations.is_empty() {
+            output.push_str("No report limitations were recorded.\n");
+        } else {
+            for limitation in &self.limitations {
+                output.push_str(&format!("- {limitation}\n"));
             }
         }
         output.push_str("\n## Tool Snapshot\n\n");

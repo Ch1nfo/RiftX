@@ -245,6 +245,51 @@ pub(crate) fn native_engagement(
 }
 
 #[tokio::test]
+async fn report_endpoint_emits_the_versioned_runtime_contract() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "report-contract", EngagementStatus::Active);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/engagements/report-contract/report?format=json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let report: EngagementReport = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("report body")
+            .to_bytes(),
+    )
+    .expect("versioned report");
+
+    assert_eq!(report.schema, codex_riftx_report::REPORT_SCHEMA_VERSION);
+    assert!(report.generated_at > 0);
+    assert_eq!(
+        report.llm_profile,
+        Some(ReportLlmProfile {
+            name: "default".to_string(),
+            protocol: Some(ReportLlmProtocol::Responses),
+        })
+    );
+    assert_eq!(report.auto_run, None);
+    assert_eq!(report.limitations, standard_report_limitations());
+}
+
+#[tokio::test]
 async fn extension_endpoints_return_typed_startup_inventories() {
     let temp = TempDir::new().expect("temp dir");
     let app = test_router(&temp).await;

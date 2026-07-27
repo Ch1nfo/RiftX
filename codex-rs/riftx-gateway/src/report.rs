@@ -1,10 +1,14 @@
 pub(crate) use codex_riftx_report::EngagementReport;
+pub(crate) use codex_riftx_report::ReportAutoRun;
+pub(crate) use codex_riftx_report::ReportLlmProfile;
+pub(crate) use codex_riftx_report::ReportLlmProtocol;
 pub(crate) use codex_riftx_report::ReportSkill;
 pub(crate) use codex_riftx_report::ReportSkillSource;
 pub(crate) use codex_riftx_report::ReportTool;
 pub(crate) use codex_riftx_report::ReportToolRisk;
 pub(crate) use codex_riftx_report::SkillReportSnapshot;
 pub(crate) use codex_riftx_report::ToolReportSnapshot;
+pub(crate) use codex_riftx_report::standard_report_limitations;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillSource;
 use codex_riftx_tools::ToolInventory;

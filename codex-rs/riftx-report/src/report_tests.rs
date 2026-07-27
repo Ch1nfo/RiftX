@@ -3,6 +3,11 @@ use codex_riftx_domain::AssessmentObjective;
 use codex_riftx_domain::AttackPathHop;
 use codex_riftx_domain::AuthorizationScope;
 use codex_riftx_domain::AuthorizationWindow;
+use codex_riftx_domain::AutoLlmProfileSnapshot;
+use codex_riftx_domain::AutoRunConfig;
+use codex_riftx_domain::AutoRunLimits;
+use codex_riftx_domain::AutoRunState;
+use codex_riftx_domain::AutoStopReason;
 use codex_riftx_domain::EngagementStatus;
 use codex_riftx_domain::EnvironmentClass;
 use codex_riftx_domain::ExecutionMode;
@@ -13,39 +18,82 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn report_contains_unverified_state_attack_paths_and_coverage() {
-    let report = EngagementReport {
-        engagement: Engagement {
-            id: "eng-1".to_string(),
-            name: "Authorized lab".to_string(),
-            status: EngagementStatus::Active,
-            objective: AssessmentObjective {
-                summary: "Validate an authorized attack path".to_string(),
-                success_criteria: vec!["Preserve reproducible evidence".to_string()],
-                structured_criteria: Vec::new(),
-            },
-            entry_points: vec!["10.10.20.10".to_string()],
-            mode: ExecutionMode::Pentest,
-            llm_profile: "default".to_string(),
-            auto_limits: None,
-            authorization: AuthorizationScope {
-                network: Scope {
-                    cidrs: vec!["10.10.20.0/24".parse().expect("CIDR")],
-                    domains: Vec::new(),
-                    ports: vec![445],
-                },
-                identities: Vec::new(),
-                capabilities: vec!["attack_path.analysis".to_string()],
-                environment: EnvironmentClass::Lab,
-                window: AuthorizationWindow {
-                    starts_at: None,
-                    expires_at: Some(2_000_000_000),
-                },
-            },
-            policy_revision: "revision-1".to_string(),
-            thread_id: None,
-            created_at: 1,
-            updated_at: 1,
+    let engagement = Engagement {
+        id: "eng-1".to_string(),
+        name: "Authorized lab".to_string(),
+        status: EngagementStatus::Active,
+        objective: AssessmentObjective {
+            summary: "Validate an authorized attack path".to_string(),
+            success_criteria: vec!["Preserve reproducible evidence".to_string()],
+            structured_criteria: Vec::new(),
         },
+        entry_points: vec!["10.10.20.10".to_string()],
+        mode: ExecutionMode::Auto,
+        llm_profile: "default".to_string(),
+        auto_limits: None,
+        authorization: AuthorizationScope {
+            network: Scope {
+                cidrs: vec!["10.10.20.0/24".parse().expect("CIDR")],
+                domains: Vec::new(),
+                ports: vec![445],
+            },
+            identities: Vec::new(),
+            capabilities: vec!["attack_path.analysis".to_string()],
+            environment: EnvironmentClass::Lab,
+            window: AuthorizationWindow {
+                starts_at: None,
+                expires_at: Some(2_000_000_000),
+            },
+        },
+        policy_revision: "revision-1".to_string(),
+        thread_id: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    let report = EngagementReport {
+        schema: REPORT_SCHEMA_VERSION.to_string(),
+        generated_at: 80,
+        llm_profile: Some(ReportLlmProfile {
+            name: "default".to_string(),
+            protocol: Some(ReportLlmProtocol::ChatCompletions),
+        }),
+        auto_run: Some(ReportAutoRun::from(&AutoRun {
+            engagement_id: engagement.id.clone(),
+            config: AutoRunConfig {
+                objective: engagement.objective.clone(),
+                authorization: engagement.authorization.clone(),
+                llm_profile: AutoLlmProfileSnapshot {
+                    name: "default".to_string(),
+                    model: "test-model".to_string(),
+                    base_url: "https://llm.example.test".to_string(),
+                    protocol: "chatCompletions".to_string(),
+                    timeout_seconds: 30,
+                    reasoning_level: "medium".to_string(),
+                    context_budget: 100_000,
+                    config_sha256: "profile-sha256".to_string(),
+                },
+                tools_snapshot_sha256: "tool-inventory-sha256".to_string(),
+                policy_revision: engagement.policy_revision.clone(),
+                expires_at: 2_000_000_000,
+                limits: AutoRunLimits::default(),
+            },
+            state: AutoRunState::BudgetExhausted,
+            stop_reason: Some(AutoStopReason::ToolBudgetExhausted),
+            current_subgoal: Some("Validate the attack path".to_string()),
+            turns_started: 3,
+            turns_completed: 3,
+            tool_calls: 100,
+            consecutive_failures: 0,
+            no_progress_turns: 0,
+            unavailable_tools: Vec::new(),
+            last_goal_assessment: None,
+            progress_baseline: None,
+            last_progress_assessment: None,
+            started_at: Some(10),
+            updated_at: 70,
+        })),
+        limitations: standard_report_limitations(),
+        engagement,
         assets: Vec::new(),
         asset_relations: Vec::new(),
         services: Vec::new(),
@@ -170,7 +218,16 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         "Credential reuse may reach domain control",
         "credentialValidation",
         "native-tool",
-        "Mode: `Pentest`",
+        "Mode: `Auto`",
+        "Schema: `riftx.report/v1`",
+        "Generated at: `80`",
+        "LLM Profile: `default`",
+        "LLM Protocol: `ChatCompletions`",
+        "Stop reason: `ToolBudgetExhausted`",
+        "Tool calls: 100/100",
+        "Known Limitations",
+        LOCAL_EXECUTION_LIMITATION,
+        NON_ENFORCED_SCOPE_LIMITATION,
         "Operator-declared Authorized Scope",
         "not an OS-enforced network isolation boundary",
         "attack_path.analysis",
@@ -191,8 +248,15 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     let json = serde_json::to_value(&report).expect("report should encode");
     let decoded = serde_json::from_value(json.clone()).expect("report should decode");
     assert_eq!(report, decoded);
+    let encoded = json.to_string();
+    assert!(!encoded.contains("llm.example.test"));
+    assert!(!encoded.contains("test-model"));
     assert_eq!(
         (
+            json.pointer("/schema"),
+            json.pointer("/generatedAt"),
+            json.pointer("/llmProfile/protocol"),
+            json.pointer("/autoRun/stopReason"),
             json.pointer("/observations/0/kind"),
             json.pointer("/hypotheses/0/status"),
             json.pointer("/testCases/0/capability"),
@@ -202,6 +266,10 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             json.pointer("/skillSnapshot/skills/0/name"),
         ),
         (
+            Some(&serde_json::json!("riftx.report/v1")),
+            Some(&serde_json::json!(80)),
+            Some(&serde_json::json!("chatCompletions")),
+            Some(&serde_json::json!("toolBudgetExhausted")),
             Some(&serde_json::json!("potentialFinding")),
             Some(&serde_json::json!("proposed")),
             Some(&serde_json::json!("credentialValidation")),

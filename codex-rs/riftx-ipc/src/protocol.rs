@@ -32,6 +32,9 @@ pub use codex_riftx_domain::StructuredSuccessCriterion;
 pub use codex_riftx_domain::TaskStatus;
 pub use codex_riftx_execution_policy::ExecutionIntent;
 pub use codex_riftx_report::EngagementReport;
+pub use codex_riftx_report::ReportAutoRun;
+pub use codex_riftx_report::ReportLlmProfile;
+pub use codex_riftx_report::ReportLlmProtocol;
 pub use codex_riftx_report::ReportSkill;
 pub use codex_riftx_report::ReportSkillSource;
 pub use codex_riftx_report::ReportTool;
@@ -43,7 +46,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 10;
+pub const IPC_PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

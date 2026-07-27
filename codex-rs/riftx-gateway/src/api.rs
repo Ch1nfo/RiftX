@@ -6,7 +6,11 @@ use crate::gateway_state::unix_timestamp;
 use crate::inventory::ipc_skill_catalog;
 use crate::inventory::ipc_tool_inventory;
 use crate::report::EngagementReport;
+use crate::report::ReportAutoRun;
+use crate::report::ReportLlmProfile;
+use crate::report::ReportLlmProtocol;
 use crate::report::skill_report_snapshot;
+use crate::report::standard_report_limitations;
 use crate::report::tool_report_snapshot;
 use axum::Json;
 use axum::Router;
@@ -1116,8 +1120,40 @@ async fn report(
     Path(id): Path<String>,
     Query(query): Query<ReportQuery>,
 ) -> Result<Response, ApiError> {
+    let engagement = state.store.engagement(&id).await?;
+    let auto_run = state.store.auto_run(&id).await?;
+    let llm_profile = if let Some(run) = auto_run.as_ref() {
+        ReportLlmProfile {
+            name: run.config.llm_profile.name.clone(),
+            protocol: match run.config.llm_profile.protocol.as_str() {
+                "responses" => Some(ReportLlmProtocol::Responses),
+                "chat_completions" | "chatCompletions" => Some(ReportLlmProtocol::ChatCompletions),
+                _ => None,
+            },
+        }
+    } else {
+        ReportLlmProfile {
+            name: engagement.llm_profile.clone(),
+            protocol: state
+                .config
+                .llm
+                .profiles
+                .get(&engagement.llm_profile)
+                .map(|profile| match profile.protocol {
+                    codex_riftx_core::LlmProtocol::Responses => ReportLlmProtocol::Responses,
+                    codex_riftx_core::LlmProtocol::ChatCompletions => {
+                        ReportLlmProtocol::ChatCompletions
+                    }
+                }),
+        }
+    };
     let report = EngagementReport {
-        engagement: state.store.engagement(&id).await?,
+        schema: codex_riftx_report::REPORT_SCHEMA_VERSION.to_string(),
+        generated_at: unix_timestamp(),
+        llm_profile: Some(llm_profile),
+        auto_run: auto_run.as_ref().map(ReportAutoRun::from),
+        limitations: standard_report_limitations(),
+        engagement,
         assets: state.store.assets(&id).await?,
         asset_relations: state.store.asset_relations(&id).await?,
         services: state.store.services(&id).await?,
