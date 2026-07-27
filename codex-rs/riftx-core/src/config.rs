@@ -58,10 +58,23 @@ impl RiftxConfig {
         let path = std::path::absolute(path)
             .map_err(|error| ConfigError::Invalid(format!("resolve config path: {error}")))?;
         let mut config = Self::load(&path).await?;
+        let migrated = config.llm.apply_protocol_migration();
+        if migrated {
+            config.write_atomic(&path).await?;
+        }
         let base = path.parent().ok_or_else(|| {
             ConfigError::Invalid(format!("config path has no parent: {}", path.display()))
         })?;
         config.resolve_paths(base);
+        Ok(config)
+    }
+
+    /// Load config and persist a one-shot protocol migration when needed.
+    pub async fn load_migrating(path: &Path) -> Result<Self, ConfigError> {
+        let mut config = Self::load(path).await?;
+        if config.llm.apply_protocol_migration() {
+            config.write_atomic(path).await?;
+        }
         Ok(config)
     }
 
@@ -143,13 +156,37 @@ pub struct DaemonConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
+    /// Bumped by repeatable migrations. Missing/`0` means pre-protocol configs.
+    #[serde(default)]
+    pub config_version: u32,
     pub default_profile: String,
     pub profiles: BTreeMap<String, LlmProfileConfig>,
+}
+
+/// Wire protocol for an LLM profile. Unknown values must fail to deserialize.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProtocol {
+    #[default]
+    Responses,
+    ChatCompletions,
+}
+
+impl LlmProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LlmProfileConfig {
+    /// Defaults to `responses` when omitted so pre-1.0 configs still load.
+    #[serde(default)]
+    pub protocol: LlmProtocol,
     pub model: String,
     pub base_url: String,
     pub api_key: LlmApiKeySource,
@@ -157,6 +194,9 @@ pub struct LlmProfileConfig {
     pub reasoning_level: LlmReasoningLevel,
     pub context_budget: u32,
 }
+
+/// Current LLM config schema version. `1` introduces explicit `protocol`.
+pub const LLM_CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
@@ -176,6 +216,19 @@ pub enum LlmReasoningLevel {
 }
 
 impl LlmConfig {
+    /// Upgrade pre-protocol configs to `config_version = 1`.
+    ///
+    /// Missing `protocol` fields already deserialize as [`LlmProtocol::Responses`].
+    /// Returns `true` when the in-memory config should be written back so the
+    /// explicit protocol and version are persisted. Safe to call repeatedly.
+    pub fn apply_protocol_migration(&mut self) -> bool {
+        if self.config_version >= LLM_CONFIG_VERSION {
+            return false;
+        }
+        self.config_version = LLM_CONFIG_VERSION;
+        true
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !valid_profile_name(&self.default_profile) {
             return Err(ConfigError::Invalid(

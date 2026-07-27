@@ -4,6 +4,7 @@ use crate::bridge::EngagementView;
 use crate::bridge::json_response;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmProfileConfig;
+use codex_riftx_core::LlmProtocol;
 use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_credentials::LlmApiKey;
@@ -29,6 +30,7 @@ pub(crate) struct LlmSettingsView {
 #[serde(rename_all = "camelCase")]
 struct LlmProfileSettingsView {
     profile_name: String,
+    protocol: String,
     model: String,
     base_url: String,
     timeout_seconds: u64,
@@ -71,6 +73,8 @@ pub(crate) struct UpsertLlmProfileInput {
     profile_name: String,
     model: String,
     base_url: String,
+    #[serde(default)]
+    protocol: Option<String>,
     #[serde(default)]
     make_default: bool,
 }
@@ -130,6 +134,7 @@ pub(crate) async fn upsert_llm_profile(
     }
     let model = input.model.trim().to_string();
     let base_url = input.base_url.trim().to_string();
+    let protocol = parse_protocol(input.protocol.as_deref())?;
     let updating_existing = config.llm.profiles.contains_key(&profile_name);
     let was_configured = if updating_existing {
         profile_is_configured(&config, &profile_name).await?
@@ -139,10 +144,12 @@ pub(crate) async fn upsert_llm_profile(
     if let Some(existing) = config.llm.profiles.get_mut(&profile_name) {
         existing.model = model;
         existing.base_url = base_url;
+        existing.protocol = protocol;
     } else {
         config.llm.profiles.insert(
             profile_name.clone(),
             LlmProfileConfig {
+                protocol,
                 model,
                 base_url,
                 api_key: LlmApiKeySource::Keyring {
@@ -281,7 +288,7 @@ pub(crate) async fn delete_llm_api_key(
 }
 
 pub(crate) async fn load_riftx_config(path: &Path) -> Result<RiftxConfig, DesktopError> {
-    RiftxConfig::load(path)
+    RiftxConfig::load_migrating(path)
         .await
         .map_err(|error| DesktopError::new("invalid_config", error.to_string()))
 }
@@ -347,6 +354,7 @@ async fn settings_view(
                 };
                 Ok(LlmProfileSettingsView {
                     profile_name,
+                    protocol: profile.protocol.as_str().to_string(),
                     model: profile.model,
                     base_url: profile.base_url,
                     timeout_seconds: profile.timeout_seconds,
@@ -431,6 +439,17 @@ async fn reject_if_profile_in_use(
         ));
     }
     Ok(())
+}
+
+fn parse_protocol(value: Option<&str>) -> Result<LlmProtocol, DesktopError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("responses") => Ok(LlmProtocol::Responses),
+        Some("chat_completions") => Ok(LlmProtocol::ChatCompletions),
+        Some(other) => Err(DesktopError::new(
+            "invalid_config",
+            format!("unsupported LLM protocol {other:?}; expected responses or chat_completions"),
+        )),
+    }
 }
 
 fn reasoning_level_label(level: LlmReasoningLevel) -> &'static str {

@@ -35,6 +35,9 @@ export function ModelSettingsView({
   const [selectedProfileName, setSelectedProfileName] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [protocol, setProtocol] = useState<"responses" | "chat_completions">(
+    "responses",
+  );
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
@@ -43,6 +46,9 @@ export function ModelSettingsView({
   const [newProfileName, setNewProfileName] = useState("");
   const [newModel, setNewModel] = useState("");
   const [newBaseUrl, setNewBaseUrl] = useState("");
+  const [newProtocol, setNewProtocol] = useState<
+    "responses" | "chat_completions"
+  >("responses");
   const [busy, setBusy] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -76,6 +82,7 @@ export function ModelSettingsView({
         ) ?? null;
       setModel(profile?.model ?? "");
       setBaseUrl(profile?.baseUrl ?? "");
+      setProtocol(profile?.protocol ?? "responses");
     },
     [selectedProfileName],
   );
@@ -116,6 +123,7 @@ export function ModelSettingsView({
         profileName: profile.profileName,
         model: model.trim(),
         baseUrl: baseUrl.trim(),
+        protocol,
       });
       applySettings(updated, profile.profileName);
       setNotice(
@@ -149,6 +157,7 @@ export function ModelSettingsView({
         profileName: newProfileName.trim(),
         model: newModel.trim(),
         baseUrl: newBaseUrl.trim(),
+        protocol: newProtocol,
         makeDefault: settings?.profiles.length === 0,
       });
       applySettings(updated, newProfileName.trim());
@@ -156,11 +165,12 @@ export function ModelSettingsView({
       setNewProfileName("");
       setNewModel("");
       setNewBaseUrl("");
+      setNewProtocol("responses");
       setNotice(
         restartNotice(
           updated.daemonRestartRequired,
-          "Profile created. Restart the externally managed daemon to load it.",
-          "Profile created. The local runtime is ready.",
+          "Profile created. Save an API key, then restart an externally managed daemon if needed.",
+          "Profile created. Save an API key to make it ready.",
         ),
       );
       onRuntimeChanged(true);
@@ -320,6 +330,21 @@ export function ModelSettingsView({
               placeholder="https://api.example.com/v1"
             />
           </label>
+          <label>
+            <span>Protocol</span>
+            <select
+              value={newProtocol}
+              onChange={(event) =>
+                setNewProtocol(
+                  event.target.value as "responses" | "chat_completions",
+                )
+              }
+              disabled={busy}
+            >
+              <option value="responses">Responses</option>
+              <option value="chat_completions">Chat Completions</option>
+            </select>
+          </label>
           <button
             type="submit"
             className="primary-button"
@@ -354,6 +379,7 @@ export function ModelSettingsView({
               ) ?? null;
             setModel(nextProfile?.model ?? "");
             setBaseUrl(nextProfile?.baseUrl ?? "");
+            setProtocol(nextProfile?.protocol ?? "responses");
             setApiKey("");
             setShowKey(false);
             setConfirmRemoveKey(false);
@@ -399,6 +425,22 @@ export function ModelSettingsView({
                 disabled={busy}
                 spellCheck={false}
               />
+            </label>
+            <label>
+              <span>Protocol</span>
+              <select
+                value={protocol}
+                onChange={(event) => {
+                  setProtocol(
+                    event.target.value as "responses" | "chat_completions",
+                  );
+                  setNotice(null);
+                }}
+                disabled={busy}
+              >
+                <option value="responses">Responses</option>
+                <option value="chat_completions">Chat Completions</option>
+              </select>
             </label>
             <dl className="settings-summary compact">
               <div>
@@ -465,7 +507,9 @@ export function ModelSettingsView({
                   busy ||
                   !model.trim() ||
                   !baseUrl.trim() ||
-                  (model === profile.model && baseUrl === profile.baseUrl)
+                  (model === profile.model &&
+                    baseUrl === profile.baseUrl &&
+                    protocol === profile.protocol)
                 }
               >
                 {busy && <LoaderCircle className="spin" size={15} />}
@@ -611,6 +655,21 @@ export function ModelSettingsView({
                 spellCheck={false}
                 placeholder="https://api.example.com/v1"
               />
+            </label>
+            <label>
+              <span>Protocol</span>
+              <select
+                value={newProtocol}
+                onChange={(event) =>
+                  setNewProtocol(
+                    event.target.value as "responses" | "chat_completions",
+                  )
+                }
+                disabled={busy}
+              >
+                <option value="responses">Responses</option>
+                <option value="chat_completions">Chat Completions</option>
+              </select>
             </label>
             <div className="settings-actions">
               <button

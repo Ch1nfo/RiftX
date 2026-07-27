@@ -19,6 +19,7 @@ use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmConfig;
 use codex_riftx_core::LlmProfileConfig;
+use codex_riftx_core::LlmProtocol;
 use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::Observation;
@@ -57,11 +58,13 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
             workspace_root: temp.path().join("workspaces"),
         },
         llm: LlmConfig {
+            config_version: 1,
             default_profile: "default".to_string(),
             profiles: BTreeMap::from([
                 (
                     "alternate".to_string(),
                     LlmProfileConfig {
+                        protocol: LlmProtocol::Responses,
                         model: "riftx-alternate-test-model".to_string(),
                         base_url: "http://127.0.0.1:8766/v1".to_string(),
                         api_key: LlmApiKeySource::Environment {
@@ -75,6 +78,7 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
                 (
                     "default".to_string(),
                     LlmProfileConfig {
+                        protocol: LlmProtocol::Responses,
                         model: "riftx-test-model".to_string(),
                         base_url: "http://127.0.0.1:8766/v1".to_string(),
                         api_key: LlmApiKeySource::Environment {

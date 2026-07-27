@@ -113,6 +113,15 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 continue;
             }
         };
+        if matches!(
+            profile.protocol,
+            codex_riftx_core::LlmProtocol::ChatCompletions
+        ) {
+            eprintln!(
+                "riftxd: skipping LLM profile {profile_name:?}: chat_completions requires the RiftX LLM bridge"
+            );
+            continue;
+        }
         let runtime = RiftxLlmRuntimeConfig {
             runtime_home: config
                 .daemon

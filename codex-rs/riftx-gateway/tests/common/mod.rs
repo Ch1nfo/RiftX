@@ -6,6 +6,7 @@ use codex_riftx_core::DaemonConfig;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmConfig;
 use codex_riftx_core::LlmProfileConfig;
+use codex_riftx_core::LlmProtocol;
 use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::RiftxConfig;
@@ -63,11 +64,13 @@ pub(crate) fn test_config(root: &Path, base_url: String) -> RiftxConfig {
             workspace_root: root.join("workspaces"),
         },
         llm: LlmConfig {
+            config_version: 1,
             default_profile: "default".to_string(),
             profiles: BTreeMap::from([
                 (
                     "default".to_string(),
                     LlmProfileConfig {
+                        protocol: LlmProtocol::Responses,
                         model: "gpt-5.2".to_string(),
                         base_url: base_url.clone(),
                         api_key: LlmApiKeySource::Environment {
@@ -81,6 +84,7 @@ pub(crate) fn test_config(root: &Path, base_url: String) -> RiftxConfig {
                 (
                     "secondary".to_string(),
                     LlmProfileConfig {
+                        protocol: LlmProtocol::Responses,
                         model: "gpt-5.2-secondary".to_string(),
                         base_url,
                         api_key: LlmApiKeySource::Environment {

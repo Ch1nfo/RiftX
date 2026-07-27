@@ -32,11 +32,13 @@ export interface UpsertLlmProfileInput {
   profileName: string;
   model: string;
   baseUrl: string;
+  protocol?: "responses" | "chat_completions";
   makeDefault?: boolean;
 }
 
 export interface LlmProfileSettings {
   profileName: string;
+  protocol: "responses" | "chat_completions";
   model: string;
   baseUrl: string;
   timeoutSeconds: number;

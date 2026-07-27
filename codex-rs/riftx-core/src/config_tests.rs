@@ -109,6 +109,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
         "http://[::1]:8766/v1",
     ] {
         let profile = LlmProfileConfig {
+            protocol: LlmProtocol::Responses,
             model: "riftx-model".to_string(),
             base_url: base_url.to_string(),
             api_key: LlmApiKeySource::Keyring {
@@ -119,6 +120,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
             context_budget: 200_000,
         };
         LlmConfig {
+            config_version: LLM_CONFIG_VERSION,
             default_profile: "default".to_string(),
             profiles: BTreeMap::from([("default".to_string(), profile)]),
         }
@@ -127,6 +129,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
     }
 
     let profile = LlmProfileConfig {
+        protocol: LlmProtocol::Responses,
         model: "riftx-model".to_string(),
         base_url: "http://llm.example.test/v1".to_string(),
         api_key: LlmApiKeySource::Environment {
@@ -137,6 +140,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
         context_budget: 200_000,
     };
     let error = LlmConfig {
+        config_version: LLM_CONFIG_VERSION,
         default_profile: "default".to_string(),
         profiles: BTreeMap::from([("default".to_string(), profile)]),
     }
@@ -151,10 +155,12 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
 #[test]
 fn llm_config_requires_an_existing_default_profile() {
     let config = LlmConfig {
+        config_version: LLM_CONFIG_VERSION,
         default_profile: "missing".to_string(),
         profiles: BTreeMap::from([(
             "available".to_string(),
             LlmProfileConfig {
+                protocol: LlmProtocol::Responses,
                 model: "riftx-model".to_string(),
                 base_url: "https://llm.example.test/v1".to_string(),
                 api_key: LlmApiKeySource::Keyring {
@@ -179,6 +185,7 @@ fn llm_config_requires_an_existing_default_profile() {
 #[test]
 fn llm_config_bounds_the_number_of_runtime_profiles() {
     let profile = LlmProfileConfig {
+        protocol: LlmProtocol::Responses,
         model: "riftx-model".to_string(),
         base_url: "https://llm.example.test/v1".to_string(),
         api_key: LlmApiKeySource::Environment {
@@ -192,6 +199,7 @@ fn llm_config_bounds_the_number_of_runtime_profiles() {
         .map(|index| (format!("profile-{index}"), profile.clone()))
         .collect();
     let config = LlmConfig {
+        config_version: LLM_CONFIG_VERSION,
         default_profile: "profile-0".to_string(),
         profiles,
     };
@@ -316,4 +324,110 @@ max_bytes_per_engagement = 1073741824
     let mut tmp_name = config_path.as_os_str().to_owned();
     tmp_name.push(".tmp");
     assert!(!PathBuf::from(tmp_name).exists());
+}
+
+#[tokio::test]
+async fn missing_protocol_defaults_to_responses_and_migrates_once() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("riftx.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[tools]
+directories = []
+extra_paths = []
+
+[skills]
+
+[llm]
+default_profile = "default"
+
+[llm.profiles.default]
+model = "test-model"
+base_url = "http://127.0.0.1:8766/v1"
+api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+
+[policy]
+allowed_capabilities = ["network.discovery"]
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1073741824
+"#,
+    )
+    .expect("seed legacy config");
+
+    let migrated = RiftxConfig::load_migrating(&config_path)
+        .await
+        .expect("migrate");
+    assert_eq!(migrated.llm.config_version, LLM_CONFIG_VERSION);
+    assert_eq!(
+        migrated.llm.profiles["default"].protocol,
+        LlmProtocol::Responses
+    );
+    let content = std::fs::read_to_string(&config_path).expect("read");
+    assert!(content.contains("config_version = 1"));
+    assert!(content.contains("protocol = \"responses\""));
+
+    let again = RiftxConfig::load_migrating(&config_path)
+        .await
+        .expect("idempotent");
+    assert_eq!(again.llm.config_version, LLM_CONFIG_VERSION);
+}
+
+#[test]
+fn unknown_protocol_is_rejected() {
+    let input = r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = "state.sqlite"
+runtime_home = "runtime"
+workspace_root = "workspaces"
+
+[llm]
+default_profile = "default"
+config_version = 1
+
+[llm.profiles.default]
+protocol = "websocket"
+model = "test-model"
+base_url = "http://127.0.0.1:8766/v1"
+api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+
+[tools]
+directories = []
+extra_paths = []
+
+[policy]
+allowed_capabilities = []
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = "audit.jsonl"
+fsync = true
+
+[artifacts]
+root = "artifacts"
+max_bytes_per_engagement = 1
+"#;
+    assert!(toml::from_str::<RiftxConfig>(input).is_err());
 }

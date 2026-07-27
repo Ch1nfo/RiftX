@@ -18,9 +18,11 @@ extra_paths = []
 
 [llm]
 default_profile = "openai"
+config_version = 1
 
 # Example: Responses-compatible OpenAI endpoint (default path for current runtime).
 [llm.profiles.openai]
+protocol = "responses"
 model = "gpt-5.2"
 base_url = "https://api.openai.com/v1"
 api_key = { source = "keyring", credential = "openai" }
@@ -28,10 +30,9 @@ timeout_seconds = 300
 reasoning_level = "high"
 context_budget = 200000
 
-# Example placeholder for a Chat Completions provider.
-# Until M1 ships the LLM bridge, Chat Completions endpoints are not a supported
-# direct runtime target; use a Responses-compatible endpoint or an external bridge.
+# Example placeholder for a Chat Completions provider (requires M1 LLM bridge).
 # [llm.profiles.example-chat]
+# protocol = "chat_completions"
 # model = "your-model"
 # base_url = "https://example.invalid/v1"
 # api_key = { source = "keyring", credential = "example-chat" }
