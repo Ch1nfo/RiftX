@@ -405,8 +405,8 @@ async fn llm_profile_connection_test_reports_capability_matrix() {
         .respond_with(
             wiremock::ResponseTemplate::new(200).set_body_string(
                 "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
-                 event: response.output_item.added\n\
-                 data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"riftx_connection_test\",\"call_id\":\"c1\",\"arguments\":\"{}\"}}\n\n\
+                 event: response.output_item.done\n\
+                 data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"name\":\"riftx_connection_test\",\"call_id\":\"c1\",\"arguments\":\"{\\\"ping\\\":\\\"ok\\\"}\"}}\n\n\
                  event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
             ),
         )

@@ -8,10 +8,12 @@
 //!
 //! The bridge never logs Authorization headers, API keys, or full prompt bodies.
 
+mod diagnostics;
 mod error;
 mod probe;
 mod request;
 mod server;
+mod sse;
 mod stream;
 
 pub use error::BridgeError;

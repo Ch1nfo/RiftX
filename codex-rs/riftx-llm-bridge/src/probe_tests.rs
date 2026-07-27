@@ -39,8 +39,8 @@ async fn responses_probe_passes_text_and_tool_layers() {
         .and(path("/v1/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
-             event: response.output_item.added\n\
-             data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"riftx_connection_test\",\"call_id\":\"c1\",\"arguments\":\"{\\\"ping\\\":\\\"ok\\\"}\"}}\n\n\
+             event: response.output_item.done\n\
+             data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"name\":\"riftx_connection_test\",\"call_id\":\"c1\",\"arguments\":\"{\\\"ping\\\":\\\"ok\\\"}\"}}\n\n\
              event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
         ))
         .mount(&server)
@@ -57,6 +57,41 @@ async fn responses_probe_passes_text_and_tool_layers() {
 
     assert!(outcome.stream_text.ok, "{:?}", outcome.stream_text);
     assert!(outcome.function_tools.ok, "{:?}", outcome.function_tools);
+}
+
+#[tokio::test]
+async fn responses_probe_rejects_plain_text_tool_name_false_positive() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ping\"}\n\n\
+             event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "event: response.output_text.delta\n\
+             data: {\"type\":\"response.output_text.delta\",\"delta\":\"I would call riftx_connection_test\"}\n\n\
+             event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+        ))
+        .mount(&server)
+        .await;
+
+    let outcome = probe_connection(ProbeTarget {
+        protocol: ProbeProtocol::Responses,
+        base_url: format!("{}/v1", server.uri()),
+        api_key: "test-key".into(),
+        model: "demo".into(),
+        timeout: Duration::from_secs(5),
+    })
+    .await;
+
+    assert!(outcome.stream_text.ok);
+    assert!(!outcome.function_tools.ok);
 }
 
 #[tokio::test]

@@ -42,9 +42,63 @@ fn converts_instructions_user_text_and_function_tool() {
             }],
             "tool_choice": "auto",
             "parallel_tool_calls": false,
-            "stream": true
+            "stream": true,
+            "stream_options": {"include_usage": true}
         })
     );
+}
+
+#[test]
+fn maps_runtime_controls_without_silently_dropping_them() {
+    let request = json!({
+        "model": "reasoning-chat",
+        "input": [],
+        "stream": true,
+        "store": false,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "service_tier": "flex",
+        "prompt_cache_key": "thread-1",
+        "reasoning": {"effort": "high"},
+        "text": {"verbosity": "low"},
+        "client_metadata": {"thread": "abc"},
+        "include": ["reasoning.encrypted_content"]
+    });
+    let chat = responses_request_to_chat(&request).expect("convert controls");
+    assert_eq!(
+        (
+            &chat["temperature"],
+            &chat["top_p"],
+            &chat["service_tier"],
+            &chat["prompt_cache_key"],
+            &chat["reasoning_effort"],
+            &chat["verbosity"],
+            &chat["metadata"],
+            &chat["stream_options"],
+        ),
+        (
+            &json!(0.2),
+            &json!(0.9),
+            &json!("flex"),
+            &json!("thread-1"),
+            &json!("high"),
+            &json!("low"),
+            &json!({"thread": "abc"}),
+            &json!({"include_usage": true}),
+        )
+    );
+}
+
+#[test]
+fn rejects_unmappable_reasoning_summary() {
+    let request = json!({
+        "model": "reasoning-chat",
+        "input": [],
+        "stream": true,
+        "reasoning": {"effort": "high", "summary": "auto"}
+    });
+    let error = responses_request_to_chat(&request).expect_err("summary unsupported");
+    assert!(error.to_string().contains("summary/context"));
 }
 
 #[test]

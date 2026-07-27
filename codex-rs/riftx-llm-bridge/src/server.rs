@@ -1,7 +1,9 @@
 use crate::BridgeError;
 use crate::ChatStreamConverter;
 use crate::chat_completions_url;
+use crate::diagnostics::sanitize_diagnostic;
 use crate::responses_request_to_chat;
+use crate::sse::SseDecoder;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -133,7 +135,7 @@ async fn handle_responses_inner(
         let text = upstream.text().await.unwrap_or_default();
         return Err(BridgeError::Upstream(format!(
             "HTTP {status}: {}",
-            truncate_for_error(&text)
+            sanitize_diagnostic(&text, 512)
         )));
     }
 
@@ -154,23 +156,31 @@ fn bridge_sse_stream(
     let (tx, rx) = mpsc::channel::<Bytes>(16);
     tokio::spawn(async move {
         let mut converter = ChatStreamConverter::new(response_id);
-        let mut buffer = String::new();
+        let mut decoder = SseDecoder::default();
         let mut byte_stream = upstream.bytes_stream();
         loop {
             match byte_stream.next().await {
                 Some(Ok(chunk)) => {
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
-                    match converter.ingest_sse_buffer(&mut buffer) {
-                        Ok(events) => {
-                            for event in events {
-                                if tx.send(Bytes::from(event.to_sse_frame())).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
+                    let frames = match decoder.push(&chunk) {
+                        Ok(frames) => frames,
                         Err(error) => {
                             let _ = tx.send(Bytes::from(failed_sse_frame(&error))).await;
                             return;
+                        }
+                    };
+                    for frame in frames {
+                        match converter.ingest_sse_frame(&frame) {
+                            Ok(events) => {
+                                for event in events {
+                                    if tx.send(Bytes::from(event.to_sse_frame())).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let _ = tx.send(Bytes::from(failed_sse_frame(&error))).await;
+                                return;
+                            }
                         }
                     }
                 }
@@ -183,17 +193,15 @@ fn bridge_sse_stream(
                     return;
                 }
                 None => {
-                    match converter.finish(None) {
-                        Ok(events) => {
-                            for event in events {
-                                if tx.send(Bytes::from(event.to_sse_frame())).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            let _ = tx.send(Bytes::from(failed_sse_frame(&error))).await;
-                        }
+                    let error = decoder.finish().err().or_else(|| {
+                        (!converter.is_completed()).then(|| {
+                            BridgeError::Upstream(
+                                "Chat Completions stream ended before the [DONE] marker".into(),
+                            )
+                        })
+                    });
+                    if let Some(error) = error {
+                        let _ = tx.send(Bytes::from(failed_sse_frame(&error))).await;
                     }
                     return;
                 }
@@ -226,7 +234,7 @@ fn error_response(error: BridgeError) -> Response {
     };
     let body = serde_json::json!({
         "error": {
-            "message": error.to_string(),
+            "message": sanitize_diagnostic(&error.to_string(), 512),
             "type": "riftx_llm_bridge_error",
         }
     });
@@ -234,6 +242,7 @@ fn error_response(error: BridgeError) -> Response {
 }
 
 fn failed_sse_frame(error: &BridgeError) -> String {
+    let message = sanitize_diagnostic(&error.to_string(), 512);
     format!(
         "event: response.failed\ndata: {}\n\n",
         serde_json::json!({
@@ -242,18 +251,8 @@ fn failed_sse_frame(error: &BridgeError) -> String {
                 "id": "resp_failed",
                 "object": "response",
                 "status": "failed",
-                "error": { "message": error.to_string() }
+                "error": { "message": message }
             }
         })
     )
-}
-
-fn truncate_for_error(text: &str) -> String {
-    const MAX: usize = 512;
-    let trimmed = text.trim();
-    if trimmed.len() <= MAX {
-        trimmed.to_string()
-    } else {
-        format!("{}…", &trimmed[..MAX])
-    }
 }

@@ -21,7 +21,7 @@ pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> 
         .as_object()
         .ok_or_else(|| BridgeError::InvalidRequest("request must be a JSON object".into()))?;
 
-    reject_unmapped_fields(obj)?;
+    validate_request_fields(obj)?;
 
     let model = obj
         .get("model")
@@ -50,6 +50,12 @@ pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> 
         "messages": messages,
         "stream": obj.get("stream").and_then(Value::as_bool).unwrap_or(true),
     });
+    if chat["stream"] != Value::Bool(true) {
+        return Err(BridgeError::Unsupported(
+            "non-streaming Responses requests cannot be mapped by the streaming bridge".into(),
+        ));
+    }
+    chat["stream_options"] = json!({ "include_usage": true });
 
     if let Some(tools) = obj.get("tools") {
         chat["tools"] = convert_tools(tools)?;
@@ -63,11 +69,20 @@ pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> 
     if let Some(max_output_tokens) = obj.get("max_output_tokens").and_then(Value::as_u64) {
         chat["max_tokens"] = Value::from(max_output_tokens);
     }
+    copy_optional(obj, &mut chat, "temperature", "temperature");
+    copy_optional(obj, &mut chat, "top_p", "top_p");
+    copy_optional(obj, &mut chat, "service_tier", "service_tier");
+    copy_optional(obj, &mut chat, "prompt_cache_key", "prompt_cache_key");
+    copy_optional(obj, &mut chat, "store", "store");
+    copy_optional(obj, &mut chat, "user", "user");
+    map_reasoning(obj.get("reasoning"), &mut chat)?;
+    map_text_controls(obj.get("text"), &mut chat)?;
+    map_metadata(obj, &mut chat)?;
 
     Ok(chat)
 }
 
-fn reject_unmapped_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
+fn validate_request_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
     const ALLOWED: &[&str] = &[
         "model",
         "instructions",
@@ -76,6 +91,7 @@ fn reject_unmapped_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
         "tool_choice",
         "parallel_tool_calls",
         "stream",
+        "stream_options",
         "store",
         "include",
         "prompt_cache_key",
@@ -83,6 +99,7 @@ fn reject_unmapped_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
         "temperature",
         "top_p",
         "metadata",
+        "client_metadata",
         "service_tier",
         "truncation",
         "user",
@@ -96,16 +113,131 @@ fn reject_unmapped_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
             )));
         }
     }
-    if let Some(text) = obj.get("text")
-        && !text.is_null()
-        && text != &json!({})
-    {
-        // Structured text/json_schema formats are not safely mapped yet.
-        if text.get("format").is_some() {
+    if let Some(include) = obj.get("include") {
+        let include = include
+            .as_array()
+            .ok_or_else(|| BridgeError::InvalidRequest("include must be an array".into()))?;
+        if include
+            .iter()
+            .any(|value| value.as_str() != Some("reasoning.encrypted_content"))
+        {
             return Err(BridgeError::Unsupported(
-                "Responses text.format cannot be mapped to Chat Completions yet".into(),
+                "Responses include contains an item unavailable in Chat Completions".into(),
             ));
         }
+        // The Runtime always requests encrypted reasoning replay. Chat Completions has no
+        // encrypted reasoning item to return, so this exact include value is a semantic no-op.
+    }
+    if obj
+        .get("stream_options")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(BridgeError::Unsupported(
+            "Responses stream_options cannot be mapped to Chat Completions".into(),
+        ));
+    }
+    if obj.get("truncation").is_some_and(|value| !value.is_null()) {
+        return Err(BridgeError::Unsupported(
+            "Responses truncation cannot be mapped to Chat Completions".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn copy_optional(source: &Map<String, Value>, target: &mut Value, from: &str, to: &str) {
+    if let Some(value) = source.get(from)
+        && !value.is_null()
+    {
+        target[to] = value.clone();
+    }
+}
+
+fn map_reasoning(reasoning: Option<&Value>, chat: &mut Value) -> Result<(), BridgeError> {
+    let Some(reasoning) = reasoning.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let reasoning = reasoning
+        .as_object()
+        .ok_or_else(|| BridgeError::InvalidRequest("reasoning must be an object or null".into()))?;
+    if reasoning
+        .get("summary")
+        .is_some_and(|value| !value.is_null())
+        || reasoning
+            .get("context")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(BridgeError::Unsupported(
+            "reasoning summary/context cannot be mapped to Chat Completions".into(),
+        ));
+    }
+    if let Some(effort) = reasoning.get("effort")
+        && !effort.is_null()
+    {
+        chat["reasoning_effort"] = effort.clone();
+    }
+    Ok(())
+}
+
+fn map_text_controls(text: Option<&Value>, chat: &mut Value) -> Result<(), BridgeError> {
+    let Some(text) = text.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let text = text
+        .as_object()
+        .ok_or_else(|| BridgeError::InvalidRequest("text must be an object or null".into()))?;
+    if let Some(verbosity) = text.get("verbosity")
+        && !verbosity.is_null()
+    {
+        chat["verbosity"] = verbosity.clone();
+    }
+    let Some(format) = text.get("format").filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let format = format
+        .as_object()
+        .ok_or_else(|| BridgeError::InvalidRequest("text.format must be an object".into()))?;
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return Err(BridgeError::Unsupported(
+            "only Responses json_schema text format can be mapped to Chat Completions".into(),
+        ));
+    }
+    let name = format.get("name").and_then(Value::as_str).ok_or_else(|| {
+        BridgeError::InvalidRequest("text.format json_schema missing name".into())
+    })?;
+    let schema = format.get("schema").ok_or_else(|| {
+        BridgeError::InvalidRequest("text.format json_schema missing schema".into())
+    })?;
+    chat["response_format"] = json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "schema": schema,
+            "strict": format.get("strict").and_then(Value::as_bool).unwrap_or(false),
+        }
+    });
+    Ok(())
+}
+
+fn map_metadata(source: &Map<String, Value>, chat: &mut Value) -> Result<(), BridgeError> {
+    let metadata = source
+        .get("metadata")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            source
+                .get("client_metadata")
+                .filter(|value| !value.is_null())
+        });
+    if source.get("metadata").is_some_and(|value| !value.is_null())
+        && source
+            .get("client_metadata")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(BridgeError::InvalidRequest(
+            "metadata and client_metadata cannot both be set".into(),
+        ));
+    }
+    if let Some(metadata) = metadata {
+        chat["metadata"] = metadata.clone();
     }
     Ok(())
 }

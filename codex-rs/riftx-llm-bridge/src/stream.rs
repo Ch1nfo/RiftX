@@ -1,4 +1,5 @@
 use crate::BridgeError;
+use crate::diagnostics::sanitize_diagnostic;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -24,6 +25,8 @@ pub struct ChatStreamConverter {
     text_item_id: Option<String>,
     text_buffer: String,
     tool_calls: BTreeMap<u64, PendingToolCall>,
+    finish_reason: Option<String>,
+    usage: Option<Value>,
     completed: bool,
 }
 
@@ -43,39 +46,55 @@ impl ChatStreamConverter {
         }
     }
 
-    pub fn ingest_sse_buffer(
+    pub(crate) fn is_completed(&self) -> bool {
+        self.completed
+    }
+
+    pub(crate) fn ingest_sse_frame(
         &mut self,
-        buffer: &mut String,
+        frame: &str,
     ) -> Result<Vec<ResponsesSseEvent>, BridgeError> {
-        let mut events = Vec::new();
-        while let Some(frame) = split_sse_frame(buffer) {
-            if frame.trim().is_empty() || frame.starts_with(':') {
-                continue;
-            }
-            let Some(data) = sse_data_payload(&frame) else {
-                continue;
-            };
-            if data.trim() == "[DONE]" {
-                events.extend(self.finish(None)?);
-                continue;
-            }
-            let chunk: Value = serde_json::from_str(&data).map_err(|error| {
-                BridgeError::Upstream(format!("invalid Chat Completions SSE JSON: {error}"))
-            })?;
-            if let Some(error) = chunk.get("error") {
-                return Err(BridgeError::Upstream(error.to_string()));
-            }
-            events.extend(self.ingest_chunk(&chunk)?);
+        if frame.trim().is_empty() || frame.trim_start().starts_with(':') {
+            return Ok(Vec::new());
         }
-        Ok(events)
+        let Some(data) = sse_data_payload(frame) else {
+            return Ok(Vec::new());
+        };
+        if data.trim() == "[DONE]" {
+            let finish_reason = self.finish_reason.clone().ok_or_else(|| {
+                BridgeError::Upstream(
+                    "Chat Completions stream ended without a finish_reason".into(),
+                )
+            })?;
+            return self.finish(&finish_reason);
+        }
+        let chunk: Value = serde_json::from_str(&data).map_err(|error| {
+            BridgeError::Upstream(format!("invalid Chat Completions SSE JSON: {error}"))
+        })?;
+        if let Some(error) = chunk.get("error") {
+            return Err(BridgeError::Upstream(sanitize_diagnostic(
+                &error.to_string(),
+                512,
+            )));
+        }
+        self.ingest_chunk(&chunk)
     }
 
     pub fn ingest_chunk(&mut self, chunk: &Value) -> Result<Vec<ResponsesSseEvent>, BridgeError> {
         if self.completed {
             return Ok(Vec::new());
         }
+        if let Some(usage) = chunk.get("usage") {
+            self.usage = Some(convert_usage(usage)?);
+        }
+
         let mut events = Vec::new();
-        if !self.created_emitted {
+        let choices = chunk
+            .get("choices")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !choices.is_empty() && !self.created_emitted {
             self.created_emitted = true;
             if let Some(id) = chunk.get("id").and_then(Value::as_str) {
                 self.response_id = id.to_string();
@@ -93,17 +112,17 @@ impl ChatStreamConverter {
             });
         }
 
-        let choices = chunk
-            .get("choices")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
         for choice in choices {
+            if choice.get("index").and_then(Value::as_u64).unwrap_or(0) != 0 {
+                return Err(BridgeError::Upstream(
+                    "Chat Completions returned more than one choice".into(),
+                ));
+            }
             if let Some(delta) = choice.get("delta") {
                 events.extend(self.ingest_delta(delta)?);
             }
             if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                events.extend(self.finish(Some(finish_reason))?);
+                self.finish_reason = Some(finish_reason.to_string());
             }
         }
         Ok(events)
@@ -189,14 +208,21 @@ impl ChatStreamConverter {
         Ok(events)
     }
 
-    pub fn finish(
-        &mut self,
-        finish_reason: Option<&str>,
-    ) -> Result<Vec<ResponsesSseEvent>, BridgeError> {
+    fn finish(&mut self, finish_reason: &str) -> Result<Vec<ResponsesSseEvent>, BridgeError> {
         if self.completed {
             return Ok(Vec::new());
         }
         self.completed = true;
+        let item_status = match finish_reason {
+            "stop" | "tool_calls" => "completed",
+            "length" => "incomplete",
+            "content_filter" => "failed",
+            other => {
+                return Err(BridgeError::Upstream(format!(
+                    "unsupported Chat Completions finish_reason {other:?}"
+                )));
+            }
+        };
         let mut events = Vec::new();
 
         if let Some(item_id) = self.text_item_id.clone() {
@@ -212,7 +238,7 @@ impl ChatStreamConverter {
                             "type": "output_text",
                             "text": self.text_buffer,
                         }],
-                        "status": "completed",
+                        "status": item_status,
                     }
                 }),
             });
@@ -224,9 +250,7 @@ impl ChatStreamConverter {
                     "Chat Completions tool call missing id or name".into(),
                 ));
             }
-            if serde_json::from_str::<Value>(&pending.arguments).is_err()
-                && !pending.arguments.trim().is_empty()
-            {
+            if serde_json::from_str::<Value>(&pending.arguments).is_err() {
                 return Err(BridgeError::Upstream(format!(
                     "Chat Completions tool call {} returned invalid JSON arguments",
                     pending.id
@@ -259,38 +283,82 @@ impl ChatStreamConverter {
                         "call_id": pending.id,
                         "name": pending.name,
                         "arguments": pending.arguments,
-                        "status": "completed",
+                        "status": item_status,
                     }
                 }),
             });
         }
 
-        let status = match finish_reason {
-            Some("length") => "incomplete",
-            Some("content_filter") => "failed",
-            _ => "completed",
-        };
-        events.push(ResponsesSseEvent {
-            event: "response.completed".into(),
-            data: json!({
-                "type": "response.completed",
-                "response": {
-                    "id": self.response_id,
-                    "object": "response",
-                    "status": status,
-                }
-            }),
+        let mut response = json!({
+            "id": self.response_id,
+            "object": "response",
+            "status": item_status,
         });
+        if let Some(usage) = self.usage.clone() {
+            response["usage"] = usage;
+        }
+        let terminal = match finish_reason {
+            "stop" | "tool_calls" => ResponsesSseEvent {
+                event: "response.completed".into(),
+                data: json!({ "type": "response.completed", "response": response }),
+            },
+            "length" => {
+                response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
+                ResponsesSseEvent {
+                    event: "response.incomplete".into(),
+                    data: json!({ "type": "response.incomplete", "response": response }),
+                }
+            }
+            "content_filter" => {
+                response["error"] = json!({
+                    "code": "content_filter",
+                    "message": "upstream content filter interrupted the response",
+                });
+                ResponsesSseEvent {
+                    event: "response.failed".into(),
+                    data: json!({ "type": "response.failed", "response": response }),
+                }
+            }
+            _ => unreachable!("finish reason validated above"),
+        };
+        events.push(terminal);
         Ok(events)
     }
 }
 
-fn split_sse_frame(buffer: &mut String) -> Option<String> {
-    let idx = buffer.find("\n\n")?;
-    let frame = buffer[..idx].to_string();
-    let rest = buffer[idx + 2..].to_string();
-    *buffer = rest;
-    Some(frame)
+fn convert_usage(usage: &Value) -> Result<Value, BridgeError> {
+    let object = usage
+        .as_object()
+        .ok_or_else(|| BridgeError::Upstream("Chat Completions usage must be an object".into()))?;
+    let input_tokens = object
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = object
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_tokens = object
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(input_tokens + output_tokens);
+    let cached_tokens = object
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let reasoning_tokens = object
+        .get("completion_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok(json!({
+        "input_tokens": input_tokens,
+        "input_tokens_details": { "cached_tokens": cached_tokens },
+        "output_tokens": output_tokens,
+        "output_tokens_details": { "reasoning_tokens": reasoning_tokens },
+        "total_tokens": total_tokens,
+    }))
 }
 
 fn sse_data_payload(frame: &str) -> Option<String> {
@@ -300,11 +368,7 @@ fn sse_data_payload(frame: &str) -> Option<String> {
             data_lines.push(rest.trim_start());
         }
     }
-    if data_lines.is_empty() {
-        None
-    } else {
-        Some(data_lines.join("\n"))
-    }
+    (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 //! Probes never return Authorization headers, API keys, or full response bodies.
 
 use crate::BridgeUpstream;
+use crate::diagnostics::sanitize_diagnostic;
 use crate::start_loopback_bridge;
 use futures::StreamExt;
 use serde_json::Value;
@@ -60,10 +61,7 @@ async fn probe_via_bridge(target: ProbeTarget) -> ProbeOutcome {
         Err(error) => {
             let detail = sanitize_error(&error.to_string());
             return ProbeOutcome {
-                stream_text: ProbeLayerResult {
-                    ok: false,
-                    detail,
-                },
+                stream_text: ProbeLayerResult { ok: false, detail },
                 function_tools: ProbeLayerResult {
                     ok: false,
                     detail: "skipped because bridge startup failed".into(),
@@ -88,10 +86,7 @@ async fn probe_responses_endpoint(target: &ProbeTarget) -> ProbeOutcome {
         Err(error) => {
             let detail = sanitize_error(&error.to_string());
             return ProbeOutcome {
-                stream_text: ProbeLayerResult {
-                    ok: false,
-                    detail,
-                },
+                stream_text: ProbeLayerResult { ok: false, detail },
                 function_tools: ProbeLayerResult {
                     ok: false,
                     detail: "skipped because HTTP client setup failed".into(),
@@ -188,13 +183,51 @@ async fn run_function_tool_probe(
         "parallel_tool_calls": false,
     });
     let sse = post_responses_sse(client, target, &body).await?;
-    if sse.contains("\"type\":\"function_call\"")
-        || sse.contains(r#""type": "function_call""#)
-        || sse.contains(TEST_TOOL_NAME)
-    {
-        return Ok(());
+    validate_function_tool_call(&sse)
+}
+
+fn validate_function_tool_call(sse: &str) -> Result<(), String> {
+    let normalized = sse.replace("\r\n", "\n");
+    for frame in normalized.split("\n\n") {
+        let data = frame
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let event: Value = serde_json::from_str(&data)
+            .map_err(|_| "probe received malformed Responses SSE JSON".to_string())?;
+        if event.get("type").and_then(Value::as_str) == Some("response.failed") {
+            return Err("upstream reported response.failed".into());
+        }
+        if event.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
+            continue;
+        }
+        let Some(item) = event.get("item") else {
+            continue;
+        };
+        if item.get("type").and_then(Value::as_str) != Some("function_call")
+            || item.get("name").and_then(Value::as_str) != Some(TEST_TOOL_NAME)
+            || item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            continue;
+        }
+        let Some(arguments) = item.get("arguments").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(arguments) = serde_json::from_str::<Value>(arguments) else {
+            continue;
+        };
+        if arguments.get("ping").and_then(Value::as_str) == Some("ok") {
+            return Ok(());
+        }
     }
-    Err("stream completed without a function_call item".into())
+    Err("stream completed without a valid structured riftx_connection_test function call".into())
 }
 
 async fn post_responses_sse(
@@ -214,39 +247,29 @@ async fn post_responses_sse(
 
     let status = response.status();
     if !status.is_success() {
-        let snippet = response
-            .text()
-            .await
-            .unwrap_or_default()
-            .chars()
-            .take(120)
-            .collect::<String>();
+        let snippet = sanitize_error(&response.text().await.unwrap_or_default());
         return Err(format!(
             "upstream returned HTTP {}{}",
             status.as_u16(),
             if snippet.trim().is_empty() {
                 String::new()
             } else {
-                format!(" ({})", redact_secrets(&snippet))
+                format!(" ({snippet})")
             }
         ));
     }
 
     let mut stream = response.bytes_stream();
-    let mut collected = String::new();
+    let mut collected = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("stream read failed: {error}"))?;
-        collected.push_str(&String::from_utf8_lossy(&chunk));
+        collected.extend_from_slice(&chunk);
         if collected.len() > MAX_SSE_BYTES {
             return Err("stream exceeded probe size limit".into());
         }
-        if collected.contains("response.completed")
-            || collected.contains("response.failed")
-            || collected.contains("[DONE]")
-        {
-            break;
-        }
     }
+    let collected = String::from_utf8(collected)
+        .map_err(|_| "probe stream contained invalid UTF-8".to_string())?;
     if collected.contains("response.failed") {
         return Err("upstream reported response.failed".into());
     }
@@ -265,40 +288,7 @@ pub fn responses_url(base_url: &str) -> String {
 }
 
 pub fn sanitize_error(message: &str) -> String {
-    let redacted = redact_secrets(message);
-    truncate(&redacted, MAX_ERROR_CHARS)
-}
-
-fn redact_secrets(message: &str) -> String {
-    let mut output = message.to_string();
-    for needle in [
-        "Authorization:",
-        "authorization:",
-        "Bearer ",
-        "bearer ",
-        "api_key",
-        "api-key",
-        "sk-",
-    ] {
-        if let Some(index) = output
-            .to_ascii_lowercase()
-            .find(&needle.to_ascii_lowercase())
-        {
-            let end = (index + needle.len() + 24).min(output.len());
-            output.replace_range(index..end, "[REDACTED]");
-        }
-    }
-    output
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
+    sanitize_diagnostic(message, MAX_ERROR_CHARS)
 }
 
 #[cfg(test)]
