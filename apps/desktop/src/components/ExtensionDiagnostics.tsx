@@ -1,10 +1,14 @@
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   BookOpen,
   CircleCheck,
   CircleX,
+  FolderPlus,
   LoaderCircle,
   RefreshCw,
+  Trash2,
   Wrench,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -34,7 +38,8 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   const [toolsSettings, setToolsSettings] = useState<ToolsSettings | null>(
     null,
   );
-  const [directoriesText, setDirectoriesText] = useState("");
+  const [directories, setDirectories] = useState<string[]>([]);
+  const [directoryDraft, setDirectoryDraft] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -45,7 +50,7 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
       .then(([loadedInventory, loadedSettings]) => {
         setInventory(loadedInventory);
         setToolsSettings(loadedSettings);
-        setDirectoriesText(loadedSettings.directories.join("\n"));
+        setDirectories(loadedSettings.directories);
       })
       .catch((cause) => {
         setLoadFailed(true);
@@ -65,17 +70,43 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
     }
   };
 
+  const addDirectory = () => {
+    const directory = directoryDraft.trim();
+    if (!directory || directories.includes(directory)) {
+      return;
+    }
+    setDirectories((current) => [...current, directory]);
+    setDirectoryDraft("");
+    setNotice(null);
+  };
+
+  const moveDirectory = (index: number, offset: -1 | 1) => {
+    const destination = index + offset;
+    if (destination < 0 || destination >= directories.length) {
+      return;
+    }
+    setDirectories((current) => {
+      const next = [...current];
+      [next[index], next[destination]] = [next[destination], next[index]];
+      return next;
+    });
+    setNotice(null);
+  };
+
+  const removeDirectory = (index: number) => {
+    setDirectories((current) =>
+      current.filter((_, currentIndex) => currentIndex !== index),
+    );
+    setNotice(null);
+  };
+
   const saveDirectories = async () => {
     setSaving(true);
     setNotice(null);
     try {
-      const directories = directoriesText
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
       const updated = await saveToolsSettings(directories);
       setToolsSettings(updated);
-      setDirectoriesText(updated.directories.join("\n"));
+      setDirectories(updated.directories);
       setInventory(await toolDoctor());
       setNotice(
         updated.daemonRestartRequired
@@ -100,24 +131,92 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
 
   return (
     <div className="extension-settings">
-      <label className="tools-directories">
+      <div className="tools-directories">
         <span>Tools directories</span>
-        <textarea
-          value={directoriesText}
-          onChange={(event) => {
-            setDirectoriesText(event.target.value);
-            setNotice(null);
-          }}
-          rows={4}
-          spellCheck={false}
-          disabled={saving || checking}
-          placeholder={"One path per line\nLeave empty to use the platform default"}
-        />
+        <div className="tools-directory-add">
+          <input
+            aria-label="Tools directory path"
+            value={directoryDraft}
+            onChange={(event) => setDirectoryDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addDirectory();
+              }
+            }}
+            spellCheck={false}
+            disabled={saving || checking}
+            placeholder="/path/to/riftx-tools"
+          />
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={addDirectory}
+            disabled={
+              saving ||
+              checking ||
+              !directoryDraft.trim() ||
+              directories.includes(directoryDraft.trim())
+            }
+          >
+            <FolderPlus size={14} />
+            Add
+          </button>
+        </div>
+        <div
+          className="tools-directory-list"
+          aria-label="Configured Tools directories"
+        >
+          {directories.map((directory, index) => (
+            <div className="tools-directory-row" key={directory}>
+              <code title={directory}>{directory}</code>
+              <div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Move ${directory} up`}
+                  title="Move up"
+                  onClick={() => moveDirectory(index, -1)}
+                  disabled={saving || checking || index === 0}
+                >
+                  <ArrowUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Move ${directory} down`}
+                  title="Move down"
+                  onClick={() => moveDirectory(index, 1)}
+                  disabled={
+                    saving || checking || index === directories.length - 1
+                  }
+                >
+                  <ArrowDown size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button danger-text-button"
+                  aria-label={`Remove ${directory}`}
+                  title="Remove directory"
+                  onClick={() => removeDirectory(index)}
+                  disabled={saving || checking}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+          {directories.length === 0 && (
+            <div className="tools-directory-default">
+              Platform default Tools Directory will be used.
+            </div>
+          )}
+        </div>
         <span className="tools-directories-hint">
-          Empty list uses the platform default Tools Directory. Changes write to
-          riftx.toml and reload the local daemon.
+          Order controls discovery precedence. Changes affect new tasks after
+          the local daemon reloads; active Engagements keep their snapshot.
         </span>
-      </label>
+      </div>
       <div className="settings-actions">
         <button
           className="primary-button"

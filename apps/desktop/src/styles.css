@@ -1754,23 +1754,73 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.tools-directories textarea {
-  width: 100%;
-  min-height: 88px;
-  padding: 10px 12px;
+.tools-directory-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tools-directory-add input {
+  min-width: 0;
+  flex: 1;
+  padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-2);
   color: var(--text);
-  font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  resize: vertical;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.tools-directories textarea:focus {
+.tools-directory-add input:focus {
   outline: 1px solid var(--accent);
+}
+
+.tools-directory-list {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.tools-directory-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px 6px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tools-directory-row:last-child {
+  border-bottom: 0;
+}
+
+.tools-directory-row code {
+  overflow: hidden;
+  flex: 1;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools-directory-row > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.tools-directory-row .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.tools-directory-default {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
 }
 
 .tools-directories-hint {
