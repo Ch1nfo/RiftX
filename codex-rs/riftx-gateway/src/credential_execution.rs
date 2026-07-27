@@ -1,5 +1,7 @@
 use crate::api::ApiError;
 use crate::api::require_execution_running;
+pub(crate) use crate::credential_execution_policy::CredentialExecutionOrigin;
+pub(crate) use crate::credential_execution_policy::credential_execution_intent;
 use crate::gateway_state::ActiveCredentialProcess;
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::unix_timestamp;
@@ -21,6 +23,9 @@ use codex_riftx_credentials::CredentialProcessOutput;
 use codex_riftx_credentials::CredentialProcessRequest;
 use codex_riftx_credentials::CredentialProcessRunner;
 use codex_riftx_credentials::CredentialProcessTermination;
+use codex_riftx_execution_policy::DecisionContext;
+use codex_riftx_execution_policy::ExecutionDisposition;
+use codex_riftx_execution_policy::decide;
 use codex_riftx_ipc::CredentialExecutionParams;
 use codex_riftx_ipc::CredentialExecutionResponse;
 use codex_riftx_ipc::CredentialGrantUse;
@@ -58,14 +63,6 @@ pub(crate) async fn execute(
     ))
 }
 
-pub(crate) enum CredentialExecutionOrigin {
-    OperatorApi,
-    DynamicTool {
-        tool_call_id: String,
-        turn_id: String,
-    },
-}
-
 pub(crate) async fn execute_inner(
     state: &GatewayState,
     engagement_id: String,
@@ -80,6 +77,27 @@ pub(crate) async fn execute_inner(
             "credential tools require an active engagement",
         ));
     }
+    let use_id = Uuid::new_v4().to_string();
+    let intent = credential_execution_intent(state, &engagement, &params, &origin, &use_id)?;
+    let decision = decide(
+        &intent,
+        DecisionContext {
+            now: unix_timestamp(),
+            authorized_capabilities: &engagement.authorization.capabilities,
+        },
+    );
+    if decision.disposition == ExecutionDisposition::Deny
+        || (decision.disposition == ExecutionDisposition::RequireApproval
+            && !origin.approves(&intent))
+    {
+        return Err(ApiError::conflict(
+            "credential_execution_denied",
+            format!(
+                "credential execution denied by unified policy: {:?}",
+                decision.reasons
+            ),
+        ));
+    }
     let (tool, metadata) = resolve_tool(state, &params.tool)?;
     let arguments = metadata
         .render_arguments(&params.target.host, params.target.port)
@@ -92,7 +110,6 @@ pub(crate) async fn execute_inner(
     let environment = safe_environment(state)?;
     let runner = CredentialProcessRunner::new(PROCESS_TIMEOUT, MAX_OUTPUT_BYTES)
         .map_err(|error| ApiError::internal(error.to_string()))?;
-    let use_id = Uuid::new_v4().to_string();
     let usage_request = CredentialUseRequest {
         id: use_id.clone(),
         engagement_id: engagement_id.clone(),
@@ -157,6 +174,7 @@ pub(crate) async fn execute_inner(
                 "capability": metadata.capability,
                 "toolCallId": origin.tool_call_id(),
                 "turnId": origin.turn_id(),
+                "executionIntent": intent,
             }),
         )
         .await;
@@ -245,22 +263,6 @@ fn ipc_credential_grant_use(usage: StoredCredentialGrantUse) -> CredentialGrantU
     }
 }
 
-impl CredentialExecutionOrigin {
-    fn tool_call_id(&self) -> Option<&str> {
-        match self {
-            Self::OperatorApi => None,
-            Self::DynamicTool { tool_call_id, .. } => Some(tool_call_id),
-        }
-    }
-
-    fn turn_id(&self) -> Option<&str> {
-        match self {
-            Self::OperatorApi => None,
-            Self::DynamicTool { turn_id, .. } => Some(turn_id),
-        }
-    }
-}
-
 pub(crate) fn model_output(response: &CredentialExecutionResponse) -> String {
     const MAX_MODEL_OUTPUT_BYTES: usize = 32 * 1024;
     let header = format!(
@@ -304,7 +306,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
     &value[..boundary]
 }
 
-fn resolve_tool<'a>(
+pub(crate) fn resolve_tool<'a>(
     state: &'a GatewayState,
     requested_name: &str,
 ) -> Result<(&'a DiscoveredTool, &'a ToolCredentialMetadata), ApiError> {

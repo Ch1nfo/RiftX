@@ -143,6 +143,62 @@ fn dynamic_tool_arguments_reject_argv_and_secret_fields() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn dynamic_credential_execution_requires_and_revalidates_bound_approval() {
+    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, false).await;
+    let engagement = state
+        .store
+        .engagement(&engagement_id)
+        .await
+        .expect("engagement");
+    let params = CredentialExecutionParams {
+        grant_id,
+        tool: "credential-probe".to_string(),
+        target: CredentialUseTarget {
+            host: "10.10.0.10".to_string(),
+            port: None,
+        },
+    };
+    let mut origin = CredentialExecutionOrigin::DynamicTool {
+        thread_id: "thread-1".to_string(),
+        tool_call_id: "call-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        approved_binding: None,
+    };
+    let intent = credential_execution_intent(&state, &engagement, &params, &origin, "preview")
+        .expect("intent");
+    assert_eq!(
+        decide(
+            &intent,
+            DecisionContext {
+                now: unix_timestamp(),
+                authorized_capabilities: &engagement.authorization.capabilities,
+            },
+        )
+        .disposition,
+        ExecutionDisposition::RequireApproval
+    );
+    assert!(!origin.approves(&intent));
+    let CredentialExecutionOrigin::DynamicTool {
+        approved_binding, ..
+    } = &mut origin
+    else {
+        unreachable!();
+    };
+    *approved_binding = Some(intent.binding_sha256.clone());
+    assert!(origin.approves(&intent));
+
+    let tool_path = state.tools.tools[0].path.clone();
+    tokio::fs::write(&tool_path, b"replacement")
+        .await
+        .expect("replace tool");
+    let replaced = credential_execution_intent(&state, &engagement, &params, &origin, "preview")
+        .expect("replacement intent");
+    assert_ne!(intent.binding_sha256, replaced.binding_sha256);
+    assert!(!origin.approves(&replaced));
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn missing_secret_closes_the_reserved_use() {
     let (_temp, state, engagement_id, grant_id) = fixture(None, 0, false).await;
     let response = post_execution(build_router(state.clone()), &engagement_id, &grant_id).await;
