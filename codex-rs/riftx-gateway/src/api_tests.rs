@@ -36,6 +36,7 @@ use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
 use codex_riftx_crypto::CryptoError;
 use codex_riftx_crypto::KeyringEngagementCipher;
+use codex_riftx_ipc::ActiveTurnStatus;
 use codex_riftx_ipc::AuditHealthState;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
@@ -157,6 +158,63 @@ pub(crate) async fn unblock_audit(temp: &TempDir) {
     tokio::fs::remove_dir(temp.path().join("audit.jsonl"))
         .await
         .expect("remove blocking audit directory");
+}
+
+#[tokio::test]
+async fn system_active_turns_returns_sorted_runtime_state() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    state.active_turns.write().await.extend([
+        (
+            "engagement-b".to_string(),
+            ActiveTurn {
+                profile_name: "profile-b".to_string(),
+                thread_id: "thread-b".to_string(),
+                turn_id: "turn-b".to_string(),
+            },
+        ),
+        (
+            "engagement-a".to_string(),
+            ActiveTurn {
+                profile_name: "profile-a".to_string(),
+                thread_id: "thread-a".to_string(),
+                turn_id: "turn-a".to_string(),
+            },
+        ),
+    ]);
+
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/system/active-turns")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let turns: Vec<ActiveTurnStatus> = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("active turns body")
+            .to_bytes(),
+    )
+    .expect("active turns");
+    assert_eq!(
+        turns,
+        vec![
+            ActiveTurnStatus {
+                engagement_id: "engagement-a".to_string(),
+                profile_name: "profile-a".to_string(),
+            },
+            ActiveTurnStatus {
+                engagement_id: "engagement-b".to_string(),
+                profile_name: "profile-b".to_string(),
+            },
+        ]
+    );
 }
 
 #[tokio::test]

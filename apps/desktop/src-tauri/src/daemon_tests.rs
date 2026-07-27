@@ -35,3 +35,28 @@ fn api_key_bundle_frame_uses_a_big_endian_length_prefix() {
         BTreeMap::from([("profile-a".to_string(), "secret".to_string())])
     );
 }
+
+#[test]
+fn settings_reload_rejects_active_turns_with_actionable_engagements() {
+    assert_eq!(reject_active_turns(Vec::new()), Ok(()));
+    assert_eq!(
+        reject_active_turns(vec![
+            ActiveTurnStatus {
+                engagement_id: "engagement-b".to_string(),
+                profile_name: "profile-b".to_string(),
+            },
+            ActiveTurnStatus {
+                engagement_id: "engagement-a".to_string(),
+                profile_name: "profile-a".to_string(),
+            },
+            ActiveTurnStatus {
+                engagement_id: "engagement-a".to_string(),
+                profile_name: "profile-a".to_string(),
+            },
+        ]),
+        Err(DesktopError::new(
+            "settings_active_turns",
+            "Pause or interrupt active RiftX tasks before changing settings: engagement-a, engagement-b",
+        ))
+    );
+}

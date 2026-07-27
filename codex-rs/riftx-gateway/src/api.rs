@@ -46,6 +46,7 @@ use codex_riftx_core::TaskStatus;
 use codex_riftx_execution_policy::DecisionContext;
 use codex_riftx_execution_policy::ExecutionDisposition;
 use codex_riftx_execution_policy::decide;
+use codex_riftx_ipc::ActiveTurnStatus;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::AuditHealthState;
@@ -237,6 +238,7 @@ pub fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/system/info", get(system_info))
         .route("/v1/system/status", get(system_status))
+        .route("/v1/system/active-turns", get(system_active_turns))
         .route("/v1/system/pause", post(pause_system))
         .route("/v1/system/resume", post(resume_system))
         .route("/v1/system/kill", post(kill_system))
@@ -328,6 +330,19 @@ async fn system_info() -> Json<DaemonInfo> {
 
 async fn system_status(State(state): State<GatewayState>) -> Json<DaemonControlStatus> {
     Json(state.control_status().await)
+}
+
+async fn system_active_turns(State(state): State<GatewayState>) -> Json<Vec<ActiveTurnStatus>> {
+    let active_turns = state.active_turns.read().await;
+    let mut turns = active_turns
+        .iter()
+        .map(|(engagement_id, turn)| ActiveTurnStatus {
+            engagement_id: engagement_id.clone(),
+            profile_name: turn.profile_name.clone(),
+        })
+        .collect::<Vec<_>>();
+    turns.sort_by(|left, right| left.engagement_id.cmp(&right.engagement_id));
+    Json(turns)
 }
 
 async fn pause_system(

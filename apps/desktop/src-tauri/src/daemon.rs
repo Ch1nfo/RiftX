@@ -1,5 +1,6 @@
 use crate::bridge::DesktopError;
 use crate::bridge::DesktopState;
+use codex_riftx_ipc::ActiveTurnStatus;
 use codex_riftx_core::RiftxConfig;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -217,6 +218,9 @@ impl DaemonSupervisor {
         state: &DesktopState,
     ) -> Result<bool, DesktopError> {
         let _transition = self.transition.lock().await;
+        if !self.owned_terminated() {
+            reject_active_turns(state.query_active_turns().await?)?;
+        }
         let owned = self.stop_owned();
         if !owned && probe(state).await? {
             return Ok(true);
@@ -259,6 +263,25 @@ impl DaemonSupervisor {
             })
             .unwrap_or(true)
     }
+}
+
+fn reject_active_turns(active_turns: Vec<ActiveTurnStatus>) -> Result<(), DesktopError> {
+    if active_turns.is_empty() {
+        return Ok(());
+    }
+    let mut engagement_ids = active_turns
+        .into_iter()
+        .map(|turn| turn.engagement_id)
+        .collect::<Vec<_>>();
+    engagement_ids.sort();
+    engagement_ids.dedup();
+    Err(DesktopError::new(
+        "settings_active_turns",
+        format!(
+            "Pause or interrupt active RiftX tasks before changing settings: {}",
+            engagement_ids.join(", ")
+        ),
+    ))
 }
 
 fn candidate_root() -> PathBuf {

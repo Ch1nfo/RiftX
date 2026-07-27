@@ -105,6 +105,13 @@ impl Default for AuditHealthStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActiveTurnStatus {
+    pub engagement_id: String,
+    pub profile_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonControlStatus {
     pub state: DaemonRunState,
     pub reason: Option<DaemonPauseReason>,

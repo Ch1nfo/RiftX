@@ -1,3 +1,4 @@
+use codex_riftx_ipc::ActiveTurnStatus;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::AutoRun;
@@ -94,6 +95,11 @@ impl DesktopState {
     pub(crate) async fn query_runtime_status(&self) -> Result<DaemonControlStatus, DesktopError> {
         let client = self.client()?;
         json_response(client.get("/v1/system/status").await).await
+    }
+
+    pub(crate) async fn query_active_turns(&self) -> Result<Vec<ActiveTurnStatus>, DesktopError> {
+        let client = self.client()?;
+        json_response(client.get("/v1/system/active-turns").await).await
     }
 
     pub(crate) async fn update_runtime(

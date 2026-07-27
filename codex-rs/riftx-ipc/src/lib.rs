@@ -12,6 +12,7 @@ pub use client::LocalSseEvent;
 pub use client::LocalSseStream;
 pub use endpoint::LocalIpcEndpoint;
 pub use listener::LocalIpcListener;
+pub use protocol::ActiveTurnStatus;
 pub use protocol::ApprovalDecision;
 pub use protocol::ApprovalDecisionParams;
 pub use protocol::ApprovalKind;
