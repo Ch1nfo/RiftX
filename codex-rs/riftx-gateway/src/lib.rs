@@ -4,6 +4,7 @@ mod artifact_api;
 mod artifacts;
 mod audit_health;
 mod auto_evaluator;
+mod auto_progress;
 mod auto_run;
 mod conversation;
 mod credential_api;

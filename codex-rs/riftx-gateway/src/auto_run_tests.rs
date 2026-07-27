@@ -494,6 +494,8 @@ fn sample_run() -> AutoRun {
         consecutive_failures: 0,
         no_progress_turns: 0,
         last_goal_assessment: None,
+        progress_baseline: None,
+        last_progress_assessment: None,
         started_at: Some(10),
         updated_at: 10,
     }

@@ -6,6 +6,7 @@ use axum::Json;
 use axum::extract::Path;
 use axum::extract::State;
 use codex_riftx_core::AutoLlmProfileSnapshot;
+use codex_riftx_core::AutoProgressAction;
 use codex_riftx_core::AutoRun;
 use codex_riftx_core::AutoRunConfig;
 use codex_riftx_core::AutoRunLimits;
@@ -195,6 +196,8 @@ pub(crate) async fn prepare(
         consecutive_failures: 0,
         no_progress_turns: 0,
         last_goal_assessment: None,
+        progress_baseline: None,
+        last_progress_assessment: None,
         started_at: None,
         updated_at: now,
     };
@@ -480,6 +483,7 @@ async fn on_turn_completed_locked(
     };
     apply_turn_completion(&mut run, outcome, unix_timestamp());
     state.store.put_auto_run(&run).await?;
+    let mut progress_action = None;
     if outcome != TurnOutcome::Interrupted {
         let evaluated_at = unix_timestamp();
         let assessment = match crate::auto_evaluator::evaluate(state, &run, evaluated_at).await {
@@ -525,6 +529,33 @@ async fn on_turn_completed_locked(
                 .await?;
             return Ok(());
         }
+        let progress = match crate::auto_progress::evaluate(state, &run, evaluated_at).await {
+            Ok(progress) => progress,
+            Err(error) => {
+                stop_run(
+                    state,
+                    &mut run,
+                    StopDecision {
+                        state: AutoRunState::Failed,
+                        reason: AutoStopReason::UnrecoverableError,
+                    },
+                )
+                .await?;
+                return Err(error.into());
+            }
+        };
+        run.no_progress_turns = progress.no_progress_turns;
+        run.last_progress_assessment = Some(progress.clone());
+        run.updated_at = evaluated_at;
+        progress_action = Some(progress.action);
+        state.store.put_auto_run(&run).await?;
+        state
+            .emit_event(
+                engagement_id,
+                "auto/progressEvaluated",
+                serde_json::to_value(&progress).unwrap_or_default(),
+            )
+            .await;
     }
     state
         .emit_event(
@@ -556,6 +587,30 @@ async fn on_turn_completed_locked(
         stop_run(state, &mut run, decision).await?;
         return Ok(());
     }
+    if progress_action == Some(AutoProgressAction::NeedsInput) {
+        stop_run(
+            state,
+            &mut run,
+            StopDecision {
+                state: AutoRunState::NeedsInput,
+                reason: AutoStopReason::NoProgress,
+            },
+        )
+        .await?;
+        state
+            .emit_event(
+                engagement_id,
+                "auto/needsInput",
+                json!({
+                    "reason": AutoStopReason::NoProgress,
+                    "question": "Auto made no deterministic progress across the configured window. Review the evidence and provide a safer next direction.",
+                    "turnsStarted": run.turns_started,
+                    "toolCalls": run.tool_calls,
+                }),
+            )
+            .await;
+        return Ok(());
+    }
     start_next_turn_locked(state, &mut run).await
 }
 
@@ -566,6 +621,23 @@ async fn start_next_turn_locked(state: &GatewayState, run: &mut AutoRun) -> Resu
         return Ok(());
     }
 
+    run.progress_baseline = Some(
+        match crate::auto_progress::snapshot(state, &run.engagement_id).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                stop_run(
+                    state,
+                    run,
+                    StopDecision {
+                        state: AutoRunState::Failed,
+                        reason: AutoStopReason::UnrecoverableError,
+                    },
+                )
+                .await?;
+                return Err(error.into());
+            }
+        },
+    );
     prepare_next_turn(run, now);
     state.store.put_auto_run(run).await?;
     state
@@ -618,14 +690,29 @@ fn prepare_next_turn(run: &mut AutoRun, now: i64) {
     run.state = AutoRunState::Running;
     run.stop_reason = None;
     run.turns_started = run.turns_started.saturating_add(1);
-    run.current_subgoal = Some(if run.turns_started == 1 {
-        "Establish the current authorized state and take the first verifiable step".to_string()
-    } else {
-        format!(
-            "Advance the objective with one bounded, verifiable step (turn {})",
-            run.turns_started
-        )
-    });
+    run.current_subgoal = Some(
+        match (
+            run.turns_started,
+            run.last_progress_assessment
+                .as_ref()
+                .map(|assessment| assessment.action),
+        ) {
+            (1, _) => "Establish the current authorized state and take the first verifiable step"
+                .to_string(),
+            (_, Some(AutoProgressAction::Replan)) => {
+                "Replan from the structured state and choose a different verifiable subgoal"
+                    .to_string()
+            }
+            (_, Some(AutoProgressAction::SwitchStrategy)) => {
+                "Switch strategy, reduce concurrency, and test a different authorized hypothesis"
+                    .to_string()
+            }
+            (_, _) => format!(
+                "Advance the objective with one bounded, verifiable step (turn {})",
+                run.turns_started
+            ),
+        },
+    );
     run.updated_at = now;
 }
 

@@ -110,6 +110,66 @@ pub struct AutoGoalAssessment {
     pub evidence_ids: Vec<String>,
 }
 
+/// Fixed-size fingerprint for one category in the structured engagement state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoProgressCategory {
+    pub item_count: u32,
+    pub sha256: String,
+}
+
+/// Structured state captured immediately before an Auto turn starts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoProgressSnapshot {
+    pub assets: AutoProgressCategory,
+    pub services: AutoProgressCategory,
+    pub identities: AutoProgressCategory,
+    pub findings: AutoProgressCategory,
+    pub evidence: AutoProgressCategory,
+    pub artifacts: AutoProgressCategory,
+    pub attack_paths: AutoProgressCategory,
+    pub coverage: AutoProgressCategory,
+    pub observations: AutoProgressCategory,
+    pub hypotheses: AutoProgressCategory,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoProgressSignal {
+    Asset,
+    Service,
+    Identity,
+    Finding,
+    Evidence,
+    Artifact,
+    AttackPath,
+    Coverage,
+    Observation,
+    Hypothesis,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoProgressAction {
+    Continue,
+    Replan,
+    SwitchStrategy,
+    NeedsInput,
+}
+
+/// Persisted deterministic progress decision for the latest completed turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoProgressAssessment {
+    pub evaluator_version: String,
+    pub evaluated_at: i64,
+    pub progressed: bool,
+    pub signals: Vec<AutoProgressSignal>,
+    pub no_progress_turns: u32,
+    pub action: AutoProgressAction,
+}
+
 /// Persisted checkpoint for one engagement's bounded Auto run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -126,6 +186,10 @@ pub struct AutoRun {
     pub no_progress_turns: u32,
     #[serde(default)]
     pub last_goal_assessment: Option<AutoGoalAssessment>,
+    #[serde(default)]
+    pub progress_baseline: Option<AutoProgressSnapshot>,
+    #[serde(default)]
+    pub last_progress_assessment: Option<AutoProgressAssessment>,
     pub started_at: Option<i64>,
     pub updated_at: i64,
 }

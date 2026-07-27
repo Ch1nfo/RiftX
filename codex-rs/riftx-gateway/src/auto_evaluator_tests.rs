@@ -376,6 +376,8 @@ fn auto_run(engagement: &Engagement, state: AutoRunState) -> AutoRun {
         consecutive_failures: 0,
         no_progress_turns: 0,
         last_goal_assessment: None,
+        progress_baseline: None,
+        last_progress_assessment: None,
         started_at: Some(100),
         updated_at: 100,
     }
