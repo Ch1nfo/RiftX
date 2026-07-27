@@ -183,6 +183,8 @@ mod tests {
             status: CommandExecutionStatus::InProgress,
             command_actions: Vec::new(),
             aggregated_output: None,
+            stdout: None,
+            stderr: None,
             exit_code: None,
             duration_ms: None,
         }

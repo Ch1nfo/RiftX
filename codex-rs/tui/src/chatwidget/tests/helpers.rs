@@ -833,6 +833,8 @@ pub(super) fn begin_exec_with_source(
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions,
         aggregated_output: None,
+        stdout: None,
+        stderr: None,
         exit_code: None,
         duration_ms: None,
     };
@@ -856,6 +858,8 @@ pub(super) fn begin_unified_exec_startup(
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions: Vec::new(),
         aggregated_output: None,
+        stdout: None,
+        stderr: None,
         exit_code: None,
         duration_ms: None,
     };
@@ -1086,6 +1090,8 @@ pub(super) fn end_exec(
             },
             command_actions,
             aggregated_output: (!aggregated.is_empty()).then_some(aggregated),
+            stdout: None,
+            stderr: None,
             exit_code: Some(exit_code),
             duration_ms: Some(5),
         },

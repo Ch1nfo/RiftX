@@ -369,6 +369,8 @@ async fn exec_end_without_begin_uses_event_command() {
             status: AppServerCommandExecutionStatus::Completed,
             command_actions,
             aggregated_output: Some("done".to_string()),
+            stdout: None,
+            stderr: None,
             exit_code: Some(0),
             duration_ms: Some(5),
         },

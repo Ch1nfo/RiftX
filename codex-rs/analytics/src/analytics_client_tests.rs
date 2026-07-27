@@ -869,6 +869,8 @@ fn sample_command_execution_item_with_id(
         status,
         command_actions: Vec::new(),
         aggregated_output: None,
+        stdout: None,
+        stderr: None,
         exit_code,
         duration_ms,
     }
