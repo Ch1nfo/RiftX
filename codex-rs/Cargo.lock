@@ -3916,6 +3916,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-riftx-execution-policy"
+version = "0.0.0"
+dependencies = [
+ "codex-riftx-domain",
+ "codex-riftx-tools",
+ "codex-shell-command",
+ "pretty_assertions",
+ "serde",
+ "sha2 0.10.9",
+ "shlex",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-riftx-gateway"
 version = "0.0.0"
 dependencies = [
