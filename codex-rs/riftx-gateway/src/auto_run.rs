@@ -189,6 +189,94 @@ pub(crate) async fn expire(state: &GatewayState, engagement_id: &str) -> Result<
     Ok(())
 }
 
+pub(crate) async fn record_tool_call(
+    state: &GatewayState,
+    engagement: &Engagement,
+) -> Result<bool, StateError> {
+    if engagement.mode != ExecutionMode::Auto {
+        return Ok(true);
+    }
+    let Ok(_permit) = state.turn_slot.clone().acquire_owned().await else {
+        return Ok(false);
+    };
+    let Some(mut run) = state.store.auto_run(&engagement.id).await? else {
+        return Ok(false);
+    };
+    if run.state != AutoRunState::Running {
+        return Ok(false);
+    }
+    if run.tool_calls >= run.config.limits.max_tool_calls {
+        run.state = AutoRunState::BudgetExhausted;
+        run.stop_reason = Some(AutoStopReason::ToolBudgetExhausted);
+        run.updated_at = unix_timestamp();
+        state.store.put_auto_run(&run).await?;
+        state
+            .emit_event(
+                &engagement.id,
+                "auto/stopped",
+                json!({
+                    "state": run.state,
+                    "reason": run.stop_reason,
+                    "turnsStarted": run.turns_started,
+                    "turnsCompleted": run.turns_completed,
+                    "toolCalls": run.tool_calls,
+                }),
+            )
+            .await;
+        return Ok(false);
+    }
+    run.tool_calls = run.tool_calls.saturating_add(1);
+    run.updated_at = unix_timestamp();
+    state.store.put_auto_run(&run).await?;
+    state
+        .emit_event(
+            &engagement.id,
+            "auto/toolCallCounted",
+            json!({
+                "toolCalls": run.tool_calls,
+                "maxToolCalls": run.config.limits.max_tool_calls,
+            }),
+        )
+        .await;
+    Ok(true)
+}
+
+pub(crate) async fn needs_input(
+    state: &GatewayState,
+    engagement: &Engagement,
+    question: &str,
+) -> Result<(), StateError> {
+    if engagement.mode != ExecutionMode::Auto {
+        return Ok(());
+    }
+    let Ok(_permit) = state.turn_slot.clone().acquire_owned().await else {
+        return Ok(());
+    };
+    let Some(mut run) = state.store.auto_run(&engagement.id).await? else {
+        return Ok(());
+    };
+    if run.state != AutoRunState::Running {
+        return Ok(());
+    }
+    run.state = AutoRunState::NeedsInput;
+    run.stop_reason = Some(AutoStopReason::ScopeNeedsInput);
+    run.updated_at = unix_timestamp();
+    state.store.put_auto_run(&run).await?;
+    state
+        .emit_event(
+            &engagement.id,
+            "auto/needsInput",
+            json!({
+                "reason": run.stop_reason,
+                "question": question,
+                "turnsStarted": run.turns_started,
+                "toolCalls": run.tool_calls,
+            }),
+        )
+        .await;
+    Ok(())
+}
+
 pub(crate) async fn on_turn_completed(state: &GatewayState, engagement_id: &str, data: &Value) {
     let permit = state.turn_slot.clone().acquire_owned().await;
     let Ok(_permit) = permit else {

@@ -163,6 +163,23 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
         return;
     }
     if decision.disposition == ExecutionDisposition::RequireApproval {
+        if engagement.mode == codex_riftx_core::ExecutionMode::Auto {
+            let _ = crate::auto_run::needs_input(
+                state,
+                &engagement,
+                "Credential execution needs authorization clarification before Auto can continue",
+            )
+            .await;
+            let _ = app_server
+                .resolve_dynamic_tool_text(
+                    pending,
+                    "RiftX paused Auto because this credential execution needs operator input"
+                        .to_string(),
+                    false,
+                )
+                .await;
+            return;
+        }
         if !await_execution_approval(
             state,
             profile_name,
@@ -188,6 +205,19 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
         {
             *approved_binding = Some(intent.binding_sha256.clone());
         }
+    }
+    if !crate::auto_run::record_tool_call(state, &engagement)
+        .await
+        .unwrap_or(false)
+    {
+        let _ = app_server
+            .resolve_dynamic_tool_text(
+                pending,
+                "RiftX denied the tool call because the Auto tool budget is exhausted".to_string(),
+                false,
+            )
+            .await;
+        return;
     }
     state
         .publish(
@@ -316,6 +346,27 @@ async fn command_approval(
             return;
         }
         ExecutionDisposition::Allow => {
+            if !crate::auto_run::record_tool_call(state, &engagement)
+                .await
+                .unwrap_or(false)
+            {
+                if let Some(app_server) = state.app_server(profile_name) {
+                    let _ = app_server
+                        .decide_command_approval(
+                            pending,
+                            codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                        )
+                        .await;
+                }
+                state
+                    .publish(
+                        &engagement_id,
+                        "approval/commandDenied",
+                        json!({"reason": "autoToolBudgetExhausted", "intent": intent}),
+                    )
+                    .await;
+                return;
+            }
             if state
                 .publish_critical(
                     &engagement,
@@ -346,6 +397,30 @@ async fn command_approval(
             return;
         }
         ExecutionDisposition::RequireApproval => {}
+    }
+    if engagement.mode == codex_riftx_core::ExecutionMode::Auto {
+        let _ = crate::auto_run::needs_input(
+            state,
+            &engagement,
+            "Command risk or scope is ambiguous; clarify authorization before Auto continues",
+        )
+        .await;
+        if let Some(app_server) = state.app_server(profile_name) {
+            let _ = app_server
+                .decide_command_approval(
+                    pending,
+                    codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                )
+                .await;
+        }
+        state
+            .publish(
+                &engagement_id,
+                "approval/commandDenied",
+                json!({"reason": "autoNeedsInput", "intent": intent}),
+            )
+            .await;
+        return;
     }
     let approval_id = pending.approval_id();
     let display_command = (!intent.display_argv.is_empty()).then(|| intent.display_argv.join(" "));

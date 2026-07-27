@@ -138,6 +138,80 @@ async fn operator_cannot_bypass_the_auto_controller_with_a_manual_turn() {
     assert_eq!(body["code"], "auto_controller_required");
 }
 
+#[tokio::test]
+async fn auto_tool_budget_is_checkpointed_before_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Running;
+    run.config.limits.max_tool_calls = 1;
+    state.store.put_auto_run(&run).await.expect("store run");
+
+    assert!(
+        record_tool_call(&state, &engagement)
+            .await
+            .expect("first tool call")
+    );
+    assert_eq!(
+        state
+            .store
+            .auto_run(&engagement.id)
+            .await
+            .expect("checkpoint")
+            .expect("run")
+            .tool_calls,
+        1
+    );
+    assert!(
+        !record_tool_call(&state, &engagement)
+            .await
+            .expect("second tool call")
+    );
+    let stopped = state
+        .store
+        .auto_run(&engagement.id)
+        .await
+        .expect("checkpoint")
+        .expect("run");
+    assert_eq!(stopped.state, AutoRunState::BudgetExhausted);
+    assert_eq!(
+        stopped.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::ToolBudgetExhausted)
+    );
+}
+
+#[tokio::test]
+async fn ambiguous_auto_action_becomes_needs_input_without_an_approval_queue() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Running;
+    state.store.put_auto_run(&run).await.expect("store run");
+
+    needs_input(&state, &engagement, "Clarify the target")
+        .await
+        .expect("pause Auto");
+
+    let paused = state
+        .store
+        .auto_run(&engagement.id)
+        .await
+        .expect("checkpoint")
+        .expect("run");
+    assert_eq!(paused.state, AutoRunState::NeedsInput);
+    assert_eq!(
+        paused.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::ScopeNeedsInput)
+    );
+    assert!(state.pending_approvals.read().await.is_empty());
+}
+
 #[test]
 fn completed_turns_advance_only_when_the_controller_schedules_them() {
     let mut run = sample_run();
