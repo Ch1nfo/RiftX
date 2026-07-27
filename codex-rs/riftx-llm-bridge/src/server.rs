@@ -147,7 +147,13 @@ async fn handle_responses_inner(
         _ = cancellation.changed() => {
             return Err(BridgeError::Upstream("Chat Completions request was cancelled".into()));
         }
-        result = request.send() => result?,
+        result = request.send() => result.map_err(|error| {
+            if error.is_timeout() {
+                BridgeError::Upstream("Chat Completions request timed out".into())
+            } else {
+                BridgeError::Http(error)
+            }
+        })?,
     };
 
     let status = upstream.status();
