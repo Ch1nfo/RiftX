@@ -25,6 +25,34 @@ use std::os::unix::fs::PermissionsExt;
 
 const SECRET: &str = "gateway-credential-secret";
 
+#[cfg(unix)]
+enum FixtureTool {
+    Exit(i32),
+    Hang,
+    SpawnStubbornChild,
+}
+
+#[cfg(unix)]
+impl FixtureTool {
+    fn script(&self) -> String {
+        let behavior = match self {
+            Self::Exit(exit_code) => format!("exit {exit_code}\n"),
+            Self::Hang => "while :; do sleep 1; done\n".to_string(),
+            Self::SpawnStubbornChild => concat!(
+                "marker=\"$(dirname \"$0\")/child-survived\"\n",
+                "pid_file=\"$(dirname \"$0\")/child.pid\"\n",
+                "(trap '' TERM; sleep 4; printf survived > \"$marker\") &\n",
+                "printf '%s\\n' \"$!\" > \"$pid_file\"\n",
+                "wait\n",
+            )
+            .to_string(),
+        };
+        format!(
+            "#!/bin/sh\nread secret\nprintf 'target=%s secret=%s\\n' \"$1\" \"$secret\"\n{behavior}"
+        )
+    }
+}
+
 struct TestSecretProvider(Option<&'static str>);
 
 impl AssessmentSecretProvider for TestSecretProvider {
@@ -53,7 +81,7 @@ impl AssessmentSecretProvider for TestSecretProvider {
 #[cfg(unix)]
 #[tokio::test]
 async fn credential_execution_is_target_bound_redacted_persisted_and_audited() {
-    let (temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, false).await;
+    let (temp, state, engagement_id, grant_id) = fixture(Some(SECRET), FixtureTool::Exit(0)).await;
     let app = build_router(state.clone());
 
     let response = post_execution(app, &engagement_id, &grant_id).await;
@@ -145,7 +173,7 @@ fn dynamic_tool_arguments_reject_argv_and_secret_fields() {
 #[cfg(unix)]
 #[tokio::test]
 async fn dynamic_credential_execution_requires_and_revalidates_bound_approval() {
-    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, false).await;
+    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), FixtureTool::Exit(0)).await;
     let engagement = state
         .store
         .engagement(&engagement_id)
@@ -201,7 +229,7 @@ async fn dynamic_credential_execution_requires_and_revalidates_bound_approval() 
 #[cfg(unix)]
 #[tokio::test]
 async fn audit_failure_closes_the_reservation_without_starting_an_execution() {
-    let (temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, false).await;
+    let (temp, state, engagement_id, grant_id) = fixture(Some(SECRET), FixtureTool::Exit(0)).await;
     block_audit(&temp).await;
 
     let response = post_execution(build_router(state.clone()), &engagement_id, &grant_id).await;
@@ -231,7 +259,7 @@ async fn audit_failure_closes_the_reservation_without_starting_an_execution() {
 #[cfg(unix)]
 #[tokio::test]
 async fn missing_secret_closes_the_reserved_use() {
-    let (_temp, state, engagement_id, grant_id) = fixture(None, 0, false).await;
+    let (_temp, state, engagement_id, grant_id) = fixture(None, FixtureTool::Exit(0)).await;
     let response = post_execution(build_router(state.clone()), &engagement_id, &grant_id).await;
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -250,7 +278,7 @@ async fn missing_secret_closes_the_reserved_use() {
 #[cfg(unix)]
 #[tokio::test]
 async fn declared_authentication_exit_code_consumes_the_failure_budget() {
-    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 3, false).await;
+    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), FixtureTool::Exit(3)).await;
     let response = post_execution(build_router(state), &engagement_id, &grant_id).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -273,7 +301,7 @@ async fn declared_authentication_exit_code_consumes_the_failure_budget() {
 #[cfg(unix)]
 #[tokio::test]
 async fn kill_switch_cancels_an_active_credential_process() {
-    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, true).await;
+    let (_temp, state, engagement_id, grant_id) = fixture(Some(SECRET), FixtureTool::Hang).await;
     let app = build_router(state.clone());
     let execution_app = app.clone();
     let execution_engagement_id = engagement_id.clone();
@@ -318,24 +346,99 @@ async fn kill_switch_cancels_an_active_credential_process() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn authorization_deadline_terminates_an_active_credential_process_tree() {
+    let (temp, state, engagement_id, grant_id) =
+        fixture(Some(SECRET), FixtureTool::SpawnStubbornChild).await;
+    let mut engagement = state
+        .store
+        .engagement(&engagement_id)
+        .await
+        .expect("engagement");
+    engagement.authorization.window.expires_at = Some(unix_timestamp() + 2);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("engagement deadline");
+    state.register_authorization_deadline(&engagement).await;
+    let app = build_router(state.clone());
+    let execution = tokio::spawn({
+        let app = app.clone();
+        let engagement_id = engagement_id.clone();
+        let grant_id = grant_id.clone();
+        async move { post_execution(app, &engagement_id, &grant_id).await }
+    });
+    let child_pid_path = temp.path().join("tools/child.pid");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !state.credential_processes.read().await.is_empty()
+                && tokio::fs::try_exists(&child_pid_path)
+                    .await
+                    .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("active credential process tree");
+
+    let response = tokio::time::timeout(Duration::from_secs(5), execution)
+        .await
+        .expect("deadline cancellation")
+        .expect("execution task");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: CredentialExecutionResponse = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("response");
+    assert_eq!(response.usage.status, CredentialUseStatus::Interrupted);
+    assert_eq!(response.execution.status, ExecutionStatus::Interrupted);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state
+                .store
+                .engagement(&engagement_id)
+                .await
+                .expect("expired engagement")
+                .status
+                == EngagementStatus::Expired
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("expired engagement state");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        !tokio::fs::try_exists(temp.path().join("tools/child-survived"))
+            .await
+            .expect("child marker")
+    );
+}
+
+#[cfg(unix)]
 async fn fixture(
     secret: Option<&'static str>,
-    exit_code: i32,
-    hangs: bool,
+    tool: FixtureTool,
 ) -> (TempDir, GatewayState, String, String) {
     let temp = TempDir::new().expect("temp dir");
     let tools_root = temp.path().join("tools");
     tokio::fs::create_dir_all(&tools_root).await.expect("tools");
     let tool_path = tools_root.join("credential-probe");
-    tokio::fs::write(
-        &tool_path,
-        format!(
-            "#!/bin/sh\nread secret\nprintf 'target=%s secret=%s\\n' \"$1\" \"$secret\"\n{}\nexit {exit_code}\n",
-            if hangs { "while :; do :; done" } else { ":" }
-        ),
-    )
-    .await
-    .expect("tool");
+    tokio::fs::write(&tool_path, tool.script())
+        .await
+        .expect("tool");
     tokio::fs::set_permissions(&tool_path, std::fs::Permissions::from_mode(0o700))
         .await
         .expect("permissions");
