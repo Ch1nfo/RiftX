@@ -111,6 +111,10 @@ impl RiftxApiKey {
         Ok(Self(value))
     }
 
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
     fn into_inner(self) -> String {
         self.0
     }

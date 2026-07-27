@@ -92,6 +92,7 @@ members = [
     "riftx-gateway",
     "riftx-guard",
     "riftx-ipc",
+    "riftx-llm-bridge",
     "riftx-report",
     "riftx-skills",
     "riftx-tools",
@@ -242,6 +243,7 @@ codex-riftx-crypto = { path = "riftx-crypto" }
 codex-riftx-gateway = { path = "riftx-gateway" }
 codex-riftx-guard = { path = "riftx-guard" }
 codex-riftx-ipc = { path = "riftx-ipc" }
+codex-riftx-llm-bridge = { path = "riftx-llm-bridge" }
 codex-riftx-report = { path = "riftx-report" }
 codex-riftx-skills = { path = "riftx-skills" }
 codex-riftx-tools = { path = "riftx-tools" }

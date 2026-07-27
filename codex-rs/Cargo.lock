@@ -3930,6 +3930,7 @@ dependencies = [
  "codex-riftx-credentials",
  "codex-riftx-crypto",
  "codex-riftx-ipc",
+ "codex-riftx-llm-bridge",
  "codex-riftx-report",
  "codex-riftx-skills",
  "codex-riftx-tools",
@@ -3986,6 +3987,24 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-riftx-llm-bridge"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures",
+ "http 1.4.0",
+ "pretty_assertions",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]

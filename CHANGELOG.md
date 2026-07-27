@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `VERSION` as the shared product version source (`0.8.0` during 1.0 development).
 - `docs/1.0-baseline.md` toolchain and test baseline record.
 - Explicit LLM Profile `protocol` (`responses` | `chat_completions`) with repeatable `config_version` migration.
+- `codex-riftx-llm-bridge`: loopback Responses → Chat Completions adapter so Runtime stays on `/v1/responses` for Chat Completions profiles.
 
 ### Changed
 

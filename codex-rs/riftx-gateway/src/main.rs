@@ -16,6 +16,9 @@ use codex_riftx_gateway::GatewayState;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcListener;
+use codex_riftx_llm_bridge::BridgeHandle;
+use codex_riftx_llm_bridge::BridgeUpstream;
+use codex_riftx_llm_bridge::start_loopback_bridge;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::SkillCatalogBuilder;
 use codex_riftx_skills::default_skills_root;
@@ -25,6 +28,7 @@ use std::io::Read;
 use std::path::PathBuf;
 #[cfg(debug_assertions)]
 use std::sync::Arc;
+use std::time::Duration;
 
 const MAX_STDIN_API_KEY_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 #[cfg(debug_assertions)]
@@ -88,6 +92,7 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
     let mut runtimes = Vec::with_capacity(config.llm.profiles.len());
+    let mut bridge_handles: Vec<BridgeHandle> = Vec::new();
     let mut skills_entry = None;
     for (profile_name, profile) in &config.llm.profiles {
         let injected_api_key = stdin_api_keys
@@ -113,15 +118,44 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 continue;
             }
         };
-        if matches!(
+        let (runtime_base_url, runtime_api_key) = if matches!(
             profile.protocol,
             codex_riftx_core::LlmProtocol::ChatCompletions
         ) {
+            let bridge = match start_loopback_bridge(BridgeUpstream {
+                base_url: profile.base_url.clone(),
+                api_key: api_key.expose().to_string(),
+                timeout: Duration::from_secs(profile.timeout_seconds),
+            })
+            .await
+            {
+                Ok(bridge) => bridge,
+                Err(error) => {
+                    eprintln!(
+                        "riftxd: skipping LLM profile {profile_name:?}: failed to start Chat Completions bridge: {error:#}"
+                    );
+                    continue;
+                }
+            };
+            let runtime_base_url = bridge.responses_base_url().to_string();
+            let runtime_api_key = match RiftxApiKey::new(bridge.bearer_token().to_string()) {
+                Ok(api_key) => api_key,
+                Err(error) => {
+                    eprintln!(
+                        "riftxd: skipping LLM profile {profile_name:?}: invalid bridge token: {error:#}"
+                    );
+                    continue;
+                }
+            };
             eprintln!(
-                "riftxd: skipping LLM profile {profile_name:?}: chat_completions requires the RiftX LLM bridge"
+                "riftxd: LLM profile {profile_name:?} using Chat Completions bridge at {}",
+                bridge.responses_base_url()
             );
-            continue;
-        }
+            bridge_handles.push(bridge);
+            (runtime_base_url, runtime_api_key)
+        } else {
+            (profile.base_url.clone(), api_key)
+        };
         let runtime = RiftxLlmRuntimeConfig {
             runtime_home: config
                 .daemon
@@ -129,9 +163,9 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 .join("profiles")
                 .join(profile_name),
             model: profile.model.clone(),
-            base_url: profile.base_url.clone(),
+            base_url: runtime_base_url,
             excluded_api_key_envs: excluded_api_key_envs.clone(),
-            api_key,
+            api_key: runtime_api_key,
             process_path: process_path.clone(),
         };
         let app_server = match RiftxAppServerAdapter::start_embedded(runtime, arg0_paths.clone())
@@ -199,6 +233,8 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let app = build_router(state);
     let listener = LocalIpcListener::bind(endpoint.clone()).await?;
     println!("{endpoint}");
+    // Keep Chat Completions bridges alive for the daemon lifetime.
+    let _bridge_handles = bridge_handles;
     axum::serve(listener, app).await?;
     Ok(())
 }
