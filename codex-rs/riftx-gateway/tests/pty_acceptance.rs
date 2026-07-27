@@ -3,6 +3,8 @@ mod common;
 use anyhow::Context;
 use axum::http::StatusCode;
 use codex_riftx_core::Engagement;
+use codex_riftx_ipc::DaemonControlStatus;
+use codex_riftx_ipc::DaemonRunState;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use common::ensure_status;
@@ -13,11 +15,15 @@ use core_test_support::responses;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
+use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::Request;
@@ -58,7 +64,7 @@ async fn pty_input_requires_a_bound_execution_intent() -> anyhow::Result<()> {
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
     wait_for_daemon(&client, &mut daemon.child).await?;
 
-    let engagement = create_engagement(&client).await?;
+    let engagement = create_engagement(&client, 4_000_000_000).await?;
     let response = client
         .post(&format!("/v1/engagements/{}/activate", engagement.id))
         .await?;
@@ -163,6 +169,83 @@ async fn pty_input_requires_a_bound_execution_intent() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authorization_deadline_terminates_active_pty_process_tree() -> anyhow::Result<()> {
+    let temp = TempDir::new().context("create PTY deadline acceptance directory")?;
+    let server = responses::start_mock_server().await;
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(PtyDeadlineResponseSequence {
+            calls: Arc::clone(&model_calls),
+        })
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    let config = test_config(temp.path(), format!("{}/v1", server.uri()));
+    let config_path = temp.path().join("riftx.toml");
+    tokio::fs::write(&config_path, toml::to_string(&config)?)
+        .await
+        .context("write PTY deadline config")?;
+    let mut daemon = spawn_daemon(&config_path)?;
+    let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
+    wait_for_daemon(&client, &mut daemon.child).await?;
+
+    let engagement = create_engagement(&client, unix_timestamp() + 10).await?;
+    let response = client
+        .post(&format!("/v1/engagements/{}/activate", engagement.id))
+        .await?;
+    ensure_status(response, StatusCode::OK, "activate PTY deadline engagement").await?;
+    let response = client
+        .post_json(
+            &format!("/v1/engagements/{}/turns", engagement.id),
+            serde_json::to_vec(&json!({"input": "Start the deadline PTY process tree."}))?,
+        )
+        .await?;
+    ensure_status(response, StatusCode::ACCEPTED, "start PTY deadline turn").await?;
+
+    let approval = wait_for_new_command_approval(&client, &engagement.id, &HashSet::new())
+        .await
+        .context("wait for PTY deadline command approval")?;
+    approve(&client, approval_id(&approval)?).await?;
+
+    let pid_path = config
+        .daemon
+        .workspace_root
+        .join(&engagement.id)
+        .join("pty-descendant.pid");
+    let descendant_pid = wait_for_pid(&pid_path).await?;
+    wait_for_model_calls(&model_calls, 2).await?;
+    anyhow::ensure!(
+        process_exists(descendant_pid),
+        "PTY descendant exited before authorization deadline"
+    );
+
+    wait_for_process_exit(descendant_pid).await?;
+    let report = wait_for_expired_report(&client, &engagement.id).await?;
+    anyhow::ensure!(
+        report["engagement"]["status"] == "expired",
+        "deadline did not expire the PTY engagement: {report}"
+    );
+    let executions = report["executions"]
+        .as_array()
+        .context("PTY deadline report executions missing")?;
+    anyhow::ensure!(
+        executions.len() == 1 && executions[0]["status"] == "interrupted",
+        "deadline did not interrupt the PTY execution: {executions:?}"
+    );
+    let response = client.get("/v1/system/status").await?;
+    anyhow::ensure!(response.status() == StatusCode::OK);
+    let control: DaemonControlStatus = serde_json::from_slice(&response.bytes().await?)?;
+    anyhow::ensure!(
+        control.state == DaemonRunState::Running && control.reason.is_none(),
+        "PTY deadline paused the daemon: {control:?}"
+    );
+    Ok(())
+}
+
 async fn wait_for_model_calls(calls: &AtomicUsize, expected: usize) -> anyhow::Result<()> {
     for _ in 0..POLL_ATTEMPTS {
         if calls.load(Ordering::SeqCst) >= expected {
@@ -180,6 +263,46 @@ struct PtyResponseSequence {
     calls: Arc<AtomicUsize>,
     process_id: Arc<Mutex<Option<i32>>>,
     stdin: String,
+}
+
+struct PtyDeadlineResponseSequence {
+    calls: Arc<AtomicUsize>,
+}
+
+impl Respond for PtyDeadlineResponseSequence {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        match self.calls.fetch_add(1, Ordering::SeqCst) {
+            0 => ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(responses::sse(vec![
+                    responses::ev_response_created("pty-deadline-response-1"),
+                    responses::ev_function_call(
+                        "pty-deadline-call-1",
+                        "exec_command",
+                        &json!({
+                            "cmd": pty_deadline_command(),
+                            "yield_time_ms": 300,
+                            "max_output_tokens": 10_000,
+                            "tty": true,
+                        })
+                        .to_string(),
+                    ),
+                    responses::ev_completed("pty-deadline-response-1"),
+                ])),
+            1 => ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(60))
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(responses::sse(vec![
+                    responses::ev_response_created("pty-deadline-response-2"),
+                    responses::ev_assistant_message(
+                        "pty-deadline-message-1",
+                        "should be interrupted",
+                    ),
+                    responses::ev_completed("pty-deadline-response-2"),
+                ])),
+            _ => ResponseTemplate::new(500),
+        }
+    }
 }
 
 impl Respond for PtyResponseSequence {
@@ -257,7 +380,7 @@ fn process_id_from_tool_output(body: &Value, call_id: &str) -> anyhow::Result<i3
         .context("invalid numeric session id")
 }
 
-async fn create_engagement(client: &LocalIpcClient) -> anyhow::Result<Engagement> {
+async fn create_engagement(client: &LocalIpcClient, expires_at: i64) -> anyhow::Result<Engagement> {
     let response = client
         .post_json(
             "/v1/engagements",
@@ -282,7 +405,7 @@ async fn create_engagement(client: &LocalIpcClient) -> anyhow::Result<Engagement
                     "environment": "lab",
                     "window": {
                         "startsAt": null,
-                        "expiresAt": 4_000_000_000_i64,
+                        "expiresAt": expires_at,
                     },
                 },
             }))?,
@@ -361,4 +484,64 @@ async fn wait_for_completed_report(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("PTY turn did not complete: {last_report}")
+}
+
+async fn wait_for_expired_report(
+    client: &LocalIpcClient,
+    engagement_id: &str,
+) -> anyhow::Result<Value> {
+    let path = format!("/v1/engagements/{engagement_id}/report?format=json");
+    let mut last_report = Value::Null;
+    for _ in 0..POLL_ATTEMPTS {
+        let response = client.get(&path).await?;
+        if response.status() == StatusCode::OK {
+            last_report = serde_json::from_slice(&response.bytes().await?)?;
+            if last_report["engagement"]["status"] == "expired" {
+                return Ok(last_report);
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("PTY deadline report did not reach expired state: {last_report}")
+}
+
+async fn wait_for_pid(path: &Path) -> anyhow::Result<u32> {
+    for _ in 0..POLL_ATTEMPTS {
+        if let Ok(value) = tokio::fs::read_to_string(path).await
+            && let Ok(pid) = value.trim().parse()
+        {
+            return Ok(pid);
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("PTY descendant PID was not written to {}", path.display())
+}
+
+async fn wait_for_process_exit(pid: u32) -> anyhow::Result<()> {
+    for _ in 0..POLL_ATTEMPTS {
+        if !process_exists(pid) {
+            return Ok(());
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("PTY descendant process {pid} survived authorization deadline")
+}
+
+fn process_exists(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
+fn pty_deadline_command() -> &'static str {
+    "/bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' & child=$!; printf '%s' \"$child\" > pty-descendant.pid; wait \"$child\""
 }
