@@ -13,15 +13,19 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
+use futures::Stream;
 use futures::StreamExt;
-use futures::stream::BoxStream;
 use reqwest::Client;
 use serde_json::Value;
 use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 /// Upstream Chat Completions target owned by one bridge instance.
@@ -36,6 +40,7 @@ pub struct BridgeUpstream {
 pub struct BridgeHandle {
     pub base_url: String,
     pub bearer_token: String,
+    request_cancellation: watch::Sender<u64>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<()>>,
 }
@@ -47,6 +52,12 @@ impl BridgeHandle {
 
     pub fn bearer_token(&self) -> &str {
         &self.bearer_token
+    }
+
+    /// Cancel requests currently proxied by this bridge without affecting future requests.
+    pub fn cancel_inflight(&self) {
+        let next_generation = self.request_cancellation.borrow().wrapping_add(1);
+        self.request_cancellation.send_replace(next_generation);
     }
 }
 
@@ -66,6 +77,7 @@ struct AppState {
     bearer_token: String,
     upstream: BridgeUpstream,
     client: Client,
+    request_cancellation: watch::Sender<u64>,
 }
 
 /// Bind `127.0.0.1:0`, serve `POST /v1/responses`, and return the Runtime-facing base URL.
@@ -75,10 +87,12 @@ pub async fn start_loopback_bridge(upstream: BridgeUpstream) -> Result<BridgeHan
     let addr = listener.local_addr()?;
     let base_url = format!("http://127.0.0.1:{}/v1", addr.port());
     let client = Client::builder().timeout(upstream.timeout).build()?;
+    let (request_cancellation, _) = watch::channel(0);
     let state = AppState {
         bearer_token: bearer_token.clone(),
         upstream,
         client,
+        request_cancellation: request_cancellation.clone(),
     };
     let app = Router::new()
         .route("/v1/responses", post(handle_responses))
@@ -93,6 +107,7 @@ pub async fn start_loopback_bridge(upstream: BridgeUpstream) -> Result<BridgeHan
     Ok(BridgeHandle {
         base_url,
         bearer_token,
+        request_cancellation,
         shutdown_tx: Some(shutdown_tx),
         join: Some(join),
     })
@@ -117,8 +132,9 @@ async fn handle_responses_inner(
     authorize(&headers, &state.bearer_token)?;
     let request: Value = serde_json::from_slice(&body)?;
     let converted = responses_request_to_chat_with_tool_names(&request)?;
+    let mut cancellation = state.request_cancellation.subscribe();
     let upstream_url = chat_completions_url(&state.upstream.base_url);
-    let upstream = state
+    let request = state
         .client
         .post(upstream_url)
         .header(
@@ -126,9 +142,13 @@ async fn handle_responses_inner(
             format!("Bearer {}", state.upstream.api_key),
         )
         .header("Content-Type", "application/json")
-        .json(&converted.body)
-        .send()
-        .await?;
+        .json(&converted.body);
+    let upstream = tokio::select! {
+        _ = cancellation.changed() => {
+            return Err(BridgeError::Upstream("Chat Completions request was cancelled".into()));
+        }
+        result = request.send() => result?,
+    };
 
     let status = upstream.status();
     if !status.is_success() {
@@ -140,7 +160,7 @@ async fn handle_responses_inner(
     }
 
     let response_id = format!("resp_{}", Uuid::new_v4());
-    let stream = bridge_sse_stream(upstream, response_id, converted.tool_names);
+    let stream = bridge_sse_stream(upstream, response_id, converted.tool_names, cancellation);
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/event-stream")
@@ -153,14 +173,19 @@ fn bridge_sse_stream(
     upstream: reqwest::Response,
     response_id: String,
     tool_names: std::collections::BTreeMap<String, crate::request::ResponsesToolName>,
-) -> BoxStream<'static, Result<Bytes, Infallible>> {
+    mut cancellation: watch::Receiver<u64>,
+) -> BridgeSseStream {
     let (tx, rx) = mpsc::channel::<Bytes>(16);
-    tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
         let mut converter = ChatStreamConverter::with_tool_names(response_id, tool_names);
         let mut decoder = SseDecoder::default();
         let mut byte_stream = upstream.bytes_stream();
         loop {
-            match byte_stream.next().await {
+            let next = tokio::select! {
+                _ = cancellation.changed() => return,
+                next = byte_stream.next() => next,
+            };
+            match next {
                 Some(Ok(chunk)) => {
                     let frames = match decoder.push(&chunk) {
                         Ok(frames) => frames,
@@ -209,9 +234,28 @@ fn bridge_sse_stream(
             }
         }
     });
-    Box::pin(futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|bytes| (Ok(bytes), rx))
-    }))
+    BridgeSseStream { rx, worker }
+}
+
+struct BridgeSseStream {
+    rx: mpsc::Receiver<Bytes>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl Stream for BridgeSseStream {
+    type Item = Result<Bytes, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.rx)
+            .poll_recv(cx)
+            .map(|item| item.map(Ok))
+    }
+}
+
+impl Drop for BridgeSseStream {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
 }
 
 fn authorize(headers: &HeaderMap, expected: &str) -> Result<(), BridgeError> {

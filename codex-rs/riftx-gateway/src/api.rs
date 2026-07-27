@@ -825,10 +825,21 @@ async fn interrupt_engagement_inner(
     }
     let active_turn = state.active_turns.read().await.get(id).cloned();
     if let Some(active_turn) = active_turn {
+        let is_only_profile_turn = state
+            .active_turns
+            .read()
+            .await
+            .values()
+            .filter(|turn| turn.profile_name == active_turn.profile_name)
+            .count()
+            == 1;
         if let Some(app_server) = state.app_server(&active_turn.profile_name) {
             let _ = app_server
                 .interrupt_turn(active_turn.thread_id.clone(), active_turn.turn_id.clone())
                 .await;
+        }
+        if is_only_profile_turn {
+            state.cancel_profile_model_requests(&active_turn.profile_name);
         }
         crate::execution_events::finish_turn(
             state,

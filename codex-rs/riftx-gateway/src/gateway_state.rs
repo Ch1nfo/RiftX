@@ -185,6 +185,12 @@ impl GatewayState {
         self.app_server(profile_name).is_some()
     }
 
+    pub(crate) fn cancel_profile_model_requests(&self, profile_name: &str) {
+        if let Some(manager) = &self.runtime_manager {
+            manager.cancel_bridge_requests(profile_name);
+        }
+    }
+
     pub(crate) fn runtime_configured(&self, profile_name: &str) -> bool {
         self.runtime_manager
             .as_ref()

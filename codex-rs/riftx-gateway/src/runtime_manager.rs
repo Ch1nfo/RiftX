@@ -161,6 +161,14 @@ impl ProfileRuntimeManager {
         Ok(())
     }
 
+    pub(crate) fn cancel_bridge_requests(&self, profile_name: &str) {
+        if let Ok(bridges) = self.bridges.lock()
+            && let Some(bridge) = bridges.get(profile_name)
+        {
+            bridge.cancel_inflight();
+        }
+    }
+
     pub(crate) fn release_bridge(&self, profile_name: &str) {
         if let Ok(mut bridges) = self.bridges.lock() {
             bridges.remove(profile_name);

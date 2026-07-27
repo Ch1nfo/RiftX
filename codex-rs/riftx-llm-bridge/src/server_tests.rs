@@ -116,3 +116,52 @@ async fn upstream_error_body_is_unicode_safe_and_redacted() {
     assert!(!body.contains("top-secret"));
     assert!(!body.contains("sk-live-secret"));
 }
+
+#[tokio::test]
+async fn cancelling_inflight_bridge_requests_aborts_an_upstream_wait() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .mount(&upstream)
+        .await;
+    let bridge = start_loopback_bridge(BridgeUpstream {
+        base_url: upstream.uri(),
+        api_key: "upstream-secret".to_string(),
+        timeout: Duration::from_secs(60),
+    })
+    .await
+    .expect("start bridge");
+
+    let request = tokio::spawn(
+        reqwest::Client::new()
+            .post(format!("{}/responses", bridge.responses_base_url()))
+            .bearer_auth(bridge.bearer_token())
+            .json(&json!({"model": "demo", "input": [], "stream": true}))
+            .send(),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if upstream
+                .received_requests()
+                .await
+                .is_some_and(|requests| !requests.is_empty())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("upstream request did not start");
+
+    bridge.cancel_inflight();
+    let response = tokio::time::timeout(Duration::from_secs(2), request)
+        .await
+        .expect("cancelled bridge request did not finish")
+        .expect("bridge request task")
+        .expect("bridge response");
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    let body = response.text().await.expect("cancel response body");
+    assert!(body.contains("request was cancelled"));
+}
