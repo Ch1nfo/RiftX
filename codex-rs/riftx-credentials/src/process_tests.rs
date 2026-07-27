@@ -9,6 +9,7 @@ const SECRET: &str = "credential-process-secret";
 const HELPER_MODE: &str = "RIFTX_CREDENTIAL_HELPER_MODE";
 const SECRET_ENV: &str = "RIFTX_TEST_CREDENTIAL";
 const FILE_ENV: &str = "RIFTX_TEST_CREDENTIAL_FILE";
+const TREE_PID_FILE_ENV: &str = "RIFTX_TEST_TREE_PID_FILE";
 
 #[tokio::test]
 async fn stdin_injection_redacts_echoed_secret_and_clears_inherited_environment() {
@@ -148,6 +149,74 @@ async fn timeout_terminates_the_process_and_io_tasks() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_terminates_the_descendant_process_tree() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let pid_file = temp.path().join("descendant.pid");
+    let runner = runner();
+    let mut request = helper_request(CredentialInjection::Stdin).await;
+    request
+        .environment
+        .insert(HELPER_MODE.to_string(), "tree_parent".into());
+    request
+        .environment
+        .insert(TREE_PID_FILE_ENV.to_string(), pid_file.as_os_str().into());
+    let cancellation = CancellationToken::new();
+    let execution_cancellation = cancellation.clone();
+    let execution = tokio::spawn(async move {
+        runner
+            .run_cancellable(request, secret(), execution_cancellation)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("descendant start");
+    let descendant_pid = tokio::fs::read_to_string(&pid_file)
+        .await
+        .expect("read descendant pid")
+        .parse::<u32>()
+        .expect("descendant pid");
+    cancellation.cancel();
+
+    let output = tokio::time::timeout(Duration::from_secs(5), execution)
+        .await
+        .expect("credential process cancellation")
+        .expect("credential process task")
+        .expect("credential process output");
+    assert_eq!(output.termination, CredentialProcessTermination::Cancelled);
+    let terminated = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let alive = std::process::Command::new("/bin/kill")
+                .arg("-0")
+                .arg(descendant_pid.to_string())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !terminated {
+        let _ = std::process::Command::new("/bin/kill")
+            .arg("-9")
+            .arg(descendant_pid.to_string())
+            .status();
+    }
+    assert!(
+        terminated,
+        "descendant process {descendant_pid} survived cancellation"
+    );
+}
+
 #[tokio::test]
 async fn cancellation_terminates_the_process_and_io_tasks() {
     let runner = runner();
@@ -209,6 +278,32 @@ fn credential_process_helper() {
             println!("secret={secret}");
         }
         "timeout" => std::thread::sleep(Duration::from_secs(30)),
+        "tree_parent" => {
+            let pid_file = std::env::var_os(TREE_PID_FILE_ENV).expect("tree pid file");
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("current test executable"),
+            )
+            .args([
+                "--exact",
+                "process::tests::credential_process_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_MODE, "tree_child")
+            .env(TREE_PID_FILE_ENV, &pid_file)
+            .spawn()
+            .expect("spawn descendant");
+            while !Path::new(&pid_file).exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_secs(30));
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        "tree_child" => {
+            let pid_file = std::env::var_os(TREE_PID_FILE_ENV).expect("tree pid file");
+            std::fs::write(pid_file, std::process::id().to_string()).expect("write descendant pid");
+            std::thread::sleep(Duration::from_secs(30));
+        }
         _ => panic!("unknown helper mode"),
     }
 }

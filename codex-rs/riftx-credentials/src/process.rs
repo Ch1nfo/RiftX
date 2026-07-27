@@ -1,4 +1,5 @@
 use crate::AssessmentSecret;
+use crate::process_tree::ProcessTreeLauncher;
 use codex_riftx_guard::GuardExecPolicy;
 use codex_riftx_guard::apply_hardened_launch;
 use sha2::Digest;
@@ -128,7 +129,15 @@ impl CredentialProcessRunner {
         if let Some(policy) = request.guard.clone() {
             apply_hardened_launch(&mut command, policy).map_err(CredentialProcessError::Guard)?;
         }
+        let process_tree = ProcessTreeLauncher::configure(&mut command)?;
         let mut child = command.spawn().map_err(CredentialProcessError::Spawn)?;
+        let mut process_tree = match process_tree.attach(&child) {
+            Ok(process_tree) => process_tree,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        };
         let stdout = child
             .stdout
             .take()
@@ -164,10 +173,14 @@ impl CredentialProcessRunner {
             ),
         };
         let status = match wait_outcome {
-            WaitOutcome::Exited(status) => status,
+            WaitOutcome::Exited(status) => {
+                process_tree
+                    .kill()
+                    .map_err(CredentialProcessError::ProcessTree)?;
+                status
+            }
             WaitOutcome::Stopped(termination) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                process_tree.stop(&mut child, termination).await?;
                 if let Some(stdin_task) = stdin_task {
                     stdin_task.abort();
                     let _ = stdin_task.await;
@@ -230,6 +243,8 @@ pub enum CredentialProcessError {
     Guard(#[source] std::io::Error),
     #[error("credential process failed to start: {0}")]
     Spawn(#[source] std::io::Error),
+    #[error("credential process tree containment failed: {0}")]
+    ProcessTree(#[source] std::io::Error),
     #[error("credential process output pipe was unavailable")]
     MissingOutputPipe,
     #[error("credential process input pipe was unavailable")]

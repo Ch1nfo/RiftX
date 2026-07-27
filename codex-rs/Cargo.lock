@@ -3883,6 +3883,7 @@ version = "0.0.0"
 dependencies = [
  "codex-keyring-store",
  "codex-riftx-guard",
+ "codex-utils-pty",
  "pretty_assertions",
  "sha2 0.10.9",
  "tempfile",

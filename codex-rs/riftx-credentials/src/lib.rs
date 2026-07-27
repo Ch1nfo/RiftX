@@ -5,6 +5,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 
 mod process;
+mod process_tree;
 
 pub use process::*;
 
