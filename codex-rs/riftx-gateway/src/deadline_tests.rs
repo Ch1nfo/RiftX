@@ -8,6 +8,9 @@ use crate::gateway_state::PendingApprovalKind;
 use crate::gateway_state::PendingApprovalRequest;
 use axum::body::Body;
 use axum::http::Request;
+use codex_riftx_core::ApprovalActor;
+use codex_riftx_core::ApprovalDecisionReason;
+use codex_riftx_core::ApprovalOutcome;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
@@ -90,6 +93,21 @@ async fn watchdog_expires_active_work_and_revokes_pending_execution() {
 
     assert!(process_cancellation.is_cancelled());
     assert!(!decision_rx.await.expect("approval decision"));
+    assert_eq!(
+        state
+            .store
+            .approvals(&engagement.id)
+            .await
+            .expect("approval history")
+            .into_iter()
+            .map(|record| (record.outcome, record.actor, record.decision_reason))
+            .collect::<Vec<_>>(),
+        vec![(
+            ApprovalOutcome::Cancelled,
+            Some(ApprovalActor::System),
+            Some(ApprovalDecisionReason::EngagementStopped),
+        )]
+    );
     assert!(state.deadline_tasks.read().await.is_empty());
     assert_eq!(
         state.store.tasks(&engagement.id).await.expect("tasks"),

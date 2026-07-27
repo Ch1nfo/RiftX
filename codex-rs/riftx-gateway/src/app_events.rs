@@ -288,29 +288,39 @@ async fn await_execution_approval(
     let approval_id = Uuid::new_v4().to_string();
     let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
     let command = (!intent.display_argv.is_empty()).then(|| intent.display_argv.join(" "));
-    state.pending_approvals.write().await.insert(
-        approval_id.clone(),
-        PendingApprovalRequest {
-            profile_name: profile_name.to_string(),
+    let pending = PendingApprovalRequest {
+        profile_name: profile_name.to_string(),
+        engagement_id: engagement_id.to_string(),
+        view: PendingApproval {
+            id: approval_id.clone(),
             engagement_id: engagement_id.to_string(),
-            view: PendingApproval {
-                id: approval_id.clone(),
-                engagement_id: engagement_id.to_string(),
-                policy_revision: policy_revision.to_string(),
-                kind: ApprovalKind::Tool,
-                requested_at: unix_timestamp(),
-                command,
-                cwd: Some(intent.cwd.display().to_string()),
-                reason: Some(format!(
-                    "{} mode requires approval for {:?}-risk credential execution",
-                    format!("{:?}", intent.mode).to_ascii_lowercase(),
-                    intent.risk
-                )),
-                execution_intent: Some(intent.clone()),
-            },
-            kind: PendingApprovalKind::Tool { decision_tx },
+            policy_revision: policy_revision.to_string(),
+            kind: ApprovalKind::Tool,
+            requested_at: unix_timestamp(),
+            command,
+            cwd: Some(intent.cwd.display().to_string()),
+            reason: Some(format!(
+                "{} mode requires approval for {:?}-risk credential execution",
+                format!("{:?}", intent.mode).to_ascii_lowercase(),
+                intent.risk
+            )),
+            execution_intent: Some(intent.clone()),
         },
-    );
+        kind: PendingApprovalKind::Tool { decision_tx },
+    };
+    if crate::approval_history::queue(state, pending)
+        .await
+        .is_err()
+    {
+        state
+            .publish(
+                engagement_id,
+                "approval/toolDenied",
+                json!({"approvalId": approval_id, "reason": "approvalStateUnavailable"}),
+            )
+            .await;
+        return false;
+    }
     state
         .publish(
             engagement_id,
@@ -486,25 +496,43 @@ async fn command_approval(
     let approval_id = pending.approval_id();
     let display_command = (!intent.display_argv.is_empty()).then(|| intent.display_argv.join(" "));
     let event_intent = intent.clone();
-    state.pending_approvals.write().await.insert(
-        approval_id.clone(),
-        PendingApprovalRequest {
-            profile_name: profile_name.to_string(),
+    let request = PendingApprovalRequest {
+        profile_name: profile_name.to_string(),
+        engagement_id: engagement_id.clone(),
+        view: PendingApproval {
+            id: approval_id.clone(),
             engagement_id: engagement_id.clone(),
-            view: PendingApproval {
-                id: approval_id.clone(),
-                engagement_id: engagement_id.clone(),
-                policy_revision: engagement.policy_revision,
-                kind: ApprovalKind::Command,
-                requested_at: pending.params.started_at_ms / 1_000,
-                command: display_command,
-                cwd: pending.params.cwd.as_ref().map(ToString::to_string),
-                reason: pending.params.reason.clone(),
-                execution_intent: Some(intent),
-            },
-            kind: PendingApprovalKind::Command(Box::new(pending.clone())),
+            policy_revision: engagement.policy_revision,
+            kind: ApprovalKind::Command,
+            requested_at: pending.params.started_at_ms / 1_000,
+            command: display_command,
+            cwd: pending.params.cwd.as_ref().map(ToString::to_string),
+            reason: pending.params.reason.clone(),
+            execution_intent: Some(intent),
         },
-    );
+        kind: PendingApprovalKind::Command(Box::new(pending.clone())),
+    };
+    if crate::approval_history::queue(state, request)
+        .await
+        .is_err()
+    {
+        if let Some(app_server) = state.app_server(profile_name) {
+            let _ = app_server
+                .decide_command_approval(
+                    pending,
+                    codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                )
+                .await;
+        }
+        state
+            .publish(
+                &engagement_id,
+                "approval/commandDenied",
+                json!({"reason": "approvalStateUnavailable", "intent": event_intent}),
+            )
+            .await;
+        return;
+    }
     state
         .publish(
             &engagement_id,
@@ -568,7 +596,25 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
             .complete_task(&engagement_id, turn_id, &event.data)
             .await;
         state.active_turns.write().await.remove(&engagement_id);
-        state.take_pending_approvals(&engagement_id).await;
+        for pending in state.take_pending_approvals(&engagement_id).await {
+            if crate::approval_history::record_system_cancellation(
+                state,
+                &pending.view,
+                codex_riftx_core::ApprovalDecisionReason::TurnCompleted,
+                unix_timestamp(),
+            )
+            .await
+            .is_err()
+            {
+                state
+                    .publish(
+                        &engagement_id,
+                        "approval/historyWriteFailed",
+                        json!({"approvalId": pending.view.id, "operation": "cancel"}),
+                    )
+                    .await;
+            }
+        }
         crate::artifacts::capture_pending_for_turn(state.clone(), engagement_id.clone(), turn_id)
             .await;
     }

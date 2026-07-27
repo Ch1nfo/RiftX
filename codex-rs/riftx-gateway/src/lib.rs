@@ -1,5 +1,6 @@
 mod api;
 mod app_events;
+mod approval_history;
 mod artifact_api;
 mod artifacts;
 mod asset_tool;

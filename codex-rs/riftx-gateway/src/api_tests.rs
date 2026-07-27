@@ -2,6 +2,11 @@ use super::*;
 use axum::body::Body;
 use axum::http::Request;
 use codex_riftx_core::AUTO_MODE_CONFIRMATION;
+use codex_riftx_core::ApprovalActor;
+use codex_riftx_core::ApprovalDecisionReason;
+use codex_riftx_core::ApprovalOutcome;
+use codex_riftx_core::ApprovalRecord;
+use codex_riftx_core::ApprovalRequestKind;
 use codex_riftx_core::Artifact;
 use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::Asset;
@@ -23,6 +28,7 @@ use codex_riftx_core::LlmProtocol;
 use codex_riftx_core::LlmReasoningLevel;
 use codex_riftx_core::ManagedPolicyConfig;
 use codex_riftx_core::Observation;
+use codex_riftx_core::RecordedApprovalDecision;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::Scope;
 use codex_riftx_core::StateStore;
@@ -262,6 +268,29 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
         discovered_at: 2,
     };
     state.store.put_asset(&asset).await.expect("store asset");
+    let approval = ApprovalRecord {
+        id: "report-approval".to_string(),
+        engagement_id: engagement.id.clone(),
+        kind: ApprovalRequestKind::Command,
+        requested_at: 3,
+        decided_at: Some(4),
+        requested_decision: Some(RecordedApprovalDecision::Deny),
+        outcome: ApprovalOutcome::Denied,
+        actor: Some(ApprovalActor::LocalOperator),
+        decision_reason: Some(ApprovalDecisionReason::OperatorDenied),
+        policy_revision: engagement.policy_revision.clone(),
+        execution_binding_sha256: "a".repeat(64),
+        command_sha256: "b".repeat(64),
+        argument_sha256: "c".repeat(64),
+        display_argv: vec!["nmap".to_string(), "10.10.0.10".to_string()],
+        cwd: Some("/workspace".to_string()),
+        executable_names: vec!["nmap".to_string()],
+    };
+    state
+        .store
+        .put_approval(&approval)
+        .await
+        .expect("store approval");
     let app = build_router(state);
 
     let response = app
@@ -296,6 +325,7 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
     assert_eq!(report.auto_run, None);
     assert_eq!(report.engagement, engagement);
     assert_eq!(report.assets, vec![asset]);
+    assert_eq!(report.approvals, vec![approval]);
     assert_eq!(report.limitations, standard_report_limitations());
 }
 
@@ -579,6 +609,28 @@ async fn restart_reconciliation_pauses_active_engagements_without_ending_them() 
         .await
         .expect("store engagement");
     state
+        .store
+        .put_approval(&ApprovalRecord {
+            id: "stale-approval".to_string(),
+            engagement_id: engagement.id.clone(),
+            kind: ApprovalRequestKind::Command,
+            requested_at: 2,
+            decided_at: None,
+            requested_decision: None,
+            outcome: ApprovalOutcome::Pending,
+            actor: None,
+            decision_reason: None,
+            policy_revision: engagement.policy_revision.clone(),
+            execution_binding_sha256: "a".repeat(64),
+            command_sha256: "b".repeat(64),
+            argument_sha256: "c".repeat(64),
+            display_argv: vec!["nmap".to_string()],
+            cwd: Some("/workspace".to_string()),
+            executable_names: vec!["nmap".to_string()],
+        })
+        .await
+        .expect("store stale approval");
+    state
         .reconcile_after_restart()
         .await
         .expect("reconcile state");
@@ -597,6 +649,18 @@ async fn restart_reconciliation_pauses_active_engagements_without_ending_them() 
             .read()
             .await
             .contains_key(&engagement.id)
+    );
+    let approvals = state
+        .store
+        .approvals(&engagement.id)
+        .await
+        .expect("approval history");
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].outcome, ApprovalOutcome::Cancelled);
+    assert_eq!(approvals[0].actor, Some(ApprovalActor::System));
+    assert_eq!(
+        approvals[0].decision_reason,
+        Some(ApprovalDecisionReason::DaemonRestart)
     );
     let paused = state.control_status().await;
     assert_eq!(
@@ -928,6 +992,22 @@ async fn approval_cannot_succeed_when_critical_audit_is_unavailable() {
     assert_eq!(
         state.control_status().await.audit.state,
         AuditHealthState::Degraded
+    );
+    let history = state
+        .store
+        .approvals(&engagement.id)
+        .await
+        .expect("approval history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].requested_decision,
+        Some(RecordedApprovalDecision::Approve)
+    );
+    assert_eq!(history[0].outcome, ApprovalOutcome::Invalidated);
+    assert_eq!(history[0].actor, Some(ApprovalActor::LocalOperator));
+    assert_eq!(
+        history[0].decision_reason,
+        Some(ApprovalDecisionReason::AuditUnavailable)
     );
 }
 

@@ -1,4 +1,9 @@
 use super::*;
+use codex_riftx_domain::ApprovalActor;
+use codex_riftx_domain::ApprovalDecisionReason;
+use codex_riftx_domain::ApprovalOutcome;
+use codex_riftx_domain::ApprovalRecord;
+use codex_riftx_domain::ApprovalRequestKind;
 use codex_riftx_domain::AssessmentObjective;
 use codex_riftx_domain::AttackPathHop;
 use codex_riftx_domain::AuthorizationScope;
@@ -188,6 +193,24 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         }],
         tasks: Vec::new(),
         artifacts: Vec::new(),
+        approvals: vec![ApprovalRecord {
+            id: "approval-1".to_string(),
+            engagement_id: "eng-1".to_string(),
+            kind: ApprovalRequestKind::Command,
+            requested_at: 30,
+            decided_at: Some(31),
+            requested_decision: None,
+            outcome: ApprovalOutcome::Cancelled,
+            actor: Some(ApprovalActor::System),
+            decision_reason: Some(ApprovalDecisionReason::EngagementStopped),
+            policy_revision: "revision-1".to_string(),
+            execution_binding_sha256: "binding-sha256".to_string(),
+            command_sha256: "command-sha256".to_string(),
+            argument_sha256: "argument-sha256".to_string(),
+            display_argv: vec!["nmap".to_string()],
+            cwd: Some("/workspace".to_string()),
+            executable_names: vec!["nmap".to_string()],
+        }],
         tool_snapshot: ToolReportSnapshot {
             snapshot_sha256: "tool-inventory-sha256".to_string(),
             tools: vec![ReportTool {
@@ -213,6 +236,8 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     };
 
     let markdown = report.markdown();
+    assert!(markdown.contains("## Approvals"));
+    assert!(markdown.contains("approval-1"));
     for expected in [
         "Potential issue requires validation",
         "Credential reuse may reach domain control",
@@ -251,6 +276,10 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     let encoded = json.to_string();
     assert!(!encoded.contains("llm.example.test"));
     assert!(!encoded.contains("test-model"));
+    assert_eq!(
+        json.pointer("/approvals/0/outcome"),
+        Some(&serde_json::json!("cancelled"))
+    );
     assert_eq!(
         (
             json.pointer("/schema"),

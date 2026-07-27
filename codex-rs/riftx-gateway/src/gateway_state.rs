@@ -325,11 +325,32 @@ impl GatewayState {
                 manager.release_bridge(&profile_name);
             }
             state.record_runtime_failure(&profile_name, failure).await;
-            state
-                .pending_approvals
-                .write()
+            let pending = {
+                let mut approvals = state.pending_approvals.write().await;
+                approvals
+                    .extract_if(|_, pending| pending.profile_name == profile_name)
+                    .map(|(_, pending)| pending)
+                    .collect::<Vec<_>>()
+            };
+            for pending in pending {
+                if crate::approval_history::record_system_cancellation(
+                    &state,
+                    &pending.view,
+                    codex_riftx_core::ApprovalDecisionReason::RuntimeClosed,
+                    unix_timestamp(),
+                )
                 .await
-                .retain(|_, pending| pending.profile_name != profile_name);
+                .is_err()
+                {
+                    state
+                        .publish(
+                            &pending.engagement_id,
+                            "approval/historyWriteFailed",
+                            json!({"approvalId": pending.view.id, "operation": "cancel"}),
+                        )
+                        .await;
+                }
+            }
             state
                 .publish_to_profile_active(&profile_name, "appServer/closed", json!({}))
                 .await;
@@ -393,6 +414,12 @@ impl GatewayState {
             .await;
         let restored_control = self.control_status().await;
         for engagement in engagements {
+            crate::approval_history::cancel_stale_after_restart(
+                self,
+                &engagement.id,
+                unix_timestamp(),
+            )
+            .await?;
             if engagement.status != EngagementStatus::Active {
                 continue;
             }

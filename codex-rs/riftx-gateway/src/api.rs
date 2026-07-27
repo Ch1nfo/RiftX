@@ -27,6 +27,8 @@ use axum::response::sse::Sse;
 use axum::routing::get;
 use axum::routing::post;
 use codex_riftx_core::AUTO_MODE_CONFIRMATION;
+use codex_riftx_core::ApprovalDecisionReason;
+use codex_riftx_core::ApprovalOutcome;
 use codex_riftx_core::AssessmentObjective;
 use codex_riftx_core::AuthorizationScope;
 use codex_riftx_core::ConversationEntryDraft;
@@ -909,6 +911,41 @@ async fn decide_approval(
     if audit_result.is_err() {
         approved = false;
     }
+    let (history_outcome, history_reason) = if approved {
+        (ApprovalOutcome::Approved, ApprovalDecisionReason::Approved)
+    } else if matches!(params.decision, ApprovalDecision::Deny) {
+        (
+            ApprovalOutcome::Denied,
+            ApprovalDecisionReason::OperatorDenied,
+        )
+    } else if audit_result.is_err() {
+        (
+            ApprovalOutcome::Invalidated,
+            ApprovalDecisionReason::AuditUnavailable,
+        )
+    } else if !execution_is_running {
+        (
+            ApprovalOutcome::Invalidated,
+            ApprovalDecisionReason::DaemonPaused,
+        )
+    } else {
+        (
+            ApprovalOutcome::Invalidated,
+            ApprovalDecisionReason::PolicyOrBindingChanged,
+        )
+    };
+    let history_result = crate::approval_history::record_operator_decision(
+        &state,
+        &pending.view,
+        params.decision,
+        history_outcome,
+        history_reason,
+        now,
+    )
+    .await;
+    if history_result.is_err() {
+        approved = false;
+    }
     match pending.kind {
         PendingApprovalKind::Command(command) => {
             let app_server = state
@@ -929,6 +966,9 @@ async fn decide_approval(
         PendingApprovalKind::Tool { decision_tx } => {
             let _ = decision_tx.send(approved);
         }
+    }
+    if let Err(error) = history_result {
+        return Err(error.into());
     }
     if requested_approval && audit_result.is_err() {
         return Err(ApiError::audit_unavailable());
@@ -1168,6 +1208,7 @@ async fn report(
         coverage: snapshot.coverage,
         tasks: snapshot.tasks,
         artifacts: snapshot.artifacts,
+        approvals: snapshot.approvals,
         tool_snapshot: tool_report_snapshot(&state.tools),
         skill_snapshot: skill_report_snapshot(&state.skills),
     };

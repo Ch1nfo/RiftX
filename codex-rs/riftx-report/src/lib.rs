@@ -1,5 +1,6 @@
 //! Typed RiftX report snapshots and deterministic Markdown rendering.
 
+use codex_riftx_domain::ApprovalRecord;
 use codex_riftx_domain::Artifact;
 use codex_riftx_domain::Asset;
 use codex_riftx_domain::AssetRelation;
@@ -179,6 +180,8 @@ pub struct EngagementReport {
     pub coverage: Vec<Coverage>,
     pub tasks: Vec<Task>,
     pub artifacts: Vec<Artifact>,
+    #[serde(default)]
+    pub approvals: Vec<ApprovalRecord>,
     pub tool_snapshot: ToolReportSnapshot,
     pub skill_snapshot: SkillReportSnapshot,
 }
@@ -403,6 +406,28 @@ impl EngagementReport {
         } else {
             for evidence in &self.evidence {
                 output.push_str(&format!("- {}\n", evidence.summary));
+            }
+        }
+        output.push_str("\n## Approvals\n\n");
+        if self.approvals.is_empty() {
+            output.push_str("No approval decisions recorded.\n");
+        } else {
+            for approval in &self.approvals {
+                output.push_str(&format!(
+                    "- `{}`: `{:?}` -> `{:?}` (actor={}, requested={}, decided={}, policy=`{}`, binding=`{}`)\n",
+                    approval.id,
+                    approval.kind,
+                    approval.outcome,
+                    approval
+                        .actor
+                        .map_or_else(|| "none".to_string(), |actor| format!("{actor:?}")),
+                    approval.requested_at,
+                    approval
+                        .decided_at
+                        .map_or_else(|| "pending".to_string(), |value| value.to_string()),
+                    approval.policy_revision,
+                    approval.execution_binding_sha256,
+                ));
             }
         }
         output.push_str("\n## Auto Run\n\n");
