@@ -80,6 +80,12 @@ pub(crate) struct UpsertLlmProfileInput {
     make_default: bool,
     #[serde(default)]
     enabled: Option<bool>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    reasoning_level: Option<String>,
+    #[serde(default)]
+    context_budget: Option<u32>,
 }
 
 #[tauri::command]
@@ -155,6 +161,11 @@ pub(crate) async fn upsert_llm_profile(
     let model = input.model.trim().to_string();
     let base_url = input.base_url.trim().to_string();
     let protocol = parse_protocol(input.protocol.as_deref())?;
+    let reasoning_level = input
+        .reasoning_level
+        .as_deref()
+        .map(parse_reasoning_level)
+        .transpose()?;
     let updating_existing = config.llm.profiles.contains_key(&profile_name);
     let was_configured = if updating_existing {
         profile_is_configured(&config, &profile_name).await?
@@ -189,6 +200,15 @@ pub(crate) async fn upsert_llm_profile(
         existing.base_url = base_url;
         existing.protocol = protocol;
         existing.enabled = enabled;
+        if let Some(timeout_seconds) = input.timeout_seconds {
+            existing.timeout_seconds = timeout_seconds;
+        }
+        if let Some(reasoning_level) = reasoning_level {
+            existing.reasoning_level = reasoning_level;
+        }
+        if let Some(context_budget) = input.context_budget {
+            existing.context_budget = context_budget;
+        }
     } else {
         config.llm.profiles.insert(
             profile_name.clone(),
@@ -200,9 +220,9 @@ pub(crate) async fn upsert_llm_profile(
                 api_key: LlmApiKeySource::Keyring {
                     credential: profile_name.clone(),
                 },
-                timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
-                reasoning_level: LlmReasoningLevel::High,
-                context_budget: DEFAULT_CONTEXT_BUDGET,
+                timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS),
+                reasoning_level: reasoning_level.unwrap_or(LlmReasoningLevel::High),
+                context_budget: input.context_budget.unwrap_or(DEFAULT_CONTEXT_BUDGET),
             },
         );
     }
@@ -632,6 +652,22 @@ fn parse_protocol(value: Option<&str>) -> Result<LlmProtocol, DesktopError> {
         Some(other) => Err(DesktopError::new(
             "invalid_config",
             format!("unsupported LLM protocol {other:?}; expected responses or chat_completions"),
+        )),
+    }
+}
+
+fn parse_reasoning_level(value: &str) -> Result<LlmReasoningLevel, DesktopError> {
+    match value.trim() {
+        "minimal" => Ok(LlmReasoningLevel::Minimal),
+        "low" => Ok(LlmReasoningLevel::Low),
+        "medium" => Ok(LlmReasoningLevel::Medium),
+        "high" => Ok(LlmReasoningLevel::High),
+        "x_high" | "xhigh" => Ok(LlmReasoningLevel::XHigh),
+        other => Err(DesktopError::new(
+            "invalid_config",
+            format!(
+                "unsupported reasoning level {other:?}; expected minimal, low, medium, high, or x_high"
+            ),
         )),
     }
 }

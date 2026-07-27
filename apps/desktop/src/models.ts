@@ -41,6 +41,13 @@ export interface ToolsSettings {
   daemonRestartRequired: boolean;
 }
 
+export type LlmReasoningLevel =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "x_high";
+
 export interface UpsertLlmProfileInput {
   profileName: string;
   model: string;
@@ -48,6 +55,9 @@ export interface UpsertLlmProfileInput {
   protocol?: "responses" | "chat_completions";
   makeDefault?: boolean;
   enabled?: boolean;
+  timeoutSeconds?: number;
+  reasoningLevel?: LlmReasoningLevel;
+  contextBudget?: number;
 }
 
 export type LlmProfileState =
@@ -81,7 +91,7 @@ export interface LlmProfileSettings {
   model: string;
   baseUrl: string;
   timeoutSeconds: number;
-  reasoningLevel: string;
+  reasoningLevel: LlmReasoningLevel;
   contextBudget: number;
   credentialSource: "keyring" | "environment";
   credentialName: string;

@@ -8,6 +8,8 @@ interface TaskSidebarProps {
   engagements: Engagement[];
   selectedId: string | null;
   loading: boolean;
+  createDisabled: boolean;
+  createDisabledReason: string;
   onSelect: (engagementId: string) => void;
   onCreate: () => void;
   onRefresh: () => void;
@@ -23,6 +25,8 @@ export function TaskSidebar({
   engagements,
   selectedId,
   loading,
+  createDisabled,
+  createDisabledReason,
   onSelect,
   onCreate,
   onRefresh,
@@ -51,7 +55,13 @@ export function TaskSidebar({
           <RefreshCw size={16} className={loading ? "spin" : undefined} />
         </button>
       </div>
-      <button className="new-task-button" type="button" onClick={onCreate}>
+      <button
+        className="new-task-button"
+        type="button"
+        onClick={onCreate}
+        disabled={createDisabled}
+        title={createDisabled ? createDisabledReason : "Create a new task"}
+      >
         <CirclePlus size={17} />
         New task
       </button>

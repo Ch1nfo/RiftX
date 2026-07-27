@@ -184,7 +184,7 @@ jobs:
           -p codex-riftx-gateway
 
   desktop-frontend:
-    name: Desktop TypeScript build (${{ matrix.os }})
+    name: Desktop frontend tests/build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -215,6 +215,9 @@ jobs:
           conda run -n agent pnpm install
           --filter @riftx/desktop...
           --frozen-lockfile
+
+      - name: Test desktop frontend
+        run: conda run -n agent pnpm --filter @riftx/desktop test
 
       - name: Build desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop build
@@ -259,6 +262,9 @@ jobs:
           conda run -n agent pnpm install
           --filter @riftx/desktop...
           --frozen-lockfile
+
+      - name: Test desktop frontend
+        run: conda run -n agent pnpm --filter @riftx/desktop test
 
       - name: Build desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop build

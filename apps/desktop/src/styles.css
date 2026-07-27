@@ -68,6 +68,10 @@ button:disabled {
   background: var(--bg);
 }
 
+.app-shell.setup-required {
+  grid-template-rows: 48px auto minmax(0, 1fr);
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -2505,4 +2509,38 @@ button:disabled {
 .auto-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.4;
+}
+
+.settings-field-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.setup-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 35%, var(--border));
+  background: color-mix(in srgb, var(--amber) 9%, var(--surface));
+  color: var(--text);
+}
+
+.setup-banner > div {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setup-banner span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.setup-banner .secondary-button {
+  flex: 0 0 auto;
 }

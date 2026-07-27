@@ -24,6 +24,7 @@ import type {
   LlmConnectionTestResult,
   LlmProfileList,
   LlmProfileState,
+  LlmReasoningLevel,
   LlmSettings,
 } from "../models";
 import { NotificationControls } from "./NotificationControls";
@@ -57,6 +58,10 @@ export function ModelSettingsView({
   const [protocol, setProtocol] = useState<"responses" | "chat_completions">(
     "responses",
   );
+  const [timeoutSeconds, setTimeoutSeconds] = useState("300");
+  const [reasoningLevel, setReasoningLevel] =
+    useState<LlmReasoningLevel>("high");
+  const [contextBudget, setContextBudget] = useState("200000");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
@@ -105,6 +110,11 @@ export function ModelSettingsView({
       setModel(profile?.model ?? "");
       setBaseUrl(profile?.baseUrl ?? "");
       setProtocol(profile?.protocol ?? "responses");
+      setTimeoutSeconds(String(profile?.timeoutSeconds ?? 300));
+      setReasoningLevel(
+        profile?.reasoningLevel ?? "high",
+      );
+      setContextBudget(String(profile?.contextBudget ?? 200_000));
     },
     [selectedProfileName],
   );
@@ -143,13 +153,28 @@ export function ModelSettingsView({
   const keyring = profile?.credentialSource === "keyring";
   const isDefault = profile?.profileName === settings?.defaultProfile;
   const canDeleteProfile = (settings?.profiles.length ?? 0) > 1 && !isDefault;
+  const parsedTimeoutSeconds = Number(timeoutSeconds);
+  const parsedContextBudget = Number(contextBudget);
+  const runtimeSettingsValid =
+    Number.isInteger(parsedTimeoutSeconds) &&
+    parsedTimeoutSeconds >= 1 &&
+    parsedTimeoutSeconds <= 3_600 &&
+    Number.isInteger(parsedContextBudget) &&
+    parsedContextBudget >= 1_024 &&
+    parsedContextBudget <= 2_000_000;
 
   const restartNotice = (required: boolean, saved: string, restarted: string) =>
     required ? saved : restarted;
 
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
-    if (!profile || !model.trim() || !baseUrl.trim() || busy) {
+    if (
+      !profile ||
+      !model.trim() ||
+      !baseUrl.trim() ||
+      !runtimeSettingsValid ||
+      busy
+    ) {
       return;
     }
     updateBusy(true);
@@ -159,6 +184,9 @@ export function ModelSettingsView({
         model: model.trim(),
         baseUrl: baseUrl.trim(),
         protocol,
+        timeoutSeconds: parsedTimeoutSeconds,
+        reasoningLevel,
+        contextBudget: parsedContextBudget,
       });
       applySettings(updated, profile.profileName);
       await refreshRuntimeProfiles();
@@ -469,6 +497,11 @@ export function ModelSettingsView({
             setModel(nextProfile?.model ?? "");
             setBaseUrl(nextProfile?.baseUrl ?? "");
             setProtocol(nextProfile?.protocol ?? "responses");
+            setTimeoutSeconds(String(nextProfile?.timeoutSeconds ?? 300));
+            setReasoningLevel(
+              nextProfile?.reasoningLevel ?? "high",
+            );
+            setContextBudget(String(nextProfile?.contextBudget ?? 200_000));
             setApiKey("");
             setShowKey(false);
             setConfirmRemoveKey(false);
@@ -531,6 +564,58 @@ export function ModelSettingsView({
                 <option value="chat_completions">Chat Completions</option>
               </select>
             </label>
+            <label>
+              <span>Reasoning</span>
+              <select
+                value={reasoningLevel}
+                onChange={(event) => {
+                  setReasoningLevel(event.target.value as LlmReasoningLevel);
+                  setNotice(null);
+                }}
+                disabled={busy}
+              >
+                <option value="minimal">Minimal</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="x_high">Extra high</option>
+              </select>
+            </label>
+            <label>
+              <span>Timeout (seconds)</span>
+              <input
+                type="number"
+                min={1}
+                max={3_600}
+                value={timeoutSeconds}
+                onChange={(event) => {
+                  setTimeoutSeconds(event.target.value);
+                  setNotice(null);
+                }}
+                disabled={busy}
+              />
+            </label>
+            <label>
+              <span>Context budget</span>
+              <input
+                type="number"
+                min={1_024}
+                max={2_000_000}
+                step={1_024}
+                value={contextBudget}
+                onChange={(event) => {
+                  setContextBudget(event.target.value);
+                  setNotice(null);
+                }}
+                disabled={busy}
+              />
+            </label>
+            {!runtimeSettingsValid && (
+              <p className="settings-field-error" role="alert">
+                Timeout must be 1–3600 seconds and context budget must be
+                1,024–2,000,000 tokens.
+              </p>
+            )}
             <dl className="settings-summary compact">
               <div>
                 <dt>State</dt>
@@ -547,18 +632,6 @@ export function ModelSettingsView({
                     ? "Initialized"
                     : "Lazy / not initialized"}
                 </dd>
-              </div>
-              <div>
-                <dt>Reasoning</dt>
-                <dd>{profile.reasoningLevel}</dd>
-              </div>
-              <div>
-                <dt>Context budget</dt>
-                <dd>{profile.contextBudget.toLocaleString()}</dd>
-              </div>
-              <div>
-                <dt>Timeout</dt>
-                <dd>{profile.timeoutSeconds}s</dd>
               </div>
             </dl>
             {runtimeProfile && (
@@ -633,9 +706,13 @@ export function ModelSettingsView({
                   busy ||
                   !model.trim() ||
                   !baseUrl.trim() ||
+                  !runtimeSettingsValid ||
                   (model === profile.model &&
                     baseUrl === profile.baseUrl &&
-                    protocol === profile.protocol)
+                    protocol === profile.protocol &&
+                    parsedTimeoutSeconds === profile.timeoutSeconds &&
+                    reasoningLevel === profile.reasoningLevel &&
+                    parsedContextBudget === profile.contextBudget)
                 }
               >
                 {busy && <LoaderCircle className="spin" size={15} />}

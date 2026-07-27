@@ -354,3 +354,57 @@ async fn load_riftx_config_from_sample() -> RiftxConfig {
         .expect("write config");
     load_riftx_config(&path).await.expect("load")
 }
+
+#[test]
+fn upsert_profile_dto_accepts_runtime_tuning_fields() {
+    let input: UpsertLlmProfileInput = serde_json::from_value(serde_json::json!({
+        "profileName": "lab",
+        "model": "model-1",
+        "baseUrl": "https://example.test/v1",
+        "protocol": "chat_completions",
+        "timeoutSeconds": 45,
+        "reasoningLevel": "x_high",
+        "contextBudget": 128000,
+    }))
+    .expect("decode profile update");
+
+    assert_eq!(
+        (
+            input.profile_name,
+            input.model,
+            input.base_url,
+            input.protocol,
+            input.timeout_seconds,
+            input.reasoning_level,
+            input.context_budget,
+        ),
+        (
+            "lab".to_string(),
+            "model-1".to_string(),
+            "https://example.test/v1".to_string(),
+            Some("chat_completions".to_string()),
+            Some(45),
+            Some("x_high".to_string()),
+            Some(128_000),
+        )
+    );
+}
+
+#[test]
+fn reasoning_level_parser_matches_desktop_values() {
+    for (value, expected) in [
+        ("minimal", LlmReasoningLevel::Minimal),
+        ("low", LlmReasoningLevel::Low),
+        ("medium", LlmReasoningLevel::Medium),
+        ("high", LlmReasoningLevel::High),
+        ("x_high", LlmReasoningLevel::XHigh),
+        ("xhigh", LlmReasoningLevel::XHigh),
+    ] {
+        assert_eq!(parse_reasoning_level(value).expect("reasoning level"), expected);
+    }
+    assert!(
+        parse_reasoning_level("extreme")
+            .expect_err("unsupported reasoning level")
+            .is_code("invalid_config")
+    );
+}

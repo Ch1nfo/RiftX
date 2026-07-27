@@ -31,6 +31,7 @@ import {
   listAssessmentCredentials,
   listCredentialGrants,
   listEngagements,
+  llmProfiles,
   onEngagementEvent,
   onEngagementStream,
   onRuntimeError,
@@ -70,6 +71,7 @@ import type {
 
 export default function App() {
   const [daemon, setDaemon] = useState<DesktopDaemonInfo | null>(null);
+  const [profileReady, setProfileReady] = useState<boolean | null>(null);
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [report, setReport] = useState<EngagementReport | null>(null);
@@ -188,13 +190,28 @@ export default function App() {
       setLoading(true);
     }
     try {
-      const daemonState = await daemonInfo();
-      const taskList = await listEngagements();
+      const [daemonState, taskList] = await Promise.all([
+        daemonInfo(),
+        listEngagements(),
+      ]);
       setDaemon(daemonState);
       replaceEngagements(taskList);
-      setError(null);
+      try {
+        const profiles = await llmProfiles();
+        setProfileReady(
+          profiles.profiles.some(
+            (profile) =>
+              profile.state === "ready" || profile.state === "in_use",
+          ),
+        );
+        setError(null);
+      } catch (cause) {
+        setProfileReady(null);
+        setError(bridgeError(cause));
+      }
     } catch (cause) {
       setDaemon(null);
+      setProfileReady(null);
       setError(bridgeError(cause));
     } finally {
       if (showLoading) {
@@ -457,6 +474,7 @@ export default function App() {
         task.status === "expiring",
     ) ?? false;
   const isRunning = turnRunning || reportHasRunningTask;
+  const canCreateTask = daemon !== null && profileReady === true;
   const runtimePaused = daemon?.runtime.state === "paused";
   const killSwitchActive = daemon?.runtime.reason === "killSwitch";
   const auditDegraded = daemon?.runtime.audit.state === "degraded";
@@ -655,7 +673,9 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${daemon && profileReady === false ? " setup-required" : ""}`}
+    >
       <header className="topbar">
         <div className="brand">
           <img src={riftxIcon} alt="" />
@@ -729,11 +749,34 @@ export default function App() {
         </div>
       </header>
 
+      {daemon && profileReady === false && (
+        <section className="setup-banner" aria-labelledby="setup-banner-title">
+          <AlertCircle size={18} />
+          <div>
+            <strong id="setup-banner-title">Finish model setup</strong>
+            <span>
+              Use RiftX only on systems you are authorized to test. Tools run on
+              this computer, and the declared scope is not OS-enforced. Test a
+              model Profile before creating a task.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Open settings
+          </button>
+        </section>
+      )}
+
       <div className="workspace">
         <TaskSidebar
           engagements={engagements}
           selectedId={selectedId}
           loading={loading}
+          createDisabled={!canCreateTask}
+          createDisabledReason="Test a ready model Profile in Settings before creating a task."
           onSelect={setSelectedId}
           onCreate={() => setCreateOpen(true)}
           onRefresh={() => void refresh()}
@@ -867,6 +910,12 @@ export default function App() {
                 type="button"
                 className="primary-button"
                 onClick={() => setCreateOpen(true)}
+                disabled={!canCreateTask}
+                title={
+                  canCreateTask
+                    ? "Create a new task"
+                    : "Test a ready model Profile in Settings first"
+                }
               >
                 New task
               </button>
@@ -931,6 +980,7 @@ export default function App() {
             void refresh(false);
           } else {
             setDaemon(null);
+            setProfileReady(null);
             setError(null);
           }
         }}
