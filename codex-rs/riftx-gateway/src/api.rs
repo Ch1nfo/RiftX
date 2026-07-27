@@ -41,6 +41,7 @@ use codex_riftx_execution_policy::ExecutionDisposition;
 use codex_riftx_execution_policy::decide;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
+use codex_riftx_ipc::AuditHealthState;
 use codex_riftx_ipc::ChangeModeParams;
 use codex_riftx_ipc::ConversationPage;
 use codex_riftx_ipc::CreateEngagementParams;
@@ -142,6 +143,15 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn audit_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "audit_unavailable",
+            message: "security audit is unavailable; controlled execution remains blocked"
+                .to_string(),
+        }
+    }
+
     fn daemon_paused(status: &DaemonControlStatus) -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -168,6 +178,7 @@ impl From<StateError> for ApiError {
         };
         let status = match error {
             StateError::EngagementNotFound(_) => StatusCode::NOT_FOUND,
+            StateError::AuditUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             StateError::InvalidTransition { .. } => StatusCode::CONFLICT,
             StateError::InvalidTargetState(_)
             | StateError::InvalidCredential(_)
@@ -470,22 +481,23 @@ async fn change_mode(
     engagement.mode = params.mode;
     engagement.policy_revision = policy.revision;
     engagement.updated_at = unix_timestamp();
+    let audit_data = json!({
+        "previousMode": previous_mode,
+        "mode": engagement.mode,
+        "previousPolicyRevision": previous_revision,
+        "policyRevision": engagement.policy_revision,
+    });
+    state
+        .append_engagement_critical(&engagement, "engagement/modeChanged", &audit_data)
+        .await
+        .map_err(|_| ApiError::audit_unavailable())?;
+    engagement.thread_id = None;
+    state.store.put_engagement(&engagement).await?;
     // Mode changes may alter approval/policy; drop the cached thread so the
     // next turn starts with matching settings.
     state.agent_threads.write().await.remove(&id);
-    engagement.thread_id = None;
-    state.store.put_engagement(&engagement).await?;
     state
-        .publish(
-            &id,
-            "engagement/modeChanged",
-            json!({
-                "previousMode": previous_mode,
-                "mode": engagement.mode,
-                "previousPolicyRevision": previous_revision,
-                "policyRevision": engagement.policy_revision,
-            }),
-        )
+        .emit_event(&id, "engagement/modeChanged", audit_data)
         .await;
     Ok(Json(engagement))
 }
@@ -776,15 +788,30 @@ async fn decide_approval(
         && current_policy.revision == pending.view.policy_revision
         && engagement.policy_revision == pending.view.policy_revision;
     let execution_is_running = state.control_status().await.state == DaemonRunState::Running;
-    let approved = matches!(params.decision, ApprovalDecision::Approve)
-        && policy_is_current
-        && execution_is_running;
-    let engagement_id = pending.engagement_id.clone();
-    let app_server = state
-        .app_server(&pending.profile_name)
-        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
+    let requested_approval = matches!(params.decision, ApprovalDecision::Approve);
+    let mut approved = requested_approval && policy_is_current && execution_is_running;
+    let audit_result = state
+        .publish_critical(
+            &engagement,
+            "approvalDecided",
+            json!({
+                "approvalId": id,
+                "decision": params.decision,
+                "approved": approved,
+                "policyCurrent": policy_is_current,
+                "executionIntentCurrent": execution_intent_is_current,
+                "executionRunning": execution_is_running,
+            }),
+        )
+        .await;
+    if audit_result.is_err() {
+        approved = false;
+    }
     match pending.kind {
         PendingApprovalKind::Command(command) => {
+            let app_server = state
+                .app_server(&pending.profile_name)
+                .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
             app_server
                 .decide_command_approval(
                     *command,
@@ -801,23 +828,13 @@ async fn decide_approval(
             let _ = decision_tx.send(approved);
         }
     }
-    state
-        .publish(
-            &engagement_id,
-            "approvalDecided",
-            json!({
-                "approvalId": id,
-                "decision": params.decision,
-                "policyCurrent": policy_is_current,
-                "executionIntentCurrent": execution_intent_is_current,
-                "executionRunning": execution_is_running,
-            }),
-        )
-        .await;
-    if matches!(params.decision, ApprovalDecision::Approve) && !execution_is_running {
+    if requested_approval && audit_result.is_err() {
+        return Err(ApiError::audit_unavailable());
+    }
+    if requested_approval && !execution_is_running {
         return Err(ApiError::daemon_paused(&state.control_status().await));
     }
-    if matches!(params.decision, ApprovalDecision::Approve) && !policy_is_current {
+    if requested_approval && !policy_is_current {
         return Err(ApiError::bad_request(
             "approval invalidated because its execution binding, authorization, or policy changed",
         ));
@@ -947,6 +964,9 @@ async fn pause_execution(
 
 pub(crate) async fn require_execution_running(state: &GatewayState) -> Result<(), ApiError> {
     let status = state.control_status().await;
+    if status.audit.state == AuditHealthState::Degraded {
+        return Err(ApiError::audit_unavailable());
+    }
     if status.state == DaemonRunState::Running {
         return Ok(());
     }

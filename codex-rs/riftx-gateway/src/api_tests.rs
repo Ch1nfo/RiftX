@@ -30,6 +30,7 @@ use codex_riftx_core::StateSubject;
 use codex_riftx_core::TargetStateError;
 use codex_riftx_crypto::CryptoError;
 use codex_riftx_crypto::KeyringEngagementCipher;
+use codex_riftx_ipc::AuditHealthState;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -132,6 +133,24 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
 
 async fn test_router(temp: &TempDir) -> Router {
     build_router(test_state(temp).await)
+}
+
+pub(crate) async fn block_audit(temp: &TempDir) {
+    let path = temp.path().join("audit.jsonl");
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("remove audit file: {error}"),
+    }
+    tokio::fs::create_dir(&path)
+        .await
+        .expect("replace audit file with directory");
+}
+
+pub(crate) async fn unblock_audit(temp: &TempDir) {
+    tokio::fs::remove_dir(temp.path().join("audit.jsonl"))
+        .await
+        .expect("remove blocking audit directory");
 }
 
 #[tokio::test]
@@ -522,6 +541,7 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             state: DaemonRunState::Paused,
             reason: Some(DaemonPauseReason::OperatorPause),
             updated_at: paused.updated_at,
+            audit: paused.audit.clone(),
         }
     );
 }
@@ -593,6 +613,236 @@ async fn clean_running_state_without_active_engagements_restores_as_running() {
         .expect("restore runtime state");
 
     assert_eq!(restarted.control_status().await, expected);
+}
+
+#[tokio::test]
+async fn audit_failure_blocks_execution_survives_restart_and_allows_kill_and_recovery() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-audit-degraded", EngagementStatus::Draft);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    block_audit(&temp).await;
+
+    assert!(
+        state
+            .publish_critical(&engagement, "execution/test", json!({}))
+            .await
+            .is_err()
+    );
+    let degraded = state.control_status().await;
+    assert_eq!(degraded.audit.state, AuditHealthState::Degraded);
+    assert_eq!(
+        degraded.audit.message.as_deref(),
+        Some("audit log cannot be written")
+    );
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/activate", engagement.id))
+                .body(Body::empty())
+                .expect("activate request"),
+        )
+        .await
+        .expect("activate response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("error body")
+            .to_bytes(),
+    )
+    .expect("error JSON");
+    assert_eq!(body["code"], "audit_unavailable");
+
+    let restarted = GatewayState::new(
+        state.config.as_ref().clone(),
+        state.store.clone(),
+        state.skills.as_ref().clone(),
+        state.tools.as_ref().clone(),
+    );
+    restarted
+        .reconcile_after_restart()
+        .await
+        .expect("restore degraded audit health");
+    assert_eq!(
+        restarted.control_status().await.audit.state,
+        AuditHealthState::Degraded
+    );
+
+    let app = build_router(restarted.clone());
+    let kill = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/system/kill")
+                .body(Body::empty())
+                .expect("kill request"),
+        )
+        .await
+        .expect("kill response");
+    assert_eq!(kill.status(), StatusCode::OK);
+    let killed = restarted.control_status().await;
+    assert_eq!(killed.state, DaemonRunState::Paused);
+    assert_eq!(killed.reason, Some(DaemonPauseReason::KillSwitch));
+    assert_eq!(killed.audit.state, AuditHealthState::Degraded);
+
+    let resume = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/system/resume")
+                .body(Body::empty())
+                .expect("resume request"),
+        )
+        .await
+        .expect("resume response");
+    assert_eq!(resume.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    unblock_audit(&temp).await;
+    restarted
+        .append_system_critical("audit/recoveryProbe", json!({}))
+        .await
+        .expect("recover audit");
+    assert_eq!(
+        restarted.control_status().await.audit.state,
+        AuditHealthState::Healthy
+    );
+    let resumed = restarted
+        .set_control(DaemonRunState::Running, None)
+        .await
+        .expect("resume after audit recovery");
+    assert_eq!(resumed.state, DaemonRunState::Running);
+}
+
+#[tokio::test]
+async fn missing_audit_encryption_key_fails_closed_without_exposing_key_errors() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-audit-key", EngagementStatus::Draft);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let healthy_audit = state.audit.clone();
+    let unavailable_cipher = Arc::new(KeyringEngagementCipher::new(
+        codex_keyring_store::tests::MockKeyringStore::default(),
+    ));
+    let unavailable_store = StateStore::open_with_cipher(
+        &temp.path().join("unavailable-audit-key.sqlite"),
+        unavailable_cipher,
+    )
+    .await
+    .expect("state store with unavailable audit key");
+    state.audit = unavailable_store.audit_writer(&state.config.audit);
+
+    assert!(
+        state
+            .publish_critical(&engagement, "execution/test", json!({}))
+            .await
+            .is_err()
+    );
+    let degraded = state.control_status().await;
+    assert_eq!(degraded.audit.state, AuditHealthState::Degraded);
+    assert_eq!(
+        degraded.audit.message.as_deref(),
+        Some("audit encryption is unavailable")
+    );
+    assert!(
+        !degraded
+            .audit
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("key")
+    );
+    state
+        .append_system_critical("audit/systemProbe", json!({}))
+        .await
+        .expect("system audit remains writable");
+    assert_eq!(
+        state.control_status().await.audit.state,
+        AuditHealthState::Degraded
+    );
+
+    state.audit = healthy_audit;
+    state
+        .publish_critical(&engagement, "execution/recoveryProbe", json!({}))
+        .await
+        .expect("encrypted audit recovery");
+    assert_eq!(
+        state.control_status().await.audit.state,
+        AuditHealthState::Healthy
+    );
+}
+
+#[tokio::test]
+async fn approval_cannot_succeed_when_critical_audit_is_unavailable() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-approval-audit", EngagementStatus::Active);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+    let approval_id = "approval-audit".to_string();
+    state.pending_approvals.write().await.insert(
+        approval_id.clone(),
+        crate::gateway_state::PendingApprovalRequest {
+            profile_name: "default".to_string(),
+            engagement_id: engagement.id.clone(),
+            view: PendingApproval {
+                id: approval_id.clone(),
+                engagement_id: engagement.id.clone(),
+                policy_revision: engagement.policy_revision.clone(),
+                kind: codex_riftx_ipc::ApprovalKind::Tool,
+                requested_at: unix_timestamp(),
+                command: None,
+                cwd: None,
+                reason: Some("test approval".to_string()),
+                execution_intent: None,
+            },
+            kind: PendingApprovalKind::Tool { decision_tx },
+        },
+    );
+    block_audit(&temp).await;
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/approvals/{approval_id}/decision"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("approval request"),
+        )
+        .await
+        .expect("approval response");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!decision_rx.await.expect("tool decision"));
+    assert!(
+        !state
+            .pending_approvals
+            .read()
+            .await
+            .contains_key(&approval_id)
+    );
+    assert_eq!(
+        state.control_status().await.audit.state,
+        AuditHealthState::Degraded
+    );
 }
 
 #[tokio::test]
@@ -1246,6 +1496,54 @@ async fn red_team_draft_can_switch_to_pentest_with_a_new_audited_policy() {
     let details = changed_record.details.as_ref().expect("mode audit details");
     assert!(details.to_string().contains(&previous_revision));
     assert!(details.to_string().contains(&changed.policy_revision));
+}
+
+#[tokio::test]
+async fn mode_switch_is_not_committed_when_critical_audit_fails() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let mut engagement = native_engagement(&state, "eng-mode-audit", EngagementStatus::Draft);
+    engagement.mode = ExecutionMode::RedTeam;
+    engagement.policy_revision = EffectivePolicy::resolve(
+        &state.config.policy,
+        engagement.mode,
+        &engagement.authorization,
+        None,
+    )
+    .expect("red-team policy")
+    .revision;
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store engagement");
+    block_audit(&temp).await;
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/mode", engagement.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"pentest","confirmation":null}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("stored engagement"),
+        engagement
+    );
+    assert_eq!(
+        state.control_status().await.audit.state,
+        AuditHealthState::Degraded
+    );
 }
 
 #[tokio::test]

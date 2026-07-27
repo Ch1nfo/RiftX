@@ -2,6 +2,7 @@ mod api;
 mod app_events;
 mod artifact_api;
 mod artifacts;
+mod audit_health;
 mod conversation;
 mod credential_api;
 mod credential_execution;

@@ -151,3 +151,36 @@ fn llm_profile_state_has_closed_wire_values() {
         ])
     );
 }
+
+#[test]
+fn legacy_daemon_control_status_defaults_to_healthy_audit() {
+    let status: DaemonControlStatus = serde_json::from_value(json!({
+        "state": "running",
+        "reason": null,
+        "updatedAt": 42
+    }))
+    .expect("legacy daemon status should decode");
+
+    assert_eq!(
+        status,
+        DaemonControlStatus {
+            state: DaemonRunState::Running,
+            reason: None,
+            updated_at: 42,
+            audit: AuditHealthStatus::default(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(status).expect("daemon status should encode"),
+        json!({
+            "state": "running",
+            "reason": null,
+            "updatedAt": 42,
+            "audit": {
+                "state": "healthy",
+                "message": null,
+                "updatedAt": 0
+            }
+        })
+    );
+}

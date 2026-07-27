@@ -17,6 +17,8 @@ pub use protocol::ApprovalDecisionParams;
 pub use protocol::ApprovalKind;
 pub use protocol::Artifact;
 pub use protocol::AssessmentObjective;
+pub use protocol::AuditHealthState;
+pub use protocol::AuditHealthStatus;
 pub use protocol::AuthorizationScope;
 pub use protocol::AuthorizationWindow;
 pub use protocol::CaptureArtifactParams;

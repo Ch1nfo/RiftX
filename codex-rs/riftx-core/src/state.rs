@@ -86,6 +86,8 @@ pub enum StateError {
     InvalidConversationQuery(String),
     #[error("system state coordinator is unavailable")]
     SystemStateUnavailable,
+    #[error("security audit is unavailable")]
+    AuditUnavailable,
     #[error("{entity_kind} {entity_id} is missing required {reference_kind} reference")]
     MissingChainReference {
         entity_kind: &'static str,

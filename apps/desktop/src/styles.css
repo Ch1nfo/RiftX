@@ -155,6 +155,15 @@ button:disabled {
   background: #d1a64d;
 }
 
+.daemon-state.audit-degraded {
+  color: #ffb06b;
+}
+
+.daemon-state.audit-degraded > span {
+  background: #ff7a45;
+  box-shadow: 0 0 0 3px rgb(255 122 69 / 16%);
+}
+
 .daemon-state.kill-switch-active {
   color: #ffaaa5;
 }

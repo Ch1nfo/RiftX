@@ -4,7 +4,6 @@ use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
 use codex_riftx_artifacts::ArtifactStore;
-use codex_riftx_core::AuditRecord;
 use codex_riftx_core::AuditWriter;
 use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::RiftxConfig;
@@ -13,6 +12,8 @@ use codex_riftx_core::StateStore;
 use codex_riftx_core::TaskStatus;
 use codex_riftx_credentials::AssessmentCredentialStore;
 use codex_riftx_credentials::AssessmentSecretProvider;
+use codex_riftx_ipc::AuditHealthState;
+use codex_riftx_ipc::AuditHealthStatus;
 use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
@@ -35,7 +36,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-const DAEMON_CONTROL_STATE_KEY: &str = "daemonControl";
+pub(crate) const DAEMON_CONTROL_STATE_KEY: &str = "daemonControl";
 const PROFILE_RUNTIME_FAILURE_PREFIX: &str = "llmProfileRuntimeFailure:";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,7 +70,7 @@ pub struct GatewayState {
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
     pub(crate) control_slot: Arc<Semaphore>,
-    control_write_slot: Arc<Semaphore>,
+    pub(crate) control_write_slot: Arc<Semaphore>,
     pub(crate) control: Arc<RwLock<DaemonControlStatus>>,
 }
 
@@ -141,6 +142,11 @@ impl GatewayState {
                 state: DaemonRunState::Running,
                 reason: None,
                 updated_at: unix_timestamp(),
+                audit: AuditHealthStatus {
+                    state: AuditHealthState::Healthy,
+                    message: None,
+                    updated_at: unix_timestamp(),
+                },
             })),
         }
     }
@@ -339,11 +345,13 @@ impl GatewayState {
                 state: DaemonRunState::Paused,
                 reason: Some(reason),
                 updated_at: status.updated_at,
+                audit: status.audit,
             },
             (DaemonRunState::Paused, None) => DaemonControlStatus {
                 state: DaemonRunState::Paused,
                 reason: Some(DaemonPauseReason::OperatorPause),
                 updated_at: status.updated_at,
+                audit: status.audit,
             },
         });
         match restored {
@@ -363,10 +371,18 @@ impl GatewayState {
                     state: DaemonRunState::Running,
                     reason: None,
                     updated_at: unix_timestamp(),
+                    audit: AuditHealthStatus {
+                        state: AuditHealthState::Healthy,
+                        message: None,
+                        updated_at: unix_timestamp(),
+                    },
                 })
                 .await?;
             }
         }
+        let _ = self
+            .append_system_critical("audit/startupProbe", json!({"outcome": "success"}))
+            .await;
         for engagement in engagements {
             if engagement.status != EngagementStatus::Active {
                 continue;
@@ -393,56 +409,6 @@ impl GatewayState {
             crate::artifacts::capture_pending(self.clone(), engagement.id).await;
         }
         Ok(())
-    }
-
-    pub(crate) async fn publish(&self, engagement_id: &str, kind: &str, data: Value) {
-        if let Ok(engagement) = self.store.engagement(engagement_id).await {
-            let record = AuditRecord {
-                timestamp: unix_timestamp(),
-                event: kind.to_string(),
-                engagement_id: engagement_id.to_string(),
-                thread_id: first_string(&data, &["/threadId", "/payload/threadId"])
-                    .or(engagement.thread_id),
-                turn_id: first_string(
-                    &data,
-                    &[
-                        "/turnId",
-                        "/execution/turnId",
-                        "/payload/turnId",
-                        "/payload/turn/id",
-                    ],
-                ),
-                tool_call_id: first_string(
-                    &data,
-                    &[
-                        "/toolCallId",
-                        "/callId",
-                        "/payload/toolCallId",
-                        "/payload/callId",
-                        "/useId",
-                        "/usage/id",
-                        "/id",
-                    ],
-                ),
-                mode: Some(engagement.mode),
-                policy_revision: Some(engagement.policy_revision),
-                outcome: event_outcome(kind, &data),
-                details: (kind.starts_with("execution/")
-                    || kind.starts_with("credential/use")
-                    || kind.starts_with("tool/credential")
-                    || kind.starts_with("artifact/")
-                    || kind == "engagement/modeChanged")
-                    .then(|| data.clone()),
-            };
-            let _ = self.audit.append(&record).await;
-        }
-        let sender = self.event_sender(engagement_id).await;
-        let _ = sender.send(EngagementEvent {
-            engagement_id: engagement_id.to_string(),
-            kind: kind.to_string(),
-            timestamp: unix_timestamp(),
-            data,
-        });
     }
 
     pub(crate) async fn event_sender(
@@ -487,21 +453,6 @@ impl GatewayState {
         state: DaemonRunState,
         reason: Option<DaemonPauseReason>,
     ) -> Result<DaemonControlStatus, StateError> {
-        let status = DaemonControlStatus {
-            state,
-            reason,
-            updated_at: unix_timestamp(),
-        };
-        let _write_permit = self
-            .control_write_slot
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| StateError::SystemStateUnavailable)?;
-        self.store
-            .put_system_state(DAEMON_CONTROL_STATE_KEY, &status)
-            .await?;
-        *self.control.write().await = status.clone();
         let event = match (state, reason) {
             (DaemonRunState::Running, None) => "daemon/resumed",
             (DaemonRunState::Paused, Some(DaemonPauseReason::OperatorPause)) => "daemon/paused",
@@ -512,24 +463,34 @@ impl GatewayState {
                 "daemon/controlChanged"
             }
         };
-        let _ = self
-            .audit
-            .append(&AuditRecord {
-                timestamp: status.updated_at,
-                event: event.to_string(),
-                engagement_id: "system".to_string(),
-                thread_id: None,
-                turn_id: None,
-                tool_call_id: None,
-                mode: None,
-                policy_revision: None,
-                outcome: Some("success".to_string()),
-                details: Some(json!({
-                    "state": status.state,
-                    "reason": status.reason,
-                })),
-            })
+        let audit_result = self
+            .append_system_critical(
+                event,
+                json!({
+                    "state": state,
+                    "reason": reason,
+                }),
+            )
             .await;
+        if state == DaemonRunState::Running && audit_result.is_err() {
+            return Err(StateError::AuditUnavailable);
+        }
+        let _write_permit = self
+            .control_write_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| StateError::SystemStateUnavailable)?;
+        let status = DaemonControlStatus {
+            state,
+            reason,
+            updated_at: unix_timestamp(),
+            audit: self.control.read().await.audit.clone(),
+        };
+        self.store
+            .put_system_state(DAEMON_CONTROL_STATE_KEY, &status)
+            .await?;
+        *self.control.write().await = status.clone();
         Ok(status)
     }
 
@@ -578,25 +539,6 @@ impl GatewayState {
             .map(str::to_string);
         let _ = self.store.put_task(&task).await;
     }
-}
-
-fn first_string(data: &Value, pointers: &[&str]) -> Option<String> {
-    pointers
-        .iter()
-        .find_map(|pointer| data.pointer(pointer).and_then(Value::as_str))
-        .map(str::to_string)
-}
-
-fn event_outcome(kind: &str, data: &Value) -> Option<String> {
-    first_string(data, &["/outcome", "/status", "/decision"]).or_else(|| {
-        if kind.ends_with("/completed") || kind.ends_with("Completed") {
-            Some("success".to_string())
-        } else if kind.ends_with("/failed") || kind.ends_with("/rejected") {
-            Some("failure".to_string())
-        } else {
-            None
-        }
-    })
 }
 
 pub(crate) fn unix_timestamp() -> i64 {

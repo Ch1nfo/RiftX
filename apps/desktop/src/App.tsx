@@ -420,6 +420,8 @@ export default function App() {
   const isRunning = turnRunning || reportHasRunningTask;
   const runtimePaused = daemon?.runtime.state === "paused";
   const killSwitchActive = daemon?.runtime.reason === "killSwitch";
+  const auditDegraded = daemon?.runtime.audit.state === "degraded";
+  const controlledExecutionBlocked = runtimePaused || auditDegraded;
 
   const create = async (newEngagement: CreateEngagementInput) => {
     setSubmitting(true);
@@ -444,7 +446,7 @@ export default function App() {
       !instruction ||
       submitting ||
       isRunning ||
-      runtimePaused
+      controlledExecutionBlocked
     ) {
       return;
     }
@@ -629,26 +631,32 @@ export default function App() {
           <div
             className={`daemon-state ${
               daemon
-                ? killSwitchActive
-                  ? "kill-switch-active"
-                  : runtimePaused
-                    ? "paused"
-                    : "connected"
+                ? auditDegraded
+                  ? "audit-degraded"
+                  : killSwitchActive
+                    ? "kill-switch-active"
+                    : runtimePaused
+                      ? "paused"
+                      : "connected"
                 : "disconnected"
             }`}
             title={
               daemon
-                ? `${daemon.configPath} · daemon ${daemon.daemonVersion}`
+                ? auditDegraded
+                  ? `Security audit unavailable: ${daemon.runtime.audit.message ?? "unknown audit failure"}. Controlled execution is blocked. · ${daemon.configPath} · daemon ${daemon.daemonVersion}`
+                  : `${daemon.configPath} · daemon ${daemon.daemonVersion}`
                 : undefined
             }
           >
             <span />
             {daemon
-              ? killSwitchActive
-                ? "Kill Switch"
-                : runtimePaused
-                  ? "Paused"
-                  : "Running"
+              ? auditDegraded
+                ? "Audit degraded"
+                : killSwitchActive
+                  ? "Kill Switch"
+                  : runtimePaused
+                    ? "Paused"
+                    : "Running"
               : "Daemon offline"}
           </div>
           <button
@@ -752,7 +760,7 @@ export default function App() {
                     selected.status === "completed" ||
                     submitting ||
                     isRunning ||
-                    runtimePaused
+                    controlledExecutionBlocked
                   }
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
@@ -779,7 +787,10 @@ export default function App() {
                     title="Run instruction"
                     aria-label="Run instruction"
                     disabled={
-                      !input.trim() || submitting || isRunning || runtimePaused
+                      !input.trim() ||
+                      submitting ||
+                      isRunning ||
+                      controlledExecutionBlocked
                     }
                   >
                     <Send size={17} />

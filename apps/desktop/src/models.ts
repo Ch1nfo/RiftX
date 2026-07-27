@@ -3,11 +3,19 @@ export type EnvironmentClass = "lab" | "staging" | "production";
 export type EngagementStatus = "draft" | "active" | "interrupted" | "completed";
 export type DaemonRunState = "running" | "paused";
 export type DaemonPauseReason = "operatorPause" | "killSwitch";
+export type AuditHealthState = "healthy" | "degraded";
+
+export interface AuditHealthStatus {
+  state: AuditHealthState;
+  message: string | null;
+  updatedAt: number;
+}
 
 export interface DaemonControlStatus {
   state: DaemonRunState;
   reason: DaemonPauseReason | null;
   updatedAt: number;
+  audit: AuditHealthStatus;
 }
 
 export interface DesktopDaemonInfo {

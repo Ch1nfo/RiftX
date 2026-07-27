@@ -62,12 +62,39 @@ pub enum DaemonPauseReason {
     KillSwitch,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AuditHealthState {
+    Healthy,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditHealthStatus {
+    pub state: AuditHealthState,
+    pub message: Option<String>,
+    pub updated_at: i64,
+}
+
+impl Default for AuditHealthStatus {
+    fn default() -> Self {
+        Self {
+            state: AuditHealthState::Healthy,
+            message: None,
+            updated_at: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonControlStatus {
     pub state: DaemonRunState,
     pub reason: Option<DaemonPauseReason>,
     pub updated_at: i64,
+    #[serde(default)]
+    pub audit: AuditHealthStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

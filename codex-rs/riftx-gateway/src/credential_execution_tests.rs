@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::build_router;
+use crate::api::tests::block_audit;
 use crate::api::tests::native_engagement;
 use crate::api::tests::test_state;
 use axum::body::Body;
@@ -195,6 +196,36 @@ async fn dynamic_credential_execution_requires_and_revalidates_bound_approval() 
         .expect("replacement intent");
     assert_ne!(intent.binding_sha256, replaced.binding_sha256);
     assert!(!origin.approves(&replaced));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn audit_failure_closes_the_reservation_without_starting_an_execution() {
+    let (temp, state, engagement_id, grant_id) = fixture(Some(SECRET), 0, false).await;
+    block_audit(&temp).await;
+
+    let response = post_execution(build_router(state.clone()), &engagement_id, &grant_id).await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(state.credential_processes.read().await.is_empty());
+    assert!(
+        state
+            .store
+            .executions(&engagement_id)
+            .await
+            .expect("executions")
+            .is_empty()
+    );
+    let uses = state
+        .store
+        .credential_uses(&engagement_id)
+        .await
+        .expect("uses");
+    assert_eq!(uses.len(), 1);
+    assert_eq!(
+        uses[0].status,
+        codex_riftx_core::CredentialUseStatus::ExecutionFailed
+    );
 }
 
 #[cfg(unix)]

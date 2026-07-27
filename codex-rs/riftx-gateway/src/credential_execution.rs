@@ -119,7 +119,7 @@ pub(crate) async fn execute_inner(
             port: params.target.port,
         },
         capability: metadata.capability.clone(),
-        policy_revision: engagement.policy_revision,
+        policy_revision: engagement.policy_revision.clone(),
         requested_at: unix_timestamp(),
     };
     let reserved = state.store.reserve_credential_use(&usage_request).await?;
@@ -149,6 +149,27 @@ pub(crate) async fn execute_inner(
         injection,
         guard: None,
     };
+    let started_data = json!({
+        "useId": use_id,
+        "grantId": reserved.grant_id,
+        "credentialId": reserved.credential_id,
+        "tool": tool.name,
+        "resolvedPath": tool.path,
+        "toolSha256": tool.sha256,
+        "target": usage_request.target,
+        "capability": metadata.capability,
+        "toolCallId": origin.tool_call_id(),
+        "turnId": origin.turn_id(),
+        "executionIntent": intent,
+    });
+    if state
+        .publish_critical(&engagement, "credential/useStarted", started_data)
+        .await
+        .is_err()
+    {
+        fail_reservation(state, &engagement_id, &use_id).await;
+        return Err(ApiError::audit_unavailable());
+    }
     let cancellation = CancellationToken::new();
     state.credential_processes.write().await.insert(
         use_id.clone(),
@@ -159,25 +180,6 @@ pub(crate) async fn execute_inner(
     );
     let started = Instant::now();
     let started_at = unix_timestamp();
-    state
-        .publish(
-            &engagement_id,
-            "credential/useStarted",
-            json!({
-                "useId": use_id,
-                "grantId": reserved.grant_id,
-                "credentialId": reserved.credential_id,
-                "tool": tool.name,
-                "resolvedPath": tool.path,
-                "toolSha256": tool.sha256,
-                "target": usage_request.target,
-                "capability": metadata.capability,
-                "toolCallId": origin.tool_call_id(),
-                "turnId": origin.turn_id(),
-                "executionIntent": intent,
-            }),
-        )
-        .await;
     let result = runner.run_cancellable(request, secret, cancellation).await;
     state.credential_processes.write().await.remove(&use_id);
     let output = match result {

@@ -316,21 +316,33 @@ async fn command_approval(
             return;
         }
         ExecutionDisposition::Allow => {
+            if state
+                .publish_critical(
+                    &engagement,
+                    "approval/commandAllowed",
+                    json!({"decision": decision, "intent": intent}),
+                )
+                .await
+                .is_err()
+            {
+                if let Some(app_server) = state.app_server(profile_name) {
+                    let _ = app_server
+                        .decide_command_approval(
+                            pending,
+                            codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                        )
+                        .await;
+                }
+                return;
+            }
             if let Some(app_server) = state.app_server(profile_name) {
                 let _ = app_server
                     .decide_command_approval(
-                        pending.clone(),
+                        pending,
                         codex_riftx_app_server_adapter::OperatorApprovalDecision::Approve,
                     )
                     .await;
             }
-            state
-                .publish(
-                    &engagement_id,
-                    "approval/commandAllowed",
-                    json!({"decision": decision, "intent": intent}),
-                )
-                .await;
             return;
         }
         ExecutionDisposition::RequireApproval => {}
