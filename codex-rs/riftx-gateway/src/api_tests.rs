@@ -1696,3 +1696,28 @@ async fn disabled_llm_profile_is_reported_and_rejected_for_new_engagements() {
         .expect("engagement response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn profile_runtime_failure_survives_gateway_state_reopen_and_clear() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    state
+        .record_runtime_failure("alternate", "upstream timeout".to_string())
+        .await;
+    assert_eq!(
+        state.runtime_failure("alternate").await.as_deref(),
+        Some("upstream timeout")
+    );
+    drop(state);
+
+    let restarted = test_state(&temp).await;
+    assert_eq!(
+        restarted.runtime_failure("alternate").await.as_deref(),
+        Some("upstream timeout")
+    );
+    restarted.clear_runtime_failure("alternate").await;
+    drop(restarted);
+
+    let recovered = test_state(&temp).await;
+    assert_eq!(recovered.runtime_failure("alternate").await, None);
+}

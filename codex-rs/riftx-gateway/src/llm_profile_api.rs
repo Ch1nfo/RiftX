@@ -20,12 +20,19 @@ use codex_riftx_llm_bridge::ProbeProtocol;
 use codex_riftx_llm_bridge::ProbeTarget;
 use codex_riftx_llm_bridge::probe_connection;
 use codex_riftx_llm_bridge::sanitize_error;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub(crate) async fn list_profiles(
     State(state): State<GatewayState>,
 ) -> Result<Json<LlmProfileList>, ApiError> {
     let engagements = state.store.engagements().await?;
+    let mut runtime_failures = BTreeMap::new();
+    for profile_name in state.config.llm.profiles.keys() {
+        if let Some(detail) = state.runtime_failure(profile_name).await {
+            runtime_failures.insert(profile_name.clone(), detail);
+        }
+    }
     let profiles = state
         .config
         .llm
@@ -55,8 +62,8 @@ pub(crate) async fn list_profiles(
                 )
             } else if runtime_ready {
                 (LlmProfileState::Ready, "Runtime is ready".to_string())
-            } else if let Some(detail) = state.runtime_failure(name) {
-                (LlmProfileState::Unreachable, detail)
+            } else if let Some(detail) = runtime_failures.get(name) {
+                (LlmProfileState::Unreachable, detail.clone())
             } else {
                 (
                     LlmProfileState::Ready,
@@ -204,14 +211,14 @@ pub(crate) async fn test_profile(
             .ensure_app_server(&profile_name)
             .await
             .map_err(|error| ApiError::app_server(error.to_string()))?;
-        state.clear_runtime_failure(&profile_name);
+        state.clear_runtime_failure(&profile_name).await;
     } else if !ok {
         let detail = if matches!(capabilities.stream_text.status, LlmCheckStatus::Failed) {
             capabilities.stream_text.detail.clone()
         } else {
             capabilities.function_tools.detail.clone()
         };
-        state.record_runtime_failure(&profile_name, detail);
+        state.record_runtime_failure(&profile_name, detail).await;
     }
 
     Ok(Json(LlmConnectionTestResult {

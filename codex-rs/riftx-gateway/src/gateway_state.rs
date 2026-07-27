@@ -20,6 +20,8 @@ use codex_riftx_ipc::EngagementEvent;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_skills::SkillCatalog;
 use codex_riftx_tools::ToolInventory;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -34,6 +36,16 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 const DAEMON_CONTROL_STATE_KEY: &str = "daemonControl";
+const PROFILE_RUNTIME_FAILURE_PREFIX: &str = "llmProfileRuntimeFailure:";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProfileRuntimeFailure {
+    detail: Option<String>,
+}
+
+fn profile_runtime_failure_key(profile_name: &str) -> String {
+    format!("{PROFILE_RUNTIME_FAILURE_PREFIX}{profile_name}")
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -46,7 +58,6 @@ pub struct GatewayState {
     pub(crate) app_servers: Arc<StdRwLock<HashMap<String, RiftxAppServerRequestHandle>>>,
     runtime_manager: Option<Arc<ProfileRuntimeManager>>,
     runtime_start: Arc<Semaphore>,
-    runtime_failures: Arc<StdRwLock<HashMap<String, String>>>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<EngagementEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
@@ -114,7 +125,6 @@ impl GatewayState {
             app_servers: Arc::new(StdRwLock::new(HashMap::new())),
             runtime_manager: None,
             runtime_start: Arc::new(Semaphore::new(1)),
-            runtime_failures: Arc::new(StdRwLock::new(HashMap::new())),
             events: Arc::new(RwLock::new(HashMap::new())),
             thread_engagements: Arc::new(RwLock::new(HashMap::new())),
             active_turns: Arc::new(RwLock::new(HashMap::new())),
@@ -186,23 +196,35 @@ impl GatewayState {
         self.runtime_manager.is_some()
     }
 
-    pub(crate) fn runtime_failure(&self, profile_name: &str) -> Option<String> {
-        self.runtime_failures
-            .read()
+    pub(crate) async fn runtime_failure(&self, profile_name: &str) -> Option<String> {
+        self.store
+            .system_state::<ProfileRuntimeFailure>(&profile_runtime_failure_key(profile_name))
+            .await
             .ok()
-            .and_then(|failures| failures.get(profile_name).cloned())
+            .flatten()
+            .and_then(|failure| failure.detail)
     }
 
-    pub(crate) fn record_runtime_failure(&self, profile_name: &str, detail: String) {
-        if let Ok(mut failures) = self.runtime_failures.write() {
-            failures.insert(profile_name.to_string(), detail);
-        }
+    pub(crate) async fn record_runtime_failure(&self, profile_name: &str, detail: String) {
+        let _ = self
+            .store
+            .put_system_state(
+                &profile_runtime_failure_key(profile_name),
+                &ProfileRuntimeFailure {
+                    detail: Some(detail),
+                },
+            )
+            .await;
     }
 
-    pub(crate) fn clear_runtime_failure(&self, profile_name: &str) {
-        if let Ok(mut failures) = self.runtime_failures.write() {
-            failures.remove(profile_name);
-        }
+    pub(crate) async fn clear_runtime_failure(&self, profile_name: &str) {
+        let _ = self
+            .store
+            .put_system_state(
+                &profile_runtime_failure_key(profile_name),
+                &ProfileRuntimeFailure { detail: None },
+            )
+            .await;
     }
 
     pub(crate) async fn ensure_app_server(
@@ -231,9 +253,8 @@ impl GatewayState {
         let mut runtime = match manager.start_profile(profile_name).await {
             Ok(runtime) => runtime,
             Err(error) => {
-                if let Ok(mut failures) = self.runtime_failures.write() {
-                    failures.insert(profile_name.to_string(), error.to_string());
-                }
+                self.record_runtime_failure(profile_name, error.to_string())
+                    .await;
                 return Err(error);
             }
         };
@@ -246,9 +267,7 @@ impl GatewayState {
                 message: "App Server state lock is unavailable".into(),
             })?
             .insert(profile_name.to_string(), handle.clone());
-        if let Ok(mut failures) = self.runtime_failures.write() {
-            failures.remove(profile_name);
-        }
+        self.clear_runtime_failure(profile_name).await;
         self.spawn_app_server_event_pump(profile_name.to_string(), runtime.adapter);
         Ok(handle)
     }
@@ -285,7 +304,7 @@ impl GatewayState {
             if let Some(manager) = &state.runtime_manager {
                 manager.release_bridge(&profile_name);
             }
-            state.record_runtime_failure(&profile_name, failure);
+            state.record_runtime_failure(&profile_name, failure).await;
             state
                 .pending_approvals
                 .write()
