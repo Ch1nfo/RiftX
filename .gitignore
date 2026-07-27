@@ -99,3 +99,13 @@ __pycache__/
 
 # RiftX runtime state
 /.riftx/
+
+# Local-only config overrides (keep riftx.toml as the safe repo example)
+/riftx.local.toml
+
+# Local progress note (do not commit)
+/当前项目进度.md
+
+# Occasional local cargo/target overrides outside crate dirs
+**/target/
+!**/src-tauri/icons/**
