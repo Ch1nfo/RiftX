@@ -18,6 +18,7 @@
       "oneOf": [
         {
           "enum": [
+            "always",
             "untrusted",
             "on-request",
             "never"

@@ -220,7 +220,7 @@ pub(crate) fn prompt_is_rejected_by_policy(
 ) -> Option<&'static str> {
     match approval_policy {
         AskForApproval::Never => Some(PROMPT_CONFLICT_REASON),
-        AskForApproval::OnRequest => None,
+        AskForApproval::Always | AskForApproval::OnRequest => None,
         AskForApproval::UnlessTrusted => None,
         AskForApproval::Granular(granular_config) => {
             if prompt_is_rule {
@@ -366,7 +366,12 @@ impl ExecPolicyManager {
             None
         };
 
-        match evaluation.decision {
+        let decision = match (approval_policy, evaluation.decision) {
+            (AskForApproval::Always, Decision::Allow) => Decision::Prompt,
+            (_, decision) => decision,
+        };
+
+        match decision {
             Decision::Forbidden => ExecApprovalRequirement::Forbidden {
                 reason: derive_forbidden_reason(
                     command,
@@ -774,13 +779,15 @@ pub(crate) fn render_decision_for_unmatched_command(
     {
         return match approval_policy {
             AskForApproval::Never => Decision::Forbidden,
-            AskForApproval::OnRequest
+            AskForApproval::Always
+            | AskForApproval::OnRequest
             | AskForApproval::UnlessTrusted
             | AskForApproval::Granular(_) => Decision::Prompt,
         };
     }
 
     match approval_policy {
+        AskForApproval::Always => Decision::Prompt,
         AskForApproval::Never => {
             // We allow the command to run, relying on the sandbox for
             // protection.

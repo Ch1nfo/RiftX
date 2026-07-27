@@ -1108,6 +1108,25 @@ async fn exec_approval_requirement_respects_approval_policy() {
     .await;
 }
 
+#[tokio::test]
+async fn always_prompts_even_when_exec_policy_allows_command() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: Some(r#"prefix_rule(pattern=["echo"], decision="allow")"#.to_string()),
+            command: vec!["echo".to_string(), "hello".to_string()],
+            approval_policy: AskForApproval::Always,
+            permission_profile: PermissionProfile::Disabled,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+    )
+    .await;
+}
+
 #[test]
 fn unmatched_granular_policy_still_prompts_for_restricted_sandbox_escalation() {
     let command = vec!["madeup-cmd".to_string()];
@@ -1147,6 +1166,26 @@ fn unmatched_on_request_uses_permission_profile_file_system_policy_for_escalatio
                 permission_profile: &PermissionProfile::read_only(),
                 windows_sandbox_level: WindowsSandboxLevel::Disabled,
                 sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
+        )
+    );
+}
+
+#[test]
+fn always_prompts_for_known_safe_commands_without_escalation() {
+    let command = vec!["echo".to_string(), "hello".to_string()];
+
+    assert_eq!(
+        Decision::Prompt,
+        render_decision_for_unmatched_command(
+            &command,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::Always,
+                permission_profile: &PermissionProfile::Disabled,
+                windows_sandbox_level: WindowsSandboxLevel::Disabled,
+                sandbox_permissions: SandboxPermissions::UseDefault,
                 used_complex_parsing: false,
                 command_origin: ExecPolicyCommandOrigin::Generic,
             },

@@ -180,6 +180,7 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
 
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
         match policy {
+            AskForApproval::Always => true,
             AskForApproval::Never => false,
             AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
             AskForApproval::OnRequest => true,

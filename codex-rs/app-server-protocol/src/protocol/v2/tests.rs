@@ -1647,6 +1647,18 @@ fn sandbox_policy_round_trips_read_only_network_access() {
 }
 
 #[test]
+fn ask_for_approval_always_round_trips() {
+    let policy = AskForApproval::Always;
+
+    assert_eq!(
+        serde_json::to_value(policy).expect("serialize policy"),
+        json!("always")
+    );
+    assert_eq!(policy.to_core(), CoreAskForApproval::Always);
+    assert_eq!(AskForApproval::from(CoreAskForApproval::Always), policy);
+}
+
+#[test]
 fn ask_for_approval_granular_round_trips_request_permissions_flag() {
     let v2_policy = AskForApproval::Granular {
         sandbox_approval: true,

@@ -6,8 +6,9 @@ use codex_riftx_domain::ExecutionMode;
 /// Map a RiftX engagement mode to the embedded runtime approval policy.
 pub fn approval_policy_for_mode(mode: ExecutionMode) -> AskForApproval {
     match mode {
-        ExecutionMode::Auto => AskForApproval::Never,
-        ExecutionMode::Pentest | ExecutionMode::RedTeam => AskForApproval::UnlessTrusted,
+        ExecutionMode::Auto | ExecutionMode::Pentest | ExecutionMode::RedTeam => {
+            AskForApproval::Always
+        }
     }
 }
 

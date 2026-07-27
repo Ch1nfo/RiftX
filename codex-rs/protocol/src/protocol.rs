@@ -912,6 +912,10 @@ impl Op {
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum AskForApproval {
+    /// Always surface executable commands for approval. This is intended for
+    /// embedders that apply their own policy decision before resolving the request.
+    Always,
+
     /// Under this policy, only "known safe" commands—as determined by
     /// `is_safe_command()`—that **only read files** are auto‑approved.
     /// Everything else will ask the user to approve.

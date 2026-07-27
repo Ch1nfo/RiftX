@@ -4,17 +4,17 @@ use codex_riftx_domain::ExecutionMode;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn maps_modes_to_tiered_ask_for_approval_policies() {
+fn maps_all_modes_to_always_ask_for_approval() {
     assert_eq!(
         approval_policy_for_mode(ExecutionMode::Auto),
-        AskForApproval::Never
+        AskForApproval::Always
     );
     assert_eq!(
         approval_policy_for_mode(ExecutionMode::Pentest),
-        AskForApproval::UnlessTrusted
+        AskForApproval::Always
     );
     assert_eq!(
         approval_policy_for_mode(ExecutionMode::RedTeam),
-        AskForApproval::UnlessTrusted
+        AskForApproval::Always
     );
 }

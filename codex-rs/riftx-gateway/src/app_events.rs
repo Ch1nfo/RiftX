@@ -296,23 +296,44 @@ async fn command_approval(
             authorized_capabilities: &engagement.authorization.capabilities,
         },
     );
-    if decision.disposition == ExecutionDisposition::Deny {
-        if let Some(app_server) = state.app_server(profile_name) {
-            let _ = app_server
-                .decide_command_approval(
-                    pending.clone(),
-                    codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+    match decision.disposition {
+        ExecutionDisposition::Deny => {
+            if let Some(app_server) = state.app_server(profile_name) {
+                let _ = app_server
+                    .decide_command_approval(
+                        pending.clone(),
+                        codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                    )
+                    .await;
+            }
+            state
+                .publish(
+                    &engagement_id,
+                    "approval/commandDenied",
+                    json!({"decision": decision, "intent": intent}),
                 )
                 .await;
+            return;
         }
-        state
-            .publish(
-                &engagement_id,
-                "approval/commandDenied",
-                json!({"decision": decision, "intent": intent}),
-            )
-            .await;
-        return;
+        ExecutionDisposition::Allow => {
+            if let Some(app_server) = state.app_server(profile_name) {
+                let _ = app_server
+                    .decide_command_approval(
+                        pending.clone(),
+                        codex_riftx_app_server_adapter::OperatorApprovalDecision::Approve,
+                    )
+                    .await;
+            }
+            state
+                .publish(
+                    &engagement_id,
+                    "approval/commandAllowed",
+                    json!({"decision": decision, "intent": intent}),
+                )
+                .await;
+            return;
+        }
+        ExecutionDisposition::RequireApproval => {}
     }
     let approval_id = pending.approval_id();
     let display_command = (!intent.display_argv.is_empty()).then(|| intent.display_argv.join(" "));

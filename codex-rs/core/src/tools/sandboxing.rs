@@ -200,6 +200,7 @@ pub(crate) fn default_exec_approval_requirement(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
 ) -> ExecApprovalRequirement {
     let needs_approval = match policy {
+        AskForApproval::Always => true,
         AskForApproval::Never => false,
         AskForApproval::OnRequest | AskForApproval::Granular(_) => {
             matches!(
@@ -350,7 +351,7 @@ pub(crate) trait Approvable<Req> {
     /// Decide we can request an approval for no-sandbox execution.
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
         match policy {
-            AskForApproval::UnlessTrusted => true,
+            AskForApproval::Always | AskForApproval::UnlessTrusted => true,
             AskForApproval::Never => false,
             AskForApproval::OnRequest => false,
             AskForApproval::Granular(granular_config) => granular_config.sandbox_approval,

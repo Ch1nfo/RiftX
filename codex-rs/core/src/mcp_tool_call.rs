@@ -650,8 +650,10 @@ async fn maybe_request_codex_apps_auth_elicitation(
         AskForApproval::Granular(granular_config) if !granular_config.allows_mcp_elicitations() => {
             return result;
         }
-        AskForApproval::OnRequest | AskForApproval::UnlessTrusted | AskForApproval::Granular(_) => {
-        }
+        AskForApproval::Always
+        | AskForApproval::OnRequest
+        | AskForApproval::UnlessTrusted
+        | AskForApproval::Granular(_) => {}
     }
 
     let connector_id = metadata.and_then(|metadata| metadata.connector_id.as_deref());

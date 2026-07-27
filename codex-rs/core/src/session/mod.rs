@@ -2340,7 +2340,8 @@ impl Session {
                     strict_auto_review: false,
                 });
             }
-            AskForApproval::OnRequest
+            AskForApproval::Always
+            | AskForApproval::OnRequest
             | AskForApproval::UnlessTrusted
             | AskForApproval::Granular(_) => {}
         }

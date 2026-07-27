@@ -256,6 +256,13 @@
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
       "oneOf": [
         {
+          "description": "Always surface executable commands for approval. This is intended for embedders that apply their own policy decision before resolving the request.",
+          "enum": [
+            "always"
+          ],
+          "type": "string"
+        },
+        {
           "description": "Under this policy, only \"known safe\" commands—as determined by `is_safe_command()`—that **only read files** are auto‑approved. Everything else will ask the user to approve.",
           "enum": [
             "untrusted"

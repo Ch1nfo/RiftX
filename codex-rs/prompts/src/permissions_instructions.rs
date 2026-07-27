@@ -16,6 +16,7 @@ use codex_utils_template::Template;
 use std::path::Path;
 use std::sync::LazyLock;
 
+const APPROVAL_POLICY_ALWAYS: &str = "All command executions are reviewed by the host before they run. Issue commands normally; the host will apply its execution policy and either allow, reject, or request operator approval.";
 const APPROVAL_POLICY_NEVER: &str =
     include_str!("../templates/permissions/approval_policy/never.md");
 const APPROVAL_POLICY_UNLESS_TRUSTED: &str =
@@ -231,6 +232,7 @@ fn approval_text(
 ) -> String {
     if let Some(approval_messages) = approval_messages {
         let selected = match &approval_policy {
+            AskForApproval::Always => None,
             AskForApproval::OnRequest => match approvals_reviewer {
                 ApprovalsReviewer::User => approval_messages.on_request.as_ref(),
                 ApprovalsReviewer::AutoReview => approval_messages.on_request_auto_review.as_ref(),
@@ -269,6 +271,7 @@ fn approval_text(
         sections.join("\n\n")
     };
     let text = match approval_policy {
+        AskForApproval::Always => with_request_permissions_tool(APPROVAL_POLICY_ALWAYS),
         AskForApproval::Never => APPROVAL_POLICY_NEVER.to_string(),
         AskForApproval::UnlessTrusted => {
             with_request_permissions_tool(APPROVAL_POLICY_UNLESS_TRUSTED)
@@ -283,7 +286,10 @@ fn approval_text(
     };
 
     if approvals_reviewer == ApprovalsReviewer::AutoReview
-        && approval_policy != AskForApproval::Never
+        && !matches!(
+            approval_policy,
+            AskForApproval::Always | AskForApproval::Never
+        )
     {
         format!("{text}\n\n{AUTO_REVIEW_APPROVAL_SUFFIX}")
     } else {

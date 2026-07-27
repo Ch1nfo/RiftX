@@ -775,6 +775,8 @@ You can optionally specify config overrides on the new turn. If specified, these
 - `"user"` — default. Review approval requests directly in the client.
 - `"auto_review"` — route approval requests to a carefully prompted subagent, which gathers relevant context and applies a risk-based decision framework before approving or denying the request. The legacy value `"guardian_subagent"` is still accepted for compatibility.
 
+`approvalPolicy: "always"` forces every executable command through the app-server approval request flow. It is intended for embedding hosts that apply their own execution policy before resolving each request; unlike `"unlessTrusted"`, known-safe commands are not auto-approved inside the runtime.
+
 ```json
 { "method": "turn/start", "id": 30, "params": {
     "threadId": "thr_123",

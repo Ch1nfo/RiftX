@@ -162,6 +162,7 @@ impl From<CoreNonSteerableTurnKind> for NonSteerableTurnKind {
 #[serde(rename_all = "kebab-case")]
 #[ts(rename_all = "kebab-case", export_to = "v2/")]
 pub enum AskForApproval {
+    Always,
     #[serde(rename = "untrusted")]
     #[ts(rename = "untrusted")]
     UnlessTrusted,
@@ -182,6 +183,7 @@ pub enum AskForApproval {
 impl AskForApproval {
     pub fn to_core(self) -> CoreAskForApproval {
         match self {
+            AskForApproval::Always => CoreAskForApproval::Always,
             AskForApproval::UnlessTrusted => CoreAskForApproval::UnlessTrusted,
             AskForApproval::OnRequest => CoreAskForApproval::OnRequest,
             AskForApproval::Granular {
@@ -205,6 +207,7 @@ impl AskForApproval {
 impl From<CoreAskForApproval> for AskForApproval {
     fn from(value: CoreAskForApproval) -> Self {
         match value {
+            CoreAskForApproval::Always => AskForApproval::Always,
             CoreAskForApproval::UnlessTrusted => AskForApproval::UnlessTrusted,
             CoreAskForApproval::OnRequest => AskForApproval::OnRequest,
             CoreAskForApproval::Granular(granular_config) => AskForApproval::Granular {

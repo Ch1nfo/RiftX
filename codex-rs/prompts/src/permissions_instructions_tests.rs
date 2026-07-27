@@ -387,6 +387,20 @@ fn on_request_includes_tool_guidance_alongside_inline_permission_guidance_when_b
 }
 
 #[test]
+fn always_approval_policy_explains_host_review() {
+    let text = approval_text(
+        AskForApproval::Always,
+        ApprovalsReviewer::User,
+        /*approval_messages*/ None,
+        &Policy::empty(),
+        /*exec_permission_approvals_enabled*/ true,
+        /*request_permissions_tool_enabled*/ false,
+    );
+
+    assert_eq!(text, APPROVAL_POLICY_ALWAYS);
+}
+
+#[test]
 fn catalog_approval_messages_select_reviewer_variant() {
     let messages = ApprovalMessages {
         on_request: Some("user catalog approvals".to_string()),
