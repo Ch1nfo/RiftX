@@ -16,6 +16,7 @@ import type {
   EngagementReport,
   EngagementStreamStatus,
   ExecutionMode,
+  LlmProfileList,
   LlmSettings,
   NotificationSettings,
   PendingApproval,
@@ -50,6 +51,10 @@ export function killRuntime(): Promise<DaemonControlStatus> {
 
 export function llmSettings(): Promise<LlmSettings> {
   return desktopInvoke("llm_settings");
+}
+
+export function llmProfiles(): Promise<LlmProfileList> {
+  return desktopInvoke("llm_profiles");
 }
 
 export function getToolsSettings(): Promise<ToolsSettings> {

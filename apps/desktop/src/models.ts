@@ -36,6 +36,31 @@ export interface UpsertLlmProfileInput {
   makeDefault?: boolean;
 }
 
+export type LlmProfileState =
+  | "unconfigured"
+  | "ready"
+  | "invalid"
+  | "unreachable"
+  | "disabled"
+  | "in_use";
+
+export interface LlmProfileSummary {
+  name: string;
+  protocol: "responses" | "chat_completions";
+  model: string;
+  baseUrl: string;
+  isDefault: boolean;
+  state: LlmProfileState;
+  stateDetail: string;
+  configured: boolean;
+  runtimeReady: boolean;
+}
+
+export interface LlmProfileList {
+  defaultProfile: string;
+  profiles: LlmProfileSummary[];
+}
+
 export interface LlmProfileSettings {
   profileName: string;
   protocol: "responses" | "chat_completions";

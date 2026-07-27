@@ -12,6 +12,7 @@ import {
   bridgeError,
   deleteLlmApiKey,
   deleteLlmProfile,
+  llmProfiles,
   llmSettings,
   saveLlmApiKey,
   setDefaultLlmProfile,
@@ -21,6 +22,8 @@ import {
 import type {
   DesktopBridgeError,
   LlmConnectionTestResult,
+  LlmProfileList,
+  LlmProfileState,
   LlmSettings,
 } from "../models";
 import { NotificationControls } from "./NotificationControls";
@@ -31,12 +34,23 @@ interface ModelSettingsViewProps {
   onRuntimeChanged: (available: boolean) => void;
 }
 
+const PROFILE_STATE_LABELS: Record<LlmProfileState, string> = {
+  unconfigured: "Unconfigured",
+  ready: "Ready",
+  invalid: "Invalid",
+  unreachable: "Unreachable",
+  disabled: "Disabled",
+  in_use: "In use",
+};
+
 export function ModelSettingsView({
   onBusyChange,
   onError,
   onRuntimeChanged,
 }: ModelSettingsViewProps) {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
+  const [runtimeProfiles, setRuntimeProfiles] =
+    useState<LlmProfileList | null>(null);
   const [selectedProfileName, setSelectedProfileName] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -95,8 +109,17 @@ export function ModelSettingsView({
     [selectedProfileName],
   );
 
+  const refreshRuntimeProfiles = useCallback(async () => {
+    try {
+      setRuntimeProfiles(await llmProfiles());
+    } catch {
+      setRuntimeProfiles(null);
+    }
+  }, []);
+
   useEffect(() => {
     updateBusy(true);
+    void refreshRuntimeProfiles();
     void llmSettings()
       .then((loaded) => {
         applySettings(loaded);
@@ -107,11 +130,15 @@ export function ModelSettingsView({
       })
       .finally(() => updateBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount
-  }, [onError, updateBusy]);
+  }, [onError, refreshRuntimeProfiles, updateBusy]);
 
   const profile =
     settings?.profiles.find(
       (candidate) => candidate.profileName === selectedProfileName,
+    ) ?? null;
+  const runtimeProfile =
+    runtimeProfiles?.profiles.find(
+      (candidate) => candidate.name === selectedProfileName,
     ) ?? null;
   const keyring = profile?.credentialSource === "keyring";
   const isDefault = profile?.profileName === settings?.defaultProfile;
@@ -134,6 +161,7 @@ export function ModelSettingsView({
         protocol,
       });
       applySettings(updated, profile.profileName);
+      await refreshRuntimeProfiles();
       setNotice(
         restartNotice(
           updated.daemonRestartRequired,
@@ -169,6 +197,7 @@ export function ModelSettingsView({
         makeDefault: settings?.profiles.length === 0,
       });
       applySettings(updated, newProfileName.trim());
+      await refreshRuntimeProfiles();
       setShowNewProfile(false);
       setNewProfileName("");
       setNewModel("");
@@ -197,6 +226,7 @@ export function ModelSettingsView({
     try {
       const updated = await setDefaultLlmProfile(profile.profileName);
       applySettings(updated, profile.profileName);
+      await refreshRuntimeProfiles();
       setConfirmDeleteProfile(false);
       setNotice(
         restartNotice(
@@ -221,6 +251,7 @@ export function ModelSettingsView({
     try {
       const updated = await deleteLlmProfile(profile.profileName);
       applySettings(updated);
+      await refreshRuntimeProfiles();
       setConfirmDeleteProfile(false);
       setApiKey("");
       setConnectionTest(null);
@@ -249,6 +280,7 @@ export function ModelSettingsView({
     try {
       const result = await testLlmProfile(profile.profileName);
       setConnectionTest(result);
+      await refreshRuntimeProfiles();
       setNotice(
         result.ok
           ? "Connection test passed."
@@ -270,6 +302,7 @@ export function ModelSettingsView({
     try {
       const updated = await saveLlmApiKey(profile.profileName, apiKey);
       applySettings(updated, profile.profileName);
+      await refreshRuntimeProfiles();
       setApiKey("");
       setShowKey(false);
       setNotice(
@@ -295,6 +328,7 @@ export function ModelSettingsView({
     try {
       const updated = await deleteLlmApiKey(profile.profileName);
       applySettings(updated, profile.profileName);
+      await refreshRuntimeProfiles();
       setApiKey("");
       setConfirmRemoveKey(false);
       setNotice(
@@ -475,6 +509,22 @@ export function ModelSettingsView({
             </label>
             <dl className="settings-summary compact">
               <div>
+                <dt>State</dt>
+                <dd>
+                  {runtimeProfile
+                    ? PROFILE_STATE_LABELS[runtimeProfile.state]
+                    : "Unavailable"}
+                </dd>
+              </div>
+              <div>
+                <dt>Runtime</dt>
+                <dd>
+                  {runtimeProfile?.runtimeReady
+                    ? "Initialized"
+                    : "Lazy / not initialized"}
+                </dd>
+              </div>
+              <div>
                 <dt>Reasoning</dt>
                 <dd>{profile.reasoningLevel}</dd>
               </div>
@@ -487,6 +537,11 @@ export function ModelSettingsView({
                 <dd>{profile.timeoutSeconds}s</dd>
               </div>
             </dl>
+            {runtimeProfile && (
+              <p className="settings-profile-state-detail">
+                {runtimeProfile.stateDetail}
+              </p>
+            )}
             <div className="settings-actions">
               <button
                 type="button"

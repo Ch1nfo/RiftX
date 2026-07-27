@@ -2401,3 +2401,10 @@ button:disabled {
     background: #fff8ed;
   }
 }
+
+.settings-profile-state-detail {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
