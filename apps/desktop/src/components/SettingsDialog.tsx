@@ -9,6 +9,7 @@ interface SettingsDialogProps {
   onClose: () => void;
   onError: (error: DesktopBridgeError) => void;
   onRuntimeChanged: (available: boolean) => void;
+  setupRequired?: boolean;
 }
 
 type SettingsTab = "model" | "tools" | "skills";
@@ -30,16 +31,19 @@ export function SettingsDialog({
   onClose,
   onError,
   onRuntimeChanged,
+  setupRequired = false,
 }: SettingsDialogProps) {
-  const [tab, setTab] = useState<SettingsTab>("model");
+  const [tab, setTab] = useState<SettingsTab>(
+    setupRequired ? "tools" : "model",
+  );
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
-      setTab("model");
+      setTab(setupRequired ? "tools" : "model");
       setBusy(false);
     }
-  }, [open]);
+  }, [open, setupRequired]);
 
   if (!open) {
     return null;
@@ -62,7 +66,7 @@ export function SettingsDialog({
       >
         <header className="dialog-heading">
           <div>
-            <span>Settings</span>
+            <span>{setupRequired ? "First-time setup" : "Settings"}</span>
             <h2 id="settings-title">{TAB_TITLES[tab]}</h2>
           </div>
           <button
@@ -76,6 +80,17 @@ export function SettingsDialog({
             <X size={17} />
           </button>
         </header>
+
+        {setupRequired && (
+          <div className="settings-onboarding" role="status">
+            <strong>Complete setup before creating a task</strong>
+            <span>
+              1. Confirm Tools directories and run Doctor. 2. Configure the
+              model Profile and API key. 3. Pass the automatic text-stream and
+              function-tool connection checks.
+            </span>
+          </div>
+        )}
 
         <div className="settings-tabs" role="tablist" aria-label="Settings">
           {(["model", "tools", "skills"] as SettingsTab[]).map((value) => (
