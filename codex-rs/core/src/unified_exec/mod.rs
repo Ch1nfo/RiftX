@@ -118,6 +118,13 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub truncation_policy: TruncationPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WriteStdinApprovalContext {
+    pub command: Vec<String>,
+    pub cwd: PathUri,
+    pub tty: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
@@ -156,6 +163,7 @@ struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
     process_id: i32,
+    command: Vec<String>,
     cwd: PathUri,
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,

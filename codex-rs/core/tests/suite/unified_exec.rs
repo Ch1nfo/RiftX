@@ -193,6 +193,21 @@ async fn submit_unified_exec_turn(
     prompt: &str,
     permission_profile: PermissionProfile,
 ) -> Result<()> {
+    submit_unified_exec_turn_with_approval_policy(
+        test,
+        prompt,
+        permission_profile,
+        AskForApproval::Never,
+    )
+    .await
+}
+
+async fn submit_unified_exec_turn_with_approval_policy(
+    test: &TestCodex,
+    prompt: &str,
+    permission_profile: PermissionProfile,
+    approval_policy: AskForApproval,
+) -> Result<()> {
     let session_model = test.session_configured.model.clone();
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(permission_profile, test.config.cwd.as_path());
@@ -207,7 +222,7 @@ async fn submit_unified_exec_turn(
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::Never),
+                approval_policy: Some(approval_policy),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
                 collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
@@ -1095,6 +1110,128 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
         .and_then(Value::as_str)
         .expect("stdin chars");
     assert_eq!(delta.stdin, expected_stdin);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_requires_approval_for_non_empty_pty_input() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX interactive shell fixture");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let open_call_id = "uexec-approved-open";
+    let stdin_call_id = "uexec-approved-stdin";
+    let stdin = "echo APPROVED-PTY-INPUT\n";
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-approval-1"),
+            ev_function_call(
+                open_call_id,
+                "exec_command",
+                &serde_json::to_string(&json!({
+                    "cmd": "/bin/bash -i",
+                    "yield_time_ms": 200,
+                    "tty": true,
+                }))?,
+            ),
+            ev_completed("resp-approval-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-approval-2"),
+            ev_function_call(
+                stdin_call_id,
+                "write_stdin",
+                &serde_json::to_string(&json!({
+                    "chars": stdin,
+                    "session_id": 1000,
+                    "yield_time_ms": 800,
+                }))?,
+            ),
+            ev_completed("resp-approval-2"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-approval-3"),
+            ev_assistant_message("msg-approval-1", "done"),
+            ev_completed("resp-approval-3"),
+        ]),
+    ];
+    mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn_with_approval_policy(
+        &test,
+        "approve interactive stdin",
+        PermissionProfile::Disabled,
+        AskForApproval::Always,
+    )
+    .await?;
+
+    let EventMsg::ExecApprovalRequest(open_approval) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ExecApprovalRequest(_))
+    })
+    .await
+    else {
+        unreachable!();
+    };
+    assert_eq!(open_approval.call_id, open_call_id);
+    test.codex
+        .submit(Op::ExecApproval {
+            id: open_approval.effective_approval_id(),
+            turn_id: None,
+            decision: codex_protocol::protocol::ReviewDecision::Approved,
+        })
+        .await?;
+
+    let EventMsg::ExecApprovalRequest(stdin_approval) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ExecApprovalRequest(_))
+    })
+    .await
+    else {
+        unreachable!();
+    };
+    assert_eq!(stdin_approval.call_id, stdin_call_id);
+    assert_eq!(
+        stdin_approval.approval_id.as_deref(),
+        Some("uexec-approved-stdin:pty-stdin")
+    );
+    assert_eq!(
+        stdin_approval.command[stdin_approval.command.len() - 3..],
+        [
+            "<pty-stdin>".to_string(),
+            "session=1000".to_string(),
+            stdin.to_string(),
+        ]
+    );
+    test.codex
+        .submit(Op::ExecApproval {
+            id: stdin_approval.effective_approval_id(),
+            turn_id: None,
+            decision: codex_protocol::protocol::ReviewDecision::Approved,
+        })
+        .await?;
+
+    let mut terminal_interaction = None;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::TerminalInteraction(event) if event.call_id == open_call_id => {
+                terminal_interaction = Some(event);
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        terminal_interaction.expect("terminal interaction").stdin,
+        stdin
+    );
     Ok(())
 }
 

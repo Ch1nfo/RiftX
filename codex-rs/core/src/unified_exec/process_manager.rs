@@ -45,6 +45,7 @@ use crate::unified_exec::ProcessStore;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
+use crate::unified_exec::WriteStdinApprovalContext;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
@@ -395,6 +396,22 @@ impl UnifiedExecProcessManager {
             store.reserved_process_ids.insert(process_id);
             return process_id;
         }
+    }
+
+    pub(crate) async fn write_stdin_approval_context(
+        &self,
+        process_id: i32,
+    ) -> Result<WriteStdinApprovalContext, UnifiedExecError> {
+        let store = self.process_store.lock().await;
+        let entry = store
+            .processes
+            .get(&process_id)
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        Ok(WriteStdinApprovalContext {
+            command: entry.command.clone(),
+            cwd: entry.cwd.clone(),
+            tty: entry.tty,
+        })
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
@@ -918,6 +935,7 @@ impl UnifiedExecProcessManager {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
             process_id,
+            command: command.to_vec(),
             cwd: cwd.clone(),
             initial_exec_command_active,
             hook_command,
