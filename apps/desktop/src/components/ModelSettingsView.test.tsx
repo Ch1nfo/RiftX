@@ -6,6 +6,8 @@ import {
   llmProfiles,
   llmSettings,
   notificationSettings,
+  saveLlmApiKey,
+  testLlmProfile,
   upsertLlmProfile,
 } from "../bridge";
 
@@ -121,6 +123,61 @@ describe("ModelSettingsView", () => {
     );
     expect(onRuntimeChanged).toHaveBeenCalledWith(true);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("saves a missing API key and immediately shows the capability matrix", async () => {
+    vi.mocked(llmSettings).mockResolvedValue({
+      ...settings,
+      profiles: [{ ...settings.profiles[0], configured: false }],
+    });
+    vi.mocked(saveLlmApiKey).mockResolvedValue(settings);
+    vi.mocked(testLlmProfile).mockResolvedValue({
+      profileName: "default",
+      protocol: "responses",
+      model: "gpt-test",
+      ok: true,
+      capabilities: {
+        config: { status: "passed", detail: "Configuration is valid." },
+        streamText: { status: "passed", detail: "Text streaming works." },
+        functionTools: {
+          status: "passed",
+          detail: "Structured function calls work.",
+        },
+      },
+    });
+
+    render(
+      <ModelSettingsView
+        onBusyChange={vi.fn()}
+        onError={vi.fn()}
+        onRuntimeChanged={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Missing")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "secret-test-key" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save key and test" }),
+    );
+
+    await waitFor(() =>
+      expect(saveLlmApiKey).toHaveBeenCalledWith("default", "secret-test-key"),
+    );
+    await waitFor(() =>
+      expect(testLlmProfile).toHaveBeenCalledWith("default"),
+    );
+    expect(
+      await screen.findByText("API key saved and connection test passed."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Text streaming works/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Structured function calls work/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/RiftX does not add product telemetry/),
+    ).toBeInTheDocument();
   });
 
   it("blocks invalid timeout and context values before invoking Tauri", async () => {

@@ -350,6 +350,7 @@ export function ModelSettingsView({
     if (!profile || !apiKey.trim() || busy) {
       return;
     }
+    const shouldTestAfterSave = !profile.configured;
     updateBusy(true);
     try {
       const updated = await saveLlmApiKey(profile.profileName, apiKey);
@@ -357,14 +358,30 @@ export function ModelSettingsView({
       await refreshRuntimeProfiles();
       setApiKey("");
       setShowKey(false);
-      setNotice(
-        restartNotice(
-          updated.daemonRestartRequired,
-          "Saved. Restart the externally managed daemon to apply the new key.",
-          "Saved. The local runtime is ready.",
-        ),
-      );
       onRuntimeChanged(true);
+      if (shouldTestAfterSave) {
+        try {
+          const result = await testLlmProfile(profile.profileName);
+          setConnectionTest(result);
+          await refreshRuntimeProfiles();
+          setNotice(
+            result.ok
+              ? "API key saved and connection test passed."
+              : "API key saved, but one or more provider capabilities failed.",
+          );
+        } catch (cause) {
+          setNotice("API key saved, but the connection test could not complete.");
+          onError(bridgeError(cause));
+        }
+      } else {
+        setNotice(
+          restartNotice(
+            updated.daemonRestartRequired,
+            "Saved. Restart the externally managed daemon to apply the new key.",
+            "Saved. The local runtime is ready.",
+          ),
+        );
+      }
     } catch (cause) {
       onError(bridgeError(cause));
     } finally {
@@ -747,6 +764,12 @@ export function ModelSettingsView({
             </div>
           )}
 
+          <p className="settings-provider-boundary">
+            Requests, prompts, and tool results are sent to this configured
+            provider under your provider agreement. RiftX does not add product
+            telemetry.
+          </p>
+
           <div className="credential-heading">
             <div className="credential-title">
               <KeyRound size={16} />
@@ -839,7 +862,7 @@ export function ModelSettingsView({
                   disabled={!apiKey.trim() || busy}
                 >
                   {busy && <LoaderCircle className="spin" size={15} />}
-                  Save key
+                  {profile.configured ? "Save key" : "Save key and test"}
                 </button>
               </div>
             </form>
