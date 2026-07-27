@@ -89,6 +89,7 @@ pub enum AutoStopReason {
     KillSwitch,
     UnrecoverableError,
     ScopeNeedsInput,
+    ArtifactQuotaExhausted,
     SuccessCriteriaMet,
 }
 

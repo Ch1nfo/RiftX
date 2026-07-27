@@ -4,12 +4,15 @@ use crate::build_router;
 use axum::body::Body;
 use axum::http::Request;
 use axum::http::StatusCode;
+use codex_riftx_artifacts::ArtifactStore;
+use codex_riftx_core::ArtifactConfig;
 use codex_riftx_core::AutoRunLimits;
 use codex_riftx_core::AutoRunState;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::EngagementStatus;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -214,6 +217,92 @@ async fn auto_pause_and_kill_have_persisted_machine_readable_states() {
             .status,
         EngagementStatus::Interrupted
     );
+}
+
+#[tokio::test]
+async fn artifact_quota_exhaustion_pauses_auto_before_another_turn_is_scheduled() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut state = test_state(&temp).await;
+    state.artifact_store = Arc::new(ArtifactStore::new(
+        &ArtifactConfig {
+            root: temp.path().join("limited-artifacts"),
+            max_bytes_per_engagement: 4,
+        },
+        state.store.record_cipher(),
+    ));
+    let engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Running;
+    run.turns_started = 1;
+    state.store.put_auto_run(&run).await.expect("store run");
+    state
+        .store
+        .transition_engagement(
+            &engagement.id,
+            EngagementStatus::Active,
+            engagement.updated_at.saturating_add(1),
+        )
+        .await
+        .expect("activate engagement state");
+    let workspace_artifacts = state
+        .config
+        .daemon
+        .workspace_root
+        .join(&engagement.id)
+        .join("artifacts");
+    tokio::fs::create_dir_all(&workspace_artifacts)
+        .await
+        .expect("create workspace artifacts");
+    tokio::fs::write(workspace_artifacts.join("oversized.txt"), b"evidence")
+        .await
+        .expect("write oversized artifact");
+    let mut events = state.event_sender(&engagement.id).await.subscribe();
+
+    assert!(
+        crate::artifacts::capture_pending_for_turn(state.clone(), engagement.id.clone(), "turn-1",)
+            .await
+    );
+    on_turn_completed(
+        &state,
+        &engagement.id,
+        &json!({"turn": {"id": "turn-1", "status": "completed"}}),
+    )
+    .await;
+
+    let paused = state
+        .store
+        .auto_run(&engagement.id)
+        .await
+        .expect("Auto checkpoint")
+        .expect("Auto run");
+    assert_eq!(paused.state, AutoRunState::Paused);
+    assert_eq!(
+        paused.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::ArtifactQuotaExhausted)
+    );
+    assert_eq!(paused.turns_started, 1);
+    assert!(
+        state
+            .store
+            .artifacts(&engagement.id)
+            .await
+            .expect("stored artifacts")
+            .is_empty()
+    );
+
+    let first = events.recv().await.expect("quota event");
+    let second = events.recv().await.expect("Auto stop event");
+    assert_eq!(first.kind, "artifact/quotaExhausted");
+    assert_eq!(first.data, json!({"quota": "bytes", "limitBytes": 4}));
+    assert_eq!(second.kind, "auto/stopped");
+    assert_eq!(second.data["state"], "paused");
+    assert_eq!(second.data["reason"], "artifactQuotaExhausted");
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]

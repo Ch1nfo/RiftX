@@ -42,6 +42,7 @@ pub(crate) enum AutoLifecycleStop {
     AuditUnavailable,
     ProviderAuthentication,
     ProviderProtocolError,
+    ArtifactQuotaExhausted,
     DaemonRestart,
     KillSwitch,
 }
@@ -308,6 +309,9 @@ pub(crate) async fn lifecycle_stop(
         }
         AutoLifecycleStop::ProviderProtocolError => {
             (AutoRunState::Failed, AutoStopReason::ProviderProtocolError)
+        }
+        AutoLifecycleStop::ArtifactQuotaExhausted => {
+            (AutoRunState::Paused, AutoStopReason::ArtifactQuotaExhausted)
         }
         AutoLifecycleStop::DaemonRestart => (AutoRunState::Paused, AutoStopReason::DaemonRestart),
         AutoLifecycleStop::KillSwitch => (AutoRunState::Killed, AutoStopReason::KillSwitch),

@@ -584,6 +584,7 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
         return;
     };
     let auto_completion_data = (event.kind == "turn/completed").then(|| event.data.clone());
+    let mut artifact_quota_exhausted = false;
     if event.kind == "turn/completed"
         && let Some(turn_id) = event.turn_id.as_deref()
     {
@@ -615,8 +616,12 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
                     .await;
             }
         }
-        crate::artifacts::capture_pending_for_turn(state.clone(), engagement_id.clone(), turn_id)
-            .await;
+        artifact_quota_exhausted = crate::artifacts::capture_pending_for_turn(
+            state.clone(),
+            engagement_id.clone(),
+            turn_id,
+        )
+        .await;
     }
     state
         .publish(
@@ -629,7 +634,7 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
             }),
         )
         .await;
-    if let Some(data) = auto_completion_data {
+    if !artifact_quota_exhausted && let Some(data) = auto_completion_data {
         crate::auto_run::on_turn_completed(state, &engagement_id, &data).await;
     }
 }

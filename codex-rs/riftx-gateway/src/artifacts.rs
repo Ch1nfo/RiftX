@@ -1,10 +1,14 @@
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::unix_timestamp;
 use codex_riftx_artifacts::ArtifactError;
+use codex_riftx_artifacts::ArtifactQuota;
 use codex_riftx_artifacts::CaptureArtifact;
 use codex_riftx_core::Artifact;
+use codex_riftx_core::AutoRunState;
+use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::Evidence;
 use codex_riftx_core::EvidencePurpose;
+use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
 use codex_riftx_core::StateError;
 use serde_json::json;
@@ -74,14 +78,14 @@ pub(crate) async fn capture(
 }
 
 pub(crate) async fn capture_pending(state: GatewayState, engagement_id: String) {
-    capture_pending_inner(state, engagement_id, None).await;
+    let _ = capture_pending_inner(state, engagement_id, None).await;
 }
 
 pub(crate) async fn capture_pending_for_turn(
     state: GatewayState,
     engagement_id: String,
     turn_id: &str,
-) {
+) -> bool {
     let linked_execution_ids = match state.store.evidence(&engagement_id).await {
         Ok(evidence) => evidence
             .into_iter()
@@ -95,8 +99,9 @@ pub(crate) async fn capture_pending_for_turn(
                     json!({"message": error.to_string()}),
                 )
                 .await;
-            capture_pending_inner(state, engagement_id, None).await;
-            return;
+            let quota = capture_pending_inner(state.clone(), engagement_id.clone(), None).await;
+            pause_auto_for_artifact_quota(&state, &engagement_id, quota).await;
+            return quota.is_some();
         }
     };
     let execution_id = match state.store.executions(&engagement_id).await {
@@ -122,21 +127,29 @@ pub(crate) async fn capture_pending_for_turn(
                     json!({"message": error.to_string()}),
                 )
                 .await;
-            capture_pending_inner(state, engagement_id, None).await;
-            return;
+            let quota = capture_pending_inner(state.clone(), engagement_id.clone(), None).await;
+            pause_auto_for_artifact_quota(&state, &engagement_id, quota).await;
+            return quota.is_some();
         }
     };
     let execution_id = (execution_id.len() == 1)
         .then(|| execution_id.into_iter().next())
         .flatten();
-    capture_pending_inner(state, engagement_id, execution_id.as_deref()).await;
+    let quota = capture_pending_inner(
+        state.clone(),
+        engagement_id.clone(),
+        execution_id.as_deref(),
+    )
+    .await;
+    pause_auto_for_artifact_quota(&state, &engagement_id, quota).await;
+    quota.is_some()
 }
 
 async fn capture_pending_inner(
     state: GatewayState,
     engagement_id: String,
     execution_id: Option<&str>,
-) {
+) -> Option<ArtifactQuota> {
     let existing = match state.store.artifacts(&engagement_id).await {
         Ok(existing) => existing,
         Err(error) => {
@@ -147,7 +160,7 @@ async fn capture_pending_inner(
                     json!({"message": error.to_string()}),
                 )
                 .await;
-            return;
+            return None;
         }
     };
     let mut known_artifacts = existing
@@ -158,6 +171,10 @@ async fn capture_pending_inner(
     let paths = match state.artifact_store.discover(&workspace) {
         Ok(paths) => paths,
         Err(error) => {
+            if let Some(quota) = error.quota_exceeded() {
+                publish_artifact_quota_exhausted(&state, &engagement_id, quota).await;
+                return Some(quota);
+            }
             state
                 .publish(
                     &engagement_id,
@@ -165,9 +182,10 @@ async fn capture_pending_inner(
                     json!({"message": error.to_string()}),
                 )
                 .await;
-            return;
+            return None;
         }
     };
+    let mut exhausted_quota = None;
     for path in paths {
         match capture(&state, &engagement_id, &path, None, None).await {
             Ok(artifact) => {
@@ -179,6 +197,12 @@ async fn capture_pending_inner(
                 }
             }
             Err(error) => {
+                if let CaptureError::Store(store_error) = &error
+                    && let Some(quota) = store_error.quota_exceeded()
+                {
+                    exhausted_quota.get_or_insert(quota);
+                    continue;
+                }
                 state
                     .publish(
                         &engagement_id,
@@ -188,6 +212,123 @@ async fn capture_pending_inner(
                     .await;
             }
         }
+    }
+    if let Some(quota) = exhausted_quota {
+        publish_artifact_quota_exhausted(&state, &engagement_id, quota).await;
+    }
+    exhausted_quota
+}
+
+async fn publish_artifact_quota_exhausted(
+    state: &GatewayState,
+    engagement_id: &str,
+    quota: ArtifactQuota,
+) {
+    state
+        .publish(
+            engagement_id,
+            "artifact/quotaExhausted",
+            artifact_quota_data(quota),
+        )
+        .await;
+}
+
+async fn pause_auto_for_artifact_quota(
+    state: &GatewayState,
+    engagement_id: &str,
+    quota: Option<ArtifactQuota>,
+) {
+    let Some(quota) = quota else {
+        return;
+    };
+    let Ok(_permit) = state.turn_slot.clone().acquire_owned().await else {
+        state
+            .emit_event(
+                engagement_id,
+                "auto/controllerError",
+                json!({"message": "artifact quota state could not be coordinated"}),
+            )
+            .await;
+        return;
+    };
+    let engagement = match state.store.engagement(engagement_id).await {
+        Ok(engagement) => engagement,
+        Err(error) => {
+            state
+                .emit_event(
+                    engagement_id,
+                    "auto/controllerError",
+                    json!({"message": error.to_string()}),
+                )
+                .await;
+            return;
+        }
+    };
+    if engagement.mode != ExecutionMode::Auto || engagement.status != EngagementStatus::Active {
+        return;
+    }
+    let run = match state.store.auto_run(engagement_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return,
+        Err(error) => {
+            state
+                .emit_event(
+                    engagement_id,
+                    "auto/controllerError",
+                    json!({"message": error.to_string()}),
+                )
+                .await;
+            return;
+        }
+    };
+    if !matches!(run.state, AutoRunState::Running | AutoRunState::Evaluating) {
+        return;
+    }
+    let mut audit_data = artifact_quota_data(quota);
+    audit_data["reason"] = json!(codex_riftx_core::AutoStopReason::ArtifactQuotaExhausted);
+    if state
+        .append_engagement_critical(&engagement, "auto/artifactQuotaExhausted", &audit_data)
+        .await
+        .is_err()
+    {
+        if let Err(error) = crate::auto_run::lifecycle_stop(
+            state,
+            engagement_id,
+            crate::auto_run::AutoLifecycleStop::AuditUnavailable,
+        )
+        .await
+        {
+            state
+                .emit_event(
+                    engagement_id,
+                    "auto/controllerError",
+                    json!({"message": error.to_string()}),
+                )
+                .await;
+        }
+        return;
+    }
+    if let Err(error) = crate::auto_run::lifecycle_stop(
+        state,
+        engagement_id,
+        crate::auto_run::AutoLifecycleStop::ArtifactQuotaExhausted,
+    )
+    .await
+    {
+        state
+            .emit_event(
+                engagement_id,
+                "auto/controllerError",
+                json!({"message": error.to_string()}),
+            )
+            .await;
+    }
+}
+
+fn artifact_quota_data(quota: ArtifactQuota) -> serde_json::Value {
+    match quota {
+        ArtifactQuota::Bytes { limit } => json!({"quota": "bytes", "limitBytes": limit}),
+        ArtifactQuota::Count { limit } => json!({"quota": "count", "limitCount": limit}),
     }
 }
 

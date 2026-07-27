@@ -23,6 +23,13 @@ pub use encrypted_blob::DecryptedArtifact;
 const MAX_DISCOVERED_ARTIFACTS: usize = 256;
 const MAX_DISCOVERY_DEPTH: usize = 8;
 
+/// Engagement-local artifact quota that prevented a capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactQuota {
+    Bytes { limit: u64 },
+    Count { limit: usize },
+}
+
 #[derive(Debug, Error)]
 pub enum ArtifactError {
     #[error("engagement id is not a safe path component")]
@@ -62,6 +69,17 @@ pub enum ArtifactError {
 }
 
 impl ArtifactError {
+    /// Returns the quota metadata when this error represents bounded storage exhaustion.
+    pub fn quota_exceeded(&self) -> Option<ArtifactQuota> {
+        match self {
+            Self::CapacityExceeded { limit } => Some(ArtifactQuota::Bytes { limit: *limit }),
+            Self::TooManyArtifacts => Some(ArtifactQuota::Count {
+                limit: MAX_DISCOVERED_ARTIFACTS,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn is_request_error(&self) -> bool {
         matches!(
             self,

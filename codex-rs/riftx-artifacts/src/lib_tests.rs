@@ -106,7 +106,24 @@ async fn capture_enforces_unique_blob_capacity() {
     tokio::fs::write(workspace.join("second.bin"), b"67890")
         .await
         .expect("write second");
+    tokio::fs::write(workspace.join("oversized.bin"), b"123456789")
+        .await
+        .expect("write oversized");
     let store = test_store(&temp, /*max_bytes_per_engagement*/ 8);
+    assert!(matches!(
+        store
+            .capture(CaptureArtifact {
+                engagement_id: "eng-1",
+                workspace: &workspace,
+                relative_path: Path::new("oversized.bin"),
+                media_type: None,
+                execution_id: None,
+                existing: &[],
+                created_at: 0,
+            })
+            .await,
+        Err(ArtifactError::CapacityExceeded { limit: 8 })
+    ));
     let first = store
         .capture(CaptureArtifact {
             engagement_id: "eng-1",
@@ -145,6 +162,33 @@ async fn capture_enforces_unique_blob_capacity() {
             .await,
         Err(ArtifactError::CapacityExceeded { limit: 8 })
     ));
+}
+
+#[tokio::test]
+async fn discovery_enforces_the_automatic_artifact_count_quota() {
+    let temp = TempDir::new().expect("temp dir");
+    let workspace = temp.path().join("workspace");
+    let artifacts = workspace.join("artifacts");
+    tokio::fs::create_dir_all(&artifacts)
+        .await
+        .expect("create artifacts directory");
+    for index in 0..=MAX_DISCOVERED_ARTIFACTS {
+        tokio::fs::write(artifacts.join(format!("artifact-{index}.txt")), b"evidence")
+            .await
+            .expect("write discovered artifact");
+    }
+    let store = test_store(&temp, /*max_bytes_per_engagement*/ 1024);
+
+    let error = store
+        .discover(&workspace)
+        .expect_err("count quota should reject discovery");
+    assert!(matches!(error, ArtifactError::TooManyArtifacts));
+    assert_eq!(
+        error.quota_exceeded(),
+        Some(ArtifactQuota::Count {
+            limit: MAX_DISCOVERED_ARTIFACTS,
+        })
+    );
 }
 
 #[tokio::test]

@@ -520,6 +520,7 @@ export type AutoStopReason =
   | "killSwitch"
   | "unrecoverableError"
   | "scopeNeedsInput"
+  | "artifactQuotaExhausted"
   | "successCriteriaMet";
 
 export interface AutoRun {
