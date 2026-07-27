@@ -37,10 +37,11 @@ async fn pty_input_requires_a_bound_execution_intent() -> anyhow::Result<()> {
     let stdin_call_id = "pty-stdin-call";
     let stdin = "printf 'PTY-APPROVED'; exit\n";
     let process_id = Arc::new(Mutex::new(None));
+    let model_calls = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(PtyResponseSequence {
-            calls: AtomicUsize::new(0),
+            calls: Arc::clone(&model_calls),
             process_id: Arc::clone(&process_id),
             stdin: stdin.to_string(),
         })
@@ -158,11 +159,25 @@ async fn pty_input_requires_a_bound_execution_intent() -> anyhow::Result<()> {
         execution["stdinSha256"].is_string(),
         "PTY stdin hash missing: {execution}"
     );
+    wait_for_model_calls(&model_calls, 3).await?;
     Ok(())
 }
 
+async fn wait_for_model_calls(calls: &AtomicUsize, expected: usize) -> anyhow::Result<()> {
+    for _ in 0..POLL_ATTEMPTS {
+        if calls.load(Ordering::SeqCst) >= expected {
+            return Ok(());
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!(
+        "model request count did not reach {expected}; observed {}",
+        calls.load(Ordering::SeqCst)
+    )
+}
+
 struct PtyResponseSequence {
-    calls: AtomicUsize,
+    calls: Arc<AtomicUsize>,
     process_id: Arc<Mutex<Option<i32>>>,
     stdin: String,
 }

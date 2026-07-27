@@ -123,12 +123,11 @@ async fn cli_turn_routes_local_execution_through_daemon_intent() -> anyhow::Resu
         executions[0]
     );
 
-    let requests = server.received_requests().await.unwrap_or_default();
+    let requests = wait_for_model_requests(&server, 2).await?;
     let model_requests = requests
         .iter()
         .filter(|request| request.url.path() == "/v1/responses")
         .collect::<Vec<_>>();
-    anyhow::ensure!(model_requests.len() == 2, "unexpected model request count");
     anyhow::ensure!(
         model_requests.iter().all(|request| {
             request.headers.get("authorization").is_some_and(|value| {
@@ -140,6 +139,25 @@ async fn cli_turn_routes_local_execution_through_daemon_intent() -> anyhow::Resu
         "CLI turn did not use the daemon-managed Runtime profile"
     );
     Ok(())
+}
+
+async fn wait_for_model_requests(
+    server: &wiremock::MockServer,
+    expected: usize,
+) -> anyhow::Result<Vec<Request>> {
+    let mut observed = 0;
+    for _ in 0..POLL_ATTEMPTS {
+        let requests = server.received_requests().await.unwrap_or_default();
+        observed = requests
+            .iter()
+            .filter(|request| request.url.path() == "/v1/responses")
+            .count();
+        if observed >= expected {
+            return Ok(requests);
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("model request count did not reach {expected}; observed {observed}")
 }
 
 struct CliResponseSequence {
