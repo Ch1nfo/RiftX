@@ -123,6 +123,10 @@ enum Command {
         #[command(subcommand)]
         command: llm_commands::LlmCommand,
     },
+    Auto {
+        #[command(subcommand)]
+        command: AutoCommand,
+    },
     Tools {
         #[command(subcommand)]
         command: ToolsCommand,
@@ -135,6 +139,14 @@ enum Command {
         #[command(subcommand)]
         command: ArtifactsCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AutoCommand {
+    Status { id: String },
+    Pause { id: String },
+    Resume { id: String },
+    Kill { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -368,6 +380,25 @@ where
         }
         Command::Llm { command } => {
             llm_commands::execute(&client, command).await?;
+        }
+        Command::Auto { command } => {
+            let (request, path) = match command {
+                AutoCommand::Status { id } => {
+                    (RequestKind::Get, format!("/v1/engagements/{id}/auto"))
+                }
+                AutoCommand::Pause { id } => (
+                    RequestKind::Post,
+                    format!("/v1/engagements/{id}/auto/pause"),
+                ),
+                AutoCommand::Resume { id } => (
+                    RequestKind::Post,
+                    format!("/v1/engagements/{id}/auto/resume"),
+                ),
+                AutoCommand::Kill { id } => {
+                    (RequestKind::Post, format!("/v1/engagements/{id}/auto/kill"))
+                }
+            };
+            send(&client, request, path).await?;
         }
         Command::Tools {
             command: ToolsCommand::Doctor { json },

@@ -173,3 +173,28 @@ fn artifacts_commands_capture_and_export_workspace_files() {
             && output.as_path() == std::path::Path::new("result.json")
     ));
 }
+
+#[test]
+fn auto_lifecycle_commands_parse_with_engagement_ids() {
+    let cases = [
+        ("status", "eng-status"),
+        ("pause", "eng-pause"),
+        ("resume", "eng-resume"),
+        ("kill", "eng-kill"),
+    ];
+
+    for (operation, expected_id) in cases {
+        let cli = Cli::try_parse_from(["riftx", "auto", operation, expected_id])
+            .expect("valid Auto lifecycle command");
+        let Command::Auto { command } = cli.command else {
+            panic!("expected Auto command");
+        };
+        let id = match command {
+            AutoCommand::Status { id }
+            | AutoCommand::Pause { id }
+            | AutoCommand::Resume { id }
+            | AutoCommand::Kill { id } => id,
+        };
+        assert_eq!(id, expected_id);
+    }
+}
