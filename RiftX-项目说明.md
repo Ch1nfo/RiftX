@@ -1,14 +1,15 @@
 # RiftX 项目说明
 
-> 当前版本：v0.8 产品基线  
-> 文档日期：2026-07-25  
-> 配套实施计划：[RiftX-技术实现方案.md](./RiftX-技术实现方案.md)
+> 当前版本：v0.8 产品基线（正在按 [1.0 计划.md](./1.0%20计划.md) 推进至 `1.0.0`）  
+> 文档日期：2026-07-27  
+> 配套实施计划：[RiftX-技术实现方案.md](./RiftX-技术实现方案.md)  
+> 1.0 发布合同：[1.0 计划.md](./1.0%20计划.md)（若与本文冲突，以 1.0 计划为准）
 
 ## 1. 一句话定位
 
-RiftX 是以开源 Agent Runtime（固定版本、源码内嵌）为底座的 **Win / Mac 桌面应用**：把安全工具放进指定文件夹就能当手脚用，自己配置大模型，用三种模式把红队 / 渗透工作流整合得更好用。边界主要靠提示词和分档人工审批，不做重型 OS 隔离平台。
+RiftX 是以开源 Agent Runtime（固定版本、源码内嵌）为底座的本机安全测试 Agent：把安全工具放进指定文件夹就能当手脚用，自己配置大模型，用三种模式把红队 / 渗透工作流整合得更好用。边界主要靠提示词和分档人工审批，不做重型 OS 隔离平台。
 
-本质：单靠该 runtime 也能做这些事；RiftX 把它们收成一个独立程序，界面、任务、工具、审批都更顺手。
+本质：单靠该 runtime 也能做这些事；RiftX 把它们收成独立程序，界面、任务、工具、审批都更顺手。
 
 ## 2. 三种模式（从紧到松）
 
@@ -26,13 +27,13 @@ RiftX 是以开源 Agent Runtime（固定版本、源码内嵌）为底座的 **
 | --- | --- |
 | macOS | 桌面应用（Apple Silicon 优先） |
 | Windows | 桌面应用 |
-| Linux | **暂不考虑** |
+| Linux | **CLI 正式入口**（1.0 合同；不做 Linux Desktop / TUI） |
 
-- 必须有自己的应用 UI，**不照抄**上游 Agent 产品的界面与交互品牌。
+- macOS / Windows 必须有自己的应用 UI，**不照抄**上游 Agent 产品的界面与交互品牌。
 - 所有面向用户的展示（窗口标题、关于页、安装包名、进程名、报告抬头、设置文案等）使用 **RiftX** 品牌。
 - 上游产品标识不出现在 UI / 安装包 / 报告等展示面；源码、许可证与技术归属可保留在开发者可见位置。
-- 只靠用户自己配置大模型（Responses-compatible Profile + API Key），**不提供**上游账号登录 / 设备码登录。
-- 后台为本机 `riftxd`，经本地 IPC（macOS UDS / Windows Named Pipe）与桌面通信，不公开 TCP 控制面。
+- 只靠用户自己配置大模型（API Key）；**不提供**上游账号登录 / 设备码登录。当前运行时原生路径为 Responses-compatible；Chat Completions 由 1.0 计划中的 LLM Bridge 补齐。
+- 后台为本机 `riftxd`，经本地 IPC（macOS UDS / Windows Named Pipe）与桌面 / CLI 通信，不公开 TCP 控制面。
 
 ## 4. 核心能力
 
@@ -75,41 +76,42 @@ RiftX 是以开源 Agent Runtime（固定版本、源码内嵌）为底座的 **
 - Kill Switch / 暂停。
 - 不实现遥测。
 
-### 明确不做（v0.8 非目标；远期若企业强需求再议）
+### 明确不做（v0.8 / 1.0 非目标）
 
 - OS 级 Guard（Landlock / netns / Seatbelt / WFP 等强制隔离）。
 - 多维强制 Scope / Policy Revision 作为主安全边界。
 - 全库案件加密、加密 `.riftxcase` 容器。
 - 独立 Evidence Evaluator 作为成功硬门槛。
-- Linux CLI/TUI、三平台签名公证与自动更新工程（可晚于产品好用之后）。
+- Linux Desktop / Linux TUI；自动更新（签名安装包属于 1.0 发布工程，见 1.0 计划 M7）。
 
-仓库中若仍有上述相关代码，视为**遗留实现**，产品路线不再加功能；后续按需收敛或删除。
+仓库中若仍有 Guard / 过重加密等相关代码，视为**遗留实现**，产品路线不再加功能；后续按需收敛或删除。
 
 ## 6. 当前实现对照（摘要）
 
 已有且继续用：
 
-- 内嵌 Agent Runtime、`riftxd`、本地 IPC、Tauri 桌面壳。
+- 内嵌 Agent Runtime、`riftxd`、本地 IPC、Tauri 桌面壳、Operator CLI。
 - Tools / Skills 目录扫描与 doctor。
-- 自配 LLM Profile、钥匙串存 Key。
-- 任务创建、对话、中断、单次命令审批、模式切换 UI（命名将收敛为 RedTeam / Pentest / Auto）。
-- Markdown / JSON 报告。
+- 自配 LLM Profile、钥匙串存 Key；Desktop 可编辑 Profile 与 Tools Directory。
+- 任务创建、对话、中断、命令审批；模式 RedTeam / Pentest / Auto 与分档审批。
+- Auto：启动确认短语、Lab + 到期、无进展提示（尚非完整多 turn 控制器）。
+- Markdown / JSON 报告；OS Guard 强制拒绝已旁路并标 legacy。
 
-遗留或偏离、需按 v0.8 收敛：
+仍按 1.0 计划推进：
 
-- 旧模式名 Native / Hardened / Auto 与 OS Guard 路径。
-- 过重的凭据租约 / 全库加密 / 案件包叙事。
-- Linux 与发布签名排期。
-- 展示面若残留上游产品名，改为 RiftX。
+- Chat Completions 双协议与 Profile 事务化（M1）。
+- 统一执行闸门、到期与审计 fail-closed（M2）。
+- Auto 多 turn 控制器（M3）。
+- 正式签名安装包、Linux CLI 产品化与真人验收（M6–M8）。
 
-细节与阶段计划见 [RiftX-技术实现方案.md](./RiftX-技术实现方案.md)。本地进度见 [当前项目进度.md](./当前项目进度.md)（不提交）。
+细节见 [RiftX-技术实现方案.md](./RiftX-技术实现方案.md) 与 [1.0 计划.md](./1.0%20计划.md)。本地进度见 [当前项目进度.md](./当前项目进度.md)（不提交）。
 
 ## 7. 当前运行方式
 
 构建 Gateway / CLI：
 
 ```bash
-cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli
+conda run -n agent sh -lc 'cd codex-rs && cargo build -p codex-riftx-gateway -p codex-riftx-cli'
 ```
 
 启动 daemon（需自备 API Key）：
@@ -119,11 +121,10 @@ export RIFTX_LLM_API_KEY="<your-api-key>"
 ./codex-rs/target/debug/riftxd --config riftx.toml
 ```
 
-启动桌面：
+本机实验配置请复制 `riftx.local.toml.example` → `riftx.local.toml`（已 gitignore），并用：
 
 ```bash
-pnpm install
-RIFTX_CONFIG="$PWD/riftx.toml" pnpm --filter @riftx/desktop tauri dev
+RIFTX_CONFIG="$PWD/riftx.local.toml" conda run -n agent pnpm --filter @riftx/desktop tauri dev
 ```
 
 ## 8. 源码布局（产品相关）
@@ -139,6 +140,7 @@ RiftX/
 │   ├── riftx-cli/
 │   ├── riftx-app-server-adapter/ # Agent Runtime 受限 facade
 │   └── …                         # 内嵌 runtime 与其它 crate
+├── 1.0 计划.md
 ├── RiftX-项目说明.md
 └── RiftX-技术实现方案.md
 ```

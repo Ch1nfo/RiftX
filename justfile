@@ -85,6 +85,17 @@ test *args:
 test *args:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; $env:NEXTEST_PROFILE = "local"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
 
+# Tauri bridge crate lives outside the codex-rs workspace (no local nextest profile).
+[no-cd]
+[unix]
+test-desktop-bridge:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast --manifest-path {{ justfile_directory() }}/apps/desktop/src-tauri/Cargo.toml
+
+[no-cd]
+[windows]
+test-desktop-bridge:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast --manifest-path "{{ justfile_directory() }}/apps/desktop/src-tauri/Cargo.toml"
+
 # Run from the repository root so scripts that resolve paths from `cwd` see
 # the same layout they use in GitHub Actions.
 [no-cd]

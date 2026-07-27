@@ -8,7 +8,7 @@ RiftX 以开源 Agent Runtime 为底座：指定文件夹放安全工具即可�
 
 > 仅用于你有权测试的目标。展示面使用 RiftX 品牌；不提供上游账号登录。
 
-## 产品方向（v0.8）
+## 产品方向（v0.8 → 1.0）
 
 三种模式从紧到松：
 
@@ -16,27 +16,30 @@ RiftX 以开源 Agent Runtime 为底座：指定文件夹放安全工具即可�
 - **Pentest**：企业内指定目标巡检；多数可跑，危险命令要批。
 - **Auto**：靶场全自动推进；启动前一次风险确认，运行中少打断，可 Kill Switch。
 
-形态：macOS / Windows 桌面应用（Linux 暂不考虑）。自有 UI，不照抄上游 Agent 产品界面。
+形态：macOS / Windows 桌面应用；Linux 以 CLI 为正式入口（见 1.0 计划）。自有 UI，不照抄上游 Agent 产品界面。
 后台 `riftxd` 经本机 IPC（UDS / Named Pipe）通信。API Key 进系统钥匙串。
 
-详细说明见 [RiftX-项目说明.md](./RiftX-项目说明.md) 与
-[RiftX-技术实现方案.md](./RiftX-技术实现方案.md)。
+详细说明见 [RiftX-项目说明.md](./RiftX-项目说明.md)、
+[RiftX-技术实现方案.md](./RiftX-技术实现方案.md) 与
+[1.0 计划.md](./1.0%20计划.md)。
 
 ## 当前实现
 
-代码库已有可用底座，产品语义正在从旧版 Native/Hardened/Auto 收敛到 v0.8：
+v0.8 产品主路径（模式、分档审批、设置、Auto 启动确认、Guard 旁路）已落地；正在按
+[1.0 计划.md](./1.0%20计划.md) 补齐双协议 LLM、Auto 多 turn、三平台发布与验收。
 
 - 内嵌 Agent Runtime（仅 API Key，无上游账号登录）。
 - `riftxd`、本地 IPC、Operator CLI。
 - Tauri 桌面：任务列表、对话、中断、命令审批、报告、托盘 Pause/Kill Switch。
 - Tools / Skills 目录扫描、doctor、PATH 注入。
-- LLM Profile + 钥匙串；模式切换 API/UI（命名与分档审批将按 v0.8 对齐）。
+- LLM Profile + 钥匙串；RedTeam / Pentest / Auto 与分档审批。
+- Desktop 可编辑 Tools Directory 与 LLM Profile（写回 `riftx.toml`）。
+- Auto：启动确认短语、Lab + 到期校验、五分钟无进展提示。
 - Markdown / JSON 报告；macOS 调试 `.app` 验证过主流程。
 
-仓库中仍可能存在 Guard、全库加密等**遗留**实现；v0.8 **不将其作为产品主路径或发布门槛**。
+仓库中仍可能存在 Guard、全库加密等**遗留**实现；**不作为**产品主路径或 1.0 发布门槛。
 
-尚未按 v0.8 完成：模式更名与分档审批、展示面品牌清查、Profile 完整编辑、Auto 启动确认、
-桌面体验打磨。不预装任何安全工具。
+已知缺口（详见 1.0 计划）：Chat Completions 直连、Profile 事务化、Auto 多 turn、正式签名安装包等。不预装任何安全工具。
 
 ## 本机工具
 
@@ -198,7 +201,7 @@ conda run -n agent pnpm --filter @riftx/desktop \
   --structured-criterion '{"id":"reach-dc","description":"验证到达域控的攻击路径","predicate":{"type":"attackPath","destinationRole":"domainController","accessLevel":"domainAdminEquivalent","minimumConfidenceBasisPoints":9000,"reproducibleEvidence":true}}' \
   --entry-point "10.10.20.15" \
   --cidr "10.10.0.0/16" \
-  --mode native \
+  --mode pentest \
   --environment lab \
   --capability network.discovery \
   --capability attack_path.analysis \
@@ -215,8 +218,11 @@ conda run -n agent pnpm --filter @riftx/desktop \
 
 ## 文档
 
-- [项目说明（v0.8）](./RiftX-项目说明.md)
+- [1.0 执行计划（正式发布合同）](./1.0%20计划.md)
+- [项目说明（v0.8 产品基线）](./RiftX-项目说明.md)
 - [产品与技术实施计划（v0.8）](./RiftX-技术实现方案.md)
+- [1.0 M0 基线记录](./docs/1.0-baseline.md)
+- [Changelog](./CHANGELOG.md)
 - [v0.7 架构决策（历史，已被 v0.8 收敛）](./architecture/adr/0001-v0.7-local-native-execution.md)
 - [上游版本锁](./codex-upstream.lock)
 - [上游同步约定](./UPSTREAM.md)

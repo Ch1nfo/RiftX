@@ -9,16 +9,13 @@ on:
 permissions:
   contents: read
 
+# Ordinary PR/push jobs must not require real provider API keys.
+# Live smoke suites (when added) are workflow_dispatch-only with protected secrets.
+
 jobs:
-  desktop:
-    name: Desktop (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - macos-14
-          - windows-2022
-    runs-on: ${{ matrix.os }}
+  upstream-lock:
+    name: Upstream lock
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -28,41 +25,109 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
+      - name: Verify vendored upstream revision
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 scripts/riftx/verify-upstream-lock.py
+          --expected-commit 963cda85aa2a4cfb85e52d771d22d9f3069951fa
 
-      - uses: actions/setup-node@v4
+      - name: Test upstream lock verifier
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 -m unittest
+          scripts/riftx/test_verify_upstream_lock.py
+
+  rust-fmt-check:
+    name: Rust fmt / check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
         with:
-          node-version: 22
-          cache: pnpm
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            apps/desktop/src-tauri
-            codex-rs
+          workspaces: codex-rs
 
-      - name: Install desktop dependencies
+      - name: Check formatting
+        shell: bash -el {0}
+        run: conda run -n agent just fmt-check
+
+      - name: Check integration crates
+        shell: bash -el {0}
         run: >-
-          conda run -n agent pnpm install
-          --filter @riftx/desktop...
-          --frozen-lockfile
+          conda run -n agent sh -lc
+          'cd codex-rs && cargo check -p codex-app-server
+          -p codex-riftx-app-server-adapter -p codex-riftx-artifacts
+          -p codex-riftx-core -p codex-riftx-credentials
+          -p codex-riftx-crypto -p codex-riftx-domain
+          -p codex-riftx-guard -p codex-riftx-ipc -p codex-riftx-report
+          -p codex-riftx-skills -p codex-riftx-tools
+          -p codex-riftx-gateway -p codex-riftx-cli'
 
-      - name: Build desktop frontend
-        run: conda run -n agent pnpm --filter @riftx/desktop build
+  app-server-protocol:
+    name: App Server protocol fixtures
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Prepare daemon sidecar
-        env:
-          RIFTX_SIDECAR_PROFILE: debug
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Test App Server protocol fixtures
+        working-directory: codex-rs
         run: >-
-          conda run -n agent pnpm
-          --filter @riftx/desktop prepare:sidecar
+          conda run -n agent just test
+          -p codex-app-server-protocol
 
-      - name: Test Tauri bridge
+  riftx-crate-tests:
+    name: RiftX crate tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Test RiftX crates
+        working-directory: codex-rs
         run: >-
-          conda run -n agent cargo test
-          --manifest-path apps/desktop/src-tauri/Cargo.toml
+          conda run -n agent just test
+          -p codex-riftx-app-server-adapter
+          -p codex-riftx-artifacts
+          -p codex-riftx-cli
+          -p codex-riftx-core
+          -p codex-riftx-credentials
+          -p codex-riftx-crypto
+          -p codex-riftx-domain
+          -p codex-riftx-guard
+          -p codex-riftx-ipc
+          -p codex-riftx-report
+          -p codex-riftx-skills
+          -p codex-riftx-tools
+          -p codex-riftx-gateway
 
   local-contracts:
     name: Local contracts (${{ matrix.os }})
@@ -112,8 +177,15 @@ jobs:
           conda run -n agent just test
           -p codex-riftx-gateway
 
-  rust:
-    runs-on: ubuntu-24.04
+  desktop-frontend:
+    name: Desktop TypeScript build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-2022
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -123,42 +195,74 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install desktop dependencies
+        run: >-
+          conda run -n agent pnpm install
+          --filter @riftx/desktop...
+          --frozen-lockfile
+
+      - name: Build desktop frontend
+        run: conda run -n agent pnpm --filter @riftx/desktop build
+
+  tauri-bridge:
+    name: Tauri bridge tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
       - uses: taiki-e/install-action@nextest
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: codex-rs
+          workspaces: |
+            apps/desktop/src-tauri
+            codex-rs
 
-      - name: Verify vendored upstream revision
-        shell: bash -el {0}
+      - name: Install desktop dependencies
         run: >-
-          conda run -n agent python3 scripts/riftx/verify-upstream-lock.py
-          --expected-commit 963cda85aa2a4cfb85e52d771d22d9f3069951fa
+          conda run -n agent pnpm install
+          --filter @riftx/desktop...
+          --frozen-lockfile
 
-      - name: Check formatting
-        shell: bash -el {0}
-        run: conda run -n agent just fmt-check
+      - name: Build desktop frontend
+        run: conda run -n agent pnpm --filter @riftx/desktop build
 
-      - name: Check integration crates
-        shell: bash -el {0}
+      - name: Prepare daemon sidecar
+        env:
+          RIFTX_SIDECAR_PROFILE: debug
         run: >-
-          conda run -n agent sh -lc
-          'cd codex-rs && cargo check -p codex-app-server
-          -p codex-riftx-app-server-adapter -p codex-riftx-artifacts
-          -p codex-riftx-core -p codex-riftx-credentials
-          -p codex-riftx-crypto -p codex-riftx-domain
-          -p codex-riftx-guard -p codex-riftx-ipc -p codex-riftx-report
-          -p codex-riftx-skills -p codex-riftx-tools
-          -p codex-riftx-gateway -p codex-riftx-cli'
+          conda run -n agent pnpm
+          --filter @riftx/desktop prepare:sidecar
 
-      - name: Test App Server protocol fixtures
-        working-directory: codex-rs
-        run: >-
-          conda run -n agent just test
-          -p codex-app-server-protocol
-
-      - name: Test upstream lock verifier
-        shell: bash -el {0}
-        run: >-
-          conda run -n agent python3 -m unittest
-          scripts/riftx/test_verify_upstream_lock.py
+      - name: Test Tauri bridge
+        run: conda run -n agent just test-desktop-bridge
