@@ -559,6 +559,9 @@ async fn activate_engagement(
     state
         .publish(&id, "engagementActivated", json!({"workspace": workspace}))
         .await;
+    if engagement.mode == ExecutionMode::Auto {
+        crate::auto_run::start_locked(&state, &engagement).await?;
+    }
     Ok(Json(engagement))
 }
 
@@ -600,6 +603,12 @@ fn mode_switch_conflict(message: impl Into<String>) -> ApiError {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum TurnRequestSource {
+    Operator,
+    Auto,
+}
+
 async fn start_turn(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
@@ -612,10 +621,27 @@ async fn start_turn(
         .acquire_owned()
         .await
         .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
-    require_execution_running(&state).await?;
-    let mut engagement = state.store.engagement(&id).await?;
+    let accepted =
+        start_turn_locked(&state, &id, params.input, TurnRequestSource::Operator).await?;
+    Ok((StatusCode::ACCEPTED, Json(accepted)))
+}
+
+pub(crate) async fn start_turn_locked(
+    state: &GatewayState,
+    id: &str,
+    input: Option<String>,
+    source: TurnRequestSource,
+) -> Result<TurnAccepted, ApiError> {
+    require_execution_running(state).await?;
+    let mut engagement = state.store.engagement(id).await?;
     if engagement.status != EngagementStatus::Active {
         return Err(ApiError::bad_request("engagement is not active"));
+    }
+    if engagement.mode == ExecutionMode::Auto && matches!(source, TurnRequestSource::Operator) {
+        return Err(ApiError::conflict(
+            "auto_controller_required",
+            "Auto turns are scheduled only by the RiftX controller",
+        ));
     }
     if let Err(error) = validate_authorization_time(&engagement.authorization, unix_timestamp()) {
         state
@@ -623,8 +649,7 @@ async fn start_turn(
             .await?;
         return Err(error);
     }
-    let operator_request = params
-        .input
+    let operator_request = input
         .filter(|input| !input.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_TURN_REQUEST.to_string());
     if operator_request.len() > MAX_OPERATOR_REQUEST_BYTES {
@@ -641,13 +666,13 @@ async fn start_turn(
                 "LLM profile {profile_name:?} is not ready: {error}"
             ))
         })?;
-    let workspace = state.config.daemon.workspace_root.join(&id);
+    let workspace = state.config.daemon.workspace_root.join(id);
     tokio::fs::create_dir_all(&workspace)
         .await
         .map_err(|error| ApiError::app_server(error.to_string()))?;
     let existing_thread = {
         let threads = state.agent_threads.read().await;
-        threads.get(&id).cloned()
+        threads.get(id).cloned()
     };
     let thread_id = match existing_thread {
         Some(thread_id) => thread_id,
@@ -660,7 +685,7 @@ async fn start_turn(
                 .agent_threads
                 .write()
                 .await
-                .insert(id.clone(), thread_id.clone());
+                .insert(id.to_string(), thread_id.clone());
             engagement.thread_id = Some(thread_id.clone());
             state.store.put_engagement(&engagement).await?;
             thread_id
@@ -670,41 +695,47 @@ async fn start_turn(
         .thread_engagements
         .write()
         .await
-        .insert(thread_id.clone(), id.clone());
+        .insert(thread_id.clone(), id.to_string());
     let mut task = Task {
         id: Uuid::new_v4().to_string(),
-        engagement_id: id.clone(),
-        kind: "main_agent_turn".to_string(),
+        engagement_id: id.to_string(),
+        kind: match source {
+            TurnRequestSource::Operator => "main_agent_turn",
+            TurnRequestSource::Auto => "auto_agent_turn",
+        }
+        .to_string(),
         status: TaskStatus::Pending,
         turn_id: None,
         error: None,
     };
     state.store.put_task(&task).await?;
-    let operator_entry = state
-        .store
-        .append_conversation_entry(&ConversationEntryDraft {
-            id: Uuid::new_v4().to_string(),
-            engagement_id: id.clone(),
-            turn_id: None,
-            role: ConversationRole::Operator,
-            kind: ConversationKind::Message,
-            text: operator_request.clone(),
-            created_at: unix_timestamp(),
-        })
-        .await?;
-    state
-        .publish(
-            &id,
-            "operator/message",
-            json!({
-                "entryId": operator_entry.id,
-                "role": operator_entry.role,
-                "kind": operator_entry.kind,
-                "text": operator_entry.text,
-            }),
-        )
-        .await;
-    let input = operational_agent_input(&state, &id, operator_request).await?;
+    if matches!(source, TurnRequestSource::Operator) {
+        let operator_entry = state
+            .store
+            .append_conversation_entry(&ConversationEntryDraft {
+                id: Uuid::new_v4().to_string(),
+                engagement_id: id.to_string(),
+                turn_id: None,
+                role: ConversationRole::Operator,
+                kind: ConversationKind::Message,
+                text: operator_request.clone(),
+                created_at: unix_timestamp(),
+            })
+            .await?;
+        state
+            .publish(
+                id,
+                "operator/message",
+                json!({
+                    "entryId": operator_entry.id,
+                    "role": operator_entry.role,
+                    "kind": operator_entry.kind,
+                    "text": operator_entry.text,
+                }),
+            )
+            .await;
+    }
+    let input = operational_agent_input(state, id, operator_request).await?;
     let turn_result = app_server
         .start_local_turn(thread_id.clone(), &workspace, input)
         .await;
@@ -721,7 +752,7 @@ async fn start_turn(
     task.turn_id = Some(turn_id.clone());
     state.store.put_task(&task).await?;
     state.active_turns.write().await.insert(
-        id.clone(),
+        id.to_string(),
         ActiveTurn {
             profile_name,
             thread_id,
@@ -730,18 +761,15 @@ async fn start_turn(
     );
     state
         .publish(
-            &id,
+            id,
             "turnStarted",
             json!({"taskId": task.id, "turnId": task.turn_id}),
         )
         .await;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(TurnAccepted {
-            task_id: task.id,
-            status: task.status,
-        }),
-    ))
+    Ok(TurnAccepted {
+        task_id: task.id,
+        status: task.status,
+    })
 }
 
 async fn list_approvals(

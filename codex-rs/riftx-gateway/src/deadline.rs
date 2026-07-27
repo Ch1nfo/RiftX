@@ -103,6 +103,9 @@ impl GatewayState {
             .await;
             task_update?;
         }
+        if engagement.mode == codex_riftx_core::ExecutionMode::Auto {
+            crate::auto_run::expire(self, engagement_id).await?;
+        }
         let audit_available = self
             .append_engagement_critical(
                 &engagement,

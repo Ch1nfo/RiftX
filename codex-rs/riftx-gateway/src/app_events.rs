@@ -419,6 +419,7 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
     let Some(engagement_id) = engagement_for_thread(state, thread_id).await else {
         return;
     };
+    let auto_completion_data = (event.kind == "turn/completed").then(|| event.data.clone());
     if event.kind == "turn/completed"
         && let Some(turn_id) = event.turn_id.as_deref()
     {
@@ -448,6 +449,9 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
             }),
         )
         .await;
+    if let Some(data) = auto_completion_data {
+        crate::auto_run::on_turn_completed(state, &engagement_id, &data).await;
+    }
 }
 
 async fn publish_pending(state: &GatewayState, kind: &str, thread_id: String, data: Value) {
