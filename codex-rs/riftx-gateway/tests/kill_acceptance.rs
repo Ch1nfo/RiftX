@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::Request;
@@ -54,7 +56,7 @@ async fn system_kill_terminates_runtime_process_tree_without_desktop() -> anyhow
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
     wait_for_daemon(&client, &mut daemon.child).await?;
 
-    let engagement = create_engagement(&client).await?;
+    let engagement = create_engagement(&client, 4_000_000_000).await?;
     let response = client
         .post(&format!("/v1/engagements/{}/activate", engagement.id))
         .await?;
@@ -150,7 +152,7 @@ async fn engagement_interrupt_terminates_process_tree_and_remains_resumable() ->
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
     wait_for_daemon(&client, &mut daemon.child).await?;
 
-    let engagement = create_engagement(&client).await?;
+    let engagement = create_engagement(&client, 4_000_000_000).await?;
     let response = client
         .post(&format!("/v1/engagements/{}/activate", engagement.id))
         .await?;
@@ -223,6 +225,90 @@ async fn engagement_interrupt_terminates_process_tree_and_remains_resumable() ->
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authorization_deadline_terminates_runtime_process_tree() -> anyhow::Result<()> {
+    let temp = TempDir::new().context("create runtime deadline acceptance directory")?;
+    let server = responses::start_mock_server().await;
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(KillResponseSequence {
+            calls: Arc::clone(&model_calls),
+        })
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    let config = test_config(temp.path(), format!("{}/v1", server.uri()));
+    let config_path = temp.path().join("riftx.toml");
+    tokio::fs::write(&config_path, toml::to_string(&config)?).await?;
+    let mut daemon = spawn_daemon(&config_path)?;
+    let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
+    wait_for_daemon(&client, &mut daemon.child).await?;
+
+    let engagement = create_engagement(&client, unix_timestamp() + 10).await?;
+    let response = client
+        .post(&format!("/v1/engagements/{}/activate", engagement.id))
+        .await?;
+    ensure_status(response, StatusCode::OK, "activate deadline engagement").await?;
+    let response = client
+        .post_json(
+            &format!("/v1/engagements/{}/turns", engagement.id),
+            serde_json::to_vec(&json!({"input": "Start the deadline process tree."}))?,
+        )
+        .await?;
+    ensure_status(response, StatusCode::ACCEPTED, "start deadline turn").await?;
+
+    let approval = wait_for_command_approval(&client, &engagement.id).await?;
+    let approval_id = approval["id"].as_str().context("approval id missing")?;
+    let decision = client
+        .post_json(
+            &format!("/v1/approvals/{approval_id}/decision"),
+            serde_json::to_vec(&json!({"decision": "approve"}))?,
+        )
+        .await?;
+    anyhow::ensure!(
+        decision.status() == StatusCode::NO_CONTENT || decision.status() == StatusCode::OK,
+        "approve deadline command returned {}",
+        decision.status()
+    );
+
+    let pid_path = config
+        .daemon
+        .workspace_root
+        .join(&engagement.id)
+        .join("kill-descendant.pid");
+    let descendant_pid = wait_for_pid(&pid_path).await?;
+    wait_for_model_calls(&model_calls, 2).await?;
+    anyhow::ensure!(
+        process_exists(descendant_pid),
+        "descendant exited before authorization deadline"
+    );
+
+    wait_for_process_exit(descendant_pid).await?;
+    let report = wait_for_expired_report(&client, &engagement.id).await?;
+    anyhow::ensure!(
+        report["engagement"]["status"] == "expired",
+        "deadline did not expire the engagement: {report}"
+    );
+    let executions = report["executions"]
+        .as_array()
+        .context("deadline report executions missing")?;
+    anyhow::ensure!(
+        executions.len() == 1 && executions[0]["status"] == "interrupted",
+        "deadline did not interrupt the runtime execution: {executions:?}"
+    );
+    let response = client.get("/v1/system/status").await?;
+    anyhow::ensure!(response.status() == StatusCode::OK);
+    let control: DaemonControlStatus = serde_json::from_slice(&response.bytes().await?)?;
+    anyhow::ensure!(
+        (control.state, control.reason) == (DaemonRunState::Running, None),
+        "engagement deadline paused the daemon: {control:?}"
+    );
+    Ok(())
+}
+
 struct KillResponseSequence {
     calls: Arc<AtomicUsize>,
 }
@@ -259,7 +345,7 @@ impl Respond for KillResponseSequence {
     }
 }
 
-async fn create_engagement(client: &LocalIpcClient) -> anyhow::Result<Engagement> {
+async fn create_engagement(client: &LocalIpcClient, expires_at: i64) -> anyhow::Result<Engagement> {
     let response = client
         .post_json(
             "/v1/engagements",
@@ -284,7 +370,7 @@ async fn create_engagement(client: &LocalIpcClient) -> anyhow::Result<Engagement
                     "environment": "lab",
                     "window": {
                         "startsAt": null,
-                        "expiresAt": 4_000_000_000_i64,
+                        "expiresAt": expires_at,
                     },
                 },
             }))?,
@@ -382,6 +468,32 @@ async fn wait_for_interrupted_report(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("kill report did not reach interrupted state: {last_report}")
+}
+
+async fn wait_for_expired_report(
+    client: &LocalIpcClient,
+    engagement_id: &str,
+) -> anyhow::Result<Value> {
+    let path = format!("/v1/engagements/{engagement_id}/report?format=json");
+    let mut last_report = Value::Null;
+    for _ in 0..POLL_ATTEMPTS {
+        let response = client.get(&path).await?;
+        if response.status() == StatusCode::OK {
+            last_report = serde_json::from_slice(&response.bytes().await?)?;
+            if last_report["engagement"]["status"] == "expired" {
+                return Ok(last_report);
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("deadline report did not reach expired state: {last_report}")
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
 }
 
 fn descendant_command() -> &'static str {
