@@ -1,9 +1,12 @@
 use crate::bridge::DesktopError;
 use crate::bridge::DesktopState;
+use codex_riftx_core::RiftxConfig;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::Runtime;
@@ -14,6 +17,8 @@ use tauri_plugin_shell::process::CommandEvent;
 const STARTUP_ATTEMPTS: usize = 100;
 const STARTUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const SHUTDOWN_ATTEMPTS: usize = 50;
+const CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
+static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub(crate) struct DaemonSupervisor {
@@ -27,6 +32,100 @@ struct OwnedDaemon {
 }
 
 impl DaemonSupervisor {
+    pub(crate) async fn validate_candidate<R: Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        config: &RiftxConfig,
+        profile_name: &str,
+    ) -> Result<(), DesktopError> {
+        let profile = config
+            .llm
+            .profiles
+            .get(profile_name)
+            .cloned()
+            .ok_or_else(|| {
+                DesktopError::new(
+                    "invalid_config",
+                    format!("LLM profile {profile_name:?} is not configured"),
+                )
+            })?;
+        let candidate_root = candidate_root();
+        let config_path = candidate_root.join("riftx.toml");
+        let mut candidate = config.clone();
+        candidate.llm.default_profile = profile_name.to_string();
+        candidate.llm.profiles = BTreeMap::from([(profile_name.to_string(), profile)]);
+        candidate.daemon.ipc_dir = candidate_root.join("ipc");
+        candidate.daemon.state_db = candidate_root.join("state.sqlite");
+        candidate.daemon.runtime_home = candidate_root.join("runtime");
+        candidate.daemon.workspace_root = candidate_root.join("workspaces");
+        candidate.audit.jsonl_path = candidate_root.join("audit.jsonl");
+        candidate.artifacts.root = candidate_root.join("artifacts");
+        tokio::fs::create_dir_all(&candidate_root)
+            .await
+            .map_err(start_error)?;
+        candidate
+            .write_atomic(&config_path)
+            .await
+            .map_err(start_error)?;
+
+        let result = self.run_candidate(app, &config_path, profile_name).await;
+        let _ = tokio::fs::remove_dir_all(&candidate_root).await;
+        result
+    }
+
+    async fn run_candidate<R: Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        config_path: &PathBuf,
+        profile_name: &str,
+    ) -> Result<(), DesktopError> {
+        let api_keys = crate::settings::sidecar_api_keys(config_path).await?;
+        let mut command = app
+            .shell()
+            .sidecar("riftxd")
+            .map_err(start_error)?
+            .arg("--config")
+            .arg(config_path)
+            .arg("--validate-profile")
+            .arg(profile_name);
+        if !api_keys.is_empty() {
+            command = command.arg("--llm-api-key-stdin");
+        }
+        let (mut events, mut child) = command.spawn().map_err(start_error)?;
+        if !api_keys.is_empty()
+            && let Err(error) = write_api_keys(&mut child, api_keys)
+        {
+            let _ = child.kill();
+            return Err(error);
+        }
+        let outcome = tokio::time::timeout(CANDIDATE_TIMEOUT, async {
+            while let Some(event) = events.recv().await {
+                match event {
+                    CommandEvent::Terminated(payload) => return Ok(payload.code == Some(0)),
+                    CommandEvent::Error(_) => return Err(()),
+                    CommandEvent::Stdout(_) | CommandEvent::Stderr(_) => {}
+                    _ => {}
+                }
+            }
+            Err(())
+        })
+        .await;
+        match outcome {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false) | Err(())) => Err(DesktopError::new(
+                "profile_candidate_failed",
+                format!("LLM profile {profile_name:?} candidate Runtime failed validation"),
+            )),
+            Err(_) => {
+                let _ = child.kill();
+                Err(DesktopError::new(
+                    "profile_candidate_timeout",
+                    format!("LLM profile {profile_name:?} candidate Runtime validation timed out"),
+                ))
+            }
+        }
+    }
+
     pub(crate) async fn ensure_running<R: Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -129,18 +228,6 @@ impl DaemonSupervisor {
         Ok(false)
     }
 
-    pub(crate) async fn stop_after_api_key_delete(
-        &self,
-        state: &DesktopState,
-    ) -> Result<bool, DesktopError> {
-        let _transition = self.transition.lock().await;
-        if self.stop_owned() {
-            wait_until_stopped(state).await?;
-            return Ok(false);
-        }
-        probe(state).await
-    }
-
     fn replace_child(
         &self,
         child: CommandChild,
@@ -172,6 +259,14 @@ impl DaemonSupervisor {
             })
             .unwrap_or(true)
     }
+}
+
+fn candidate_root() -> PathBuf {
+    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "riftx-profile-candidate-{}-{sequence}",
+        std::process::id()
+    ))
 }
 
 async fn probe(state: &DesktopState) -> Result<bool, DesktopError> {

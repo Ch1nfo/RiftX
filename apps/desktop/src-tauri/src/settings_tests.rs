@@ -216,6 +216,16 @@ async fn cannot_validate_after_removing_last_profile() {
     assert!(config.validate().is_err());
 }
 
+#[test]
+fn counts_shared_keyring_credential_references() {
+    let mut config: RiftxConfig = toml::from_str(sample_config_toml()).expect("config");
+    let shared = config.llm.profiles.get("openai").expect("openai").clone();
+    config.llm.profiles.insert("backup".to_string(), shared);
+
+    assert_eq!(credential_reference_count(&config, "openai"), 2);
+    assert_eq!(credential_reference_count(&config, "missing"), 0);
+}
+
 #[tokio::test]
 async fn write_riftx_config_uses_atomic_replace() {
     let temp = tempfile::tempdir().expect("temp dir");
