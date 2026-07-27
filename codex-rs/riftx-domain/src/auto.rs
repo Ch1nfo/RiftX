@@ -90,6 +90,26 @@ pub enum AutoStopReason {
     SuccessCriteriaMet,
 }
 
+/// Deterministic result for one structured Auto success criterion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoCriterionAssessment {
+    pub criterion_id: String,
+    pub satisfied: bool,
+    pub evidence_ids: Vec<String>,
+}
+
+/// Persisted output from the RiftX goal evaluator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoGoalAssessment {
+    pub evaluator_version: String,
+    pub evaluated_at: i64,
+    pub succeeded: bool,
+    pub criteria: Vec<AutoCriterionAssessment>,
+    pub evidence_ids: Vec<String>,
+}
+
 /// Persisted checkpoint for one engagement's bounded Auto run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,6 +124,8 @@ pub struct AutoRun {
     pub tool_calls: u32,
     pub consecutive_failures: u32,
     pub no_progress_turns: u32,
+    #[serde(default)]
+    pub last_goal_assessment: Option<AutoGoalAssessment>,
     pub started_at: Option<i64>,
     pub updated_at: i64,
 }

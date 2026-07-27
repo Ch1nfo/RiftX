@@ -127,6 +127,7 @@ async fn auto_run_checkpoint_round_trips_with_the_engagement_key() {
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        last_goal_assessment: None,
         started_at: None,
         updated_at: 1,
     };

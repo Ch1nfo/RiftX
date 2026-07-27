@@ -2,6 +2,8 @@ pub use codex_riftx_domain::Artifact;
 pub use codex_riftx_domain::AssessmentObjective;
 pub use codex_riftx_domain::AuthorizationScope;
 pub use codex_riftx_domain::AuthorizationWindow;
+pub use codex_riftx_domain::AutoCriterionAssessment;
+pub use codex_riftx_domain::AutoGoalAssessment;
 pub use codex_riftx_domain::AutoLlmProfileSnapshot;
 pub use codex_riftx_domain::AutoRun;
 pub use codex_riftx_domain::AutoRunConfig;
@@ -36,7 +38,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 6;
+pub const IPC_PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

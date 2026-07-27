@@ -239,6 +239,15 @@ impl StateStore {
                 )?;
             }
         }
+        for coverage in self.coverage(engagement_id).await? {
+            check_references(
+                "coverage",
+                &coverage.id,
+                "evidence",
+                &coverage.evidence_ids,
+                &evidence_ids,
+            )?;
+        }
         Ok(())
     }
 }

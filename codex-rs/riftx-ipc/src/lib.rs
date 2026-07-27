@@ -21,6 +21,8 @@ pub use protocol::AuditHealthState;
 pub use protocol::AuditHealthStatus;
 pub use protocol::AuthorizationScope;
 pub use protocol::AuthorizationWindow;
+pub use protocol::AutoCriterionAssessment;
+pub use protocol::AutoGoalAssessment;
 pub use protocol::AutoLlmProfileSnapshot;
 pub use protocol::AutoRun;
 pub use protocol::AutoRunConfig;

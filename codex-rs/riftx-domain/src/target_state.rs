@@ -153,6 +153,8 @@ pub struct Coverage {
     pub dimension: String,
     pub covered_items: u64,
     pub total_items: u64,
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
     pub measured_at: i64,
 }
 
@@ -265,6 +267,7 @@ impl Coverage {
         if self.total_items == 0 || self.covered_items > self.total_items {
             return Err(TargetStateError::InvalidCoverage);
         }
+        require_references("evidenceIds", &self.evidence_ids)?;
         Ok(())
     }
 }

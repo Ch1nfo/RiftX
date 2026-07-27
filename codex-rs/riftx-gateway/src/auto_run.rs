@@ -194,6 +194,7 @@ pub(crate) async fn prepare(
         tool_calls: 0,
         consecutive_failures: 0,
         no_progress_turns: 0,
+        last_goal_assessment: None,
         started_at: None,
         updated_at: now,
     };
@@ -479,6 +480,52 @@ async fn on_turn_completed_locked(
     };
     apply_turn_completion(&mut run, outcome, unix_timestamp());
     state.store.put_auto_run(&run).await?;
+    if outcome != TurnOutcome::Interrupted {
+        let evaluated_at = unix_timestamp();
+        let assessment = match crate::auto_evaluator::evaluate(state, &run, evaluated_at).await {
+            Ok(assessment) => assessment,
+            Err(error) => {
+                stop_run(
+                    state,
+                    &mut run,
+                    StopDecision {
+                        state: AutoRunState::Failed,
+                        reason: AutoStopReason::UnrecoverableError,
+                    },
+                )
+                .await?;
+                return Err(error.into());
+            }
+        };
+        run.last_goal_assessment = Some(assessment.clone());
+        run.updated_at = evaluated_at;
+        state.store.put_auto_run(&run).await?;
+        state
+            .emit_event(
+                engagement_id,
+                "auto/goalEvaluated",
+                serde_json::to_value(&assessment).unwrap_or_default(),
+            )
+            .await;
+        if assessment.succeeded {
+            stop_run(
+                state,
+                &mut run,
+                StopDecision {
+                    state: AutoRunState::Succeeded,
+                    reason: AutoStopReason::SuccessCriteriaMet,
+                },
+            )
+            .await?;
+            state.cancel_authorization_deadline(engagement_id).await;
+            state.agent_threads.write().await.remove(engagement_id);
+            state
+                .store
+                .transition_engagement(engagement_id, EngagementStatus::Completed, unix_timestamp())
+                .await?;
+            return Ok(());
+        }
+    }
     state
         .emit_event(
             engagement_id,

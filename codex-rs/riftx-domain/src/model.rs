@@ -101,6 +101,8 @@ pub struct Finding {
     pub evidence_ids: Vec<String>,
     pub title: String,
     pub severity: FindingSeverity,
+    #[serde(default)]
+    pub confidence_basis_points: u16,
     pub description: String,
     pub remediation: Option<String>,
 }
@@ -114,6 +116,8 @@ pub struct Evidence {
     pub execution_id: Option<String>,
     pub artifact_id: Option<String>,
     pub summary: String,
+    #[serde(default)]
+    pub reproducible: bool,
     pub captured_at: i64,
 }
 

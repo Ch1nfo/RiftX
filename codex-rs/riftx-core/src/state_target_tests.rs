@@ -280,6 +280,7 @@ fn evidence() -> Evidence {
         execution_id: Some("execution-1".to_string()),
         artifact_id: None,
         summary: "Authenticated access was reproduced".to_string(),
+        reproducible: false,
         captured_at: 80,
     }
 }
@@ -292,6 +293,7 @@ fn finding() -> Finding {
         evidence_ids: vec!["evidence-1".to_string()],
         title: "Credential reuse reaches domain controller".to_string(),
         severity: FindingSeverity::Critical,
+        confidence_basis_points: 9_500,
         description: "The authorized credential provides administrative access".to_string(),
         remediation: Some("Rotate the credential and restrict administrative logon".to_string()),
     }
@@ -326,6 +328,7 @@ fn coverage() -> Coverage {
         dimension: "authorizedAssets".to_string(),
         covered_items: 1,
         total_items: 1,
+        evidence_ids: vec!["evidence-1".to_string()],
         measured_at: 100,
     }
 }

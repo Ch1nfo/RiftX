@@ -57,6 +57,7 @@ fn coverage_rejects_impossible_counts() {
         dimension: "authorizedAssets".to_string(),
         covered_items: 3,
         total_items: 2,
+        evidence_ids: vec!["evidence-1".to_string()],
         measured_at: 100,
     };
 

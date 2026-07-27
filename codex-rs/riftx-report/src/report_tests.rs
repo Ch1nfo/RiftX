@@ -134,6 +134,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             dimension: "authorizedAssets".to_string(),
             covered_items: 3,
             total_items: 4,
+            evidence_ids: vec!["evidence-1".to_string()],
             measured_at: 70,
         }],
         tasks: Vec::new(),
