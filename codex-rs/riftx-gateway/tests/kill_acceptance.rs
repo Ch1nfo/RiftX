@@ -127,6 +127,102 @@ async fn system_kill_terminates_runtime_process_tree_without_desktop() -> anyhow
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engagement_interrupt_terminates_process_tree_and_remains_resumable() -> anyhow::Result<()>
+{
+    let temp = TempDir::new().context("create interrupt process acceptance directory")?;
+    let server = responses::start_mock_server().await;
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(KillResponseSequence {
+            calls: Arc::clone(&model_calls),
+        })
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    let config = test_config(temp.path(), format!("{}/v1", server.uri()));
+    let config_path = temp.path().join("riftx.toml");
+    tokio::fs::write(&config_path, toml::to_string(&config)?).await?;
+    let mut daemon = spawn_daemon(&config_path)?;
+    let client = LocalIpcClient::new(LocalIpcEndpoint::new(&config.daemon.ipc_dir));
+    wait_for_daemon(&client, &mut daemon.child).await?;
+
+    let engagement = create_engagement(&client).await?;
+    let response = client
+        .post(&format!("/v1/engagements/{}/activate", engagement.id))
+        .await?;
+    ensure_status(response, StatusCode::OK, "activate interrupt engagement").await?;
+    let response = client
+        .post_json(
+            &format!("/v1/engagements/{}/turns", engagement.id),
+            serde_json::to_vec(&json!({"input": "Start the interrupt process tree."}))?,
+        )
+        .await?;
+    ensure_status(response, StatusCode::ACCEPTED, "start interrupt turn").await?;
+
+    let approval = wait_for_command_approval(&client, &engagement.id).await?;
+    let approval_id = approval["id"].as_str().context("approval id missing")?;
+    let decision = client
+        .post_json(
+            &format!("/v1/approvals/{approval_id}/decision"),
+            serde_json::to_vec(&json!({"decision": "approve"}))?,
+        )
+        .await?;
+    anyhow::ensure!(
+        decision.status() == StatusCode::NO_CONTENT || decision.status() == StatusCode::OK,
+        "approve interrupt command returned {}",
+        decision.status()
+    );
+
+    let pid_path = config
+        .daemon
+        .workspace_root
+        .join(&engagement.id)
+        .join("kill-descendant.pid");
+    let descendant_pid = wait_for_pid(&pid_path).await?;
+    wait_for_model_calls(&model_calls, 2).await?;
+    anyhow::ensure!(
+        process_exists(descendant_pid),
+        "descendant exited before interrupt"
+    );
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.post(&format!("/v1/engagements/{}/interrupt", engagement.id)),
+    )
+    .await
+    .context("engagement interrupt endpoint did not return")??;
+    let status_code = response.status();
+    let body = response.bytes().await?;
+    anyhow::ensure!(
+        status_code == StatusCode::OK,
+        "interrupt returned {status_code}"
+    );
+    let interrupted: Engagement = serde_json::from_slice(&body)?;
+    anyhow::ensure!(
+        interrupted.status == codex_riftx_core::EngagementStatus::Active,
+        "interrupt ended the engagement: {interrupted:?}"
+    );
+
+    wait_for_process_exit(descendant_pid).await?;
+    let report = wait_for_interrupted_report(&client, &engagement.id).await?;
+    anyhow::ensure!(
+        report["engagement"]["status"] == "active",
+        "interrupt made the engagement non-resumable: {report}"
+    );
+    let response = client.get("/v1/system/status").await?;
+    anyhow::ensure!(response.status() == StatusCode::OK);
+    let control: DaemonControlStatus = serde_json::from_slice(&response.bytes().await?)?;
+    anyhow::ensure!(
+        (control.state, control.reason) == (DaemonRunState::Running, None),
+        "engagement interrupt paused the daemon: {control:?}"
+    );
+    Ok(())
+}
+
 struct KillResponseSequence {
     calls: Arc<AtomicUsize>,
 }

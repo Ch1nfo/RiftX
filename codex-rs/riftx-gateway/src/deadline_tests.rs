@@ -204,7 +204,7 @@ async fn restart_marks_past_deadline_active_work_expired_without_extending_it() 
 }
 
 #[tokio::test]
-async fn operator_interrupt_cancels_the_registered_deadline() {
+async fn operator_interrupt_preserves_the_registered_deadline() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
     let mut engagement = native_engagement(&state, "eng-cancel-deadline", EngagementStatus::Active);
@@ -228,7 +228,13 @@ async fn operator_interrupt_cancels_the_registered_deadline() {
         .expect("interrupt response");
 
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    assert!(state.deadline_tasks.read().await.is_empty());
+    assert!(
+        state
+            .deadline_tasks
+            .read()
+            .await
+            .contains_key(&engagement.id)
+    );
     assert_eq!(
         state
             .store
@@ -236,6 +242,6 @@ async fn operator_interrupt_cancels_the_registered_deadline() {
             .await
             .expect("engagement")
             .status,
-        EngagementStatus::Interrupted
+        EngagementStatus::Active
     );
 }

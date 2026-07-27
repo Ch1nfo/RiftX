@@ -862,12 +862,35 @@ async fn interrupt_engagement(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
-    Ok(Json(
-        interrupt_engagement_inner(&state, &id, "operatorInterrupt").await?,
-    ))
+    let _turn_permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let engagement = state.store.engagement(&id).await?;
+    if engagement.status != EngagementStatus::Active {
+        return Err(ApiError::bad_request(
+            "only active engagements can be interrupted",
+        ));
+    }
+    state
+        .stop_engagement_work(
+            &id,
+            crate::engagement_stop::AgentThreadDisposition::Preserve,
+        )
+        .await;
+    state
+        .publish(
+            &id,
+            "engagementInterrupted",
+            json!({"reason": "operatorInterrupt"}),
+        )
+        .await;
+    Ok(Json(engagement))
 }
 
-async fn interrupt_engagement_inner(
+async fn terminate_engagement_inner(
     state: &GatewayState,
     id: &str,
     reason: &str,
@@ -935,7 +958,7 @@ async fn pause_execution(
                     .await;
             }
             DaemonPauseReason::KillSwitch => {
-                interrupt_engagement_inner(&state, &engagement_id, "killSwitch").await?;
+                terminate_engagement_inner(&state, &engagement_id, "killSwitch").await?;
             }
         }
     }
