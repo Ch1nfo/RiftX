@@ -83,6 +83,8 @@ pub enum AutoStopReason {
     ConsecutiveFailures,
     NoProgress,
     AuditUnavailable,
+    ProviderAuthentication,
+    ProviderProtocolError,
     DaemonRestart,
     KillSwitch,
     UnrecoverableError,

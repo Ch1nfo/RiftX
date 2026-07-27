@@ -5,6 +5,7 @@ use crate::gateway_state::unix_timestamp;
 use axum::Json;
 use axum::extract::Path;
 use axum::extract::State;
+use codex_riftx_app_server_adapter::TurnError;
 use codex_riftx_core::AutoLlmProfileSnapshot;
 use codex_riftx_core::AutoProgressAction;
 use codex_riftx_core::AutoRun;
@@ -40,6 +41,8 @@ struct StopDecision {
 pub(crate) enum AutoLifecycleStop {
     OperatorPause,
     AuditUnavailable,
+    ProviderAuthentication,
+    ProviderProtocolError,
     DaemonRestart,
     KillSwitch,
 }
@@ -299,6 +302,12 @@ pub(crate) async fn lifecycle_stop(
         AutoLifecycleStop::AuditUnavailable => {
             (AutoRunState::Paused, AutoStopReason::AuditUnavailable)
         }
+        AutoLifecycleStop::ProviderAuthentication => {
+            (AutoRunState::Paused, AutoStopReason::ProviderAuthentication)
+        }
+        AutoLifecycleStop::ProviderProtocolError => {
+            (AutoRunState::Failed, AutoStopReason::ProviderProtocolError)
+        }
         AutoLifecycleStop::DaemonRestart => (AutoRunState::Paused, AutoStopReason::DaemonRestart),
         AutoLifecycleStop::KillSwitch => (AutoRunState::Killed, AutoStopReason::KillSwitch),
     };
@@ -473,6 +482,14 @@ async fn on_turn_completed_locked(
         return Ok(());
     };
     if run.state != AutoRunState::Running {
+        return Ok(());
+    }
+    if let Some(error) = data
+        .pointer("/turn/error")
+        .cloned()
+        .and_then(|error| serde_json::from_value::<TurnError>(error).ok())
+        && crate::auto_provider::handle_turn_error_locked(state, &engagement, &error).await
+    {
         return Ok(());
     }
 

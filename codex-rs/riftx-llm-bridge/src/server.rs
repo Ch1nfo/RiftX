@@ -159,10 +159,10 @@ async fn handle_responses_inner(
     let status = upstream.status();
     if !status.is_success() {
         let text = upstream.text().await.unwrap_or_default();
-        return Err(BridgeError::Upstream(format!(
-            "HTTP {status}: {}",
-            sanitize_diagnostic(&text, 512)
-        )));
+        return Err(BridgeError::UpstreamStatus {
+            status,
+            message: sanitize_diagnostic(&text, 512),
+        });
     }
 
     let response_id = format!("resp_{}", Uuid::new_v4());
@@ -281,6 +281,7 @@ fn authorize(headers: &HeaderMap, expected: &str) -> Result<(), BridgeError> {
 fn error_response(error: BridgeError) -> Response {
     let status = match &error {
         BridgeError::Unsupported(_) | BridgeError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+        BridgeError::UpstreamStatus { status, .. } => *status,
         _ => StatusCode::BAD_GATEWAY,
     };
     let body = serde_json::json!({

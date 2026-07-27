@@ -43,7 +43,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 8;
+pub const IPC_PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

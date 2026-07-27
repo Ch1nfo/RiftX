@@ -24,6 +24,11 @@ use uuid::Uuid;
 pub(crate) async fn process(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {
     match event {
         RiftxAppServerEvent::Notification(notification) => {
+            if let codex_riftx_app_server_adapter::ServerNotification::Error(error) = &notification
+                && let Some(engagement_id) = engagement_for_thread(state, &error.thread_id).await
+            {
+                crate::auto_provider::handle(state, &engagement_id, error).await;
+            }
             crate::execution_events::process_notification(state, &notification).await;
             crate::conversation::process_notification(state, &notification).await;
             forward_event(

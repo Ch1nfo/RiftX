@@ -167,7 +167,7 @@ async fn cancelling_inflight_bridge_requests_aborts_an_upstream_wait() {
 }
 
 #[tokio::test]
-async fn upstream_http_error_status_matrix_returns_sanitized_gateway_errors() {
+async fn upstream_http_error_status_matrix_preserves_status_and_sanitizes_errors() {
     for status in [401, 404, 429, 503] {
         let upstream = MockServer::start().await;
         Mock::given(method("POST"))
@@ -193,7 +193,7 @@ async fn upstream_http_error_status_matrix_returns_sanitized_gateway_errors() {
             .send()
             .await
             .expect("bridge response");
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status().as_u16(), status);
         let body = response.text().await.expect("error body");
         assert!(body.contains(&format!("HTTP {status}")));
         assert!(body.contains("[REDACTED]"));

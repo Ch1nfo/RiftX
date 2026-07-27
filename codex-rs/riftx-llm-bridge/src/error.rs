@@ -6,6 +6,11 @@ pub enum BridgeError {
     Unsupported(String),
     #[error("invalid Responses request: {0}")]
     InvalidRequest(String),
+    #[error("upstream Chat Completions error: HTTP {status}: {message}")]
+    UpstreamStatus {
+        status: reqwest::StatusCode,
+        message: String,
+    },
     #[error("upstream Chat Completions error: {0}")]
     Upstream(String),
     #[error(transparent)]
