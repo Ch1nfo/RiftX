@@ -3,6 +3,7 @@ mod app_events;
 mod artifact_api;
 mod artifacts;
 mod audit_health;
+mod auto_run;
 mod conversation;
 mod credential_api;
 mod credential_execution;

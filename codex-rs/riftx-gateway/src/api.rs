@@ -281,6 +281,7 @@ pub fn build_router(state: GatewayState) -> Router {
             post(crate::credential_execution::execute),
         )
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
+        .route("/v1/engagements/{id}/auto", get(crate::auto_run::get))
         .route("/v1/engagements/{id}/turns", post(start_turn))
         .route("/v1/engagements/{id}/approvals", get(list_approvals))
         .route("/v1/approvals/{id}/decision", post(decide_approval))
@@ -538,6 +539,9 @@ async fn activate_engagement(
             .await?;
     if policy.revision != engagement.policy_revision {
         return Err(ApiError::bad_request("engagement policy revision is stale"));
+    }
+    if engagement.mode == ExecutionMode::Auto {
+        crate::auto_run::prepare(&state, &engagement).await?;
     }
     state.agent_threads.write().await.remove(&id);
     let workspace = state.config.daemon.workspace_root.join(&id);

@@ -2,6 +2,12 @@ pub use codex_riftx_domain::Artifact;
 pub use codex_riftx_domain::AssessmentObjective;
 pub use codex_riftx_domain::AuthorizationScope;
 pub use codex_riftx_domain::AuthorizationWindow;
+pub use codex_riftx_domain::AutoLlmProfileSnapshot;
+pub use codex_riftx_domain::AutoRun;
+pub use codex_riftx_domain::AutoRunConfig;
+pub use codex_riftx_domain::AutoRunLimits;
+pub use codex_riftx_domain::AutoRunState;
+pub use codex_riftx_domain::AutoStopReason;
 pub use codex_riftx_domain::ConversationEntry;
 pub use codex_riftx_domain::ConversationKind;
 pub use codex_riftx_domain::ConversationRole;
@@ -30,7 +36,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 5;
+pub const IPC_PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -3,6 +3,7 @@ use crate::Asset;
 use crate::AssetRelation;
 use crate::AuditConfig;
 use crate::AuditWriter;
+use crate::AutoRun;
 use crate::CredentialError;
 use crate::CredentialGrant;
 use crate::CredentialReference;
@@ -193,6 +194,7 @@ entity_tables!(
     CredentialGrants => "credential_grants",
     Tasks => "tasks",
     Artifacts => "artifacts",
+    AutoRuns => "auto_runs",
 );
 
 impl StateStore {
@@ -299,6 +301,7 @@ impl StateStore {
             EntityTable::CredentialGrants,
             EntityTable::Tasks,
             EntityTable::Artifacts,
+            EntityTable::AutoRuns,
         ] {
             sqlx::query(table.create_sql()).execute(&self.pool).await?;
         }
@@ -492,6 +495,21 @@ impl StateStore {
             value,
         )
         .await
+    }
+
+    pub async fn put_auto_run(&self, value: &AutoRun) -> Result<(), StateError> {
+        self.put_entity(
+            EntityTable::AutoRuns,
+            &value.engagement_id,
+            &value.engagement_id,
+            value,
+        )
+        .await
+    }
+
+    pub async fn auto_run(&self, engagement_id: &str) -> Result<Option<AutoRun>, StateError> {
+        self.entity(EntityTable::AutoRuns, engagement_id, engagement_id)
+            .await
     }
 
     pub async fn findings(&self, engagement_id: &str) -> Result<Vec<Finding>, StateError> {

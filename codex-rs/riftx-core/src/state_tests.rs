@@ -2,6 +2,11 @@ use super::*;
 use crate::AssessmentObjective;
 use crate::AuthorizationScope;
 use crate::AuthorizationWindow;
+use crate::AutoLlmProfileSnapshot;
+use crate::AutoRun;
+use crate::AutoRunConfig;
+use crate::AutoRunLimits;
+use crate::AutoRunState;
 use crate::ConversationEntryDraft;
 use crate::ConversationKind;
 use crate::ConversationRole;
@@ -81,6 +86,55 @@ async fn engagement_lifecycle_is_persisted() {
         .expect("reactivate");
     assert_eq!(reactivated.status, EngagementStatus::Active);
     assert_eq!(reactivated.id, interrupted.id);
+}
+
+#[tokio::test]
+async fn auto_run_checkpoint_round_trips_with_the_engagement_key() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = open_test_store(&temp.path().join("state.sqlite"))
+        .await
+        .expect("state store");
+    let engagement = engagement();
+    store
+        .put_engagement(&engagement)
+        .await
+        .expect("insert engagement");
+    let run = AutoRun {
+        engagement_id: engagement.id.clone(),
+        config: AutoRunConfig {
+            objective: engagement.objective.clone(),
+            authorization: engagement.authorization.clone(),
+            llm_profile: AutoLlmProfileSnapshot {
+                name: "default".to_string(),
+                model: "model".to_string(),
+                base_url: "https://example.invalid/v1".to_string(),
+                protocol: "responses".to_string(),
+                timeout_seconds: 30,
+                reasoning_level: "medium".to_string(),
+                context_budget: 32_000,
+                config_sha256: "a".repeat(64),
+            },
+            tools_snapshot_sha256: "b".repeat(64),
+            policy_revision: engagement.policy_revision.clone(),
+            expires_at: 200,
+            limits: AutoRunLimits::default(),
+        },
+        state: AutoRunState::Ready,
+        stop_reason: None,
+        current_subgoal: None,
+        turns_started: 0,
+        turns_completed: 0,
+        tool_calls: 0,
+        consecutive_failures: 0,
+        no_progress_turns: 0,
+        started_at: None,
+        updated_at: 1,
+    };
+    store.put_auto_run(&run).await.expect("put Auto run");
+    assert_eq!(
+        store.auto_run(&engagement.id).await.expect("read Auto run"),
+        Some(run)
+    );
 }
 
 #[tokio::test]
