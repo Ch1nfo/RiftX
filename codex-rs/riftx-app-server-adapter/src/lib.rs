@@ -37,6 +37,8 @@ use codex_app_server_protocol::SkillsExtraRootsSetResponse;
 use codex_app_server_protocol::SkillsListEntry;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnInterruptParams;
@@ -280,6 +282,15 @@ impl RiftxAppServerAdapter {
         turn_id: String,
     ) -> Result<TurnInterruptResponse, AdapterError> {
         self.request_handle.interrupt_turn(thread_id, turn_id).await
+    }
+
+    pub async fn clean_background_terminals(
+        &self,
+        thread_id: String,
+    ) -> Result<ThreadBackgroundTerminalsCleanResponse, AdapterError> {
+        self.request_handle
+            .clean_background_terminals(thread_id)
+            .await
     }
 
     pub async fn resolve_command_approval(
@@ -753,6 +764,19 @@ impl RiftxAppServerRequestHandle {
             .request_typed(ClientRequest::TurnInterrupt {
                 request_id: self.next_request_id(),
                 params: TurnInterruptParams { thread_id, turn_id },
+            })
+            .await?)
+    }
+
+    pub async fn clean_background_terminals(
+        &self,
+        thread_id: String,
+    ) -> Result<ThreadBackgroundTerminalsCleanResponse, AdapterError> {
+        Ok(self
+            .client
+            .request_typed(ClientRequest::ThreadBackgroundTerminalsClean {
+                request_id: self.next_request_id(),
+                params: ThreadBackgroundTerminalsCleanParams { thread_id },
             })
             .await?)
     }

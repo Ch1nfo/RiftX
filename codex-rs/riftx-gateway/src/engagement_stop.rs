@@ -30,6 +30,9 @@ impl GatewayState {
                 let _ = app_server
                     .interrupt_turn(active_turn.thread_id.clone(), active_turn.turn_id.clone())
                     .await;
+                let _ = app_server
+                    .clean_background_terminals(active_turn.thread_id.clone())
+                    .await;
             }
             if is_only_profile_turn {
                 self.cancel_profile_model_requests(&active_turn.profile_name);
