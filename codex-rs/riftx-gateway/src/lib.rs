@@ -3,6 +3,7 @@ mod app_events;
 mod artifact_api;
 mod artifacts;
 mod audit_health;
+mod auto_budget;
 mod auto_evaluator;
 mod auto_progress;
 mod auto_provider;

@@ -70,6 +70,7 @@ pub struct GatewayState {
     pub(crate) timed_out_auto_turns: Arc<RwLock<HashSet<(String, String)>>>,
     pub(crate) credential_processes: Arc<RwLock<HashMap<String, ActiveCredentialProcess>>>,
     pub(crate) deadline_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    pub(crate) auto_budget_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     pub(crate) assessment_credentials: Arc<dyn AssessmentSecretProvider>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
@@ -139,6 +140,7 @@ impl GatewayState {
             timed_out_auto_turns: Arc::new(RwLock::new(HashSet::new())),
             credential_processes: Arc::new(RwLock::new(HashMap::new())),
             deadline_tasks: Arc::new(RwLock::new(HashMap::new())),
+            auto_budget_tasks: Arc::new(RwLock::new(HashMap::new())),
             assessment_credentials: Arc::new(AssessmentCredentialStore::default()),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
@@ -446,6 +448,9 @@ impl GatewayState {
                     crate::auto_run::AutoLifecycleStop::DaemonRestart,
                 )
                 .await?;
+                if let Some(run) = self.store.auto_run(&engagement.id).await? {
+                    self.register_auto_wall_clock_budget(&run).await;
+                }
                 self.register_authorization_deadline(&engagement).await;
                 self.emit_event(
                     &engagement.id,

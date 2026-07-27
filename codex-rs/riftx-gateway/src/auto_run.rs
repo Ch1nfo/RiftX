@@ -276,6 +276,7 @@ pub(crate) async fn start_locked(
         .await
         .map_err(|_| ApiError::audit_unavailable())?;
     run.started_at.get_or_insert(now);
+    state.register_auto_wall_clock_budget(&run).await;
     start_next_turn_locked(state, &mut run).await
 }
 
@@ -315,6 +316,16 @@ pub(crate) async fn lifecycle_stop(
     run.stop_reason = Some(reason);
     run.updated_at = unix_timestamp();
     state.store.put_auto_run(&run).await?;
+    if matches!(
+        run.state,
+        AutoRunState::Succeeded
+            | AutoRunState::Expired
+            | AutoRunState::BudgetExhausted
+            | AutoRunState::Failed
+            | AutoRunState::Killed
+    ) {
+        state.cancel_auto_wall_clock_budget(engagement_id).await;
+    }
     state
         .emit_event(
             engagement_id,
@@ -349,6 +360,7 @@ pub(crate) async fn expire(state: &GatewayState, engagement_id: &str) -> Result<
     run.stop_reason = Some(AutoStopReason::AuthorizationExpired);
     run.updated_at = unix_timestamp();
     state.store.put_auto_run(&run).await?;
+    state.cancel_auto_wall_clock_budget(engagement_id).await;
     state
         .emit_event(
             engagement_id,
@@ -386,6 +398,7 @@ pub(crate) async fn record_tool_call(
         run.stop_reason = Some(AutoStopReason::ToolBudgetExhausted);
         run.updated_at = unix_timestamp();
         state.store.put_auto_run(&run).await?;
+        state.cancel_auto_wall_clock_budget(&engagement.id).await;
         state
             .emit_event(
                 &engagement.id,
@@ -788,6 +801,18 @@ async fn stop_run(
     run.stop_reason = Some(decision.reason);
     run.updated_at = unix_timestamp();
     state.store.put_auto_run(run).await?;
+    if matches!(
+        run.state,
+        AutoRunState::Succeeded
+            | AutoRunState::Expired
+            | AutoRunState::BudgetExhausted
+            | AutoRunState::Failed
+            | AutoRunState::Killed
+    ) {
+        state
+            .cancel_auto_wall_clock_budget(&run.engagement_id)
+            .await;
+    }
     state
         .emit_event(
             &run.engagement_id,
