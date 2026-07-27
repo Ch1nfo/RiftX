@@ -1,5 +1,7 @@
 use crate::bridge::DesktopError;
 use crate::bridge::DesktopState;
+use crate::bridge::EngagementView;
+use crate::bridge::json_response;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmProfileConfig;
 use codex_riftx_core::LlmReasoningLevel;
@@ -114,7 +116,6 @@ pub(crate) async fn save_tools_settings(
 
 #[tauri::command]
 pub(crate) async fn upsert_llm_profile(
-    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: UpsertLlmProfileInput,
 ) -> Result<LlmSettingsView, DesktopError> {
@@ -129,6 +130,12 @@ pub(crate) async fn upsert_llm_profile(
     }
     let model = input.model.trim().to_string();
     let base_url = input.base_url.trim().to_string();
+    let updating_existing = config.llm.profiles.contains_key(&profile_name);
+    let was_configured = if updating_existing {
+        profile_is_configured(&config, &profile_name).await?
+    } else {
+        false
+    };
     if let Some(existing) = config.llm.profiles.get_mut(&profile_name) {
         existing.model = model;
         existing.base_url = base_url;
@@ -154,8 +161,10 @@ pub(crate) async fn upsert_llm_profile(
         .validate()
         .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
     write_riftx_config(path, &config).await?;
-    let daemon_restart_required = state.daemon.reload_after_api_key_save(&app, &state).await?;
-    settings_view(&config, daemon_restart_required).await
+    // Never restart here: new profiles are often still missing a key (G-02), and
+    // daemon startup skips unconfigured profiles. Restart only after save_llm_api_key
+    // or when the operator changes tools directories.
+    settings_view(&config, was_configured).await
 }
 
 #[tauri::command]
@@ -185,30 +194,32 @@ pub(crate) async fn delete_llm_profile(
             "set another default profile before deleting the current default",
         ));
     }
+    reject_if_profile_in_use(&state, profile_name).await?;
     let removed = config.llm.profiles.remove(profile_name).ok_or_else(|| {
         DesktopError::new(
             "invalid_config",
             format!("LLM profile {profile_name:?} is not configured"),
         )
     })?;
-    if let LlmApiKeySource::Keyring { credential } = removed.api_key {
+    config
+        .validate()
+        .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
+    write_riftx_config(path, &config).await?;
+    if let LlmApiKeySource::Keyring { credential } = removed.api_key
+        && !credential_still_referenced(&config, &credential)
+    {
         let credential = credential.clone();
         let _ =
             tokio::task::spawn_blocking(move || LlmCredentialStore::default().delete(&credential))
                 .await
                 .map_err(|error| DesktopError::new("credential_store", error.to_string()))?;
     }
-    config
-        .validate()
-        .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
-    write_riftx_config(path, &config).await?;
     let daemon_restart_required = state.daemon.reload_after_api_key_save(&app, &state).await?;
     settings_view(&config, daemon_restart_required).await
 }
 
 #[tauri::command]
 pub(crate) async fn set_default_llm_profile(
-    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: SelectLlmProfileInput,
 ) -> Result<LlmSettingsView, DesktopError> {
@@ -226,8 +237,7 @@ pub(crate) async fn set_default_llm_profile(
         .validate()
         .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
     write_riftx_config(path, &config).await?;
-    let daemon_restart_required = state.daemon.reload_after_api_key_save(&app, &state).await?;
-    settings_view(&config, daemon_restart_required).await
+    settings_view(&config, false).await
 }
 
 #[tauri::command]
@@ -280,9 +290,7 @@ pub(crate) async fn write_riftx_config(
     path: &Path,
     config: &RiftxConfig,
 ) -> Result<(), DesktopError> {
-    let content = toml::to_string(config)
-        .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
-    tokio::fs::write(path, content).await.map_err(|error| {
+    config.write_atomic(path).await.map_err(|error| {
         DesktopError::new(
             "config_unavailable",
             format!("write {}: {error}", path.display()),
@@ -372,6 +380,59 @@ fn profile<'a>(
     })
 }
 
+fn credential_still_referenced(config: &RiftxConfig, credential: &str) -> bool {
+    config.llm.profiles.values().any(|profile| {
+        matches!(
+            &profile.api_key,
+            LlmApiKeySource::Keyring { credential: name } if name == credential
+        )
+    })
+}
+
+async fn profile_is_configured(
+    config: &RiftxConfig,
+    profile_name: &str,
+) -> Result<bool, DesktopError> {
+    let profile = profile(config, profile_name)?;
+    match &profile.api_key {
+        LlmApiKeySource::Keyring { credential } => {
+            let credential = credential.clone();
+            tokio::task::spawn_blocking(move || {
+                LlmCredentialStore::default()
+                    .load(&credential)
+                    .map(|key| key.is_some())
+                    .map_err(credential_error)
+            })
+            .await
+            .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
+        }
+        LlmApiKeySource::Environment { variable } => Ok(std::env::var_os(variable).is_some()),
+    }
+}
+
+async fn reject_if_profile_in_use(
+    state: &DesktopState,
+    profile_name: &str,
+) -> Result<(), DesktopError> {
+    let Ok(client) = state.client() else {
+        return Ok(());
+    };
+    let engagements: Vec<EngagementView> =
+        json_response(client.get("/v1/engagements").await).await?;
+    if engagements
+        .iter()
+        .any(|engagement| engagement.llm_profile == profile_name)
+    {
+        return Err(DesktopError::new(
+            "profile_in_use",
+            format!(
+                "LLM profile {profile_name:?} is referenced by an existing engagement and cannot be deleted"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn reasoning_level_label(level: LlmReasoningLevel) -> &'static str {
     match level {
         LlmReasoningLevel::Minimal => "minimal",
@@ -410,16 +471,14 @@ pub(crate) async fn sidecar_api_keys(
         let store = LlmCredentialStore::default();
         let mut api_keys = BTreeMap::new();
         for (profile_name, credential) in keyring_profiles {
-            let api_key = store
-                .load(&credential)
-                .map_err(credential_error)?
-                .ok_or_else(|| {
-                    DesktopError::new(
-                        "credential_missing",
-                        format!("LLM API key credential {credential:?} is not configured"),
-                    )
-                })?;
-            api_keys.insert(profile_name, api_key);
+            match store.load(&credential).map_err(credential_error)? {
+                Some(api_key) => {
+                    api_keys.insert(profile_name, api_key);
+                }
+                None => {
+                    // Unconfigured profiles must not block daemon startup (G-03).
+                }
+            }
         }
         Ok(api_keys)
     })

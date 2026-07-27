@@ -16,6 +16,11 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to write RiftX config {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("invalid RiftX config: {0}")]
     Parse(#[from] toml::de::Error),
     #[error("invalid RiftX config: {0}")]
@@ -58,6 +63,41 @@ impl RiftxConfig {
         })?;
         config.resolve_paths(base);
         Ok(config)
+    }
+
+    /// Serialize and replace `path` via temp file + fsync + rename.
+    pub async fn write_atomic(&self, path: &Path) -> Result<(), ConfigError> {
+        self.validate()?;
+        let content = toml::to_string(self)
+            .map_err(|error| ConfigError::Invalid(format!("serialize config: {error}")))?;
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        tokio::fs::write(&tmp, &content)
+            .await
+            .map_err(|source| ConfigError::Write {
+                path: tmp.clone(),
+                source,
+            })?;
+        {
+            let file = tokio::fs::File::open(&tmp)
+                .await
+                .map_err(|source| ConfigError::Write {
+                    path: tmp.clone(),
+                    source,
+                })?;
+            file.sync_all().await.map_err(|source| ConfigError::Write {
+                path: tmp.clone(),
+                source,
+            })?;
+        }
+        tokio::fs::rename(&tmp, path)
+            .await
+            .map_err(|source| ConfigError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {

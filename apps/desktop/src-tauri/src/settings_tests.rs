@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::path::PathBuf;
 
 fn sample_config_toml() -> &'static str {
     r#"
@@ -210,4 +211,126 @@ async fn cannot_validate_after_removing_last_profile() {
     let mut config = load_riftx_config(&path).await.expect("load");
     config.llm.profiles.clear();
     assert!(config.validate().is_err());
+}
+
+#[tokio::test]
+async fn write_riftx_config_uses_atomic_replace() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("riftx.toml");
+    tokio::fs::write(&path, sample_config_toml())
+        .await
+        .expect("write config");
+    let mut config = load_riftx_config(&path).await.expect("load");
+    config.llm.profiles.insert(
+        "lab".to_string(),
+        LlmProfileConfig {
+            model: "local-model".to_string(),
+            base_url: "http://127.0.0.1:8080/v1".to_string(),
+            api_key: LlmApiKeySource::Keyring {
+                credential: "lab".to_string(),
+            },
+            timeout_seconds: 300,
+            reasoning_level: LlmReasoningLevel::Medium,
+            context_budget: 64_000,
+        },
+    );
+    write_riftx_config(&path, &config)
+        .await
+        .expect("atomic write");
+    let reloaded = load_riftx_config(&path).await.expect("reload");
+    assert!(reloaded.llm.profiles.contains_key("lab"));
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    assert!(!PathBuf::from(tmp).exists());
+}
+
+#[tokio::test]
+async fn sidecar_api_keys_skips_missing_keyring_credentials() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("riftx.toml");
+    tokio::fs::write(
+        &path,
+        r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[tools]
+directories = []
+extra_paths = []
+
+[skills]
+
+[llm]
+default_profile = "ready"
+
+[llm.profiles.ready]
+model = "model-a"
+base_url = "https://ready.example.test/v1"
+api_key = { source = "environment", variable = "RIFTX_SETTINGS_READY_KEY" }
+timeout_seconds = 60
+reasoning_level = "medium"
+context_budget = 64000
+
+[llm.profiles.pending]
+model = "model-b"
+base_url = "https://pending.example.test/v1"
+api_key = { source = "keyring", credential = "riftx-settings-missing-credential" }
+timeout_seconds = 60
+reasoning_level = "medium"
+context_budget = 64000
+
+[policy]
+allowed_capabilities = ["network.discovery"]
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1073741824
+"#,
+    )
+    .await
+    .expect("write config");
+
+    let api_keys = sidecar_api_keys(&path).await.expect("skip missing");
+    assert!(api_keys.is_empty());
+}
+
+#[tokio::test]
+async fn credential_still_referenced_blocks_key_cleanup() {
+    let mut config = load_riftx_config_from_sample().await;
+    config.llm.profiles.insert(
+        "shared".to_string(),
+        LlmProfileConfig {
+            model: "shared-model".to_string(),
+            base_url: "https://shared.example.test/v1".to_string(),
+            api_key: LlmApiKeySource::Keyring {
+                credential: "openai".to_string(),
+            },
+            timeout_seconds: 300,
+            reasoning_level: LlmReasoningLevel::High,
+            context_budget: 200_000,
+        },
+    );
+    assert!(credential_still_referenced(&config, "openai"));
+    config.llm.profiles.remove("openai");
+    assert!(credential_still_referenced(&config, "openai"));
+    config.llm.profiles.remove("shared");
+    assert!(!credential_still_referenced(&config, "openai"));
+}
+
+async fn load_riftx_config_from_sample() -> RiftxConfig {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("riftx.toml");
+    tokio::fs::write(&path, sample_config_toml())
+        .await
+        .expect("write config");
+    load_riftx_config(&path).await.expect("load")
 }

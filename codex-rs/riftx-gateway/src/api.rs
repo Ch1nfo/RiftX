@@ -589,7 +589,11 @@ async fn start_turn(
     let profile_name = engagement.llm_profile.clone();
     let app_server = state
         .app_server(&profile_name)
-        .ok_or_else(|| ApiError::app_server("embedded App Server is unavailable"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "LLM profile {profile_name:?} is not ready; configure a valid API key before starting a turn"
+            ))
+        })?;
     let workspace = state.config.daemon.workspace_root.join(&id);
     tokio::fs::create_dir_all(&workspace)
         .await

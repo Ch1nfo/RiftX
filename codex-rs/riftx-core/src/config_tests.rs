@@ -1,6 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[test]
 fn strict_config_rejects_unknown_fields() {
@@ -248,4 +249,71 @@ fn policy_layers_only_reduce_access() {
             .contains(&"169.254.0.0/16".parse().expect("CIDR"))
     );
     assert_eq!(effective.revision.len(), 64);
+}
+
+#[tokio::test]
+async fn write_atomic_replaces_config_without_leaving_tmp() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("riftx.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[tools]
+directories = []
+extra_paths = []
+
+[skills]
+
+[llm]
+default_profile = "default"
+
+[llm.profiles.default]
+model = "test-model"
+base_url = "http://127.0.0.1:8766/v1"
+api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+
+[policy]
+allowed_capabilities = ["network.discovery"]
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1073741824
+"#,
+    )
+    .expect("seed config");
+
+    let mut config = RiftxConfig::load(&config_path).await.expect("load");
+    config.llm.default_profile = "default".to_string();
+    config
+        .llm
+        .profiles
+        .get_mut("default")
+        .expect("profile")
+        .model = "updated".to_string();
+    config
+        .write_atomic(&config_path)
+        .await
+        .expect("atomic write");
+
+    let reloaded = RiftxConfig::load(&config_path).await.expect("reload");
+    assert_eq!(reloaded.llm.profiles["default"].model, "updated");
+    assert!(!config_path.with_extension("toml.tmp").exists());
+    let mut tmp_name = config_path.as_os_str().to_owned();
+    tmp_name.push(".tmp");
+    assert!(!PathBuf::from(tmp_name).exists());
 }

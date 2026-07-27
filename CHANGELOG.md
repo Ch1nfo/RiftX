@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Desktop CI no longer invokes raw `cargo test`; uses repository nextest entry via `just`.
+- LLM Profile create no longer restarts the daemon before an API key is saved; missing keys no longer block other profiles or daemon startup.
 
 ## [1.0.0] - TBD
 
