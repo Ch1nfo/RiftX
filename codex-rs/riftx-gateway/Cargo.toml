@@ -45,6 +45,7 @@ uuid = { workspace = true, features = ["v4"] }
 url = { workspace = true }
 
 [dev-dependencies]
+codex-riftx-cli = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
 http-body-util = { workspace = true }

@@ -3941,6 +3941,7 @@ dependencies = [
  "codex-keyring-store",
  "codex-riftx-app-server-adapter",
  "codex-riftx-artifacts",
+ "codex-riftx-cli",
  "codex-riftx-core",
  "codex-riftx-credentials",
  "codex-riftx-crypto",
