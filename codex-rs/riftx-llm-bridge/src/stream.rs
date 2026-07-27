@@ -12,7 +12,7 @@ pub struct ResponsesSseEvent {
 
 impl ResponsesSseEvent {
     pub fn to_sse_frame(&self) -> String {
-        format!("event: {}\ndata: {}\n\n", self.event, self.data.to_string())
+        format!("event: {}\ndata: {}\n\n", self.event, self.data)
     }
 }
 

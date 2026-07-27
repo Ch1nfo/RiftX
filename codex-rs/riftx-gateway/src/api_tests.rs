@@ -351,6 +351,116 @@ async fn tool_doctor_rescans_the_configured_directory() {
 }
 
 #[tokio::test]
+async fn llm_profiles_list_reports_configured_state() {
+    let temp = TempDir::new().expect("temp dir");
+    unsafe {
+        std::env::set_var("RIFTX_TEST_API_KEY", "test-key");
+    }
+    let state = test_state(&temp).await;
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/llm/profiles")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let list: codex_riftx_ipc::LlmProfileList = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("profile list");
+    assert_eq!(list.default_profile, "default");
+    assert!(
+        list.profiles
+            .iter()
+            .any(|profile| profile.name == "default" && profile.configured)
+    );
+}
+
+#[tokio::test]
+async fn llm_profile_connection_test_reports_capability_matrix() {
+    let upstream = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
+                 event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ping\"}\n\n\
+                 event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            ),
+        )
+        .up_to_n_times(1)
+        .mount(&upstream)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
+                 event: response.output_item.added\n\
+                 data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"name\":\"riftx_connection_test\",\"call_id\":\"c1\",\"arguments\":\"{}\"}}\n\n\
+                 event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            ),
+        )
+        .mount(&upstream)
+        .await;
+
+    let temp = TempDir::new().expect("temp dir");
+    unsafe {
+        std::env::set_var("RIFTX_TEST_API_KEY", "test-key");
+    }
+    let mut state = test_state(&temp).await;
+    {
+        let config = Arc::make_mut(&mut state.config);
+        let profile = config
+            .llm
+            .profiles
+            .get_mut("default")
+            .expect("default profile");
+        profile.base_url = format!("{}/v1", upstream.uri());
+        profile.timeout_seconds = 5;
+    }
+
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/llm/profiles/default/test")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: codex_riftx_ipc::LlmConnectionTestResult = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes(),
+    )
+    .expect("connection test");
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        result.capabilities.stream_text.status,
+        codex_riftx_ipc::LlmCheckStatus::Passed
+    );
+    assert_eq!(
+        result.capabilities.function_tools.status,
+        codex_riftx_ipc::LlmCheckStatus::Passed
+    );
+}
+
+#[tokio::test]
 async fn restart_reconciliation_interrupts_active_engagements() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;

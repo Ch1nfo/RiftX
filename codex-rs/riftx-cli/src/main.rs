@@ -32,6 +32,7 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 mod credential_commands;
+mod llm_commands;
 
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
@@ -116,6 +117,10 @@ enum Command {
     Credentials {
         #[command(subcommand)]
         command: credential_commands::CredentialCommand,
+    },
+    Llm {
+        #[command(subcommand)]
+        command: llm_commands::LlmCommand,
     },
     Tools {
         #[command(subcommand)]
@@ -355,6 +360,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Credentials { command } => {
             credential_commands::execute(&client, command).await?;
+        }
+        Command::Llm { command } => {
+            llm_commands::execute(&client, command).await?;
         }
         Command::Tools {
             command: ToolsCommand::Doctor { json },

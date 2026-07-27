@@ -9,11 +9,19 @@
 //! The bridge never logs Authorization headers, API keys, or full prompt bodies.
 
 mod error;
+mod probe;
 mod request;
 mod server;
 mod stream;
 
 pub use error::BridgeError;
+pub use probe::ProbeLayerResult;
+pub use probe::ProbeOutcome;
+pub use probe::ProbeProtocol;
+pub use probe::ProbeTarget;
+pub use probe::probe_connection;
+pub use probe::responses_url;
+pub use probe::sanitize_error;
 pub use request::chat_completions_url;
 pub use request::responses_request_to_chat;
 pub use server::BridgeHandle;

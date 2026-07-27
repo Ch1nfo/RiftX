@@ -227,6 +227,14 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/tools", get(tools))
         .route("/v1/tools/doctor", post(crate::extension_api::doctor_tools))
         .route(
+            "/v1/llm/profiles",
+            get(crate::llm_profile_api::list_profiles),
+        )
+        .route(
+            "/v1/llm/profiles/{name}/test",
+            post(crate::llm_profile_api::test_profile),
+        )
+        .route(
             "/v1/engagements",
             get(list_engagements).post(create_engagement),
         )

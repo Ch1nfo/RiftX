@@ -201,10 +201,7 @@ fn bridge_sse_stream(
         }
     });
     Box::pin(futures::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(bytes) => Some((Ok(bytes), rx)),
-            None => None,
-        }
+        rx.recv().await.map(|bytes| (Ok(bytes), rx))
     }))
 }
 

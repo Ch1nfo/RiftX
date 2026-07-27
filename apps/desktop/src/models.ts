@@ -49,6 +49,27 @@ export interface LlmProfileSettings {
   configured: boolean;
 }
 
+export type LlmCheckStatus = "passed" | "failed" | "skipped";
+
+export interface LlmCapabilityCheck {
+  status: LlmCheckStatus;
+  detail: string;
+}
+
+export interface LlmCapabilityMatrix {
+  config: LlmCapabilityCheck;
+  streamText: LlmCapabilityCheck;
+  functionTools: LlmCapabilityCheck;
+}
+
+export interface LlmConnectionTestResult {
+  profileName: string;
+  protocol: string;
+  model: string;
+  ok: boolean;
+  capabilities: LlmCapabilityMatrix;
+}
+
 export type DiagnosticLevel = "info" | "warning" | "error";
 
 export interface ExtensionDiagnostic {

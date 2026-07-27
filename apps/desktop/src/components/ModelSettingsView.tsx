@@ -15,9 +15,14 @@ import {
   llmSettings,
   saveLlmApiKey,
   setDefaultLlmProfile,
+  testLlmProfile,
   upsertLlmProfile,
 } from "../bridge";
-import type { DesktopBridgeError, LlmSettings } from "../models";
+import type {
+  DesktopBridgeError,
+  LlmConnectionTestResult,
+  LlmSettings,
+} from "../models";
 import { NotificationControls } from "./NotificationControls";
 
 interface ModelSettingsViewProps {
@@ -52,6 +57,8 @@ export function ModelSettingsView({
   const [busy, setBusy] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [connectionTest, setConnectionTest] =
+    useState<LlmConnectionTestResult | null>(null);
 
   const updateBusy = useCallback(
     (nextBusy: boolean) => {
@@ -76,6 +83,7 @@ export function ModelSettingsView({
             ? selectedProfileName
             : loaded.defaultProfile;
       setSelectedProfileName(nextProfile);
+      setConnectionTest(null);
       const profile =
         loaded.profiles.find(
           (candidate) => candidate.profileName === nextProfile,
@@ -215,6 +223,7 @@ export function ModelSettingsView({
       applySettings(updated);
       setConfirmDeleteProfile(false);
       setApiKey("");
+      setConnectionTest(null);
       setNotice(
         restartNotice(
           updated.daemonRestartRequired,
@@ -223,6 +232,28 @@ export function ModelSettingsView({
         ),
       );
       onRuntimeChanged(true);
+    } catch (cause) {
+      onError(bridgeError(cause));
+    } finally {
+      updateBusy(false);
+    }
+  };
+
+  const runConnectionTest = async () => {
+    if (!profile || busy) {
+      return;
+    }
+    updateBusy(true);
+    setConnectionTest(null);
+    setNotice(null);
+    try {
+      const result = await testLlmProfile(profile.profileName);
+      setConnectionTest(result);
+      setNotice(
+        result.ok
+          ? "Connection test passed."
+          : "Connection test failed. Review the capability matrix.",
+      );
     } catch (cause) {
       onError(bridgeError(cause));
     } finally {
@@ -457,6 +488,14 @@ export function ModelSettingsView({
               </div>
             </dl>
             <div className="settings-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void runConnectionTest()}
+                disabled={busy || !profile.configured}
+              >
+                Test connection
+              </button>
               {!isDefault && (
                 <button
                   type="button"
@@ -517,6 +556,32 @@ export function ModelSettingsView({
               </button>
             </div>
           </form>
+
+          {connectionTest && (
+            <div
+              className={`settings-connection-test ${connectionTest.ok ? "ok" : "failed"}`}
+            >
+              <strong>
+                Connection test{" "}
+                {connectionTest.ok ? "passed" : "failed"}
+              </strong>
+              <ul>
+                <li>
+                  config: {connectionTest.capabilities.config.status} —{" "}
+                  {connectionTest.capabilities.config.detail}
+                </li>
+                <li>
+                  stream text: {connectionTest.capabilities.streamText.status} —{" "}
+                  {connectionTest.capabilities.streamText.detail}
+                </li>
+                <li>
+                  function tools:{" "}
+                  {connectionTest.capabilities.functionTools.status} —{" "}
+                  {connectionTest.capabilities.functionTools.detail}
+                </li>
+              </ul>
+            </div>
+          )}
 
           <div className="credential-heading">
             <div className="credential-title">

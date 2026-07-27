@@ -44,6 +44,8 @@ pub fn run() {
             extensions::tool_doctor,
             extensions::skill_catalog,
             extensions::skill_doctor,
+            extensions::llm_profiles,
+            extensions::test_llm_profile,
             settings::llm_settings,
             settings::get_tools_settings,
             settings::save_tools_settings,

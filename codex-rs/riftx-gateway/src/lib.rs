@@ -10,6 +10,7 @@ mod execution_events;
 mod extension_api;
 mod gateway_state;
 mod inventory;
+mod llm_profile_api;
 mod report;
 
 pub use api::build_router;

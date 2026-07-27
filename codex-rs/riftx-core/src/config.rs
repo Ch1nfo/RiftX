@@ -264,7 +264,7 @@ impl LlmConfig {
 }
 
 impl LlmProfileConfig {
-    fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
+    pub fn validate(&self, profile_name: &str) -> Result<(), ConfigError> {
         let prefix = format!("llm.profiles.{profile_name}");
         if self.model.trim().is_empty()
             || self.model.len() > 256

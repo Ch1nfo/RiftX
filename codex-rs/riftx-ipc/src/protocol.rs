@@ -374,6 +374,58 @@ pub struct ConversationPage {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LlmCheckStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LlmCapabilityCheck {
+    pub status: LlmCheckStatus,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LlmCapabilityMatrix {
+    pub config: LlmCapabilityCheck,
+    pub stream_text: LlmCapabilityCheck,
+    pub function_tools: LlmCapabilityCheck,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LlmProfileSummary {
+    pub name: String,
+    pub protocol: String,
+    pub model: String,
+    pub base_url: String,
+    pub is_default: bool,
+    pub configured: bool,
+    pub runtime_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LlmProfileList {
+    pub default_profile: String,
+    pub profiles: Vec<LlmProfileSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LlmConnectionTestResult {
+    pub profile_name: String,
+    pub protocol: String,
+    pub model: String,
+    pub ok: bool,
+    pub capabilities: LlmCapabilityMatrix,
+}
+
 #[cfg(test)]
 #[path = "protocol_tests.rs"]
 mod tests;

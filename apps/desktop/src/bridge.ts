@@ -24,6 +24,7 @@ import type {
   ToolsSettings,
   TurnAccepted,
   UpsertLlmProfileInput,
+  LlmConnectionTestResult,
 } from "./models";
 
 const ENGAGEMENT_EVENT_NAME = "riftx://engagement-event";
@@ -108,6 +109,12 @@ export function skillCatalog(): Promise<SkillCatalog> {
 
 export function skillDoctor(): Promise<SkillCatalog> {
   return desktopInvoke("skill_doctor");
+}
+
+export function testLlmProfile(
+  profileName: string,
+): Promise<LlmConnectionTestResult> {
+  return desktopInvoke("test_llm_profile", { profileName });
 }
 
 export function notificationSettings(): Promise<NotificationSettings> {

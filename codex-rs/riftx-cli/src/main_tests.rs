@@ -81,6 +81,32 @@ fn skills_doctor_supports_machine_readable_output() {
 }
 
 #[test]
+fn llm_profiles_list_and_test_parse() {
+    let list = Cli::try_parse_from(["riftx", "llm", "profiles", "list", "--json"]).expect("list");
+    assert!(matches!(
+        list.command,
+        Command::Llm {
+            command: llm_commands::LlmCommand::Profiles {
+                command: llm_commands::LlmProfilesCommand::List { json: true }
+            }
+        }
+    ));
+    let test = Cli::try_parse_from(["riftx", "llm", "profiles", "test", "default", "--json"])
+        .expect("test");
+    assert!(matches!(
+        test.command,
+        Command::Llm {
+            command: llm_commands::LlmCommand::Profiles {
+                command: llm_commands::LlmProfilesCommand::Test {
+                    profile,
+                    json: true
+                }
+            }
+        } if profile == "default"
+    ));
+}
+
+#[test]
 fn mode_command_carries_the_explicit_auto_confirmation() {
     let cli = Cli::try_parse_from([
         "riftx",
