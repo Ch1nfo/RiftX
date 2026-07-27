@@ -20,9 +20,20 @@ use codex_riftx_domain::ExecutionStatus;
 use codex_riftx_domain::HypothesisStatus;
 use codex_riftx_domain::Scope;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeSet;
 
 #[test]
 fn report_contains_unverified_state_attack_paths_and_coverage() {
+    let secrets: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/redaction-cases.json"))
+            .expect("redaction fixture");
+    let api_key = secrets["apiKey"].as_str().expect("fixture API key");
+    let password = secrets["password"].as_str().expect("fixture password");
+    let token = secrets["token"].as_str().expect("fixture token");
+    let private_key = secrets["privateKey"].as_str().expect("fixture private key");
+    let credential_url = secrets["credentialUrl"]
+        .as_str()
+        .expect("fixture credential URL");
     let engagement = Engagement {
         id: "eng-1".to_string(),
         name: "Authorized lab".to_string(),
@@ -112,7 +123,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             execution_id: None,
             source: "local:nuclei".to_string(),
             kind: "potentialFinding".to_string(),
-            summary: "Potential issue requires validation".to_string(),
+            summary: format!("Potential issue requires validation token: {token}"),
             confidence_basis_points: 7_000,
             observed_at: 10,
         }],
@@ -148,7 +159,15 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             completed_at: Some(50),
             exit_code: Some(0),
             duration_ms: Some(10_000),
-            argv: vec!["nmap".to_string(), "10.10.20.10".to_string()],
+            argv: vec![
+                "nmap".to_string(),
+                "--api-key".to_string(),
+                api_key.to_string(),
+                format!("--password={password}"),
+                "--token-validation".to_string(),
+                "strict".to_string(),
+                credential_url.to_string(),
+            ],
             command_sha256: "command-sha256".to_string(),
             cwd: "/tmp".to_string(),
             process_id: None,
@@ -207,7 +226,11 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             execution_binding_sha256: "binding-sha256".to_string(),
             command_sha256: "command-sha256".to_string(),
             argument_sha256: "argument-sha256".to_string(),
-            display_argv: vec!["nmap".to_string()],
+            display_argv: vec![
+                "nmap".to_string(),
+                "--private-key".to_string(),
+                private_key.to_string(),
+            ],
             cwd: Some("/workspace".to_string()),
             executable_names: vec!["nmap".to_string()],
         }],
@@ -233,7 +256,8 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
                 sha256: "skill-sha256".to_string(),
             }],
         },
-    };
+    }
+    .redacted();
 
     let markdown = report.markdown();
     assert!(markdown.contains("## Approvals"));
@@ -274,8 +298,60 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     let decoded = serde_json::from_value(json.clone()).expect("report should decode");
     assert_eq!(report, decoded);
     let encoded = json.to_string();
+    for secret in [api_key, password, token, private_key, credential_url] {
+        assert!(
+            !markdown.contains(secret),
+            "Markdown leaked fixture: {secret}"
+        );
+        assert!(!encoded.contains(secret), "JSON leaked fixture: {secret}");
+    }
+    assert!(markdown.contains("token: [REDACTED]"));
+    assert_eq!(
+        json.pointer("/executions/0/argv"),
+        Some(&serde_json::json!([
+            "nmap",
+            "--api-key",
+            "[REDACTED]",
+            "--password=[REDACTED]",
+            "--token-validation",
+            "strict",
+            "[REDACTED_URL]"
+        ]))
+    );
+    assert_eq!(
+        json.pointer("/approvals/0/displayArgv"),
+        Some(&serde_json::json!(["nmap", "--private-key", "[REDACTED]"]))
+    );
     assert!(!encoded.contains("llm.example.test"));
     assert!(!encoded.contains("test-model"));
+
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/riftx.report-v1.schema.json"))
+            .expect("report schema fixture");
+    assert_eq!(
+        schema.pointer("/properties/schema/const"),
+        Some(&serde_json::json!(REPORT_SCHEMA_VERSION))
+    );
+    let report_fields = json
+        .as_object()
+        .expect("report object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let schema_fields = schema["properties"]
+        .as_object()
+        .expect("schema properties")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let required_fields = schema["required"]
+        .as_array()
+        .expect("schema required fields")
+        .iter()
+        .map(|field| field.as_str().expect("required field").to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(schema_fields, report_fields);
+    assert_eq!(required_fields, report_fields);
     assert_eq!(
         json.pointer("/approvals/0/outcome"),
         Some(&serde_json::json!("cancelled"))

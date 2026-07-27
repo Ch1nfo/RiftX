@@ -1,0 +1,7 @@
+{
+  "apiKey": "sk-fixture-api-key-0000000000000000",
+  "password": "fixture-password-do-not-use",
+  "token": "fixture-token-do-not-use",
+  "privateKey": "-----BEGIN PRIVATE KEY----- fixture-private-key-do-not-use -----END PRIVATE KEY-----",
+  "credentialUrl": "https://fixture-user:fixture-password@example.invalid/resource"
+}

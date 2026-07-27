@@ -1211,7 +1211,8 @@ async fn report(
         approvals: snapshot.approvals,
         tool_snapshot: tool_report_snapshot(&state.tools),
         skill_snapshot: skill_report_snapshot(&state.skills),
-    };
+    }
+    .redacted();
     match query.format {
         ReportFormat::Markdown => Ok((
             [("content-type", "text/markdown; charset=utf-8")],

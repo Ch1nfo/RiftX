@@ -282,7 +282,11 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
         execution_binding_sha256: "a".repeat(64),
         command_sha256: "b".repeat(64),
         argument_sha256: "c".repeat(64),
-        display_argv: vec!["nmap".to_string(), "10.10.0.10".to_string()],
+        display_argv: vec![
+            "nmap".to_string(),
+            "--api-key".to_string(),
+            "fixture-report-api-key-do-not-use".to_string(),
+        ],
         cwd: Some("/workspace".to_string()),
         executable_names: vec!["nmap".to_string()],
     };
@@ -325,7 +329,14 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
     assert_eq!(report.auto_run, None);
     assert_eq!(report.engagement, engagement);
     assert_eq!(report.assets, vec![asset]);
-    assert_eq!(report.approvals, vec![approval]);
+    let mut expected_approval = approval;
+    expected_approval.display_argv[2] = "[REDACTED]".to_string();
+    assert_eq!(report.approvals, vec![expected_approval]);
+    assert!(
+        !serde_json::to_string(&report)
+            .expect("encoded report")
+            .contains("fixture-report-api-key-do-not-use")
+    );
     assert_eq!(report.limitations, standard_report_limitations());
 }
 

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riftx.local/schemas/riftx.report-v1.schema.json",
+  "title": "RiftX Engagement Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generatedAt",
+    "llmProfile",
+    "autoRun",
+    "limitations",
+    "engagement",
+    "assets",
+    "assetRelations",
+    "services",
+    "identities",
+    "observations",
+    "hypotheses",
+    "testCases",
+    "executions",
+    "findings",
+    "evidence",
+    "attackPaths",
+    "coverage",
+    "tasks",
+    "artifacts",
+    "approvals",
+    "toolSnapshot",
+    "skillSnapshot"
+  ],
+  "properties": {
+    "schema": {
+      "const": "riftx.report/v1"
+    },
+    "generatedAt": {
+      "type": "integer"
+    },
+    "llmProfile": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "protocol"],
+          "properties": {
+            "name": { "type": "string" },
+            "protocol": {
+              "enum": ["responses", "chatCompletions", null]
+            }
+          }
+        }
+      ]
+    },
+    "autoRun": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "stopReason",
+            "currentSubgoal",
+            "turnsStarted",
+            "turnsCompleted",
+            "toolCalls",
+            "consecutiveFailures",
+            "noProgressTurns",
+            "unavailableTools",
+            "limits",
+            "expiresAt",
+            "lastGoalAssessment",
+            "lastProgressAssessment",
+            "startedAt",
+            "updatedAt"
+          ],
+          "properties": {
+            "state": { "type": "string" },
+            "stopReason": { "type": ["string", "null"] },
+            "currentSubgoal": { "type": ["string", "null"] },
+            "turnsStarted": { "type": "integer", "minimum": 0 },
+            "turnsCompleted": { "type": "integer", "minimum": 0 },
+            "toolCalls": { "type": "integer", "minimum": 0 },
+            "consecutiveFailures": { "type": "integer", "minimum": 0 },
+            "noProgressTurns": { "type": "integer", "minimum": 0 },
+            "unavailableTools": { "type": "array", "items": { "type": "string" } },
+            "limits": { "type": "object" },
+            "expiresAt": { "type": "integer" },
+            "lastGoalAssessment": { "type": ["object", "null"] },
+            "lastProgressAssessment": { "type": ["object", "null"] },
+            "startedAt": { "type": ["integer", "null"] },
+            "updatedAt": { "type": "integer" }
+          }
+        }
+      ]
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "engagement": { "type": "object" },
+    "assets": { "$ref": "#/$defs/entityArray" },
+    "assetRelations": { "$ref": "#/$defs/entityArray" },
+    "services": { "$ref": "#/$defs/entityArray" },
+    "identities": { "$ref": "#/$defs/entityArray" },
+    "observations": { "$ref": "#/$defs/entityArray" },
+    "hypotheses": { "$ref": "#/$defs/entityArray" },
+    "testCases": { "$ref": "#/$defs/entityArray" },
+    "executions": { "$ref": "#/$defs/entityArray" },
+    "findings": { "$ref": "#/$defs/entityArray" },
+    "evidence": { "$ref": "#/$defs/entityArray" },
+    "attackPaths": { "$ref": "#/$defs/entityArray" },
+    "coverage": { "$ref": "#/$defs/entityArray" },
+    "tasks": { "$ref": "#/$defs/entityArray" },
+    "artifacts": { "$ref": "#/$defs/entityArray" },
+    "approvals": { "$ref": "#/$defs/entityArray" },
+    "toolSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotSha256", "tools"],
+      "properties": {
+        "snapshotSha256": { "type": "string" },
+        "tools": { "$ref": "#/$defs/entityArray" }
+      }
+    },
+    "skillSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotSha256", "skills"],
+      "properties": {
+        "snapshotSha256": { "type": "string" },
+        "skills": { "$ref": "#/$defs/entityArray" }
+      }
+    }
+  },
+  "$defs": {
+    "entityArray": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

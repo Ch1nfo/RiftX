@@ -26,6 +26,8 @@ use codex_riftx_domain::TestCase;
 use serde::Deserialize;
 use serde::Serialize;
 
+mod redaction;
+
 pub const REPORT_SCHEMA_VERSION: &str = "riftx.report/v1";
 pub const LOCAL_EXECUTION_LIMITATION: &str = "RiftX executes tools on the local machine; review local tool and Artifact handling accordingly.";
 pub const NON_ENFORCED_SCOPE_LIMITATION: &str = "The declared target Scope is checked by RiftX policy but is not an OS-enforced network isolation boundary.";
@@ -187,6 +189,12 @@ pub struct EngagementReport {
 }
 
 impl EngagementReport {
+    /// Applies the report export redaction layer used by both JSON and Markdown output.
+    pub fn redacted(mut self) -> Self {
+        redaction::redact_report(&mut self);
+        self
+    }
+
     pub fn markdown(&self) -> String {
         let mut output = format!(
             "# RiftX Report: {}\n\n- Schema: `{}`\n- Generated at: `{}`\n- Engagement: `{}`\n- Objective: {}\n- Mode: `{:?}`\n- Environment: `{:?}`\n- Authorization expires: `{}`\n- Policy revision: `{}`\n- Status: `{:?}`\n- LLM Profile: `{}`\n- LLM Protocol: `{}`\n\n## Success Criteria\n\n",
