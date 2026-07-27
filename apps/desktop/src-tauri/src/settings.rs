@@ -39,6 +39,7 @@ struct LlmProfileSettingsView {
     credential_source: String,
     credential_name: String,
     configured: bool,
+    enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -77,6 +78,8 @@ pub(crate) struct UpsertLlmProfileInput {
     protocol: Option<String>,
     #[serde(default)]
     make_default: bool,
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 #[tauri::command]
@@ -158,14 +161,39 @@ pub(crate) async fn upsert_llm_profile(
     } else {
         false
     };
+    let enabled = input.enabled.unwrap_or_else(|| {
+        config
+            .llm
+            .profiles
+            .get(&profile_name)
+            .is_none_or(|profile| profile.enabled)
+    });
+    if !enabled && config.llm.default_profile == profile_name {
+        return Err(DesktopError::new(
+            "profile_in_use",
+            "set another default profile before disabling this profile",
+        ));
+    }
+    if updating_existing
+        && !enabled
+        && config
+            .llm
+            .profiles
+            .get(&profile_name)
+            .is_some_and(|profile| profile.enabled)
+    {
+        reject_if_profile_in_use(&state, &profile_name).await?;
+    }
     if let Some(existing) = config.llm.profiles.get_mut(&profile_name) {
         existing.model = model;
         existing.base_url = base_url;
         existing.protocol = protocol;
+        existing.enabled = enabled;
     } else {
         config.llm.profiles.insert(
             profile_name.clone(),
             LlmProfileConfig {
+                enabled,
                 protocol,
                 model,
                 base_url,
@@ -184,20 +212,22 @@ pub(crate) async fn upsert_llm_profile(
     config
         .validate()
         .map_err(|error| DesktopError::new("invalid_config", error.to_string()))?;
-    if was_configured {
+    if was_configured && enabled {
         state
             .daemon
             .validate_candidate(&app, &config, &profile_name)
             .await?;
     }
     write_riftx_config(path, &config).await?;
-    if was_configured && let Err(error) = state.daemon.reload_after_api_key_save(&app, &state).await
-    {
-        write_riftx_config(path, &previous).await?;
-        let _ = state.daemon.reload_after_api_key_save(&app, &state).await;
-        return Err(error);
-    }
-    settings_view(&config, false).await
+    let daemon_restart_required = match state.daemon.reload_after_api_key_save(&app, &state).await {
+        Ok(required) => required,
+        Err(error) => {
+            write_riftx_config(path, &previous).await?;
+            let _ = state.daemon.reload_after_api_key_save(&app, &state).await;
+            return Err(error);
+        }
+    };
+    settings_view(&config, daemon_restart_required).await
 }
 
 #[tauri::command]
@@ -276,10 +306,16 @@ pub(crate) async fn set_default_llm_profile(
     let mut config = load_riftx_config(path).await?;
     let previous = config.clone();
     let profile_name = input.profile_name.trim().to_string();
-    if !config.llm.profiles.contains_key(&profile_name) {
-        return Err(DesktopError::new(
+    let selected = config.llm.profiles.get(&profile_name).ok_or_else(|| {
+        DesktopError::new(
             "invalid_config",
             format!("LLM profile {profile_name:?} is not configured"),
+        )
+    })?;
+    if !selected.enabled {
+        return Err(DesktopError::new(
+            "profile_disabled",
+            format!("LLM profile {profile_name:?} is disabled"),
         ));
     }
     config.llm.default_profile = profile_name.clone();
@@ -332,21 +368,25 @@ pub(crate) async fn save_llm_api_key(
     .await
     .map_err(|error| DesktopError::new("credential_store", error.to_string()))?
     .map_err(credential_error)?;
-    if let Err(error) = state
-        .daemon
-        .validate_candidate(&app, &config, &input.profile_name)
-        .await
-    {
-        restore_api_key(&credential, previous_key).await?;
-        return Err(error);
-    }
-    let daemon_restart_required = match state.daemon.reload_after_api_key_save(&app, &state).await {
-        Ok(required) => required,
-        Err(error) => {
+    let daemon_restart_required = if profile.enabled {
+        if let Err(error) = state
+            .daemon
+            .validate_candidate(&app, &config, &input.profile_name)
+            .await
+        {
             restore_api_key(&credential, previous_key).await?;
-            let _ = state.daemon.reload_after_api_key_save(&app, &state).await;
             return Err(error);
         }
+        match state.daemon.reload_after_api_key_save(&app, &state).await {
+            Ok(required) => required,
+            Err(error) => {
+                restore_api_key(&credential, previous_key).await?;
+                let _ = state.daemon.reload_after_api_key_save(&app, &state).await;
+                return Err(error);
+            }
+        }
+    } else {
+        false
     };
     settings_view(&config, daemon_restart_required).await
 }
@@ -497,6 +537,7 @@ async fn settings_view(
                     credential_source,
                     credential_name,
                     configured,
+                    enabled: profile.enabled,
                 })
             })
             .collect::<Result<Vec<_>, DesktopError>>()

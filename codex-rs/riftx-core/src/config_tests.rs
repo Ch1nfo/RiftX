@@ -109,6 +109,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
         "http://[::1]:8766/v1",
     ] {
         let profile = LlmProfileConfig {
+            enabled: true,
             protocol: LlmProtocol::Responses,
             model: "riftx-model".to_string(),
             base_url: base_url.to_string(),
@@ -129,6 +130,7 @@ fn llm_config_accepts_https_and_loopback_but_rejects_remote_http() {
     }
 
     let profile = LlmProfileConfig {
+        enabled: true,
         protocol: LlmProtocol::Responses,
         model: "riftx-model".to_string(),
         base_url: "http://llm.example.test/v1".to_string(),
@@ -160,6 +162,7 @@ fn llm_config_requires_an_existing_default_profile() {
         profiles: BTreeMap::from([(
             "available".to_string(),
             LlmProfileConfig {
+                enabled: true,
                 protocol: LlmProtocol::Responses,
                 model: "riftx-model".to_string(),
                 base_url: "https://llm.example.test/v1".to_string(),
@@ -185,6 +188,7 @@ fn llm_config_requires_an_existing_default_profile() {
 #[test]
 fn llm_config_bounds_the_number_of_runtime_profiles() {
     let profile = LlmProfileConfig {
+        enabled: true,
         protocol: LlmProtocol::Responses,
         model: "riftx-model".to_string(),
         base_url: "https://llm.example.test/v1".to_string(),
@@ -381,7 +385,8 @@ max_bytes_per_engagement = 1073741824
         LlmProtocol::Responses
     );
     let content = std::fs::read_to_string(&config_path).expect("read");
-    assert!(content.contains("config_version = 1"));
+    assert!(content.contains("config_version = 2"));
+    assert!(content.contains("enabled = true"));
     assert!(content.contains("protocol = \"responses\""));
 
     let again = RiftxConfig::load_migrating(&config_path)
@@ -430,4 +435,32 @@ root = "artifacts"
 max_bytes_per_engagement = 1
 "#;
     assert!(toml::from_str::<RiftxConfig>(input).is_err());
+}
+
+#[test]
+fn llm_config_rejects_a_disabled_default_profile() {
+    let config = LlmConfig {
+        config_version: LLM_CONFIG_VERSION,
+        default_profile: "default".to_string(),
+        profiles: BTreeMap::from([(
+            "default".to_string(),
+            LlmProfileConfig {
+                enabled: false,
+                protocol: LlmProtocol::Responses,
+                model: "riftx-model".to_string(),
+                base_url: "https://llm.example.test/v1".to_string(),
+                api_key: LlmApiKeySource::Keyring {
+                    credential: "default".to_string(),
+                },
+                timeout_seconds: 300,
+                reasoning_level: LlmReasoningLevel::High,
+                context_budget: 200_000,
+            },
+        )]),
+    };
+
+    assert_eq!(
+        config.validate().expect_err("disabled default").to_string(),
+        "invalid RiftX config: llm.default_profile \"default\" cannot be disabled"
+    );
 }

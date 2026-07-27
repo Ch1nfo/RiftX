@@ -58,7 +58,7 @@ impl RiftxConfig {
         let path = std::path::absolute(path)
             .map_err(|error| ConfigError::Invalid(format!("resolve config path: {error}")))?;
         let mut config = Self::load(&path).await?;
-        let migrated = config.llm.apply_protocol_migration();
+        let migrated = config.llm.apply_migrations();
         if migrated {
             config.write_atomic(&path).await?;
         }
@@ -72,7 +72,7 @@ impl RiftxConfig {
     /// Load config and persist a one-shot protocol migration when needed.
     pub async fn load_migrating(path: &Path) -> Result<Self, ConfigError> {
         let mut config = Self::load(path).await?;
-        if config.llm.apply_protocol_migration() {
+        if config.llm.apply_migrations() {
             config.write_atomic(path).await?;
         }
         Ok(config)
@@ -184,6 +184,9 @@ impl LlmProtocol {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LlmProfileConfig {
+    /// Defaults to enabled so existing configurations preserve their behavior.
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
     /// Defaults to `responses` when omitted so pre-1.0 configs still load.
     #[serde(default)]
     pub protocol: LlmProtocol,
@@ -195,8 +198,12 @@ pub struct LlmProfileConfig {
     pub context_budget: u32,
 }
 
-/// Current LLM config schema version. `1` introduces explicit `protocol`.
-pub const LLM_CONFIG_VERSION: u32 = 1;
+/// Current LLM config schema version. `2` introduces explicit Profile enablement.
+pub const LLM_CONFIG_VERSION: u32 = 2;
+
+fn enabled_by_default() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
@@ -228,12 +235,12 @@ impl LlmReasoningLevel {
 }
 
 impl LlmConfig {
-    /// Upgrade pre-protocol configs to `config_version = 1`.
+    /// Upgrade older LLM configs to the current repeatable schema version.
     ///
-    /// Missing `protocol` fields already deserialize as [`LlmProtocol::Responses`].
-    /// Returns `true` when the in-memory config should be written back so the
-    /// explicit protocol and version are persisted. Safe to call repeatedly.
-    pub fn apply_protocol_migration(&mut self) -> bool {
+    /// Missing `protocol` and `enabled` fields deserialize to safe compatibility
+    /// defaults. Returns `true` when the explicit fields and version should be
+    /// persisted. Safe to call repeatedly.
+    pub fn apply_migrations(&mut self) -> bool {
         if self.config_version >= LLM_CONFIG_VERSION {
             return false;
         }
@@ -256,6 +263,16 @@ impl LlmConfig {
         if !self.profiles.contains_key(&self.default_profile) {
             return Err(ConfigError::Invalid(format!(
                 "llm.default_profile {:?} does not exist in llm.profiles",
+                self.default_profile
+            )));
+        }
+        if self
+            .profiles
+            .get(&self.default_profile)
+            .is_some_and(|profile| !profile.enabled)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "llm.default_profile {:?} cannot be disabled",
                 self.default_profile
             )));
         }

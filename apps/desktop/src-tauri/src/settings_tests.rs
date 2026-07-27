@@ -118,6 +118,7 @@ max_bytes_per_engagement = 1073741824
                     credential_source: "environment".to_string(),
                     credential_name: "RIFTX_SETTINGS_ALPHA_UNSET".to_string(),
                     configured: false,
+                    enabled: true,
                 },
                 LlmProfileSettingsView {
                     profile_name: "zeta".to_string(),
@@ -130,6 +131,7 @@ max_bytes_per_engagement = 1073741824
                     credential_source: "environment".to_string(),
                     credential_name: "RIFTX_SETTINGS_ZETA_UNSET".to_string(),
                     configured: false,
+                    enabled: true,
                 },
             ],
             daemon_restart_required: true,
@@ -175,6 +177,7 @@ async fn upsert_and_delete_llm_profiles_enforce_defaults() {
     config.llm.profiles.insert(
         "lab".to_string(),
         LlmProfileConfig {
+            enabled: true,
             protocol: LlmProtocol::Responses,
             model: "local-model".to_string(),
             base_url: "http://127.0.0.1:8080/v1".to_string(),
@@ -237,6 +240,7 @@ async fn write_riftx_config_uses_atomic_replace() {
     config.llm.profiles.insert(
         "lab".to_string(),
         LlmProfileConfig {
+            enabled: true,
             protocol: LlmProtocol::Responses,
             model: "local-model".to_string(),
             base_url: "http://127.0.0.1:8080/v1".to_string(),
@@ -323,6 +327,7 @@ async fn credential_still_referenced_blocks_key_cleanup() {
     config.llm.profiles.insert(
         "shared".to_string(),
         LlmProfileConfig {
+            enabled: true,
             protocol: LlmProtocol::Responses,
             model: "shared-model".to_string(),
             base_url: "https://shared.example.test/v1".to_string(),

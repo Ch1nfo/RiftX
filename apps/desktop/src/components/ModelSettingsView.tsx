@@ -243,6 +243,30 @@ export function ModelSettingsView({
     }
   };
 
+  const toggleProfileEnabled = async () => {
+    if (!profile || busy) {
+      return;
+    }
+    updateBusy(true);
+    try {
+      const updated = await upsertLlmProfile({
+        profileName: profile.profileName,
+        model: profile.model,
+        baseUrl: profile.baseUrl,
+        protocol: profile.protocol,
+        enabled: !profile.enabled,
+      });
+      applySettings(updated, profile.profileName);
+      await refreshRuntimeProfiles();
+      setNotice(profile.enabled ? "Profile disabled." : "Profile enabled.");
+      onRuntimeChanged(true);
+    } catch (cause) {
+      onError(bridgeError(cause));
+    } finally {
+      updateBusy(false);
+    }
+  };
+
   const removeProfile = async () => {
     if (!profile || busy || !canDeleteProfile) {
       return;
@@ -547,11 +571,19 @@ export function ModelSettingsView({
                 type="button"
                 className="secondary-button"
                 onClick={() => void runConnectionTest()}
-                disabled={busy || !profile.configured}
+                disabled={busy || !profile.configured || !profile.enabled}
               >
                 Test connection
               </button>
-              {!isDefault && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void toggleProfileEnabled()}
+                disabled={busy || isDefault}
+              >
+                {profile.enabled ? "Disable profile" : "Enable profile"}
+              </button>
+              {!isDefault && profile.enabled && (
                 <button
                   type="button"
                   className="secondary-button"

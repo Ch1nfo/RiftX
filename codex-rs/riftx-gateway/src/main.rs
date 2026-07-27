@@ -93,6 +93,10 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         let injected_api_key = stdin_api_keys
             .as_mut()
             .and_then(|api_keys| api_keys.remove(profile_name));
+        if !profile.enabled {
+            eprintln!("riftxd: LLM profile {profile_name:?} is disabled");
+            continue;
+        }
         match try_load_llm_api_key(
             profile_name,
             &profile.api_key,

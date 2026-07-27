@@ -38,7 +38,12 @@ pub(crate) async fn list_profiles(
             let in_use = engagements.iter().any(|engagement| {
                 engagement.llm_profile == *name && engagement.status == EngagementStatus::Active
             });
-            let (profile_state, state_detail) = if in_use {
+            let (profile_state, state_detail) = if !profile.enabled {
+                (
+                    LlmProfileState::Disabled,
+                    "disabled in configuration".to_string(),
+                )
+            } else if in_use {
                 (
                     LlmProfileState::InUse,
                     "referenced by an existing engagement".to_string(),
@@ -97,6 +102,19 @@ pub(crate) async fn test_profile(
         stream_text: skipped("waiting for config check"),
         function_tools: skipped("waiting for config check"),
     };
+
+    if !profile.enabled {
+        capabilities.config = skipped("profile is disabled");
+        capabilities.stream_text = skipped("profile is disabled");
+        capabilities.function_tools = skipped("profile is disabled");
+        return Ok(Json(LlmConnectionTestResult {
+            profile_name,
+            protocol: profile.protocol.as_str().to_string(),
+            model: profile.model,
+            ok: false,
+            capabilities,
+        }));
+    }
 
     if let Err(error) = profile.validate(&profile_name) {
         capabilities.config = LlmCapabilityCheck {

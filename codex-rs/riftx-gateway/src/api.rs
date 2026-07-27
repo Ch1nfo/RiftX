@@ -363,9 +363,12 @@ async fn create_engagement(
     let llm_profile = params
         .llm_profile
         .unwrap_or_else(|| state.config.llm.default_profile.clone());
-    if !state.config.llm.profiles.contains_key(&llm_profile) {
+    let profile = state.config.llm.profiles.get(&llm_profile).ok_or_else(|| {
+        ApiError::bad_request(format!("LLM profile {llm_profile:?} is not configured"))
+    })?;
+    if !profile.enabled {
         return Err(ApiError::bad_request(format!(
-            "LLM profile {llm_profile:?} is not configured"
+            "LLM profile {llm_profile:?} is disabled"
         )));
     }
     let engagement = Engagement {

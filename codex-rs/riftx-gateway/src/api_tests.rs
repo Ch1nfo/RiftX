@@ -58,12 +58,13 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
             workspace_root: temp.path().join("workspaces"),
         },
         llm: LlmConfig {
-            config_version: 1,
+            config_version: codex_riftx_core::LLM_CONFIG_VERSION,
             default_profile: "default".to_string(),
             profiles: BTreeMap::from([
                 (
                     "alternate".to_string(),
                     LlmProfileConfig {
+                        enabled: true,
                         protocol: LlmProtocol::Responses,
                         model: "riftx-alternate-test-model".to_string(),
                         base_url: "http://127.0.0.1:8766/v1".to_string(),
@@ -78,6 +79,7 @@ pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
                 (
                     "default".to_string(),
                     LlmProfileConfig {
+                        enabled: true,
                         protocol: LlmProtocol::Responses,
                         model: "riftx-test-model".to_string(),
                         base_url: "http://127.0.0.1:8766/v1".to_string(),
@@ -1640,4 +1642,57 @@ fn encrypted_state_errors_are_redacted() {
         error.message,
         "encrypted engagement state is unavailable".to_string()
     );
+}
+
+#[tokio::test]
+async fn disabled_llm_profile_is_reported_and_rejected_for_new_engagements() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut state = test_state(&temp).await;
+    Arc::make_mut(&mut state.config)
+        .llm
+        .profiles
+        .get_mut("alternate")
+        .expect("alternate profile")
+        .enabled = false;
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/llm/profiles")
+                .body(Body::empty())
+                .expect("profile request"),
+        )
+        .await
+        .expect("profile response");
+    let list: codex_riftx_ipc::LlmProfileList = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("profile body")
+            .to_bytes(),
+    )
+    .expect("profile list");
+    assert!(list.profiles.iter().any(|profile| {
+        profile.name == "alternate"
+            && profile.state == codex_riftx_ipc::LlmProfileState::Disabled
+            && !profile.runtime_ready
+    }));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/engagements")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Disabled runtime","objective":{"summary":"Reject a disabled runtime","successCriteria":[],"structuredCriteria":[]},"entryPoints":[],"mode":"native","llmProfile":"alternate","authorization":{"network":{"cidrs":[],"domains":[],"ports":[]},"identities":[],"capabilities":["web.discovery"],"environment":"lab","window":{"startsAt":null,"expiresAt":2000000000}}}"#,
+                ))
+                .expect("engagement request"),
+        )
+        .await
+        .expect("engagement response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

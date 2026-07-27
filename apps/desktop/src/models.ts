@@ -34,6 +34,7 @@ export interface UpsertLlmProfileInput {
   baseUrl: string;
   protocol?: "responses" | "chat_completions";
   makeDefault?: boolean;
+  enabled?: boolean;
 }
 
 export type LlmProfileState =
@@ -72,6 +73,7 @@ export interface LlmProfileSettings {
   credentialSource: "keyring" | "environment";
   credentialName: string;
   configured: boolean;
+  enabled: boolean;
 }
 
 export type LlmCheckStatus = "passed" | "failed" | "skipped";

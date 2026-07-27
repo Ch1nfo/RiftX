@@ -64,12 +64,13 @@ pub(crate) fn test_config(root: &Path, base_url: String) -> RiftxConfig {
             workspace_root: root.join("workspaces"),
         },
         llm: LlmConfig {
-            config_version: 1,
+            config_version: codex_riftx_core::LLM_CONFIG_VERSION,
             default_profile: "default".to_string(),
             profiles: BTreeMap::from([
                 (
                     "default".to_string(),
                     LlmProfileConfig {
+                        enabled: true,
                         protocol: LlmProtocol::Responses,
                         model: "gpt-5.2".to_string(),
                         base_url: base_url.clone(),
@@ -84,6 +85,7 @@ pub(crate) fn test_config(root: &Path, base_url: String) -> RiftxConfig {
                 (
                     "secondary".to_string(),
                     LlmProfileConfig {
+                        enabled: true,
                         protocol: LlmProtocol::Responses,
                         model: "gpt-5.2-secondary".to_string(),
                         base_url,
