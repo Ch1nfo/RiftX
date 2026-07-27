@@ -10,6 +10,7 @@ interface SettingsDialogProps {
   onError: (error: DesktopBridgeError) => void;
   onRuntimeChanged: (available: boolean) => void;
   setupRequired?: boolean;
+  settingsLocked?: boolean;
 }
 
 type SettingsTab = "model" | "tools" | "skills";
@@ -32,6 +33,7 @@ export function SettingsDialog({
   onError,
   onRuntimeChanged,
   setupRequired = false,
+  settingsLocked = false,
 }: SettingsDialogProps) {
   const [tab, setTab] = useState<SettingsTab>(
     setupRequired ? "tools" : "model",
@@ -92,6 +94,16 @@ export function SettingsDialog({
           </div>
         )}
 
+        {settingsLocked && (
+          <div className="settings-lock-warning" role="alert">
+            <strong>Settings changes are locked during active execution</strong>
+            <span>
+              Pause or interrupt the active turn before changing model, Tools,
+              or Skills settings. No configuration has been written.
+            </span>
+          </div>
+        )}
+
         <div className="settings-tabs" role="tablist" aria-label="Settings">
           {(["model", "tools", "skills"] as SettingsTab[]).map((value) => (
             <button
@@ -108,15 +120,17 @@ export function SettingsDialog({
           ))}
         </div>
 
-        {tab === "model" && (
-          <ModelSettingsView
-            onBusyChange={setBusy}
-            onError={onError}
-            onRuntimeChanged={onRuntimeChanged}
-          />
-        )}
-        {tab === "tools" && <ToolsSettingsView onError={onError} />}
-        {tab === "skills" && <SkillsSettingsView onError={onError} />}
+        <fieldset className="settings-content" disabled={settingsLocked}>
+          {tab === "model" && (
+            <ModelSettingsView
+              onBusyChange={setBusy}
+              onError={onError}
+              onRuntimeChanged={onRuntimeChanged}
+            />
+          )}
+          {tab === "tools" && <ToolsSettingsView onError={onError} />}
+          {tab === "skills" && <SkillsSettingsView onError={onError} />}
+        </fieldset>
       </section>
     </div>
   );

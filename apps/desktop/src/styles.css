@@ -1500,6 +1500,36 @@ button:disabled {
   font-weight: 650;
 }
 
+.settings-content {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-content:disabled {
+  opacity: 0.68;
+}
+
+.settings-lock-warning {
+  display: grid;
+  gap: 3px;
+  padding: 10px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 35%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+}
+
+.settings-lock-warning strong {
+  font-size: 11px;
+}
+
+.settings-lock-warning span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .settings-onboarding {
   display: grid;
   gap: 3px;

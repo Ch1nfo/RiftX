@@ -976,6 +976,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onError={setError}
         setupRequired={daemon !== null && profileReady === false}
+        settingsLocked={isRunning}
         onRuntimeChanged={(available) => {
           if (available) {
             void refresh(false);

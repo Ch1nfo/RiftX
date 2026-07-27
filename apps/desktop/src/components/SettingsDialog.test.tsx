@@ -8,7 +8,12 @@ vi.mock("./ExtensionDiagnostics", () => ({
 }));
 
 vi.mock("./ModelSettingsView", () => ({
-  ModelSettingsView: () => <div>Model setup content</div>,
+  ModelSettingsView: () => (
+    <div>
+      Model setup content
+      <button type="button">Save model settings</button>
+    </div>
+  ),
 }));
 
 describe("SettingsDialog onboarding", () => {
@@ -40,5 +45,25 @@ describe("SettingsDialog onboarding", () => {
       "aria-selected",
       "true",
     );
+  });
+
+  it("locks setting mutations while execution is active", () => {
+    render(
+      <SettingsDialog
+        open
+        settingsLocked
+        onClose={vi.fn()}
+        onError={vi.fn()}
+        onRuntimeChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Pause or interrupt the active turn",
+    );
+    expect(
+      screen.getByRole("button", { name: "Save model settings" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Tools" })).toBeEnabled();
   });
 });
