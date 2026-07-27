@@ -1,5 +1,6 @@
 use crate::BridgeError;
 use crate::diagnostics::sanitize_diagnostic;
+use crate::request::ResponsesToolName;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -25,6 +26,7 @@ pub struct ChatStreamConverter {
     text_item_id: Option<String>,
     text_buffer: String,
     tool_calls: BTreeMap<u64, PendingToolCall>,
+    tool_names: BTreeMap<String, ResponsesToolName>,
     finish_reason: Option<String>,
     usage: Option<Value>,
     completed: bool,
@@ -35,13 +37,23 @@ struct PendingToolCall {
     id: String,
     name: String,
     arguments: String,
-    added: bool,
 }
 
 impl ChatStreamConverter {
     pub fn new(response_id: impl Into<String>) -> Self {
         Self {
             response_id: response_id.into(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_tool_names(
+        response_id: impl Into<String>,
+        tool_names: BTreeMap<String, ResponsesToolName>,
+    ) -> Self {
+        Self {
+            response_id: response_id.into(),
+            tool_names,
             ..Self::default()
         }
     }
@@ -176,7 +188,7 @@ impl ChatStreamConverter {
                     .and_then(Value::as_str)
                     && !name.is_empty()
                 {
-                    pending.name = name.to_string();
+                    pending.name.push_str(name);
                 }
                 if let Some(arguments) = tool_call
                     .get("function")
@@ -184,24 +196,6 @@ impl ChatStreamConverter {
                     .and_then(Value::as_str)
                 {
                     pending.arguments.push_str(arguments);
-                }
-                if !pending.added && !pending.id.is_empty() && !pending.name.is_empty() {
-                    pending.added = true;
-                    let item_id = format!("fc_{}", pending.id);
-                    events.push(ResponsesSseEvent {
-                        event: "response.output_item.added".into(),
-                        data: json!({
-                            "type": "response.output_item.added",
-                            "item": {
-                                "type": "function_call",
-                                "id": item_id,
-                                "call_id": pending.id,
-                                "name": pending.name,
-                                "arguments": "",
-                                "status": "in_progress",
-                            }
-                        }),
-                    });
                 }
             }
         }
@@ -256,35 +250,18 @@ impl ChatStreamConverter {
                     pending.id
                 )));
             }
-            let item_id = format!("fc_{}", pending.id);
-            if !pending.added {
-                events.push(ResponsesSseEvent {
-                    event: "response.output_item.added".into(),
-                    data: json!({
-                        "type": "response.output_item.added",
-                        "item": {
-                            "type": "function_call",
-                            "id": item_id,
-                            "call_id": pending.id,
-                            "name": pending.name,
-                            "arguments": "",
-                            "status": "in_progress",
-                        }
-                    }),
-                });
-            }
+            events.push(ResponsesSseEvent {
+                event: "response.output_item.added".into(),
+                data: json!({
+                    "type": "response.output_item.added",
+                    "item": self.function_call_item(pending, "", "in_progress"),
+                }),
+            });
             events.push(ResponsesSseEvent {
                 event: "response.output_item.done".into(),
                 data: json!({
                     "type": "response.output_item.done",
-                    "item": {
-                        "type": "function_call",
-                        "id": item_id,
-                        "call_id": pending.id,
-                        "name": pending.name,
-                        "arguments": pending.arguments,
-                        "status": item_status,
-                    }
+                    "item": self.function_call_item(pending, &pending.arguments, item_status),
                 }),
             });
         }
@@ -323,6 +300,27 @@ impl ChatStreamConverter {
         };
         events.push(terminal);
         Ok(events)
+    }
+
+    fn function_call_item(
+        &self,
+        pending: &PendingToolCall,
+        arguments: &str,
+        status: &str,
+    ) -> Value {
+        let responses_name = self.tool_names.get(&pending.name);
+        let mut item = json!({
+            "type": "function_call",
+            "id": format!("fc_{}", pending.id),
+            "call_id": pending.id,
+            "name": responses_name.map_or(pending.name.as_str(), |name| name.name.as_str()),
+            "arguments": arguments,
+            "status": status,
+        });
+        if let Some(namespace) = responses_name.and_then(|name| name.namespace.as_deref()) {
+            item["namespace"] = Value::String(namespace.to_string());
+        }
+        item
     }
 }
 

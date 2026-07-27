@@ -52,6 +52,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::SessionSource;
 use codex_riftx_domain::ExecutionMode;
 use codex_riftx_guard::GuardNetworkPolicy;
@@ -126,6 +127,13 @@ impl std::fmt::Debug for RiftxApiKey {
     }
 }
 
+/// Controls whether the embedded Runtime may expose Responses-only hosted tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiftxHostedToolMode {
+    Responses,
+    FunctionOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RiftxLlmRuntimeConfig {
     pub runtime_home: PathBuf,
@@ -133,6 +141,7 @@ pub struct RiftxLlmRuntimeConfig {
     pub reasoning_effort: String,
     pub context_window: u32,
     pub base_url: String,
+    pub hosted_tool_mode: RiftxHostedToolMode,
     pub excluded_api_key_envs: Vec<String>,
     pub api_key: RiftxApiKey,
     pub process_path: String,
@@ -408,6 +417,8 @@ async fn build_runtime_config(
         && !config.model_provider.requires_openai_auth
         && config.forced_login_method == Some(ForcedLoginMethod::Api)
         && config.cli_auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral
+        && (runtime.hosted_tool_mode == RiftxHostedToolMode::Responses
+            || config.web_search_mode.value() == WebSearchMode::Disabled)
         && !config.bundled_skills_enabled();
     let path_is_enforced = config
         .permissions
@@ -490,6 +501,12 @@ fn runtime_overrides(runtime: &RiftxLlmRuntimeConfig) -> Vec<(String, toml::Valu
             toml::Value::Boolean(false),
         ),
     ];
+    if runtime.hosted_tool_mode == RiftxHostedToolMode::FunctionOnly {
+        overrides.push((
+            "web_search".to_string(),
+            toml::Value::String("disabled".to_string()),
+        ));
+    }
     if !runtime.excluded_api_key_envs.is_empty() {
         overrides.push((
             "shell_environment_policy.exclude".to_string(),

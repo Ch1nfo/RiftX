@@ -64,6 +64,7 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
         reasoning_effort: "high".to_string(),
         context_window: 200_000,
         base_url: "http://127.0.0.1:8766/v1".to_string(),
+        hosted_tool_mode: RiftxHostedToolMode::FunctionOnly,
         excluded_api_key_envs: vec![
             "RIFTX_OTHER_API_KEY".to_string(),
             "RIFTX_TEST_API_KEY".to_string(),
@@ -76,6 +77,7 @@ async fn embedded_runtime_forces_api_key_only_authentication() {
         .expect("runtime config");
     let config = built.config;
 
+    assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
     assert_eq!(
         (
             config.model.as_deref(),

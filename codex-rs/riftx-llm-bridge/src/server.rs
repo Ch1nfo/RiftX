@@ -2,7 +2,7 @@ use crate::BridgeError;
 use crate::ChatStreamConverter;
 use crate::chat_completions_url;
 use crate::diagnostics::sanitize_diagnostic;
-use crate::responses_request_to_chat;
+use crate::request::responses_request_to_chat_with_tool_names;
 use crate::sse::SseDecoder;
 use axum::Router;
 use axum::body::Body;
@@ -116,7 +116,7 @@ async fn handle_responses_inner(
 ) -> Result<Response, BridgeError> {
     authorize(&headers, &state.bearer_token)?;
     let request: Value = serde_json::from_slice(&body)?;
-    let chat_body = responses_request_to_chat(&request)?;
+    let converted = responses_request_to_chat_with_tool_names(&request)?;
     let upstream_url = chat_completions_url(&state.upstream.base_url);
     let upstream = state
         .client
@@ -126,7 +126,7 @@ async fn handle_responses_inner(
             format!("Bearer {}", state.upstream.api_key),
         )
         .header("Content-Type", "application/json")
-        .json(&chat_body)
+        .json(&converted.body)
         .send()
         .await?;
 
@@ -140,7 +140,7 @@ async fn handle_responses_inner(
     }
 
     let response_id = format!("resp_{}", Uuid::new_v4());
-    let stream = bridge_sse_stream(upstream, response_id);
+    let stream = bridge_sse_stream(upstream, response_id, converted.tool_names);
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/event-stream")
@@ -152,10 +152,11 @@ async fn handle_responses_inner(
 fn bridge_sse_stream(
     upstream: reqwest::Response,
     response_id: String,
+    tool_names: std::collections::BTreeMap<String, crate::request::ResponsesToolName>,
 ) -> BoxStream<'static, Result<Bytes, Infallible>> {
     let (tx, rx) = mpsc::channel::<Bytes>(16);
     tokio::spawn(async move {
-        let mut converter = ChatStreamConverter::new(response_id);
+        let mut converter = ChatStreamConverter::with_tool_names(response_id, tool_names);
         let mut decoder = SseDecoder::default();
         let mut byte_stream = upstream.bytes_stream();
         loop {

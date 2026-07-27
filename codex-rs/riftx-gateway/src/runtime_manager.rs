@@ -2,6 +2,7 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_riftx_app_server_adapter::RiftxApiKey;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
+use codex_riftx_app_server_adapter::RiftxHostedToolMode;
 use codex_riftx_app_server_adapter::RiftxLlmRuntimeConfig;
 use codex_riftx_core::LlmProtocol;
 use codex_riftx_llm_bridge::BridgeHandle;
@@ -116,6 +117,10 @@ impl ProfileRuntimeManager {
                 reasoning_effort: spec.reasoning_effort,
                 context_window: spec.context_window,
                 base_url,
+                hosted_tool_mode: match spec.protocol {
+                    LlmProtocol::Responses => RiftxHostedToolMode::Responses,
+                    LlmProtocol::ChatCompletions => RiftxHostedToolMode::FunctionOnly,
+                },
                 excluded_api_key_envs: spec.excluded_api_key_envs,
                 api_key,
                 process_path: spec.process_path,

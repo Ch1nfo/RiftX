@@ -2,6 +2,7 @@ use crate::BridgeError;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 /// Build the upstream Chat Completions URL from a Profile `base_url`.
 pub fn chat_completions_url(base_url: &str) -> String {
@@ -15,8 +16,25 @@ pub fn chat_completions_url(base_url: &str) -> String {
     format!("{base}/chat/completions")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponsesToolName {
+    pub(crate) namespace: Option<String>,
+    pub(crate) name: String,
+}
+
+pub(crate) struct ConvertedChatRequest {
+    pub(crate) body: Value,
+    pub(crate) tool_names: BTreeMap<String, ResponsesToolName>,
+}
+
 /// Convert a Responses API request body into a Chat Completions request body.
 pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> {
+    Ok(responses_request_to_chat_with_tool_names(request)?.body)
+}
+
+pub(crate) fn responses_request_to_chat_with_tool_names(
+    request: &Value,
+) -> Result<ConvertedChatRequest, BridgeError> {
     let obj = request
         .as_object()
         .ok_or_else(|| BridgeError::InvalidRequest("request must be a JSON object".into()))?;
@@ -57,8 +75,11 @@ pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> 
     }
     chat["stream_options"] = json!({ "include_usage": true });
 
+    let mut tool_names = BTreeMap::new();
     if let Some(tools) = obj.get("tools") {
-        chat["tools"] = convert_tools(tools)?;
+        let (tools, names) = convert_tools(tools)?;
+        chat["tools"] = tools;
+        tool_names = names;
     }
     if let Some(tool_choice) = obj.get("tool_choice") {
         chat["tool_choice"] = convert_tool_choice(tool_choice)?;
@@ -79,7 +100,10 @@ pub fn responses_request_to_chat(request: &Value) -> Result<Value, BridgeError> 
     map_text_controls(obj.get("text"), &mut chat)?;
     map_metadata(obj, &mut chat)?;
 
-    Ok(chat)
+    Ok(ConvertedChatRequest {
+        body: chat,
+        tool_names,
+    })
 }
 
 fn validate_request_fields(obj: &Map<String, Value>) -> Result<(), BridgeError> {
@@ -332,7 +356,7 @@ fn message_text_content(item: &Value) -> Result<String, BridgeError> {
                     "message content type {part_type:?} is not supported for Chat Completions profiles"
                 )));
             }
-            other if other.is_empty() => {}
+            "" => {}
             other => {
                 return Err(BridgeError::Unsupported(format!(
                     "message content type {other:?} cannot be mapped to Chat Completions"
@@ -352,11 +376,10 @@ fn convert_function_call_item(item: &Value) -> Result<Value, BridgeError> {
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| BridgeError::InvalidRequest("function_call missing name".into()))?;
-    if item.get("namespace").and_then(Value::as_str).is_some() {
-        return Err(BridgeError::Unsupported(
-            "namespaced function_call tools cannot be mapped to Chat Completions".into(),
-        ));
-    }
+    let chat_name = item.get("namespace").and_then(Value::as_str).map_or_else(
+        || name.to_string(),
+        |namespace| flattened_tool_name(namespace, name),
+    );
     let arguments = item
         .get("arguments")
         .and_then(Value::as_str)
@@ -365,7 +388,7 @@ fn convert_function_call_item(item: &Value) -> Result<Value, BridgeError> {
         "id": call_id,
         "type": "function",
         "function": {
-            "name": name,
+            "name": chat_name,
             "arguments": arguments,
         }
     }))
@@ -397,11 +420,14 @@ fn convert_function_call_output_item(item: &Value) -> Result<Value, BridgeError>
     }))
 }
 
-fn convert_tools(tools: &Value) -> Result<Value, BridgeError> {
+fn convert_tools(
+    tools: &Value,
+) -> Result<(Value, BTreeMap<String, ResponsesToolName>), BridgeError> {
     let tools = tools
         .as_array()
         .ok_or_else(|| BridgeError::InvalidRequest("tools must be an array".into()))?;
-    let mut converted = Vec::with_capacity(tools.len());
+    let mut converted = Vec::new();
+    let mut tool_names = BTreeMap::new();
     for tool in tools {
         let tool_type = tool.get("type").and_then(Value::as_str).unwrap_or("");
         match tool_type {
@@ -409,22 +435,45 @@ fn convert_tools(tools: &Value) -> Result<Value, BridgeError> {
                 let name = tool.get("name").and_then(Value::as_str).ok_or_else(|| {
                     BridgeError::InvalidRequest("function tool missing name".into())
                 })?;
-                let mut function = json!({
-                    "name": name,
-                });
-                if let Some(description) = tool.get("description") {
-                    function["description"] = description.clone();
+                push_function_tool(
+                    &mut converted,
+                    &mut tool_names,
+                    name.to_string(),
+                    ResponsesToolName {
+                        namespace: None,
+                        name: name.to_string(),
+                    },
+                    tool,
+                )?;
+            }
+            "namespace" => {
+                let namespace = tool.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    BridgeError::InvalidRequest("namespace tool missing name".into())
+                })?;
+                let children = tool.get("tools").and_then(Value::as_array).ok_or_else(|| {
+                    BridgeError::InvalidRequest("namespace tool children must be an array".into())
+                })?;
+                for child in children {
+                    if child.get("type").and_then(Value::as_str) != Some("function") {
+                        return Err(BridgeError::Unsupported(
+                            "Chat Completions only supports function children in tool namespaces"
+                                .into(),
+                        ));
+                    }
+                    let name = child.get("name").and_then(Value::as_str).ok_or_else(|| {
+                        BridgeError::InvalidRequest("namespace function tool missing name".into())
+                    })?;
+                    push_function_tool(
+                        &mut converted,
+                        &mut tool_names,
+                        flattened_tool_name(namespace, name),
+                        ResponsesToolName {
+                            namespace: Some(namespace.to_string()),
+                            name: name.to_string(),
+                        },
+                        child,
+                    )?;
                 }
-                if let Some(parameters) = tool.get("parameters") {
-                    function["parameters"] = parameters.clone();
-                }
-                if let Some(strict) = tool.get("strict") {
-                    function["strict"] = strict.clone();
-                }
-                converted.push(json!({
-                    "type": "function",
-                    "function": function,
-                }));
             }
             other => {
                 return Err(BridgeError::Unsupported(format!(
@@ -433,7 +482,52 @@ fn convert_tools(tools: &Value) -> Result<Value, BridgeError> {
             }
         }
     }
-    Ok(Value::Array(converted))
+    Ok((Value::Array(converted), tool_names))
+}
+
+fn push_function_tool(
+    converted: &mut Vec<Value>,
+    tool_names: &mut BTreeMap<String, ResponsesToolName>,
+    chat_name: String,
+    responses_name: ResponsesToolName,
+    tool: &Value,
+) -> Result<(), BridgeError> {
+    if chat_name.len() > 64 {
+        return Err(BridgeError::Unsupported(format!(
+            "tool name {chat_name:?} exceeds the Chat Completions 64-byte limit"
+        )));
+    }
+    if tool_names
+        .insert(chat_name.clone(), responses_name)
+        .is_some()
+    {
+        return Err(BridgeError::Unsupported(format!(
+            "tool name {chat_name:?} collides after flattening a Responses namespace"
+        )));
+    }
+    let mut function = json!({"name": chat_name});
+    if let Some(description) = tool.get("description") {
+        function["description"] = description.clone();
+    }
+    if let Some(parameters) = tool.get("parameters") {
+        function["parameters"] = parameters.clone();
+    }
+    if let Some(strict) = tool.get("strict") {
+        function["strict"] = strict.clone();
+    }
+    converted.push(json!({
+        "type": "function",
+        "function": function,
+    }));
+    Ok(())
+}
+
+fn flattened_tool_name(namespace: &str, name: &str) -> String {
+    if namespace.ends_with('_') || name.starts_with('_') {
+        format!("{namespace}{name}")
+    } else {
+        format!("{namespace}__{name}")
+    }
 }
 
 fn convert_tool_choice(tool_choice: &Value) -> Result<Value, BridgeError> {
@@ -452,9 +546,13 @@ fn convert_tool_choice(tool_choice: &Value) -> Result<Value, BridgeError> {
                     .ok_or_else(|| {
                         BridgeError::InvalidRequest("tool_choice function missing name".into())
                     })?;
+                let chat_name = obj.get("namespace").and_then(Value::as_str).map_or_else(
+                    || name.to_string(),
+                    |namespace| flattened_tool_name(namespace, name),
+                );
                 Ok(json!({
                     "type": "function",
-                    "function": { "name": name }
+                    "function": { "name": chat_name }
                 }))
             } else {
                 Err(BridgeError::Unsupported(

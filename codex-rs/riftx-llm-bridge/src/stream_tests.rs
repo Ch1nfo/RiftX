@@ -113,3 +113,57 @@ fn done_without_finish_reason_is_rejected() {
         .expect_err("missing finish reason");
     assert!(error.to_string().contains("finish_reason"));
 }
+
+#[test]
+fn restores_namespace_after_a_fragmented_chat_tool_name() {
+    let tool_names = BTreeMap::from([(
+        "mcp__demo__lookup".to_string(),
+        ResponsesToolName {
+            namespace: Some("mcp__demo__".to_string()),
+            name: "lookup".to_string(),
+        },
+    )]);
+    let mut converter = ChatStreamConverter::with_tool_names("resp_namespace", tool_names);
+    converter
+        .ingest_chunk(&json!({
+            "id": "chatcmpl_namespace",
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_namespace",
+                    "function": {"name": "mcp__demo__look", "arguments": "{"}
+                }]}
+            }]
+        }))
+        .expect("first tool fragment");
+    converter
+        .ingest_chunk(&json!({
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "up", "arguments": "}"}
+                }]},
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .expect("second tool fragment");
+    let events = converter.ingest_sse_frame("data: [DONE]").expect("done");
+    let done = events
+        .iter()
+        .find(|event| event.event == "response.output_item.done")
+        .expect("function call done");
+    assert_eq!(
+        done.data["item"],
+        json!({
+            "type": "function_call",
+            "id": "fc_call_namespace",
+            "call_id": "call_namespace",
+            "namespace": "mcp__demo__",
+            "name": "lookup",
+            "arguments": "{}",
+            "status": "completed",
+        })
+    );
+}

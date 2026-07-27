@@ -188,3 +188,55 @@ fn chat_completions_url_appends_path() {
         "https://api.deepseek.com/chat/completions"
     );
 }
+
+#[test]
+fn flattens_namespace_tools_and_namespaced_call_history() {
+    let request = json!({
+        "model": "chat-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "namespace": "mcp__demo__",
+            "name": "lookup",
+            "arguments": "{}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__demo__",
+            "description": "Demo tools",
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "description": "Look up a value",
+                "strict": false,
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let converted = responses_request_to_chat_with_tool_names(&request).expect("convert namespace");
+    assert_eq!(
+        converted.body["tools"],
+        json!([{
+            "type": "function",
+            "function": {
+                "name": "mcp__demo__lookup",
+                "description": "Look up a value",
+                "strict": false,
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }])
+    );
+    assert_eq!(
+        converted.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "mcp__demo__lookup"
+    );
+    assert_eq!(
+        converted.tool_names.get("mcp__demo__lookup"),
+        Some(&ResponsesToolName {
+            namespace: Some("mcp__demo__".to_string()),
+            name: "lookup".to_string(),
+        })
+    );
+}
