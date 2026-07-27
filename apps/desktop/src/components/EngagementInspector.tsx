@@ -1,10 +1,12 @@
 import { ChevronRight, FileText, KeyRound, ShieldCheck } from "lucide-react";
 import type {
+  AutoRun,
   CredentialGrant,
   Engagement,
   EngagementReport,
   ExecutionMode,
 } from "../models";
+import { AutoControl, type AutoAction } from "./AutoControl";
 import { ModeControl } from "./ModeControl";
 
 interface EngagementInspectorProps {
@@ -13,6 +15,9 @@ interface EngagementInspectorProps {
   modeBusy: boolean;
   modeBlocked: boolean;
   credentialGrants: CredentialGrant[];
+  autoRun: AutoRun | null;
+  autoBusy: boolean;
+  onAutoAction: (action: AutoAction) => void;
   onModeChange: (mode: ExecutionMode, confirmation: string | null) => void;
   onOpenCredentials: () => void;
   onOpenReport: () => void;
@@ -24,6 +29,9 @@ export function EngagementInspector({
   modeBusy,
   modeBlocked,
   credentialGrants,
+  autoRun,
+  autoBusy,
+  onAutoAction,
   onModeChange,
   onOpenCredentials,
   onOpenReport,
@@ -75,6 +83,15 @@ export function EngagementInspector({
           </div>
         ))}
       </section>
+
+      {engagement.mode === "auto" && (
+        <AutoControl
+          run={autoRun}
+          busy={autoBusy}
+          active={engagement.status === "active"}
+          onAction={onAutoAction}
+        />
+      )}
 
       <ModeControl
         engagement={engagement}

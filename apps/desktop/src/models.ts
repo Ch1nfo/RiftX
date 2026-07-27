@@ -453,3 +453,67 @@ export interface DesktopBridgeError {
   code: string;
   message: string;
 }
+
+export type AutoRunState =
+  | "ready"
+  | "running"
+  | "evaluating"
+  | "paused"
+  | "needsInput"
+  | "succeeded"
+  | "expired"
+  | "budgetExhausted"
+  | "failed"
+  | "killed";
+
+export type AutoStopReason =
+  | "operatorPause"
+  | "authorizationExpired"
+  | "turnBudgetExhausted"
+  | "toolBudgetExhausted"
+  | "wallClockBudgetExhausted"
+  | "consecutiveFailures"
+  | "noProgress"
+  | "auditUnavailable"
+  | "providerAuthentication"
+  | "providerProtocolError"
+  | "daemonRestart"
+  | "killSwitch"
+  | "unrecoverableError"
+  | "scopeNeedsInput"
+  | "successCriteriaMet";
+
+export interface AutoRun {
+  engagementId: string;
+  config: {
+    objective: Engagement["objective"];
+    expiresAt: number;
+    limits: {
+      maxTurns: number;
+      maxToolCalls: number;
+      maxWallClockSeconds: number;
+      maxSingleCommandSeconds: number;
+      maxConsecutiveFailures: number;
+      noProgressWindow: number;
+      maxModelTokensOrCost: number | null;
+    };
+  };
+  state: AutoRunState;
+  stopReason: AutoStopReason | null;
+  currentSubgoal: string | null;
+  turnsStarted: number;
+  turnsCompleted: number;
+  toolCalls: number;
+  consecutiveFailures: number;
+  noProgressTurns: number;
+  lastGoalAssessment: {
+    succeeded: boolean;
+    criteria: Array<{ criterionId: string; satisfied: boolean }>;
+  } | null;
+  lastProgressAssessment: {
+    progressed: boolean;
+    action: "continue" | "replan" | "switchStrategy" | "needsInput";
+  } | null;
+  startedAt: number | null;
+  updatedAt: number;
+}

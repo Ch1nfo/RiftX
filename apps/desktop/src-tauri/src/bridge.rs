@@ -1,5 +1,6 @@
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
+use codex_riftx_ipc::AutoRun;
 use codex_riftx_ipc::AssessmentObjective;
 use codex_riftx_ipc::AuthorizationScope;
 use codex_riftx_ipc::AuthorizationWindow;
@@ -312,6 +313,55 @@ pub(crate) async fn change_engagement_mode(
     let client = state.client()?;
     let (path, params) = mode_change_request(input)?;
     json_response(client.post_typed(&path, &params).await).await
+}
+
+#[tauri::command]
+pub(crate) async fn auto_status(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<AutoRun, DesktopError> {
+    validate_engagement_id(&engagement_id)?;
+    let client = state.client()?;
+    json_response(client.get(&format!("/v1/engagements/{engagement_id}/auto")).await).await
+}
+
+#[tauri::command]
+pub(crate) async fn pause_auto(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<AutoRun, DesktopError> {
+    update_auto(&state, &engagement_id, "pause").await
+}
+
+#[tauri::command]
+pub(crate) async fn resume_auto(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<AutoRun, DesktopError> {
+    update_auto(&state, &engagement_id, "resume").await
+}
+
+#[tauri::command]
+pub(crate) async fn kill_auto(
+    state: tauri::State<'_, DesktopState>,
+    engagement_id: String,
+) -> Result<AutoRun, DesktopError> {
+    update_auto(&state, &engagement_id, "kill").await
+}
+
+async fn update_auto(
+    state: &tauri::State<'_, DesktopState>,
+    engagement_id: &str,
+    action: &str,
+) -> Result<AutoRun, DesktopError> {
+    validate_engagement_id(engagement_id)?;
+    let client = state.client()?;
+    json_response(
+        client
+            .post(&format!("/v1/engagements/{engagement_id}/auto/{action}"))
+            .await,
+    )
+    .await
 }
 
 #[tauri::command]

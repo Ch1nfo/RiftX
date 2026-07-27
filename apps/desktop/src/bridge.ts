@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AutoRun,
   ApprovalDecision,
   ConversationPage,
   CreateAssessmentCredentialInput,
@@ -322,4 +323,20 @@ export function bridgeError(error: unknown): DesktopBridgeError {
     code: "desktop_error",
     message: error instanceof Error ? error.message : String(error),
   };
+}
+
+export function autoStatus(engagementId: string): Promise<AutoRun> {
+  return desktopInvoke("auto_status", { engagementId });
+}
+
+export function pauseAuto(engagementId: string): Promise<AutoRun> {
+  return desktopInvoke("pause_auto", { engagementId });
+}
+
+export function resumeAuto(engagementId: string): Promise<AutoRun> {
+  return desktopInvoke("resume_auto", { engagementId });
+}
+
+export function killAuto(engagementId: string): Promise<AutoRun> {
+  return desktopInvoke("kill_auto", { engagementId });
 }

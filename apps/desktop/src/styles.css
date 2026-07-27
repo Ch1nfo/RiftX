@@ -2427,3 +2427,82 @@ button:disabled {
   font-size: 11px;
   line-height: 1.4;
 }
+
+.auto-control-heading,
+.auto-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.auto-control-heading h3 {
+  margin: 0;
+}
+
+.auto-control-heading strong,
+.auto-stop-reason {
+  color: var(--mint);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.auto-stop-reason {
+  margin-top: 8px;
+  color: #d1a64d;
+}
+
+.auto-budget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0;
+  gap: 1px;
+  background: var(--border);
+}
+
+.auto-budget-grid > div {
+  padding: 8px;
+  background: var(--surface-raised);
+}
+
+.auto-budget-grid dt {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.auto-budget-grid dd {
+  margin: 3px 0 0;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+}
+
+.inspector .auto-progress {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.auto-actions button {
+  display: inline-flex;
+  min-width: 0;
+  padding: 7px 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 10px;
+}
+
+.auto-actions button.danger {
+  color: #efaaa5;
+  border-color: #6e3532;
+}
+
+.auto-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}

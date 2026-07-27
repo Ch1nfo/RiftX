@@ -14,6 +14,7 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   activateEngagement,
+  autoStatus,
   bridgeError,
   changeEngagementMode,
   createEngagement,
@@ -24,6 +25,7 @@ import {
   engagementReportMarkdown,
   engagementStreamStatus,
   interruptEngagement,
+  killAuto,
   killRuntime,
   listApprovals,
   listAssessmentCredentials,
@@ -33,7 +35,9 @@ import {
   onEngagementStream,
   onRuntimeError,
   onRuntimeStatus,
+  pauseAuto,
   pauseRuntime,
+  resumeAuto,
   resumeRuntime,
   startTurn,
 } from "./bridge";
@@ -48,6 +52,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { TaskSidebar } from "./components/TaskSidebar";
 import type {
   ApprovalDecision,
+  AutoRun,
   ConversationEntry,
   CreateEngagementInput,
   CredentialGrant,
@@ -68,6 +73,8 @@ export default function App() {
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [report, setReport] = useState<EngagementReport | null>(null);
+  const [autoRun, setAutoRun] = useState<AutoRun | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
   const [events, setEvents] = useState<EngagementEvent[]>([]);
   const [history, setHistory] = useState<ConversationEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
@@ -248,6 +255,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) {
       setReport(null);
+      setAutoRun(null);
       setReportOpen(false);
       setReportMarkdown(null);
       setEvents([]);
@@ -264,6 +272,7 @@ export default function App() {
       return;
     }
     setReport(null);
+    setAutoRun(null);
     setReportOpen(false);
     setReportMarkdown(null);
     setEvents([]);
@@ -330,6 +339,11 @@ export default function App() {
         if (event.kind === "item/completed") {
           void loadConversation(selectedId);
         }
+        if (event.kind.startsWith("auto/")) {
+          void autoStatus(selectedId).then(setAutoRun).catch((cause) => {
+            setError(bridgeError(cause));
+          });
+        }
       }),
       onEngagementStream((status) => {
         if (!disposed && status.engagementId === selectedId) {
@@ -371,6 +385,28 @@ export default function App() {
     refresh,
     selectedId,
   ]);
+
+  useEffect(() => {
+    if (!selected || selected.mode !== "auto") {
+      setAutoRun(null);
+      return;
+    }
+    let disposed = false;
+    void autoStatus(selected.id)
+      .then((run) => {
+        if (!disposed) {
+          setAutoRun(run);
+        }
+      })
+      .catch((cause) => {
+        if (!disposed) {
+          setError(bridgeError(cause));
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [selected?.id, selected?.mode]);
 
   useEffect(() => {
     if (
@@ -528,6 +564,23 @@ export default function App() {
       setError(bridgeError(cause));
     } finally {
       setControlBusy(false);
+    }
+  };
+
+  const changeAuto = async (action: "pause" | "resume" | "kill") => {
+    if (!selected || autoBusy) {
+      return;
+    }
+    setAutoBusy(true);
+    try {
+      const command =
+        action === "pause" ? pauseAuto : action === "resume" ? resumeAuto : killAuto;
+      setAutoRun(await command(selected.id));
+      setError(null);
+    } catch (cause) {
+      setError(bridgeError(cause));
+    } finally {
+      setAutoBusy(false);
     }
   };
 
@@ -827,6 +880,9 @@ export default function App() {
           modeBusy={modeBusy}
           modeBlocked={isRunning || approvals.length > 0}
           credentialGrants={credentialGrants}
+          autoRun={autoRun}
+          autoBusy={autoBusy}
+          onAutoAction={(action) => void changeAuto(action)}
           onModeChange={(mode, confirmation) =>
             void changeMode(mode, confirmation)
           }
