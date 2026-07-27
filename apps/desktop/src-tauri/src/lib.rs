@@ -5,6 +5,7 @@ mod daemon;
 mod extensions;
 mod notifications;
 mod settings;
+mod settings_coordination;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -58,6 +59,8 @@ pub fn run() {
             settings::set_default_llm_profile,
             settings::save_llm_api_key,
             settings::delete_llm_api_key,
+            settings_coordination::settings_reload_impact,
+            settings_coordination::prepare_settings_reload,
             notifications::notification_settings,
             notifications::request_notification_permission,
         ])

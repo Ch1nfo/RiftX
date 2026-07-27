@@ -1,6 +1,14 @@
-import { X } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { DesktopBridgeError } from "../models";
+import { AlertTriangle, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  bridgeError,
+  prepareSettingsReload,
+  settingsReloadImpact,
+} from "../bridge";
+import type {
+  DesktopBridgeError,
+  SettingsReloadImpact,
+} from "../models";
 import { SkillsSettingsView, ToolsSettingsView } from "./ExtensionDiagnostics";
 import { ModelSettingsView } from "./ModelSettingsView";
 
@@ -11,6 +19,11 @@ interface SettingsDialogProps {
   onRuntimeChanged: (available: boolean) => void;
   setupRequired?: boolean;
   settingsLocked?: boolean;
+}
+
+interface PendingCoordination {
+  impact: SettingsReloadImpact;
+  resolve: (allowed: boolean) => void;
 }
 
 type SettingsTab = "model" | "tools" | "skills";
@@ -39,23 +52,77 @@ export function SettingsDialog({
     setupRequired ? "tools" : "model",
   );
   const [busy, setBusy] = useState(false);
+  const [coordinationBusy, setCoordinationBusy] = useState(false);
+  const [pendingCoordination, setPendingCoordination] =
+    useState<PendingCoordination | null>(null);
 
   useEffect(() => {
     if (!open) {
+      pendingCoordination?.resolve(false);
+      setPendingCoordination(null);
       setTab(setupRequired ? "tools" : "model");
       setBusy(false);
+      setCoordinationBusy(false);
     }
-  }, [open, setupRequired]);
+  }, [open, pendingCoordination, setupRequired]);
+
+  const requestMutation = useCallback(async () => {
+    if (pendingCoordination || coordinationBusy) {
+      return false;
+    }
+    try {
+      const impact = await settingsReloadImpact();
+      if (impact.activeTurns.length === 0) {
+        return true;
+      }
+      return await new Promise<boolean>((resolve) => {
+        setPendingCoordination({ impact, resolve });
+      });
+    } catch (cause) {
+      onError(bridgeError(cause));
+      return false;
+    }
+  }, [coordinationBusy, onError, pendingCoordination]);
+
+  const cancelCoordination = () => {
+    const pending = pendingCoordination;
+    setPendingCoordination(null);
+    pending?.resolve(false);
+  };
+
+  const confirmCoordination = async () => {
+    const pending = pendingCoordination;
+    if (!pending || coordinationBusy) {
+      return;
+    }
+    setCoordinationBusy(true);
+    try {
+      await prepareSettingsReload(
+        pending.impact.activeTurns.map((turn) => turn.engagementId),
+      );
+      setPendingCoordination(null);
+      pending.resolve(true);
+    } catch (cause) {
+      setPendingCoordination(null);
+      pending.resolve(false);
+      onError(bridgeError(cause));
+    } finally {
+      setCoordinationBusy(false);
+    }
+  };
 
   if (!open) {
     return null;
   }
 
+  const interactionBlocked =
+    busy || coordinationBusy || pendingCoordination !== null;
+
   return (
     <div
       className="dialog-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) {
+        if (event.target === event.currentTarget && !interactionBlocked) {
           onClose();
         }
       }}
@@ -77,7 +144,7 @@ export function SettingsDialog({
             aria-label="Close settings"
             title="Close"
             onClick={onClose}
-            disabled={busy}
+            disabled={interactionBlocked}
           >
             <X size={17} />
           </button>
@@ -94,12 +161,13 @@ export function SettingsDialog({
           </div>
         )}
 
-        {settingsLocked && (
-          <div className="settings-lock-warning" role="alert">
-            <strong>Settings changes are locked during active execution</strong>
+        {settingsLocked && !pendingCoordination && (
+          <div className="settings-lock-warning" role="status">
+            <strong>Active execution requires confirmation</strong>
             <span>
-              Pause or interrupt the active turn before changing model, Tools,
-              or Skills settings. No configuration has been written.
+              When you save a runtime setting, RiftX will show every affected
+              task before pausing active work. Canceling leaves configuration
+              unchanged.
             </span>
           </div>
         )}
@@ -113,24 +181,81 @@ export function SettingsDialog({
               aria-selected={tab === value}
               className={tab === value ? "active" : undefined}
               onClick={() => setTab(value)}
-              disabled={busy}
+              disabled={interactionBlocked}
             >
               {TAB_LABELS[value]}
             </button>
           ))}
         </div>
 
-        <fieldset className="settings-content" disabled={settingsLocked}>
+        <fieldset className="settings-content" disabled={interactionBlocked}>
           {tab === "model" && (
             <ModelSettingsView
               onBusyChange={setBusy}
               onError={onError}
               onRuntimeChanged={onRuntimeChanged}
+              onBeforeMutation={requestMutation}
             />
           )}
-          {tab === "tools" && <ToolsSettingsView onError={onError} />}
+          {tab === "tools" && (
+            <ToolsSettingsView
+              onError={onError}
+              onBeforeMutation={requestMutation}
+            />
+          )}
           {tab === "skills" && <SkillsSettingsView onError={onError} />}
         </fieldset>
+
+        {pendingCoordination && (
+          <section
+            className="settings-reload-confirmation"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="settings-reload-title"
+          >
+            <div className="settings-reload-heading">
+              <AlertTriangle size={18} />
+              <div>
+                <strong id="settings-reload-title">
+                  Pause active work and apply this setting?
+                </strong>
+                <span>
+                  RiftX will pause or interrupt the turns below before writing
+                  configuration. Tasks remain paused after daemon restart and
+                  do not resume automatically.
+                </span>
+              </div>
+            </div>
+            <ul>
+              {pendingCoordination.impact.activeTurns.map((turn) => (
+                <li key={turn.engagementId}>
+                  <strong>{turn.engagementName}</strong>
+                  <span>
+                    {turn.profileName} · {turn.engagementId}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="settings-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={cancelCoordination}
+                disabled={coordinationBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void confirmCoordination()}
+                disabled={coordinationBusy}
+              >
+                {coordinationBusy ? "Pausing active work" : "Pause and apply"}
+              </button>
+            </div>
+          </section>
+        )}
       </section>
     </div>
   );

@@ -33,6 +33,7 @@ interface ModelSettingsViewProps {
   onBusyChange: (busy: boolean) => void;
   onError: (error: DesktopBridgeError) => void;
   onRuntimeChanged: (available: boolean) => void;
+  onBeforeMutation?: () => Promise<boolean>;
 }
 
 const PROFILE_STATE_LABELS: Record<LlmProfileState, string> = {
@@ -48,6 +49,7 @@ export function ModelSettingsView({
   onBusyChange,
   onError,
   onRuntimeChanged,
+  onBeforeMutation,
 }: ModelSettingsViewProps) {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [runtimeProfiles, setRuntimeProfiles] =
@@ -85,6 +87,11 @@ export function ModelSettingsView({
       onBusyChange(nextBusy);
     },
     [onBusyChange],
+  );
+
+  const mutationAllowed = useCallback(
+    async () => (onBeforeMutation ? onBeforeMutation() : true),
+    [onBeforeMutation],
   );
 
   const applySettings = useCallback(
@@ -177,6 +184,9 @@ export function ModelSettingsView({
     ) {
       return;
     }
+    if (!(await mutationAllowed())) {
+      return;
+    }
     updateBusy(true);
     try {
       const updated = await upsertLlmProfile({
@@ -215,6 +225,9 @@ export function ModelSettingsView({
     ) {
       return;
     }
+    if (!(await mutationAllowed())) {
+      return;
+    }
     updateBusy(true);
     try {
       const updated = await upsertLlmProfile({
@@ -250,6 +263,9 @@ export function ModelSettingsView({
     if (!profile || busy || isDefault) {
       return;
     }
+    if (!(await mutationAllowed())) {
+      return;
+    }
     updateBusy(true);
     try {
       const updated = await setDefaultLlmProfile(profile.profileName);
@@ -275,6 +291,9 @@ export function ModelSettingsView({
     if (!profile || busy) {
       return;
     }
+    if (!(await mutationAllowed())) {
+      return;
+    }
     updateBusy(true);
     try {
       const updated = await upsertLlmProfile({
@@ -297,6 +316,9 @@ export function ModelSettingsView({
 
   const removeProfile = async () => {
     if (!profile || busy || !canDeleteProfile) {
+      return;
+    }
+    if (!(await mutationAllowed())) {
       return;
     }
     updateBusy(true);
@@ -351,6 +373,9 @@ export function ModelSettingsView({
       return;
     }
     const shouldTestAfterSave = !profile.configured;
+    if (!(await mutationAllowed())) {
+      return;
+    }
     updateBusy(true);
     try {
       const updated = await saveLlmApiKey(profile.profileName, apiKey);
@@ -391,6 +416,9 @@ export function ModelSettingsView({
 
   const remove = async () => {
     if (busy || !profile) {
+      return;
+    }
+    if (!(await mutationAllowed())) {
       return;
     }
     updateBusy(true);

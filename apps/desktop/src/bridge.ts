@@ -21,6 +21,8 @@ import type {
   LlmSettings,
   NotificationSettings,
   PendingApproval,
+  SettingsReloadImpact,
+  SettingsReloadPreparation,
   SkillCatalog,
   ToolInventory,
   ToolsSettings,
@@ -48,6 +50,18 @@ export function resumeRuntime(): Promise<DaemonControlStatus> {
 
 export function killRuntime(): Promise<DaemonControlStatus> {
   return desktopInvoke("kill_runtime");
+}
+
+export function settingsReloadImpact(): Promise<SettingsReloadImpact> {
+  return desktopInvoke("settings_reload_impact");
+}
+
+export function prepareSettingsReload(
+  expectedEngagementIds: string[],
+): Promise<SettingsReloadPreparation> {
+  return desktopInvoke("prepare_settings_reload", {
+    input: { expectedEngagementIds },
+  });
 }
 
 export function llmSettings(): Promise<LlmSettings> {

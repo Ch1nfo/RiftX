@@ -13,6 +13,8 @@ vi.mock("./bridge", () => ({
   llmProfiles: vi.fn(),
   onRuntimeStatus: vi.fn().mockResolvedValue(() => undefined),
   onRuntimeError: vi.fn().mockResolvedValue(() => undefined),
+  prepareSettingsReload: vi.fn(),
+  settingsReloadImpact: vi.fn(),
 }));
 
 describe("App first-run model gate", () => {

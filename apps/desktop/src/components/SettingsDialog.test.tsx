@@ -1,6 +1,20 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  prepareSettingsReload,
+  settingsReloadImpact,
+} from "../bridge";
 import { SettingsDialog } from "./SettingsDialog";
+
+const { applyMutation } = vi.hoisted(() => ({
+  applyMutation: vi.fn(),
+}));
+
+vi.mock("../bridge", () => ({
+  bridgeError: (error: unknown) => error,
+  prepareSettingsReload: vi.fn(),
+  settingsReloadImpact: vi.fn(),
+}));
 
 vi.mock("./ExtensionDiagnostics", () => ({
   ToolsSettingsView: () => <div>Tools setup content</div>,
@@ -8,15 +22,44 @@ vi.mock("./ExtensionDiagnostics", () => ({
 }));
 
 vi.mock("./ModelSettingsView", () => ({
-  ModelSettingsView: () => (
+  ModelSettingsView: ({
+    onBeforeMutation,
+  }: {
+    onBeforeMutation: () => Promise<boolean>;
+  }) => (
     <div>
       Model setup content
-      <button type="button">Save model settings</button>
+      <button
+        type="button"
+        onClick={() =>
+          void onBeforeMutation().then((allowed) => {
+            if (allowed) {
+              applyMutation();
+            }
+          })
+        }
+      >
+        Save model settings
+      </button>
     </div>
   ),
 }));
 
 describe("SettingsDialog onboarding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(settingsReloadImpact).mockResolvedValue({ activeTurns: [] });
+    vi.mocked(prepareSettingsReload).mockResolvedValue({
+      runtime: {
+        state: "paused",
+        reason: "operatorPause",
+        updatedAt: 1,
+        audit: { state: "healthy", message: null, updatedAt: 1 },
+      },
+      interruptedEngagementIds: ["engagement-a"],
+    });
+  });
+
   it("starts first-time setup with Tools and leads to Model configuration", () => {
     render(
       <SettingsDialog
@@ -47,7 +90,16 @@ describe("SettingsDialog onboarding", () => {
     );
   });
 
-  it("locks setting mutations while execution is active", () => {
+  it("cancels without mutation or pauses affected turns before applying", async () => {
+    vi.mocked(settingsReloadImpact).mockResolvedValue({
+      activeTurns: [
+        {
+          engagementId: "engagement-a",
+          engagementName: "Authorized lab",
+          profileName: "default",
+        },
+      ],
+    });
     render(
       <SettingsDialog
         open
@@ -58,12 +110,35 @@ describe("SettingsDialog onboarding", () => {
       />,
     );
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Pause or interrupt the active turn",
-    );
     expect(
+      screen.getByText("Active execution requires confirmation"),
+    ).toBeInTheDocument();
+    fireEvent.click(
       screen.getByRole("button", { name: "Save model settings" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("tab", { name: "Tools" })).toBeEnabled();
+    );
+
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "Authorized lab",
+    );
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "default · engagement-a",
+    );
+    expect(prepareSettingsReload).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(applyMutation).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save model settings" }),
+    );
+    await screen.findByRole("alertdialog");
+    fireEvent.click(screen.getByRole("button", { name: "Pause and apply" }));
+
+    await waitFor(() =>
+      expect(prepareSettingsReload).toHaveBeenCalledWith(["engagement-a"]),
+    );
+    await waitFor(() => expect(applyMutation).toHaveBeenCalledOnce());
   });
 });

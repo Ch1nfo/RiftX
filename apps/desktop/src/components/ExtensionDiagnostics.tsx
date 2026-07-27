@@ -31,9 +31,13 @@ import type {
 
 interface ExtensionDiagnosticsProps {
   onError: (error: DesktopBridgeError) => void;
+  onBeforeMutation?: () => Promise<boolean>;
 }
 
-export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
+export function ToolsSettingsView({
+  onError,
+  onBeforeMutation,
+}: ExtensionDiagnosticsProps) {
   const [inventory, setInventory] = useState<ToolInventory | null>(null);
   const [toolsSettings, setToolsSettings] = useState<ToolsSettings | null>(
     null,
@@ -101,6 +105,9 @@ export function ToolsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   };
 
   const saveDirectories = async () => {
+    if (onBeforeMutation && !(await onBeforeMutation())) {
+      return;
+    }
     setSaving(true);
     setNotice(null);
     try {

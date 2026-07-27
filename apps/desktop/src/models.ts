@@ -41,6 +41,21 @@ export interface ToolsSettings {
   daemonRestartRequired: boolean;
 }
 
+export interface SettingsAffectedEngagement {
+  engagementId: string;
+  engagementName: string;
+  profileName: string;
+}
+
+export interface SettingsReloadImpact {
+  activeTurns: SettingsAffectedEngagement[];
+}
+
+export interface SettingsReloadPreparation {
+  runtime: DaemonControlStatus;
+  interruptedEngagementIds: string[];
+}
+
 export type LlmReasoningLevel =
   | "minimal"
   | "low"

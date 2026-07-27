@@ -1221,6 +1221,7 @@ button:disabled {
 }
 
 .settings-dialog {
+  position: relative;
   width: min(640px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
@@ -1528,6 +1529,65 @@ button:disabled {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;
+}
+
+.settings-reload-confirmation {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--red) 45%, var(--border));
+  background: color-mix(in srgb, var(--red) 7%, var(--surface-raised));
+  box-shadow: 0 -16px 36px rgb(0 0 0 / 28%);
+}
+
+.settings-reload-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.settings-reload-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-reload-heading strong {
+  font-size: 12px;
+}
+
+.settings-reload-heading span,
+.settings-reload-confirmation li span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.settings-reload-confirmation ul {
+  display: grid;
+  max-height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  gap: 5px;
+  list-style: none;
+}
+
+.settings-reload-confirmation li {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.settings-reload-confirmation li strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-onboarding {
