@@ -8,6 +8,8 @@ mod credential_api;
 mod credential_execution;
 mod credential_execution_policy;
 mod credential_store;
+mod deadline;
+mod engagement_stop;
 mod execution_events;
 mod extension_api;
 mod gateway_state;

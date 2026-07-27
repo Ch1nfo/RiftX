@@ -1726,7 +1726,8 @@ async fn create_auto_engagement_requires_exact_confirmation_phrase() {
 #[tokio::test]
 async fn expired_authorization_cannot_activate() {
     let temp = TempDir::new().expect("temp dir");
-    let app = test_router(&temp).await;
+    let state = test_state(&temp).await;
+    let app = build_router(state.clone());
     let response = app
         .clone()
         .oneshot(
@@ -1763,6 +1764,15 @@ async fn expired_authorization_cannot_activate() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("expired engagement")
+            .status,
+        EngagementStatus::Expired
+    );
 }
 
 #[tokio::test]

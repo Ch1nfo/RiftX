@@ -1,3 +1,4 @@
+use crate::deadline::ExpirationTrigger;
 use crate::gateway_state::ActiveTurn;
 use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
@@ -441,9 +442,12 @@ async fn change_mode(
     if engagement.mode == params.mode {
         return Ok(Json(engagement));
     }
-    if engagement.status == EngagementStatus::Completed {
+    if matches!(
+        engagement.status,
+        EngagementStatus::Completed | EngagementStatus::Expired
+    ) {
         return Err(mode_switch_conflict(
-            "completed engagements cannot change execution mode",
+            "completed or expired engagements cannot change execution mode",
         ));
     }
     if state.active_turns.read().await.contains_key(&id) {
@@ -507,6 +511,13 @@ async fn activate_engagement(
     Path(id): Path<String>,
 ) -> Result<Json<Engagement>, ApiError> {
     require_execution_running(&state).await?;
+    let _turn_permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    require_execution_running(&state).await?;
     let engagement = state.store.engagement(&id).await?;
     if !matches!(
         engagement.status,
@@ -516,7 +527,12 @@ async fn activate_engagement(
             "only draft or interrupted engagements can be activated",
         ));
     }
-    validate_authorization_time(&engagement.authorization, unix_timestamp())?;
+    if let Err(error) = validate_authorization_time(&engagement.authorization, unix_timestamp()) {
+        state
+            .expire_engagement_locked(engagement, ExpirationTrigger::CurrentTime)
+            .await?;
+        return Err(error);
+    }
     let policy =
         crate::credential_api::resolve_engagement_policy(&state, &engagement, engagement.mode)
             .await?;
@@ -535,6 +551,7 @@ async fn activate_engagement(
         .store
         .transition_engagement(&id, EngagementStatus::Active, unix_timestamp())
         .await?;
+    state.register_authorization_deadline(&engagement).await;
     state
         .publish(&id, "engagementActivated", json!({"workspace": workspace}))
         .await;
@@ -598,8 +615,7 @@ async fn start_turn(
     }
     if let Err(error) = validate_authorization_time(&engagement.authorization, unix_timestamp()) {
         state
-            .store
-            .transition_engagement(&id, EngagementStatus::Interrupted, unix_timestamp())
+            .expire_engagement_locked(engagement, ExpirationTrigger::CurrentTime)
             .await?;
         return Err(error);
     }
@@ -857,61 +873,8 @@ async fn interrupt_engagement_inner(
     reason: &str,
 ) -> Result<Engagement, ApiError> {
     state.store.engagement(id).await?;
-    for process in state.credential_processes.read().await.values() {
-        if process.engagement_id == id {
-            process.cancellation.cancel();
-        }
-    }
-    let active_turn = state.active_turns.read().await.get(id).cloned();
-    if let Some(active_turn) = active_turn {
-        let is_only_profile_turn = state
-            .active_turns
-            .read()
-            .await
-            .values()
-            .filter(|turn| turn.profile_name == active_turn.profile_name)
-            .count()
-            == 1;
-        if let Some(app_server) = state.app_server(&active_turn.profile_name) {
-            let _ = app_server
-                .interrupt_turn(active_turn.thread_id.clone(), active_turn.turn_id.clone())
-                .await;
-        }
-        if is_only_profile_turn {
-            state.cancel_profile_model_requests(&active_turn.profile_name);
-        }
-        crate::execution_events::finish_turn(
-            state,
-            id,
-            &active_turn.turn_id,
-            ExecutionStatus::Interrupted,
-        )
-        .await;
-    }
-    state.active_turns.write().await.remove(id);
-    state.agent_threads.write().await.remove(id);
-    let pending_approvals = state.take_pending_approvals(id).await;
-    for pending in pending_approvals {
-        if let Some(app_server) = state.app_server(&pending.profile_name) {
-            match pending.kind {
-                PendingApprovalKind::Command(command) => {
-                    let _ = app_server
-                        .decide_command_approval(
-                            *command,
-                            codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
-                        )
-                        .await;
-                }
-                PendingApprovalKind::Tool { decision_tx } => {
-                    let _ = decision_tx.send(false);
-                }
-            }
-        }
-    }
-    tokio::spawn(crate::artifacts::capture_pending(
-        state.clone(),
-        id.to_string(),
-    ));
+    state.cancel_authorization_deadline(id).await;
+    state.stop_engagement_work(id).await;
     let engagement = state
         .store
         .transition_engagement(id, EngagementStatus::Interrupted, unix_timestamp())

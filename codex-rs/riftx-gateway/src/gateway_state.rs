@@ -1,3 +1,4 @@
+use crate::deadline::ExpirationTrigger;
 use crate::runtime_manager::ProfileRuntimeError;
 use crate::runtime_manager::ProfileRuntimeManager;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
@@ -66,6 +67,7 @@ pub struct GatewayState {
     pub(crate) pending_approvals: Arc<RwLock<HashMap<String, PendingApprovalRequest>>>,
     pub(crate) active_executions: Arc<RwLock<HashMap<ExecutionKey, ActiveExecution>>>,
     pub(crate) credential_processes: Arc<RwLock<HashMap<String, ActiveCredentialProcess>>>,
+    pub(crate) deadline_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
     pub(crate) assessment_credentials: Arc<dyn AssessmentSecretProvider>,
     pub(crate) tool_search_path: Arc<Vec<PathBuf>>,
     pub(crate) turn_slot: Arc<Semaphore>,
@@ -133,6 +135,7 @@ impl GatewayState {
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             active_executions: Arc::new(RwLock::new(HashMap::new())),
             credential_processes: Arc::new(RwLock::new(HashMap::new())),
+            deadline_tasks: Arc::new(RwLock::new(HashMap::new())),
             assessment_credentials: Arc::new(AssessmentCredentialStore::default()),
             tool_search_path: Arc::new(tool_search_path),
             turn_slot: Arc::new(Semaphore::new(1)),
@@ -387,6 +390,16 @@ impl GatewayState {
             if engagement.status != EngagementStatus::Active {
                 continue;
             }
+            if engagement
+                .authorization
+                .window
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= unix_timestamp())
+            {
+                self.expire_engagement_locked(engagement, ExpirationTrigger::CurrentTime)
+                    .await?;
+                continue;
+            }
             let interrupted_at = unix_timestamp();
             for mut execution in self.store.executions(&engagement.id).await? {
                 if matches!(
@@ -523,6 +536,9 @@ impl GatewayState {
         let Ok(Some(mut task)) = self.store.task_for_turn(engagement_id, turn_id).await else {
             return;
         };
+        if matches!(task.status, TaskStatus::Expiring | TaskStatus::Expired) {
+            return;
+        }
         let status = data
             .pointer("/turn/status")
             .and_then(Value::as_str)

@@ -26,6 +26,7 @@ pub enum EngagementStatus {
     Draft,
     Active,
     Interrupted,
+    Expired,
     Completed,
 }
 
@@ -124,6 +125,8 @@ pub enum TaskStatus {
     Completed,
     Failed,
     Interrupted,
+    Expiring,
+    Expired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

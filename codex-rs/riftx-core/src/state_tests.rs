@@ -84,6 +84,30 @@ async fn engagement_lifecycle_is_persisted() {
 }
 
 #[tokio::test]
+async fn authorization_expiry_is_a_terminal_persisted_transition() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = open_test_store(&temp.path().join("state.sqlite"))
+        .await
+        .expect("state store");
+    store
+        .put_engagement(&engagement())
+        .await
+        .expect("insert draft");
+    let expired = store
+        .transition_engagement("eng-1", EngagementStatus::Expired, 2)
+        .await
+        .expect("expire");
+
+    assert_eq!(expired.status, EngagementStatus::Expired);
+    assert!(
+        store
+            .transition_engagement("eng-1", EngagementStatus::Active, 3)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn task_is_resolved_by_turn_id() {
     let temp = TempDir::new().expect("temp dir");
     let store = open_test_store(&temp.path().join("state.sqlite"))

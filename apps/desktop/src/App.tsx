@@ -415,7 +415,10 @@ export default function App() {
 
   const reportHasRunningTask =
     report?.tasks.some(
-      (task) => task.status === "pending" || task.status === "running",
+      (task) =>
+        task.status === "pending" ||
+        task.status === "running" ||
+        task.status === "expiring",
     ) ?? false;
   const isRunning = turnRunning || reportHasRunningTask;
   const runtimePaused = daemon?.runtime.state === "paused";
@@ -443,6 +446,8 @@ export default function App() {
     const instruction = input.trim();
     if (
       !selected ||
+      selected.status === "completed" ||
+      selected.status === "expired" ||
       !instruction ||
       submitting ||
       isRunning ||
@@ -758,6 +763,7 @@ export default function App() {
                   placeholder="Give the next authorized instruction..."
                   disabled={
                     selected.status === "completed" ||
+                    selected.status === "expired" ||
                     submitting ||
                     isRunning ||
                     controlledExecutionBlocked
@@ -787,6 +793,8 @@ export default function App() {
                     title="Run instruction"
                     aria-label="Run instruction"
                     disabled={
+                      selected.status === "completed" ||
+                      selected.status === "expired" ||
                       !input.trim() ||
                       submitting ||
                       isRunning ||
@@ -886,6 +894,7 @@ export default function App() {
         mutable={
           selected !== null &&
           selected.status !== "completed" &&
+          selected.status !== "expired" &&
           !(selected.mode === "auto" && selected.status === "active") &&
           !isRunning &&
           approvals.length === 0

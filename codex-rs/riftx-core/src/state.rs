@@ -405,6 +405,9 @@ impl StateStore {
             (EngagementStatus::Draft, EngagementStatus::Active)
                 | (EngagementStatus::Interrupted, EngagementStatus::Active)
                 | (EngagementStatus::Active, EngagementStatus::Interrupted)
+                | (EngagementStatus::Draft, EngagementStatus::Expired)
+                | (EngagementStatus::Interrupted, EngagementStatus::Expired)
+                | (EngagementStatus::Active, EngagementStatus::Expired)
                 | (EngagementStatus::Active, EngagementStatus::Completed)
         );
         if !valid {

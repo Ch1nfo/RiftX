@@ -1,6 +1,11 @@
 export type ExecutionMode = "redTeam" | "pentest" | "auto";
 export type EnvironmentClass = "lab" | "staging" | "production";
-export type EngagementStatus = "draft" | "active" | "interrupted" | "completed";
+export type EngagementStatus =
+  | "draft"
+  | "active"
+  | "interrupted"
+  | "expired"
+  | "completed";
 export type DaemonRunState = "running" | "paused";
 export type DaemonPauseReason = "operatorPause" | "killSwitch";
 export type AuditHealthState = "healthy" | "degraded";

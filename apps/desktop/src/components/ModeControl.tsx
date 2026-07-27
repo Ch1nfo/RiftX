@@ -33,7 +33,8 @@ export function ModeControl({
   }, [engagement.id, engagement.mode]);
 
   const changing = target !== engagement.mode;
-  const completed = engagement.status === "completed";
+  const completed =
+    engagement.status === "completed" || engagement.status === "expired";
   const controlsDisabled = busy || blocked || completed;
   const autoConfirmed =
     target !== "auto" || confirmation === AUTO_MODE_CONFIRMATION;

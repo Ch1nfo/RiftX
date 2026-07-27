@@ -383,10 +383,13 @@ async fn ensure_credentials_mutable(
     state: &GatewayState,
     engagement: &Engagement,
 ) -> Result<(), ApiError> {
-    if engagement.status == EngagementStatus::Completed {
+    if matches!(
+        engagement.status,
+        EngagementStatus::Completed | EngagementStatus::Expired
+    ) {
         return Err(ApiError::conflict(
             "credentials_locked",
-            "completed engagement credentials cannot be changed",
+            "completed or expired engagement credentials cannot be changed",
         ));
     }
     if engagement.mode == ExecutionMode::Auto && engagement.status == EngagementStatus::Active {

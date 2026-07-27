@@ -329,6 +329,10 @@ button:disabled {
   background: var(--amber);
 }
 
+.status-dot.expired {
+  background: var(--red);
+}
+
 .status-dot.completed {
   background: var(--blue);
 }
