@@ -376,6 +376,12 @@ async fn command_approval(
                 .await
                 .is_err()
             {
+                let _ = crate::auto_run::lifecycle_stop(
+                    state,
+                    &engagement_id,
+                    crate::auto_run::AutoLifecycleStop::AuditUnavailable,
+                )
+                .await;
                 if let Some(app_server) = state.app_server(profile_name) {
                     let _ = app_server
                         .decide_command_approval(

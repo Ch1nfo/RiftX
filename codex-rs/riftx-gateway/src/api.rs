@@ -282,6 +282,18 @@ pub fn build_router(state: GatewayState) -> Router {
         )
         .route("/v1/engagements/{id}/activate", post(activate_engagement))
         .route("/v1/engagements/{id}/auto", get(crate::auto_run::get))
+        .route(
+            "/v1/engagements/{id}/auto/pause",
+            post(crate::auto_run::pause),
+        )
+        .route(
+            "/v1/engagements/{id}/auto/resume",
+            post(crate::auto_run::resume),
+        )
+        .route(
+            "/v1/engagements/{id}/auto/kill",
+            post(crate::auto_run::kill),
+        )
         .route("/v1/engagements/{id}/turns", post(start_turn))
         .route("/v1/engagements/{id}/approvals", get(list_approvals))
         .route("/v1/approvals/{id}/decision", post(decide_approval))
@@ -981,6 +993,12 @@ async fn pause_execution(
                         crate::engagement_stop::AgentThreadDisposition::Preserve,
                     )
                     .await;
+                crate::auto_run::lifecycle_stop(
+                    &state,
+                    &engagement_id,
+                    crate::auto_run::AutoLifecycleStop::OperatorPause,
+                )
+                .await?;
                 state
                     .publish(
                         &engagement_id,
@@ -991,6 +1009,12 @@ async fn pause_execution(
             }
             DaemonPauseReason::KillSwitch => {
                 terminate_engagement_inner(&state, &engagement_id, "killSwitch").await?;
+                crate::auto_run::lifecycle_stop(
+                    &state,
+                    &engagement_id,
+                    crate::auto_run::AutoLifecycleStop::KillSwitch,
+                )
+                .await?;
             }
         }
     }

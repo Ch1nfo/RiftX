@@ -139,6 +139,165 @@ async fn operator_cannot_bypass_the_auto_controller_with_a_manual_turn() {
 }
 
 #[tokio::test]
+async fn auto_pause_and_kill_have_persisted_machine_readable_states() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Running;
+    state.store.put_auto_run(&run).await.expect("store run");
+    state
+        .store
+        .transition_engagement(
+            &engagement.id,
+            EngagementStatus::Active,
+            engagement.updated_at.saturating_add(1),
+        )
+        .await
+        .expect("activate engagement state");
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::post(format!("/v1/engagements/{}/auto/pause", engagement.id))
+                .body(Body::empty())
+                .expect("pause request"),
+        )
+        .await
+        .expect("pause response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let paused: AutoRun = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("pause body")
+            .to_bytes(),
+    )
+    .expect("paused run");
+    assert_eq!(paused.state, AutoRunState::Paused);
+    assert_eq!(
+        paused.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::OperatorPause)
+    );
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::post(format!("/v1/engagements/{}/auto/kill", engagement.id))
+                .body(Body::empty())
+                .expect("kill request"),
+        )
+        .await
+        .expect("kill response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let killed: AutoRun = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("kill body")
+            .to_bytes(),
+    )
+    .expect("killed run");
+    assert_eq!(killed.state, AutoRunState::Killed);
+    assert_eq!(
+        killed.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::KillSwitch)
+    );
+    assert_eq!(
+        state
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("engagement")
+            .status,
+        EngagementStatus::Interrupted
+    );
+}
+
+#[tokio::test]
+async fn daemon_restart_recovers_auto_as_paused_without_starting_a_turn() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Running;
+    run.turns_started = 1;
+    state.store.put_auto_run(&run).await.expect("store run");
+    state
+        .store
+        .transition_engagement(
+            &engagement.id,
+            EngagementStatus::Active,
+            engagement.updated_at.saturating_add(1),
+        )
+        .await
+        .expect("activate engagement state");
+
+    state
+        .reconcile_after_restart()
+        .await
+        .expect("reconcile restart");
+
+    let recovered = state
+        .store
+        .auto_run(&engagement.id)
+        .await
+        .expect("checkpoint")
+        .expect("run");
+    assert_eq!(recovered.state, AutoRunState::Paused);
+    assert_eq!(
+        recovered.stop_reason,
+        Some(codex_riftx_core::AutoStopReason::DaemonRestart)
+    );
+    assert_eq!(recovered.turns_started, 1);
+    assert!(state.active_turns.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn auto_resume_rejects_changed_immutable_inputs() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = test_state(&temp).await;
+    let mut engagement = create_auto_engagement(&state).await;
+    let mut run = prepare(&state, &engagement)
+        .await
+        .expect("prepare Auto run");
+    run.state = AutoRunState::Paused;
+    state.store.put_auto_run(&run).await.expect("store run");
+    engagement.status = EngagementStatus::Active;
+    engagement.policy_revision = "changed-policy".to_string();
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store changed engagement");
+
+    let response = build_router(state)
+        .oneshot(
+            Request::post(format!("/v1/engagements/{}/auto/resume", engagement.id))
+                .body(Body::empty())
+                .expect("resume request"),
+        )
+        .await
+        .expect("resume response");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes(),
+    )
+    .expect("error body");
+    assert_eq!(body["code"], "auto_snapshot_changed");
+}
+
+#[tokio::test]
 async fn auto_tool_budget_is_checkpointed_before_execution() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;

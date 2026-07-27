@@ -35,6 +35,14 @@ struct StopDecision {
     reason: AutoStopReason,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum AutoLifecycleStop {
+    OperatorPause,
+    AuditUnavailable,
+    DaemonRestart,
+    KillSwitch,
+}
+
 pub(crate) async fn get(
     State(state): State<GatewayState>,
     Path(engagement_id): Path<String>,
@@ -46,6 +54,109 @@ pub(crate) async fn get(
     state
         .store
         .auto_run(&engagement_id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("Auto run has not been prepared"))
+}
+
+pub(crate) async fn pause(
+    State(state): State<GatewayState>,
+    Path(engagement_id): Path<String>,
+) -> Result<Json<AutoRun>, ApiError> {
+    let _permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let engagement = state.store.engagement(&engagement_id).await?;
+    if engagement.mode != ExecutionMode::Auto || engagement.status != EngagementStatus::Active {
+        return Err(ApiError::bad_request("active Auto engagement required"));
+    }
+    state
+        .append_engagement_critical(
+            &engagement,
+            "auto/runPaused",
+            &json!({"reason": AutoStopReason::OperatorPause}),
+        )
+        .await
+        .map_err(|_| ApiError::audit_unavailable())?;
+    state
+        .stop_engagement_work(
+            &engagement_id,
+            crate::engagement_stop::AgentThreadDisposition::Preserve,
+        )
+        .await;
+    lifecycle_stop(&state, &engagement_id, AutoLifecycleStop::OperatorPause)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("Auto run has not been prepared"))
+}
+
+pub(crate) async fn resume(
+    State(state): State<GatewayState>,
+    Path(engagement_id): Path<String>,
+) -> Result<Json<AutoRun>, ApiError> {
+    crate::api::require_execution_running(&state).await?;
+    let _permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let engagement = state.store.engagement(&engagement_id).await?;
+    if engagement.mode != ExecutionMode::Auto || engagement.status != EngagementStatus::Active {
+        return Err(ApiError::bad_request("active Auto engagement required"));
+    }
+    start_locked(&state, &engagement).await?;
+    state
+        .store
+        .auto_run(&engagement_id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("Auto run has not been prepared"))
+}
+
+pub(crate) async fn kill(
+    State(state): State<GatewayState>,
+    Path(engagement_id): Path<String>,
+) -> Result<Json<AutoRun>, ApiError> {
+    let _permit = state
+        .turn_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::app_server("turn coordinator is closed"))?;
+    let engagement = state.store.engagement(&engagement_id).await?;
+    if engagement.mode != ExecutionMode::Auto {
+        return Err(ApiError::bad_request("engagement is not in Auto mode"));
+    }
+    state
+        .append_engagement_critical(
+            &engagement,
+            "auto/runKilled",
+            &json!({"reason": AutoStopReason::KillSwitch}),
+        )
+        .await
+        .map_err(|_| ApiError::audit_unavailable())?;
+    state.cancel_authorization_deadline(&engagement_id).await;
+    state
+        .stop_engagement_work(
+            &engagement_id,
+            crate::engagement_stop::AgentThreadDisposition::Remove,
+        )
+        .await;
+    if engagement.status == EngagementStatus::Active {
+        state
+            .store
+            .transition_engagement(
+                &engagement_id,
+                EngagementStatus::Interrupted,
+                unix_timestamp(),
+            )
+            .await?;
+    }
+    lifecycle_stop(&state, &engagement_id, AutoLifecycleStop::KillSwitch)
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::not_found("Auto run has not been prepared"))
@@ -119,6 +230,12 @@ pub(crate) async fn start_locked(
         .auto_run(&engagement.id)
         .await?
         .ok_or_else(|| ApiError::not_found("Auto run has not been prepared"))?;
+    if run.config != snapshot_config(state, engagement)? {
+        return Err(ApiError::conflict(
+            "auto_snapshot_changed",
+            "Auto run inputs changed; create a new engagement",
+        ));
+    }
     if !matches!(
         run.state,
         AutoRunState::Ready | AutoRunState::Paused | AutoRunState::NeedsInput
@@ -153,6 +270,52 @@ pub(crate) async fn start_locked(
         .map_err(|_| ApiError::audit_unavailable())?;
     run.started_at.get_or_insert(now);
     start_next_turn_locked(state, &mut run).await
+}
+
+pub(crate) async fn lifecycle_stop(
+    state: &GatewayState,
+    engagement_id: &str,
+    stop: AutoLifecycleStop,
+) -> Result<Option<AutoRun>, StateError> {
+    let Some(mut run) = state.store.auto_run(engagement_id).await? else {
+        return Ok(None);
+    };
+    if matches!(
+        run.state,
+        AutoRunState::Succeeded
+            | AutoRunState::Expired
+            | AutoRunState::BudgetExhausted
+            | AutoRunState::Failed
+            | AutoRunState::Killed
+    ) {
+        return Ok(Some(run));
+    }
+    let (next_state, reason) = match stop {
+        AutoLifecycleStop::OperatorPause => (AutoRunState::Paused, AutoStopReason::OperatorPause),
+        AutoLifecycleStop::AuditUnavailable => {
+            (AutoRunState::Paused, AutoStopReason::AuditUnavailable)
+        }
+        AutoLifecycleStop::DaemonRestart => (AutoRunState::Paused, AutoStopReason::DaemonRestart),
+        AutoLifecycleStop::KillSwitch => (AutoRunState::Killed, AutoStopReason::KillSwitch),
+    };
+    run.state = next_state;
+    run.stop_reason = Some(reason);
+    run.updated_at = unix_timestamp();
+    state.store.put_auto_run(&run).await?;
+    state
+        .emit_event(
+            engagement_id,
+            "auto/stopped",
+            json!({
+                "state": run.state,
+                "reason": run.stop_reason,
+                "turnsStarted": run.turns_started,
+                "turnsCompleted": run.turns_completed,
+                "toolCalls": run.tool_calls,
+            }),
+        )
+        .await;
+    Ok(Some(run))
 }
 
 pub(crate) async fn expire(state: &GatewayState, engagement_id: &str) -> Result<(), StateError> {

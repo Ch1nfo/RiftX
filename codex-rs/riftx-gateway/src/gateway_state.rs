@@ -430,7 +430,19 @@ impl GatewayState {
                         interrupted_at,
                     )
                     .await?;
+                crate::auto_run::lifecycle_stop(
+                    self,
+                    &engagement.id,
+                    crate::auto_run::AutoLifecycleStop::KillSwitch,
+                )
+                .await?;
             } else {
+                crate::auto_run::lifecycle_stop(
+                    self,
+                    &engagement.id,
+                    crate::auto_run::AutoLifecycleStop::DaemonRestart,
+                )
+                .await?;
                 self.register_authorization_deadline(&engagement).await;
                 self.emit_event(
                     &engagement.id,
