@@ -57,13 +57,13 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
     wait_for_daemon(&client, &mut daemon.child).await?;
     for profile_name in ["default", "secondary"] {
         anyhow::ensure!(
-            config
+            !config
                 .daemon
                 .runtime_home
                 .join("profiles")
                 .join(profile_name)
-                .is_dir(),
-            "LLM profile {profile_name:?} runtime home was not created"
+                .exists(),
+            "LLM profile {profile_name:?} Runtime initialized before first use"
         );
     }
 
@@ -128,6 +128,19 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         )
         .await?;
     ensure_status(response, StatusCode::ACCEPTED, "start Native turn").await?;
+
+    anyhow::ensure!(
+        config
+            .daemon
+            .runtime_home
+            .join("profiles/secondary")
+            .is_dir(),
+        "selected LLM profile Runtime was not initialized on first use"
+    );
+    anyhow::ensure!(
+        !config.daemon.runtime_home.join("profiles/default").exists(),
+        "unused default LLM profile Runtime was initialized eagerly"
+    );
 
     let report = wait_for_completed_report(&client, &engagement.id)
         .await

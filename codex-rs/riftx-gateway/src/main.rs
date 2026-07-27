@@ -3,8 +3,6 @@ use clap::Parser;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_riftx_app_server_adapter::RiftxApiKey;
-use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
-use codex_riftx_app_server_adapter::RiftxLlmRuntimeConfig;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_core::StateStore;
@@ -13,14 +11,12 @@ use codex_riftx_credentials::LlmCredentialStore;
 #[cfg(debug_assertions)]
 use codex_riftx_crypto::KeyringEngagementCipher;
 use codex_riftx_gateway::GatewayState;
+use codex_riftx_gateway::ProfileRuntimeManager;
+use codex_riftx_gateway::ProfileRuntimeSpec;
 use codex_riftx_gateway::build_router;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcListener;
-use codex_riftx_llm_bridge::BridgeHandle;
-use codex_riftx_llm_bridge::BridgeUpstream;
-use codex_riftx_llm_bridge::start_loopback_bridge;
 use codex_riftx_skills::SkillCatalog;
-use codex_riftx_skills::SkillCatalogBuilder;
 use codex_riftx_skills::default_skills_root;
 use codex_riftx_tools::ToolScanner;
 use std::collections::BTreeMap;
@@ -56,7 +52,6 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         .then(read_llm_api_keys_stdin)
         .transpose()?;
     let stdin_bundle_supplied = stdin_api_keys.is_some();
-    let default_profile_name = config.llm.default_profile.clone();
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -93,18 +88,12 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             LlmApiKeySource::Keyring { .. } => None,
         })
         .collect::<Vec<_>>();
-    let mut runtimes = Vec::with_capacity(config.llm.profiles.len());
-    let mut bridge_handles: Vec<BridgeHandle> = Vec::new();
-    let mut skills_entry = None;
-    for (profile_name, profile) in config.llm.profiles.iter().filter(|(profile_name, _)| {
-        args.validate_profile
-            .as_ref()
-            .is_none_or(|candidate| candidate == *profile_name)
-    }) {
+    let mut runtime_specs = BTreeMap::new();
+    for (profile_name, profile) in &config.llm.profiles {
         let injected_api_key = stdin_api_keys
             .as_mut()
             .and_then(|api_keys| api_keys.remove(profile_name));
-        let api_key = match try_load_llm_api_key(
+        match try_load_llm_api_key(
             profile_name,
             &profile.api_key,
             injected_api_key,
@@ -112,105 +101,37 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         )
         .await
         {
-            Ok(Some(api_key)) => api_key,
+            Ok(Some(api_key)) => {
+                runtime_specs.insert(
+                    profile_name.clone(),
+                    ProfileRuntimeSpec {
+                        protocol: profile.protocol,
+                        runtime_home: config
+                            .daemon
+                            .runtime_home
+                            .join("profiles")
+                            .join(profile_name),
+                        model: profile.model.clone(),
+                        reasoning_effort: profile.reasoning_level.as_str().to_string(),
+                        context_window: profile.context_budget,
+                        base_url: profile.base_url.clone(),
+                        timeout: Duration::from_secs(profile.timeout_seconds),
+                        excluded_api_key_envs: excluded_api_key_envs.clone(),
+                        api_key,
+                        process_path: process_path.clone(),
+                        skills_root: skills_root.clone(),
+                    },
+                );
+            }
             Ok(None) => {
                 eprintln!(
-                    "riftxd: skipping LLM profile {profile_name:?} until an API key is configured"
+                    "riftxd: LLM profile {profile_name:?} remains unconfigured until an API key is saved"
                 );
-                continue;
             }
             Err(error) => {
-                eprintln!("riftxd: skipping LLM profile {profile_name:?}: {error:#}");
-                continue;
-            }
-        };
-        let (runtime_base_url, runtime_api_key) = if matches!(
-            profile.protocol,
-            codex_riftx_core::LlmProtocol::ChatCompletions
-        ) {
-            let bridge = match start_loopback_bridge(BridgeUpstream {
-                base_url: profile.base_url.clone(),
-                api_key: api_key.expose().to_string(),
-                timeout: Duration::from_secs(profile.timeout_seconds),
-            })
-            .await
-            {
-                Ok(bridge) => bridge,
-                Err(error) => {
-                    eprintln!(
-                        "riftxd: skipping LLM profile {profile_name:?}: failed to start Chat Completions bridge: {error:#}"
-                    );
-                    continue;
-                }
-            };
-            let runtime_base_url = bridge.responses_base_url().to_string();
-            let runtime_api_key = match RiftxApiKey::new(bridge.bearer_token().to_string()) {
-                Ok(api_key) => api_key,
-                Err(error) => {
-                    eprintln!(
-                        "riftxd: skipping LLM profile {profile_name:?}: invalid bridge token: {error:#}"
-                    );
-                    continue;
-                }
-            };
-            eprintln!(
-                "riftxd: LLM profile {profile_name:?} using Chat Completions bridge at {}",
-                bridge.responses_base_url()
-            );
-            bridge_handles.push(bridge);
-            (runtime_base_url, runtime_api_key)
-        } else {
-            (profile.base_url.clone(), api_key)
-        };
-        let runtime = RiftxLlmRuntimeConfig {
-            runtime_home: config
-                .daemon
-                .runtime_home
-                .join("profiles")
-                .join(profile_name),
-            model: profile.model.clone(),
-            reasoning_effort: profile.reasoning_level.as_str().to_string(),
-            context_window: profile.context_budget,
-            base_url: runtime_base_url,
-            excluded_api_key_envs: excluded_api_key_envs.clone(),
-            api_key: runtime_api_key,
-            process_path: process_path.clone(),
-        };
-        let app_server = match RiftxAppServerAdapter::start_embedded(runtime, arg0_paths.clone())
-            .await
-        {
-            Ok(app_server) => app_server,
-            Err(error) => {
-                eprintln!(
-                    "riftxd: skipping LLM profile {profile_name:?}: failed to start runtime: {error:#}"
-                );
-                continue;
-            }
-        };
-        let app_server_handle = app_server.request_handle();
-        if let Err(error) = app_server_handle
-            .set_exclusive_skill_root(&skills_root)
-            .await
-        {
-            eprintln!(
-                "riftxd: skipping LLM profile {profile_name:?}: failed to configure Skills Directory: {error:#}"
-            );
-            continue;
-        }
-        if profile_name == &default_profile_name {
-            match app_server_handle
-                .list_skills(&config.daemon.workspace_root, /*force_reload*/ true)
-                .await
-            {
-                Ok(entry) => skills_entry = Some(entry),
-                Err(error) => {
-                    eprintln!(
-                        "riftxd: default LLM profile {profile_name:?} skill catalog unavailable: {error:#}"
-                    );
-                }
+                eprintln!("riftxd: LLM profile {profile_name:?} credential unavailable: {error:#}");
             }
         }
-        runtimes.push((profile_name.clone(), app_server_handle, app_server));
     }
     if let Some(api_keys) = stdin_api_keys {
         anyhow::ensure!(
@@ -218,46 +139,22 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             "stdin LLM API key bundle contains unknown profiles"
         );
     }
+    let runtime_manager = ProfileRuntimeManager::new(runtime_specs, arg0_paths);
     if let Some(profile_name) = args.validate_profile {
-        anyhow::ensure!(
-            config.llm.profiles.contains_key(&profile_name),
-            "LLM profile {profile_name:?} is not configured"
-        );
-        anyhow::ensure!(
-            runtimes.iter().any(|(name, _, _)| name == &profile_name),
-            "LLM profile {profile_name:?} candidate Runtime did not become ready"
-        );
-        for (_, _, app_server) in runtimes {
-            app_server.shutdown().await?;
-        }
-        drop(bridge_handles);
+        runtime_manager.validate_profile(&profile_name).await?;
         return Ok(());
     }
-    let skills = match skills_entry {
-        Some(entry) => {
-            SkillCatalogBuilder::new(skills_root.clone())
-                .build(entry)
-                .await
-        }
-        None => SkillCatalog::empty(skills_root),
-    };
-    let mut state = GatewayState::new(config, store, skills, tools);
-    for (profile_name, app_server_handle, _) in &runtimes {
-        state = state.with_app_server(profile_name.clone(), app_server_handle.clone());
-    }
+    let skills = SkillCatalog::empty(skills_root);
+    let state =
+        GatewayState::new(config, store, skills, tools).with_runtime_manager(runtime_manager);
     state
         .reconcile_after_restart()
         .await
         .context("reconcile active engagements after Gateway restart")?;
-    for (profile_name, _, app_server) in runtimes {
-        state.spawn_app_server_event_pump(profile_name, app_server);
-    }
     let endpoint = LocalIpcEndpoint::new(&state.config.daemon.ipc_dir);
     let app = build_router(state);
     let listener = LocalIpcListener::bind(endpoint.clone()).await?;
     println!("{endpoint}");
-    // Keep Chat Completions bridges alive for the daemon lifetime.
-    let _bridge_handles = bridge_handles;
     axum::serve(listener, app).await?;
     Ok(())
 }

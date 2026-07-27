@@ -1,3 +1,5 @@
+use crate::runtime_manager::ProfileRuntimeError;
+use crate::runtime_manager::ProfileRuntimeManager;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::RiftxAppServerAdapter;
 use codex_riftx_app_server_adapter::RiftxAppServerRequestHandle;
@@ -23,6 +25,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock as StdRwLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::sync::RwLock;
@@ -40,7 +43,10 @@ pub struct GatewayState {
     pub tools: Arc<ToolInventory>,
     pub(crate) artifact_store: Arc<ArtifactStore>,
     pub(crate) audit: AuditWriter,
-    pub(crate) app_servers: Arc<HashMap<String, RiftxAppServerRequestHandle>>,
+    pub(crate) app_servers: Arc<StdRwLock<HashMap<String, RiftxAppServerRequestHandle>>>,
+    runtime_manager: Option<Arc<ProfileRuntimeManager>>,
+    runtime_start: Arc<Semaphore>,
+    runtime_failures: Arc<StdRwLock<HashMap<String, String>>>,
     pub(crate) events: Arc<RwLock<HashMap<String, broadcast::Sender<EngagementEvent>>>>,
     pub(crate) thread_engagements: Arc<RwLock<HashMap<String, String>>>,
     pub(crate) active_turns: Arc<RwLock<HashMap<String, ActiveTurn>>>,
@@ -105,7 +111,10 @@ impl GatewayState {
             tools: Arc::new(tools),
             artifact_store: Arc::new(artifact_store),
             audit,
-            app_servers: Arc::new(HashMap::new()),
+            app_servers: Arc::new(StdRwLock::new(HashMap::new())),
+            runtime_manager: None,
+            runtime_start: Arc::new(Semaphore::new(1)),
+            runtime_failures: Arc::new(StdRwLock::new(HashMap::new())),
             events: Arc::new(RwLock::new(HashMap::new())),
             thread_engagements: Arc::new(RwLock::new(HashMap::new())),
             active_turns: Arc::new(RwLock::new(HashMap::new())),
@@ -135,16 +144,113 @@ impl GatewayState {
     }
 
     pub fn with_app_server(
-        mut self,
+        self,
         profile_name: String,
         app_server: RiftxAppServerRequestHandle,
     ) -> Self {
-        Arc::make_mut(&mut self.app_servers).insert(profile_name, app_server);
+        match self.app_servers.write() {
+            Ok(mut app_servers) => {
+                app_servers.insert(profile_name, app_server);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().insert(profile_name, app_server);
+            }
+        }
         self
     }
 
-    pub(crate) fn app_server(&self, profile_name: &str) -> Option<&RiftxAppServerRequestHandle> {
-        self.app_servers.get(profile_name)
+    pub fn with_runtime_manager(mut self, manager: ProfileRuntimeManager) -> Self {
+        self.runtime_manager = Some(Arc::new(manager));
+        self
+    }
+
+    pub(crate) fn app_server(&self, profile_name: &str) -> Option<RiftxAppServerRequestHandle> {
+        self.app_servers
+            .read()
+            .ok()
+            .and_then(|servers| servers.get(profile_name).cloned())
+    }
+
+    pub(crate) fn runtime_ready(&self, profile_name: &str) -> bool {
+        self.app_server(profile_name).is_some()
+    }
+
+    pub(crate) fn runtime_configured(&self, profile_name: &str) -> bool {
+        self.runtime_manager
+            .as_ref()
+            .is_some_and(|manager| manager.configured(profile_name))
+            || self.runtime_ready(profile_name)
+    }
+
+    pub(crate) fn has_runtime_manager(&self) -> bool {
+        self.runtime_manager.is_some()
+    }
+
+    pub(crate) fn runtime_failure(&self, profile_name: &str) -> Option<String> {
+        self.runtime_failures
+            .read()
+            .ok()
+            .and_then(|failures| failures.get(profile_name).cloned())
+    }
+
+    pub(crate) fn record_runtime_failure(&self, profile_name: &str, detail: String) {
+        if let Ok(mut failures) = self.runtime_failures.write() {
+            failures.insert(profile_name.to_string(), detail);
+        }
+    }
+
+    pub(crate) fn clear_runtime_failure(&self, profile_name: &str) {
+        if let Ok(mut failures) = self.runtime_failures.write() {
+            failures.remove(profile_name);
+        }
+    }
+
+    pub(crate) async fn ensure_app_server(
+        &self,
+        profile_name: &str,
+    ) -> Result<RiftxAppServerRequestHandle, ProfileRuntimeError> {
+        if let Some(handle) = self.app_server(profile_name) {
+            return Ok(handle);
+        }
+        let _start = self
+            .runtime_start
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ProfileRuntimeError::Start {
+                profile_name: profile_name.to_string(),
+                message: "Runtime startup coordinator is unavailable".into(),
+            })?;
+        if let Some(handle) = self.app_server(profile_name) {
+            return Ok(handle);
+        }
+        let manager = self
+            .runtime_manager
+            .as_ref()
+            .ok_or_else(|| ProfileRuntimeError::Unconfigured(profile_name.to_string()))?;
+        let mut runtime = match manager.start_profile(profile_name).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Ok(mut failures) = self.runtime_failures.write() {
+                    failures.insert(profile_name.to_string(), error.to_string());
+                }
+                return Err(error);
+            }
+        };
+        manager.retain_bridge(profile_name.to_string(), &mut runtime)?;
+        let handle = runtime.handle.clone();
+        self.app_servers
+            .write()
+            .map_err(|_| ProfileRuntimeError::Start {
+                profile_name: profile_name.to_string(),
+                message: "App Server state lock is unavailable".into(),
+            })?
+            .insert(profile_name.to_string(), handle.clone());
+        if let Ok(mut failures) = self.runtime_failures.write() {
+            failures.remove(profile_name);
+        }
+        self.spawn_app_server_event_pump(profile_name.to_string(), runtime.adapter);
+        Ok(handle)
     }
 
     pub fn spawn_app_server_event_pump(
@@ -154,24 +260,32 @@ impl GatewayState {
     ) {
         let state = self.clone();
         tokio::spawn(async move {
-            loop {
+            let failure = loop {
                 match adapter.next_event().await {
                     Ok(Some(event)) => {
                         crate::app_events::process(&state, &profile_name, event).await
                     }
-                    Ok(None) => break,
+                    Ok(None) => break "App Server Runtime closed unexpectedly".to_string(),
                     Err(error) => {
+                        let message = error.to_string();
                         state
                             .publish_to_profile_active(
                                 &profile_name,
                                 "appServer/error",
-                                json!({"message": error.to_string()}),
+                                json!({"message": &message}),
                             )
                             .await;
-                        break;
+                        break message;
                     }
                 }
+            };
+            if let Ok(mut app_servers) = state.app_servers.write() {
+                app_servers.remove(&profile_name);
             }
+            if let Some(manager) = &state.runtime_manager {
+                manager.release_bridge(&profile_name);
+            }
+            state.record_runtime_failure(&profile_name, failure);
             state
                 .pending_approvals
                 .write()

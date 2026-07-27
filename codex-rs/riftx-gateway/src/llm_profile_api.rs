@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::Path;
 use axum::extract::State;
 use codex_riftx_app_server_adapter::RiftxApiKey;
+use codex_riftx_core::EngagementStatus;
 use codex_riftx_core::LlmApiKeySource;
 use codex_riftx_core::LlmProtocol;
 use codex_riftx_credentials::LlmApiKey;
@@ -31,24 +32,30 @@ pub(crate) async fn list_profiles(
         .profiles
         .iter()
         .map(|(name, profile)| {
-            let configured = key_is_configured(name, &profile.api_key);
-            let runtime_ready = state.app_servers.contains_key(name);
-            let in_use = engagements
-                .iter()
-                .any(|engagement| engagement.llm_profile == *name);
+            let configured =
+                key_is_configured(name, &profile.api_key) || state.runtime_configured(name);
+            let runtime_ready = state.runtime_ready(name);
+            let in_use = engagements.iter().any(|engagement| {
+                engagement.llm_profile == *name && engagement.status == EngagementStatus::Active
+            });
             let (profile_state, state_detail) = if in_use {
                 (
                     LlmProfileState::InUse,
-                    "referenced by an existing engagement",
+                    "referenced by an existing engagement".to_string(),
                 )
             } else if !configured {
-                (LlmProfileState::Unconfigured, "API key is not configured")
+                (
+                    LlmProfileState::Unconfigured,
+                    "API key is not configured".to_string(),
+                )
             } else if runtime_ready {
-                (LlmProfileState::Ready, "Runtime is ready")
+                (LlmProfileState::Ready, "Runtime is ready".to_string())
+            } else if let Some(detail) = state.runtime_failure(name) {
+                (LlmProfileState::Unreachable, detail)
             } else {
                 (
-                    LlmProfileState::Invalid,
-                    "Runtime is not ready; run the connection test for details",
+                    LlmProfileState::Ready,
+                    "configured; Runtime will initialize on first use".to_string(),
                 )
             };
             LlmProfileSummary {
@@ -58,7 +65,7 @@ pub(crate) async fn list_profiles(
                 base_url: profile.base_url.clone(),
                 is_default: name == &state.config.llm.default_profile,
                 state: profile_state,
-                state_detail: state_detail.to_string(),
+                state_detail,
                 configured,
                 runtime_ready,
             }
@@ -173,6 +180,21 @@ pub(crate) async fn test_profile(
     let ok = matches!(capabilities.config.status, LlmCheckStatus::Passed)
         && matches!(capabilities.stream_text.status, LlmCheckStatus::Passed)
         && matches!(capabilities.function_tools.status, LlmCheckStatus::Passed);
+
+    if ok && state.has_runtime_manager() {
+        state
+            .ensure_app_server(&profile_name)
+            .await
+            .map_err(|error| ApiError::app_server(error.to_string()))?;
+        state.clear_runtime_failure(&profile_name);
+    } else if !ok {
+        let detail = if matches!(capabilities.stream_text.status, LlmCheckStatus::Failed) {
+            capabilities.stream_text.detail.clone()
+        } else {
+            capabilities.function_tools.detail.clone()
+        };
+        state.record_runtime_failure(&profile_name, detail);
+    }
 
     Ok(Json(LlmConnectionTestResult {
         profile_name,

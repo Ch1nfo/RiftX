@@ -596,10 +596,11 @@ async fn start_turn(
     }
     let profile_name = engagement.llm_profile.clone();
     let app_server = state
-        .app_server(&profile_name)
-        .ok_or_else(|| {
+        .ensure_app_server(&profile_name)
+        .await
+        .map_err(|error| {
             ApiError::bad_request(format!(
-                "LLM profile {profile_name:?} is not ready; configure a valid API key before starting a turn"
+                "LLM profile {profile_name:?} is not ready: {error}"
             ))
         })?;
     let workspace = state.config.daemon.workspace_root.join(&id);

@@ -18,11 +18,10 @@ pub(crate) async fn doctor_skills(
     State(state): State<GatewayState>,
 ) -> Result<Json<SkillCatalog>, ApiError> {
     let profile_name = &state.config.llm.default_profile;
-    let app_server = state.app_servers.get(profile_name).ok_or_else(|| {
-        ApiError::app_server(format!(
-            "LLM profile {profile_name:?} App Server is unavailable"
-        ))
-    })?;
+    let app_server = state
+        .ensure_app_server(profile_name)
+        .await
+        .map_err(|error| ApiError::app_server(error.to_string()))?;
     let entry = app_server
         .list_skills(
             &state.config.daemon.workspace_root,

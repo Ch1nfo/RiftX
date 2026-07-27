@@ -12,6 +12,10 @@ mod gateway_state;
 mod inventory;
 mod llm_profile_api;
 mod report;
+mod runtime_manager;
 
 pub use api::build_router;
 pub use gateway_state::GatewayState;
+pub use runtime_manager::ProfileRuntimeError;
+pub use runtime_manager::ProfileRuntimeManager;
+pub use runtime_manager::ProfileRuntimeSpec;
