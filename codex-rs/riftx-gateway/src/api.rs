@@ -36,6 +36,9 @@ use codex_riftx_core::MAX_CONVERSATION_PAGE_SIZE;
 use codex_riftx_core::StateError;
 use codex_riftx_core::Task;
 use codex_riftx_core::TaskStatus;
+use codex_riftx_execution_policy::DecisionContext;
+use codex_riftx_execution_policy::ExecutionDisposition;
+use codex_riftx_execution_policy::decide;
 use codex_riftx_ipc::ApprovalDecision;
 use codex_riftx_ipc::ApprovalDecisionParams;
 use codex_riftx_ipc::ChangeModeParams;
@@ -746,12 +749,30 @@ async fn decide_approval(
             message: format!("approval {id} was not found or already decided"),
         })?;
     let engagement = state.store.engagement(&pending.engagement_id).await?;
+    let now = unix_timestamp();
     let authorization_is_current =
-        validate_authorization_time(&engagement.authorization, unix_timestamp()).is_ok();
+        validate_authorization_time(&engagement.authorization, now).is_ok();
     let current_policy =
         crate::credential_api::resolve_engagement_policy(&state, &engagement, engagement.mode)
             .await?;
+    let execution_intent_is_current = match (&pending.kind, &pending.view.execution_intent) {
+        (PendingApprovalKind::Command(command), Some(expected)) => {
+            let current = crate::app_events::command_execution_intent(&state, &engagement, command);
+            let decision = decide(
+                &current,
+                DecisionContext {
+                    now,
+                    authorized_capabilities: &engagement.authorization.capabilities,
+                },
+            );
+            current.binding_sha256 == expected.binding_sha256
+                && decision.disposition != ExecutionDisposition::Deny
+        }
+        (PendingApprovalKind::Command(_), None) => false,
+        (PendingApprovalKind::Tool { .. }, _) => true,
+    };
     let policy_is_current = authorization_is_current
+        && execution_intent_is_current
         && current_policy.revision == pending.view.policy_revision
         && engagement.policy_revision == pending.view.policy_revision;
     let execution_is_running = state.control_status().await.state == DaemonRunState::Running;
@@ -766,7 +787,7 @@ async fn decide_approval(
         PendingApprovalKind::Command(command) => {
             app_server
                 .decide_command_approval(
-                    command,
+                    *command,
                     if approved {
                         codex_riftx_app_server_adapter::OperatorApprovalDecision::Approve
                     } else {
@@ -788,6 +809,7 @@ async fn decide_approval(
                 "approvalId": id,
                 "decision": params.decision,
                 "policyCurrent": policy_is_current,
+                "executionIntentCurrent": execution_intent_is_current,
                 "executionRunning": execution_is_running,
             }),
         )
@@ -797,7 +819,7 @@ async fn decide_approval(
     }
     if matches!(params.decision, ApprovalDecision::Approve) && !policy_is_current {
         return Err(ApiError::bad_request(
-            "approval invalidated because the authorization expired or policy revision changed",
+            "approval invalidated because its execution binding, authorization, or policy changed",
         ));
     }
     Ok(StatusCode::NO_CONTENT)
@@ -858,7 +880,7 @@ async fn interrupt_engagement_inner(
                 PendingApprovalKind::Command(command) => {
                     let _ = app_server
                         .decide_command_approval(
-                            command,
+                            *command,
                             codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
                         )
                         .await;

@@ -17,6 +17,7 @@ pub use codex_riftx_domain::IdentitySelector;
 pub use codex_riftx_domain::Scope;
 pub use codex_riftx_domain::StructuredSuccessCriterion;
 pub use codex_riftx_domain::TaskStatus;
+pub use codex_riftx_execution_policy::ExecutionIntent;
 pub use codex_riftx_report::EngagementReport;
 pub use codex_riftx_report::ReportSkill;
 pub use codex_riftx_report::ReportSkillSource;
@@ -96,6 +97,8 @@ pub struct PendingApproval {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub execution_intent: Option<ExecutionIntent>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

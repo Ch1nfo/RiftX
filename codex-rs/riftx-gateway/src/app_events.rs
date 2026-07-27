@@ -6,14 +6,22 @@ use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RIFTX_CREDENTIAL_TOOL_NAME;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
+use codex_riftx_core::Engagement;
 use codex_riftx_core::ExecutionMode;
 use codex_riftx_core::ExecutionStatus;
+use codex_riftx_execution_policy::CommandIntentInput;
+use codex_riftx_execution_policy::CommandSpec;
+use codex_riftx_execution_policy::DecisionContext;
+use codex_riftx_execution_policy::ExecutionDisposition;
+use codex_riftx_execution_policy::ExecutionIntent;
+use codex_riftx_execution_policy::decide;
 use codex_riftx_ipc::ApprovalKind;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_tools::DiscoveredTool;
 use codex_riftx_tools::ToolRisk;
 use serde_json::Value;
 use serde_json::json;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub(crate) async fn process(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {
@@ -235,6 +243,7 @@ async fn await_red_team_tool_approval(
                 reason: Some(format!(
                     "RedTeam requires approval for {risk}-risk credential tool `{tool_name}`"
                 )),
+                execution_intent: None,
             },
             kind: PendingApprovalKind::Tool { decision_tx },
         },
@@ -273,7 +282,35 @@ async fn command_approval(
     let Ok(engagement) = state.store.engagement(&engagement_id).await else {
         return;
     };
+    let intent = command_execution_intent(state, &engagement, &pending);
+    let decision = decide(
+        &intent,
+        DecisionContext {
+            now: unix_timestamp(),
+            authorized_capabilities: &engagement.authorization.capabilities,
+        },
+    );
+    if decision.disposition == ExecutionDisposition::Deny {
+        if let Some(app_server) = state.app_server(profile_name) {
+            let _ = app_server
+                .decide_command_approval(
+                    pending.clone(),
+                    codex_riftx_app_server_adapter::OperatorApprovalDecision::Deny,
+                )
+                .await;
+        }
+        state
+            .publish(
+                &engagement_id,
+                "approval/commandDenied",
+                json!({"decision": decision, "intent": intent}),
+            )
+            .await;
+        return;
+    }
     let approval_id = pending.approval_id();
+    let display_command = (!intent.display_argv.is_empty()).then(|| intent.display_argv.join(" "));
+    let event_intent = intent.clone();
     state.pending_approvals.write().await.insert(
         approval_id.clone(),
         PendingApprovalRequest {
@@ -285,20 +322,49 @@ async fn command_approval(
                 policy_revision: engagement.policy_revision,
                 kind: ApprovalKind::Command,
                 requested_at: pending.params.started_at_ms / 1_000,
-                command: pending.params.command.clone(),
+                command: display_command,
                 cwd: pending.params.cwd.as_ref().map(ToString::to_string),
                 reason: pending.params.reason.clone(),
+                execution_intent: Some(intent),
             },
-            kind: PendingApprovalKind::Command(pending.clone()),
+            kind: PendingApprovalKind::Command(Box::new(pending.clone())),
         },
     );
     state
         .publish(
             &engagement_id,
             "approval/command",
-            json!({"approvalId": approval_id, "payload": pending.params}),
+            json!({"approvalId": approval_id, "executionIntent": event_intent}),
         )
         .await;
+}
+
+pub(crate) fn command_execution_intent(
+    state: &GatewayState,
+    engagement: &Engagement,
+    pending: &PendingCommandApproval,
+) -> ExecutionIntent {
+    let cwd = pending
+        .params
+        .cwd
+        .as_ref()
+        .map(ToString::to_string)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.config.daemon.workspace_root.join(&engagement.id));
+    ExecutionIntent::from_command(CommandIntentInput {
+        engagement_id: &engagement.id,
+        thread_id: &pending.params.thread_id,
+        turn_id: &pending.params.turn_id,
+        tool_call_id: &pending.params.item_id,
+        mode: engagement.mode,
+        command: CommandSpec::CommandLine(pending.params.command.as_deref().unwrap_or_default()),
+        cwd: &cwd,
+        search_path: &state.tool_search_path,
+        inventory: &state.tools,
+        requested_capabilities: &[],
+        authorization_deadline: engagement.authorization.window.expires_at,
+        policy_revision: &engagement.policy_revision,
+    })
 }
 
 async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxAppServerEvent) {

@@ -120,6 +120,24 @@ export function ActivityTimeline({
             </header>
             {approval.reason && <p>{approval.reason}</p>}
             {approval.command && <code>{approval.command}</code>}
+            {approval.executionIntent && (
+              <div className="approval-intent">
+                <p>
+                  {approval.executionIntent.mode} · {approval.executionIntent.risk} ·{" "}
+                  {approval.executionIntent.parseStatus}
+                </p>
+                {approval.executionIntent.executables.map((executable, index) => (
+                  <p key={`${executable.requestedName}-${index}`}>
+                    <strong>{executable.requestedName}</strong> · {executable.risk} ({executable.riskSource})
+                    {executable.resolvedPath && (
+                      <>
+                        {" "}· <code>{executable.resolvedPath}</code>
+                      </>
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
             {approval.cwd && <p className="approval-cwd">{approval.cwd}</p>}
             <div className="approval-actions">
               <button

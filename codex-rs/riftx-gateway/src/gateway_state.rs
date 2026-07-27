@@ -88,7 +88,7 @@ pub(crate) struct PendingApprovalRequest {
 }
 
 pub(crate) enum PendingApprovalKind {
-    Command(PendingCommandApproval),
+    Command(Box<PendingCommandApproval>),
     Tool {
         decision_tx: tokio::sync::oneshot::Sender<bool>,
     },

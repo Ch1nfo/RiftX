@@ -266,6 +266,7 @@ async fn native_mode_executes_and_audits_a_local_command() -> anyhow::Result<()>
         .context("event stream did not observe turn completion")?
         .context("event collector task failed")??;
     anyhow::ensure!(event_kinds.iter().any(|kind| kind == "operator/message"));
+    anyhow::ensure!(event_kinds.iter().any(|kind| kind == "approval/command"));
     anyhow::ensure!(event_kinds.iter().any(|kind| kind == "turn/completed"));
     let requests = response_mock.requests();
     anyhow::ensure!(requests.len() == 2);
@@ -329,6 +330,38 @@ async fn approve_pending_approvals(
         let Some(approval_id) = approval["id"].as_str() else {
             continue;
         };
+        if approval["kind"] == "command" {
+            let intent = &approval["executionIntent"];
+            anyhow::ensure!(
+                intent["threadId"].is_string(),
+                "thread binding missing: {approval}"
+            );
+            anyhow::ensure!(
+                intent["turnId"].is_string(),
+                "turn binding missing: {approval}"
+            );
+            anyhow::ensure!(
+                intent["toolCallId"].is_string(),
+                "tool-call binding missing: {approval}"
+            );
+            anyhow::ensure!(
+                intent["displayArgv"].is_array(),
+                "display argv missing: {approval}"
+            );
+            anyhow::ensure!(
+                intent["executables"].is_array(),
+                "executables missing: {approval}"
+            );
+            anyhow::ensure!(
+                intent["bindingSha256"]
+                    .as_str()
+                    .is_some_and(|digest| digest.len() == 64),
+                "approval binding digest missing: {approval}"
+            );
+            let serialized = approval.to_string();
+            anyhow::ensure!(!serialized.contains(API_KEY));
+            anyhow::ensure!(!serialized.contains(SECONDARY_API_KEY));
+        }
         let decision = client
             .post_json(
                 &format!("/v1/approvals/{approval_id}/decision"),

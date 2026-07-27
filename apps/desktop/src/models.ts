@@ -300,6 +300,48 @@ export type ApprovalKind = "command" | "tool";
 
 export type ApprovalDecision = "approve" | "deny";
 
+export type ExecutionParseStatus = "parsed" | "complex" | "empty";
+export type ExecutionRisk = "low" | "medium" | "high" | "critical" | "unknown";
+export type ExecutionRiskSource =
+  | "declared"
+  | "missingRisk"
+  | "missingMetadata"
+  | "unmanaged"
+  | "unresolved";
+
+export interface ExecutionExecutable {
+  requestedName: string;
+  displayArgs: string[];
+  resolvedPath: string | null;
+  sha256: string | null;
+  inventorySha256: string | null;
+  inventoryHashMatches: boolean | null;
+  risk: ExecutionRisk;
+  riskSource: ExecutionRiskSource;
+  capabilities: string[];
+  managed: boolean;
+}
+
+export interface ExecutionIntent {
+  engagementId: string;
+  threadId: string;
+  turnId: string;
+  toolCallId: string;
+  mode: ExecutionMode;
+  displayArgv: string[];
+  commandSha256: string;
+  argumentSha256: string;
+  cwd: string;
+  executables: ExecutionExecutable[];
+  toolInventorySha256: string;
+  risk: ExecutionRisk;
+  requestedCapabilities: string[];
+  authorizationDeadline: number | null;
+  policyRevision: string;
+  parseStatus: ExecutionParseStatus;
+  bindingSha256: string;
+}
+
 export interface PendingApproval {
   id: string;
   engagementId: string;
@@ -309,6 +351,7 @@ export interface PendingApproval {
   command: string | null;
   cwd: string | null;
   reason: string | null;
+  executionIntent: ExecutionIntent | null;
 }
 
 export interface EngagementStreamStatus {
