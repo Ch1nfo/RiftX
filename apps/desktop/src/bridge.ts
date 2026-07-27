@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ActiveTurnStatus,
   AutoRun,
   ApprovalDecision,
   ConversationPage,
@@ -38,6 +39,10 @@ const RUNTIME_ERROR_EVENT_NAME = "riftx://runtime-error";
 
 export function daemonInfo(): Promise<DesktopDaemonInfo> {
   return desktopInvoke("daemon_info");
+}
+
+export function activeTurns(): Promise<ActiveTurnStatus[]> {
+  return desktopInvoke("active_turns");
 }
 
 export function pauseRuntime(): Promise<DaemonControlStatus> {

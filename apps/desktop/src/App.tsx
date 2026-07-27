@@ -11,9 +11,10 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activateEngagement,
+  activeTurns,
   autoStatus,
   bridgeError,
   changeEngagementMode,
@@ -109,6 +110,11 @@ export default function App() {
   const [lastActivityAt, setLastActivityAt] = useState<number | null>(null);
   const [staleAutoHint, setStaleAutoHint] = useState(false);
 
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
+  const runtimeReconciliationIdRef = useRef(0);
+
   const selected = useMemo(
     () =>
       engagements.find((engagement) => engagement.id === selectedId) ?? null,
@@ -185,6 +191,78 @@ export default function App() {
     [],
   );
 
+  const reconcileSelectedState = useCallback(
+    async (engagementId: string, mode: ExecutionMode) => {
+      const [
+        reportResult,
+        approvalsResult,
+        conversationResult,
+        credentialsResult,
+        streamResult,
+        activeTurnsResult,
+        autoResult,
+      ] = await Promise.allSettled([
+        engagementReport(engagementId),
+        listApprovals(engagementId),
+        conversationHistory(engagementId),
+        Promise.all([
+          listAssessmentCredentials(engagementId),
+          listCredentialGrants(engagementId),
+        ]),
+        engagementStreamStatus(engagementId),
+        activeTurns(),
+        mode === "auto" ? autoStatus(engagementId) : Promise.resolve(null),
+      ]);
+
+      if (selectedIdRef.current !== engagementId) {
+        return;
+      }
+      if (reportResult.status === "fulfilled") {
+        setReport(reportResult.value);
+        updateEngagement(reportResult.value.engagement);
+      }
+      if (approvalsResult.status === "fulfilled") {
+        setApprovals(approvalsResult.value);
+      }
+      if (conversationResult.status === "fulfilled") {
+        setHistory(conversationResult.value.data);
+        setHistoryCursor(conversationResult.value.nextCursor);
+      }
+      if (credentialsResult.status === "fulfilled") {
+        const [references, grants] = credentialsResult.value;
+        setCredentialReferences(references);
+        setCredentialGrants(grants);
+      }
+      if (streamResult.status === "fulfilled") {
+        setStreamState(streamResult.value.state);
+      }
+      if (activeTurnsResult.status === "fulfilled") {
+        setTurnRunning(
+          activeTurnsResult.value.some(
+            (turn) => turn.engagementId === engagementId,
+          ),
+        );
+      }
+      if (autoResult.status === "fulfilled") {
+        setAutoRun(autoResult.value);
+      }
+
+      const failure = [
+        reportResult,
+        approvalsResult,
+        conversationResult,
+        credentialsResult,
+        streamResult,
+        activeTurnsResult,
+        autoResult,
+      ].find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") {
+        throw failure.reason;
+      }
+    },
+    [updateEngagement],
+  );
+
   const refresh = useCallback(async (showLoading = true) => {
     if (showLoading) {
       setLoading(true);
@@ -235,20 +313,57 @@ export default function App() {
         }
         setDaemon((current) => (current ? { ...current, runtime } : current));
         setControlBusy(false);
-        void listEngagements()
-          .then((taskList) => {
+        setError(null);
+        const reconciliationId = ++runtimeReconciliationIdRef.current;
+        const selectedSnapshot = selected
+          ? { id: selected.id, mode: selected.mode }
+          : null;
+        const reconciliation = [
+          daemonInfo().then((info) => {
+            if (!disposed) {
+              setDaemon(info);
+            }
+          }),
+          listEngagements().then((taskList) => {
             if (!disposed) {
               replaceEngagements(taskList);
             }
-          })
-          .catch((cause) => {
+          }),
+          llmProfiles().then((profiles) => {
             if (!disposed) {
-              setError(bridgeError(cause));
+              setProfileReady(
+                profiles.profiles.some(
+                  (profile) =>
+                    profile.state === "ready" || profile.state === "in_use",
+                ),
+              );
             }
-          });
+          }),
+          selectedSnapshot
+            ? reconcileSelectedState(
+                selectedSnapshot.id,
+                selectedSnapshot.mode,
+              )
+            : Promise.resolve(),
+        ];
+        void Promise.allSettled(reconciliation).then((results) => {
+          if (
+            disposed ||
+            reconciliationId !== runtimeReconciliationIdRef.current
+          ) {
+            return;
+          }
+          const failure = results.find(
+            (result) => result.status === "rejected",
+          );
+          if (failure?.status === "rejected") {
+            setError(bridgeError(failure.reason));
+          }
+        });
       }),
       onRuntimeError((runtimeError) => {
         if (!disposed) {
+          runtimeReconciliationIdRef.current += 1;
           setControlBusy(false);
           setError(runtimeError);
         }
@@ -267,7 +382,12 @@ export default function App() {
       stopStatus();
       stopError();
     };
-  }, [replaceEngagements]);
+  }, [
+    reconcileSelectedState,
+    replaceEngagements,
+    selected?.id,
+    selected?.mode,
+  ]);
 
   useEffect(() => {
     if (!selectedId) {

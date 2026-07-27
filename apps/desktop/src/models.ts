@@ -30,6 +30,11 @@ export interface DesktopDaemonInfo {
   runtime: DaemonControlStatus;
 }
 
+export interface ActiveTurnStatus {
+  engagementId: string;
+  profileName: string;
+}
+
 export interface LlmSettings {
   defaultProfile: string;
   profiles: LlmProfileSettings[];

@@ -207,6 +207,13 @@ pub(crate) async fn daemon_info(
 }
 
 #[tauri::command]
+pub(crate) async fn active_turns(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<ActiveTurnStatus>, DesktopError> {
+    state.query_active_turns().await
+}
+
+#[tauri::command]
 pub(crate) async fn pause_runtime(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,

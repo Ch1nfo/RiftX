@@ -20,6 +20,7 @@ pub fn run() {
         .manage(bridge::DesktopState::load())
         .invoke_handler(tauri::generate_handler![
             bridge::daemon_info,
+            bridge::active_turns,
             bridge::pause_runtime,
             bridge::resume_runtime,
             bridge::kill_runtime,
