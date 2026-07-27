@@ -514,7 +514,8 @@ async fn forward_event(state: &GatewayState, profile_name: &str, event: RiftxApp
             .await;
         state.active_turns.write().await.remove(&engagement_id);
         state.take_pending_approvals(&engagement_id).await;
-        crate::artifacts::capture_pending(state.clone(), engagement_id.clone()).await;
+        crate::artifacts::capture_pending_for_turn(state.clone(), engagement_id.clone(), turn_id)
+            .await;
     }
     state
         .publish(
