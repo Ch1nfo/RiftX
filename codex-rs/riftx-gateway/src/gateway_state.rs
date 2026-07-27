@@ -386,6 +386,7 @@ impl GatewayState {
         let _ = self
             .append_system_critical("audit/startupProbe", json!({"outcome": "success"}))
             .await;
+        let restored_control = self.control_status().await;
         for engagement in engagements {
             if engagement.status != EngagementStatus::Active {
                 continue;
@@ -401,6 +402,15 @@ impl GatewayState {
                 continue;
             }
             let interrupted_at = unix_timestamp();
+            for mut task in self.store.tasks(&engagement.id).await? {
+                if matches!(
+                    task.status,
+                    TaskStatus::Pending | TaskStatus::Running | TaskStatus::Expiring
+                ) {
+                    task.status = TaskStatus::Interrupted;
+                    self.store.put_task(&task).await?;
+                }
+            }
             for mut execution in self.store.executions(&engagement.id).await? {
                 if matches!(
                     execution.status,
@@ -412,13 +422,23 @@ impl GatewayState {
                     self.store.put_execution(&execution).await?;
                 }
             }
-            self.store
-                .transition_engagement(
+            if restored_control.reason == Some(DaemonPauseReason::KillSwitch) {
+                self.store
+                    .transition_engagement(
+                        &engagement.id,
+                        EngagementStatus::Interrupted,
+                        interrupted_at,
+                    )
+                    .await?;
+            } else {
+                self.register_authorization_deadline(&engagement).await;
+                self.emit_event(
                     &engagement.id,
-                    EngagementStatus::Interrupted,
-                    interrupted_at,
+                    "engagementRecoveredPaused",
+                    json!({"reason": "daemonRestart"}),
                 )
-                .await?;
+                .await;
+            }
             crate::artifacts::capture_pending(self.clone(), engagement.id).await;
         }
         Ok(())

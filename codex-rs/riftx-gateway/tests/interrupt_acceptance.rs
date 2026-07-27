@@ -38,7 +38,7 @@ const COMPLETION_ATTEMPTS: usize = 100;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pause_cancels_the_live_model_stream_without_replay_or_execution() -> anyhow::Result<()> {
+async fn pause_cancels_live_work_and_resume_accepts_only_a_fresh_turn() -> anyhow::Result<()> {
     let temp = TempDir::new().context("create interrupt acceptance directory")?;
     let mock = BlockingChatMock::start().await?;
 
@@ -74,7 +74,7 @@ async fn pause_cancels_the_live_model_stream_without_replay_or_execution() -> an
         .await?;
     ensure_status(response, StatusCode::ACCEPTED, "start interrupt turn").await?;
 
-    mock.wait_for_request().await?;
+    mock.wait_for_request_count(1).await?;
     let response = tokio::time::timeout(Duration::from_secs(10), client.post("/v1/system/pause"))
         .await
         .context("pause did not return after interrupting App Server")??;
@@ -89,8 +89,8 @@ async fn pause_cancels_the_live_model_stream_without_replay_or_execution() -> an
     tokio::time::sleep(Duration::from_millis(500)).await;
     let report = read_report(&client, &engagement.id).await?;
     anyhow::ensure!(
-        report["engagement"]["status"] == "interrupted",
-        "engagement was not interrupted: {report}"
+        report["engagement"]["status"] == "active",
+        "pause made the engagement non-resumable: {report}"
     );
     anyhow::ensure!(
         report["executions"].as_array().is_some_and(Vec::is_empty),
@@ -127,11 +127,31 @@ async fn pause_cancels_the_live_model_stream_without_replay_or_execution() -> an
         .await?;
     anyhow::ensure!(
         response.status() == StatusCode::OK,
-        "read interrupted engagement returned {}",
+        "read paused engagement returned {}",
         response.status()
     );
     let current: Engagement = serde_json::from_slice(&response.bytes().await?)?;
-    anyhow::ensure!(current.status == EngagementStatus::Interrupted);
+    anyhow::ensure!(current.status == EngagementStatus::Active);
+
+    let response = client
+        .post_json(
+            &format!("/v1/engagements/{}/turns", engagement.id),
+            serde_json::to_vec(&json!({
+                "input": "Start a new turn after the operator explicitly resumes."
+            }))?,
+        )
+        .await?;
+    ensure_status(response, StatusCode::ACCEPTED, "start fresh resumed turn").await?;
+    mock.wait_for_request_count(2).await?;
+    anyhow::ensure!(
+        mock.request_count() == 2,
+        "resume did not route exactly one fresh model request"
+    );
+
+    let response = client
+        .post(&format!("/v1/engagements/{}/interrupt", engagement.id))
+        .await?;
+    ensure_status(response, StatusCode::OK, "clean up fresh resumed turn").await?;
     Ok(())
 }
 
@@ -244,14 +264,19 @@ impl BlockingChatMock {
         format!("http://{}", self.address)
     }
 
-    async fn wait_for_request(&self) -> anyhow::Result<()> {
+    async fn wait_for_request_count(&self, expected: usize) -> anyhow::Result<()> {
         tokio::time::timeout(Duration::from_secs(10), async {
-            while self.request_count() == 0 {
+            while self.request_count() < expected {
                 self.state.started.notified().await;
             }
         })
         .await
-        .context("model request did not reach the blocking Chat mock")?;
+        .with_context(|| {
+            format!(
+                "model request count did not reach {expected}; observed {}",
+                self.request_count()
+            )
+        })?;
         Ok(())
     }
 

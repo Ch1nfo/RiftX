@@ -874,7 +874,9 @@ async fn interrupt_engagement_inner(
 ) -> Result<Engagement, ApiError> {
     state.store.engagement(id).await?;
     state.cancel_authorization_deadline(id).await;
-    state.stop_engagement_work(id).await;
+    state
+        .stop_engagement_work(id, crate::engagement_stop::AgentThreadDisposition::Remove)
+        .await;
     let engagement = state
         .store
         .transition_engagement(id, EngagementStatus::Interrupted, unix_timestamp())
@@ -915,12 +917,27 @@ async fn pause_execution(
         .filter(|engagement| engagement.status == EngagementStatus::Active)
         .map(|engagement| engagement.id)
         .collect::<Vec<_>>();
-    let event_reason = match reason {
-        DaemonPauseReason::OperatorPause => "operatorPause",
-        DaemonPauseReason::KillSwitch => "killSwitch",
-    };
     for engagement_id in active {
-        interrupt_engagement_inner(&state, &engagement_id, event_reason).await?;
+        match reason {
+            DaemonPauseReason::OperatorPause => {
+                state
+                    .stop_engagement_work(
+                        &engagement_id,
+                        crate::engagement_stop::AgentThreadDisposition::Preserve,
+                    )
+                    .await;
+                state
+                    .publish(
+                        &engagement_id,
+                        "engagementPaused",
+                        json!({"reason": "operatorPause"}),
+                    )
+                    .await;
+            }
+            DaemonPauseReason::KillSwitch => {
+                interrupt_engagement_inner(&state, &engagement_id, "killSwitch").await?;
+            }
+        }
     }
     Ok(Json(status))
 }

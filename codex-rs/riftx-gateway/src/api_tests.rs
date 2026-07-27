@@ -482,7 +482,7 @@ async fn llm_profile_connection_test_reports_capability_matrix() {
 }
 
 #[tokio::test]
-async fn restart_reconciliation_interrupts_active_engagements() {
+async fn restart_reconciliation_pauses_active_engagements_without_ending_them() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
     let engagement = Engagement {
@@ -532,7 +532,14 @@ async fn restart_reconciliation_interrupts_active_engagements() {
             .await
             .expect("read engagement")
             .status,
-        EngagementStatus::Interrupted
+        EngagementStatus::Active
+    );
+    assert!(
+        state
+            .deadline_tasks
+            .read()
+            .await
+            .contains_key(&engagement.id)
     );
     let paused = state.control_status().await;
     assert_eq!(
@@ -550,6 +557,12 @@ async fn restart_reconciliation_interrupts_active_engagements() {
 async fn kill_switch_survives_gateway_restart() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
+    let engagement = native_engagement(&state, "eng-kill-restart", EngagementStatus::Active);
+    state
+        .store
+        .put_engagement(&engagement)
+        .await
+        .expect("store active kill engagement");
     let expected = state
         .set_control(DaemonRunState::Paused, Some(DaemonPauseReason::KillSwitch))
         .await
@@ -566,6 +579,22 @@ async fn kill_switch_survives_gateway_restart() {
         .expect("restore runtime state");
 
     assert_eq!(restarted.control_status().await, expected);
+    assert_eq!(
+        restarted
+            .store
+            .engagement(&engagement.id)
+            .await
+            .expect("reconciled kill engagement")
+            .status,
+        EngagementStatus::Interrupted
+    );
+    assert!(
+        !restarted
+            .deadline_tasks
+            .read()
+            .await
+            .contains_key(&engagement.id)
+    );
 }
 
 #[tokio::test]
@@ -846,7 +875,7 @@ async fn approval_cannot_succeed_when_critical_audit_is_unavailable() {
 }
 
 #[tokio::test]
-async fn pause_interrupts_active_work_and_resume_never_replays_it() {
+async fn pause_stops_active_work_and_resume_keeps_the_engagement_ready() {
     let temp = TempDir::new().expect("temp dir");
     let state = test_state(&temp).await;
     let engagement = native_engagement(&state, "eng-pause", EngagementStatus::Active);
@@ -855,6 +884,12 @@ async fn pause_interrupts_active_work_and_resume_never_replays_it() {
         .put_engagement(&engagement)
         .await
         .expect("store engagement");
+    state.register_authorization_deadline(&engagement).await;
+    state
+        .agent_threads
+        .write()
+        .await
+        .insert(engagement.id.clone(), "thread-pause".to_string());
     let app = build_router(state.clone());
 
     let response = app
@@ -892,7 +927,23 @@ async fn pause_interrupts_active_work_and_resume_never_replays_it() {
             .await
             .expect("paused engagement")
             .status,
-        EngagementStatus::Interrupted
+        EngagementStatus::Active
+    );
+    assert!(
+        state
+            .deadline_tasks
+            .read()
+            .await
+            .contains_key(&engagement.id)
+    );
+    assert_eq!(
+        state
+            .agent_threads
+            .read()
+            .await
+            .get(&engagement.id)
+            .map(String::as_str),
+        Some("thread-pause")
     );
 
     let response = app
@@ -939,7 +990,14 @@ async fn pause_interrupts_active_work_and_resume_never_replays_it() {
             .await
             .expect("engagement after resume")
             .status,
-        EngagementStatus::Interrupted
+        EngagementStatus::Active
+    );
+    assert!(
+        state
+            .deadline_tasks
+            .read()
+            .await
+            .contains_key(&engagement.id)
     );
 
     let response = app
@@ -948,11 +1006,11 @@ async fn pause_interrupts_active_work_and_resume_never_replays_it() {
                 .method("POST")
                 .uri(format!("/v1/engagements/{}/activate", engagement.id))
                 .body(Body::empty())
-                .expect("activation request"),
+                .expect("redundant activation request"),
         )
         .await
-        .expect("activation response");
-    assert_eq!(response.status(), StatusCode::OK);
+        .expect("redundant activation response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let audit = tokio::fs::read_to_string(&state.config.audit.jsonl_path)
         .await
         .expect("control audit");

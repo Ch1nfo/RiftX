@@ -96,7 +96,11 @@ impl GatewayState {
             let task_update = self
                 .update_deadline_tasks(engagement_id, DeadlineTaskUpdate::Expiring)
                 .await;
-            self.stop_engagement_work(engagement_id).await;
+            self.stop_engagement_work(
+                engagement_id,
+                crate::engagement_stop::AgentThreadDisposition::Remove,
+            )
+            .await;
             task_update?;
         }
         let audit_available = self

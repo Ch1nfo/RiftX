@@ -2,8 +2,18 @@ use crate::gateway_state::GatewayState;
 use crate::gateway_state::PendingApprovalKind;
 use codex_riftx_core::ExecutionStatus;
 
+#[derive(Clone, Copy)]
+pub(crate) enum AgentThreadDisposition {
+    Preserve,
+    Remove,
+}
+
 impl GatewayState {
-    pub(crate) async fn stop_engagement_work(&self, engagement_id: &str) {
+    pub(crate) async fn stop_engagement_work(
+        &self,
+        engagement_id: &str,
+        thread_disposition: AgentThreadDisposition,
+    ) {
         let cancellations = self
             .credential_processes
             .read()
@@ -46,7 +56,9 @@ impl GatewayState {
             .await;
         }
         self.active_turns.write().await.remove(engagement_id);
-        self.agent_threads.write().await.remove(engagement_id);
+        if matches!(thread_disposition, AgentThreadDisposition::Remove) {
+            self.agent_threads.write().await.remove(engagement_id);
+        }
 
         for pending in self.take_pending_approvals(engagement_id).await {
             match pending.kind {
