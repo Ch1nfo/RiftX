@@ -72,6 +72,7 @@ use thiserror::Error;
 
 const UNSUPPORTED_REQUEST_CODE: i64 = -32601;
 pub const RIFTX_CREDENTIAL_TOOL_NAME: &str = "riftx_credential_tool";
+pub const RIFTX_RECORD_ASSET_TOOL_NAME: &str = "riftx_record_asset";
 
 /// Optional OS-isolation settings for a local agent thread.
 ///
@@ -794,38 +795,61 @@ fn workspace_string(cwd: &Path) -> Result<String, AdapterError> {
 }
 
 fn riftx_dynamic_tools() -> Vec<DynamicToolSpec> {
-    vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
-        name: RIFTX_CREDENTIAL_TOOL_NAME.to_string(),
-        description: "Run one credential-aware local tool using an existing operator grant. The tool, capability, target template, use limits, and secret injection are enforced by RiftX. Never place secrets or arbitrary argv in this call.".to_string(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["grantId", "tool", "target"],
-            "properties": {
-                "grantId": {
-                    "type": "string",
-                    "description": "Existing CredentialGrant identifier"
-                },
-                "tool": {
-                    "type": "string",
-                    "description": "Credential-aware tool name from the RiftX inventory"
-                },
-                "target": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["host"],
-                    "properties": {
-                        "host": {"type": "string"},
-                        "port": {"type": ["integer", "null"], "minimum": 1, "maximum": 65535}
+    vec![
+        DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            name: RIFTX_CREDENTIAL_TOOL_NAME.to_string(),
+            description: "Run one credential-aware local tool using an existing operator grant. The tool, capability, target template, use limits, and secret injection are enforced by RiftX. Never place secrets or arbitrary argv in this call.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["grantId", "tool", "target"],
+                "properties": {
+                    "grantId": {
+                        "type": "string",
+                        "description": "Existing CredentialGrant identifier"
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "Credential-aware tool name from the RiftX inventory"
+                    },
+                    "target": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["host"],
+                        "properties": {
+                            "host": {"type": "string"},
+                            "port": {"type": ["integer", "null"], "minimum": 1, "maximum": 65535}
+                        }
                     }
                 }
-            }
+            }),
+            defer_loading: false,
         }),
-        defer_loading: false,
-    })]
+        DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            name: RIFTX_RECORD_ASSET_TOOL_NAME.to_string(),
+            description: "Record one newly discovered host, domain, or URL in RiftX structured state. RiftX validates the value against the operator-authorized scope before persisting it; an out-of-scope candidate pauses Auto for operator input.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "value"],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["host", "domain", "url"]
+                    },
+                    "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
+                    }
+                }
+            }),
+            defer_loading: false,
+        }),
+    ]
 }
 
-const MAIN_AGENT_INSTRUCTIONS: &str = "Act as the RiftX main security-testing agent. Work only within the operator-authorized scope and objective. Treat entry points as starting clues, build hypotheses from observations, request approval for risky actions, preserve evidence, and never claim success without validated evidence. Tools are local executables available through the RiftX process environment; do not assume any tool is installed. Secrets are never available in shell or conversation context. Use riftx_credential_tool only with an operator-created CredentialGrant and a credential-aware tool from the inventory.";
+const MAIN_AGENT_INSTRUCTIONS: &str = "Act as the RiftX main security-testing agent. Work only within the operator-authorized scope and objective. Treat entry points as starting clues, build hypotheses from observations, request approval for risky actions, preserve evidence, and never claim success without validated evidence. Tools are local executables available through the RiftX process environment; do not assume any tool is installed. Record each newly discovered host, domain, or URL with riftx_record_asset before acting on it; RiftX performs the mandatory scope precheck and persists accepted assets. Secrets are never available in shell or conversation context. Use riftx_credential_tool only with an operator-created CredentialGrant and a credential-aware tool from the inventory.";
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

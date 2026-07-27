@@ -5,6 +5,7 @@ use crate::gateway_state::unix_timestamp;
 use codex_riftx_app_server_adapter::PendingCommandApproval;
 use codex_riftx_app_server_adapter::PendingDynamicToolCall;
 use codex_riftx_app_server_adapter::RIFTX_CREDENTIAL_TOOL_NAME;
+use codex_riftx_app_server_adapter::RIFTX_RECORD_ASSET_TOOL_NAME;
 use codex_riftx_app_server_adapter::RiftxAppServerEvent;
 use codex_riftx_core::Engagement;
 use codex_riftx_core::ExecutionStatus;
@@ -87,14 +88,30 @@ async fn dynamic_tool(state: &GatewayState, profile_name: &str, pending: Pending
     let Some(app_server) = state.app_server(profile_name) else {
         return;
     };
-    if pending.params.namespace.is_some() || pending.params.tool != RIFTX_CREDENTIAL_TOOL_NAME {
+    if pending.params.namespace.is_some() {
         let _ = app_server
             .reject_dynamic_tool(
                 pending,
-                "RiftX rejected an unknown dynamic tool".to_string(),
+                "RiftX rejected a namespaced dynamic tool".to_string(),
             )
             .await;
         return;
+    }
+    match pending.params.tool.as_str() {
+        RIFTX_CREDENTIAL_TOOL_NAME => {}
+        RIFTX_RECORD_ASSET_TOOL_NAME => {
+            crate::asset_tool::handle(state, profile_name, pending).await;
+            return;
+        }
+        _ => {
+            let _ = app_server
+                .reject_dynamic_tool(
+                    pending,
+                    "RiftX rejected an unknown dynamic tool".to_string(),
+                )
+                .await;
+            return;
+        }
     }
     let Some(engagement_id) = engagement_for_thread(state, &pending.params.thread_id).await else {
         let _ = app_server
