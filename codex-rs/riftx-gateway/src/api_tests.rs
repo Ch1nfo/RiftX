@@ -254,6 +254,14 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
         .put_engagement(&engagement)
         .await
         .expect("store engagement");
+    let asset = Asset {
+        id: "report-asset".to_string(),
+        engagement_id: engagement.id.clone(),
+        kind: "host".to_string(),
+        value: "10.10.0.10".to_string(),
+        discovered_at: 2,
+    };
+    state.store.put_asset(&asset).await.expect("store asset");
     let app = build_router(state);
 
     let response = app
@@ -286,6 +294,8 @@ async fn report_endpoint_emits_the_versioned_runtime_contract() {
         })
     );
     assert_eq!(report.auto_run, None);
+    assert_eq!(report.engagement, engagement);
+    assert_eq!(report.assets, vec![asset]);
     assert_eq!(report.limitations, standard_report_limitations());
 }
 

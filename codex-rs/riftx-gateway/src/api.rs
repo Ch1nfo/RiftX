@@ -1120,9 +1120,9 @@ async fn report(
     Path(id): Path<String>,
     Query(query): Query<ReportQuery>,
 ) -> Result<Response, ApiError> {
-    let engagement = state.store.engagement(&id).await?;
-    let auto_run = state.store.auto_run(&id).await?;
-    let llm_profile = if let Some(run) = auto_run.as_ref() {
+    let snapshot = state.store.engagement_state_snapshot(&id).await?;
+    let auto_run = snapshot.auto_run.as_ref().map(ReportAutoRun::from);
+    let llm_profile = if let Some(run) = snapshot.auto_run.as_ref() {
         ReportLlmProfile {
             name: run.config.llm_profile.name.clone(),
             protocol: match run.config.llm_profile.protocol.as_str() {
@@ -1133,12 +1133,12 @@ async fn report(
         }
     } else {
         ReportLlmProfile {
-            name: engagement.llm_profile.clone(),
+            name: snapshot.engagement.llm_profile.clone(),
             protocol: state
                 .config
                 .llm
                 .profiles
-                .get(&engagement.llm_profile)
+                .get(&snapshot.engagement.llm_profile)
                 .map(|profile| match profile.protocol {
                     codex_riftx_core::LlmProtocol::Responses => ReportLlmProtocol::Responses,
                     codex_riftx_core::LlmProtocol::ChatCompletions => {
@@ -1151,23 +1151,23 @@ async fn report(
         schema: codex_riftx_report::REPORT_SCHEMA_VERSION.to_string(),
         generated_at: unix_timestamp(),
         llm_profile: Some(llm_profile),
-        auto_run: auto_run.as_ref().map(ReportAutoRun::from),
+        auto_run,
         limitations: standard_report_limitations(),
-        engagement,
-        assets: state.store.assets(&id).await?,
-        asset_relations: state.store.asset_relations(&id).await?,
-        services: state.store.services(&id).await?,
-        identities: state.store.identities(&id).await?,
-        observations: state.store.observations(&id).await?,
-        hypotheses: state.store.hypotheses(&id).await?,
-        test_cases: state.store.test_cases(&id).await?,
-        executions: state.store.executions(&id).await?,
-        findings: state.store.findings(&id).await?,
-        evidence: state.store.evidence(&id).await?,
-        attack_paths: state.store.attack_paths(&id).await?,
-        coverage: state.store.coverage(&id).await?,
-        tasks: state.store.tasks(&id).await?,
-        artifacts: state.store.artifacts(&id).await?,
+        engagement: snapshot.engagement,
+        assets: snapshot.assets,
+        asset_relations: snapshot.asset_relations,
+        services: snapshot.services,
+        identities: snapshot.identities,
+        observations: snapshot.observations,
+        hypotheses: snapshot.hypotheses,
+        test_cases: snapshot.test_cases,
+        executions: snapshot.executions,
+        findings: snapshot.findings,
+        evidence: snapshot.evidence,
+        attack_paths: snapshot.attack_paths,
+        coverage: snapshot.coverage,
+        tasks: snapshot.tasks,
+        artifacts: snapshot.artifacts,
         tool_snapshot: tool_report_snapshot(&state.tools),
         skill_snapshot: skill_report_snapshot(&state.skills),
     };

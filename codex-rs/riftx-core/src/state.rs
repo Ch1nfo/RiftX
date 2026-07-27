@@ -713,6 +713,9 @@ pub(crate) async fn open_test_store(path: &Path) -> Result<StateStore, StateErro
 #[path = "state_target.rs"]
 mod target;
 
+#[path = "state_snapshot.rs"]
+mod snapshot;
+
 #[path = "state_credential.rs"]
 mod credential;
 
