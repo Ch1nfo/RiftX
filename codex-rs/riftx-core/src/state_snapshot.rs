@@ -75,6 +75,9 @@ impl StateStore {
             artifacts: self
                 .snapshot_entities(&mut transaction, EntityTable::Artifacts, engagement_id)
                 .await?,
+            approvals: self
+                .snapshot_entities(&mut transaction, EntityTable::Approvals, engagement_id)
+                .await?,
         };
         transaction.commit().await?;
         Ok(snapshot)

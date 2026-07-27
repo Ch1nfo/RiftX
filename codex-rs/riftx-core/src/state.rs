@@ -1,3 +1,4 @@
+use crate::ApprovalRecord;
 use crate::Artifact;
 use crate::Asset;
 use crate::AssetRelation;
@@ -195,6 +196,7 @@ entity_tables!(
     Tasks => "tasks",
     Artifacts => "artifacts",
     AutoRuns => "auto_runs",
+    Approvals => "approvals",
 );
 
 impl StateStore {
@@ -302,6 +304,7 @@ impl StateStore {
             EntityTable::Tasks,
             EntityTable::Artifacts,
             EntityTable::AutoRuns,
+            EntityTable::Approvals,
         ] {
             sqlx::query(table.create_sql()).execute(&self.pool).await?;
         }
@@ -510,6 +513,29 @@ impl StateStore {
     pub async fn auto_run(&self, engagement_id: &str) -> Result<Option<AutoRun>, StateError> {
         self.entity(EntityTable::AutoRuns, engagement_id, engagement_id)
             .await
+    }
+
+    pub async fn put_approval(&self, value: &ApprovalRecord) -> Result<(), StateError> {
+        self.put_entity(
+            EntityTable::Approvals,
+            &value.id,
+            &value.engagement_id,
+            value,
+        )
+        .await
+    }
+
+    pub async fn approval(
+        &self,
+        engagement_id: &str,
+        approval_id: &str,
+    ) -> Result<Option<ApprovalRecord>, StateError> {
+        self.entity(EntityTable::Approvals, engagement_id, approval_id)
+            .await
+    }
+
+    pub async fn approvals(&self, engagement_id: &str) -> Result<Vec<ApprovalRecord>, StateError> {
+        self.entities(EntityTable::Approvals, engagement_id).await
     }
 
     pub async fn findings(&self, engagement_id: &str) -> Result<Vec<Finding>, StateError> {

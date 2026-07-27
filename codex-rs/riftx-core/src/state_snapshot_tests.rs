@@ -1,4 +1,9 @@
 use super::*;
+use crate::ApprovalActor;
+use crate::ApprovalDecisionReason;
+use crate::ApprovalOutcome;
+use crate::ApprovalRecord;
+use crate::ApprovalRequestKind;
 use crate::Artifact;
 use crate::AssessmentObjective;
 use crate::Asset;
@@ -13,6 +18,7 @@ use crate::AutoRunState;
 use crate::EngagementStatus;
 use crate::EnvironmentClass;
 use crate::ExecutionMode;
+use crate::RecordedApprovalDecision;
 use crate::Scope;
 use crate::Service;
 use crate::Task;
@@ -97,6 +103,15 @@ async fn snapshot_returns_one_engagements_state_from_one_read_model() {
         .expect("store artifact");
     let auto_run = auto_run(&engagement);
     store.put_auto_run(&auto_run).await.expect("store Auto run");
+    let approvals = vec![approval("approval-1", "eng-1")];
+    store
+        .put_approval(&approvals[0])
+        .await
+        .expect("store approval");
+    store
+        .put_approval(&approval("other-approval", "eng-2"))
+        .await
+        .expect("store other approval");
 
     assert_eq!(
         store
@@ -120,6 +135,7 @@ async fn snapshot_returns_one_engagements_state_from_one_read_model() {
             coverage: Vec::new(),
             tasks,
             artifacts,
+            approvals,
         }
     );
 }
@@ -218,5 +234,26 @@ fn auto_run(engagement: &Engagement) -> AutoRun {
         last_progress_assessment: None,
         started_at: None,
         updated_at: 2,
+    }
+}
+
+fn approval(id: &str, engagement_id: &str) -> ApprovalRecord {
+    ApprovalRecord {
+        id: id.to_string(),
+        engagement_id: engagement_id.to_string(),
+        kind: ApprovalRequestKind::Command,
+        requested_at: 6,
+        decided_at: Some(7),
+        requested_decision: Some(RecordedApprovalDecision::Approve),
+        outcome: ApprovalOutcome::Approved,
+        actor: Some(ApprovalActor::LocalOperator),
+        decision_reason: Some(ApprovalDecisionReason::Approved),
+        policy_revision: "revision-1".to_string(),
+        execution_binding_sha256: "d".repeat(64),
+        command_sha256: "e".repeat(64),
+        argument_sha256: "f".repeat(64),
+        display_argv: vec!["nmap".to_string(), "10.10.0.10".to_string()],
+        cwd: Some("/workspace".to_string()),
+        executable_names: vec!["nmap".to_string()],
     }
 }

@@ -1,3 +1,4 @@
+use crate::ApprovalRecord;
 use crate::Artifact;
 use crate::Asset;
 use crate::AssetRelation;
@@ -37,4 +38,5 @@ pub struct EngagementStateSnapshot {
     pub coverage: Vec<Coverage>,
     pub tasks: Vec<Task>,
     pub artifacts: Vec<Artifact>,
+    pub approvals: Vec<ApprovalRecord>,
 }

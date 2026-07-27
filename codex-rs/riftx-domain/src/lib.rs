@@ -1,5 +1,6 @@
 //! Lightweight RiftX business-domain types shared by state, IPC, CLI, and Desktop.
 
+mod approval;
 mod authorization;
 mod auto;
 mod conversation;
@@ -9,6 +10,7 @@ mod objective;
 mod snapshot;
 mod target_state;
 
+pub use approval::*;
 pub use authorization::*;
 pub use auto::*;
 pub use conversation::*;
