@@ -1,5 +1,6 @@
 use crate::DiagnosticLevel;
 use crate::DiscoveredTool;
+use crate::TOOL_METADATA_SCHEMA_VERSION;
 use crate::ToolDiagnostic;
 use crate::ToolInventory;
 use crate::ToolMetadata;
@@ -339,13 +340,26 @@ async fn read_tool_metadata(
         }
     };
     let metadata_sha256 = hex_digest(Sha256::digest(&bytes));
-    match std::str::from_utf8(&bytes)
+    let parsed = std::str::from_utf8(&bytes)
         .ok()
-        .and_then(|content| toml::from_str::<ToolMetadata>(content).ok())
-        .filter(ToolMetadata::is_valid)
-    {
-        Some(metadata) => (Some(metadata_path), Some(metadata_sha256), Some(metadata)),
-        None => {
+        .and_then(|content| toml::from_str::<ToolMetadata>(content).ok());
+    match parsed {
+        Some(metadata) if metadata.schema_version != TOOL_METADATA_SCHEMA_VERSION => {
+            diagnostics.push(diagnostic(
+                DiagnosticLevel::Error,
+                "metadataSchemaUnsupported",
+                Some(metadata_path),
+                &format!(
+                    "tool metadata schema version {} is unsupported; expected {}",
+                    metadata.schema_version, TOOL_METADATA_SCHEMA_VERSION
+                ),
+            ));
+            (None, None, None)
+        }
+        Some(metadata) if metadata.is_valid() => {
+            (Some(metadata_path), Some(metadata_sha256), Some(metadata))
+        }
+        Some(_) | None => {
             diagnostics.push(diagnostic(
                 DiagnosticLevel::Error,
                 "metadataInvalid",

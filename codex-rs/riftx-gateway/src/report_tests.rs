@@ -23,6 +23,7 @@ fn report_snapshots_exclude_local_extension_paths() {
             )),
             metadata_sha256: Some("metadata-sha256".to_string()),
             metadata: Some(ToolMetadata {
+                schema_version: 1,
                 capabilities: vec!["network.discovery".to_string()],
                 risk: Some(ToolRisk::Medium),
                 help_args: Vec::new(),
@@ -63,6 +64,7 @@ fn report_snapshots_exclude_local_extension_paths() {
                 name: "scanner".to_string(),
                 sha256: "tool-sha256".to_string(),
                 metadata_sha256: Some("metadata-sha256".to_string()),
+                metadata_schema_version: Some(1),
                 capabilities: vec!["network.discovery".to_string()],
                 risk: Some(ReportToolRisk::Medium),
                 managed: true,

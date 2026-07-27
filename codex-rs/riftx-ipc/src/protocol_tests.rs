@@ -14,6 +14,7 @@ fn extension_inventory_round_trips_as_complete_typed_values() {
             "metadataPath": "/opt/riftx/tools/bin/scanner.riftx.toml",
             "metadataSha256": "metadata-sha",
             "metadata": {
+                "schemaVersion": 1,
                 "capabilities": ["network.discovery", "credential.testing"],
                 "risk": "medium",
                 "helpArgs": ["--help"],

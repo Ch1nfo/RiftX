@@ -861,6 +861,12 @@ button:disabled {
   color: var(--mint);
 }
 
+.inspector .scope-disclaimer {
+  margin-bottom: 12px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
 .scope-list {
   display: grid;
   margin: 0;

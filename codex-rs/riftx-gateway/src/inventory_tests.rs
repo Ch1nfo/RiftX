@@ -20,6 +20,7 @@ fn runtime_extension_inventories_map_to_complete_ipc_values() {
             metadata_path: Some(PathBuf::from("/opt/riftx/tools/bin/scanner.riftx.toml")),
             metadata_sha256: Some("metadata-sha".to_string()),
             metadata: Some(RuntimeToolMetadata {
+                schema_version: 1,
                 capabilities: vec![
                     "network.discovery".to_string(),
                     "credential.testing".to_string(),
@@ -80,6 +81,7 @@ fn runtime_extension_inventories_map_to_complete_ipc_values() {
                 metadata_path: Some(PathBuf::from("/opt/riftx/tools/bin/scanner.riftx.toml",)),
                 metadata_sha256: Some("metadata-sha".to_string()),
                 metadata: Some(ToolMetadata {
+                    schema_version: 1,
                     capabilities: vec![
                         "network.discovery".to_string(),
                         "credential.testing".to_string(),

@@ -112,7 +112,7 @@ export function ModeControl({
               <dd>{engagement.authorization.environment}</dd>
             </div>
             <div>
-              <dt>Scope entries</dt>
+              <dt>Declared scope entries</dt>
               <dd>
                 {engagement.entryPoints.length +
                   engagement.authorization.network.cidrs.length +

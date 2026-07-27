@@ -58,11 +58,15 @@ RiftX 扫描根目录、一级子目录及其 `bin/`，不递归遍历、不跟�
 可执行文件旁可以放置可选的 `<filename>.riftx.toml`：
 
 ```toml
+schema_version = 1
 capabilities = ["network.discovery"]
 risk = "low"
 version_args = ["--version"]
 health_check_args = ["--help"]
 ```
+
+`schema_version` 为必填字段；当前仅支持 `1`。缺失或不受支持的版本会被拒绝并在
+Tools Doctor 中报告诊断，不会作为受管理工具元数据使用。
 
 检查当前启动时工具快照：
 

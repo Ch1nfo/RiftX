@@ -230,6 +230,7 @@ impl Fixture {
                 metadata_path: None,
                 metadata_sha256: None,
                 metadata: Some(ToolMetadata {
+                    schema_version: 1,
                     capabilities: capabilities.iter().map(ToString::to_string).collect(),
                     risk,
                     help_args: Vec::new(),

@@ -6,6 +6,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Current supported version of the sidecar tool metadata contract.
+pub const TOOL_METADATA_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ToolScanConfig {
@@ -18,6 +21,8 @@ pub struct ToolScanConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolMetadata {
+    #[serde(alias = "schema_version")]
+    pub schema_version: u32,
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub risk: Option<ToolRisk>,
@@ -37,9 +42,11 @@ pub struct ToolMetadata {
 
 impl ToolMetadata {
     pub(crate) fn is_valid(&self) -> bool {
-        self.capabilities
-            .iter()
-            .all(|capability| valid_capability(capability))
+        self.schema_version == TOOL_METADATA_SCHEMA_VERSION
+            && self
+                .capabilities
+                .iter()
+                .all(|capability| valid_capability(capability))
             && bounded_arguments(&self.help_args)
             && bounded_arguments(&self.version_args)
             && bounded_arguments(&self.health_check_args)

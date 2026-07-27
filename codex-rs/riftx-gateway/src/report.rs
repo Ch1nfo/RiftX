@@ -20,6 +20,10 @@ pub(crate) fn tool_report_snapshot(inventory: &ToolInventory) -> ToolReportSnaps
                 name: tool.name.clone(),
                 sha256: tool.sha256.clone(),
                 metadata_sha256: tool.metadata_sha256.clone(),
+                metadata_schema_version: tool
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.schema_version),
                 capabilities: tool
                     .metadata
                     .as_ref()

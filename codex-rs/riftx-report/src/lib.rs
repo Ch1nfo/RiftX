@@ -48,6 +48,8 @@ pub struct ReportTool {
     pub name: String,
     pub sha256: String,
     pub metadata_sha256: Option<String>,
+    #[serde(default)]
+    pub metadata_schema_version: Option<u32>,
     pub capabilities: Vec<String>,
     pub risk: Option<ReportToolRisk>,
     pub managed: bool,
@@ -122,7 +124,10 @@ impl EngagementReport {
                 criterion.id, criterion.description
             ));
         }
-        output.push_str("\n## Authorization\n\n");
+        output.push_str("\n## Operator-declared Authorized Scope\n\n");
+        output.push_str(
+            "This scope is an application-level operator declaration. Local shell execution is not an OS-enforced network isolation boundary.\n\n",
+        );
         output.push_str(&format!(
             "- CIDRs: {}\n- Domains: {}\n- Ports: {}\n- Capabilities: {}\n",
             joined(
@@ -307,8 +312,13 @@ impl EngagementReport {
         } else {
             for tool in &self.tool_snapshot.tools {
                 output.push_str(&format!(
-                    "- `{}`: `{}` (managed={}, shadowed={})\n",
-                    tool.name, tool.sha256, tool.managed, tool.shadowed
+                    "- `{}`: `{}` (metadataSchema={}, managed={}, shadowed={})\n",
+                    tool.name,
+                    tool.sha256,
+                    tool.metadata_schema_version
+                        .map_or_else(|| "none".to_string(), |version| version.to_string()),
+                    tool.managed,
+                    tool.shadowed
                 ));
             }
         }

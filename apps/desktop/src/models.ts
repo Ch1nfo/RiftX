@@ -134,6 +134,7 @@ export interface DiscoveredTool {
   metadataPath: string | null;
   metadataSha256: string | null;
   metadata: {
+    schemaVersion: number;
     capabilities: string[];
     risk: "low" | "medium" | "high" | "critical" | null;
     helpArgs: string[];
@@ -413,6 +414,7 @@ export interface ToolReportSnapshot {
     name: string;
     sha256: string;
     metadataSha256: string | null;
+    metadataSchemaVersion: number | null;
     capabilities: string[];
     risk: "low" | "medium" | "high" | "critical" | null;
     managed: boolean;

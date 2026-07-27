@@ -342,6 +342,7 @@ async fn fixture(
     tokio::fs::write(
         tools_root.join("credential-probe.riftx.toml"),
         concat!(
+            "schema_version = 1\n",
             "capabilities = [\"network.discovery\"]\n",
             "[credential]\n",
             "capability = \"network.discovery\"\n",

@@ -31,6 +31,7 @@ pub(crate) fn ipc_tool_inventory(inventory: &RuntimeToolInventory) -> ToolInvent
                 metadata_path: tool.metadata_path.clone(),
                 metadata_sha256: tool.metadata_sha256.clone(),
                 metadata: tool.metadata.as_ref().map(|metadata| ToolMetadata {
+                    schema_version: metadata.schema_version,
                     capabilities: metadata.capabilities.clone(),
                     risk: metadata.risk.map(|risk| match risk {
                         RuntimeToolRisk::Low => ToolRisk::Low,

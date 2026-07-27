@@ -85,7 +85,11 @@ export function EngagementInspector({
       />
 
       <section>
-        <h3>Scope</h3>
+        <h3>Operator-declared authorized scope</h3>
+        <p className="scope-disclaimer">
+          Application-level prechecks only; local shell execution is not an
+          OS-enforced network isolation boundary.
+        </p>
         <dl className="scope-list">
           <div>
             <dt>Entry points</dt>

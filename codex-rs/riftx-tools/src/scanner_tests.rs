@@ -25,6 +25,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
     tokio::fs::write(
         root.join("probe.riftx.toml"),
         concat!(
+            "schema_version = 1\n",
             "capabilities = [\"network.discovery\"]\n",
             "risk = \"low\"\n",
             "help_args = [\"--help\"]\n",
@@ -66,6 +67,7 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
     assert_eq!(
         inventory.tools[0].metadata.as_ref().expect("metadata"),
         &ToolMetadata {
+            schema_version: 1,
             capabilities: vec!["network.discovery".to_string()],
             risk: Some(ToolRisk::Low),
             help_args: vec!["--help".to_string()],
@@ -91,6 +93,35 @@ async fn scanner_obeys_depth_order_metadata_and_shadowing() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn scanner_rejects_unsupported_metadata_schema_versions() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    write_executable(&root.join("probe"), b"#!/bin/sh\nexit 0\n").await;
+    tokio::fs::write(
+        root.join("probe.riftx.toml"),
+        "schema_version = 2\nrisk = \"low\"\n",
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert!(inventory.tools[0].metadata.is_none());
+    assert!(inventory.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "metadataSchemaUnsupported"
+            && diagnostic.message.contains("version 2")
+            && diagnostic.message.contains("expected 1")
+    }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn scanner_rejects_unsafe_credential_metadata() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("tools");
@@ -99,6 +130,7 @@ async fn scanner_rejects_unsafe_credential_metadata() {
     tokio::fs::write(
         root.join("probe.riftx.toml"),
         concat!(
+            "schema_version = 1\n",
             "capabilities = [\"credential.testing\"]\n",
             "[credential]\n",
             "capability = \"credential.testing\"\n",
