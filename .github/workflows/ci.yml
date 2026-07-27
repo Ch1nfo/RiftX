@@ -216,8 +216,14 @@ jobs:
           --filter @riftx/desktop...
           --frozen-lockfile
 
+      - name: Check desktop frontend and E2E types
+        run: conda run -n agent pnpm --filter @riftx/desktop check
+
       - name: Test desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop test
+
+      - name: Test desktop mock E2E
+        run: conda run -n agent pnpm --filter @riftx/desktop test:e2e
 
       - name: Build desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop build

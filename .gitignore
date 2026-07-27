@@ -68,6 +68,8 @@ apply_patch/
 
 # coverage
 coverage/
+**/test-results/
+**/playwright-report/
 
 # personal files
 personal/
