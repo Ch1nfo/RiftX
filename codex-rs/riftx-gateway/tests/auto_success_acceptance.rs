@@ -207,6 +207,44 @@ async fn auto_controller_replans_then_completes_with_artifact_backed_evidence() 
         }),
         "Auto evidence chain missing from report: {report}"
     );
+    let evidence_id = report["evidence"][0]["id"]
+        .as_str()
+        .context("report evidence id missing")?;
+    let artifact_id = report["evidence"][0]["artifactId"]
+        .as_str()
+        .context("report evidence artifact id missing")?;
+    let artifact = report["artifacts"]
+        .as_array()
+        .context("report artifact list missing")?
+        .iter()
+        .find(|artifact| artifact["id"] == artifact_id)
+        .context("report evidence references a missing artifact")?;
+    let artifact_sha256 = artifact["sha256"]
+        .as_str()
+        .context("report artifact SHA-256 missing")?;
+    anyhow::ensure!(artifact_sha256.len() == 64);
+    anyhow::ensure!(
+        report["autoRun"]["lastGoalAssessment"]["evidenceIds"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id == evidence_id)),
+        "success assessment does not reference report evidence: {report}"
+    );
+
+    let markdown_response = client
+        .get(&format!(
+            "/v1/engagements/{}/report?format=markdown",
+            engagement.id
+        ))
+        .await?;
+    anyhow::ensure!(markdown_response.status() == StatusCode::OK);
+    let markdown = String::from_utf8(markdown_response.bytes().await?.to_vec())?;
+    anyhow::ensure!(
+        markdown.contains("Stop reason: `SuccessCriteriaMet`")
+            && markdown.contains(evidence_id)
+            && markdown.contains(artifact_id)
+            && markdown.contains(artifact_sha256),
+        "Markdown report lost the success evidence chain: {markdown}"
+    );
 
     let requests = server
         .received_requests()

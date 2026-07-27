@@ -370,8 +370,12 @@ impl EngagementReport {
         } else {
             for finding in &self.findings {
                 output.push_str(&format!(
-                    "### {} ({:?})\n\n{}\n\n",
-                    finding.title, finding.severity, finding.description
+                    "### {} ({:?})\n\n- Finding ID: `{}`\n- Evidence: {}\n\n{}\n\n",
+                    finding.title,
+                    finding.severity,
+                    finding.id,
+                    joined_references(&finding.evidence_ids),
+                    finding.description
                 ));
             }
         }
@@ -389,10 +393,11 @@ impl EngagementReport {
                 ));
                 for hop in &path.hops {
                     output.push_str(&format!(
-                        "  - `{}` --{}--> `{}`\n",
+                        "  - `{}` --{}--> `{}` (evidence={})\n",
                         subject_label(&hop.source),
                         hop.capability,
-                        subject_label(&hop.destination)
+                        subject_label(&hop.destination),
+                        joined_references(&hop.evidence_ids)
                     ));
                 }
             }
@@ -403,8 +408,11 @@ impl EngagementReport {
         } else {
             for coverage in &self.coverage {
                 output.push_str(&format!(
-                    "- `{}`: {}/{}\n",
-                    coverage.dimension, coverage.covered_items, coverage.total_items
+                    "- `{}`: {}/{} (evidence={})\n",
+                    coverage.dimension,
+                    coverage.covered_items,
+                    coverage.total_items,
+                    joined_references(&coverage.evidence_ids)
                 ));
             }
         }
@@ -413,7 +421,33 @@ impl EngagementReport {
             output.push_str("No evidence recorded.\n");
         } else {
             for evidence in &self.evidence {
-                output.push_str(&format!("- {}\n", evidence.summary));
+                let artifact_integrity = evidence
+                    .artifact_id
+                    .as_deref()
+                    .and_then(|artifact_id| {
+                        self.artifacts
+                            .iter()
+                            .find(|artifact| artifact.id == artifact_id)
+                    })
+                    .map_or_else(
+                        || "none".to_string(),
+                        |artifact| {
+                            format!(
+                                "id=`{}`, sha256=`{}`, bytes={}",
+                                artifact.id, artifact.sha256, artifact.size_bytes
+                            )
+                        },
+                    );
+                output.push_str(&format!(
+                    "- `{}`: {} (finding={}, execution={}, artifact={}, captured={}, reproducible={})\n",
+                    evidence.id,
+                    evidence.summary,
+                    evidence.finding_id.as_deref().unwrap_or("none"),
+                    evidence.execution_id.as_deref().unwrap_or("none"),
+                    artifact_integrity,
+                    evidence.captured_at,
+                    evidence.reproducible
+                ));
             }
         }
         output.push_str("\n## Approvals\n\n");
@@ -452,6 +486,24 @@ impl EngagementReport {
                 run.limits.max_wall_clock_seconds,
                 run.limits.max_single_command_seconds,
             ));
+            if let Some(assessment) = &run.last_goal_assessment {
+                output.push_str(&format!(
+                    "- Goal assessment: succeeded={}, evaluated={}, evidence={}\n",
+                    assessment.succeeded,
+                    assessment.evaluated_at,
+                    joined_references(&assessment.evidence_ids)
+                ));
+                for criterion in &assessment.criteria {
+                    output.push_str(&format!(
+                        "  - Criterion `{}`: satisfied={}, evidence={}\n",
+                        criterion.criterion_id,
+                        criterion.satisfied,
+                        joined_references(&criterion.evidence_ids)
+                    ));
+                }
+            } else {
+                output.push_str("- Goal assessment: unavailable\n");
+            }
         } else {
             output.push_str("This engagement has no Auto run.\n");
         }
@@ -504,8 +556,8 @@ impl EngagementReport {
         } else {
             for artifact in &self.artifacts {
                 output.push_str(&format!(
-                    "- `{}`: `{}` ({} bytes)\n",
-                    artifact.path, artifact.sha256, artifact.size_bytes
+                    "- `{}`: path=`{}`, sha256=`{}` ({} bytes)\n",
+                    artifact.id, artifact.path, artifact.sha256, artifact.size_bytes
                 ));
             }
         }
@@ -514,6 +566,18 @@ impl EngagementReport {
             output.push_str(&format!("{}  {}\n", artifact.sha256, artifact.path));
         }
         output
+    }
+}
+
+fn joined_references(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| format!("`{value}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 

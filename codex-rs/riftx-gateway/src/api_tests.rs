@@ -1493,6 +1493,13 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
         .put_engagement(&engagement)
         .await
         .expect("store engagement");
+    let mut other_engagement = engagement.clone();
+    other_engagement.id = "eng-artifacts-other".to_string();
+    state
+        .store
+        .put_engagement(&other_engagement)
+        .await
+        .expect("store other engagement");
     let workspace = state.config.daemon.workspace_root.join(&engagement.id);
     tokio::fs::create_dir_all(workspace.join("artifacts"))
         .await
@@ -1501,6 +1508,20 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
         .await
         .expect("write artifact");
     let app = build_router(state.clone());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/engagements/{}/artifacts", engagement.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"path":"../outside"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("path traversal response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = app
         .clone()
@@ -1531,6 +1552,21 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
             Request::builder()
                 .uri(format!(
                     "/v1/engagements/{}/artifacts/{}/content",
+                    other_engagement.id, artifact.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("cross-engagement export response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/engagements/{}/artifacts/{}/content",
                     engagement.id, artifact.id
                 ))
                 .body(Body::empty())
@@ -1550,6 +1586,7 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
     );
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/v1/engagements/{}/artifacts", engagement.id))
@@ -1567,7 +1604,59 @@ async fn artifacts_are_captured_listed_and_exported_from_the_workspace() {
             .to_bytes(),
     )
     .expect("artifact list");
-    assert_eq!(artifacts, vec![artifact]);
+    assert_eq!(artifacts, vec![artifact.clone()]);
+
+    let stored = state
+        .config
+        .artifacts
+        .root
+        .join(&engagement.id)
+        .join(&artifact.sha256);
+    let mut permissions = tokio::fs::metadata(&stored)
+        .await
+        .expect("stored artifact metadata")
+        .permissions();
+    #[cfg(unix)]
+    permissions.set_mode(0o600);
+    #[cfg(not(unix))]
+    permissions.set_readonly(/*readonly*/ false);
+    tokio::fs::set_permissions(&stored, permissions)
+        .await
+        .expect("make stored artifact writable");
+    let mut encrypted = tokio::fs::read(&stored)
+        .await
+        .expect("read stored artifact");
+    let last = encrypted.len() - 1;
+    encrypted[last] ^= 1;
+    tokio::fs::write(&stored, encrypted)
+        .await
+        .expect("tamper stored artifact");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/engagements/{}/artifacts/{}/content",
+                    engagement.id, artifact.id
+                ))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("tampered export response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = String::from_utf8_lossy(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("tampered export body")
+            .to_bytes(),
+    )
+    .into_owned();
+    assert!(body.contains("encrypted artifact is unavailable"));
+    assert!(!body.contains("authentication"));
+
     let audit = state
         .audit
         .read_records(/*limit*/ 100)

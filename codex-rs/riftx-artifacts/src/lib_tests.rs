@@ -192,7 +192,7 @@ async fn discovery_enforces_the_automatic_artifact_count_quota() {
 }
 
 #[tokio::test]
-async fn multi_chunk_artifact_round_trips_and_decrypted_temporary_is_removed() {
+async fn multi_chunk_artifact_round_trips_and_interrupted_export_is_removed() {
     let temp = TempDir::new().expect("temp dir");
     let workspace = temp.path().join("workspace");
     tokio::fs::create_dir_all(&workspace)
@@ -218,10 +218,20 @@ async fn multi_chunk_artifact_round_trips_and_decrypted_temporary_is_removed() {
         .await
         .expect("capture artifact");
 
-    let mut reader = store.open(&artifact).await.expect("open artifact");
     let export_directory = temp.path().join("store").join("eng-1");
+    let mut interrupted = store.open(&artifact).await.expect("open artifact");
     #[cfg(unix)]
     assert_eq!(temporary_exports(&export_directory), 0);
+    let mut prefix = [0_u8; 1_024];
+    interrupted
+        .read_exact(&mut prefix)
+        .await
+        .expect("read artifact prefix");
+    assert_eq!(prefix.as_slice(), &content[..prefix.len()]);
+    drop(interrupted);
+    assert_eq!(temporary_exports(&export_directory), 0);
+
+    let mut reader = store.open(&artifact).await.expect("reopen artifact");
     let mut exported = Vec::new();
     reader
         .read_to_end(&mut exported)

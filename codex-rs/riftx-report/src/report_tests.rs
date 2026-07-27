@@ -8,6 +8,8 @@ use codex_riftx_domain::AssessmentObjective;
 use codex_riftx_domain::AttackPathHop;
 use codex_riftx_domain::AuthorizationScope;
 use codex_riftx_domain::AuthorizationWindow;
+use codex_riftx_domain::AutoCriterionAssessment;
+use codex_riftx_domain::AutoGoalAssessment;
 use codex_riftx_domain::AutoLlmProfileSnapshot;
 use codex_riftx_domain::AutoRunConfig;
 use codex_riftx_domain::AutoRunLimits;
@@ -15,15 +17,19 @@ use codex_riftx_domain::AutoRunState;
 use codex_riftx_domain::AutoStopReason;
 use codex_riftx_domain::EngagementStatus;
 use codex_riftx_domain::EnvironmentClass;
+use codex_riftx_domain::EvidencePurpose;
 use codex_riftx_domain::ExecutionMode;
 use codex_riftx_domain::ExecutionStatus;
+use codex_riftx_domain::FindingSeverity;
 use codex_riftx_domain::HypothesisStatus;
 use codex_riftx_domain::Scope;
+use codex_riftx_domain::StructuredSuccessCriterion;
+use codex_riftx_domain::SuccessPredicate;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeSet;
 
 #[test]
-fn report_contains_unverified_state_attack_paths_and_coverage() {
+fn report_preserves_traceability_redaction_and_schema() {
     let secrets: serde_json::Value =
         serde_json::from_str(include_str!("../fixtures/redaction-cases.json"))
             .expect("redaction fixture");
@@ -41,7 +47,14 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         objective: AssessmentObjective {
             summary: "Validate an authorized attack path".to_string(),
             success_criteria: vec!["Preserve reproducible evidence".to_string()],
-            structured_criteria: Vec::new(),
+            structured_criteria: vec![StructuredSuccessCriterion {
+                id: "artifact-evidence".to_string(),
+                description: "Preserve one artifact-backed evidence item".to_string(),
+                predicate: SuccessPredicate::Evidence {
+                    minimum_items: 1,
+                    reproduction_required: true,
+                },
+            }],
         },
         entry_points: vec!["10.10.20.10".to_string()],
         mode: ExecutionMode::Auto,
@@ -93,8 +106,8 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
                 expires_at: 2_000_000_000,
                 limits: AutoRunLimits::default(),
             },
-            state: AutoRunState::BudgetExhausted,
-            stop_reason: Some(AutoStopReason::ToolBudgetExhausted),
+            state: AutoRunState::Succeeded,
+            stop_reason: Some(AutoStopReason::SuccessCriteriaMet),
             current_subgoal: Some("Validate the attack path".to_string()),
             turns_started: 3,
             turns_completed: 3,
@@ -102,7 +115,17 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             consecutive_failures: 0,
             no_progress_turns: 0,
             unavailable_tools: Vec::new(),
-            last_goal_assessment: None,
+            last_goal_assessment: Some(AutoGoalAssessment {
+                evaluator_version: "riftx.goal/v1".to_string(),
+                evaluated_at: 70,
+                succeeded: true,
+                criteria: vec![AutoCriterionAssessment {
+                    criterion_id: "artifact-evidence".to_string(),
+                    satisfied: true,
+                    evidence_ids: vec!["evidence-1".to_string()],
+                }],
+                evidence_ids: vec!["evidence-1".to_string()],
+            }),
             progress_baseline: None,
             last_progress_assessment: None,
             started_at: Some(10),
@@ -180,8 +203,28 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             stderr_bytes: 5,
             stdin_bytes: 0,
         }],
-        findings: Vec::new(),
-        evidence: Vec::new(),
+        findings: vec![Finding {
+            id: "finding-1".to_string(),
+            engagement_id: "eng-1".to_string(),
+            asset_id: None,
+            evidence_ids: vec!["evidence-1".to_string()],
+            title: "Validated credential reuse".to_string(),
+            severity: FindingSeverity::High,
+            confidence_basis_points: 9_000,
+            description: "The authorized test reproduced credential reuse".to_string(),
+            remediation: Some("Rotate the exposed credential".to_string()),
+        }],
+        evidence: vec![Evidence {
+            id: "evidence-1".to_string(),
+            engagement_id: "eng-1".to_string(),
+            finding_id: Some("finding-1".to_string()),
+            execution_id: Some("execution-1".to_string()),
+            artifact_id: Some("artifact-1".to_string()),
+            summary: "Tool output reproduced the authorized finding".to_string(),
+            purpose: EvidencePurpose::Objective,
+            reproducible: true,
+            captured_at: 55,
+        }],
         attack_paths: vec![AttackPath {
             id: "path-1".to_string(),
             engagement_id: "eng-1".to_string(),
@@ -211,7 +254,16 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             measured_at: 70,
         }],
         tasks: Vec::new(),
-        artifacts: Vec::new(),
+        artifacts: vec![Artifact {
+            id: "artifact-1".to_string(),
+            engagement_id: "eng-1".to_string(),
+            execution_id: Some("execution-1".to_string()),
+            path: "artifacts/reproduction.txt".to_string(),
+            media_type: "text/plain".to_string(),
+            sha256: "d".repeat(64),
+            size_bytes: 42,
+            created_at: 55,
+        }],
         approvals: vec![ApprovalRecord {
             id: "approval-1".to_string(),
             engagement_id: "eng-1".to_string(),
@@ -260,6 +312,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     .redacted();
 
     let markdown = report.markdown();
+    assert_eq!(markdown, include_str!("../fixtures/traceable-report-v1.md"));
     assert!(markdown.contains("## Approvals"));
     assert!(markdown.contains("approval-1"));
     for expected in [
@@ -272,7 +325,12 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
         "Generated at: `80`",
         "LLM Profile: `default`",
         "LLM Protocol: `ChatCompletions`",
-        "Stop reason: `ToolBudgetExhausted`",
+        "Stop reason: `SuccessCriteriaMet`",
+        "Goal assessment: succeeded=true, evaluated=70, evidence=`evidence-1`",
+        "Criterion `artifact-evidence`: satisfied=true, evidence=`evidence-1`",
+        "Finding ID: `finding-1`",
+        "Evidence: `evidence-1`",
+        "artifact=id=`artifact-1`, sha256=`dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd`, bytes=42",
         "Tool calls: 100/100",
         "Known Limitations",
         LOCAL_EXECUTION_LIMITATION,
@@ -295,6 +353,13 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     }
 
     let json = serde_json::to_value(&report).expect("report should encode");
+    assert_eq!(
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&report).expect("pretty report JSON")
+        ),
+        include_str!("../fixtures/traceable-report-v1.json")
+    );
     let decoded = serde_json::from_value(json.clone()).expect("report should decode");
     assert_eq!(report, decoded);
     let encoded = json.to_string();
@@ -353,6 +418,22 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
     assert_eq!(schema_fields, report_fields);
     assert_eq!(required_fields, report_fields);
     assert_eq!(
+        json.pointer("/findings/0/evidenceIds/0"),
+        Some(&serde_json::json!("evidence-1"))
+    );
+    assert_eq!(
+        json.pointer("/evidence/0/artifactId"),
+        Some(&serde_json::json!("artifact-1"))
+    );
+    assert_eq!(
+        json.pointer("/artifacts/0/sha256"),
+        Some(&serde_json::json!("d".repeat(64)))
+    );
+    assert_eq!(
+        json.pointer("/autoRun/lastGoalAssessment/criteria/0/evidenceIds/0"),
+        Some(&serde_json::json!("evidence-1"))
+    );
+    assert_eq!(
         json.pointer("/approvals/0/outcome"),
         Some(&serde_json::json!("cancelled"))
     );
@@ -374,7 +455,7 @@ fn report_contains_unverified_state_attack_paths_and_coverage() {
             Some(&serde_json::json!("riftx.report/v1")),
             Some(&serde_json::json!(80)),
             Some(&serde_json::json!("chatCompletions")),
-            Some(&serde_json::json!("toolBudgetExhausted")),
+            Some(&serde_json::json!("successCriteriaMet")),
             Some(&serde_json::json!("potentialFinding")),
             Some(&serde_json::json!("proposed")),
             Some(&serde_json::json!("credentialValidation")),

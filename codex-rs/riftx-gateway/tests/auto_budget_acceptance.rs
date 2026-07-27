@@ -43,6 +43,19 @@ async fn auto_stops_after_the_configured_turn_budget() -> anyhow::Result<()> {
     anyhow::ensure!(run.stop_reason == Some(AutoStopReason::TurnBudgetExhausted));
     anyhow::ensure!(run.turns_started == 1 && run.turns_completed == 1);
     anyhow::ensure!(run.tool_calls == 0);
+    let response = client
+        .get(&format!(
+            "/v1/engagements/{}/report?format=json",
+            engagement.id
+        ))
+        .await?;
+    anyhow::ensure!(response.status() == StatusCode::OK);
+    let report: Value = serde_json::from_slice(&response.bytes().await?)?;
+    anyhow::ensure!(
+        report["autoRun"]["state"] == "budgetExhausted"
+            && report["autoRun"]["stopReason"] == "turnBudgetExhausted",
+        "budget failure report lost its stop reason: {report}"
+    );
     Ok(())
 }
 

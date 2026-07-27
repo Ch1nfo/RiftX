@@ -53,7 +53,7 @@ pub(crate) async fn export(
         .artifact_store
         .open(&artifact)
         .await
-        .map_err(map_store_error)?;
+        .map_err(map_export_error)?;
     let filename = safe_filename(&artifact.path);
     Response::builder()
         .status(StatusCode::OK)
@@ -65,6 +65,10 @@ pub(crate) async fn export(
         )
         .body(Body::from_stream(ReaderStream::new(file)))
         .map_err(|error| ApiError::internal(error.to_string()))
+}
+
+fn map_export_error(_error: ArtifactError) -> ApiError {
+    ApiError::internal("encrypted artifact is unavailable")
 }
 
 fn map_capture_error(error: CaptureError) -> ApiError {
