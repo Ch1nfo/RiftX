@@ -441,6 +441,35 @@ export interface SkillReportSnapshot {
   }[];
 }
 
+export interface ReportApproval {
+  id: string;
+  engagementId: string;
+  kind: "command" | "tool";
+  requestedAt: number;
+  decidedAt: number | null;
+  requestedDecision: "approve" | "deny" | null;
+  outcome: "pending" | "approved" | "denied" | "invalidated" | "cancelled";
+  actor: "localOperator" | "system" | null;
+  decisionReason:
+    | "approved"
+    | "operatorDenied"
+    | "policyOrBindingChanged"
+    | "daemonPaused"
+    | "auditUnavailable"
+    | "engagementStopped"
+    | "turnCompleted"
+    | "daemonRestart"
+    | "runtimeClosed"
+    | null;
+  policyRevision: string;
+  executionBindingSha256: string;
+  commandSha256: string;
+  argumentSha256: string;
+  displayArgv: string[];
+  cwd: string | null;
+  executableNames: string[];
+}
+
 export interface EngagementReport {
   engagement: Engagement;
   assets: unknown[];
@@ -454,6 +483,7 @@ export interface EngagementReport {
   coverage: unknown[];
   tasks: ReportTask[];
   artifacts: ReportArtifact[];
+  approvals: ReportApproval[];
   toolSnapshot: ToolReportSnapshot;
   skillSnapshot: SkillReportSnapshot;
 }
