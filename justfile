@@ -48,6 +48,11 @@ fmt:
 fmt-check:
     @{{ python }} ../scripts/format.py --check
 
+# Remove large, reproducible RiftX Cargo outputs and generated Desktop sidecars.
+[no-cd]
+clean-riftx-generated:
+    @{{ python }} {{ justfile_directory() }}/scripts/riftx/clean-generated.py
+
 fix *args:
     cargo clippy --fix --tests --allow-dirty {args}
 
