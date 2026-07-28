@@ -26,6 +26,7 @@ mod credential_commands;
 mod engagement_commands;
 mod exit_codes;
 mod extension_commands;
+mod json_contract;
 mod llm_commands;
 mod system_commands;
 

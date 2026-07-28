@@ -1,5 +1,6 @@
 use crate::exit_codes::CliExitCode;
 use crate::exit_codes::WithExitCode;
+use crate::json_contract::ApprovalDecisionOutput;
 use anyhow::Context;
 use clap::Args;
 use clap::Subcommand;
@@ -333,13 +334,6 @@ pub(crate) async fn decide(
         println!("Approval {approval_id}: {decision_name}");
         Ok(())
     }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApprovalDecisionOutput<'a> {
-    approval_id: &'a str,
-    decision: &'a str,
 }
 
 fn print_engagement(engagement: &Engagement, json: bool) -> anyhow::Result<()> {

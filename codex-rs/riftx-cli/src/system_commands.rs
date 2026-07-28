@@ -1,9 +1,10 @@
 use crate::exit_codes::CliExitCode;
 use crate::exit_codes::WithExitCode;
+use crate::json_contract::ConfigValidation;
+use crate::json_contract::DoctorReport;
 use clap::Subcommand;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_ipc::DaemonInfo;
-use serde::Serialize;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
@@ -12,21 +13,6 @@ pub(crate) enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConfigValidation<'a> {
-    ok: bool,
-    config: &'a Path,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorReport<'a> {
-    ok: bool,
-    config: &'a Path,
-    daemon: &'a DaemonInfo,
 }
 
 pub(crate) async fn execute_config(

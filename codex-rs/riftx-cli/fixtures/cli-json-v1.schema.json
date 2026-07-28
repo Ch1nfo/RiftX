@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riftx.local/schemas/cli-json-v1.schema.json",
+  "title": "RiftX CLI-owned JSON output contract v1",
+  "description": "Schema for JSON objects owned by the RiftX CLI. Domain DTO output remains governed by codex-riftx-ipc.",
+  "oneOf": [
+    { "$ref": "#/$defs/configValidation" },
+    { "$ref": "#/$defs/doctorReport" },
+    { "$ref": "#/$defs/approvalDecision" }
+  ],
+  "$defs": {
+    "configValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "config"],
+      "properties": {
+        "ok": { "const": true },
+        "config": { "type": "string" }
+      }
+    },
+    "daemonInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "daemonVersion"],
+      "properties": {
+        "protocolVersion": { "type": "integer", "minimum": 1 },
+        "daemonVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "doctorReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "config", "daemon"],
+      "properties": {
+        "ok": { "const": true },
+        "config": { "type": "string" },
+        "daemon": { "$ref": "#/$defs/daemonInfo" }
+      }
+    },
+    "approvalDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalId", "decision"],
+      "properties": {
+        "approvalId": { "type": "string", "minLength": 1 },
+        "decision": { "enum": ["approve", "deny"] }
+      }
+    }
+  },
+  "x-riftx-contract-version": 1,
+  "x-riftx-command-schemas": {
+    "config validate --json": "#/$defs/configValidation",
+    "doctor --json": "#/$defs/doctorReport",
+    "approvals decide --json": "#/$defs/approvalDecision"
+  },
+  "x-riftx-ipc-passthrough-contracts": {
+    "engagements create|get|activate --json": "codex_riftx_ipc::Engagement",
+    "engagements list --json": "Vec<codex_riftx_ipc::Engagement>",
+    "approvals list --json": "Vec<codex_riftx_ipc::PendingApproval>",
+    "llm profiles list --json": "codex_riftx_ipc::LlmProfileList",
+    "llm profiles test --json": "codex_riftx_ipc::LlmConnectionTestResult",
+    "tools list|doctor --json": "codex_riftx_tools::ToolInventory",
+    "skills list|doctor --json": "codex_riftx_skills::SkillCatalog"
+  },
+  "x-riftx-exit-codes": {
+    "success": 0,
+    "internal": 1,
+    "argumentOrConfig": 2,
+    "daemonOrProtocol": 3,
+    "requestRejected": 4,
+    "localIo": 5
+  }
+}
