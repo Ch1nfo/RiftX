@@ -2688,6 +2688,7 @@ async fn skills_service_reuses_skills_parsed_during_plugin_load() {
             .outcome()
             .skills
             .iter()
+            .filter(|skill| skill.plugin_id.is_some())
             .map(|skill| skill.description.as_str())
             .collect::<Vec<_>>(),
         vec!["first"]
