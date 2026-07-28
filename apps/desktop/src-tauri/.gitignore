@@ -1,0 +1,4 @@
+/target/
+/gen/schemas/
+/binaries/*
+!/binaries/.gitkeep

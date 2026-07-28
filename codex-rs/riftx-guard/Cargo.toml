@@ -1,0 +1,26 @@
+[package]
+name = "codex-riftx-guard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_riftx_guard"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# exec.rs uses tokio::process::Command::pre_exec on all targets.
+ipnet = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+landlock = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

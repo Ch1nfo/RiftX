@@ -1,0 +1,15 @@
+schema_version = 1
+repository = "https://github.com/openai/codex.git"
+commit = "963cda85aa2a4cfb85e52d771d22d9f3069951fa"
+commit_date = "2026-07-22T04:54:54Z"
+imported_on = "2026-07-22"
+import_mode = "root-vendor"
+protocol_fixture_version = 1
+excluded_paths = [".git", ".codex"]
+patched_components = [
+  "codex-rs/app-server-client",
+  "codex-rs/app-server-protocol",
+  "codex-rs/app-server",
+  "codex-rs/cli",
+  "codex-rs/exec-server",
+]

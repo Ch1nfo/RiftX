@@ -1,0 +1,113 @@
+# deps
+# Node.js dependencies
+node_modules
+.pnpm-store
+.pnpm-debug.log
+
+# Keep pnpm-lock.yaml
+!pnpm-lock.yaml
+
+# build
+dist/
+bazel-*
+user.bazelrc
+build/
+out/
+storybook-static/
+
+# ignore README for publishing
+codex-cli/README.md
+
+# ignore Nix derivation results
+result
+
+# editor
+.vscode/
+.idea/
+.history/
+.zed/
+*.swp
+*~
+
+# cli tools
+CLAUDE.md
+.claude/
+AGENTS.override.md
+
+# caches
+.cache/
+.turbo/
+.parcel-cache/
+.eslintcache
+.nyc_output/
+.jest/
+*.tsbuildinfo
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env
+.env*
+!.env.example
+.venv/
+
+# package
+*.tgz
+
+# ci
+.vercel/
+.netlify/
+/.tmp/sdk-ci/
+/upstream-rusty-v8/
+
+# patches
+apply_patch/
+
+# coverage
+coverage/
+**/test-results/
+**/playwright-report/
+
+# personal files
+personal/
+
+# os
+.DS_Store
+Thumbs.db
+Icon?
+!apps/desktop/src-tauri/icons/
+!apps/desktop/src-tauri/icons/**
+.Spotlight-V100/
+
+# Unwanted package managers
+.yarn/
+yarn.lock
+
+# release
+package.json-e
+session.ts-e
+CHANGELOG.ignore.md
+
+# nix related
+.direnv
+.envrc
+
+# Python bytecode files
+__pycache__/
+*.pyc
+
+# RiftX runtime state
+/.riftx/
+
+# Local-only config overrides (keep riftx.toml as the safe repo example)
+/riftx.local.toml
+
+# Local progress note (do not commit)
+/当前项目进度.md
+
+# Occasional local cargo/target overrides outside crate dirs
+**/target/
+!**/src-tauri/icons/**

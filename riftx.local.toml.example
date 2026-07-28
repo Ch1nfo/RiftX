@@ -1,0 +1,67 @@
+# Copy to riftx.local.toml (gitignored) and point RIFTX_CONFIG at it for local experiments.
+# Do not commit real endpoints, credentials, or internal addresses.
+#
+#   cp riftx.local.toml.example riftx.local.toml
+#   RIFTX_CONFIG="$PWD/riftx.local.toml" pnpm --filter @riftx/desktop tauri dev
+
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[tools]
+directories = []
+extra_paths = []
+
+[skills]
+
+[llm]
+default_profile = "openai"
+config_version = 1
+
+# Example: Responses-compatible OpenAI endpoint (default path for current runtime).
+[llm.profiles.openai]
+protocol = "responses"
+model = "gpt-5.2"
+base_url = "https://api.openai.com/v1"
+api_key = { source = "keyring", credential = "openai" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+
+# Example placeholder for a Chat Completions provider (requires M1 LLM bridge).
+# [llm.profiles.example-chat]
+# protocol = "chat_completions"
+# model = "your-model"
+# base_url = "https://example.invalid/v1"
+# api_key = { source = "keyring", credential = "example-chat" }
+# timeout_seconds = 300
+# reasoning_level = "high"
+# context_budget = 200000
+
+[policy]
+allowed_capabilities = [
+  "network.discovery",
+  "service.enumeration",
+  "web.discovery",
+  "content.discovery",
+  "vulnerability.scanning",
+  "vulnerability.validation",
+  "credential.testing",
+  "attack_path.analysis",
+  "lateral_movement",
+  "privilege_escalation",
+  "code_execution",
+  "evidence.capture",
+]
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1073741824

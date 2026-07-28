@@ -1,0 +1,306 @@
+use super::*;
+use pretty_assertions::assert_eq;
+use std::path::Path;
+use tempfile::TempDir;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scanner_obeys_depth_order_metadata_and_shadowing() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    let suite = root.join("suite");
+    let bin = suite.join("bin");
+    tokio::fs::create_dir_all(&bin).await.expect("directories");
+    write_executable(&root.join("probe"), b"#!/bin/sh\nexit 0\n").await;
+    write_executable(&suite.join("probe"), b"#!/bin/sh\nexit 1\n").await;
+    write_executable(&bin.join("deep-probe"), b"#!/bin/sh\nexit 0\n").await;
+    let ignored = bin.join("nested").join("ignored");
+    tokio::fs::create_dir_all(ignored.parent().expect("parent"))
+        .await
+        .expect("nested");
+    write_executable(&ignored, b"#!/bin/sh\nexit 0\n").await;
+    tokio::fs::write(
+        root.join("probe.riftx.toml"),
+        concat!(
+            "schema_version = 1\n",
+            "capabilities = [\"network.discovery\"]\n",
+            "risk = \"low\"\n",
+            "help_args = [\"--help\"]\n",
+            "version_args = [\"--version\"]\n",
+            "health_check_args = [\"doctor\"]\n",
+            "input_target_field = \"target\"\n",
+            "output_format = \"json\"\n",
+            "parser = \"json\"\n",
+            "\n",
+            "[credential]\n",
+            "capability = \"network.discovery\"\n",
+            "injection = \"stdin\"\n",
+            "arguments = [\"--target\", \"{target}\"]\n",
+            "authentication_failure_exit_codes = [3]\n",
+        ),
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root.clone()],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(
+        inventory.path_entries,
+        vec![root.clone(), suite.clone(), bin.clone()]
+    );
+    assert_eq!(
+        inventory
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["probe", "probe", "deep-probe"]
+    );
+    assert_eq!(
+        inventory.tools[0].metadata.as_ref().expect("metadata"),
+        &ToolMetadata {
+            schema_version: 1,
+            capabilities: vec!["network.discovery".to_string()],
+            risk: Some(ToolRisk::Low),
+            help_args: vec!["--help".to_string()],
+            version_args: vec!["--version".to_string()],
+            health_check_args: vec!["doctor".to_string()],
+            input_target_field: Some("target".to_string()),
+            output_format: Some("json".to_string()),
+            parser: Some("json".to_string()),
+            credential: Some(ToolCredentialMetadata {
+                capability: "network.discovery".to_string(),
+                injection: ToolCredentialInjection::Stdin,
+                environment_variable: None,
+                arguments: vec!["--target".to_string(), "{target}".to_string()],
+                authentication_failure_exit_codes: vec![3],
+            }),
+        }
+    );
+    assert_eq!(inventory.tools[1].shadowed_by, Some(root.join("probe")));
+    assert!(!inventory.tools.iter().any(|tool| tool.path == ignored));
+    assert!(inventory.is_healthy());
+    assert_eq!(inventory.snapshot_sha256.len(), 64);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scanner_rejects_unsupported_metadata_schema_versions() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    write_executable(&root.join("probe"), b"#!/bin/sh\nexit 0\n").await;
+    tokio::fs::write(
+        root.join("probe.riftx.toml"),
+        "schema_version = 2\nrisk = \"low\"\n",
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert!(inventory.tools[0].metadata.is_none());
+    assert!(inventory.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "metadataSchemaUnsupported"
+            && diagnostic.message.contains("version 2")
+            && diagnostic.message.contains("expected 1")
+    }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scanner_rejects_unsafe_credential_metadata() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    write_executable(&root.join("probe"), b"#!/bin/sh\nexit 0\n").await;
+    tokio::fs::write(
+        root.join("probe.riftx.toml"),
+        concat!(
+            "schema_version = 1\n",
+            "capabilities = [\"credential.testing\"]\n",
+            "[credential]\n",
+            "capability = \"credential.testing\"\n",
+            "injection = \"environment\"\n",
+            "environment_variable = \"PATH\"\n",
+            "arguments = [\"{target}\"]\n",
+        ),
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(inventory.tools[0].metadata, None);
+    assert!(
+        inventory
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadataInvalid")
+    );
+}
+
+#[test]
+fn credential_argument_template_binds_the_authorized_target() {
+    let metadata = ToolCredentialMetadata {
+        capability: "credential.testing".to_string(),
+        injection: ToolCredentialInjection::Stdin,
+        environment_variable: None,
+        arguments: vec![
+            "--endpoint".to_string(),
+            "smb://{target}:{port}".to_string(),
+        ],
+        authentication_failure_exit_codes: vec![3],
+    };
+
+    assert_eq!(
+        metadata.render_arguments("dc.lab.example", Some(445)),
+        Some(vec![
+            "--endpoint".to_string(),
+            "smb://dc.lab.example:445".to_string(),
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scanner_rejects_non_executable_files_and_symlinks() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    tokio::fs::write(root.join("not-executable"), "#!/bin/sh\n")
+        .await
+        .expect("file");
+    write_executable(&root.join("real"), b"#!/bin/sh\n").await;
+    std::os::unix::fs::symlink(root.join("real"), root.join("linked")).expect("symlink");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(
+        inventory
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["real"]
+    );
+    assert!(
+        inventory
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "symlinkSkipped")
+    );
+}
+
+#[tokio::test]
+async fn missing_directory_is_a_healthy_empty_inventory() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("missing");
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root.clone()],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+    assert_eq!(inventory.roots, vec![root]);
+    assert!(inventory.path_entries.is_empty());
+    assert!(inventory.tools.is_empty());
+    assert!(inventory.is_healthy());
+    assert_eq!(inventory.diagnostics[0].code, "directoryMissing");
+}
+
+#[cfg(unix)]
+async fn write_executable(path: &Path, content: &[u8]) {
+    tokio::fs::write(path, content).await.expect("tool");
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .expect("permissions");
+}
+
+#[tokio::test]
+async fn scanner_supports_unicode_paths_spaces_and_platform_executables() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools with spaces 安全");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    let file_name = if cfg!(windows) {
+        "network probe 安全.CmD"
+    } else {
+        "network probe 安全"
+    };
+    let tool_path = root.join(file_name);
+    tokio::fs::write(&tool_path, platform_tool_contents())
+        .await
+        .expect("tool");
+    #[cfg(unix)]
+    tokio::fs::set_permissions(&tool_path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .expect("permissions");
+
+    let mut metadata_name = tool_path.file_name().expect("filename").to_os_string();
+    metadata_name.push(".riftx.toml");
+    tokio::fs::write(
+        tool_path.with_file_name(metadata_name),
+        concat!(
+            "schema_version = 1\n",
+            "capabilities = [\"network.discovery\"]\n",
+            "risk = \"high\"\n",
+        ),
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(inventory.tools.len(), 1);
+    let tool = &inventory.tools[0];
+    assert_eq!(
+        tool.name,
+        if cfg!(windows) {
+            "network probe 安全"
+        } else {
+            file_name
+        }
+    );
+    assert_eq!(tool.path, tool_path);
+    assert_eq!(
+        tool.metadata.as_ref().and_then(|metadata| metadata.risk),
+        Some(ToolRisk::High)
+    );
+    assert!(inventory.is_healthy());
+}
+
+fn platform_tool_contents() -> &'static [u8] {
+    if cfg!(windows) {
+        b"@echo off\r\nexit /b 0\r\n"
+    } else {
+        b"#!/bin/sh\nexit 0\n"
+    }
+}

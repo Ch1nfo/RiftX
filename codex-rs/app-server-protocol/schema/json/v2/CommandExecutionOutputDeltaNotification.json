@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CommandExecutionOutputStream": {
+      "enum": [
+        "stdout",
+        "stderr"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "delta": {
+      "type": "string"
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "stream": {
+      "$ref": "#/definitions/CommandExecutionOutputStream"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delta",
+    "itemId",
+    "stream",
+    "threadId",
+    "turnId"
+  ],
+  "title": "CommandExecutionOutputDeltaNotification",
+  "type": "object"
+}

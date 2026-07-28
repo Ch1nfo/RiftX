@@ -1,0 +1,14 @@
+services:
+  juice-shop:
+    image: bkimminich/juice-shop@sha256:fd58bdc9745416afce8184ee0666278a436574633ea7880365153a63bfd418b0
+    networks:
+      target:
+
+  dvwa:
+    image: ghcr.io/digininja/dvwa@sha256:091498cedec31b4a3091a1262e6a5a0ce5ec32d4bd26486558818346ccc89d67
+    networks:
+      target:
+
+networks:
+  target:
+    internal: true

@@ -1,0 +1,158 @@
+use crate::context::ContextualUserFragment;
+use crate::context::ModelSwitchInstructions;
+use crate::context::MultiAgentModeInstructions;
+use crate::context::PersonalitySpecInstructions;
+use crate::session::PreviousTurnSettings;
+use crate::session::turn_context::TurnContext;
+use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::config_types::Personality;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::protocol::TurnContextItem;
+
+fn build_multi_agent_mode_update_item(
+    previous: Option<&TurnContextItem>,
+    next: &TurnContext,
+) -> Option<String> {
+    let effective_multi_agent_mode = crate::session::multi_agents::effective_multi_agent_mode(next);
+    let previous = previous?;
+    if previous.multi_agent_mode == effective_multi_agent_mode {
+        return None;
+    }
+
+    match effective_multi_agent_mode {
+        Some(multi_agent_mode) => MultiAgentModeInstructions::from_mode(multi_agent_mode)
+            .map(|instructions| instructions.render()),
+        None if previous.multi_agent_mode == Some(MultiAgentMode::Proactive) => {
+            MultiAgentModeInstructions::from_mode(MultiAgentMode::ExplicitRequestOnly)
+                .map(|instructions| instructions.render())
+        }
+        None => None,
+    }
+}
+
+fn build_personality_update_item(
+    previous: Option<&TurnContextItem>,
+    next: &TurnContext,
+    personality_feature_enabled: bool,
+) -> Option<String> {
+    if !personality_feature_enabled {
+        return None;
+    }
+    let previous = previous?;
+    if next.model_info.slug != previous.model {
+        return None;
+    }
+
+    if let Some(personality) = next.personality
+        && next.personality != previous.personality
+    {
+        let model_info = &next.model_info;
+        let personality_message = personality_message_for(model_info, personality);
+        personality_message.map(|message| PersonalitySpecInstructions::new(message).render())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn personality_message_for(
+    model_info: &ModelInfo,
+    personality: Personality,
+) -> Option<String> {
+    model_info
+        .model_messages
+        .as_ref()
+        .and_then(|spec| spec.get_personality_message(Some(personality)))
+        .filter(|message| !message.is_empty())
+}
+
+pub(crate) fn build_model_instructions_update_item(
+    previous_turn_settings: Option<&PreviousTurnSettings>,
+    next: &TurnContext,
+) -> Option<String> {
+    let previous_turn_settings = previous_turn_settings?;
+    if previous_turn_settings.model == next.model_info.slug {
+        return None;
+    }
+
+    let model_instructions = next.model_info.get_model_instructions(next.personality);
+    if model_instructions.is_empty() {
+        return None;
+    }
+
+    Some(ModelSwitchInstructions::new(model_instructions).render())
+}
+
+pub(crate) fn build_developer_update_item(text_sections: Vec<String>) -> Option<ResponseItem> {
+    build_text_message("developer", text_sections)
+}
+
+pub(crate) fn build_contextual_user_message(text_sections: Vec<String>) -> Option<ResponseItem> {
+    build_text_message("user", text_sections)
+}
+
+pub(crate) fn merge_contextual_fragments(
+    fragments: Vec<Box<dyn ContextualUserFragment>>,
+) -> Vec<ResponseItem> {
+    let mut messages: Vec<(&str, Vec<String>)> = Vec::with_capacity(fragments.len());
+    for fragment in fragments {
+        let role = fragment.role();
+        let text = fragment.render();
+        match messages.last_mut() {
+            Some((previous_role, text_sections)) if *previous_role == role => {
+                text_sections.push(text);
+            }
+            _ => messages.push((role, vec![text])),
+        }
+    }
+    messages
+        .into_iter()
+        .filter_map(|(role, text_sections)| build_text_message(role, text_sections))
+        .collect()
+}
+
+fn build_text_message(role: &str, text_sections: Vec<String>) -> Option<ResponseItem> {
+    if text_sections.is_empty() {
+        return None;
+    }
+
+    let content = text_sections
+        .into_iter()
+        .map(|text| ContentItem::InputText { text })
+        .collect();
+
+    Some(ResponseItem::Message {
+        id: None,
+        role: role.to_string(),
+        content,
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    })
+}
+
+pub(crate) fn build_settings_update_items(
+    previous: Option<&TurnContextItem>,
+    previous_turn_settings: Option<&PreviousTurnSettings>,
+    next: &TurnContext,
+    personality_feature_enabled: bool,
+) -> Vec<ResponseItem> {
+    // TODO(ccunningham): build_settings_update_items still does not cover every
+    // model-visible item emitted by build_initial_context. Persist the remaining
+    // inputs or add explicit replay events so fork/resume can diff everything
+    // deterministically.
+    let developer_update_sections = [
+        // Keep model-switch instructions first so model-specific guidance is read before
+        // any other context diffs on this turn.
+        build_model_instructions_update_item(previous_turn_settings, next),
+        build_multi_agent_mode_update_item(previous, next),
+        build_personality_update_item(previous, next, personality_feature_enabled),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    build_developer_update_item(developer_update_sections)
+        .into_iter()
+        .collect()
+}

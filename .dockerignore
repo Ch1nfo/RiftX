@@ -1,0 +1,7 @@
+.git
+.riftx
+codex-rs/target
+**/__pycache__
+**/*.pyc
+node_modules
+scripts/.venv

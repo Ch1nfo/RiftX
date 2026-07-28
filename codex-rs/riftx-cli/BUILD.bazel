@@ -1,0 +1,7 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "riftx-cli",
+    compile_data = glob(["fixtures/**"]),
+    crate_name = "codex_riftx_cli",
+)
