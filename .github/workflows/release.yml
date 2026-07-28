@@ -146,7 +146,7 @@ jobs:
             sha256sum --check "riftx-${{ needs.resolve.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256"
           )
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: riftx-linux-${{ needs.resolve.outputs.version }}
           path: |
@@ -277,7 +277,7 @@ jobs:
             shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
           )
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: riftx-macos-${{ needs.resolve.outputs.version }}
           path: |
@@ -421,7 +421,7 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant()
           "$hash  $($installer.Name)" | Set-Content -Encoding ascii "$($installer.FullName).sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: riftx-windows-${{ needs.resolve.outputs.version }}
           path: |
