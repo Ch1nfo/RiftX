@@ -30,7 +30,7 @@ fn create_command_accepts_repeated_scope_arguments() {
         "web.discovery",
     ])
     .expect("valid CLI");
-    let Command::Create {
+    let Command::Create(engagement_commands::CreateEngagementArgs {
         objective,
         structured_criteria,
         entry_points,
@@ -42,7 +42,7 @@ fn create_command_accepts_repeated_scope_arguments() {
         environment,
         capabilities,
         ..
-    } = cli.command
+    }) = cli.command
     else {
         panic!("expected create command");
     };
@@ -56,6 +56,76 @@ fn create_command_accepts_repeated_scope_arguments() {
     assert_eq!(llm_profile.as_deref(), Some("red-team"));
     assert!(matches!(environment, EnvironmentClassArg::Lab));
     assert_eq!(capabilities, vec!["web.discovery"]);
+}
+
+#[test]
+fn engagement_and_approval_namespaces_match_the_m6_surface() {
+    let create = Cli::try_parse_from([
+        "riftx",
+        "engagements",
+        "create",
+        "--name",
+        "Lab",
+        "--objective",
+        "Assess lab",
+        "--cidr",
+        "10.0.0.0/24",
+        "--mode",
+        "pentest",
+        "--environment",
+        "lab",
+        "--capability",
+        "web.discovery",
+        "--json",
+    ])
+    .expect("engagement create");
+    assert!(matches!(
+        create.command,
+        Command::Engagements {
+            command: engagement_commands::EngagementCommand::Create(args)
+        } if args.json
+    ));
+
+    let list =
+        Cli::try_parse_from(["riftx", "engagements", "list", "--json"]).expect("engagement list");
+    assert!(matches!(
+        list.command,
+        Command::Engagements {
+            command: engagement_commands::EngagementCommand::List { json: true }
+        }
+    ));
+
+    let approvals = Cli::try_parse_from(["riftx", "approvals", "list", "eng-1", "--json"])
+        .expect("approval list");
+    assert!(matches!(
+        approvals.command,
+        Command::Approvals {
+            command: engagement_commands::ApprovalCommand::List {
+                engagement_id,
+                json: true,
+            }
+        } if engagement_id == "eng-1"
+    ));
+
+    let decide = Cli::try_parse_from([
+        "riftx",
+        "approvals",
+        "decide",
+        "approval-1",
+        "approve",
+        "--json",
+    ])
+    .expect("approval decision");
+    assert!(matches!(
+        decide.command,
+        Command::Approvals {
+            command: engagement_commands::ApprovalCommand::Decide {
+                approval_id,
+                decision: engagement_commands::ApprovalDecisionArg::Approve,
+                json: true,
+            }
+        } if approval_id == "approval-1"
+    ));
 }
 
 #[test]

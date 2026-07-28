@@ -3,33 +3,25 @@ use clap::Parser;
 use clap::Subcommand;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_ipc::ApprovalDecision;
-use codex_riftx_ipc::ApprovalDecisionParams;
-use codex_riftx_ipc::AssessmentObjective;
-use codex_riftx_ipc::AuthorizationScope;
-use codex_riftx_ipc::AuthorizationWindow;
 use codex_riftx_ipc::CaptureArtifactParams;
 use codex_riftx_ipc::ChangeModeParams;
-use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::EnvironmentClass;
 use codex_riftx_ipc::ExecutionMode;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
-use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
 use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
 use codex_riftx_ipc::ReportFormat;
-use codex_riftx_ipc::Scope;
 use codex_riftx_ipc::StartTurnParams;
-use codex_riftx_ipc::StructuredSuccessCriterion;
 use futures::StreamExt;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 mod credential_commands;
+mod engagement_commands;
 mod extension_commands;
 mod llm_commands;
 mod system_commands;
@@ -54,45 +46,20 @@ enum Command {
         #[command(subcommand)]
         command: system_commands::ConfigCommand,
     },
-    Create {
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        objective: String,
-        #[arg(long = "success-criterion")]
-        success_criteria: Vec<String>,
-        #[arg(long = "structured-criterion")]
-        structured_criteria: Vec<String>,
-        #[arg(long = "entry-point")]
-        entry_points: Vec<String>,
-        #[arg(long = "cidr", required = true)]
-        cidrs: Vec<String>,
-        #[arg(long = "domain")]
-        domains: Vec<String>,
-        #[arg(long = "port")]
-        ports: Vec<u16>,
-        #[arg(long, value_enum)]
-        mode: ExecutionModeArg,
-        #[arg(long = "llm-profile")]
-        llm_profile: Option<String>,
-        #[arg(long, value_enum)]
-        environment: EnvironmentClassArg,
-        #[arg(long = "capability", required = true)]
-        capabilities: Vec<String>,
-        #[arg(long = "identity-selector")]
-        identity_selectors: Vec<String>,
-        #[arg(long)]
-        starts_at: Option<i64>,
-        #[arg(long)]
-        expires_at: Option<i64>,
-        #[arg(long)]
-        confirmation: Option<String>,
-    },
+    Create(engagement_commands::CreateEngagementArgs),
     Get {
         id: String,
     },
     Activate {
         id: String,
+    },
+    Engagements {
+        #[command(subcommand)]
+        command: engagement_commands::EngagementCommand,
+    },
+    Approvals {
+        #[command(subcommand)]
+        command: engagement_commands::ApprovalCommand,
     },
     Mode {
         id: String,
@@ -251,78 +218,21 @@ where
             system_commands::print_doctor(&config_path, &daemon, json)?;
         }
         Command::Config { .. } => unreachable!("config command returned before daemon setup"),
-        Command::Create {
-            name,
-            objective,
-            success_criteria,
-            structured_criteria,
-            entry_points,
-            cidrs,
-            domains,
-            ports,
-            mode,
-            llm_profile,
-            environment,
-            capabilities,
-            identity_selectors,
-            starts_at,
-            expires_at,
-            confirmation,
-        } => {
-            let identities: Vec<IdentitySelector> =
-                parse_json_arguments(&identity_selectors, "identity selector")?;
-            let structured_criteria: Vec<StructuredSuccessCriterion> =
-                parse_json_arguments(&structured_criteria, "structured criterion")?;
-            let cidrs = cidrs
-                .into_iter()
-                .map(|cidr| {
-                    cidr.parse()
-                        .with_context(|| format!("invalid CIDR: {cidr}"))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            send_typed(
-                &client,
-                "/v1/engagements",
-                &CreateEngagementParams {
-                    name,
-                    objective: AssessmentObjective {
-                        summary: objective,
-                        success_criteria,
-                        structured_criteria,
-                    },
-                    entry_points,
-                    mode: mode.into(),
-                    llm_profile,
-                    auto_limits: None,
-                    confirmation,
-                    authorization: AuthorizationScope {
-                        network: Scope {
-                            cidrs,
-                            domains,
-                            ports,
-                        },
-                        identities,
-                        capabilities,
-                        environment: environment.into(),
-                        window: AuthorizationWindow {
-                            starts_at,
-                            expires_at,
-                        },
-                    },
-                },
-            )
-            .await?;
+        Command::Create(mut args) => {
+            args.json = true;
+            engagement_commands::create(&client, args).await?;
         }
         Command::Get { id } => {
-            send(&client, RequestKind::Get, format!("/v1/engagements/{id}")).await?;
+            engagement_commands::get(&client, &id, /*json*/ true).await?;
         }
         Command::Activate { id } => {
-            send(
-                &client,
-                RequestKind::Post,
-                format!("/v1/engagements/{id}/activate"),
-            )
-            .await?;
+            engagement_commands::activate(&client, &id, /*json*/ true).await?;
+        }
+        Command::Engagements { command } => {
+            engagement_commands::execute_engagements(&client, command).await?;
+        }
+        Command::Approvals { command } => {
+            engagement_commands::execute_approvals(&client, command).await?;
         }
         Command::Mode {
             id,
@@ -348,10 +258,17 @@ where
             .await?;
         }
         Command::Approve { id } => {
-            decide(&client, &id, ApprovalDecision::Approve).await?;
+            engagement_commands::decide(
+                &client,
+                &id,
+                ApprovalDecision::Approve,
+                /*json*/ false,
+            )
+            .await?;
         }
         Command::Deny { id } => {
-            decide(&client, &id, ApprovalDecision::Deny).await?;
+            engagement_commands::decide(&client, &id, ApprovalDecision::Deny, /*json*/ false)
+                .await?;
         }
         Command::Interrupt { id } => {
             send(
@@ -455,32 +372,6 @@ where
         } => export_artifact(&client, &id, &artifact_id, &output).await?,
     }
     Ok(())
-}
-
-fn parse_json_arguments<T: DeserializeOwned>(
-    arguments: &[String],
-    kind: &str,
-) -> anyhow::Result<Vec<T>> {
-    arguments
-        .iter()
-        .map(|argument| {
-            serde_json::from_str::<T>(argument)
-                .with_context(|| format!("invalid {kind} JSON: {argument}"))
-        })
-        .collect()
-}
-
-async fn decide(
-    client: &LocalIpcClient,
-    id: &str,
-    decision: ApprovalDecision,
-) -> anyhow::Result<()> {
-    send_typed(
-        client,
-        &format!("/v1/approvals/{id}/decision"),
-        &ApprovalDecisionParams { decision },
-    )
-    .await
 }
 
 async fn send_typed<T: Serialize + ?Sized>(
