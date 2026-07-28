@@ -1,6 +1,6 @@
 [package]
 name = "riftx-desktop"
-version = "0.8.0"
+version = "1.0.0"
 description = "RiftX desktop application"
 authors = ["RiftX contributors"]
 edition = "2024"

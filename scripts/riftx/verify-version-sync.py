@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify VERSION is the authoritative RiftX Desktop release version."""
+"""Verify VERSION is the authoritative RiftX release version."""
 
 import json
 import sys
@@ -9,18 +9,28 @@ from pathlib import Path
 
 def load_versions(root: Path) -> dict[str, str]:
     expected = (root / "VERSION").read_text(encoding="utf-8").strip()
-    package = json.loads((root / "apps/desktop/package.json").read_text(encoding="utf-8"))
+    package = json.loads(
+        (root / "apps/desktop/package.json").read_text(encoding="utf-8")
+    )
     tauri = json.loads(
         (root / "apps/desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     )
     cargo = tomllib.loads(
         (root / "apps/desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8")
     )
+    cli = tomllib.loads(
+        (root / "codex-rs/riftx-cli/Cargo.toml").read_text(encoding="utf-8")
+    )
+    gateway = tomllib.loads(
+        (root / "codex-rs/riftx-gateway/Cargo.toml").read_text(encoding="utf-8")
+    )
     return {
         "VERSION": expected,
         "apps/desktop/package.json": package["version"],
         "apps/desktop/src-tauri/tauri.conf.json": tauri["version"],
         "apps/desktop/src-tauri/Cargo.toml": cargo["package"]["version"],
+        "codex-rs/riftx-cli/Cargo.toml": cli["package"]["version"],
+        "codex-rs/riftx-gateway/Cargo.toml": gateway["package"]["version"],
     }
 
 
@@ -31,9 +41,12 @@ def main() -> int:
     drift = {path: version for path, version in versions.items() if version != expected}
     if drift:
         for path, version in drift.items():
-            print(f"version drift: {path}={version!r}, expected {expected!r}", file=sys.stderr)
+            print(
+                f"version drift: {path}={version!r}, expected {expected!r}",
+                file=sys.stderr,
+            )
         return 1
-    print(f"RiftX Desktop version {expected} is synchronized")
+    print(f"RiftX release version {expected} is synchronized")
     return 0
 
 

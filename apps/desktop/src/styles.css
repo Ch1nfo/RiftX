@@ -2442,6 +2442,25 @@ button:disabled {
   line-height: 1.45;
 }
 
+.settings-about {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.settings-about strong {
+  color: var(--text);
+}
+
+.settings-about p {
+  margin: 0;
+  line-height: 1.45;
+}
+
 .settings-notice,
 .settings-readonly {
   margin: -6px 0 0;

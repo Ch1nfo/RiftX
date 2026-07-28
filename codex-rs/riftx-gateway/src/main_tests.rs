@@ -1,7 +1,16 @@
 use super::*;
+use clap::error::ErrorKind;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::io::Cursor;
+
+#[test]
+fn version_flag_reports_the_release_version() {
+    let error = Args::try_parse_from(["riftxd", "--version"]).expect_err("version exits early");
+
+    assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+    assert!(error.to_string().contains("1.0.0"));
+}
 
 #[test]
 fn reads_a_length_prefixed_api_key_bundle() {

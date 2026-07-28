@@ -41,6 +41,12 @@ jobs:
         shell: bash -el {0}
         run: conda run -n agent python3 scripts/riftx/verify-version-sync.py
 
+      - name: Test RiftX version verifier
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 -m unittest
+          scripts/riftx/test_verify_version_sync.py
+
   rust-fmt-check:
     name: Rust fmt / check
     runs-on: ubuntu-24.04

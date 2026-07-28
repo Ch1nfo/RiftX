@@ -8,6 +8,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import desktopPackage from "../../package.json";
 import {
   bridgeError,
   deleteLlmApiKey,
@@ -1012,6 +1013,15 @@ export function ModelSettingsView({
       </div>
 
       <NotificationControls open onError={onError} />
+
+      <section className="settings-about" aria-label="About RiftX">
+        <strong>About RiftX</strong>
+        <span>Desktop version {desktopPackage.version}</span>
+        <p>
+          Local authorized-testing agent. Tools run on this computer, and the
+          declared target scope is not an OS-enforced isolation boundary.
+        </p>
+      </section>
     </div>
   );
 }

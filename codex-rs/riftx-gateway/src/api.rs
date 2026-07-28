@@ -57,6 +57,7 @@ use codex_riftx_ipc::DaemonControlStatus;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::DaemonPauseReason;
 use codex_riftx_ipc::DaemonRunState;
+use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::PendingApproval;
 use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::SkillCatalog;
@@ -325,7 +326,10 @@ pub fn build_router(state: GatewayState) -> Router {
 }
 
 async fn system_info() -> Json<DaemonInfo> {
-    Json(DaemonInfo::current())
+    Json(DaemonInfo {
+        protocol_version: IPC_PROTOCOL_VERSION,
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
 
 async fn system_status(State(state): State<GatewayState>) -> Json<DaemonControlStatus> {

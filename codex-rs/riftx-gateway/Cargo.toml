@@ -1,6 +1,6 @@
 [package]
 name = "codex-riftx-gateway"
-version.workspace = true
+version = "1.0.0"
 edition.workspace = true
 license.workspace = true
 

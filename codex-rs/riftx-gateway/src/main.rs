@@ -32,6 +32,7 @@ const MAX_STDIN_API_KEY_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 const TEST_EPHEMERAL_ENGAGEMENT_KEYS_ENV: &str = "RIFTX_TEST_EPHEMERAL_ENGAGEMENT_KEYS";
 
 #[derive(Debug, Parser)]
+#[command(version)]
 struct Args {
     #[arg(long, default_value = "riftx.toml")]
     config: PathBuf,

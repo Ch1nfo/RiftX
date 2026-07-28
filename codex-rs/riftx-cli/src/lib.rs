@@ -36,7 +36,7 @@ mod system_commands;
 pub use exit_codes::exit_code_for_error;
 
 #[derive(Debug, Parser)]
-#[command(name = "riftx")]
+#[command(name = "riftx", version)]
 struct Cli {
     #[arg(long, default_value = "riftx.toml")]
     config: PathBuf,

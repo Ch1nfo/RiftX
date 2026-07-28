@@ -178,6 +178,10 @@ describe("ModelSettingsView", () => {
     expect(
       screen.getByText(/RiftX does not add product telemetry/),
     ).toBeInTheDocument();
+    expect(screen.getByText("Desktop version 1.0.0")).toBeInTheDocument();
+    expect(
+      screen.getByText(/not an OS-enforced isolation boundary/),
+    ).toBeInTheDocument();
   });
 
   it("retries loading model settings after a temporary IPC failure", async () => {

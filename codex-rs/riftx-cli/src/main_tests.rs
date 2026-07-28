@@ -1,5 +1,14 @@
 use super::*;
+use clap::error::ErrorKind;
 use pretty_assertions::assert_eq;
+
+#[test]
+fn version_flag_reports_the_release_version() {
+    let error = Cli::try_parse_from(["riftx", "--version"]).expect_err("version exits early");
+
+    assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+    assert!(error.to_string().contains("1.0.0"));
+}
 
 #[test]
 fn create_command_accepts_repeated_scope_arguments() {

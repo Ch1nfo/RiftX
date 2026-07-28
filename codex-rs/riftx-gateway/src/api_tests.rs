@@ -50,12 +50,24 @@ use codex_riftx_tools::ToolScanConfig;
 use http_body_util::BodyExt;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+#[tokio::test]
+async fn system_info_reports_the_gateway_release_version() {
+    let Json(info) = system_info().await;
+
+    assert_eq!(
+        info,
+        DaemonInfo {
+            protocol_version: IPC_PROTOCOL_VERSION,
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    );
+}
 
 pub(crate) async fn test_state(temp: &TempDir) -> GatewayState {
     let config = RiftxConfig {
