@@ -26,7 +26,7 @@ jobs:
       tag: ${{ steps.source.outputs.tag }}
       release_label: ${{ steps.source.outputs.release_label }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
@@ -75,7 +75,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
@@ -161,7 +161,7 @@ jobs:
     runs-on: macos-14
     environment: riftx-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
@@ -292,7 +292,7 @@ jobs:
     runs-on: windows-2022
     environment: riftx-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
@@ -438,7 +438,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
