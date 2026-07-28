@@ -149,6 +149,17 @@ Desktop 设置页可逐 Profile 管理 Keyring 凭据，新建 Engagement 时可
 Profile。Keyring 来源的 API Key 不写入 TOML、SQLite、审计、命令行、环境变量或普通
 日志。
 
+Linux headless 环境没有可用 Secret Service 时，可让受信任的密码管理器或秘密提供程序
+向 stdin 输出一次性的 JSON 对象；不要把真实 Key 写进命令行或 shell 历史：
+
+```bash
+secure-profile-key-json | riftxd --config riftx.toml --llm-api-key-stdin-json
+```
+
+stdin 格式为 `{"profile-name":"api-key"}`，总大小上限为 2 MiB，并且只能引用配置中
+使用 Keyring 来源的 Profile。daemon 读取后会清零输入缓冲；未提供 Key 的 Profile 保持
+`unconfigured`，Runtime 仍在首次使用时 lazy 初始化。
+
 评估目标使用的密码、Token、私钥等凭据与 LLM API Key 分开管理。CLI/Desktop 只通过
 本机 IPC 向 `riftxd` 提交秘密，`riftxd` 负责写入和读取 Keychain、Credential Manager
 或 Secret Service；凭据元数据、SQLite、审计、报告和 Agent 上下文只保留引用及

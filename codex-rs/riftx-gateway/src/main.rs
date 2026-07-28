@@ -20,6 +20,7 @@ use codex_riftx_skills::SkillCatalog;
 use codex_riftx_skills::default_skills_root;
 use codex_riftx_tools::ToolScanner;
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
 #[cfg(debug_assertions)]
@@ -36,6 +37,9 @@ struct Args {
     config: PathBuf,
     #[arg(long, hide = true)]
     llm_api_key_stdin: bool,
+    /// Read a bounded JSON object of Profile API keys from redirected stdin.
+    #[arg(long, conflicts_with = "llm_api_key_stdin")]
+    llm_api_key_stdin_json: bool,
     #[arg(long, hide = true)]
     validate_profile: Option<String>,
 }
@@ -47,10 +51,13 @@ fn main() -> anyhow::Result<()> {
 async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let args = Args::parse();
     let config = RiftxConfig::load_resolved(&args.config).await?;
-    let mut stdin_api_keys = args
-        .llm_api_key_stdin
-        .then(read_llm_api_keys_stdin)
-        .transpose()?;
+    let mut stdin_api_keys = if args.llm_api_key_stdin {
+        Some(read_llm_api_keys_stdin()?)
+    } else if args.llm_api_key_stdin_json {
+        Some(read_llm_api_keys_json_stdin()?)
+    } else {
+        None
+    };
     let stdin_bundle_supplied = stdin_api_keys.is_some();
     if let Some(parent) = config.daemon.state_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -215,6 +222,31 @@ fn read_llm_api_keys(reader: &mut impl Read) -> anyhow::Result<BTreeMap<String, 
     reader
         .read_exact(&mut secret)
         .context("read LLM API key bundle frame from stdin")?;
+    decode_llm_api_keys(secret)
+}
+
+fn read_llm_api_keys_json_stdin() -> anyhow::Result<BTreeMap<String, LlmApiKey>> {
+    anyhow::ensure!(
+        !std::io::stdin().is_terminal(),
+        "--llm-api-key-stdin-json requires redirected or piped stdin"
+    );
+    read_llm_api_keys_json(&mut std::io::stdin())
+}
+
+fn read_llm_api_keys_json(reader: &mut impl Read) -> anyhow::Result<BTreeMap<String, LlmApiKey>> {
+    let mut secret = Vec::new();
+    reader
+        .take((MAX_STDIN_API_KEY_BUNDLE_BYTES + 1) as u64)
+        .read_to_end(&mut secret)
+        .context("read LLM API key JSON from stdin")?;
+    anyhow::ensure!(
+        secret.len() <= MAX_STDIN_API_KEY_BUNDLE_BYTES,
+        "LLM API key JSON exceeds the maximum size"
+    );
+    decode_llm_api_keys(secret)
+}
+
+fn decode_llm_api_keys(mut secret: Vec<u8>) -> anyhow::Result<BTreeMap<String, LlmApiKey>> {
     let api_keys = serde_json::from_slice::<BTreeMap<String, String>>(&secret)
         .context("decode LLM API key bundle");
     secret.fill(0);
