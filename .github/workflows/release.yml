@@ -78,9 +78,30 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
+      - uses: taiki-e/install-action@nextest
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: codex-rs
+
+      - name: Test release CLI and daemon contracts
+        working-directory: codex-rs
+        run: >-
+          conda run -n agent just test
+          -p codex-riftx-app-server-adapter
+          -p codex-riftx-artifacts
+          -p codex-riftx-cli
+          -p codex-riftx-core
+          -p codex-riftx-credentials
+          -p codex-riftx-crypto
+          -p codex-riftx-domain
+          -p codex-riftx-guard
+          -p codex-riftx-ipc
+          -p codex-riftx-llm-bridge
+          -p codex-riftx-report
+          -p codex-riftx-skills
+          -p codex-riftx-tools
+          -p codex-riftx-gateway
 
       - name: Build locked release binaries
         env:
@@ -143,6 +164,8 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
+      - uses: taiki-e/install-action@nextest
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
@@ -181,7 +204,29 @@ jobs:
         run: |
           conda run -n agent pnpm --filter @riftx/desktop check
           conda run -n agent pnpm --filter @riftx/desktop test
+          conda run -n agent pnpm --filter @riftx/desktop test:e2e
           conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Test release RiftX contracts
+        run: >-
+          conda run -n agent just test
+          -p codex-riftx-app-server-adapter
+          -p codex-riftx-artifacts
+          -p codex-riftx-cli
+          -p codex-riftx-core
+          -p codex-riftx-credentials
+          -p codex-riftx-crypto
+          -p codex-riftx-domain
+          -p codex-riftx-guard
+          -p codex-riftx-ipc
+          -p codex-riftx-llm-bridge
+          -p codex-riftx-report
+          -p codex-riftx-skills
+          -p codex-riftx-tools
+          -p codex-riftx-gateway
+
+      - name: Test release Desktop bridge contracts
+        run: conda run -n agent just test-desktop-bridge
 
       - name: Prepare release sidecar
         env:
@@ -250,6 +295,8 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
+      - uses: taiki-e/install-action@nextest
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
@@ -281,7 +328,29 @@ jobs:
         run: |
           conda run -n agent pnpm --filter @riftx/desktop check
           conda run -n agent pnpm --filter @riftx/desktop test
+          conda run -n agent pnpm --filter @riftx/desktop test:e2e
           conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Test release RiftX contracts
+        run: >-
+          conda run -n agent just test
+          -p codex-riftx-app-server-adapter
+          -p codex-riftx-artifacts
+          -p codex-riftx-cli
+          -p codex-riftx-core
+          -p codex-riftx-credentials
+          -p codex-riftx-crypto
+          -p codex-riftx-domain
+          -p codex-riftx-guard
+          -p codex-riftx-ipc
+          -p codex-riftx-llm-bridge
+          -p codex-riftx-report
+          -p codex-riftx-skills
+          -p codex-riftx-tools
+          -p codex-riftx-gateway
+
+      - name: Test release Desktop bridge contracts
+        run: conda run -n agent just test-desktop-bridge
 
       - name: Prepare release sidecar
         env:
