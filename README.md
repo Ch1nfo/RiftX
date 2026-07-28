@@ -25,17 +25,17 @@ RiftX 以开源 Agent Runtime 为底座：指定文件夹放安全工具即可�
 
 ## 当前实现
 
-v0.8 产品主路径（模式、分档审批、设置、Auto 启动确认、Guard 旁路）已落地；正在按
-[1.0 计划.md](./1.0%20计划.md) 补齐双协议 LLM、Auto 多 turn、三平台发布与验收。
+1.0 产品主路径已在本地实现并由定向测试覆盖；当前尚未达到正式发布条件，仍需完成
+[1.0 计划.md](./1.0%20计划.md) 要求的远端三平台 CI、受保护双协议 live tool loop、签名安装包和真人验收证据。
 
 - 内嵌 Agent Runtime（仅 API Key，无上游账号登录）。
 - `riftxd`、本地 IPC、Operator CLI。
 - Tauri 桌面：任务列表、对话、中断、命令审批、报告、托盘 Pause/Kill Switch。
 - Tools / Skills 目录扫描、doctor、PATH 注入。
-- LLM Profile + 钥匙串；RedTeam / Pentest / Auto 与分档审批。
+- Responses / Chat Completions LLM Profile + 钥匙串，事务化 lazy Runtime 与连接能力矩阵。
 - Desktop 可编辑 Tools Directory 与 LLM Profile（写回 `riftx.toml`）。
-- Auto：启动确认短语、Lab + 到期校验、五分钟无进展提示。
-- Markdown / JSON 报告；macOS 调试 `.app` 验证过主流程。
+- Auto：Lab + 风险确认、多 turn 预算、跨资产目标、无进展重规划/暂停、恢复与明确停止原因。
+- 可追溯 Markdown / JSON 报告、Artifact 完整性导出与分页 Conversation；正式安装包仍待 M7/M8 外部验收。
 
 仓库中仍可能存在 Guard、全库加密等**遗留**实现；**不作为**产品主路径或 1.0 发布门槛。
 
@@ -252,6 +252,8 @@ conda run -n agent pnpm --filter @riftx/desktop \
 - [Linux 1.0 安装与卸载](./docs/release/linux.md)
 - [本地构建空间与清理](./docs/development-storage.md)
 - [1.0 签名发布流程](./docs/release/process.md)
+- [1.0 RC 验收证据合同](./docs/release/acceptance.md)
+- [1.0 性能与资源门槛](./docs/release/performance.md)
 - [RustSec 临时例外](./security/rustsec-exceptions.toml)
 
 ## Source Attribution

@@ -26,9 +26,9 @@ The verifier requires:
 1. **44 automated cells** from the M8 matrix: mock plus macOS/Windows/Linux for every row, and a
    protected live lane for Responses/Chat text and tool loops.
 2. **18 human cells**: scenarios A-F on macOS, Windows, and Linux.
-3. **13 release gates**: protected environments; tag/commit identity; Apple signing,
+3. **14 release gates**: protected environments; tag/commit identity; Apple signing,
    notarization, and staple; Windows Authenticode; clean installs; Ubuntu 22.04/24.04; upgrade and
-   rollback; checksum/SBOM/manifest identity; live-secret scan; final notes; and the defect gate.
+   rollback; checksum/SBOM/manifest identity; live-secret scan; the fixed performance contract in `performance.md`; final notes; and a structured zero-P0/P1/no-flake defect gate in which every remaining P2 has a workaround, risk assessment, and 1.0.x milestone.
 4. A separate Go/No-Go reviewer decision with outcome `go`.
 
 Run:

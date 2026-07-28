@@ -36,6 +36,7 @@ RELEASE_CHECKS = (
     "upgradeAndRollback",
     "checksumsSbomManifest",
     "liveSecretScan",
+    "performanceGate",
     "releaseNotes",
     "defectGate",
 )
@@ -122,6 +123,64 @@ def verify_matrix(
         raise AcceptanceError(f"missing {name} evidence: {missing[0]}")
 
 
+def verify_performance_metrics(entry: dict[str, Any]) -> None:
+    metrics = entry.get("metrics")
+    if not isinstance(metrics, dict):
+        raise AcceptanceError("performanceGate.metrics must be an object")
+    requirements = {
+        "sampleSeconds": ("minimum", 60),
+        "desktopIdleCpuP95Percent": ("maximum", 5.0),
+        "daemonIdleCpuP95Percent": ("maximum", 2.0),
+        "configuredProfileCount": ("minimum", 16),
+        "eagerRuntimeCount": ("maximum", 0),
+        "timelineEntryCount": ("minimum", 10_000),
+        "timelinePageP95Ms": ("maximum", 250),
+        "killStartP95Ms": ("maximum", 2_000),
+        "duplicateEventCountAfterReconnect": ("maximum", 0),
+        "reportArtifactPayloadBytesRead": ("maximum", 0),
+    }
+    for name, (bound, threshold) in requirements.items():
+        value = metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise AcceptanceError(f"performanceGate.metrics.{name} must be numeric")
+        if bound == "minimum" and value < threshold:
+            raise AcceptanceError(
+                f"performanceGate.metrics.{name} must be at least {threshold}"
+            )
+        if bound == "maximum" and value > threshold:
+            raise AcceptanceError(
+                f"performanceGate.metrics.{name} must be at most {threshold}"
+            )
+
+
+def verify_defect_metrics(entry: dict[str, Any]) -> None:
+    metrics = entry.get("metrics")
+    if not isinstance(metrics, dict):
+        raise AcceptanceError("defectGate.metrics must be an object")
+    zero_fields = (
+        "p0Open",
+        "p1Open",
+        "flakyRequiredChecks",
+        "unexplainedMigrationFailures",
+        "unexplainedCrossPlatformFailures",
+    )
+    for name in zero_fields:
+        value = metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value != 0:
+            raise AcceptanceError(f"defectGate.metrics.{name} must be 0")
+    p2_open = metrics.get("p2Open")
+    p2_planned = metrics.get("p2WithWorkaroundRiskAndMilestone")
+    if (
+        isinstance(p2_open, bool)
+        or not isinstance(p2_open, int)
+        or p2_open < 0
+        or p2_planned != p2_open
+    ):
+        raise AcceptanceError(
+            "every open P2 must have a workaround, risk assessment, and 1.0.x milestone"
+        )
+
+
 def verify_release_checks(entries: Any, tag: str, source_commit: str) -> None:
     required = set(RELEASE_CHECKS)
     if not isinstance(entries, list):
@@ -137,6 +196,10 @@ def verify_release_checks(entries: Any, tag: str, source_commit: str) -> None:
             raise AcceptanceError(f"duplicate release evidence check: {check}")
         seen.add(check)
         verify_evidence_entry(entry, tag, source_commit, f"release check {check}")
+        if check == "performanceGate":
+            verify_performance_metrics(entry)
+        elif check == "defectGate":
+            verify_defect_metrics(entry)
     missing = sorted(required - seen)
     if missing:
         raise AcceptanceError(f"missing release evidence: {missing[0]}")

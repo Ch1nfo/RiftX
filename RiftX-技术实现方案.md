@@ -112,8 +112,8 @@ flowchart LR
 | --- | --- | --- |
 | A | 模式更名 RedTeam / Pentest / Auto；展示面 RiftX；旁路 Guard 强制拒绝 | 完成 |
 | B | 分档审批策略表与 Desktop 文案 | 完成 |
-| C | Tools Directory / Profile 设置可编辑 | 完成（Profile 事务化留给 1.0 M1） |
-| D | Auto 启动确认、Lab+到期、无进展提示 | 完成（多 turn 控制器留给 1.0 M3） |
+| C | Tools Directory / Profile 设置可编辑 | v0.8 完成；1.0 已补齐 Profile 事务、共享 credential 与 lazy Runtime |
+| D | Auto 启动确认、Lab+到期、无进展提示 | v0.8 完成；1.0 已补齐多 turn、预算、恢复和证据停止条件 |
 | E | Guard 主路径拆死挂载并标 legacy | 完成 |
 
 ### 1.0（执行合同）
@@ -143,10 +143,10 @@ flowchart LR
 
 **1.0**：以 [1.0 计划.md](./1.0%20计划.md) 第 3 节产品合同与 M8 退出条件为准。
 
-## 12. 开放问题（不影响方向）
+## 12. 1.0 收敛结果
 
-- 「危险命令」规则集是否完全复用 runtime 默认，或 RiftX 再加一层列表。
-- 高风险工具元数据字段的正式 schema（1.0 M2 统一进执行闸门）。
-- Auto 在无进展时是否自动暂停（当前仅提示；完整策略见 1.0 M3）。
+- 危险命令和高风险工具统一进入 RiftX `ExecutionIntent`，保留 Runtime 命令审批语义，并绑定 engagement、turn、tool call、policy revision、命令和 executable inventory。
+- Tools sidecar 元数据使用 `schema_version = 1`；风险、capability、版本与健康检查参与快照和审批失效判断。
+- Auto 在无进展窗口后先重规划，继续无进展则自动暂停；Resume、Kill、deadline 和 daemon 恢复均有持久状态与测试。
 
-这些问题用小原型验证，不得重新引入 v0.7 式强制隔离平台范围。
+这些收敛仍不把应用层 precheck 宣称为 v0.7 式强制 OS 隔离；正式发布状态以 1.0 M8 证据为准。

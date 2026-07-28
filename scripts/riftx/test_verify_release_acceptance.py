@@ -25,6 +25,34 @@ def evidence(**fields: str) -> dict[str, str]:
     }
 
 
+def release_evidence(check: str) -> dict[str, object]:
+    item: dict[str, object] = evidence(check=check)
+    if check == "performanceGate":
+        item["metrics"] = {
+            "sampleSeconds": 60,
+            "desktopIdleCpuP95Percent": 4.5,
+            "daemonIdleCpuP95Percent": 1.5,
+            "configuredProfileCount": 16,
+            "eagerRuntimeCount": 0,
+            "timelineEntryCount": 10_000,
+            "timelinePageP95Ms": 200,
+            "killStartP95Ms": 1_500,
+            "duplicateEventCountAfterReconnect": 0,
+            "reportArtifactPayloadBytesRead": 0,
+        }
+    elif check == "defectGate":
+        item["metrics"] = {
+            "p0Open": 0,
+            "p1Open": 0,
+            "p2Open": 1,
+            "p2WithWorkaroundRiskAndMilestone": 1,
+            "flakyRequiredChecks": 0,
+            "unexplainedMigrationFailures": 0,
+            "unexplainedCrossPlatformFailures": 0,
+        }
+    return item
+
+
 def valid_record() -> dict[str, object]:
     return {
         "schema": "riftx.releaseAcceptance/v1",
@@ -42,7 +70,7 @@ def valid_record() -> dict[str, object]:
             for scenario in MODULE.HUMAN_SCENARIOS
             for platform in MODULE.PLATFORMS
         ],
-        "releaseEvidence": [evidence(check=check) for check in MODULE.RELEASE_CHECKS],
+        "releaseEvidence": [release_evidence(check) for check in MODULE.RELEASE_CHECKS],
         "decision": {
             "outcome": "go",
             "reviewer": "release-owner",
@@ -56,7 +84,7 @@ class VerifyReleaseAcceptanceTests(unittest.TestCase):
         summary = MODULE.verify(valid_record())
         self.assertEqual(summary["automatedEvidenceCount"], 44)
         self.assertEqual(summary["humanEvidenceCount"], 18)
-        self.assertEqual(summary["releaseEvidenceCount"], 13)
+        self.assertEqual(summary["releaseEvidenceCount"], 14)
         self.assertEqual(summary["decision"], "go")
 
     def test_rejects_missing_live_tool_loop(self) -> None:
@@ -85,6 +113,30 @@ class VerifyReleaseAcceptanceTests(unittest.TestCase):
         record["status"] = "approved"
         record["decision"]["outcome"] = "no-go"
         with self.assertRaisesRegex(MODULE.AcceptanceError, "not go"):
+            MODULE.verify(record)
+
+    def test_rejects_performance_threshold_failure(self) -> None:
+        record = valid_record()
+        performance = next(
+            item
+            for item in record["releaseEvidence"]
+            if item["check"] == "performanceGate"
+        )
+        performance["metrics"]["killStartP95Ms"] = 2_001
+        with self.assertRaisesRegex(MODULE.AcceptanceError, "at most 2000"):
+            MODULE.verify(record)
+
+    def test_rejects_unplanned_p2_or_required_check_flake(self) -> None:
+        record = valid_record()
+        defects = next(
+            item for item in record["releaseEvidence"] if item["check"] == "defectGate"
+        )
+        defects["metrics"]["p2WithWorkaroundRiskAndMilestone"] = 0
+        with self.assertRaisesRegex(MODULE.AcceptanceError, "every open P2"):
+            MODULE.verify(record)
+        defects["metrics"]["p2WithWorkaroundRiskAndMilestone"] = 1
+        defects["metrics"]["flakyRequiredChecks"] = 1
+        with self.assertRaisesRegex(MODULE.AcceptanceError, "must be 0"):
             MODULE.verify(record)
 
     def test_rejects_non_https_evidence(self) -> None:
