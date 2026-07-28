@@ -239,3 +239,68 @@ async fn write_executable(path: &Path, content: &[u8]) {
         .await
         .expect("permissions");
 }
+
+#[tokio::test]
+async fn scanner_supports_unicode_paths_spaces_and_platform_executables() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("tools with spaces 安全");
+    tokio::fs::create_dir_all(&root).await.expect("root");
+    let file_name = if cfg!(windows) {
+        "network probe 安全.CmD"
+    } else {
+        "network probe 安全"
+    };
+    let tool_path = root.join(file_name);
+    tokio::fs::write(&tool_path, platform_tool_contents())
+        .await
+        .expect("tool");
+    #[cfg(unix)]
+    tokio::fs::set_permissions(&tool_path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .expect("permissions");
+
+    let mut metadata_name = tool_path.file_name().expect("filename").to_os_string();
+    metadata_name.push(".riftx.toml");
+    tokio::fs::write(
+        tool_path.with_file_name(metadata_name),
+        concat!(
+            "schema_version = 1\n",
+            "capabilities = [\"network.discovery\"]\n",
+            "risk = \"high\"\n",
+        ),
+    )
+    .await
+    .expect("metadata");
+
+    let inventory = ToolScanner::new(ToolScanConfig {
+        directories: vec![root],
+        extra_paths: Vec::new(),
+    })
+    .scan()
+    .await;
+
+    assert_eq!(inventory.tools.len(), 1);
+    let tool = &inventory.tools[0];
+    assert_eq!(
+        tool.name,
+        if cfg!(windows) {
+            "network probe 安全"
+        } else {
+            file_name
+        }
+    );
+    assert_eq!(tool.path, tool_path);
+    assert_eq!(
+        tool.metadata.as_ref().and_then(|metadata| metadata.risk),
+        Some(ToolRisk::High)
+    );
+    assert!(inventory.is_healthy());
+}
+
+fn platform_tool_contents() -> &'static [u8] {
+    if cfg!(windows) {
+        b"@echo off\r\nexit /b 0\r\n"
+    } else {
+        b"#!/bin/sh\nexit 0\n"
+    }
+}
