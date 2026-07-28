@@ -225,6 +225,15 @@ jobs:
       - name: Test desktop mock E2E
         run: conda run -n agent pnpm --filter @riftx/desktop test:e2e
 
+      - name: Upload desktop visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-visual-${{ matrix.os }}
+          path: apps/desktop/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Build desktop frontend
         run: conda run -n agent pnpm --filter @riftx/desktop build
 

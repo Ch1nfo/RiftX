@@ -1,6 +1,10 @@
 import type { Page } from "@playwright/test";
 
-export type DesktopMockScenario = "firstRun" | "providerError" | "reconnect";
+export type DesktopMockScenario =
+  | "firstRun"
+  | "providerError"
+  | "reconnect"
+  | "visualStress";
 
 export async function installTauriMock(
   page: Page,
@@ -15,6 +19,14 @@ export async function installTauriMock(
       updatedAt: number;
       audit: { state: string; message: string | null; updatedAt: number };
     };
+
+    const isVisual = initialScenario === "visualStress";
+    const profileName = isVisual
+      ? "企业授权红队评估-超长模型配置名称-生产前验证"
+      : "default";
+    const modelName = isVisual
+      ? "provider/very-long-reasoning-model-name-with-unicode-安全评估-2026-07"
+      : "gpt-test";
 
     const callbacks = new Map<number, { callback: Callback; once: boolean }>();
     const listeners = new Map<string, Listener[]>();
@@ -35,16 +47,26 @@ export async function installTauriMock(
     };
     const engagement = {
       id: "engagement-a",
-      name: "Authorized lab",
+      name: isVisual
+        ? "授权实验室中的超长中文任务名称用于验证不同缩放比例下不会溢出"
+        : "Authorized lab",
       status: "active",
       objective: {
-        summary: "Assess the authorized lab",
-        successCriteria: ["Confirm exposure"],
+        summary: isVisual
+          ? "在明确授权的实验室范围内验证超长中文目标、命令、模型名称和审批信息在桌面工作台中保持可读且不会发生布局重叠。"
+          : "Assess the authorized lab",
+        successCriteria: isVisual
+          ? ["确认关键服务暴露面并保留可追溯证据", "所有操作保持在授权范围内"]
+          : ["Confirm exposure"],
         structuredCriteria: [],
       },
-      entryPoints: ["lab.example.test"],
+      entryPoints: [
+        isVisual
+          ? "very-long-authorized-entry-point.security-laboratory.example.test"
+          : "lab.example.test",
+      ],
       mode: "auto",
-      llmProfile: "default",
+      llmProfile: profileName,
       autoLimits: {
         maxTurns: 10,
         maxToolCalls: 20,
@@ -57,7 +79,11 @@ export async function installTauriMock(
       authorization: {
         network: {
           cidrs: [],
-          domains: ["lab.example.test"],
+          domains: [
+            isVisual
+              ? "very-long-authorized-entry-point.security-laboratory.example.test"
+              : "lab.example.test",
+          ],
           ports: [443],
         },
         identities: [],
@@ -88,25 +114,25 @@ export async function installTauriMock(
       skillSnapshot: { snapshotSha256: "skills", skills: [] },
     };
     const state = {
-      profileReady: initialScenario === "reconnect",
-      keySaved: initialScenario === "reconnect",
+      profileReady: initialScenario === "reconnect" || isVisual,
+      keySaved: initialScenario === "reconnect" || isVisual,
       reconnected: false,
       runtime: runningRuntime,
     };
 
     const profileSettings = () => ({
-      defaultProfile: "default",
+      defaultProfile: profileName,
       profiles: [
         {
-          profileName: "default",
+          profileName,
           protocol: "responses",
-          model: "gpt-test",
+          model: modelName,
           baseUrl: "https://api.example.test/v1",
           timeoutSeconds: 300,
           reasoningLevel: "high",
           contextBudget: 200000,
           credentialSource: "keyring",
-          credentialName: "riftx/default",
+          credentialName: `riftx/${profileName}`,
           configured: state.keySaved,
           enabled: true,
         },
@@ -114,12 +140,12 @@ export async function installTauriMock(
       daemonRestartRequired: false,
     });
     const profileList = () => ({
-      defaultProfile: "default",
+      defaultProfile: profileName,
       profiles: [
         {
-          name: "default",
+          name: profileName,
           protocol: "responses",
-          model: "gpt-test",
+          model: modelName,
           baseUrl: "https://api.example.test/v1",
           isDefault: true,
           state: state.profileReady ? "in_use" : "unconfigured",
@@ -140,9 +166,11 @@ export async function installTauriMock(
       },
       state: state.reconnected ? "needsInput" : "ready",
       stopReason: null,
-      currentSubgoal: state.reconnected
-        ? "Confirm the recovered target scope"
-        : "Initial subgoal",
+      currentSubgoal: isVisual
+        ? "验证超长中文子目标在 Auto 控制面板中换行、预算和操作按钮仍保持稳定"
+        : state.reconnected
+          ? "Confirm the recovered target scope"
+          : "Initial subgoal",
       turnsStarted: 1,
       turnsCompleted: 0,
       toolCalls: 0,
@@ -222,11 +250,13 @@ export async function installTauriMock(
               runtime: state.runtime,
             };
           case "active_turns":
-            return state.reconnected
-              ? [{ engagementId: engagement.id, profileName: "default" }]
+            return state.reconnected || isVisual
+              ? [{ engagementId: engagement.id, profileName }]
               : [];
           case "list_engagements":
-            return initialScenario === "reconnect" ? [engagement] : [];
+            return initialScenario === "reconnect" || isVisual
+              ? [engagement]
+              : [];
           case "llm_profiles":
             return profileList();
           case "llm_settings":
@@ -246,9 +276,9 @@ export async function installTauriMock(
             }
             state.profileReady = true;
             return {
-              profileName: "default",
+              profileName,
               protocol: "responses",
-              model: "gpt-test",
+              model: modelName,
               ok: true,
               capabilities: {
                 config: { status: "passed", detail: "Configuration accepted." },
@@ -278,7 +308,7 @@ export async function installTauriMock(
           case "engagement_report":
             return report;
           case "list_approvals":
-            return state.reconnected
+            return state.reconnected || isVisual
               ? [
                   {
                     id: "approval-a",
@@ -286,16 +316,20 @@ export async function installTauriMock(
                     policyRevision: "policy-a",
                     kind: "command",
                     requestedAt: 1,
-                    command: "nmap -sV lab.example.test",
+                    command: isVisual
+                      ? "nmap --script very-long-authorized-validation-script --script-args scope=very-long-authorized-entry-point.security-laboratory.example.test -sV -Pn -p 443,8443 very-long-authorized-entry-point.security-laboratory.example.test"
+                      : "nmap -sV lab.example.test",
                     cwd: "/tmp/riftx",
-                    reason: "Recovered approval after daemon restart",
+                    reason: isVisual
+                      ? "高风险命令需要操作者确认实际 executable、完整参数、授权范围和执行原因。"
+                      : "Recovered approval after daemon restart",
                     executionIntent: null,
                   },
                 ]
               : [];
           case "conversation_history":
             return {
-              data: state.reconnected
+              data: state.reconnected || isVisual
                 ? [
                     {
                       sequence: 1,
@@ -304,7 +338,9 @@ export async function installTauriMock(
                       turnId: "turn-a",
                       role: "agent",
                       kind: "message",
-                      text: "Recovered conversation after reconnect",
+                      text: isVisual
+                        ? "已完成授权范围预检查，下一步将验证长文本、中文消息和审批卡片在不同显示缩放下的可读性。"
+                        : "Recovered conversation after reconnect",
                       createdAt: 2,
                     },
                   ]
