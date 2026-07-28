@@ -142,6 +142,7 @@ jobs:
         os:
           - macos-14
           - windows-2022
+          - ubuntu-22.04
           - ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:
