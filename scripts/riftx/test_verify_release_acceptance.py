@@ -99,6 +99,18 @@ class VerifyReleaseAcceptanceTests(unittest.TestCase):
         ):
             MODULE.verify(record)
 
+    def test_accepts_rc_automation_and_human_evidence_from_same_commit(self) -> None:
+        record = valid_record()
+        for item in [*record["automatedEvidence"], *record["humanEvidence"]]:
+            item["tag"] = "v1.0.0-rc.2"
+        self.assertEqual(MODULE.verify(record)["decision"], "go")
+
+    def test_rejects_rc_release_artifact_evidence(self) -> None:
+        record = valid_record()
+        record["releaseEvidence"][0]["tag"] = "v1.0.0-rc.2"
+        with self.assertRaisesRegex(MODULE.AcceptanceError, "release source"):
+            MODULE.verify(record)
+
     def test_rejects_evidence_from_another_commit(self) -> None:
         record = valid_record()
         record["humanEvidence"][0]["sourceCommit"] = "b" * 40

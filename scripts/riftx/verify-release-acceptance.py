@@ -74,14 +74,34 @@ def require_string(record: dict[str, Any], field: str) -> str:
     return value
 
 
+def evidence_tag_matches(value: Any, final_tag: str, allow_rc: bool) -> bool:
+    if value == final_tag:
+        return True
+    if not allow_rc or not isinstance(value, str):
+        return False
+    prefix = f"{final_tag}-rc."
+    number = value.removeprefix(prefix)
+    return (
+        value == f"{prefix}{number}" and number.isdigit() and not number.startswith("0")
+    )
+
+
 def verify_evidence_entry(
-    entry: Any, tag: str, source_commit: str, context: str
+    entry: Any,
+    tag: str,
+    source_commit: str,
+    context: str,
+    *,
+    allow_rc: bool,
 ) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise AcceptanceError(f"{context} evidence must be an object")
     if entry.get("status") != "passed":
         raise AcceptanceError(f"{context} evidence is not passed")
-    if entry.get("tag") != tag or entry.get("sourceCommit") != source_commit:
+    if (
+        not evidence_tag_matches(entry.get("tag"), tag, allow_rc)
+        or entry.get("sourceCommit") != source_commit
+    ):
         raise AcceptanceError(f"{context} evidence does not match the release source")
     require_string(entry, "tester")
     require_string(entry, "os")
@@ -117,7 +137,7 @@ def verify_matrix(
         if key in seen:
             raise AcceptanceError(f"duplicate {name} evidence key: {key}")
         seen.add(key)
-        verify_evidence_entry(entry, tag, source_commit, f"{name} {key}")
+        verify_evidence_entry(entry, tag, source_commit, f"{name} {key}", allow_rc=True)
     missing = sorted(required - seen)
     if missing:
         raise AcceptanceError(f"missing {name} evidence: {missing[0]}")
@@ -195,7 +215,13 @@ def verify_release_checks(entries: Any, tag: str, source_commit: str) -> None:
         if check in seen:
             raise AcceptanceError(f"duplicate release evidence check: {check}")
         seen.add(check)
-        verify_evidence_entry(entry, tag, source_commit, f"release check {check}")
+        verify_evidence_entry(
+            entry,
+            tag,
+            source_commit,
+            f"release check {check}",
+            allow_rc=False,
+        )
         if check == "performanceGate":
             verify_performance_metrics(entry)
         elif check == "defectGate":

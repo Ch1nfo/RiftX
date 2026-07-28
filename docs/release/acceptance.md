@@ -14,7 +14,7 @@ certificates, or private target data. Evidence links must be durable HTTPS URLs 
 Every evidence entry has these common fields:
 
 - `status`: exactly `passed`;
-- `tag` and `sourceCommit`: the same immutable release source as the record;
+- `sourceCommit`: the same immutable release source as the record; automated/human evidence may use the matching numbered `v<version>-rc.N` tag, while all release-gate evidence must use the final tag;
 - `tester`: a named human or CI identity;
 - `os`: the tested OS/runtime, or an explicit applicable-platform description;
 - `checkedAt`: timezone-aware RFC 3339 timestamp;
