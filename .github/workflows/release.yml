@@ -24,6 +24,7 @@ jobs:
       commit: ${{ steps.source.outputs.commit }}
       version: ${{ steps.source.outputs.version }}
       tag: ${{ steps.source.outputs.tag }}
+      release_label: ${{ steps.source.outputs.release_label }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,14 +48,20 @@ jobs:
             echo "release tag must start with v and contain a semantic version" >&2
             exit 1
           fi
-          if [[ "$tag" != "v$version" ]]; then
-            echo "tag $tag does not match VERSION $version" >&2
-            exit 1
+          final_tag="v$version"
+          if [[ "$tag" != "$final_tag" ]]; then
+            rc_prefix="$final_tag-rc."
+            rc_number="${tag#"$rc_prefix"}"
+            if [[ "$tag" != "$rc_prefix$rc_number" || ! "$rc_number" =~ ^[1-9][0-9]*$ ]]; then
+              echo "tag $tag must be $final_tag or $final_tag-rc.N" >&2
+              exit 1
+            fi
           fi
           git describe --tags --exact-match HEAD | grep -Fx "$tag"
           commit="$(git rev-parse HEAD)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_label=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Verify source contracts
@@ -495,5 +502,5 @@ jobs:
           gh release create "$RELEASE_TAG" "${assets[@]}" \
             --verify-tag \
             --draft \
-            --title "RiftX ${{ needs.resolve.outputs.version }}" \
+            --title "RiftX ${{ needs.resolve.outputs.release_label }}" \
             --notes-file dist/RELEASE_NOTES.md

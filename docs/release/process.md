@@ -1,6 +1,6 @@
 # RiftX 1.0 release process
 
-RiftX releases are built by `.github/workflows/release.yml` from an existing tag. The workflow rejects non-`v*` semantic tags, requires the tag to equal `v$(cat VERSION)`, resolves the tag to one immutable commit, and checks out that commit in every platform job.
+RiftX releases are built by `.github/workflows/release.yml` from an existing tag. The workflow accepts `v$(cat VERSION)` or a numbered `v$(cat VERSION)-rc.N` tag, resolves it to one immutable commit, and checks out that commit in every platform job. Only the exact final tag can pass the separate publication workflow.
 
 ## Repository setup
 
@@ -15,7 +15,7 @@ The release workflow is `workflow_dispatch` only. Ordinary pull requests and pus
 
 1. Complete required CI and protected Responses/Chat live smoke checks on the intended commit.
 2. Fill the matching `CHANGELOG.md` release section; placeholder notes make the workflow fail.
-3. Set `VERSION` and all synchronized product versions, then create and push the matching signed or protected `v*` tag.
+3. Set `VERSION` and all synchronized product versions. Create a protected `v<version>-rc.N` tag for RC evidence; after M8 passes, the exact `v<version>` final tag may point to the same immutable commit.
 4. Dispatch **RiftX Release** for that tag. The workflow always creates a draft and cannot publish directly.
 5. Review per-platform signature checks, payload scans, checksums, CycloneDX SBOM, and the source commit in `RELEASE-MANIFEST.json`.
 6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04.
