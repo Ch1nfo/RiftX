@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use anyhow::Context;
 use clap::Subcommand;
 use codex_riftx_credentials::AssessmentSecret;
@@ -283,8 +285,11 @@ where
     let response = client
         .post_typed(path, body)
         .await
-        .context("riftxd request failed")?;
-    decode_response(response).await
+        .context("riftxd request failed")
+        .with_exit_code(CliExitCode::Request)?;
+    decode_response(response)
+        .await
+        .with_exit_code(CliExitCode::Request)
 }
 
 async fn request_typed<T: DeserializeOwned>(
@@ -296,8 +301,11 @@ async fn request_typed<T: DeserializeOwned>(
         Request::Post { path } => client.post(&path).await,
         Request::PostBytes { path, body } => client.post_bytes(&path, body).await,
     }
-    .context("riftxd request failed")?;
-    decode_response(response).await
+    .context("riftxd request failed")
+    .with_exit_code(CliExitCode::Request)?;
+    decode_response(response)
+        .await
+        .with_exit_code(CliExitCode::Request)
 }
 
 async fn decode_response<T: DeserializeOwned>(response: LocalIpcResponse) -> anyhow::Result<T> {

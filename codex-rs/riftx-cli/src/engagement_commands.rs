@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use anyhow::Context;
 use clap::Args;
 use clap::Subcommand;
@@ -145,9 +147,11 @@ pub(crate) async fn create(
     args: CreateEngagementArgs,
 ) -> anyhow::Result<()> {
     let identities: Vec<IdentitySelector> =
-        parse_json_arguments(&args.identity_selectors, "identity selector")?;
+        parse_json_arguments(&args.identity_selectors, "identity selector")
+            .with_exit_code(CliExitCode::Config)?;
     let structured_criteria: Vec<StructuredSuccessCriterion> =
-        parse_json_arguments(&args.structured_criteria, "structured criterion")?;
+        parse_json_arguments(&args.structured_criteria, "structured criterion")
+            .with_exit_code(CliExitCode::Config)?;
     let cidrs = args
         .cidrs
         .into_iter()
@@ -155,7 +159,8 @@ pub(crate) async fn create(
             cidr.parse()
                 .with_context(|| format!("invalid CIDR: {cidr}"))
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()
+        .with_exit_code(CliExitCode::Config)?;
     let params = CreateEngagementParams {
         name: args.name,
         objective: AssessmentObjective {
@@ -187,10 +192,12 @@ pub(crate) async fn create(
         client
             .post_typed("/v1/engagements", &params)
             .await
-            .context("create engagement")?,
+            .context("create engagement")
+            .with_exit_code(CliExitCode::Request)?,
         "created engagement",
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     print_engagement(&engagement, args.json)
 }
 
@@ -199,10 +206,12 @@ pub(crate) async fn get(client: &LocalIpcClient, id: &str, json: bool) -> anyhow
         client
             .get(&format!("/v1/engagements/{id}"))
             .await
-            .context("get engagement")?,
+            .context("get engagement")
+            .with_exit_code(CliExitCode::Request)?,
         "engagement",
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     print_engagement(&engagement, json)
 }
 
@@ -211,10 +220,12 @@ pub(crate) async fn activate(client: &LocalIpcClient, id: &str, json: bool) -> a
         client
             .post(&format!("/v1/engagements/{id}/activate"))
             .await
-            .context("activate engagement")?,
+            .context("activate engagement")
+            .with_exit_code(CliExitCode::Request)?,
         "activated engagement",
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     print_engagement(&engagement, json)
 }
 
@@ -223,10 +234,12 @@ async fn list(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
         client
             .get("/v1/engagements")
             .await
-            .context("list engagements")?,
+            .context("list engagements")
+            .with_exit_code(CliExitCode::Request)?,
         "engagement list",
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     if json {
         return print_json(&engagements);
     }
@@ -255,10 +268,12 @@ async fn list_approvals(
         client
             .get(&format!("/v1/engagements/{engagement_id}/approvals"))
             .await
-            .context("list approvals")?,
+            .context("list approvals")
+            .with_exit_code(CliExitCode::Request)?,
         "approval list",
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     if json {
         return print_json(&approvals);
     }
@@ -300,8 +315,11 @@ pub(crate) async fn decide(
             &ApprovalDecisionParams { decision },
         )
         .await
-        .context("decide approval")?;
-    ensure_success(response).await?;
+        .context("decide approval")
+        .with_exit_code(CliExitCode::Request)?;
+    ensure_success(response)
+        .await
+        .with_exit_code(CliExitCode::Request)?;
     let decision_name = match decision {
         ApprovalDecision::Approve => "approve",
         ApprovalDecision::Deny => "deny",

@@ -302,3 +302,32 @@ fn auto_lifecycle_commands_parse_with_engagement_ids() {
         assert_eq!(id, expected_id);
     }
 }
+
+#[test]
+fn runtime_failures_use_stable_exit_codes() {
+    use crate::exit_codes::CliExitCode;
+    use crate::exit_codes::WithExitCode;
+
+    let config = Err::<(), _>(anyhow::anyhow!("invalid config"))
+        .with_exit_code(CliExitCode::Config)
+        .expect_err("config error");
+    let daemon = Err::<(), _>(anyhow::anyhow!("daemon unavailable"))
+        .with_exit_code(CliExitCode::Daemon)
+        .expect_err("daemon error");
+    let request = Err::<(), _>(anyhow::anyhow!("request rejected"))
+        .with_exit_code(CliExitCode::Request)
+        .expect_err("request error");
+    let io = anyhow::Error::new(std::io::Error::other("disk failure"));
+    let internal = anyhow::anyhow!("unexpected failure");
+
+    assert_eq!(
+        [
+            exit_code_for_error(&config),
+            exit_code_for_error(&daemon),
+            exit_code_for_error(&request),
+            exit_code_for_error(&io),
+            exit_code_for_error(&internal),
+        ],
+        [2, 3, 4, 5, 1]
+    );
+}

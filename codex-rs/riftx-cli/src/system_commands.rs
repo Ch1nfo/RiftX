@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use clap::Subcommand;
 use codex_riftx_core::RiftxConfig;
 use codex_riftx_ipc::DaemonInfo;
@@ -33,7 +35,9 @@ pub(crate) async fn execute_config(
 ) -> anyhow::Result<()> {
     match command {
         ConfigCommand::Validate { json } => {
-            RiftxConfig::load_resolved(config_path).await?;
+            RiftxConfig::load_resolved(config_path)
+                .await
+                .with_exit_code(CliExitCode::Config)?;
             if json {
                 println!(
                     "{}",

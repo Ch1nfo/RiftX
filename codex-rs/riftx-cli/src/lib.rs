@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
@@ -22,9 +24,12 @@ use tokio::io::AsyncWriteExt;
 
 mod credential_commands;
 mod engagement_commands;
+mod exit_codes;
 mod extension_commands;
 mod llm_commands;
 mod system_commands;
+
+pub use exit_codes::exit_code_for_error;
 
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
@@ -210,9 +215,13 @@ where
         }
         command => command,
     };
-    let config = RiftxConfig::load_resolved(&config_path).await?;
+    let config = RiftxConfig::load_resolved(&config_path)
+        .await
+        .with_exit_code(CliExitCode::Config)?;
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(config.daemon.ipc_dir));
-    let daemon = verify_daemon(&client, &config_path).await?;
+    let daemon = verify_daemon(&client, &config_path)
+        .await
+        .with_exit_code(CliExitCode::Daemon)?;
     match command {
         Command::Doctor { json } => {
             system_commands::print_doctor(&config_path, &daemon, json)?;
@@ -285,11 +294,15 @@ where
             let response = client
                 .get(&format!("/v1/engagements/{id}/events"))
                 .await
-                .context("riftxd request failed")?;
-            ensure_success(&response)?;
+                .context("riftxd request failed")
+                .with_exit_code(CliExitCode::Request)?;
+            ensure_success(&response).with_exit_code(CliExitCode::Request)?;
             let mut body = response.into_data_stream();
             while let Some(chunk) = body.next().await {
-                print!("{}", String::from_utf8_lossy(&chunk?));
+                print!(
+                    "{}",
+                    String::from_utf8_lossy(&chunk.with_exit_code(CliExitCode::Request)?)
+                );
             }
         }
         Command::Report { id, format } => {
@@ -382,8 +395,11 @@ async fn send_typed<T: Serialize + ?Sized>(
     let response = client
         .post_typed(path, body)
         .await
-        .context("riftxd request failed")?;
-    print_response(response).await
+        .context("riftxd request failed")
+        .with_exit_code(CliExitCode::Request)?;
+    print_response(response)
+        .await
+        .with_exit_code(CliExitCode::Request)
 }
 
 async fn send(client: &LocalIpcClient, kind: RequestKind, path: String) -> anyhow::Result<()> {
@@ -391,8 +407,11 @@ async fn send(client: &LocalIpcClient, kind: RequestKind, path: String) -> anyho
         RequestKind::Get => client.get(&path).await,
         RequestKind::Post => client.post(&path).await,
     }
-    .context("riftxd request failed")?;
-    print_response(response).await
+    .context("riftxd request failed")
+    .with_exit_code(CliExitCode::Request)?;
+    print_response(response)
+        .await
+        .with_exit_code(CliExitCode::Request)
 }
 
 async fn print_response(response: LocalIpcResponse) -> anyhow::Result<()> {
@@ -462,14 +481,16 @@ async fn export_artifact(
             "/v1/engagements/{engagement_id}/artifacts/{artifact_id}/content"
         ))
         .await
-        .context("request artifact export")?;
+        .context("request artifact export")
+        .with_exit_code(CliExitCode::Request)?;
     let status = response.status();
     if !status.is_success() {
         let body = response.bytes().await?;
-        anyhow::bail!(
+        return Err(anyhow::anyhow!(
             "riftxd returned {status}: {}",
             String::from_utf8_lossy(&body)
-        );
+        ))
+        .with_exit_code(CliExitCode::Request);
     }
     let mut file = tokio::fs::OpenOptions::new()
         .create_new(true)

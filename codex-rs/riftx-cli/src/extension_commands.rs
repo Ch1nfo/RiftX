@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use anyhow::Context;
 use clap::Subcommand;
 use codex_riftx_ipc::ExtensionDiagnosticLevel;
@@ -38,19 +40,23 @@ pub(crate) async fn execute_tools(
         ToolsCommand::List { json } => ("/v1/tools", json, false),
         ToolsCommand::Doctor { json } => ("/v1/tools/doctor", json, true),
     };
-    let response = if require_healthy {
-        client.post(path).await.context("run tool doctor")?
+    let response = (if require_healthy {
+        client.post(path).await.context("run tool doctor")
     } else {
-        client.get(path).await.context("list tools")?
-    };
-    let inventory: ToolInventory = decode_success(response, "tool inventory").await?;
+        client.get(path).await.context("list tools")
+    })
+    .with_exit_code(CliExitCode::Request)?;
+    let inventory: ToolInventory = decode_success(response, "tool inventory")
+        .await
+        .with_exit_code(CliExitCode::Request)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&inventory)?);
     } else {
         print_tools(&inventory);
     }
-    if require_healthy {
-        anyhow::ensure!(inventory.is_healthy(), "one or more tool checks failed");
+    if require_healthy && !inventory.is_healthy() {
+        return Err(anyhow::anyhow!("one or more tool checks failed"))
+            .with_exit_code(CliExitCode::Request);
     }
     Ok(())
 }
@@ -63,19 +69,23 @@ pub(crate) async fn execute_skills(
         SkillsCommand::List { json } => ("/v1/skills", json, false),
         SkillsCommand::Doctor { json } => ("/v1/skills/doctor", json, true),
     };
-    let response = if require_healthy {
-        client.post(path).await.context("run skill doctor")?
+    let response = (if require_healthy {
+        client.post(path).await.context("run skill doctor")
     } else {
-        client.get(path).await.context("list skills")?
-    };
-    let catalog: SkillCatalog = decode_success(response, "skill catalog").await?;
+        client.get(path).await.context("list skills")
+    })
+    .with_exit_code(CliExitCode::Request)?;
+    let catalog: SkillCatalog = decode_success(response, "skill catalog")
+        .await
+        .with_exit_code(CliExitCode::Request)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&catalog)?);
     } else {
         print_skills(&catalog);
     }
-    if require_healthy {
-        anyhow::ensure!(catalog.is_healthy(), "one or more RiftX skills are invalid");
+    if require_healthy && !catalog.is_healthy() {
+        return Err(anyhow::anyhow!("one or more RiftX skills are invalid"))
+            .with_exit_code(CliExitCode::Request);
     }
     Ok(())
 }

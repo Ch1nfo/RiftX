@@ -1,3 +1,5 @@
+use crate::exit_codes::CliExitCode;
+use crate::exit_codes::WithExitCode;
 use anyhow::Context;
 use clap::Subcommand;
 use codex_riftx_ipc::LlmCheckStatus;
@@ -43,9 +45,11 @@ async fn list_profiles(client: &LocalIpcClient, json: bool) -> anyhow::Result<()
         client
             .get("/v1/llm/profiles")
             .await
-            .context("list LLM profiles")?,
+            .context("list LLM profiles")
+            .with_exit_code(CliExitCode::Request)?,
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
@@ -71,9 +75,11 @@ async fn test_profile(client: &LocalIpcClient, profile: &str, json: bool) -> any
         client
             .post(&format!("/v1/llm/profiles/{profile}/test"))
             .await
-            .context("test LLM profile")?,
+            .context("test LLM profile")
+            .with_exit_code(CliExitCode::Request)?,
     )
-    .await?;
+    .await
+    .with_exit_code(CliExitCode::Request)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -88,7 +94,10 @@ async fn test_profile(client: &LocalIpcClient, profile: &str, json: bool) -> any
         print_check("stream_text", &result.capabilities.stream_text);
         print_check("function_tools", &result.capabilities.function_tools);
     }
-    anyhow::ensure!(result.ok, "LLM profile connection test failed");
+    if !result.ok {
+        return Err(anyhow::anyhow!("LLM profile connection test failed"))
+            .with_exit_code(CliExitCode::Request);
+    }
     Ok(())
 }
 
