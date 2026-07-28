@@ -33,7 +33,7 @@ importers:
   apps/desktop:
     dependencies:
       '@tauri-apps/api':
-        specifier: ^2.11.1
+        specifier: 2.11.1
         version: 2.11.1
       lucide-react:
         specifier: ^0.468.0
@@ -49,7 +49,7 @@ importers:
         specifier: ^1.61.1
         version: 1.61.1
       '@tauri-apps/cli':
-        specifier: ^2.11.1
+        specifier: 2.11.4
         version: 2.11.4
       '@testing-library/jest-dom':
         specifier: ^7.0.0

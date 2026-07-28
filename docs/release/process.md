@@ -1,0 +1,23 @@
+# RiftX 1.0 release process
+
+RiftX releases are built by `.github/workflows/release.yml` from an existing tag. The workflow rejects non-`v*` semantic tags, requires the tag to equal `v$(cat VERSION)`, resolves the tag to one immutable commit, and checks out that commit in every platform job.
+
+## Repository setup
+
+Create a protected GitHub Environment named `riftx-release` with required reviewers. Store signing material only in that environment:
+
+- macOS: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
+- Windows: `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERTIFICATE_PASSWORD`.
+
+The release workflow is `workflow_dispatch` only. Ordinary pull requests and push CI cannot read these secrets. Rotate signing secrets immediately if a release job exposes unexpected output; secret values must never be echoed.
+
+## Release sequence
+
+1. Complete required CI and protected Responses/Chat live smoke checks on the intended commit.
+2. Fill the matching `CHANGELOG.md` release section; placeholder notes make the workflow fail.
+3. Set `VERSION` and all synchronized product versions, then create and push the matching signed or protected `v*` tag.
+4. Dispatch **RiftX Release** for that tag. Keep `draft=true` for RC review; publish only after install evidence is attached.
+5. Review per-platform signature checks, payload scans, checksums, CycloneDX SBOM, and the source commit in `RELEASE-MANIFEST.json`.
+6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04 before publishing.
+
+The workflow does not configure automatic updates and does not enable product telemetry. Linux remains a tarball release; no deb/rpm repository is promised for 1.0.

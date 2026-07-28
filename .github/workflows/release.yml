@@ -1,0 +1,440 @@
+name: RiftX Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and release
+        required: true
+        type: string
+      draft:
+        description: Create a draft GitHub release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riftx-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve and approve release source
+    runs-on: ubuntu-24.04
+    environment: riftx-release
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      tag: ${{ steps.source.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - id: source
+        name: Verify tag, version, and source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.tag }}'
+          version="$(cat VERSION)"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must start with v and contain a semantic version" >&2
+            exit 1
+          fi
+          if [[ "$tag" != "v$version" ]]; then
+            echo "tag $tag does not match VERSION $version" >&2
+            exit 1
+          fi
+          git describe --tags --exact-match HEAD | grep -Fx "$tag"
+          commit="$(git rev-parse HEAD)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify source contracts
+        run: |
+          conda run -n agent python3 scripts/riftx/verify-version-sync.py
+          conda run -n agent python3 scripts/riftx/verify-toolchain-lock.py
+          conda run -n agent python3 scripts/riftx/verify-upstream-lock.py
+
+  linux:
+    name: Linux x86_64 GNU tarball
+    needs: resolve
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Build locked release binaries
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: >-
+          conda run -n agent cargo build --locked --release
+          --manifest-path codex-rs/Cargo.toml
+          -p codex-riftx-cli -p codex-riftx-gateway
+
+      - name: Verify and strip binaries
+        run: |
+          codex-rs/target/release/riftx --version
+          codex-rs/target/release/riftxd --version
+          strip codex-rs/target/release/riftx codex-rs/target/release/riftxd
+          ldd --version | head -1
+
+      - name: Package Linux release
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: >-
+          conda run -n agent python3 scripts/riftx/package-linux-release.py
+          --bin-dir codex-rs/target/release
+          --output-dir build/release/linux
+          --version '${{ needs.resolve.outputs.version }}'
+          --source-commit '${{ needs.resolve.outputs.commit }}'
+
+      - name: Scan and verify Linux payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="build/release/linux/riftx-${{ needs.resolve.outputs.version }}-x86_64-unknown-linux-gnu"
+          conda run -n agent python3 scripts/riftx/verify-release-payload.py "$stage"
+          (
+            cd build/release/linux
+            sha256sum --check "riftx-${{ needs.resolve.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riftx-linux-${{ needs.resolve.outputs.version }}
+          path: |
+            build/release/linux/*.tar.gz
+            build/release/linux/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS Apple Silicon signed and notarized DMG
+    needs: resolve
+    runs-on: macos-14
+    environment: riftx-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop/src-tauri
+            codex-rs
+
+      - name: Require Apple signing and notarization secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name}" ]] || { echo "missing protected secret $name" >&2; exit 1; }
+          done
+          test "$(conda run -n agent rustc --print host-tuple)" = aarch64-apple-darwin
+
+      - name: Install locked Desktop dependencies
+        run: conda run -n agent pnpm install --filter @riftx/desktop... --frozen-lockfile
+
+      - name: Test and build Desktop frontend
+        run: |
+          conda run -n agent pnpm --filter @riftx/desktop check
+          conda run -n agent pnpm --filter @riftx/desktop test
+          conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Prepare release sidecar
+        env:
+          CARGO_INCREMENTAL: "0"
+          RIFTX_SIDECAR_PROFILE: release
+          RIFTX_SIDECAR_TARGET: aarch64-apple-darwin
+        run: conda run -n agent pnpm --filter @riftx/desktop prepare:sidecar
+
+      - name: Build, sign, and notarize DMG
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CARGO_INCREMENTAL: "0"
+          RIFTX_SIDECAR_PROFILE: release
+          RIFTX_SIDECAR_TARGET: aarch64-apple-darwin
+        shell: bash
+        run: |
+          printf '%s\n' '{"build":{"beforeBuildCommand":""}}' > "$RUNNER_TEMP/release-macos.json"
+          conda run -n agent pnpm --filter @riftx/desktop tauri build \
+            --target aarch64-apple-darwin \
+            --bundles dmg \
+            --config "$RUNNER_TEMP/release-macos.json"
+
+      - name: Verify signatures, notarization, and payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle -name 'RiftX.app' -type d -print -quit)"
+          dmg="$(find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle -name '*.dmg' -type f -print -quit)"
+          [[ -n "$app" && -n "$dmg" ]]
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$dmg"
+          conda run -n agent python3 scripts/riftx/verify-release-payload.py "$app"
+          (
+            cd "$(dirname "$dmg")"
+            shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riftx-macos-${{ needs.resolve.outputs.version }}
+          path: |
+            apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x86_64 signed NSIS installer
+    needs: resolve
+    runs-on: windows-2022
+    environment: riftx-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop/src-tauri
+            codex-rs
+
+      - name: Require Windows signing secrets
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64) { throw "missing protected secret WINDOWS_CERTIFICATE_BASE64" }
+          if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) { throw "missing protected secret WINDOWS_CERTIFICATE_PASSWORD" }
+
+      - name: Install locked Desktop dependencies
+        run: conda run -n agent pnpm install --filter @riftx/desktop... --frozen-lockfile
+
+      - name: Test and build Desktop frontend
+        run: |
+          conda run -n agent pnpm --filter @riftx/desktop check
+          conda run -n agent pnpm --filter @riftx/desktop test
+          conda run -n agent pnpm --filter @riftx/desktop build
+
+      - name: Prepare release sidecar
+        env:
+          CARGO_INCREMENTAL: "0"
+          RIFTX_SIDECAR_PROFILE: release
+          RIFTX_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: conda run -n agent pnpm --filter @riftx/desktop prepare:sidecar
+
+      - id: certificate
+        name: Import signing certificate and sign sidecar
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "riftx-code-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if (-not $certificate) { throw "certificate import failed" }
+          $thumbprint = $certificate.Thumbprint
+          "thumbprint=$thumbprint" >> $env:GITHUB_OUTPUT
+          $sidecar = "apps/desktop/src-tauri/binaries/riftxd-x86_64-pc-windows-msvc.exe"
+          & signtool sign /sha1 $thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $sidecar
+          if ($LASTEXITCODE -ne 0) { throw "sidecar signing failed" }
+
+      - name: Build and sign NSIS installer
+        shell: pwsh
+        env:
+          CARGO_INCREMENTAL: "0"
+          RIFTX_SIDECAR_PROFILE: release
+          RIFTX_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        run: |
+          $config = @{
+            build = @{ beforeBuildCommand = "" }
+            bundle = @{
+              windows = @{
+                certificateThumbprint = "${{ steps.certificate.outputs.thumbprint }}"
+                digestAlgorithm = "sha256"
+                timestampUrl = "http://timestamp.digicert.com"
+              }
+            }
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP "release-windows.json"
+          $config | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $configPath
+          conda run -n agent pnpm --filter @riftx/desktop tauri build --bundles nsis --config $configPath
+          if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
+
+      - name: Verify signatures and payload
+        shell: pwsh
+        run: |
+          $sidecar = "apps/desktop/src-tauri/binaries/riftxd-x86_64-pc-windows-msvc.exe"
+          $app = "apps/desktop/src-tauri/target/release/riftx-desktop.exe"
+          $installer = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer is missing" }
+          foreach ($path in @($sidecar, $app, $installer.FullName)) {
+            & signtool verify /pa /all /v $path
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $path" }
+          }
+          conda run -n agent python3 scripts/riftx/verify-release-payload.py $sidecar $app $installer.FullName
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content -Encoding ascii "$($installer.FullName).sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riftx-windows-${{ needs.resolve.outputs.version }}
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Aggregate and publish release
+    needs: [resolve, linux, macos, windows]
+    runs-on: ubuntu-24.04
+    environment: riftx-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: riftx-*-${{ needs.resolve.outputs.version }}
+          path: dist
+          merge-multiple: true
+
+      - name: Scan assembled platform artifacts
+        run: conda run -n agent python3 scripts/riftx/verify-release-payload.py dist
+
+      - name: Generate release notes
+        run: >-
+          conda run -n agent python3 scripts/riftx/render-release-notes.py
+          --version '${{ needs.resolve.outputs.version }}'
+          --output dist/RELEASE_NOTES.md
+
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/riftx-${{ needs.resolve.outputs.version }}.cdx.json
+          upload-artifact: false
+
+      - name: Generate aggregate checksums and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/RELEASE-MANIFEST.json <<JSON
+          {
+            "schema": "riftx.release/v1",
+            "tag": "${{ needs.resolve.outputs.tag }}",
+            "version": "${{ needs.resolve.outputs.version }}",
+            "sourceCommit": "${{ needs.resolve.outputs.commit }}",
+            "sbom": "riftx-${{ needs.resolve.outputs.version }}.cdx.json"
+          }
+          JSON
+          (
+            cd dist
+            find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+
+      - name: Create GitHub release from the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find dist -type f ! -name RELEASE_NOTES.md -print0)
+          draft_flag=()
+          if [[ "$RELEASE_DRAFT" == "true" ]]; then
+            draft_flag+=(--draft)
+          fi
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --verify-tag \
+            --title "RiftX ${{ needs.resolve.outputs.version }}" \
+            --notes-file dist/RELEASE_NOTES.md \
+            "${draft_flag[@]}"

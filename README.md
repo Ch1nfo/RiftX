@@ -249,6 +249,10 @@ conda run -n agent pnpm --filter @riftx/desktop \
 - [1.0 IPC 与数据兼容决策](./architecture/adr/0004-ipc-and-data-compatibility.md)
 - [上游版本锁](./codex-upstream.lock)
 - [上游同步约定](./UPSTREAM.md)
+- [Linux 1.0 安装与卸载](./docs/release/linux.md)
+- [本地构建空间与清理](./docs/development-storage.md)
+- [1.0 签名发布流程](./docs/release/process.md)
+- [RustSec 临时例外](./security/rustsec-exceptions.toml)
 
 ## Source Attribution
 
