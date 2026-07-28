@@ -3,11 +3,14 @@ use codex_riftx_tools::ToolScanConfig;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 const MAX_LLM_PROFILES: usize = 16;
+const PRE_V1_BACKUP_SUFFIX: &str = ".pre-1.0.bak";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -18,6 +21,11 @@ pub enum ConfigError {
     },
     #[error("failed to write RiftX config {path}: {source}")]
     Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to back up RiftX config to {path}: {source}")]
+    Backup {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -57,11 +65,7 @@ impl RiftxConfig {
     pub async fn load_resolved(path: &Path) -> Result<Self, ConfigError> {
         let path = std::path::absolute(path)
             .map_err(|error| ConfigError::Invalid(format!("resolve config path: {error}")))?;
-        let mut config = Self::load(&path).await?;
-        let migrated = config.llm.apply_migrations();
-        if migrated {
-            config.write_atomic(&path).await?;
-        }
+        let mut config = Self::load_migrating(&path).await?;
         let base = path.parent().ok_or_else(|| {
             ConfigError::Invalid(format!("config path has no parent: {}", path.display()))
         })?;
@@ -73,6 +77,7 @@ impl RiftxConfig {
     pub async fn load_migrating(path: &Path) -> Result<Self, ConfigError> {
         let mut config = Self::load(path).await?;
         if config.llm.apply_migrations() {
+            backup_config_once(path).await?;
             config.write_atomic(path).await?;
         }
         Ok(config)
@@ -136,6 +141,89 @@ impl RiftxConfig {
             resolve_path(base, path);
         }
     }
+}
+
+async fn backup_config_once(path: &Path) -> Result<(), ConfigError> {
+    let mut backup_name = path.as_os_str().to_owned();
+    backup_name.push(PRE_V1_BACKUP_SUFFIX);
+    let backup_path = PathBuf::from(backup_name);
+    let content = tokio::fs::read(path)
+        .await
+        .map_err(|source| ConfigError::Backup {
+            path: backup_path.clone(),
+            source,
+        })?;
+    let permissions = tokio::fs::metadata(path)
+        .await
+        .map_err(|source| ConfigError::Backup {
+            path: backup_path.clone(),
+            source,
+        })?
+        .permissions();
+    let mut backup = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup_path)
+        .await
+    {
+        Ok(backup) => backup,
+        Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+            let metadata =
+                tokio::fs::metadata(&backup_path)
+                    .await
+                    .map_err(|source| ConfigError::Backup {
+                        path: backup_path.clone(),
+                        source,
+                    })?;
+            if metadata.is_file() {
+                validate_config_backup(&backup_path)
+                    .await
+                    .map_err(|source| ConfigError::Backup {
+                        path: backup_path.clone(),
+                        source,
+                    })?;
+                return Ok(());
+            }
+            return Err(ConfigError::Backup {
+                path: backup_path,
+                source: std::io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    "backup path is not a regular file",
+                ),
+            });
+        }
+        Err(source) => {
+            return Err(ConfigError::Backup {
+                path: backup_path,
+                source,
+            });
+        }
+    };
+    let result = async {
+        tokio::fs::set_permissions(&backup_path, permissions).await?;
+        backup.write_all(&content).await?;
+        backup.sync_all().await?;
+        drop(backup);
+        validate_config_backup(&backup_path).await
+    }
+    .await;
+    if let Err(source) = result {
+        let _ = tokio::fs::remove_file(&backup_path).await;
+        return Err(ConfigError::Backup {
+            path: backup_path,
+            source,
+        });
+    }
+    Ok(())
+}
+
+async fn validate_config_backup(path: &Path) -> Result<(), std::io::Error> {
+    let content = tokio::fs::read_to_string(path).await?;
+    let config = toml::from_str::<RiftxConfig>(&content)
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+    config
+        .validate()
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))
 }
 
 fn resolve_path(base: &Path, path: &mut PathBuf) {

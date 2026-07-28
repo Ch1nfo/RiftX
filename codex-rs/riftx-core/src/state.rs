@@ -26,9 +26,13 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+#[path = "state_schema.rs"]
+mod schema;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -90,6 +94,20 @@ pub enum StateError {
     SystemStateUnavailable,
     #[error("security audit is unavailable")]
     AuditUnavailable,
+    #[error(
+        "state database schema version {found} is newer than supported version {supported}; refusing to write"
+    )]
+    UnsupportedSchemaVersion { found: i64, supported: i64 },
+    #[error("state database path is not valid UTF-8: {0}")]
+    NonUtf8DatabasePath(PathBuf),
+    #[error("failed to create pre-1.0 state database backup {path}: {source}")]
+    BackupDatabase { path: PathBuf, source: sqlx::Error },
+    #[error("failed to {operation} state database file {path}: {source}")]
+    DatabaseFile {
+        operation: &'static str,
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("{entity_kind} {entity_id} is missing required {reference_kind} reference")]
     MissingChainReference {
         entity_kind: &'static str,
@@ -119,6 +137,8 @@ macro_rules! entity_tables {
         }
 
         impl EntityTable {
+            const ALL: &'static [Self] = &[$(Self::$variant),+];
+
             fn name(self) -> &'static str {
                 match self {
                     $(Self::$variant => $table),+
@@ -208,6 +228,11 @@ impl StateStore {
         path: &Path,
         cipher: Arc<dyn EngagementRecordCipher>,
     ) -> Result<Self, StateError> {
+        let entity_schema = EntityTable::ALL
+            .iter()
+            .map(|table| table.create_sql())
+            .collect::<Vec<_>>();
+        schema::prepare_state_database(path, &entity_schema).await?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -217,7 +242,6 @@ impl StateStore {
             .connect_with(options)
             .await?;
         let store = Self { pool, cipher };
-        store.initialize().await?;
         store.prepare_existing_engagements().await?;
         Ok(store)
     }
@@ -230,85 +254,6 @@ impl StateStore {
     /// Returns an opaque cipher handle for other engagement-owned encrypted stores.
     pub fn record_cipher(&self) -> Arc<dyn EngagementRecordCipher> {
         self.cipher.clone()
-    }
-
-    async fn initialize(&self) -> Result<(), StateError> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS engagements (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS conversation_entries (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                id TEXT NOT NULL,
-                engagement_id TEXT NOT NULL,
-                data BLOB NOT NULL,
-                UNIQUE(engagement_id, id),
-                FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS system_state (
-                key TEXT PRIMARY KEY,
-                data TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS conversation_entries_engagement_sequence
-             ON conversation_entries(engagement_id, sequence)",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS credential_grant_uses (
-                id TEXT PRIMARY KEY,
-                engagement_id TEXT NOT NULL,
-                grant_id TEXT NOT NULL,
-                credential_id TEXT NOT NULL,
-                identity_hash TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at INTEGER NOT NULL,
-                completed_at INTEGER,
-                data BLOB NOT NULL,
-                FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS credential_grant_uses_limits
-             ON credential_grant_uses(grant_id, identity_hash, status)",
-        )
-        .execute(&self.pool)
-        .await?;
-        for table in [
-            EntityTable::Assets,
-            EntityTable::AssetRelations,
-            EntityTable::Services,
-            EntityTable::Identities,
-            EntityTable::Observations,
-            EntityTable::Hypotheses,
-            EntityTable::TestCases,
-            EntityTable::Executions,
-            EntityTable::Findings,
-            EntityTable::Evidence,
-            EntityTable::AttackPaths,
-            EntityTable::Coverage,
-            EntityTable::CredentialReferences,
-            EntityTable::CredentialGrants,
-            EntityTable::Tasks,
-            EntityTable::Artifacts,
-            EntityTable::AutoRuns,
-            EntityTable::Approvals,
-        ] {
-            sqlx::query(table.create_sql()).execute(&self.pool).await?;
-        }
-        Ok(())
     }
 
     pub async fn put_engagement(&self, engagement: &Engagement) -> Result<(), StateError> {

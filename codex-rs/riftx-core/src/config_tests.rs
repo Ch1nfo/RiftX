@@ -1,7 +1,14 @@
 use super::*;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
+
+fn pre_v1_backup_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(".pre-1.0.bak");
+    PathBuf::from(value)
+}
 
 #[test]
 fn strict_config_rejects_unknown_fields() {
@@ -334,9 +341,7 @@ max_bytes_per_engagement = 1073741824
 async fn missing_protocol_defaults_to_responses_and_migrates_once() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("riftx.toml");
-    std::fs::write(
-        &config_path,
-        r#"
+    let legacy_config = r#"
 [daemon]
 ipc_dir = ".riftx/ipc"
 state_db = ".riftx/state.sqlite"
@@ -372,9 +377,8 @@ fsync = true
 [artifacts]
 root = ".riftx/artifacts"
 max_bytes_per_engagement = 1073741824
-"#,
-    )
-    .expect("seed legacy config");
+"#;
+    std::fs::write(&config_path, legacy_config).expect("seed legacy config");
 
     let migrated = RiftxConfig::load_migrating(&config_path)
         .await
@@ -388,11 +392,75 @@ max_bytes_per_engagement = 1073741824
     assert!(content.contains("config_version = 2"));
     assert!(content.contains("enabled = true"));
     assert!(content.contains("protocol = \"responses\""));
+    assert_eq!(
+        std::fs::read_to_string(pre_v1_backup_path(&config_path)).expect("read pre-1.0 backup"),
+        legacy_config
+    );
 
+    let backup_before = std::fs::read(pre_v1_backup_path(&config_path)).expect("read backup");
     let again = RiftxConfig::load_migrating(&config_path)
         .await
         .expect("idempotent");
     assert_eq!(again.llm.config_version, LLM_CONFIG_VERSION);
+    assert_eq!(
+        std::fs::read(pre_v1_backup_path(&config_path)).expect("read backup again"),
+        backup_before
+    );
+}
+
+#[tokio::test]
+async fn config_migration_refuses_to_replace_source_when_backup_is_invalid() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("riftx.toml");
+    let legacy_config = r#"
+[daemon]
+ipc_dir = ".riftx/ipc"
+state_db = ".riftx/state.sqlite"
+runtime_home = ".riftx/runtime"
+workspace_root = ".riftx/workspaces"
+
+[tools]
+directories = []
+extra_paths = []
+
+[skills]
+
+[llm]
+default_profile = "default"
+
+[llm.profiles.default]
+model = "test-model"
+base_url = "http://127.0.0.1:8766/v1"
+api_key = { source = "environment", variable = "RIFTX_TEST_API_KEY" }
+timeout_seconds = 300
+reasoning_level = "high"
+context_budget = 200000
+
+[policy]
+allowed_capabilities = []
+denied_cidrs = []
+denied_domains = []
+
+[audit]
+jsonl_path = ".riftx/audit.jsonl"
+fsync = true
+
+[artifacts]
+root = ".riftx/artifacts"
+max_bytes_per_engagement = 1024
+"#;
+    std::fs::write(&config_path, legacy_config).expect("seed legacy config");
+    std::fs::write(pre_v1_backup_path(&config_path), "not valid TOML")
+        .expect("seed invalid backup");
+
+    RiftxConfig::load_migrating(&config_path)
+        .await
+        .expect_err("migration must fail when backup is invalid");
+
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("read preserved config"),
+        legacy_config
+    );
 }
 
 #[test]

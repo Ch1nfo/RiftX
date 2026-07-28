@@ -21,3 +21,7 @@ The release workflow is `workflow_dispatch` only. Ordinary pull requests and pus
 6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04 before publishing.
 
 The workflow does not configure automatic updates and does not enable product telemetry. Linux remains a tarball release; no deb/rpm repository is promised for 1.0.
+
+Before testing an upgrade from v0.8 data, read [the upgrade and rollback procedure](upgrade.md). The
+1.0 binary performs forward-only migrations and refuses to write a State DB whose schema is newer
+than it supports.
