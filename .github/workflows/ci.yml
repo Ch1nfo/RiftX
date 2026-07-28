@@ -47,6 +47,95 @@ jobs:
           conda run -n agent python3 -m unittest
           scripts/riftx/test_verify_version_sync.py
 
+      - name: Verify release toolchain pins
+        shell: bash -el {0}
+        run: conda run -n agent python3 scripts/riftx/verify-toolchain-lock.py
+
+      - name: Test release policy verifiers
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 -m unittest
+          scripts/riftx/test_verify_toolchain_lock.py
+          scripts/riftx/test_verify_license_reports.py
+          scripts/riftx/test_verify_release_payload.py
+          scripts/riftx/test_audit_rust_dependencies.py
+          scripts/riftx/test_package_linux_release.py
+          scripts/riftx/test_render_release_notes.py
+          scripts/riftx/test_clean_generated.py
+
+  supply-chain:
+    name: Dependency, license, and SBOM checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: agent
+          environment-file: .github/agent-environment.yml
+          miniforge-version: latest
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+          cache: pnpm
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Prepare supply-chain report directory
+        run: mkdir -p build/supply-chain
+
+      - name: Generate source SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: build/supply-chain/riftx-source.cdx.json
+          artifact-name: riftx-source-sbom
+
+      - name: Install locked Node dependencies
+        run: conda run -n agent pnpm install --frozen-lockfile
+
+      - name: Audit Rust lockfiles
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 scripts/riftx/audit-rust-dependencies.py
+          --lockfile codex-rs/Cargo.lock
+          --lockfile apps/desktop/src-tauri/Cargo.lock
+
+      - name: Audit production Node dependencies
+        run: conda run -n agent pnpm audit --prod --audit-level high
+
+      - name: Generate dependency license reports
+        shell: bash -el {0}
+        run: |
+          mkdir -p build/supply-chain
+          conda run -n agent sh -lc 'cargo metadata --locked --format-version 1 --manifest-path codex-rs/Cargo.toml > build/supply-chain/cargo-codex.json'
+          conda run -n agent sh -lc 'cargo metadata --locked --format-version 1 --manifest-path apps/desktop/src-tauri/Cargo.toml > build/supply-chain/cargo-desktop.json'
+          conda run -n agent sh -lc 'pnpm licenses list --json > build/supply-chain/pnpm-licenses.json'
+
+      - name: Enforce dependency license policy
+        shell: bash -el {0}
+        run: >-
+          conda run -n agent python3 scripts/riftx/verify-license-reports.py
+          --cargo-metadata build/supply-chain/cargo-codex.json
+          --cargo-metadata build/supply-chain/cargo-desktop.json
+          --pnpm-licenses build/supply-chain/pnpm-licenses.json
+
+      - name: Upload supply-chain reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: riftx-supply-chain-reports
+          path: build/supply-chain/
+          if-no-files-found: error
+          retention-days: 30
+
   rust-fmt-check:
     name: Rust fmt / check
     runs-on: ubuntu-24.04
@@ -214,7 +303,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.20.0
           cache: pnpm
 
       - name: Install desktop dependencies
@@ -268,7 +357,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.20.0
           cache: pnpm
 
       - uses: taiki-e/install-action@nextest
