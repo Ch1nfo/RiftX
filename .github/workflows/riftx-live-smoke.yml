@@ -43,7 +43,7 @@ jobs:
       RIFTX_LIVE_CHAT_API_KEY: ${{ secrets.RIFTX_LIVE_CHAT_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@1.95.0
 

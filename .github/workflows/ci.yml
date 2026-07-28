@@ -17,7 +17,7 @@ jobs:
     name: Upstream lock
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -70,7 +70,7 @@ jobs:
     name: Dependency, license, and SBOM checks
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -143,7 +143,7 @@ jobs:
     name: Rust fmt / check
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -175,7 +175,7 @@ jobs:
     name: App Server protocol fixtures
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -199,7 +199,7 @@ jobs:
     name: RiftX crate tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -244,7 +244,7 @@ jobs:
           - ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -292,7 +292,7 @@ jobs:
           - windows-2022
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -346,7 +346,7 @@ jobs:
           - windows-2022
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
