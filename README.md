@@ -244,6 +244,8 @@ conda run -n agent pnpm --filter @riftx/desktop \
 - [1.0 M0 基线记录](./docs/1.0-baseline.md)
 - [Changelog](./CHANGELOG.md)
 - [v0.7 架构决策（历史，已被 v0.8 收敛）](./architecture/adr/0001-v0.7-local-native-execution.md)
+- [Linux headless 密钥决策](./architecture/adr/0003-linux-headless-secrets.md)
+- [1.0 IPC 与数据兼容决策](./architecture/adr/0004-ipc-and-data-compatibility.md)
 - [上游版本锁](./codex-upstream.lock)
 - [上游同步约定](./UPSTREAM.md)
 
