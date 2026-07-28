@@ -92,7 +92,9 @@ class VerifyLiveSmokeTests(unittest.TestCase):
 
     def _write_json_lines(self, name: str, values: list[object]) -> Path:
         path = self.root / name
-        path.write_text("".join(json.dumps(value) + "\n" for value in values), encoding="utf-8")
+        path.write_text(
+            "".join(json.dumps(value) + "\n" for value in values), encoding="utf-8"
+        )
         return path
 
     def _args(self) -> argparse.Namespace:
@@ -141,9 +143,13 @@ class VerifyLiveSmokeTests(unittest.TestCase):
             MODULE.verify(self._args())
 
     def test_rejects_final_marker_from_a_different_turn(self) -> None:
-        conversation = json.loads(self.files["conversation"].read_text(encoding="utf-8"))
+        conversation = json.loads(
+            self.files["conversation"].read_text(encoding="utf-8")
+        )
         conversation["data"][0]["turnId"] = "turn-other"
-        self.files["conversation"].write_text(json.dumps(conversation), encoding="utf-8")
+        self.files["conversation"].write_text(
+            json.dumps(conversation), encoding="utf-8"
+        )
         with self.assertRaisesRegex(MODULE.VerificationError, "final agent marker"):
             MODULE.verify(self._args())
 
@@ -151,7 +157,9 @@ class VerifyLiveSmokeTests(unittest.TestCase):
         report = json.loads(self.files["report"].read_text(encoding="utf-8"))
         report["artifacts"][0]["executionId"] = "exec-other"
         self.files["report"].write_text(json.dumps(report), encoding="utf-8")
-        with self.assertRaisesRegex(MODULE.VerificationError, "execution-bound artifact"):
+        with self.assertRaisesRegex(
+            MODULE.VerificationError, "execution-bound artifact"
+        ):
             MODULE.verify(self._args())
 
     def test_rejects_mismatched_turn_completion_event(self) -> None:

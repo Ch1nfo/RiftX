@@ -13,7 +13,10 @@ from typing import Any
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PROTOCOL_CONTRACTS = {
     "responses": ({"responses"}, {"responses"}),
-    "chat": ({"chat_completions", "chatCompletions"}, {"chatCompletions", "chat_completions"}),
+    "chat": (
+        {"chat_completions", "chatCompletions"},
+        {"chatCompletions", "chat_completions"},
+    ),
 }
 
 
@@ -67,9 +70,7 @@ def load_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
-def verify_capability(
-    capability: Any, protocol: str, profile: str
-) -> dict[str, str]:
+def verify_capability(capability: Any, protocol: str, profile: str) -> dict[str, str]:
     if not isinstance(capability, dict) or capability.get("ok") is not True:
         raise VerificationError("provider capability probe did not succeed")
     if capability.get("profileName") != profile:
@@ -122,7 +123,9 @@ def verify_tool_loop(
         and execution["stdoutBytes"] > 0
     ]
     if len(completed) != 1:
-        raise VerificationError("tool loop must contain exactly one successful execution")
+        raise VerificationError(
+            "tool loop must contain exactly one successful execution"
+        )
     execution = completed[0]
 
     artifacts = report.get("artifacts")
@@ -144,7 +147,9 @@ def verify_tool_loop(
         raise VerificationError("expected execution-bound artifact is missing")
     artifact = matching_artifacts[0]
 
-    if not isinstance(conversation, dict) or not isinstance(conversation.get("data"), list):
+    if not isinstance(conversation, dict) or not isinstance(
+        conversation.get("data"), list
+    ):
         raise VerificationError("conversation page is missing")
     final_messages = [
         entry
@@ -158,13 +163,16 @@ def verify_tool_loop(
     if not final_messages:
         raise VerificationError("final agent marker is missing from the execution turn")
 
-    event_names = [event.get("event") for event in events if isinstance(event.get("event"), str)]
+    event_names = [
+        event.get("event") for event in events if isinstance(event.get("event"), str)
+    ]
     if "turn/completed" not in event_names:
         raise VerificationError("event stream did not observe turn/completed")
     event_turn_ids = {
         event.get("data", {}).get("turnId")
         for event in events
-        if event.get("event") == "turn/completed" and isinstance(event.get("data"), dict)
+        if event.get("event") == "turn/completed"
+        and isinstance(event.get("data"), dict)
     }
     if event_turn_ids != {execution["turnId"]}:
         raise VerificationError("turn/completed does not match the executed turn")
@@ -183,7 +191,9 @@ def verify_secrets(paths: list[Path], environment_names: list[str]) -> None:
     secrets = [(name, os.environ.get(name, "").encode()) for name in environment_names]
     missing = [name for name, value in secrets if not value]
     if missing:
-        raise VerificationError(f"protected secret environment variable is empty: {missing[0]}")
+        raise VerificationError(
+            f"protected secret environment variable is empty: {missing[0]}"
+        )
     for path in paths:
         try:
             data = path.read_bytes()
@@ -210,13 +220,17 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         args.expected_artifact,
     )
     verify_secrets(
-        list(dict.fromkeys([
-            args.capability,
-            args.report,
-            args.conversation,
-            args.events,
-            *args.scan_file,
-        ])),
+        list(
+            dict.fromkeys(
+                [
+                    args.capability,
+                    args.report,
+                    args.conversation,
+                    args.events,
+                    *args.scan_file,
+                ]
+            )
+        ),
         args.secret_env,
     )
     return {

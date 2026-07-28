@@ -42,9 +42,7 @@ def valid_record() -> dict[str, object]:
             for scenario in MODULE.HUMAN_SCENARIOS
             for platform in MODULE.PLATFORMS
         ],
-        "releaseEvidence": [
-            evidence(check=check) for check in MODULE.RELEASE_CHECKS
-        ],
+        "releaseEvidence": [evidence(check=check) for check in MODULE.RELEASE_CHECKS],
         "decision": {
             "outcome": "go",
             "reviewer": "release-owner",
@@ -66,11 +64,11 @@ class VerifyReleaseAcceptanceTests(unittest.TestCase):
         record["automatedEvidence"] = [
             item
             for item in record["automatedEvidence"]
-            if not (
-                item["scenario"] == "chatToolLoop" and item["lane"] == "live"
-            )
+            if not (item["scenario"] == "chatToolLoop" and item["lane"] == "live")
         ]
-        with self.assertRaisesRegex(MODULE.AcceptanceError, "missing automatedEvidence"):
+        with self.assertRaisesRegex(
+            MODULE.AcceptanceError, "missing automatedEvidence"
+        ):
             MODULE.verify(record)
 
     def test_rejects_evidence_from_another_commit(self) -> None:

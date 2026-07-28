@@ -55,15 +55,11 @@ class RunLiveSmokeTests(unittest.TestCase):
             ],
         }
         self.assertTrue(
-            MODULE.has_completed_execution(
-                report, "artifacts/responses-live-smoke.txt"
-            )
+            MODULE.has_completed_execution(report, "artifacts/responses-live-smoke.txt")
         )
         report["artifacts"][0]["executionId"] = "exec-other"
         self.assertFalse(
-            MODULE.has_completed_execution(
-                report, "artifacts/responses-live-smoke.txt"
-            )
+            MODULE.has_completed_execution(report, "artifacts/responses-live-smoke.txt")
         )
 
 

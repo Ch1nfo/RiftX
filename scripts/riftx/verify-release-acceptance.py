@@ -122,9 +122,7 @@ def verify_matrix(
         raise AcceptanceError(f"missing {name} evidence: {missing[0]}")
 
 
-def verify_release_checks(
-    entries: Any, tag: str, source_commit: str
-) -> None:
+def verify_release_checks(entries: Any, tag: str, source_commit: str) -> None:
     required = set(RELEASE_CHECKS)
     if not isinstance(entries, list):
         raise AcceptanceError("releaseEvidence must be an array")
@@ -165,9 +163,7 @@ def verify(record: Any) -> dict[str, Any]:
         for lane in lanes
     }
     human_required = {
-        (scenario, platform)
-        for scenario in HUMAN_SCENARIOS
-        for platform in PLATFORMS
+        (scenario, platform) for scenario in HUMAN_SCENARIOS for platform in PLATFORMS
     }
     verify_matrix(
         record.get("automatedEvidence"),

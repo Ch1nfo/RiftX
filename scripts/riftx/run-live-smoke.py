@@ -45,7 +45,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_command(command: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str], timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
         text=True,
@@ -98,7 +100,9 @@ def build_prompt(command: str, final_marker: str) -> str:
     )
 
 
-def create_engagement(args: argparse.Namespace, contract: dict[str, str]) -> dict[str, Any]:
+def create_engagement(
+    args: argparse.Namespace, contract: dict[str, str]
+) -> dict[str, Any]:
     expires_at = int(time.time()) + max(args.timeout_seconds * 2, 1_800)
     engagement = run_cli_json(
         args,
@@ -136,7 +140,10 @@ def create_engagement(args: argparse.Namespace, contract: dict[str, str]) -> dic
 def approval_matches(
     approval: dict[str, Any], engagement_id: str, command: str
 ) -> bool:
-    if approval.get("kind") != "command" or approval.get("engagementId") != engagement_id:
+    if (
+        approval.get("kind") != "command"
+        or approval.get("engagementId") != engagement_id
+    ):
         return False
     intent = approval.get("executionIntent")
     if not isinstance(intent, dict):
@@ -168,7 +175,9 @@ def decide_approvals(
     for approval in approvals:
         if not isinstance(approval, dict) or not isinstance(approval.get("id"), str):
             raise SmokeError("pending approval is malformed")
-        decision = "approve" if approval_matches(approval, engagement_id, command) else "deny"
+        decision = (
+            "approve" if approval_matches(approval, engagement_id, command) else "deny"
+        )
         run_cli_json(
             args,
             "approvals",
@@ -179,7 +188,9 @@ def decide_approvals(
             timeout=15,
         )
         if decision == "deny":
-            raise SmokeError("model requested a command outside the guarded live-smoke contract")
+            raise SmokeError(
+                "model requested a command outside the guarded live-smoke contract"
+            )
 
 
 def fetch_conversation(args: argparse.Namespace, engagement_id: str) -> dict[str, Any]:
@@ -198,7 +209,9 @@ def fetch_conversation(args: argparse.Namespace, engagement_id: str) -> dict[str
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise SmokeError(f"conversation endpoint returned invalid JSON: {error}") from error
+        raise SmokeError(
+            f"conversation endpoint returned invalid JSON: {error}"
+        ) from error
     if not isinstance(value, dict):
         raise SmokeError("conversation endpoint did not return an object")
     return value
@@ -227,12 +240,16 @@ def has_completed_execution(report: Any, artifact_path: str) -> bool:
 
 
 def has_final_marker(conversation: Any, marker: str) -> bool:
-    return isinstance(conversation, dict) and isinstance(conversation.get("data"), list) and any(
-        isinstance(entry, dict)
-        and entry.get("role") == "agent"
-        and entry.get("kind") == "message"
-        and marker in str(entry.get("text", ""))
-        for entry in conversation["data"]
+    return (
+        isinstance(conversation, dict)
+        and isinstance(conversation.get("data"), list)
+        and any(
+            isinstance(entry, dict)
+            and entry.get("role") == "agent"
+            and entry.get("kind") == "message"
+            and marker in str(entry.get("text", ""))
+            for entry in conversation["data"]
+        )
     )
 
 
@@ -250,7 +267,9 @@ def event_completed(path: Path) -> bool:
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def run_smoke(args: argparse.Namespace) -> None:
@@ -270,9 +289,10 @@ def run_smoke(args: argparse.Namespace) -> None:
     engagement_id = engagement["id"]
     run_cli_json(args, "engagements", "activate", engagement_id, "--json")
 
-    with events_path.open("w", encoding="utf-8") as events_file, event_errors_path.open(
-        "w", encoding="utf-8"
-    ) as event_errors:
+    with (
+        events_path.open("w", encoding="utf-8") as events_file,
+        event_errors_path.open("w", encoding="utf-8") as event_errors,
+    ):
         event_process = subprocess.Popen(
             [
                 str(args.riftx),
@@ -295,7 +315,9 @@ def run_smoke(args: argparse.Namespace) -> None:
             last_conversation: Any = None
             while time.monotonic() < deadline:
                 if event_process.poll() is not None:
-                    raise SmokeError("event subscription exited before tool-loop completion")
+                    raise SmokeError(
+                        "event subscription exited before tool-loop completion"
+                    )
                 decide_approvals(args, engagement_id, command)
                 last_report = run_cli_json(
                     args, "report", engagement_id, "--format", "json", timeout=15
@@ -303,15 +325,17 @@ def run_smoke(args: argparse.Namespace) -> None:
                 last_conversation = fetch_conversation(args, engagement_id)
                 write_json(report_path, last_report)
                 write_json(conversation_path, last_conversation)
-                if has_completed_execution(last_report, contract["artifact"]) and has_final_marker(
-                    last_conversation, contract["final_marker"]
-                ):
+                if has_completed_execution(
+                    last_report, contract["artifact"]
+                ) and has_final_marker(last_conversation, contract["final_marker"]):
                     for _ in range(20):
                         events_file.flush()
                         if event_completed(events_path):
                             return
                         time.sleep(0.25)
-                    raise SmokeError("turn completed without a matching streamed completion event")
+                    raise SmokeError(
+                        "turn completed without a matching streamed completion event"
+                    )
                 time.sleep(1)
             raise SmokeError("live Runtime tool loop timed out")
         finally:
