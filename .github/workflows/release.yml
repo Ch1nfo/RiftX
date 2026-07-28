@@ -448,7 +448,7 @@ jobs:
           environment-file: .github/agent-environment.yml
           miniforge-version: latest
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: riftx-*-${{ needs.resolve.outputs.version }}
           path: dist
