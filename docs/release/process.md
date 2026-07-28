@@ -16,9 +16,10 @@ The release workflow is `workflow_dispatch` only. Ordinary pull requests and pus
 1. Complete required CI and protected Responses/Chat live smoke checks on the intended commit.
 2. Fill the matching `CHANGELOG.md` release section; placeholder notes make the workflow fail.
 3. Set `VERSION` and all synchronized product versions, then create and push the matching signed or protected `v*` tag.
-4. Dispatch **RiftX Release** for that tag. Keep `draft=true` for RC review; publish only after install evidence is attached.
+4. Dispatch **RiftX Release** for that tag. The workflow always creates a draft and cannot publish directly.
 5. Review per-platform signature checks, payload scans, checksums, CycloneDX SBOM, and the source commit in `RELEASE-MANIFEST.json`.
-6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04 before publishing.
+6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04.
+7. Complete `docs/release/acceptance-template.json`, run `scripts/riftx/verify-release-acceptance.py`, attach only its sanitized summary, and obtain the final Go decision before publishing the draft.
 
 The workflow does not configure automatic updates and does not enable product telemetry. Linux remains a tarball release; no deb/rpm repository is promised for 1.0.
 

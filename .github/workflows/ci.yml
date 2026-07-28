@@ -64,6 +64,7 @@ jobs:
           scripts/riftx/test_clean_generated.py
           scripts/riftx/test_run_live_smoke.py
           scripts/riftx/test_verify_live_smoke.py
+          scripts/riftx/test_verify_release_acceptance.py
 
   supply-chain:
     name: Dependency, license, and SBOM checks

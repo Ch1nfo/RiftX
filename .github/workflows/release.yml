@@ -7,11 +7,6 @@ on:
         description: Existing v* tag to build and release
         required: true
         type: string
-      draft:
-        description: Create a draft GitHub release
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -424,17 +419,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
-          RELEASE_DRAFT: ${{ inputs.draft }}
         shell: bash
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find dist -type f ! -name RELEASE_NOTES.md -print0)
-          draft_flag=()
-          if [[ "$RELEASE_DRAFT" == "true" ]]; then
-            draft_flag+=(--draft)
-          fi
           gh release create "$RELEASE_TAG" "${assets[@]}" \
             --verify-tag \
+            --draft \
             --title "RiftX ${{ needs.resolve.outputs.version }}" \
-            --notes-file dist/RELEASE_NOTES.md \
-            "${draft_flag[@]}"
+            --notes-file dist/RELEASE_NOTES.md
