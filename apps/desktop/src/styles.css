@@ -1078,6 +1078,21 @@ button:disabled {
   line-height: 1.4;
 }
 
+.error-recovery-button {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 5px 8px;
+  border: 1px solid #a75b55;
+  border-radius: 5px;
+  color: #ffe3e0;
+  background: #59302d;
+}
+
+.error-recovery-button:hover:not(:disabled) {
+  border-color: #d17a72;
+  background: #6a3733;
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -1632,6 +1647,18 @@ button:disabled {
 .settings-tabs button.active {
   border-bottom-color: var(--mint-strong);
   color: var(--text);
+}
+
+.report-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 18px;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+  color: #f2c3bf;
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+  font-size: 11px;
 }
 
 .report-content {

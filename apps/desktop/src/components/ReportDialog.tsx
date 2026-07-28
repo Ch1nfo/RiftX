@@ -9,6 +9,8 @@ interface ReportDialogProps {
   report: EngagementReport | null;
   markdown: string | null;
   loading: boolean;
+  failed: boolean;
+  onRetry: () => void;
   onClose: () => void;
 }
 
@@ -17,6 +19,8 @@ export function ReportDialog({
   report,
   markdown,
   loading,
+  failed,
+  onRetry,
   onClose,
 }: ReportDialogProps) {
   const [tab, setTab] = useState<ReportTab>("overview");
@@ -71,6 +75,20 @@ export function ReportDialog({
             ),
           )}
         </div>
+
+        {failed && (
+          <div className="report-recovery" role="status">
+            <span>Report generation failed. Task state was not changed.</span>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onRetry}
+              disabled={loading}
+            >
+              {loading ? "Retrying report" : "Retry report"}
+            </button>
+          </div>
+        )}
 
         <div className="report-content">
           {loading && !report ? (

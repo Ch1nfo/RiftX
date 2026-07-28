@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import {
@@ -209,6 +209,32 @@ describe("App runtime readiness and recovery", () => {
       expect(button).toBeDisabled();
     }
     expect(screen.getByText("Open settings").closest("button")).toBeEnabled();
+  });
+
+  it("redacts daemon transport details and retries the connection", async () => {
+    vi.mocked(daemonInfo).mockRejectedValueOnce({
+      code: "daemon_unavailable",
+      message:
+        "connect /private/tmp/riftx.sock failed; Authorization: Bearer secret",
+    });
+
+    render(<App />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Daemon connection lost");
+    expect(alert).toHaveTextContent(
+      "RiftX cannot reach its local daemon",
+    );
+    expect(alert).not.toHaveTextContent("/private/tmp/riftx.sock");
+    expect(alert).not.toHaveTextContent("Bearer secret");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry connection" }),
+    );
+
+    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(daemonInfo).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the daemon online when profile discovery fails", async () => {

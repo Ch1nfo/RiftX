@@ -76,6 +76,25 @@ describe("ToolsSettingsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("retries when the Tools Directory is temporarily unavailable", async () => {
+    const onError = vi.fn();
+    vi.mocked(toolInventory).mockRejectedValueOnce({
+      code: "state_error",
+      message: "Tools Directory could not be read.",
+    });
+
+    render(<ToolsSettingsView onError={onError} />);
+
+    expect(await screen.findByText("Tools unavailable")).toBeInTheDocument();
+    expect(onError).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+
+    expect(
+      await screen.findByLabelText("Configured Tools directories"),
+    ).toBeInTheDocument();
+    expect(toolInventory).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the platform default when the configured list is empty", async () => {
     vi.mocked(getToolsSettings).mockResolvedValue({
       directories: [],

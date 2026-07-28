@@ -11,7 +11,7 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   bridgeError,
   getToolsSettings,
@@ -49,18 +49,25 @@ export function ToolsSettingsView({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  useEffect(() => {
-    void Promise.all([loadToolInventory(), getToolsSettings()])
-      .then(([loadedInventory, loadedSettings]) => {
-        setInventory(loadedInventory);
-        setToolsSettings(loadedSettings);
-        setDirectories(loadedSettings.directories);
-      })
-      .catch((cause) => {
-        setLoadFailed(true);
-        onError(bridgeError(cause));
-      });
+  const load = useCallback(async () => {
+    setLoadFailed(false);
+    try {
+      const [loadedInventory, loadedSettings] = await Promise.all([
+        loadToolInventory(),
+        getToolsSettings(),
+      ]);
+      setInventory(loadedInventory);
+      setToolsSettings(loadedSettings);
+      setDirectories(loadedSettings.directories);
+    } catch (cause) {
+      setLoadFailed(true);
+      onError(bridgeError(cause));
+    }
   }, [onError]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const runDoctor = async () => {
     setChecking(true);
@@ -132,6 +139,7 @@ export function ToolsSettingsView({
       <SettingsLoading
         failed={loadFailed}
         label={loadFailed ? "Tools unavailable" : "Loading tools"}
+        onRetry={() => void load()}
       />
     );
   }
@@ -297,14 +305,19 @@ export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [checking, setChecking] = useState(false);
 
-  useEffect(() => {
-    void loadSkillCatalog()
-      .then(setCatalog)
-      .catch((cause) => {
-        setLoadFailed(true);
-        onError(bridgeError(cause));
-      });
+  const load = useCallback(async () => {
+    setLoadFailed(false);
+    try {
+      setCatalog(await loadSkillCatalog());
+    } catch (cause) {
+      setLoadFailed(true);
+      onError(bridgeError(cause));
+    }
   }, [onError]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const runDoctor = async () => {
     setChecking(true);
@@ -323,6 +336,7 @@ export function SkillsSettingsView({ onError }: ExtensionDiagnosticsProps) {
       <SettingsLoading
         failed={loadFailed}
         label={loadFailed ? "Skills unavailable" : "Loading skills"}
+        onRetry={() => void load()}
       />
     );
   }
@@ -464,9 +478,11 @@ function DiagnosticList({
 function SettingsLoading({
   failed = false,
   label,
+  onRetry,
 }: {
   failed?: boolean;
   label: string;
+  onRetry?: () => void;
 }) {
   return (
     <div className="settings-loading">
@@ -476,6 +492,11 @@ function SettingsLoading({
         <LoaderCircle className="spin" size={19} />
       )}
       <span>{label}</span>
+      {failed && onRetry && (
+        <button type="button" className="secondary-button" onClick={onRetry}>
+          Retry loading
+        </button>
+      )}
     </div>
   );
 }

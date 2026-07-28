@@ -16,7 +16,7 @@ interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   onError: (error: DesktopBridgeError) => void;
-  onRuntimeChanged: (available: boolean) => void;
+  onRuntimeChanged: (available: boolean) => Promise<void> | void;
   setupRequired?: boolean;
   settingsLocked?: boolean;
 }

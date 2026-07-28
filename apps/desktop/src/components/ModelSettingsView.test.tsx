@@ -180,6 +180,29 @@ describe("ModelSettingsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("retries loading model settings after a temporary IPC failure", async () => {
+    const onError = vi.fn();
+    vi.mocked(llmSettings).mockRejectedValueOnce({
+      code: "daemon_unavailable",
+      message: "RiftX daemon connection is unavailable",
+    });
+
+    render(
+      <ModelSettingsView
+        onBusyChange={vi.fn()}
+        onError={onError}
+        onRuntimeChanged={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Settings unavailable")).toBeInTheDocument();
+    expect(onError).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+
+    expect(await screen.findByText("Unreachable")).toBeInTheDocument();
+    expect(llmSettings).toHaveBeenCalledTimes(2);
+  });
+
   it("blocks invalid timeout and context values before invoking Tauri", async () => {
     render(
       <ModelSettingsView

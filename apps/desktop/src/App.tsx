@@ -45,6 +45,7 @@ import {
 } from "./bridge";
 import riftxIcon from "./assets/riftx-icon.png";
 import { AUTO_STALE_ACTIVITY_MS } from "./constants";
+import { presentDesktopError } from "./errorPresentation";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { CredentialDialog } from "./components/CredentialDialog";
 import { EngagementInspector } from "./components/EngagementInspector";
@@ -106,6 +107,7 @@ export default function App() {
   const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportFailed, setReportFailed] = useState(false);
   const [error, setError] = useState<DesktopBridgeError | null>(null);
   const [lastActivityAt, setLastActivityAt] = useState<number | null>(null);
   const [staleAutoHint, setStaleAutoHint] = useState(false);
@@ -119,6 +121,11 @@ export default function App() {
     () =>
       engagements.find((engagement) => engagement.id === selectedId) ?? null,
     [engagements, selectedId],
+  );
+
+  const presentedError = useMemo(
+    () => (error ? presentDesktopError(error) : null),
+    [error],
   );
 
   const updateEngagement = useCallback((updated: Engagement) => {
@@ -394,6 +401,7 @@ export default function App() {
       setReport(null);
       setAutoRun(null);
       setReportOpen(false);
+      setReportFailed(false);
       setReportMarkdown(null);
       setEvents([]);
       setHistory([]);
@@ -411,6 +419,7 @@ export default function App() {
     setReport(null);
     setAutoRun(null);
     setReportOpen(false);
+    setReportFailed(false);
     setReportMarkdown(null);
     setEvents([]);
     setHistory([]);
@@ -754,6 +763,7 @@ export default function App() {
     }
     setReportOpen(true);
     setReportLoading(true);
+    setReportFailed(false);
     try {
       const [nextReport, markdown] = await Promise.all([
         engagementReport(selected.id),
@@ -764,9 +774,23 @@ export default function App() {
       updateEngagement(nextReport.engagement);
       setError(null);
     } catch (cause) {
+      setReportFailed(true);
       setError(bridgeError(cause));
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const recoverFromError = () => {
+    const action = presentedError?.action;
+    if (!action) {
+      return;
+    }
+    setError(null);
+    if (action === "retryConnection") {
+      void refresh();
+    } else {
+      setSettingsOpen(true);
     }
   };
 
@@ -1065,12 +1089,21 @@ export default function App() {
         />
       </div>
 
-      {error && (
+      {presentedError && (
         <div className="error-banner" role="alert">
           <AlertCircle size={17} />
           <div>
-            <strong>{error.code.replace(/_/g, " ")}</strong>
-            <span>{error.message}</span>
+            <strong>{presentedError.title}</strong>
+            <span>{presentedError.message}</span>
+            {presentedError.actionLabel && (
+              <button
+                type="button"
+                className="error-recovery-button"
+                onClick={recoverFromError}
+              >
+                {presentedError.actionLabel}
+              </button>
+            )}
           </div>
           <button
             type="button"
@@ -1097,9 +1130,9 @@ export default function App() {
         onError={setError}
         setupRequired={daemon !== null && profileReady === false}
         settingsLocked={isRunning}
-        onRuntimeChanged={(available) => {
+        onRuntimeChanged={async (available) => {
           if (available) {
-            void refresh(false);
+            await refresh(false);
           } else {
             setDaemon(null);
             setProfileReady(null);
@@ -1112,6 +1145,8 @@ export default function App() {
         report={report}
         markdown={reportMarkdown}
         loading={reportLoading}
+        failed={reportFailed}
+        onRetry={() => void openReport()}
         onClose={() => setReportOpen(false)}
       />
       <CredentialDialog

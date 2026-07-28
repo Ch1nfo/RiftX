@@ -38,6 +38,30 @@ test("new users complete model setup without editing configuration files", async
   expect(horizontalOverflow).toBeLessThanOrEqual(0);
 });
 
+test("provider protocol failures are redacted and route back to Settings", async ({
+  page,
+}) => {
+  await installTauriMock(page, "providerError");
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Open settings" }).first().click();
+  await page.getByRole("tab", { name: "Model" }).click();
+  await page.getByLabel("API key", { exact: true }).fill("local-input-secret");
+  await page.getByRole("button", { name: "Save key and test" }).click();
+
+  await expect(
+    page.getByText("API key saved, but the connection test could not complete."),
+  ).toBeVisible();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Model provider request failed");
+  await expect(alert).toContainText("run Test connection");
+  await expect(alert).not.toContainText("provider-secret");
+  await expect(alert).not.toContainText("authorization");
+  await expect(
+    alert.getByRole("button", { name: "Open settings" }),
+  ).toBeVisible();
+});
+
 test("runtime reconnect reconciles persisted safety and task state", async ({
   page,
 }) => {

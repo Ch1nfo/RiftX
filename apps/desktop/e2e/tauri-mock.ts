@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 
-export type DesktopMockScenario = "firstRun" | "reconnect";
+export type DesktopMockScenario = "firstRun" | "providerError" | "reconnect";
 
 export async function installTauriMock(
   page: Page,
@@ -237,6 +237,13 @@ export async function installTauriMock(
             state.keySaved = true;
             return profileSettings();
           case "test_llm_profile":
+            if (initialScenario === "providerError") {
+              throw {
+                code: "app_server_error",
+                message:
+                  '{"error":{"authorization":"Bearer provider-secret"}}',
+              };
+            }
             state.profileReady = true;
             return {
               profileName: "default",

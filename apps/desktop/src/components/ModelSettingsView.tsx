@@ -32,7 +32,7 @@ import { NotificationControls } from "./NotificationControls";
 interface ModelSettingsViewProps {
   onBusyChange: (busy: boolean) => void;
   onError: (error: DesktopBridgeError) => void;
-  onRuntimeChanged: (available: boolean) => void;
+  onRuntimeChanged: (available: boolean) => Promise<void> | void;
   onBeforeMutation?: () => Promise<boolean>;
 }
 
@@ -134,20 +134,27 @@ export function ModelSettingsView({
     }
   }, []);
 
-  useEffect(() => {
+  const loadSettings = async () => {
     updateBusy(true);
-    void refreshRuntimeProfiles();
-    void llmSettings()
-      .then((loaded) => {
-        applySettings(loaded);
-      })
-      .catch((cause) => {
-        setLoadFailed(true);
-        onError(bridgeError(cause));
-      })
-      .finally(() => updateBusy(false));
+    setLoadFailed(false);
+    try {
+      const [loaded] = await Promise.all([
+        llmSettings(),
+        refreshRuntimeProfiles(),
+      ]);
+      applySettings(loaded);
+    } catch (cause) {
+      setLoadFailed(true);
+      onError(bridgeError(cause));
+    } finally {
+      updateBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount
-  }, [onError, refreshRuntimeProfiles, updateBusy]);
+  }, []);
 
   const profile =
     settings?.profiles.find(
@@ -383,7 +390,7 @@ export function ModelSettingsView({
       await refreshRuntimeProfiles();
       setApiKey("");
       setShowKey(false);
-      onRuntimeChanged(true);
+      let connectionError: DesktopBridgeError | null = null;
       if (shouldTestAfterSave) {
         try {
           const result = await testLlmProfile(profile.profileName);
@@ -396,7 +403,10 @@ export function ModelSettingsView({
           );
         } catch (cause) {
           setNotice("API key saved, but the connection test could not complete.");
-          onError(bridgeError(cause));
+          connectionError = {
+            ...bridgeError(cause),
+            code: "provider_connection_failed",
+          };
         }
       } else {
         setNotice(
@@ -406,6 +416,10 @@ export function ModelSettingsView({
             "Saved. The local runtime is ready.",
           ),
         );
+      }
+      await onRuntimeChanged(true);
+      if (connectionError) {
+        onError(connectionError);
       }
     } catch (cause) {
       onError(bridgeError(cause));
@@ -452,6 +466,15 @@ export function ModelSettingsView({
           <LoaderCircle className="spin" size={19} />
         )}
         <span>{loadFailed ? "Settings unavailable" : "Loading settings"}</span>
+        {loadFailed && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void loadSettings()}
+          >
+            Retry loading
+          </button>
+        )}
       </div>
     );
   }
