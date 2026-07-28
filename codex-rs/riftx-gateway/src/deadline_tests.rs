@@ -90,6 +90,11 @@ async fn watchdog_expires_active_work_and_revokes_pending_execution() {
     })
     .await
     .expect("deadline watchdog");
+    let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("expiration event timeout")
+        .expect("expiration event");
+    assert_eq!(event.kind, "engagementExpired");
 
     assert!(process_cancellation.is_cancelled());
     assert!(!decision_rx.await.expect("approval decision"));
@@ -116,8 +121,6 @@ async fn watchdog_expires_active_work_and_revokes_pending_execution() {
             ..task
         }]
     );
-    let event = events.recv().await.expect("expiration event");
-    assert_eq!(event.kind, "engagementExpired");
     let audit = state.audit.read_records(100).await.expect("audit");
     assert!(
         audit

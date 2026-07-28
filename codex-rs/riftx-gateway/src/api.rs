@@ -209,6 +209,10 @@ impl From<StateError> for ApiError {
             | StateError::CredentialUseInProgress
             | StateError::InvalidCredentialUseTransition { .. } => StatusCode::CONFLICT,
             StateError::Database(_)
+            | StateError::UnsupportedSchemaVersion { .. }
+            | StateError::NonUtf8DatabasePath(_)
+            | StateError::BackupDatabase { .. }
+            | StateError::DatabaseFile { .. }
             | StateError::Json(_)
             | StateError::Crypto(_)
             | StateError::CryptoTask(_)
