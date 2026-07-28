@@ -240,7 +240,7 @@ jobs:
             --output "$results/chat-sanitized-summary.json"
 
       - name: Upload sanitized dual-protocol results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: riftx-provider-live-smoke
           path: ${{ runner.temp }}/riftx-live-smoke/results/*-sanitized-summary.json
