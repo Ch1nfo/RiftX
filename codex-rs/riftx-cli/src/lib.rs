@@ -13,7 +13,6 @@ use codex_riftx_ipc::CreateEngagementParams;
 use codex_riftx_ipc::DaemonInfo;
 use codex_riftx_ipc::EnvironmentClass;
 use codex_riftx_ipc::ExecutionMode;
-use codex_riftx_ipc::ExtensionDiagnosticLevel;
 use codex_riftx_ipc::IPC_PROTOCOL_VERSION;
 use codex_riftx_ipc::IdentitySelector;
 use codex_riftx_ipc::LocalIpcClient;
@@ -21,10 +20,8 @@ use codex_riftx_ipc::LocalIpcEndpoint;
 use codex_riftx_ipc::LocalIpcResponse;
 use codex_riftx_ipc::ReportFormat;
 use codex_riftx_ipc::Scope;
-use codex_riftx_ipc::SkillCatalog;
 use codex_riftx_ipc::StartTurnParams;
 use codex_riftx_ipc::StructuredSuccessCriterion;
-use codex_riftx_ipc::ToolInventory;
 use futures::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -33,7 +30,9 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 mod credential_commands;
+mod extension_commands;
 mod llm_commands;
+mod system_commands;
 
 #[derive(Debug, Parser)]
 #[command(name = "riftx")]
@@ -47,6 +46,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    Config {
+        #[command(subcommand)]
+        command: system_commands::ConfigCommand,
+    },
     Create {
         #[arg(long)]
         name: String,
@@ -107,6 +114,7 @@ enum Command {
     Interrupt {
         id: String,
     },
+    Kill,
     Events {
         id: String,
     },
@@ -129,11 +137,11 @@ enum Command {
     },
     Tools {
         #[command(subcommand)]
-        command: ToolsCommand,
+        command: extension_commands::ToolsCommand,
     },
     Skills {
         #[command(subcommand)]
-        command: SkillsCommand,
+        command: extension_commands::SkillsCommand,
     },
     Artifacts {
         #[command(subcommand)]
@@ -147,22 +155,6 @@ enum AutoCommand {
     Pause { id: String },
     Resume { id: String },
     Kill { id: String },
-}
-
-#[derive(Debug, Subcommand)]
-enum ToolsCommand {
-    Doctor {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum SkillsCommand {
-    Doctor {
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -241,11 +233,24 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = Cli::parse_from(args);
-    let config = RiftxConfig::load_resolved(&cli.config).await?;
+    let Cli {
+        config: config_path,
+        command,
+    } = Cli::parse_from(args);
+    let command = match command {
+        Command::Config { command } => {
+            return system_commands::execute_config(&config_path, command).await;
+        }
+        command => command,
+    };
+    let config = RiftxConfig::load_resolved(&config_path).await?;
     let client = LocalIpcClient::new(LocalIpcEndpoint::new(config.daemon.ipc_dir));
-    verify_daemon(&client).await?;
-    match cli.command {
+    let daemon = verify_daemon(&client, &config_path).await?;
+    match command {
+        Command::Doctor { json } => {
+            system_commands::print_doctor(&config_path, &daemon, json)?;
+        }
+        Command::Config { .. } => unreachable!("config command returned before daemon setup"),
         Command::Create {
             name,
             objective,
@@ -356,6 +361,9 @@ where
             )
             .await?;
         }
+        Command::Kill => {
+            send(&client, RequestKind::Post, "/v1/system/kill".to_string()).await?;
+        }
         Command::Events { id } => {
             let response = client
                 .get(&format!("/v1/engagements/{id}/events"))
@@ -401,12 +409,12 @@ where
             };
             send(&client, request, path).await?;
         }
-        Command::Tools {
-            command: ToolsCommand::Doctor { json },
-        } => tools_doctor(&client, json).await?,
-        Command::Skills {
-            command: SkillsCommand::Doctor { json },
-        } => skills_doctor(&client, json).await?,
+        Command::Tools { command } => {
+            extension_commands::execute_tools(&client, command).await?;
+        }
+        Command::Skills { command } => {
+            extension_commands::execute_skills(&client, command).await?;
+        }
         Command::Artifacts {
             command:
                 ArtifactsCommand::Capture {
@@ -525,11 +533,16 @@ fn ensure_success(response: &LocalIpcResponse) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn verify_daemon(client: &LocalIpcClient) -> anyhow::Result<()> {
-    let response = client
-        .get("/v1/system/info")
-        .await
-        .context("connect to riftxd")?;
+async fn verify_daemon(
+    client: &LocalIpcClient,
+    config_path: &std::path::Path,
+) -> anyhow::Result<DaemonInfo> {
+    let response = client.get("/v1/system/info").await.with_context(|| {
+        format!(
+            "riftxd is unavailable; start it with `riftxd --config {}` and retry",
+            config_path.display()
+        )
+    })?;
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(
@@ -544,82 +557,7 @@ async fn verify_daemon(client: &LocalIpcClient) -> anyhow::Result<()> {
         IPC_PROTOCOL_VERSION,
         info.protocol_version
     );
-    Ok(())
-}
-
-async fn tools_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
-    let response = client
-        .post("/v1/tools/doctor")
-        .await
-        .context("run tool doctor")?;
-    let status = response.status();
-    let body = response.bytes().await?;
-    anyhow::ensure!(
-        status.is_success(),
-        "riftxd returned {status}: {}",
-        String::from_utf8_lossy(&body)
-    );
-    let inventory: ToolInventory =
-        serde_json::from_slice(&body).context("decode tool inventory")?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&inventory)?);
-    } else {
-        println!("Tools: {}", inventory.tools.len());
-        println!("PATH entries: {}", inventory.path_entries.len());
-        println!("Snapshot: {}", inventory.snapshot_sha256);
-        for diagnostic in &inventory.diagnostics {
-            let level = match diagnostic.level {
-                ExtensionDiagnosticLevel::Info => "INFO",
-                ExtensionDiagnosticLevel::Warning => "WARN",
-                ExtensionDiagnosticLevel::Error => "ERROR",
-            };
-            let path = diagnostic
-                .path
-                .as_ref()
-                .map(|path| format!(" {}:", path.display()))
-                .unwrap_or_default();
-            println!("{level} {}{path} {}", diagnostic.code, diagnostic.message);
-        }
-    }
-    anyhow::ensure!(inventory.is_healthy(), "one or more tool checks failed");
-    Ok(())
-}
-
-async fn skills_doctor(client: &LocalIpcClient, json: bool) -> anyhow::Result<()> {
-    let response = client
-        .post("/v1/skills/doctor")
-        .await
-        .context("run skill doctor")?;
-    let status = response.status();
-    let body = response.bytes().await?;
-    anyhow::ensure!(
-        status.is_success(),
-        "riftxd returned {status}: {}",
-        String::from_utf8_lossy(&body)
-    );
-    let catalog: SkillCatalog = serde_json::from_slice(&body).context("decode skill catalog")?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&catalog)?);
-    } else {
-        println!("Skills: {}", catalog.skills.len());
-        println!("Directory: {}", catalog.root.display());
-        println!("Snapshot: {}", catalog.snapshot_sha256);
-        for diagnostic in &catalog.diagnostics {
-            let level = match diagnostic.level {
-                ExtensionDiagnosticLevel::Info => "INFO",
-                ExtensionDiagnosticLevel::Warning => "WARN",
-                ExtensionDiagnosticLevel::Error => "ERROR",
-            };
-            let path = diagnostic
-                .path
-                .as_deref()
-                .map(|path| format!(" ({})", path.display()))
-                .unwrap_or_default();
-            println!("{level} {}{path}: {}", diagnostic.code, diagnostic.message);
-        }
-    }
-    anyhow::ensure!(catalog.is_healthy(), "one or more RiftX skills are invalid");
-    Ok(())
+    Ok(info)
 }
 
 async fn export_artifact(

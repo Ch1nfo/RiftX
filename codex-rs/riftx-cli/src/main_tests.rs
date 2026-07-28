@@ -59,12 +59,46 @@ fn create_command_accepts_repeated_scope_arguments() {
 }
 
 #[test]
+fn diagnostic_and_discovery_commands_match_the_m6_surface() {
+    let doctor = Cli::try_parse_from(["riftx", "doctor", "--json"]).expect("doctor");
+    assert!(matches!(doctor.command, Command::Doctor { json: true }));
+
+    let validate =
+        Cli::try_parse_from(["riftx", "config", "validate", "--json"]).expect("validate");
+    assert!(matches!(
+        validate.command,
+        Command::Config {
+            command: system_commands::ConfigCommand::Validate { json: true }
+        }
+    ));
+
+    let tools = Cli::try_parse_from(["riftx", "tools", "list", "--json"]).expect("tools");
+    assert!(matches!(
+        tools.command,
+        Command::Tools {
+            command: extension_commands::ToolsCommand::List { json: true }
+        }
+    ));
+
+    let skills = Cli::try_parse_from(["riftx", "skills", "list", "--json"]).expect("skills");
+    assert!(matches!(
+        skills.command,
+        Command::Skills {
+            command: extension_commands::SkillsCommand::List { json: true }
+        }
+    ));
+
+    let kill = Cli::try_parse_from(["riftx", "kill"]).expect("kill");
+    assert!(matches!(kill.command, Command::Kill));
+}
+
+#[test]
 fn tools_doctor_supports_machine_readable_output() {
     let cli = Cli::try_parse_from(["riftx", "tools", "doctor", "--json"]).expect("valid CLI");
     assert!(matches!(
         cli.command,
         Command::Tools {
-            command: ToolsCommand::Doctor { json: true }
+            command: extension_commands::ToolsCommand::Doctor { json: true }
         }
     ));
 }
@@ -75,7 +109,7 @@ fn skills_doctor_supports_machine_readable_output() {
     assert!(matches!(
         cli.command,
         Command::Skills {
-            command: SkillsCommand::Doctor { json: true }
+            command: extension_commands::SkillsCommand::Doctor { json: true }
         }
     ));
 }
