@@ -158,8 +158,8 @@ fn diagnostic_and_discovery_commands_match_the_m6_surface() {
         }
     ));
 
-    let kill = Cli::try_parse_from(["riftx", "kill"]).expect("kill");
-    assert!(matches!(kill.command, Command::Kill));
+    let kill = Cli::try_parse_from(["riftx", "kill", "--json"]).expect("kill");
+    assert!(matches!(kill.command, Command::Kill { json: true }));
 }
 
 #[test]
@@ -219,6 +219,7 @@ fn mode_command_carries_the_explicit_auto_confirmation() {
         "auto",
         "--confirmation",
         "AUTO MODE - TEST ENVIRONMENT ONLY",
+        "--json",
     ])
     .expect("valid CLI");
     assert!(matches!(
@@ -227,6 +228,7 @@ fn mode_command_carries_the_explicit_auto_confirmation() {
             id,
             mode: ExecutionModeArg::Auto,
             confirmation: Some(confirmation),
+            json: true,
         } if id == "eng-1" && confirmation == "AUTO MODE - TEST ENVIRONMENT ONLY"
     ));
 }
@@ -241,6 +243,7 @@ fn artifacts_commands_capture_and_export_workspace_files() {
         "artifacts/result.json",
         "--execution-id",
         "execution-1",
+        "--json",
     ])
     .expect("capture command");
     assert!(matches!(
@@ -249,6 +252,7 @@ fn artifacts_commands_capture_and_export_workspace_files() {
             command: ArtifactsCommand::Capture {
                 id,
                 execution_id: Some(execution_id),
+                json: true,
                 ..
             }
         } if id == "eng-1" && execution_id == "execution-1"
@@ -262,6 +266,7 @@ fn artifacts_commands_capture_and_export_workspace_files() {
         "artifact-1",
         "--output",
         "result.json",
+        "--json",
     ])
     .expect("export command");
     assert!(matches!(
@@ -271,6 +276,7 @@ fn artifacts_commands_capture_and_export_workspace_files() {
                 id,
                 artifact_id,
                 output,
+                json: true,
             }
         } if id == "eng-1"
             && artifact_id == "artifact-1"
@@ -288,19 +294,55 @@ fn auto_lifecycle_commands_parse_with_engagement_ids() {
     ];
 
     for (operation, expected_id) in cases {
-        let cli = Cli::try_parse_from(["riftx", "auto", operation, expected_id])
+        let cli = Cli::try_parse_from(["riftx", "auto", operation, expected_id, "--json"])
             .expect("valid Auto lifecycle command");
         let Command::Auto { command } = cli.command else {
             panic!("expected Auto command");
         };
         let id = match command {
-            AutoCommand::Status { id }
-            | AutoCommand::Pause { id }
-            | AutoCommand::Resume { id }
-            | AutoCommand::Kill { id } => id,
+            AutoCommand::Status { id, json }
+            | AutoCommand::Pause { id, json }
+            | AutoCommand::Resume { id, json }
+            | AutoCommand::Kill { id, json } => {
+                assert!(json);
+                id
+            }
         };
         assert_eq!(id, expected_id);
     }
+}
+
+#[test]
+fn streaming_and_control_commands_support_json_output() {
+    let turn = Cli::try_parse_from(["riftx", "turn", "eng-1", "Run checks", "--json"])
+        .expect("turn command");
+    assert!(matches!(
+        turn.command,
+        Command::Turn { id, json: true, .. } if id == "eng-1"
+    ));
+
+    let events =
+        Cli::try_parse_from(["riftx", "events", "eng-1", "--json"]).expect("events command");
+    assert!(matches!(
+        events.command,
+        Command::Events { id, json: true } if id == "eng-1"
+    ));
+
+    let interrupt =
+        Cli::try_parse_from(["riftx", "interrupt", "eng-1", "--json"]).expect("interrupt command");
+    assert!(matches!(
+        interrupt.command,
+        Command::Interrupt { id, json: true } if id == "eng-1"
+    ));
+
+    let artifacts = Cli::try_parse_from(["riftx", "artifacts", "list", "eng-1", "--json"])
+        .expect("artifact list command");
+    assert!(matches!(
+        artifacts.command,
+        Command::Artifacts {
+            command: ArtifactsCommand::List { id, json: true }
+        } if id == "eng-1"
+    ));
 }
 
 #[test]

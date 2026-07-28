@@ -53,6 +53,26 @@ fn cli_owned_json_outputs_match_the_versioned_schema_fixture() {
             })
             .expect("approval decision JSON"),
         ),
+        (
+            "operationSuccess",
+            serde_json::to_value(OperationSuccess { ok: true }).expect("operation success JSON"),
+        ),
+        (
+            "eventEnvelope",
+            serde_json::to_value(EventEnvelope {
+                event: Some("turnCompleted".to_string()),
+                data: json!({"turnId": "turn-1"}),
+                id: None,
+            })
+            .expect("event envelope JSON"),
+        ),
+        (
+            "artifactExport",
+            serde_json::to_value(ArtifactExportOutput {
+                output: Path::new("result.json"),
+            })
+            .expect("artifact export JSON"),
+        ),
     ];
 
     for (definition, output) in cases {

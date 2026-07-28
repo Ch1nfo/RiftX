@@ -39,7 +39,12 @@ v0.8 产品主路径（模式、分档审批、设置、Auto 启动确认、Guar
 
 仓库中仍可能存在 Guard、全库加密等**遗留**实现；**不作为**产品主路径或 1.0 发布门槛。
 
-已知缺口（详见 1.0 计划）：Chat Completions 直连、Profile 事务化、Auto 多 turn、正式签名安装包等。不预装任何安全工具。
+Linux 正式 CLI 命令同时提供人类可读输出和 `--json`；`events --json` 是持续输出的
+newline-delimited JSON 事件流。稳定 JSON 字段和退出码由
+`codex-rs/riftx-cli/fixtures/cli-json-v1.schema.json` 固定。
+
+当前剩余发布门槛（详见 1.0 计划）主要是远端 required CI 结果、受保护 provider live
+smoke、正式签名安装包和干净系统真人安装验收。不预装任何安全工具。
 
 ## 本机工具
 

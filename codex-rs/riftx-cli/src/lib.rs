@@ -1,5 +1,8 @@
 use crate::exit_codes::CliExitCode;
 use crate::exit_codes::WithExitCode;
+use crate::json_contract::ArtifactExportOutput;
+use crate::json_contract::EventEnvelope;
+use crate::json_contract::OperationSuccess;
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
@@ -73,10 +76,14 @@ enum Command {
         mode: ExecutionModeArg,
         #[arg(long)]
         confirmation: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     Turn {
         id: String,
         input: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     Approve {
         id: String,
@@ -86,10 +93,17 @@ enum Command {
     },
     Interrupt {
         id: String,
+        #[arg(long)]
+        json: bool,
     },
-    Kill,
+    Kill {
+        #[arg(long)]
+        json: bool,
+    },
     Events {
         id: String,
+        #[arg(long)]
+        json: bool,
     },
     Report {
         id: String,
@@ -124,10 +138,26 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum AutoCommand {
-    Status { id: String },
-    Pause { id: String },
-    Resume { id: String },
-    Kill { id: String },
+    Status {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Pause {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Resume {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Kill {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -139,15 +169,21 @@ enum ArtifactsCommand {
         media_type: Option<String>,
         #[arg(long)]
         execution_id: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     List {
         id: String,
+        #[arg(long)]
+        json: bool,
     },
     Export {
         id: String,
         artifact_id: String,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -248,6 +284,7 @@ where
             id,
             mode,
             confirmation,
+            json,
         } => {
             send_typed(
                 &client,
@@ -256,14 +293,16 @@ where
                     mode: mode.into(),
                     confirmation,
                 },
+                json,
             )
             .await?;
         }
-        Command::Turn { id, input } => {
+        Command::Turn { id, input, json } => {
             send_typed(
                 &client,
                 &format!("/v1/engagements/{id}/turns"),
                 &StartTurnParams { input },
+                json,
             )
             .await?;
         }
@@ -280,31 +319,34 @@ where
             engagement_commands::decide(&client, &id, ApprovalDecision::Deny, /*json*/ false)
                 .await?;
         }
-        Command::Interrupt { id } => {
+        Command::Interrupt { id, json } => {
             send(
                 &client,
                 RequestKind::Post,
                 format!("/v1/engagements/{id}/interrupt"),
+                json,
             )
             .await?;
         }
-        Command::Kill => {
-            send(&client, RequestKind::Post, "/v1/system/kill".to_string()).await?;
+        Command::Kill { json } => {
+            send(
+                &client,
+                RequestKind::Post,
+                "/v1/system/kill".to_string(),
+                json,
+            )
+            .await?;
         }
-        Command::Events { id } => {
+        Command::Events { id, json } => {
             let response = client
                 .get(&format!("/v1/engagements/{id}/events"))
                 .await
                 .context("riftxd request failed")
                 .with_exit_code(CliExitCode::Request)?;
             ensure_success(&response).with_exit_code(CliExitCode::Request)?;
-            let mut body = response.into_data_stream();
-            while let Some(chunk) = body.next().await {
-                print!(
-                    "{}",
-                    String::from_utf8_lossy(&chunk.with_exit_code(CliExitCode::Request)?)
-                );
-            }
+            stream_events(response, json)
+                .await
+                .with_exit_code(CliExitCode::Request)?;
         }
         Command::Report { id, format } => {
             let format = ReportFormat::from(format);
@@ -312,6 +354,7 @@ where
                 &client,
                 RequestKind::Get,
                 format!("/v1/engagements/{id}/report?format={}", format.as_str()),
+                matches!(format, ReportFormat::Json),
             )
             .await?;
         }
@@ -322,23 +365,27 @@ where
             llm_commands::execute(&client, command).await?;
         }
         Command::Auto { command } => {
-            let (request, path) = match command {
-                AutoCommand::Status { id } => {
-                    (RequestKind::Get, format!("/v1/engagements/{id}/auto"))
+            let (request, path, json) = match command {
+                AutoCommand::Status { id, json } => {
+                    (RequestKind::Get, format!("/v1/engagements/{id}/auto"), json)
                 }
-                AutoCommand::Pause { id } => (
+                AutoCommand::Pause { id, json } => (
                     RequestKind::Post,
                     format!("/v1/engagements/{id}/auto/pause"),
+                    json,
                 ),
-                AutoCommand::Resume { id } => (
+                AutoCommand::Resume { id, json } => (
                     RequestKind::Post,
                     format!("/v1/engagements/{id}/auto/resume"),
+                    json,
                 ),
-                AutoCommand::Kill { id } => {
-                    (RequestKind::Post, format!("/v1/engagements/{id}/auto/kill"))
-                }
+                AutoCommand::Kill { id, json } => (
+                    RequestKind::Post,
+                    format!("/v1/engagements/{id}/auto/kill"),
+                    json,
+                ),
             };
-            send(&client, request, path).await?;
+            send(&client, request, path, json).await?;
         }
         Command::Tools { command } => {
             extension_commands::execute_tools(&client, command).await?;
@@ -353,6 +400,7 @@ where
                     path,
                     media_type,
                     execution_id,
+                    json,
                 },
         } => {
             send_typed(
@@ -363,16 +411,18 @@ where
                     media_type,
                     execution_id,
                 },
+                json,
             )
             .await?;
         }
         Command::Artifacts {
-            command: ArtifactsCommand::List { id },
+            command: ArtifactsCommand::List { id, json },
         } => {
             send(
                 &client,
                 RequestKind::Get,
                 format!("/v1/engagements/{id}/artifacts"),
+                json,
             )
             .await?;
         }
@@ -382,8 +432,9 @@ where
                     id,
                     artifact_id,
                     output,
+                    json,
                 },
-        } => export_artifact(&client, &id, &artifact_id, &output).await?,
+        } => export_artifact(&client, &id, &artifact_id, &output, json).await?,
     }
     Ok(())
 }
@@ -392,30 +443,36 @@ async fn send_typed<T: Serialize + ?Sized>(
     client: &LocalIpcClient,
     path: &str,
     body: &T,
+    json: bool,
 ) -> anyhow::Result<()> {
     let response = client
         .post_typed(path, body)
         .await
         .context("riftxd request failed")
         .with_exit_code(CliExitCode::Request)?;
-    print_response(response)
+    print_response(response, json)
         .await
         .with_exit_code(CliExitCode::Request)
 }
 
-async fn send(client: &LocalIpcClient, kind: RequestKind, path: String) -> anyhow::Result<()> {
+async fn send(
+    client: &LocalIpcClient,
+    kind: RequestKind,
+    path: String,
+    json: bool,
+) -> anyhow::Result<()> {
     let response = match kind {
         RequestKind::Get => client.get(&path).await,
         RequestKind::Post => client.post(&path).await,
     }
     .context("riftxd request failed")
     .with_exit_code(CliExitCode::Request)?;
-    print_response(response)
+    print_response(response, json)
         .await
         .with_exit_code(CliExitCode::Request)
 }
 
-async fn print_response(response: LocalIpcResponse) -> anyhow::Result<()> {
+async fn print_response(response: LocalIpcResponse, json: bool) -> anyhow::Result<()> {
     let status = response.status();
     let body = response.bytes().await?;
     anyhow::ensure!(
@@ -423,8 +480,38 @@ async fn print_response(response: LocalIpcResponse) -> anyhow::Result<()> {
         "riftxd returned {status}: {}",
         String::from_utf8_lossy(&body)
     );
-    if !body.is_empty() {
+    if body.is_empty() {
+        if json {
+            println!("{}", serde_json::to_string(&OperationSuccess { ok: true })?);
+        }
+    } else if json {
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).context("decode JSON command response")?;
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
         println!("{}", String::from_utf8_lossy(&body));
+    }
+    Ok(())
+}
+
+async fn stream_events(response: LocalIpcResponse, json: bool) -> anyhow::Result<()> {
+    let mut stream = response.into_sse_stream();
+    while let Some(event) = stream.next_event().await? {
+        if json {
+            let data =
+                serde_json::from_str(&event.data).unwrap_or(serde_json::Value::String(event.data));
+            println!(
+                "{}",
+                serde_json::to_string(&EventEnvelope {
+                    event: event.event,
+                    data,
+                    id: event.id,
+                })?
+            );
+        } else {
+            let event_name = event.event.as_deref().unwrap_or("message");
+            println!("[{event_name}] {}", event.data);
+        }
     }
     Ok(())
 }
@@ -476,6 +563,7 @@ async fn export_artifact(
     engagement_id: &str,
     artifact_id: &str,
     output: &std::path::Path,
+    json: bool,
 ) -> anyhow::Result<()> {
     let response = client
         .get(&format!(
@@ -516,7 +604,14 @@ async fn export_artifact(
         let _ = tokio::fs::remove_file(output).await;
         return Err(error);
     }
-    println!("{}", output.display());
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ArtifactExportOutput { output })?
+        );
+    } else {
+        println!("{}", output.display());
+    }
     Ok(())
 }
 
