@@ -242,6 +242,7 @@ conda run -n agent pnpm --filter @riftx/desktop \
 - [项目说明（v0.8 产品基线）](./RiftX-项目说明.md)
 - [产品与技术实施计划（v0.8）](./RiftX-技术实现方案.md)
 - [1.0 M0 基线记录](./docs/1.0-baseline.md)
+- [1.0 Threat Model](./architecture/threat-model-1.0.md)
 - [Changelog](./CHANGELOG.md)
 - [v0.7 架构决策（历史，已被 v0.8 收敛）](./architecture/adr/0001-v0.7-local-native-execution.md)
 - [Linux headless 密钥决策](./architecture/adr/0003-linux-headless-secrets.md)
