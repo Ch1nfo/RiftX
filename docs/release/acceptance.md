@@ -40,9 +40,11 @@ conda run --no-capture-output -n agent \
   --output /secure/path/riftx-1.0.0-acceptance-summary.json
 ```
 
-Only the sanitized summary and the acceptance-record SHA-256 should be attached to the release.
-The draft may be published only after this command succeeds and reviewers confirm the referenced
-artifacts still exist.
+Upload the completed protected record to the draft release using the exact name
+`riftx-<version>-acceptance.json`, then dispatch `.github/workflows/publish-release.yml`. The
+protected workflow repeats this verification against the tag commit, deletes the raw record,
+attaches only the sanitized summary and record SHA-256, and then removes draft status. Do not
+publish from the GitHub UI or retain the raw record as a public release asset.
 
 ## Human scenarios
 

@@ -424,7 +424,7 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Aggregate and publish release
+    name: Aggregate draft release
     needs: [resolve, linux, macos, windows]
     runs-on: ubuntu-24.04
     environment: riftx-release
@@ -484,7 +484,7 @@ jobs:
               | xargs -0 sha256sum > SHA256SUMS
           )
 
-      - name: Create GitHub release from the existing tag
+      - name: Create draft GitHub release from the existing tag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}

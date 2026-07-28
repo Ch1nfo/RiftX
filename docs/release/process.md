@@ -19,7 +19,8 @@ The release workflow is `workflow_dispatch` only. Ordinary pull requests and pus
 4. Dispatch **RiftX Release** for that tag. The workflow always creates a draft and cannot publish directly.
 5. Review per-platform signature checks, payload scans, checksums, CycloneDX SBOM, and the source commit in `RELEASE-MANIFEST.json`.
 6. Verify macOS and Windows installers on clean systems and the Linux tarball on clean Ubuntu 22.04 and 24.04.
-7. Complete `docs/release/acceptance-template.json`, run `scripts/riftx/verify-release-acceptance.py`, attach only its sanitized summary, and obtain the final Go decision before publishing the draft.
+7. Complete `docs/release/acceptance-template.json`, validate it locally, then upload the protected record to the draft release as `riftx-<version>-acceptance.json`.
+8. Dispatch **RiftX Publish Accepted Release** for the same tag. The protected workflow revalidates all M8 evidence against the tag commit, deletes the raw record, attaches only its SHA-256-bound sanitized summary, and then removes draft status.
 
 The workflow does not configure automatic updates and does not enable product telemetry. Linux remains a tarball release; no deb/rpm repository is promised for 1.0.
 
