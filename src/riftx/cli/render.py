@@ -1,0 +1,135 @@
+"""Rich renderers for control-plane data."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
+
+from rich.console import Console
+from rich.json import JSON
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+
+def render_runs(console: Console, runs: Iterable[dict[str, Any]]) -> None:
+    table = Table(title="RiftX Runs", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Status")
+    table.add_column("Objective")
+    table.add_column("Node")
+    table.add_column("Created")
+    count = 0
+    for run in runs:
+        count += 1
+        objective = run.get("objective", {})
+        description = (
+            objective.get("description", "") if isinstance(objective, dict) else str(objective)
+        )
+        table.add_row(
+            str(run.get("id", "")),
+            _status_text(str(run.get("status", "unknown"))),
+            str(description),
+            str(run.get("node_id", "")),
+            str(run.get("created_at", "")),
+        )
+    if count:
+        console.print(table)
+    else:
+        console.print("[dim]No runs found.[/dim]")
+
+
+def render_run(console: Console, run: dict[str, Any]) -> None:
+    objective = run.get("objective", {})
+    description = (
+        objective.get("description", "") if isinstance(objective, dict) else str(objective)
+    )
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold")
+    body.add_column()
+    body.add_row("ID", str(run.get("id", "")))
+    body.add_row("Status", _status_text(str(run.get("status", "unknown"))))
+    body.add_row("Objective", str(description))
+    body.add_row("Node", str(run.get("node_id", "")))
+    body.add_row("Approval", str(run.get("approval_mode", "")))
+    body.add_row("Workspace", str(run.get("workspace_path", "")))
+    body.add_row("Workflow", str(run.get("temporal_workflow_id", "")))
+    console.print(Panel(body, title="RiftX Run", border_style="cyan"))
+
+
+def render_tools(console: Console, payload: dict[str, Any]) -> None:
+    table = Table(
+        title=(
+            f"Tools on {payload.get('node_id', 'unknown')} "
+            f"(generation {payload.get('generation', '?')})"
+        ),
+        expand=True,
+    )
+    table.add_column("Tool", style="cyan")
+    table.add_column("Availability")
+    table.add_column("Version")
+    table.add_column("Executor")
+    table.add_column("Capabilities")
+    for item in payload.get("tools", []):
+        definition = item.get("definition", {})
+        state = item.get("state", {})
+        table.add_row(
+            str(definition.get("id", "")),
+            _availability_text(str(state.get("availability", "unknown"))),
+            str(state.get("version") or "—"),
+            str(definition.get("executor", "")),
+            ", ".join(definition.get("capabilities", [])),
+        )
+    console.print(table)
+
+
+def render_event(console: Console, event: object) -> None:
+    if not isinstance(event, dict):
+        console.print(event)
+        return
+    sequence = event.get("sequence", "?")
+    event_type = event.get("event_type", "event")
+    payload = event.get("payload", {})
+    console.print(f"[dim]#{sequence}[/dim] [bold cyan]{event_type}[/bold cyan]")
+    if payload:
+        console.print(JSON.from_data(payload), soft_wrap=True)
+
+
+def render_error(console: Console, error: Exception) -> None:
+    from .client import RiftXAPIError
+
+    if isinstance(error, RiftXAPIError):
+        console.print(
+            Panel(
+                f"[bold]{error.message}[/bold]\n[dim]code={error.code} "
+                f"status={error.status_code}[/dim]",
+                title="RiftX API error",
+                border_style="red",
+            )
+        )
+    else:
+        console.print(Panel(str(error), title="Error", border_style="red"))
+
+
+def _status_text(status: str) -> Text:
+    colors = {
+        "running": "green",
+        "completed": "bright_green",
+        "waiting_approval": "yellow",
+        "paused": "yellow",
+        "failed": "red",
+        "cancelled": "red",
+        "created": "blue",
+        "preparing": "blue",
+    }
+    return Text(status, style=colors.get(status, "white"))
+
+
+def _availability_text(availability: str) -> Text:
+    colors = {
+        "available": "green",
+        "unavailable": "red",
+        "misconfigured": "yellow",
+        "disabled": "dim",
+    }
+    return Text(availability, style=colors.get(availability, "white"))

@@ -16,14 +16,21 @@ dependencies = [
   "aiosqlite>=0.20,<1",
   "alembic>=1.14,<2",
   "fastapi>=0.136,<1",
+  "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
+  "prompt-toolkit>=3.0.53,<4",
   "PyYAML>=6,<7",
+  "rich>=14,<15",
   "openai>=2.50,<3",
   "openai-agents>=0.19,<1",
   "sqlalchemy[asyncio]>=2.0.36,<3",
   "temporalio>=1.30,<2",
+  "typer>=0.26,<1",
   "uvicorn>=0.51,<1",
 ]
+
+[project.scripts]
+riftx = "riftx.cli.app:app"
 
 [project.optional-dependencies]
 dev = [
