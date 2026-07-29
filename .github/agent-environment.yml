@@ -1,8 +1,0 @@
-name: agent
-channels:
-  - conda-forge
-dependencies:
-  - python=3.12
-  - rust=1.95.0
-  - just=1.57.0
-  - go=1.25

@@ -108,6 +108,9 @@ __pycache__/
 # Local progress note (do not commit)
 /当前项目进度.md
 
+# Local full-tree archives (snapshots of code + plans; do not commit)
+/archive/
+
 # Occasional local cargo/target overrides outside crate dirs
 **/target/
 !**/src-tauri/icons/**
