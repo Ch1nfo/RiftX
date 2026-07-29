@@ -1,0 +1,66 @@
+version: 1
+execution_policy: open
+
+shells:
+  default:
+    linux: /bin/bash
+    macos: /bin/zsh
+    windows: pwsh.exe
+
+tools:
+  nmap:
+    enabled: true
+    command:
+      - nmap
+    executor: process
+    capabilities:
+      - port_scan
+      - service_detection
+      - os_detection
+    version_probe:
+      command:
+        - nmap
+        - --version
+    approval: never
+    timeout: 1800
+    output:
+      preferred: xml
+
+  nuclei:
+    enabled: true
+    command:
+      - nuclei
+    executor: process
+    capabilities:
+      - vulnerability_scan
+      - template_scan
+    version_probe:
+      command:
+        - nuclei
+        - -version
+    approval: never
+    timeout: 3600
+
+  msfconsole:
+    enabled: true
+    command:
+      - msfconsole
+      - -q
+    executor: pty
+    capabilities:
+      - exploit_search
+      - exploit_execute
+      - session_management
+    approval: sensitive
+
+  custom_poc:
+    enabled: false
+    command:
+      - python3
+      - /opt/redteam/pocs/custom.py
+    executor: process
+    capabilities:
+      - custom_verification
+    approval: sensitive
+    environment:
+      PYTHONUNBUFFERED: "1"
