@@ -17,6 +17,8 @@ dependencies = [
   "alembic>=1.14,<2",
   "pydantic>=2.10,<3",
   "PyYAML>=6,<7",
+  "openai>=2.50,<3",
+  "openai-agents>=0.19,<1",
   "sqlalchemy[asyncio]>=2.0.36,<3",
 ]
 

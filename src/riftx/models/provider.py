@@ -1,0 +1,193 @@
+"""OpenAI and OpenAI-compatible model provider for the Agents SDK."""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+from agents import (
+    Model,
+    ModelProvider,
+    OpenAIChatCompletionsModel,
+    OpenAIResponsesModel,
+)
+from openai import APITimeoutError, AsyncOpenAI
+
+from .config import ModelAPI, ModelProfile, ModelsConfig
+
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class ModelFailureCategory(StrEnum):
+    TIMEOUT = "timeout"
+    RATE_LIMIT = "rate_limit"
+    TEMPORARY_SERVER = "temporary_server"
+    INVALID_MODEL = "invalid_model"
+    INVALID_REQUEST = "invalid_request"
+    CONTEXT_EXCEEDED = "context_exceeded"
+    UNSUPPORTED_TOOL_SCHEMA = "unsupported_tool_schema"
+    AUTHENTICATION = "authentication"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelFailure:
+    category: ModelFailureCategory
+    retryable: bool
+    status_code: int | None = None
+
+
+class ModelConfigurationError(ValueError):
+    pass
+
+
+class RiftXModelProvider(ModelProvider):
+    """Resolve logical model profiles without exposing credentials to business code."""
+
+    def __init__(
+        self,
+        config: ModelsConfig,
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> None:
+        self.config = config
+        self._environment = dict(os.environ if environment is None else environment)
+        self._models: dict[str, Model] = {}
+        self._clients: dict[str, AsyncOpenAI] = {}
+
+    def get_model(self, model_name: str | None) -> Model:
+        profile_name = model_name or self.config.default_profile
+        if profile_name in self._models:
+            return self._models[profile_name]
+        try:
+            profile = self.config.models[profile_name]
+        except KeyError as exc:
+            raise ModelConfigurationError(
+                f"model profile {profile_name!r} is not configured"
+            ) from exc
+
+        client = self._build_client(profile_name, profile)
+        if profile.api is ModelAPI.RESPONSES:
+            model: Model = OpenAIResponsesModel(
+                model=profile.model,
+                openai_client=client,
+            )
+        else:
+            model = OpenAIChatCompletionsModel(
+                model=profile.model,
+                openai_client=client,
+            )
+        self._clients[profile_name] = client
+        self._models[profile_name] = model
+        return model
+
+    async def aclose(self) -> None:
+        clients = list(self._clients.values())
+        self._clients.clear()
+        self._models.clear()
+        for client in clients:
+            await client.close()
+
+    def _build_client(self, profile_name: str, profile: ModelProfile) -> AsyncOpenAI:
+        api_key: str
+        if profile.api_key_env:
+            configured = self._environment.get(profile.api_key_env)
+        else:
+            configured = None
+        if configured:
+            api_key = configured
+        elif profile.requires_api_key:
+            raise ModelConfigurationError(
+                f"model profile {profile_name!r} requires environment variable "
+                f"{profile.api_key_env or '<unspecified>'}"
+            )
+        else:
+            api_key = "not-required"
+
+        base_url = _expand_environment(profile.base_url, self._environment)
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+        )
+
+
+def classify_model_failure(error: BaseException) -> ModelFailure:
+    status_code = _status_code(error)
+    message = str(error).lower()
+    if isinstance(error, (TimeoutError, APITimeoutError)):
+        return ModelFailure(ModelFailureCategory.TIMEOUT, retryable=True, status_code=status_code)
+    if status_code == 429:
+        return ModelFailure(
+            ModelFailureCategory.RATE_LIMIT, retryable=True, status_code=status_code
+        )
+    if status_code is not None and status_code >= 500:
+        return ModelFailure(
+            ModelFailureCategory.TEMPORARY_SERVER,
+            retryable=True,
+            status_code=status_code,
+        )
+    if status_code in {401, 403}:
+        return ModelFailure(
+            ModelFailureCategory.AUTHENTICATION,
+            retryable=False,
+            status_code=status_code,
+        )
+    if "context" in message and any(
+        word in message for word in ("length", "window", "token", "exceed")
+    ):
+        return ModelFailure(
+            ModelFailureCategory.CONTEXT_EXCEEDED,
+            retryable=False,
+            status_code=status_code,
+        )
+    if "tool" in message and "schema" in message:
+        return ModelFailure(
+            ModelFailureCategory.UNSUPPORTED_TOOL_SCHEMA,
+            retryable=False,
+            status_code=status_code,
+        )
+    if "model" in message and any(
+        word in message for word in ("invalid", "not found", "does not exist")
+    ):
+        return ModelFailure(
+            ModelFailureCategory.INVALID_MODEL,
+            retryable=False,
+            status_code=status_code,
+        )
+    if status_code is not None and 400 <= status_code < 500:
+        return ModelFailure(
+            ModelFailureCategory.INVALID_REQUEST,
+            retryable=False,
+            status_code=status_code,
+        )
+    return ModelFailure(
+        ModelFailureCategory.UNKNOWN,
+        retryable=False,
+        status_code=status_code,
+    )
+
+
+def _expand_environment(value: str | None, environment: dict[str, str]) -> str | None:
+    if value is None:
+        return None
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        try:
+            return environment[name]
+        except KeyError as exc:
+            raise ModelConfigurationError(
+                f"environment variable {name!r} referenced by model config is not set"
+            ) from exc
+
+    return _ENV_PATTERN.sub(replace, value)
+
+
+def _status_code(error: BaseException) -> int | None:
+    value: Any = getattr(error, "status_code", None)
+    return value if isinstance(value, int) else None
