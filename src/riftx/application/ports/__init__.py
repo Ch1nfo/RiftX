@@ -3,6 +3,7 @@
 from .repositories import (
     EngagementRepository,
     ExecutionRepository,
+    FindingRepository,
     RunEventRepository,
     RunRepository,
 )
@@ -10,6 +11,7 @@ from .repositories import (
 __all__ = [
     "EngagementRepository",
     "ExecutionRepository",
+    "FindingRepository",
     "RunEventRepository",
     "RunRepository",
 ]

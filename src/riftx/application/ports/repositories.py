@@ -8,6 +8,9 @@ from typing import Protocol
 from riftx.domain import (
     Engagement,
     Execution,
+    Finding,
+    FindingSeverity,
+    FindingStatus,
     Run,
     RunEvent,
     RunStatus,
@@ -63,3 +66,19 @@ class ExecutionRepository(Protocol):
     async def save(self, execution: Execution) -> Execution: ...
 
     async def list_active(self) -> Sequence[Execution]: ...
+
+
+class FindingRepository(Protocol):
+    async def create(self, finding: Finding) -> Finding: ...
+
+    async def get(self, finding_id: str) -> Finding | None: ...
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Finding]: ...

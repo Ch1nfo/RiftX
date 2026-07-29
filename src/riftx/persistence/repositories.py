@@ -9,7 +9,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
-from riftx.domain import Engagement, Execution, ExecutionStatus, Run, RunEvent, RunStatus
+from riftx.domain import (
+    Engagement,
+    Execution,
+    ExecutionStatus,
+    Finding,
+    FindingSeverity,
+    FindingStatus,
+    Run,
+    RunEvent,
+    RunStatus,
+)
 from riftx.domain.base import utc_now
 
 from .mappers import (
@@ -21,10 +31,18 @@ from .mappers import (
     event_to_record,
     execution_from_record,
     execution_to_record,
+    finding_from_record,
+    finding_to_record,
     run_from_record,
     run_to_record,
 )
-from .orm import EngagementRecord, ExecutionRecord, RunEventRecord, RunRecord
+from .orm import (
+    EngagementRecord,
+    ExecutionRecord,
+    FindingRecord,
+    RunEventRecord,
+    RunRecord,
+)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -184,6 +202,53 @@ class SQLAlchemyRunEventRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [event_from_record(record) for record in records]
+
+
+class SQLAlchemyFindingRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, finding: Finding) -> Finding:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(finding_to_record(finding))
+                await session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflictError(f"could not create finding {finding.id!r}") from exc
+        return finding
+
+    async def get(self, finding_id: str) -> Finding | None:
+        async with self._session_factory() as session:
+            record = await session.get(FindingRecord, finding_id)
+        return finding_from_record(record) if record is not None else None
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Finding]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+
+        statement = select(FindingRecord).where(FindingRecord.run_id == run_id)
+        if severity is not None:
+            statement = statement.where(FindingRecord.severity == severity.value)
+        if status is not None:
+            statement = statement.where(FindingRecord.status == status.value)
+        statement = (
+            statement.order_by(FindingRecord.created_at, FindingRecord.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [finding_from_record(record) for record in records]
 
 
 class SQLAlchemyExecutionRepository:

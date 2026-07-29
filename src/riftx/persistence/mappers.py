@@ -9,6 +9,10 @@ from riftx.domain import (
     Execution,
     ExecutionStatus,
     ExecutorType,
+    Finding,
+    FindingEvidence,
+    FindingSeverity,
+    FindingStatus,
     Objective,
     Run,
     RunEvent,
@@ -20,6 +24,7 @@ from riftx.domain import (
 from .orm import (
     EngagementRecord,
     ExecutionRecord,
+    FindingRecord,
     RunEventRecord,
     RunRecord,
 )
@@ -183,4 +188,40 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         stderr_path=record.stderr_path,
         started_at=record.started_at,
         finished_at=record.finished_at,
+    )
+
+
+def finding_to_record(finding: Finding) -> FindingRecord:
+    return FindingRecord(
+        id=finding.id,
+        run_id=finding.run_id,
+        title=finding.title,
+        severity=finding.severity.value,
+        status=finding.status.value,
+        affected_assets_json=finding.affected_assets,
+        description=finding.description,
+        evidence_json=[item.model_dump(mode="json") for item in finding.evidence],
+        reproduction_steps_json=finding.reproduction_steps,
+        impact=finding.impact,
+        recommendation=finding.recommendation,
+        created_at=finding.created_at,
+        updated_at=finding.updated_at,
+    )
+
+
+def finding_from_record(record: FindingRecord) -> Finding:
+    return Finding(
+        id=record.id,
+        run_id=record.run_id,
+        title=record.title,
+        severity=FindingSeverity(record.severity),
+        status=FindingStatus(record.status),
+        affected_assets=record.affected_assets_json,
+        description=record.description,
+        evidence=[FindingEvidence.model_validate(item) for item in record.evidence_json],
+        reproduction_steps=record.reproduction_steps_json,
+        impact=record.impact,
+        recommendation=record.recommendation,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
