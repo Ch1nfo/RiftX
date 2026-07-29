@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,7 +74,15 @@ class ProcessHandle:
         except TimeoutError:
             pass
 
-        _signal_process_group(self.process, signal.SIGKILL)
+        if os.name == "nt":
+            await _kill_windows_process_tree(self.pid)
+            if self.process.returncode is None:
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+        else:
+            _signal_process_group(self.process, signal.SIGKILL)
         await self.process.wait()
 
 
@@ -94,7 +103,7 @@ class DirectProcessExecutor:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                start_new_session=os.name == "posix",
+                **_process_group_options(),
             )
         except (OSError, ValueError) as exc:
             raise ProcessStartError(
@@ -122,4 +131,27 @@ def _signal_process_group(process: asyncio.subprocess.Process, sig: signal.Signa
         else:
             process.kill()
     except ProcessLookupError:
+        return
+
+
+def _process_group_options() -> dict[str, object]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+async def _kill_windows_process_tree(pid: int) -> None:
+    try:
+        taskkill = await asyncio.create_subprocess_exec(
+            "taskkill.exe",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await taskkill.wait()
+    except (OSError, ProcessLookupError):
         return

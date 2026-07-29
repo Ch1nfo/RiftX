@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .models import ProcessExecutionRequest, ShellExecutionRequest, ShellKind
+from .powershell import PowerShellExecutor, build_powershell_argv
 from .process import DirectProcessExecutor, ProcessHandle
 
 _DEFAULT_SHELL_PATHS: dict[ShellKind, Path] = {
@@ -17,10 +18,20 @@ _DEFAULT_SHELL_PATHS: dict[ShellKind, Path] = {
 
 
 class ShellExecutor:
-    def __init__(self, process_executor: DirectProcessExecutor | None = None) -> None:
+    def __init__(
+        self,
+        process_executor: DirectProcessExecutor | None = None,
+        *,
+        powershell_executor: PowerShellExecutor | None = None,
+    ) -> None:
         self._process_executor = process_executor or DirectProcessExecutor()
+        self._powershell_executor = powershell_executor or PowerShellExecutor(
+            self._process_executor
+        )
 
     async def start(self, request: ShellExecutionRequest) -> ProcessHandle:
+        if request.shell is ShellKind.POWERSHELL:
+            return await self._powershell_executor.start(request)
         shell_path = request.shell_path or _DEFAULT_SHELL_PATHS[request.shell]
         argv = build_shell_argv(request.shell, shell_path, request.script)
         return await self._process_executor.start(
@@ -42,7 +53,7 @@ def build_shell_argv(shell: ShellKind, shell_path: Path, script: str) -> list[st
             raise ValueError("Unix shells require an explicit path on Windows")
         return [str(shell_path), "-lc", script]
     if shell is ShellKind.POWERSHELL:
-        return [str(shell_path), "-NoLogo", "-NoProfile", "-Command", script]
+        return build_powershell_argv(shell_path, script)
     if shell is ShellKind.CMD:
         return [str(shell_path), "/d", "/s", "/c", script]
     raise ValueError(f"unsupported shell: {shell}")

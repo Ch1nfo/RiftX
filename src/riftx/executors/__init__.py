@@ -8,12 +8,25 @@ from .models import (
     ShellExecutionRequest,
     ShellKind,
 )
+from .powershell import (
+    PowerShellEdition,
+    PowerShellExecutable,
+    PowerShellExecutor,
+    PowerShellNotFoundError,
+    PowerShellResolver,
+    build_powershell_argv,
+)
 from .process import DirectProcessExecutor, ProcessHandle, ProcessStartError
 from .shell import ShellExecutor, build_shell_argv
 
 __all__ = [
     "DirectProcessExecutor",
     "EnvironmentMode",
+    "PowerShellEdition",
+    "PowerShellExecutable",
+    "PowerShellExecutor",
+    "PowerShellNotFoundError",
+    "PowerShellResolver",
     "ProcessExecutionRequest",
     "ProcessHandle",
     "ProcessResult",
@@ -21,6 +34,7 @@ __all__ = [
     "ShellExecutionRequest",
     "ShellExecutor",
     "ShellKind",
+    "build_powershell_argv",
     "build_shell_argv",
     "merge_environment",
 ]

@@ -52,3 +52,11 @@ and bounded output uploads. The bootstrap token can be removed from the Runner h
 after its node credential has been persisted. Commands are durable, idempotent, and
 leased, so a disconnected daemon can reconnect without starting the same execution
 key twice.
+
+## Windows shell execution
+
+`ShellKind.POWERSHELL` resolves PowerShell 7 (`pwsh.exe`) first and falls back to
+Windows PowerShell (`powershell.exe`). RiftX always launches it with an explicit argv
+(`-NoLogo -NoProfile -Command`) rather than `shell=True`. Windows child processes are
+created in a new process group; cancellation escalates from normal termination to a
+`taskkill /T /F` process-tree cleanup after the grace period.

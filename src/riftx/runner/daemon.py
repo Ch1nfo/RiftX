@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform as platform_module
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Protocol
 
@@ -15,6 +15,7 @@ from riftx import __version__
 from riftx.application.ports import ExecutionRepository
 from riftx.application.services import NodeRegistration
 from riftx.domain import Execution, ExecutionStatus, RunnerCommandKind
+from riftx.executors import PowerShellNotFoundError, PowerShellResolver
 
 from .control_client import (
     LeasedRunnerCommand,
@@ -50,6 +51,17 @@ class TerminalCommandHandler(Protocol):
     async def handle(self, kind: RunnerCommandKind, payload: dict[str, object]) -> object: ...
 
 
+def _default_capabilities() -> tuple[str, ...]:
+    capabilities = ["process", "shell"]
+    try:
+        PowerShellResolver().resolve()
+    except PowerShellNotFoundError:
+        pass
+    else:
+        capabilities.append("powershell")
+    return tuple(capabilities)
+
+
 @dataclass(frozen=True, slots=True)
 class RunnerDaemonConfig:
     server_url: str
@@ -60,7 +72,7 @@ class RunnerDaemonConfig:
     platform: str = platform_module.system().lower()
     architecture: str = platform_module.machine().lower()
     runner_version: str = __version__
-    capabilities: tuple[str, ...] = ("process", "shell")
+    capabilities: tuple[str, ...] = field(default_factory=_default_capabilities)
     labels: dict[str, str] | None = None
     poll_wait_seconds: float = 30.0
     reconnect_initial_seconds: float = 0.25
