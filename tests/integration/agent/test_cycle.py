@@ -26,10 +26,12 @@ from riftx.agent import (
     SQLAlchemyCheckpointStore,
     build_agent_tools,
 )
+from riftx.application.services import FindingApplicationService
 from riftx.domain import ApprovalMode, Engagement, FindingSeverity, Objective, Run
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -132,13 +134,25 @@ async def _runtime(
         RunnerPaths(tmp_path / "state"),
         termination_grace_seconds=0.1,
     )
+    run_repository = SQLAlchemyRunRepository(database.session_factory)
+    event_repository = SQLAlchemyRunEventRepository(database.session_factory)
+    execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     services = AgentRuntimeServices(
         tool_registry=registry,
         skill_registry=create_default_skill_registry(),
         supervisor=supervisor,
-        finding_repository=SQLAlchemyFindingRepository(database.session_factory),
-        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        finding_repository=finding_repository,
+        event_repository=event_repository,
         approval_repository=SQLAlchemyApprovalRepository(database.session_factory),
+        finding_service=FindingApplicationService(
+            run_repository=run_repository,
+            finding_repository=finding_repository,
+            artifact_repository=artifact_repository,
+            execution_repository=execution_repository,
+            event_repository=event_repository,
+        ),
     )
     context = RiftXAgentContext.from_run(run, registry, agent_step_id="step-1")
     return database, run, context, services, supervisor

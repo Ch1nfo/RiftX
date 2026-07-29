@@ -142,6 +142,8 @@ class FindingRepository(Protocol):
 
     async def get(self, finding_id: str) -> Finding | None: ...
 
+    async def save(self, finding: Finding) -> Finding: ...
+
     async def list(
         self,
         run_id: str,

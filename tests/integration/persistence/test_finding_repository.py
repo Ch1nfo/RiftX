@@ -62,6 +62,15 @@ async def test_finding_repository_create_get_and_filter(tmp_path: Path) -> None:
     assert await repository.get(high.id) == high
     assert list(await repository.list("run-1", severity=FindingSeverity.HIGH)) == [high]
     assert list(await repository.list("run-1", status=FindingStatus.DRAFT)) == [low]
+
+    updated = high.model_copy(
+        update={
+            "title": "Updated high finding",
+            "status": FindingStatus.RESOLVED,
+        }
+    )
+    await repository.save(updated)
+    assert await repository.get(high.id) == updated
     await database.dispose()
 
 
@@ -80,4 +89,6 @@ async def test_finding_repository_enforces_run_and_id_constraints(tmp_path: Path
         await repository.create(finding)
     with pytest.raises(RepositoryConflictError):
         await repository.create(finding.model_copy(update={"id": "other", "run_id": "missing"}))
+    with pytest.raises(RepositoryConflictError):
+        await repository.save(finding.model_copy(update={"run_id": "missing"}))
     await database.dispose()

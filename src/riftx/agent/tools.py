@@ -8,9 +8,9 @@ from pathlib import Path
 from agents import FunctionTool, RunContextWrapper, function_tool
 from agents.tool_context import ToolContext
 
+from riftx.application.services import CreateFinding
 from riftx.domain import (
     ApprovalLevel,
-    Finding,
     FindingEvidence,
     FindingSeverity,
     requires_approval,
@@ -161,27 +161,19 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
     ) -> str:
         """Create a structured finding supported by execution or artifact evidence."""
 
-        finding = Finding(
-            run_id=ctx.context.run_id,
-            title=title,
-            severity=severity,
-            affected_assets=affected_assets,
-            description=description,
-            evidence=evidence,
-            reproduction_steps=reproduction_steps,
-            impact=impact,
-            recommendation=recommendation,
-        )
-        await services.finding_repository.create(finding)
-        await services.event_repository.append(
+        finding = await services.finding_service.create_finding(
             ctx.context.run_id,
-            "finding.created",
-            {
-                "finding_id": finding.id,
-                "title": finding.title,
-                "severity": finding.severity.value,
-                "agent_step_id": ctx.context.agent_step_id,
-            },
+            CreateFinding(
+                title=title,
+                severity=severity,
+                affected_assets=affected_assets,
+                description=description,
+                evidence=evidence,
+                reproduction_steps=reproduction_steps,
+                impact=impact,
+                recommendation=recommendation,
+                agent_step_id=ctx.context.agent_step_id,
+            ),
         )
         return finding.model_dump_json()
 

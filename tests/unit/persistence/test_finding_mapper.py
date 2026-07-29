@@ -1,5 +1,9 @@
 from riftx.domain import Finding, FindingEvidence, FindingSeverity, FindingStatus
-from riftx.persistence.mappers import finding_from_record, finding_to_record
+from riftx.persistence.mappers import (
+    apply_finding_to_record,
+    finding_from_record,
+    finding_to_record,
+)
 
 
 def test_finding_mapper_round_trip() -> None:
@@ -26,3 +30,10 @@ def test_finding_mapper_round_trip() -> None:
     restored = finding_from_record(finding_to_record(finding))
 
     assert restored == finding
+
+    updated = finding.model_copy(
+        update={"title": "Updated service", "status": FindingStatus.RESOLVED}
+    )
+    record = finding_to_record(finding)
+    apply_finding_to_record(updated, record)
+    assert finding_from_record(record) == updated

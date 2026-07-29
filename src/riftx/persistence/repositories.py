@@ -32,6 +32,7 @@ from riftx.domain.base import utc_now
 from .mappers import (
     apply_approval_to_record,
     apply_execution_to_record,
+    apply_finding_to_record,
     apply_run_to_record,
     apply_terminal_to_record,
     approval_from_record,
@@ -289,6 +290,19 @@ class SQLAlchemyFindingRepository:
         async with self._session_factory() as session:
             record = await session.get(FindingRecord, finding_id)
         return finding_from_record(record) if record is not None else None
+
+    async def save(self, finding: Finding) -> Finding:
+        async with self._session_factory() as session, session.begin():
+            record = await session.scalar(
+                select(FindingRecord).where(FindingRecord.id == finding.id).with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("Finding", finding.id)
+            if record.run_id != finding.run_id:
+                raise RepositoryConflictError(f"cannot move finding {finding.id!r} between runs")
+            apply_finding_to_record(finding, record)
+            await session.flush()
+        return finding
 
     async def list(
         self,

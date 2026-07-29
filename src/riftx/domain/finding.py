@@ -16,7 +16,7 @@ class FindingEvidence(DomainModel):
 class Finding(DomainModel):
     id: str = Field(default_factory=new_id)
     run_id: str
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=500)
     severity: FindingSeverity
     status: FindingStatus = FindingStatus.DRAFT
     affected_assets: list[str] = Field(default_factory=list)

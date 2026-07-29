@@ -151,6 +151,9 @@ tools:
             finding_service=FindingApplicationService(
                 run_repository=run_repository,
                 finding_repository=finding_repository,
+                artifact_repository=artifact_repository,
+                execution_repository=execution_repository,
+                event_repository=event_repository,
             ),
             tool_service=ToolApplicationService(registry),
             approval_service=ApprovalApplicationService(
@@ -813,5 +816,116 @@ async def test_artifact_download_detects_snapshot_tampering(tmp_path: Path) -> N
             content = await client.get(f"/api/v1/artifacts/{artifact_id}/content")
             assert content.status_code == 409
             assert content.json()["error"]["code"] == "artifact_integrity_mismatch"
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            first = await _create_run(client)
+            first_run_id = str(first["id"])
+            source = Path(str(first["workspace_path"])) / "proof.txt"
+            source.write_text("service exposed")
+            artifact_response = await client.post(
+                f"/api/v1/runs/{first_run_id}/artifacts",
+                json={"source_path": str(source), "description": "raw proof"},
+            )
+            artifact_id = str(artifact_response.json()["id"])
+
+            created = await client.post(
+                f"/api/v1/runs/{first_run_id}/findings",
+                json={
+                    "title": "  Exposed service  ",
+                    "severity": "high",
+                    "affected_assets": [" 127.0.0.1 ", "127.0.0.1"],
+                    "description": "  Development service is reachable.  ",
+                    "evidence": [
+                        {
+                            "artifact_id": artifact_id,
+                            "description": "Banner capture",
+                            "location": "line:1",
+                        }
+                    ],
+                    "reproduction_steps": [" curl localhost ", "curl localhost"],
+                },
+            )
+            assert created.status_code == 201
+            finding = created.json()
+            finding_id = str(finding["id"])
+            assert finding["title"] == "Exposed service"
+            assert finding["status"] == "draft"
+            assert finding["affected_assets"] == ["127.0.0.1"]
+            assert finding["reproduction_steps"] == ["curl localhost"]
+            assert finding["evidence"][0]["artifact_id"] == artifact_id
+
+            updated = await client.patch(
+                f"/api/v1/findings/{finding_id}",
+                json={
+                    "status": "confirmed",
+                    "severity": "critical",
+                    "impact": "Administrative metadata is exposed.",
+                },
+            )
+            assert updated.status_code == 200
+            assert updated.json()["status"] == "confirmed"
+            assert updated.json()["severity"] == "critical"
+            assert updated.json()["title"] == "Exposed service"
+            assert updated.json()["updated_at"] > finding["updated_at"]
+
+            fetched = await client.get(f"/api/v1/findings/{finding_id}")
+            assert fetched.json() == updated.json()
+            listed = await client.get(
+                f"/api/v1/runs/{first_run_id}/findings",
+                params={"status": "confirmed", "severity": "critical"},
+            )
+            assert [item["id"] for item in listed.json()["items"]] == [finding_id]
+
+            second = await _create_run(client)
+            second_run_id = str(second["id"])
+            mismatch = await client.post(
+                f"/api/v1/runs/{second_run_id}/findings",
+                json={
+                    "title": "Invalid evidence",
+                    "severity": "low",
+                    "evidence": [{"artifact_id": artifact_id}],
+                },
+            )
+            assert mismatch.status_code == 409
+            assert mismatch.json()["error"]["code"] == "finding_artifact_run_mismatch"
+
+            missing = await client.patch(
+                f"/api/v1/findings/{finding_id}",
+                json={"evidence": [{"artifact_id": "missing"}]},
+            )
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "artifact_not_found"
+
+            no_changes = await client.patch(
+                f"/api/v1/findings/{finding_id}",
+                json={},
+            )
+            assert no_changes.status_code == 409
+            assert no_changes.json()["error"]["code"] == "empty_finding_update"
+
+            empty = await client.post(
+                f"/api/v1/runs/{first_run_id}/findings",
+                json={
+                    "title": "Empty evidence",
+                    "severity": "info",
+                    "evidence": [{}],
+                },
+            )
+            assert empty.status_code == 409
+            assert empty.json()["error"]["code"] == "empty_finding_evidence"
+
+            events = await client.get(f"/api/v1/runs/{first_run_id}/events")
+            assert [item["event_type"] for item in events.json()["items"]][-3:] == [
+                "artifact.registered",
+                "finding.created",
+                "finding.updated",
+            ]
     finally:
         await runtime.control_plane.close()

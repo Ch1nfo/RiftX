@@ -2240,3 +2240,213 @@ button:disabled {
     grid-column: 1 / -1;
   }
 }
+
+.finding-edit-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  border: 0;
+  color: var(--mint);
+  background: transparent;
+  font-size: 9px;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.finding-evidence-list,
+.finding-guidance {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.finding-evidence {
+  border: 1px solid rgba(29, 52, 46, 0.78);
+  border-radius: 8px;
+  background: rgba(4, 12, 10, 0.42);
+  padding: 11px;
+}
+
+.finding-evidence > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.finding-evidence strong,
+.finding-guidance strong {
+  color: #a8bbb4;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.finding-evidence > div:first-child span {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.finding-evidence p,
+.finding-guidance p {
+  margin: 6px 0 0;
+}
+
+.finding-evidence-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.finding-evidence-links a,
+.finding-evidence-links code {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--mint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding-guidance {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.finding-guidance > div {
+  border-left: 2px solid var(--line-bright);
+  padding-left: 10px;
+}
+
+.finding-editor {
+  border: 1px solid rgba(69, 214, 164, 0.26);
+  border-radius: 11px;
+  background: rgba(7, 17, 15, 0.66);
+  padding: 17px;
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12);
+}
+
+.finding-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.25fr) minmax(150px, 0.3fr);
+  gap: 12px;
+}
+
+.finding-editor label,
+.finding-evidence-row label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.finding-editor input,
+.finding-editor textarea,
+.finding-editor select {
+  width: 100%;
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  outline: 0;
+  color: var(--text);
+  background: rgba(5, 13, 11, 0.76);
+  padding: 9px 10px;
+  font-size: 10px;
+}
+
+.finding-editor input,
+.finding-editor select {
+  min-height: 38px;
+}
+
+.finding-editor textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.finding-editor input:focus,
+.finding-editor textarea:focus,
+.finding-editor select:focus {
+  border-color: rgba(69, 214, 164, 0.56);
+  box-shadow: 0 0 0 3px rgba(69, 214, 164, 0.08);
+}
+
+.finding-editor-title,
+.finding-editor-wide {
+  grid-column: 1 / -1;
+}
+
+.finding-editor-grid > label:nth-last-child(-n + 4) {
+  grid-column: span 1;
+}
+
+.finding-evidence-editor {
+  margin-top: 17px;
+  border-top: 1px solid var(--line);
+  padding-top: 15px;
+}
+
+.finding-editor-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.finding-editor-section-head h4 {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.finding-evidence-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.7fr 1.4fr 34px;
+  align-items: end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.finding-remove-evidence {
+  display: grid;
+  width: 34px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(255, 116, 121, 0.22);
+  border-radius: 8px;
+  color: #ff9297;
+  background: rgba(255, 116, 121, 0.06);
+  cursor: pointer;
+}
+
+.finding-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 17px;
+}
+
+@media (max-width: 900px) {
+  .finding-guidance,
+  .finding-editor-grid,
+  .finding-evidence-row {
+    grid-template-columns: 1fr;
+  }
+
+  .finding-editor-title,
+  .finding-editor-wide,
+  .finding-editor-grid > label:nth-last-child(-n + 4) {
+    grid-column: auto;
+  }
+
+  .finding-remove-evidence {
+    width: 100%;
+  }
+}

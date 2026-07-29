@@ -53,6 +53,7 @@ export function useEventStream(runId: string, enabled = true) {
       "terminal.lost",
       "artifact.registered",
       "finding.created",
+      "finding.updated",
       "report.generation_requested",
       "run.cleaned_up",
     ];
@@ -76,7 +77,10 @@ export function useEventStream(runId: string, enabled = true) {
       }));
       void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
-      if (event.event_type === "finding.created") {
+      if (
+        event.event_type === "finding.created" ||
+        event.event_type === "finding.updated"
+      ) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.findings(runId) });
       }
       if (event.event_type === "artifact.registered") {

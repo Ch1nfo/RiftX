@@ -252,6 +252,19 @@ def finding_to_record(finding: Finding) -> FindingRecord:
     )
 
 
+def apply_finding_to_record(finding: Finding, record: FindingRecord) -> None:
+    record.title = finding.title
+    record.severity = finding.severity.value
+    record.status = finding.status.value
+    record.affected_assets_json = finding.affected_assets
+    record.description = finding.description
+    record.evidence_json = [item.model_dump(mode="json") for item in finding.evidence]
+    record.reproduction_steps_json = finding.reproduction_steps
+    record.impact = finding.impact
+    record.recommendation = finding.recommendation
+    record.updated_at = finding.updated_at
+
+
 def finding_from_record(record: FindingRecord) -> Finding:
     return Finding(
         id=record.id,

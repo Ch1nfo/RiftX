@@ -111,6 +111,47 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("creates and edits structured findings through the control plane", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: "finding-1", title: "Exposed service" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.createFinding("run-1", {
+      title: "Exposed service",
+      severity: "high",
+    });
+    await api.updateFinding("finding-1", { status: "confirmed" });
+    await api.getFinding("finding-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/runs/run-1/findings",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "Exposed service", severity: "high" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/findings/finding-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ status: "confirmed" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/v1/findings/finding-1",
+      expect.any(Object),
+    );
+  });
+
 
   it("creates, fetches, and closes terminal sessions through the shared API", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>

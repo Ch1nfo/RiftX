@@ -10,22 +10,33 @@ import {
   CirclePause,
   Clock3,
   Download,
+  ExternalLink,
   FileWarning,
   Loader2,
   MessageSquareText,
+  Pencil,
   Play,
   Plus,
+  Save,
   Send,
   ShieldAlert,
   TerminalSquare,
+  Trash2,
   Wrench,
+  X,
 } from "lucide-react";
 import { FormEvent, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import type { Approval, Artifact, Finding, RunEvent } from "../api/types";
+import type {
+  Approval,
+  Artifact,
+  Finding,
+  FindingEvidence,
+  RunEvent,
+} from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
@@ -36,6 +47,7 @@ import {
   useApprovals,
   useArtifactControl,
   useArtifacts,
+  useFindingControl,
   useFindings,
   useRun,
   useRunControl,
@@ -61,6 +73,7 @@ export function RunDetailPage() {
   const approvals = useApprovals(runId);
   const approvalControls = useApprovalControl(runId);
   const artifactControls = useArtifactControl(runId);
+  const findingControls = useFindingControl(runId);
   const controls = useRunControl(runId);
   const [tab, setTab] = useState<DetailTab>("timeline");
   const [message, setMessage] = useState("");
@@ -211,7 +224,11 @@ export function RunDetailPage() {
               />
             ) : null}
             {tab === "findings" ? (
-              <Findings findings={findings.data?.items ?? []} loading={findings.isLoading} />
+              <Findings
+                findings={findings.data?.items ?? []}
+                loading={findings.isLoading}
+                controls={findingControls}
+              />
             ) : null}
             {tab === "report" ? <ReportPlaceholder completed={run.data.status === "completed"} /> : null}
           </div>
@@ -423,7 +440,16 @@ function RunOverview({
   );
 }
 
-function Findings({ findings, loading }: { findings: Finding[]; loading: boolean }) {
+function Findings({
+  findings,
+  loading,
+  controls,
+}: {
+  findings: Finding[];
+  loading: boolean;
+  controls: ReturnType<typeof useFindingControl>;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
   if (loading) return <LoadingState label="Loading findings" />;
   if (!findings.length) {
     return (
@@ -434,31 +460,321 @@ function Findings({ findings, loading }: { findings: Finding[]; loading: boolean
   }
   return (
     <div className="finding-list">
-      {findings.map((finding) => (
-        <article className="finding-card" key={finding.id}>
-          <div className={`severity-marker severity-${finding.severity}`} />
-          <div>
-            <div className="finding-head">
-              <span className={`severity-label severity-${finding.severity}`}>
-                {finding.severity}
-              </span>
-              <span>{finding.status.replaceAll("_", " ")}</span>
-            </div>
-            <h3>{finding.title}</h3>
-            <p>{finding.description || "No description supplied."}</p>
-            {finding.affected_assets.length ? (
-              <div className="scope-list">
-                {finding.affected_assets.map((asset) => (
-                  <span className="mono-chip" key={asset}>
-                    {asset}
-                  </span>
-                ))}
+      {findings.map((finding) =>
+        editingId === finding.id ? (
+          <FindingEditor
+            key={finding.id}
+            finding={finding}
+            saving={controls.update.isPending}
+            onCancel={() => setEditingId(null)}
+            onSave={async (payload) => {
+              await controls.update.mutateAsync({ findingId: finding.id, payload });
+              setEditingId(null);
+            }}
+          />
+        ) : (
+          <article className="finding-card" key={finding.id}>
+            <div className={`severity-marker severity-${finding.severity}`} />
+            <div>
+              <div className="finding-head">
+                <span className={`severity-label severity-${finding.severity}`}>
+                  {finding.severity}
+                </span>
+                <span>{finding.status.replaceAll("_", " ")}</span>
+                <button
+                  className="finding-edit-button"
+                  onClick={() => setEditingId(finding.id)}
+                  aria-label={`Edit ${finding.title}`}
+                >
+                  <Pencil size={13} /> Edit
+                </button>
               </div>
+              <h3>{finding.title}</h3>
+              <p>{finding.description || "No description supplied."}</p>
+              {finding.affected_assets.length ? (
+                <div className="scope-list">
+                  {finding.affected_assets.map((asset) => (
+                    <span className="mono-chip" key={asset}>
+                      {asset}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <FindingEvidenceList evidence={finding.evidence} />
+              {finding.impact || finding.recommendation ? (
+                <div className="finding-guidance">
+                  {finding.impact ? (
+                    <div>
+                      <strong>Impact</strong>
+                      <p>{finding.impact}</p>
+                    </div>
+                  ) : null}
+                  {finding.recommendation ? (
+                    <div>
+                      <strong>Recommendation</strong>
+                      <p>{finding.recommendation}</p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </article>
+        ),
+      )}
+      {controls.update.error ? <ErrorState error={controls.update.error} /> : null}
+    </div>
+  );
+}
+
+function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
+  if (!evidence.length) return null;
+  return (
+    <div className="finding-evidence-list">
+      {evidence.map((item, index) => (
+        <article
+          className="finding-evidence"
+          key={`${item.artifact_id ?? "artifact"}-${item.execution_id ?? "execution"}-${index}`}
+        >
+          <div>
+            <strong>Evidence {index + 1}</strong>
+            <span>{item.location || "No location marker"}</span>
+          </div>
+          <p>{item.description || "No evidence description."}</p>
+          <div className="finding-evidence-links">
+            {item.artifact_id ? (
+              <a
+                href={api.artifactContentUrlById(item.artifact_id)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={12} /> Artifact {item.artifact_id}
+              </a>
             ) : null}
+            {item.execution_id ? <code>Execution {item.execution_id}</code> : null}
           </div>
         </article>
       ))}
     </div>
+  );
+}
+
+function FindingEditor({
+  finding,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  finding: Finding;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (payload: {
+    title: string;
+    severity: Finding["severity"];
+    status: Finding["status"];
+    affected_assets: string[];
+    description: string;
+    evidence: FindingEvidence[];
+    reproduction_steps: string[];
+    impact: string;
+    recommendation: string;
+  }) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(finding.title);
+  const [severity, setSeverity] = useState(finding.severity);
+  const [status, setStatus] = useState(finding.status);
+  const [affectedAssets, setAffectedAssets] = useState(finding.affected_assets.join("\n"));
+  const [description, setDescription] = useState(finding.description);
+  const [evidence, setEvidence] = useState<FindingEvidence[]>(finding.evidence);
+  const [reproductionSteps, setReproductionSteps] = useState(
+    finding.reproduction_steps.join("\n"),
+  );
+  const [impact, setImpact] = useState(finding.impact);
+  const [recommendation, setRecommendation] = useState(finding.recommendation);
+
+  function updateEvidence(index: number, patch: Partial<FindingEvidence>) {
+    setEvidence((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  }
+
+  return (
+    <form
+      className="finding-editor"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!title.trim()) return;
+        void onSave({
+          title: title.trim(),
+          severity,
+          status,
+          affected_assets: splitLines(affectedAssets),
+          description,
+          evidence,
+          reproduction_steps: splitLines(reproductionSteps),
+          impact,
+          recommendation,
+        });
+      }}
+    >
+      <div className="finding-editor-grid">
+        <label className="finding-editor-title">
+          <span>Title</span>
+          <input value={title} onChange={(event) => setTitle(event.target.value)} required />
+        </label>
+        <label>
+          <span>Severity</span>
+          <select
+            value={severity}
+            onChange={(event) => setSeverity(event.target.value as Finding["severity"])}
+          >
+            {(["info", "low", "medium", "high", "critical"] as const).map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Status</span>
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value as Finding["status"])}
+          >
+            {(["draft", "confirmed", "resolved", "false_positive"] as const).map(
+              (value) => (
+                <option key={value} value={value}>
+                  {value.replaceAll("_", " ")}
+                </option>
+              ),
+            )}
+          </select>
+        </label>
+        <label className="finding-editor-wide">
+          <span>Description</span>
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            rows={4}
+          />
+        </label>
+        <label>
+          <span>Affected assets · one per line</span>
+          <textarea
+            value={affectedAssets}
+            onChange={(event) => setAffectedAssets(event.target.value)}
+            rows={4}
+          />
+        </label>
+        <label>
+          <span>Reproduction steps · one per line</span>
+          <textarea
+            value={reproductionSteps}
+            onChange={(event) => setReproductionSteps(event.target.value)}
+            rows={4}
+          />
+        </label>
+        <label>
+          <span>Impact</span>
+          <textarea value={impact} onChange={(event) => setImpact(event.target.value)} rows={4} />
+        </label>
+        <label>
+          <span>Recommendation</span>
+          <textarea
+            value={recommendation}
+            onChange={(event) => setRecommendation(event.target.value)}
+            rows={4}
+          />
+        </label>
+      </div>
+
+      <div className="finding-evidence-editor">
+        <div className="finding-editor-section-head">
+          <div>
+            <span className="panel-kicker">Evidence links</span>
+            <h4>Artifacts and executions</h4>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() =>
+              setEvidence((current) => [
+                ...current,
+                {
+                  artifact_id: null,
+                  execution_id: null,
+                  description: "",
+                  location: null,
+                },
+              ])
+            }
+          >
+            <Plus size={14} /> Add evidence
+          </button>
+        </div>
+        {evidence.map((item, index) => (
+          <div className="finding-evidence-row" key={index}>
+            <label>
+              <span>Artifact ID</span>
+              <input
+                value={item.artifact_id ?? ""}
+                onChange={(event) =>
+                  updateEvidence(index, { artifact_id: event.target.value || null })
+                }
+              />
+            </label>
+            <label>
+              <span>Execution ID</span>
+              <input
+                value={item.execution_id ?? ""}
+                onChange={(event) =>
+                  updateEvidence(index, { execution_id: event.target.value || null })
+                }
+              />
+            </label>
+            <label>
+              <span>Location</span>
+              <input
+                value={item.location ?? ""}
+                onChange={(event) =>
+                  updateEvidence(index, { location: event.target.value || null })
+                }
+              />
+            </label>
+            <label className="finding-evidence-description">
+              <span>Description</span>
+              <input
+                value={item.description}
+                onChange={(event) =>
+                  updateEvidence(index, { description: event.target.value })
+                }
+              />
+            </label>
+            <button
+              className="finding-remove-evidence"
+              type="button"
+              onClick={() =>
+                setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))
+              }
+              aria-label={`Remove evidence ${index + 1}`}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="finding-editor-actions">
+        <button className="secondary-button" type="button" onClick={onCancel} disabled={saving}>
+          <X size={14} /> Cancel
+        </button>
+        <button className="primary-button" type="submit" disabled={saving || !title.trim()}>
+          {saving ? <Loader2 className="spin" size={14} /> : <Save size={14} />}
+          Save finding
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -765,4 +1081,11 @@ function formatBytes(value: number) {
     unit = units[index];
   }
   return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function splitLines(value: string) {
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

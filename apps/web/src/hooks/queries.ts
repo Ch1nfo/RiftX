@@ -6,6 +6,7 @@ import type {
   CreateRunPayload,
   CreateTerminalPayload,
   RegisterArtifactPayload,
+  UpdateFindingPayload,
   RunStatus,
 } from "../api/types";
 
@@ -50,6 +51,25 @@ export function useFindings(runId: string) {
     queryFn: () => api.listFindings(runId),
     enabled: Boolean(runId),
   });
+}
+
+export function useFindingControl(runId: string) {
+  const queryClient = useQueryClient();
+  return {
+    update: useMutation({
+      mutationFn: ({
+        findingId,
+        payload,
+      }: {
+        findingId: string;
+        payload: UpdateFindingPayload;
+      }) => api.updateFinding(findingId, payload),
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.findings(runId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+      },
+    }),
+  };
 }
 
 export function useArtifacts(runId: string) {

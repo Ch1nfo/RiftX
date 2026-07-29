@@ -186,6 +186,20 @@ export interface FindingList {
   offset: number;
 }
 
+export interface CreateFindingPayload {
+  title: string;
+  severity: Finding["severity"];
+  status?: Finding["status"];
+  affected_assets?: string[];
+  description?: string;
+  evidence?: FindingEvidence[];
+  reproduction_steps?: string[];
+  impact?: string;
+  recommendation?: string;
+}
+
+export type UpdateFindingPayload = Partial<CreateFindingPayload>;
+
 export interface Artifact {
   id: string;
   run_id: string;

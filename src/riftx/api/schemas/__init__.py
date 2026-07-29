@@ -8,7 +8,7 @@ from .artifacts import (
 )
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
-from .findings import FindingListResponse
+from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
 from .runs import (
     CreateRunRequest,
     EngagementCreateRequest,
@@ -30,6 +30,7 @@ __all__ = [
     "ArtifactListResponse",
     "ArtifactResponse",
     "CreateRunRequest",
+    "CreateFindingRequest",
     "EngagementCreateRequest",
     "EntryPointRequest",
     "ErrorDetail",
@@ -46,6 +47,7 @@ __all__ = [
     "ScopeRequest",
     "SuccessCriterionRequest",
     "ToolRegistryResponse",
+    "UpdateFindingRequest",
     "TerminalCreateRequest",
     "TerminalResponse",
 ]

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RunDetailPage } from "./RunDetailPage";
 
+const mocks = vi.hoisted(() => ({ updateFinding: vi.fn() }));
+
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../components/TerminalPanel", () => ({ TerminalPanel: () => null }));
 vi.mock("../hooks/queries", () => ({
@@ -26,7 +28,35 @@ vi.mock("../hooks/queries", () => ({
     },
   }),
   useRunEvents: () => ({ isSuccess: true, isLoading: false, data: { items: [] } }),
-  useFindings: () => ({ isLoading: false, data: { items: [] } }),
+  useFindings: () => ({
+    isLoading: false,
+    data: {
+      items: [
+        {
+          id: "finding-1",
+          run_id: "run-1",
+          title: "Exposed service",
+          severity: "high",
+          status: "draft",
+          affected_assets: ["127.0.0.1"],
+          description: "Development service is reachable.",
+          evidence: [
+            {
+              artifact_id: "artifact-1",
+              execution_id: null,
+              description: "Banner capture",
+              location: "line:1",
+            },
+          ],
+          reproduction_steps: ["curl localhost"],
+          impact: "Metadata exposure",
+          recommendation: "Restrict access",
+          created_at: "2026-07-29T00:00:03Z",
+          updated_at: "2026-07-29T00:00:03Z",
+        },
+      ],
+    },
+  }),
   useArtifacts: () => ({
     isLoading: false,
     data: {
@@ -81,6 +111,13 @@ vi.mock("../hooks/queries", () => ({
   useArtifactControl: () => ({
     register: { isPending: false, error: null, mutateAsync: vi.fn() },
   }),
+  useFindingControl: () => ({
+    update: {
+      isPending: false,
+      error: null,
+      mutateAsync: mocks.updateFinding,
+    },
+  }),
 }));
 
 describe("RunDetailPage approvals", () => {
@@ -122,6 +159,43 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByRole("link", { name: /download/i })).toHaveAttribute(
       "href",
       "/api/v1/artifacts/artifact-1/content",
+    );
+  });
+
+  it("links evidence to artifacts and saves user edits", async () => {
+    mocks.updateFinding.mockResolvedValue({});
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    screen.getAllByRole("tab", { name: /findings 1/i }).at(-1)?.click();
+    expect(await screen.findByText("Banner capture")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /artifact artifact-1/i })).toHaveAttribute(
+      "href",
+      "/api/v1/artifacts/artifact-1/content",
+    );
+    screen.getByRole("button", { name: /edit exposed service/i }).click();
+    expect(await screen.findByDisplayValue("Exposed service")).toBeInTheDocument();
+    screen.getByRole("button", { name: /save finding/i }).click();
+
+    expect(mocks.updateFinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        findingId: "finding-1",
+        payload: expect.objectContaining({
+          title: "Exposed service",
+          status: "draft",
+          evidence: expect.arrayContaining([
+            expect.objectContaining({ artifact_id: "artifact-1" }),
+          ]),
+        }),
+      }),
     );
   });
 });

@@ -6,7 +6,10 @@ import type {
   Artifact,
   ArtifactList,
   CreateRunPayload,
+  Finding,
   FindingList,
+  CreateFindingPayload,
+  UpdateFindingPayload,
   RegisterArtifactPayload,
   Run,
   RunEventList,
@@ -139,6 +142,27 @@ export const api = {
     return request(`/api/v1/runs/${encodeURIComponent(runId)}/findings`);
   },
 
+  createFinding(runId: string, payload: CreateFindingPayload): Promise<Finding> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/findings`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getFinding(findingId: string): Promise<Finding> {
+    return request(`/api/v1/findings/${encodeURIComponent(findingId)}`);
+  },
+
+  updateFinding(
+    findingId: string,
+    payload: UpdateFindingPayload,
+  ): Promise<Finding> {
+    return request(`/api/v1/findings/${encodeURIComponent(findingId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+
   listArtifacts(runId: string): Promise<ArtifactList> {
     return request(`/api/v1/runs/${encodeURIComponent(runId)}/artifacts`);
   },
@@ -155,6 +179,10 @@ export const api = {
 
   artifactContentUrl(artifact: Pick<Artifact, "content_url">): string {
     return `${API_BASE_URL}${artifact.content_url}`;
+  },
+
+  artifactContentUrlById(artifactId: string): string {
+    return `${API_BASE_URL}/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
   },
 
   listApprovals(runId: string): Promise<ApprovalList> {

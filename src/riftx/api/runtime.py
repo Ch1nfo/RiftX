@@ -212,6 +212,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         finding_service=FindingApplicationService(
             run_repository=run_repository,
             finding_repository=finding_repository,
+            artifact_repository=artifact_repository,
+            execution_repository=execution_repository,
+            event_repository=event_repository,
         ),
         tool_service=ToolApplicationService(registry),
         approval_service=ApprovalApplicationService(

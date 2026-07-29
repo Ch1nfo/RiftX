@@ -1,19 +1,43 @@
-"""Finding query endpoints."""
+"""Editable structured Finding endpoints."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from riftx.domain import FindingSeverity, FindingStatus
+from riftx.application.services import CreateFinding, UpdateFinding
+from riftx.domain import Finding, FindingSeverity, FindingStatus
 
 from ..dependencies import FindingServiceDependency
-from ..schemas import ErrorResponse, FindingListResponse
+from ..schemas import (
+    CreateFindingRequest,
+    ErrorResponse,
+    FindingListResponse,
+    UpdateFindingRequest,
+)
 
-router = APIRouter(prefix="/runs/{run_id}/findings", tags=["findings"])
+router = APIRouter(tags=["findings"])
+
+
+@router.post(
+    "/runs/{run_id}/findings",
+    response_model=Finding,
+    status_code=201,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def create_finding(
+    run_id: str,
+    request: CreateFindingRequest,
+    service: FindingServiceDependency,
+) -> Finding:
+    values = request.model_dump(exclude={"evidence"})
+    return await service.create_finding(
+        run_id,
+        CreateFinding(**values, evidence=request.evidence),
+    )
 
 
 @router.get(
-    "",
+    "/runs/{run_id}/findings",
     response_model=FindingListResponse,
     responses={404: {"model": ErrorResponse}},
 )
@@ -33,3 +57,31 @@ async def list_findings(
         offset=offset,
     )
     return FindingListResponse(items=findings, limit=limit, offset=offset)
+
+
+@router.get(
+    "/findings/{finding_id}",
+    response_model=Finding,
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_finding(
+    finding_id: str,
+    service: FindingServiceDependency,
+) -> Finding:
+    return await service.get_finding(finding_id)
+
+
+@router.patch(
+    "/findings/{finding_id}",
+    response_model=Finding,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def update_finding(
+    finding_id: str,
+    request: UpdateFindingRequest,
+    service: FindingServiceDependency,
+) -> Finding:
+    values = request.model_dump(exclude_unset=True, exclude={"evidence"})
+    if "evidence" in request.model_fields_set:
+        values["evidence"] = request.evidence
+    return await service.update_finding(finding_id, UpdateFinding(**values))
