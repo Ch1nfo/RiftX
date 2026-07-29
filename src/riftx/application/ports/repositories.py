@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from riftx.domain import Engagement, Run, RunEvent, RunStatus
+from riftx.domain import (
+    Engagement,
+    Execution,
+    Run,
+    RunEvent,
+    RunStatus,
+)
 
 
 class EngagementRepository(Protocol):
@@ -45,3 +51,15 @@ class RunEventRepository(Protocol):
         after_sequence: int = 0,
         limit: int = 100,
     ) -> Sequence[RunEvent]: ...
+
+
+class ExecutionRepository(Protocol):
+    async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]: ...
+
+    async def get(self, execution_id: str) -> Execution | None: ...
+
+    async def get_by_key(self, execution_key: str) -> Execution | None: ...
+
+    async def save(self, execution: Execution) -> Execution: ...
+
+    async def list_active(self) -> Sequence[Execution]: ...

@@ -6,6 +6,9 @@ from riftx.domain import (
     ApprovalMode,
     Engagement,
     EntryPoint,
+    Execution,
+    ExecutionStatus,
+    ExecutorType,
     Objective,
     Run,
     RunEvent,
@@ -14,7 +17,12 @@ from riftx.domain import (
     SuccessCriterion,
 )
 
-from .orm import EngagementRecord, RunEventRecord, RunRecord
+from .orm import (
+    EngagementRecord,
+    ExecutionRecord,
+    RunEventRecord,
+    RunRecord,
+)
 
 
 def engagement_to_record(engagement: Engagement) -> EngagementRecord:
@@ -114,4 +122,65 @@ def event_from_record(record: RunEventRecord) -> RunEvent:
         event_type=record.event_type,
         payload=record.payload_json,
         created_at=record.created_at,
+    )
+
+
+def execution_to_record(execution: Execution) -> ExecutionRecord:
+    return ExecutionRecord(
+        id=execution.id,
+        execution_key=execution.execution_key,
+        run_id=execution.run_id,
+        node_id=execution.node_id,
+        executor_type=execution.executor_type.value,
+        argv_json=execution.argv,
+        command_text=execution.command_text,
+        cwd=execution.cwd,
+        env_diff_json=execution.env_diff,
+        status=execution.status.value,
+        pid=execution.pid,
+        process_group_id=execution.process_group_id,
+        exit_code=execution.exit_code,
+        stdout_path=execution.stdout_path,
+        stderr_path=execution.stderr_path,
+        started_at=execution.started_at,
+        finished_at=execution.finished_at,
+    )
+
+
+def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> None:
+    record.node_id = execution.node_id
+    record.executor_type = execution.executor_type.value
+    record.argv_json = execution.argv
+    record.command_text = execution.command_text
+    record.cwd = execution.cwd
+    record.env_diff_json = execution.env_diff
+    record.status = execution.status.value
+    record.pid = execution.pid
+    record.process_group_id = execution.process_group_id
+    record.exit_code = execution.exit_code
+    record.stdout_path = execution.stdout_path
+    record.stderr_path = execution.stderr_path
+    record.started_at = execution.started_at
+    record.finished_at = execution.finished_at
+
+
+def execution_from_record(record: ExecutionRecord) -> Execution:
+    return Execution(
+        id=record.id,
+        execution_key=record.execution_key,
+        run_id=record.run_id,
+        node_id=record.node_id,
+        executor_type=ExecutorType(record.executor_type),
+        argv=record.argv_json,
+        command_text=record.command_text,
+        cwd=record.cwd,
+        env_diff=record.env_diff_json,
+        status=ExecutionStatus(record.status),
+        pid=record.pid,
+        process_group_id=record.process_group_id,
+        exit_code=record.exit_code,
+        stdout_path=record.stdout_path,
+        stderr_path=record.stderr_path,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
     )

@@ -12,7 +12,7 @@ from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["success", "failure", "sleep", "child"])
+    parser.add_argument("mode", choices=["success", "failure", "sleep", "stream", "large", "child"])
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument("--heartbeat")
     args = parser.parse_args()
@@ -27,6 +27,15 @@ def main() -> int:
         return 23
     if args.mode == "sleep":
         time.sleep(args.seconds)
+        return 0
+    if args.mode == "stream":
+        print("first", flush=True)
+        time.sleep(0.25)
+        print("second", flush=True)
+        return 0
+    if args.mode == "large":
+        sys.stdout.write("x" * 200_000)
+        sys.stdout.flush()
         return 0
 
     if not args.heartbeat:
