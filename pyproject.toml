@@ -20,6 +20,7 @@ dependencies = [
   "openai>=2.50,<3",
   "openai-agents>=0.19,<1",
   "sqlalchemy[asyncio]>=2.0.36,<3",
+  "temporalio>=1.30,<2",
 ]
 
 [project.optional-dependencies]
