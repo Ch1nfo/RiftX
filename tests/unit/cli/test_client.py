@@ -132,3 +132,47 @@ def test_approval_client_uses_control_plane_endpoints() -> None:
             {"decided_by": "local-user", "reason": "Denied"},
         ),
     ]
+
+
+def test_terminal_client_uses_rest_endpoints_and_builds_websocket_url() -> None:
+    requests: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        return httpx.Response(200, json={"id": "terminal-1", "status": "open"})
+
+    with APIClient(
+        "https://control-plane.example/riftx/",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.create_terminal(
+            "run-1",
+            argv=["python", "-i"],
+            cwd="/tmp/run-1",
+            cols=132,
+            rows=48,
+            owner="user",
+        )
+        client.get_terminal("terminal-1")
+        client.close_terminal("terminal-1")
+        websocket_url = client.terminal_websocket_url("terminal-1", cursor=42)
+
+    assert requests == [
+        (
+            "POST",
+            "/riftx/api/v1/runs/run-1/terminals",
+            {
+                "argv": ["python", "-i"],
+                "cwd": "/tmp/run-1",
+                "cols": 132,
+                "rows": 48,
+                "owner": "user",
+            },
+        ),
+        ("GET", "/riftx/api/v1/terminals/terminal-1", None),
+        ("DELETE", "/riftx/api/v1/terminals/terminal-1", None),
+    ]
+    assert websocket_url == (
+        "wss://control-plane.example/riftx/api/v1/terminals/terminal-1/ws?cursor=42"
+    )

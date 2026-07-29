@@ -7,6 +7,7 @@ from .repositories import (
     FindingRepository,
     RunEventRepository,
     RunRepository,
+    TerminalRepository,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "FindingRepository",
     "RunEventRepository",
     "RunRepository",
+    "TerminalRepository",
 ]

@@ -75,4 +75,43 @@ describe("RiftX API client", () => {
       }),
     );
   });
+
+
+  it("creates, fetches, and closes terminal sessions through the shared API", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: "terminal-1", status: "open" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.createTerminal("run-1", { argv: ["python", "-i"], owner: "agent" });
+    await api.getTerminal("terminal-1");
+    await api.closeTerminal("terminal-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/runs/run-1/terminals",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ argv: ["python", "-i"], owner: "agent" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/terminals/terminal-1",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/v1/terminals/terminal-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(api.terminalWebSocketUrl("terminal-1", 42)).toMatch(
+      /^ws:\/\/localhost(?::\d+)?\/api\/v1\/terminals\/terminal-1\/ws\?cursor=42$/,
+    );
+  });
 });

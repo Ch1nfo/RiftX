@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -175,6 +176,44 @@ class APIClient:
             f"/api/v1/approvals/{approval_id}/reject",
             json={"decided_by": decided_by, "reason": reason},
         )
+
+    def create_terminal(
+        self,
+        run_id: str,
+        *,
+        argv: list[str] | None = None,
+        cwd: str | None = None,
+        cols: int = 120,
+        rows: int = 40,
+        owner: str = "agent",
+    ) -> dict[str, Any]:
+        payload: dict[str, object] = {
+            "argv": argv or [],
+            "cols": cols,
+            "rows": rows,
+            "owner": owner,
+        }
+        if cwd is not None:
+            payload["cwd"] = cwd
+        return self._json(
+            "POST",
+            f"/api/v1/runs/{run_id}/terminals",
+            json=payload,
+        )
+
+    def get_terminal(self, session_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/terminals/{session_id}")
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/api/v1/terminals/{session_id}")
+
+    def terminal_websocket_url(self, session_id: str, *, cursor: int = 0) -> str:
+        parsed = urlsplit(self.base_url)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        base_path = parsed.path.rstrip("/")
+        path = f"{base_path}/api/v1/terminals/{session_id}/ws"
+        query = urlencode({"cursor": max(cursor, 0)})
+        return urlunsplit((scheme, parsed.netloc, path, query, ""))
 
     def _json(self, method: str, path: str, **kwargs: object) -> dict[str, Any]:
         response = self._client.request(method, path, **kwargs)

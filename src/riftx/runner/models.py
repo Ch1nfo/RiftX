@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from riftx.domain import ExecutorType
+from riftx.domain import ExecutorType, TerminalOwner
 from riftx.executors import EnvironmentMode, ShellKind
 
 
@@ -64,3 +64,25 @@ class ExecutionOutput(BaseModel):
 
     stdout: OutputSlice
     stderr: OutputSlice
+
+
+class TerminalLaunchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    node_id: str = Field(min_length=1)
+    cwd: Path
+    argv: list[str]
+    environment_mode: EnvironmentMode = EnvironmentMode.INHERIT
+    env: dict[str, str | None] = Field(default_factory=dict)
+    cols: int = Field(default=120, gt=0, le=1000)
+    rows: int = Field(default=40, gt=0, le=1000)
+    owner: TerminalOwner = TerminalOwner.AGENT
+
+    @model_validator(mode="after")
+    def validate_terminal_payload(self) -> TerminalLaunchRequest:
+        if not self.cwd.is_dir():
+            raise ValueError(f"cwd does not exist or is not a directory: {self.cwd}")
+        if not self.argv or any(not item for item in self.argv):
+            raise ValueError("terminal execution requires non-empty argv")
+        return self

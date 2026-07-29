@@ -13,6 +13,12 @@ class ExecutionPaths:
     stderr: Path
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalPaths:
+    directory: Path
+    transcript: Path
+
+
 class RunnerPaths:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
@@ -40,6 +46,10 @@ class RunnerPaths:
         ):
             (run_directory / name).mkdir(parents=True, exist_ok=True)
         return run_directory
+
+    def terminal(self, run_id: str, session_id: str) -> TerminalPaths:
+        directory = self.run_directory(run_id) / "terminals" / _safe_component(session_id)
+        return TerminalPaths(directory=directory, transcript=directory / "transcript.log")
 
 
 def _safe_component(value: str) -> str:

@@ -193,3 +193,45 @@ export interface APIErrorEnvelope {
     details: Record<string, unknown> | unknown[];
   };
 }
+
+export type TerminalStatus = "created" | "open" | "closed" | "lost";
+export type TerminalOwner = "agent" | "user" | "shared";
+
+export interface TerminalSession {
+  id: string;
+  run_id: string;
+  execution_id: string;
+  status: TerminalStatus;
+  owner: TerminalOwner;
+  cols: number;
+  rows: number;
+  argv: string[];
+  cwd: string;
+  pid: number | null;
+  exit_code: number | null;
+  execution_status:
+    | "created"
+    | "starting"
+    | "running"
+    | "exited"
+    | "failed"
+    | "cancelled"
+    | "lost";
+  created_at: string;
+  closed_at: string | null;
+}
+
+export interface CreateTerminalPayload {
+  argv?: string[];
+  cwd?: string;
+  env?: Record<string, string | null>;
+  cols?: number;
+  rows?: number;
+  owner?: TerminalOwner;
+}
+
+export type TerminalWebSocketMessage =
+  | { type: "state"; session: TerminalSession }
+  | { type: "output"; data: string; cursor: number; next_cursor: number }
+  | { type: "error"; code: string; message: string }
+  | { type: "pong" };

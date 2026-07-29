@@ -15,16 +15,20 @@ from riftx.application.services import (
     FindingApplicationService,
     RunApplicationService,
     RunWorkflowClient,
+    TerminalApplicationService,
     ToolApplicationService,
 )
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTerminalRepository,
 )
+from riftx.runner import RunnerPaths, TerminalSupervisor
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
 
@@ -37,6 +41,7 @@ class APISettings:
     tools_config_path: Path = Path("configs/tools.example.yaml")
     node_id: str = "local"
     workspace_root: Path = Path(".riftx/workspaces")
+    runner_state_path: Path = Path(".riftx/runner")
     web_dist_path: Path = Path("apps/web/dist")
     temporal_address: str = "127.0.0.1:7233"
     temporal_namespace: str = "default"
@@ -59,6 +64,9 @@ class APISettings:
             ),
             node_id=os.getenv("RIFTX_NODE_ID", defaults.node_id),
             workspace_root=Path(os.getenv("RIFTX_WORKSPACE_ROOT", str(defaults.workspace_root))),
+            runner_state_path=Path(
+                os.getenv("RIFTX_RUNNER_STATE", str(defaults.runner_state_path))
+            ),
             web_dist_path=Path(os.getenv("RIFTX_WEB_DIST", str(defaults.web_dist_path))),
             temporal_address=os.getenv("RIFTX_TEMPORAL_ADDRESS", defaults.temporal_address),
             temporal_namespace=os.getenv("RIFTX_TEMPORAL_NAMESPACE", defaults.temporal_namespace),
@@ -101,8 +109,11 @@ class ControlPlane:
     finding_service: FindingApplicationService
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
+    terminal_service: TerminalApplicationService
+    terminal_supervisor: TerminalSupervisor
 
     async def close(self) -> None:
+        await self.terminal_supervisor.close_all()
         await self.database.dispose()
 
 
@@ -169,6 +180,15 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
+    execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    terminal_supervisor = TerminalSupervisor(
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        event_repository=event_repository,
+        paths=RunnerPaths(settings.runner_state_path),
+    )
+    await terminal_supervisor.recover()
 
     return ControlPlane(
         settings=settings,
@@ -195,11 +215,17 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             event_repository=event_repository,
             workflow_client=workflow_client,
         ),
+        terminal_service=TerminalApplicationService(
+            run_repository=run_repository,
+            supervisor=terminal_supervisor,
+        ),
+        terminal_supervisor=terminal_supervisor,
     )
 
 
 def _prepare_local_paths(settings: APISettings) -> None:
     settings.workspace_root.mkdir(parents=True, exist_ok=True)
+    settings.runner_state_path.mkdir(parents=True, exist_ok=True)
     if settings.database_url.startswith("sqlite+aiosqlite:///"):
         raw_path = settings.database_url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":

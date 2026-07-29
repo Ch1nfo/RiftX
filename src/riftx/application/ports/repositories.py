@@ -17,6 +17,7 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunStatus,
+    TerminalSession,
     ToolCall,
 )
 
@@ -108,6 +109,16 @@ class ExecutionRepository(Protocol):
     async def save(self, execution: Execution) -> Execution: ...
 
     async def list_active(self) -> Sequence[Execution]: ...
+
+
+class TerminalRepository(Protocol):
+    async def create(self, terminal: TerminalSession) -> TerminalSession: ...
+
+    async def get(self, session_id: str) -> TerminalSession | None: ...
+
+    async def save(self, terminal: TerminalSession) -> TerminalSession: ...
+
+    async def list_open(self) -> Sequence[TerminalSession]: ...
 
 
 class FindingRepository(Protocol):

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from riftx.api import APISettings, ControlPlane, create_app
 from riftx.application.services import (
@@ -15,6 +19,7 @@ from riftx.application.services import (
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
+    TerminalApplicationService,
     ToolApplicationService,
 )
 from riftx.domain import Approval, Finding, FindingSeverity, ToolCall
@@ -22,10 +27,13 @@ from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTerminalRepository,
 )
+from riftx.runner import RunnerPaths, TerminalSupervisor
 from riftx.tools import ToolRegistry
 
 
@@ -103,6 +111,15 @@ tools:
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
+    execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    terminal_supervisor = TerminalSupervisor(
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        event_repository=event_repository,
+        paths=RunnerPaths(tmp_path / "runner"),
+        termination_grace_seconds=0.1,
+    )
     workflow_client = workflow or FakeWorkflowClient()
     settings = APISettings(
         database_url=database.url,
@@ -137,6 +154,11 @@ tools:
                 event_repository=event_repository,
                 workflow_client=workflow_client,
             ),
+            terminal_service=TerminalApplicationService(
+                run_repository=run_repository,
+                supervisor=terminal_supervisor,
+            ),
+            terminal_supervisor=terminal_supervisor,
         ),
         workflow=workflow_client,
         finding_repository=finding_repository,
@@ -495,3 +517,146 @@ async def test_approval_decision_remains_durable_when_temporal_signal_fails(
         assert persisted is not None
         assert persisted.status.value == "approved"
     await runtime.control_plane.close()
+
+
+_TERMINAL_SCRIPT = r"""
+import signal
+import sys
+
+def interrupted(signum, frame):
+    print("INTERRUPTED", flush=True)
+
+signal.signal(signal.SIGINT, interrupted)
+print("READY", flush=True)
+for line in sys.stdin:
+    print("ECHO:" + line.rstrip(), flush=True)
+"""
+
+
+@pytest.mark.asyncio
+async def test_terminal_rest_lifecycle_and_start_failure(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            run = await _create_run(client)
+            created = await client.post(
+                f"/api/v1/runs/{run['id']}/terminals",
+                json={
+                    "argv": [sys.executable, "-u", "-c", _TERMINAL_SCRIPT],
+                    "owner": "agent",
+                    "cols": 100,
+                    "rows": 30,
+                },
+            )
+            assert created.status_code == 201, created.text
+            session = created.json()
+            assert session["status"] == "open"
+            assert session["owner"] == "agent"
+            assert session["execution_status"] == "running"
+
+            fetched = await client.get(f"/api/v1/terminals/{session['id']}")
+            assert fetched.status_code == 200
+            assert fetched.json()["id"] == session["id"]
+
+            closed = await client.delete(f"/api/v1/terminals/{session['id']}")
+            assert closed.status_code == 200
+            assert closed.json()["status"] == "closed"
+            assert closed.json()["execution_status"] == "cancelled"
+
+            missing = await client.get("/api/v1/terminals/missing")
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "terminal_session_not_found"
+
+            failed = await client.post(
+                f"/api/v1/runs/{run['id']}/terminals",
+                json={"argv": [str(tmp_path / "does-not-exist")]},
+            )
+            assert failed.status_code == 409
+            assert failed.json()["error"]["code"] == "terminal_start_failed"
+    finally:
+        await runtime.control_plane.close()
+
+
+def _receive_ws_message(websocket: Any, expected_type: str) -> dict[str, object]:
+    for _ in range(100):
+        message = websocket.receive_json()
+        if message.get("type") == expected_type:
+            return message
+    raise AssertionError(f"did not receive websocket message type {expected_type!r}")
+
+
+def _receive_ws_state(websocket: Any, **expected: object) -> dict[str, object]:
+    for _ in range(100):
+        message = _receive_ws_message(websocket, "state")
+        session = message["session"]
+        if isinstance(session, dict) and all(
+            session.get(key) == value for key, value in expected.items()
+        ):
+            return session
+    raise AssertionError(f"did not receive terminal state matching {expected!r}")
+
+
+def _receive_ws_output(websocket: Any, expected: str) -> str:
+    content = ""
+    for _ in range(100):
+        message = _receive_ws_message(websocket, "output")
+        content += str(message.get("data", ""))
+        if expected in content:
+            return content
+    raise AssertionError(f"did not receive terminal output {expected!r}; output={content!r}")
+
+
+def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: Path) -> None:
+    runtime = asyncio.run(_build_runtime(tmp_path))
+    app = create_app(control_plane=runtime.control_plane)
+    try:
+        with TestClient(app) as client:
+            run_response = client.post(
+                "/api/v1/runs",
+                json={"objective": "Exercise the local PTY"},
+            )
+            assert run_response.status_code == 201
+            run = run_response.json()
+            created = client.post(
+                f"/api/v1/runs/{run['id']}/terminals",
+                json={
+                    "argv": [sys.executable, "-u", "-c", _TERMINAL_SCRIPT],
+                    "owner": "agent",
+                },
+            )
+            assert created.status_code == 201, created.text
+            session_id = created.json()["id"]
+
+            with client.websocket_connect(f"/api/v1/terminals/{session_id}/ws") as websocket:
+                _receive_ws_state(websocket, owner="agent", status="open")
+                _receive_ws_output(websocket, "READY")
+
+                websocket.send_json({"type": "input", "data": "blocked\n"})
+                error = _receive_ws_message(websocket, "error")
+                assert error["code"] == "terminal_not_owned"
+
+                websocket.send_json({"type": "takeover"})
+                _receive_ws_state(websocket, owner="user")
+                websocket.send_json({"type": "input", "data": "你好 RiftX\n"})
+                assert "ECHO:你好 RiftX" in _receive_ws_output(websocket, "ECHO:你好 RiftX")
+
+                websocket.send_json({"type": "resize", "cols": 132, "rows": 48})
+                _receive_ws_state(websocket, cols=132, rows=48)
+                websocket.send_json({"type": "interrupt"})
+                _receive_ws_output(websocket, "INTERRUPTED")
+
+                websocket.send_json({"type": "ping"})
+                _receive_ws_message(websocket, "pong")
+                websocket.send_json({"type": "release"})
+                _receive_ws_state(websocket, owner="agent")
+
+            closed = client.delete(f"/api/v1/terminals/{session_id}")
+            assert closed.status_code == 200
+            assert closed.json()["status"] == "closed"
+
+            with client.websocket_connect("/api/v1/terminals/missing/ws") as websocket:
+                error = websocket.receive_json()
+                assert error["type"] == "error"
+                assert error["code"] == "terminal_session_not_found"
+    finally:
+        asyncio.run(runtime.control_plane.close())

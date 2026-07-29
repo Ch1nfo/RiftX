@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api/client";
-import type { ApprovalDecisionPayload, CreateRunPayload, RunStatus } from "../api/types";
+import type {
+  ApprovalDecisionPayload,
+  CreateRunPayload,
+  CreateTerminalPayload,
+  RunStatus,
+} from "../api/types";
 
 export const queryKeys = {
   runs: (status?: RunStatus) => ["runs", status ?? "all"] as const,
@@ -9,6 +14,7 @@ export const queryKeys = {
   events: (runId: string) => ["run-events", runId] as const,
   findings: (runId: string) => ["run-findings", runId] as const,
   approvals: (runId: string) => ["run-approvals", runId] as const,
+  terminal: (sessionId: string) => ["terminal", sessionId] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
 };
 
@@ -80,6 +86,34 @@ export function useApprovalControl(runId: string) {
         payload?: ApprovalDecisionPayload;
       }) => api.reject(approvalId, payload),
       onSuccess: refresh,
+    }),
+  };
+}
+
+export function useTerminal(sessionId: string) {
+  return useQuery({
+    queryKey: queryKeys.terminal(sessionId),
+    queryFn: () => api.getTerminal(sessionId),
+    enabled: Boolean(sessionId),
+  });
+}
+
+export function useTerminalControl(runId: string) {
+  const queryClient = useQueryClient();
+  return {
+    create: useMutation({
+      mutationFn: (payload: CreateTerminalPayload = {}) => api.createTerminal(runId, payload),
+      onSuccess: (terminal) => {
+        queryClient.setQueryData(queryKeys.terminal(terminal.id), terminal);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+      },
+    }),
+    close: useMutation({
+      mutationFn: (sessionId: string) => api.closeTerminal(sessionId),
+      onSuccess: (terminal) => {
+        queryClient.setQueryData(queryKeys.terminal(terminal.id), terminal);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+      },
     }),
   };
 }

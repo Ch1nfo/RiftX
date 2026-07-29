@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,16 @@ class RunApplicationService:
         )
         if not run.workspace_path:
             run.workspace_path = str(self._workspace_root / run.id)
+        workspace = await asyncio.to_thread(lambda: Path(run.workspace_path).expanduser().resolve())
+        try:
+            await asyncio.to_thread(workspace.mkdir, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ApplicationConflictError(
+                "workspace_unavailable",
+                f"Unable to create Run workspace {str(workspace)!r}: {exc}",
+                details={"workspace_path": str(workspace)},
+            ) from exc
+        run.workspace_path = str(workspace)
         run.temporal_workflow_id = self._workflow_client.workflow_id(run.id)
         await self._run_repository.create(run)
 

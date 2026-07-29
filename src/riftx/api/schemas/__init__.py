@@ -15,6 +15,7 @@ from .runs import (
     ScopeRequest,
     SuccessCriterionRequest,
 )
+from .terminals import TerminalCreateRequest, TerminalResponse
 from .tools import RegisteredToolResponse, ToolRegistryResponse
 
 __all__ = [
@@ -37,4 +38,6 @@ __all__ = [
     "ScopeRequest",
     "SuccessCriterionRequest",
     "ToolRegistryResponse",
+    "TerminalCreateRequest",
+    "TerminalResponse",
 ]

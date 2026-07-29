@@ -27,6 +27,7 @@ dependencies = [
   "temporalio>=1.30,<2",
   "typer>=0.26,<1",
   "uvicorn>=0.51,<1",
+  "websockets>=16,<17",
 ]
 
 [project.scripts]

@@ -81,6 +81,7 @@ describe("useEventStream", () => {
 
     expect(FakeEventSource.latest?.listeners.has("agent.tool_completed")).toBe(true);
     expect(FakeEventSource.latest?.listeners.has("tool.approval_required")).toBe(true);
+    expect(FakeEventSource.latest?.listeners.has("terminal.opened")).toBe(true);
     expect(FakeEventSource.latest?.listeners.has("tool.execution_completed")).toBe(false);
 
     act(() => {
@@ -94,8 +95,19 @@ describe("useEventStream", () => {
       });
     });
 
+    act(() => {
+      FakeEventSource.latest?.emit("terminal.opened", {
+        id: "event-4",
+        run_id: "run-1",
+        sequence: 4,
+        event_type: "terminal.opened",
+        payload: { session_id: "terminal-1" },
+        created_at: "2026-07-29T00:00:03Z",
+      });
+    });
+
     const cached = queryClient.getQueryData<RunEventList>(queryKeys.events("run-1"));
-    expect(cached?.items.map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(cached?.items.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     rendered.unmount();
     expect(FakeEventSource.latest?.closed).toBe(true);
     globalThis.EventSource = original;

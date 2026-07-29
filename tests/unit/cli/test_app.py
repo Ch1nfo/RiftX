@@ -82,6 +82,52 @@ class FakeAPIClient:
         self.calls.append(("reject", (approval_id, reason)))
         return {"id": approval_id, "status": "rejected"}
 
+    def create_terminal(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        self.calls.append(("create_terminal", (run_id, kwargs)))
+        return {
+            "id": "terminal-1",
+            "run_id": run_id,
+            "status": "open",
+            "owner": kwargs.get("owner", "agent"),
+            "argv": kwargs.get("argv") or ["/bin/sh"],
+            "cwd": kwargs.get("cwd") or "/tmp/run-1",
+            "cols": kwargs.get("cols", 120),
+            "rows": kwargs.get("rows", 40),
+            "pid": 123,
+        }
+
+    def get_terminal(self, session_id: str) -> dict[str, Any]:
+        self.calls.append(("get_terminal", session_id))
+        return {
+            "id": session_id,
+            "run_id": "run-1",
+            "status": "open",
+            "owner": "agent",
+            "argv": ["/bin/sh"],
+            "cwd": "/tmp/run-1",
+            "cols": 120,
+            "rows": 40,
+            "pid": 123,
+        }
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]:
+        self.calls.append(("close_terminal", session_id))
+        return {
+            "id": session_id,
+            "run_id": "run-1",
+            "status": "closed",
+            "owner": "agent",
+            "argv": ["/bin/sh"],
+            "cwd": "/tmp/run-1",
+            "cols": 120,
+            "rows": 40,
+            "pid": 123,
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,3 +200,46 @@ def test_approval_commands_delegate_to_shared_http_client() -> None:
     assert FakeAPIClient.instances[0].calls == [("list_approvals", "run-1")]
     assert FakeAPIClient.instances[1].calls == [("approve", ("approval-1", True))]
     assert FakeAPIClient.instances[2].calls == [("reject", ("approval-2", "Outside scope"))]
+
+
+def test_terminal_commands_delegate_to_shared_control_plane() -> None:
+    created = runner.invoke(
+        cli_module.app,
+        [
+            "terminal",
+            "create",
+            "run-1",
+            "--cwd",
+            "/tmp/run-1",
+            "--cols",
+            "132",
+            "--rows",
+            "48",
+            "--",
+            "python",
+            "-i",
+        ],
+    )
+    shown = runner.invoke(cli_module.app, ["terminal", "show", "terminal-1"])
+    closed = runner.invoke(cli_module.app, ["terminal", "close", "terminal-1"])
+
+    assert created.exit_code == 0, created.output
+    assert shown.exit_code == 0, shown.output
+    assert closed.exit_code == 0, closed.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "create_terminal",
+            (
+                "run-1",
+                {
+                    "argv": ["python", "-i"],
+                    "cwd": "/tmp/run-1",
+                    "cols": 132,
+                    "rows": 48,
+                    "owner": "agent",
+                },
+            ),
+        )
+    ]
+    assert FakeAPIClient.instances[1].calls == [("get_terminal", "terminal-1")]
+    assert FakeAPIClient.instances[2].calls == [("close_terminal", "terminal-1")]

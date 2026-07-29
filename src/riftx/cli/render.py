@@ -83,6 +83,23 @@ def render_tools(console: Console, payload: dict[str, Any]) -> None:
     console.print(table)
 
 
+def render_terminal(console: Console, terminal: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("Session", str(terminal.get("id", "")))
+    body.add_row("Run", str(terminal.get("run_id", "")))
+    body.add_row("Status", _status_text(str(terminal.get("status", "unknown"))))
+    body.add_row("Owner", str(terminal.get("owner", "")))
+    body.add_row("Command", " ".join(str(item) for item in terminal.get("argv", [])))
+    body.add_row("Working dir", str(terminal.get("cwd", "")))
+    body.add_row("Size", f"{terminal.get('cols', '?')} × {terminal.get('rows', '?')}")
+    body.add_row("PID", str(terminal.get("pid") or "—"))
+    if terminal.get("exit_code") is not None:
+        body.add_row("Exit code", str(terminal["exit_code"]))
+    console.print(Panel(body, title="Terminal", border_style="cyan"))
+
+
 def render_approvals(console: Console, approvals: Iterable[dict[str, Any]]) -> None:
     items = list(approvals)
     if not items:

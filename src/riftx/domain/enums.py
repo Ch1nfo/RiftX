@@ -82,6 +82,7 @@ class TerminalStatus(StrEnum):
 class TerminalOwner(StrEnum):
     AGENT = "agent"
     USER = "user"
+    SHARED = "shared"
 
 
 class FindingSeverity(StrEnum):

@@ -14,7 +14,15 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .client import APIClient, RiftXAPIError
-from .render import render_approvals, render_error, render_run, render_runs, render_tools
+from .render import (
+    render_approvals,
+    render_error,
+    render_run,
+    render_runs,
+    render_terminal,
+    render_tools,
+)
+from .terminal import attach_terminal, control_terminal
 
 _COMMANDS = [
     "/new",
@@ -27,6 +35,10 @@ _COMMANDS = [
     "/cancel",
     "/watch",
     "/approvals",
+    "/terminal",
+    "/attach",
+    "/takeover",
+    "/release",
     "/approve",
     "/reject",
     "/help",
@@ -37,6 +49,7 @@ _COMMANDS = [
 @dataclass(slots=True)
 class InteractiveState:
     active_run_id: str | None = None
+    active_terminal_id: str | None = None
 
 
 def run_interactive(client: APIClient, console: Console) -> None:
@@ -72,7 +85,7 @@ def run_interactive(client: APIClient, console: Console) -> None:
                     return
             else:
                 _handle_message(text, state, client, console)
-        except (RiftXAPIError, httpx.HTTPError, ValueError) as exc:
+        except (RiftXAPIError, httpx.HTTPError, OSError, ValueError) as exc:
             render_error(console, exc)
 
 
@@ -98,6 +111,9 @@ def _handle_command(
             "[bold]/cancel[/bold] control the active run\n"
             "[bold]/watch[/bold] stream active run events\n"
             "[bold]/approvals[/bold] list approval requests\n"
+            "[bold]/terminal [COMMAND ...][/bold] start a terminal for the active run\n"
+            "[bold]/attach [SESSION_ID][/bold] take over and attach (Ctrl+] detaches)\n"
+            "[bold]/release [SESSION_ID][/bold] return terminal ownership to the Agent\n"
             "[bold]/approve APPROVAL_ID [--for-run][/bold] approve a tool call\n"
             "[bold]/reject APPROVAL_ID [REASON][/bold] reject a tool call\n"
             "[bold]/exit[/bold] close interactive mode"
@@ -148,6 +164,20 @@ def _handle_command(
             client.list_approvals(_require_active(state)).get("items", []),
         )
         return False
+    if command == "/terminal":
+        terminal = client.create_terminal(_require_active(state), argv=args or None)
+        state.active_terminal_id = str(terminal["id"])
+        render_terminal(console, terminal)
+        return False
+    if command in {"/attach", "/takeover"}:
+        session_id = args[0] if args else _require_active_terminal(state)
+        state.active_terminal_id = session_id
+        attach_terminal(client, session_id, console)
+        return False
+    if command == "/release":
+        session_id = args[0] if args else _require_active_terminal(state)
+        render_terminal(console, control_terminal(client, session_id, "release"))
+        return False
     if command == "/approve":
         if not args:
             raise ValueError("Usage: /approve APPROVAL_ID [--for-run]")
@@ -197,6 +227,12 @@ def _require_active(state: InteractiveState) -> str:
     if state.active_run_id is None:
         raise ValueError("No active run; use /new OBJECTIVE or /resume RUN_ID")
     return state.active_run_id
+
+
+def _require_active_terminal(state: InteractiveState) -> str:
+    if state.active_terminal_id is None:
+        raise ValueError("No active terminal; use /terminal or /attach SESSION_ID")
+    return state.active_terminal_id
 
 
 def _prompt(state: InteractiveState) -> str:

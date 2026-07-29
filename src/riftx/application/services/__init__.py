@@ -10,6 +10,7 @@ from .approvals import (
 from .events import EventApplicationService
 from .findings import FindingApplicationService
 from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflowClient
+from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
 
 __all__ = [
@@ -27,4 +28,7 @@ __all__ = [
     "RunWorkflowClient",
     "ToolApplicationService",
     "ToolRegistryView",
+    "CreateTerminal",
+    "TerminalApplicationService",
+    "TerminalView",
 ]

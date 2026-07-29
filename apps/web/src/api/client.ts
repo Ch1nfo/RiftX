@@ -9,6 +9,8 @@ import type {
   RunEventList,
   RunList,
   RunStatus,
+  TerminalSession,
+  CreateTerminalPayload,
   ToolRegistrySnapshot,
 } from "./types";
 
@@ -153,6 +155,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  createTerminal(
+    runId: string,
+    payload: CreateTerminalPayload = {},
+  ): Promise<TerminalSession> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/terminals`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getTerminal(sessionId: string): Promise<TerminalSession> {
+    return request(`/api/v1/terminals/${encodeURIComponent(sessionId)}`);
+  },
+
+  closeTerminal(sessionId: string): Promise<TerminalSession> {
+    return request(`/api/v1/terminals/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  terminalWebSocketUrl(sessionId: string, cursor = 0): string {
+    const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    const url = new URL(
+      `${API_BASE_URL}/api/v1/terminals/${encodeURIComponent(sessionId)}/ws`,
+      base,
+    );
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("cursor", String(Math.max(cursor, 0)));
+    return url.toString();
   },
 
   listTools(nodeId = "local"): Promise<ToolRegistrySnapshot> {

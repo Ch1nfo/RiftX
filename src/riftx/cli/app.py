@@ -11,7 +11,7 @@ import typer
 import uvicorn
 from rich.console import Console
 
-from riftx.domain import ApprovalMode, EntryPointKind, RunStatus
+from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
 
 from .client import APIClient, RiftXAPIError
 from .interactive import run_interactive
@@ -21,8 +21,10 @@ from .render import (
     render_event,
     render_run,
     render_runs,
+    render_terminal,
     render_tools,
 )
+from .terminal import attach_terminal
 
 console = Console()
 app = typer.Typer(
@@ -34,8 +36,10 @@ app = typer.Typer(
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
+terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
 app.add_typer(run_app, name="run")
 app.add_typer(tools_app, name="tools")
+app.add_typer(terminal_app, name="terminal")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +143,98 @@ def reject(
         lambda client: client.reject(approval_id, reason=reason),
     )
     console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
+
+
+@terminal_app.command("create")
+def create_terminal(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    command: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Command and arguments (use -- before command options); omit for the default shell."
+            )
+        ),
+    ] = None,
+    cwd: Annotated[str | None, typer.Option("--cwd", help="Terminal working directory.")] = None,
+    cols: Annotated[int, typer.Option(min=1, max=1000)] = 120,
+    rows: Annotated[int, typer.Option(min=1, max=1000)] = 40,
+    owner: Annotated[
+        TerminalOwner,
+        typer.Option(case_sensitive=False, help="Initial terminal owner."),
+    ] = TerminalOwner.AGENT,
+) -> None:
+    """Start a host-native terminal through the Control Plane."""
+
+    _run_with_client(
+        context,
+        lambda client: render_terminal(
+            console,
+            client.create_terminal(
+                run_id,
+                argv=command,
+                cwd=cwd,
+                cols=cols,
+                rows=rows,
+                owner=owner.value,
+            ),
+        ),
+    )
+
+
+@terminal_app.command("show")
+def show_terminal(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument(help="Terminal session ID.")],
+) -> None:
+    """Show durable terminal metadata."""
+
+    _run_with_client(
+        context,
+        lambda client: render_terminal(console, client.get_terminal(session_id)),
+    )
+
+
+@terminal_app.command("close")
+def close_terminal(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument(help="Terminal session ID.")],
+) -> None:
+    """Close a terminal session and its native process group."""
+
+    _run_with_client(
+        context,
+        lambda client: render_terminal(console, client.close_terminal(session_id)),
+    )
+
+
+@app.command("attach")
+def attach(
+    context: typer.Context,
+    session_id: Annotated[str, typer.Argument(help="Terminal session ID.")],
+    read_only: Annotated[
+        bool,
+        typer.Option("--read-only", help="Observe output without taking terminal ownership."),
+    ] = False,
+    cursor: Annotated[int, typer.Option(min=0, help="Transcript byte cursor.")] = 0,
+) -> None:
+    """Attach the local TTY; press Ctrl+] to release and detach."""
+
+    state = _state(context)
+    try:
+        with APIClient(state.api_url) as client:
+            console.print(f"[dim]Attaching to {session_id}; press Ctrl+] to detach.[/dim]")
+            attach_terminal(
+                client,
+                session_id,
+                console,
+                take_over=not read_only,
+                cursor=cursor,
+            )
+    except (RiftXAPIError, httpx.HTTPError, OSError, ValueError) as exc:
+        render_error(console, exc)
+        raise typer.Exit(1) from exc
 
 
 @run_app.command("create")

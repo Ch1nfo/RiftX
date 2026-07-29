@@ -22,6 +22,9 @@ from riftx.domain import (
     RunStatus,
     Scope,
     SuccessCriterion,
+    TerminalOwner,
+    TerminalSession,
+    TerminalStatus,
     ToolCall,
 )
 
@@ -33,6 +36,7 @@ from .orm import (
     FindingRecord,
     RunEventRecord,
     RunRecord,
+    TerminalSessionRecord,
     ToolCallRecord,
 )
 
@@ -324,4 +328,43 @@ def approval_grant_from_record(record: ApprovalGrantRecord) -> ApprovalGrant:
         tool_id=record.tool_id,
         created_by=record.created_by,
         created_at=record.created_at,
+    )
+
+
+def terminal_to_record(terminal: TerminalSession) -> TerminalSessionRecord:
+    return TerminalSessionRecord(
+        id=terminal.id,
+        run_id=terminal.run_id,
+        execution_id=terminal.execution_id,
+        status=terminal.status.value,
+        owner=terminal.owner.value,
+        cols=terminal.cols,
+        rows=terminal.rows,
+        created_at=terminal.created_at,
+        closed_at=terminal.closed_at,
+    )
+
+
+def apply_terminal_to_record(
+    terminal: TerminalSession,
+    record: TerminalSessionRecord,
+) -> None:
+    record.status = terminal.status.value
+    record.owner = terminal.owner.value
+    record.cols = terminal.cols
+    record.rows = terminal.rows
+    record.closed_at = terminal.closed_at
+
+
+def terminal_from_record(record: TerminalSessionRecord) -> TerminalSession:
+    return TerminalSession(
+        id=record.id,
+        run_id=record.run_id,
+        execution_id=record.execution_id,
+        status=TerminalStatus(record.status),
+        owner=TerminalOwner(record.owner),
+        cols=record.cols,
+        rows=record.rows,
+        created_at=record.created_at,
+        closed_at=record.closed_at,
     )

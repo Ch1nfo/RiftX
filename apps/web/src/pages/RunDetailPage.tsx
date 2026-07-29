@@ -26,6 +26,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
+import { TerminalPanel } from "../components/TerminalPanel";
 import {
   useFindings,
   useApprovalControl,
@@ -36,7 +37,13 @@ import {
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
 
-type DetailTab = "overview" | "timeline" | "approvals" | "findings" | "report";
+type DetailTab =
+  | "overview"
+  | "timeline"
+  | "approvals"
+  | "terminal"
+  | "findings"
+  | "report";
 
 export function RunDetailPage() {
   const { runId = "" } = useParams();
@@ -54,6 +61,14 @@ export function RunDetailPage() {
   const planEvent = [...eventItems]
     .reverse()
     .find((event) => event.event_type === "agent.plan_updated");
+  const terminalEvent = [...eventItems]
+    .reverse()
+    .find(
+      (event) =>
+        event.event_type === "terminal.opened" &&
+        typeof event.payload.session_id === "string",
+    );
+  const terminalSessionId = terminalEvent?.payload.session_id as string | undefined;
   const pendingApprovals =
     approvals.data?.items.filter((approval) => approval.status === "pending") ?? [];
 
@@ -142,6 +157,7 @@ export function RunDetailPage() {
                 ["overview", "Overview"],
                 ["timeline", `Timeline ${eventItems.length}`],
                 ["approvals", `Approvals ${pendingApprovals.length}`],
+                ["terminal", "Terminal"],
                 ["findings", `Findings ${findings.data?.items.length ?? 0}`],
                 ["report", "Report"],
               ] as Array<[DetailTab, string]>
@@ -173,6 +189,9 @@ export function RunDetailPage() {
                 loading={approvals.isLoading}
                 controls={approvalControls}
               />
+            ) : null}
+            {tab === "terminal" ? (
+              <TerminalPanel runId={runId} initialSessionId={terminalSessionId} />
             ) : null}
             {tab === "findings" ? (
               <Findings findings={findings.data?.items ?? []} loading={findings.isLoading} />
@@ -563,7 +582,9 @@ function EventIcon({ eventType }: { eventType: string }) {
   if (eventType.startsWith("agent.")) return <Bot size={16} />;
   if (eventType.includes("tool")) return <Wrench size={16} />;
   if (eventType.includes("approval")) return <ShieldAlert size={16} />;
-  if (eventType.includes("execution")) return <TerminalSquare size={16} />;
+  if (eventType.includes("execution") || eventType.startsWith("terminal.")) {
+    return <TerminalSquare size={16} />;
+  }
   if (eventType.startsWith("user.")) return <MessageSquareText size={16} />;
   return <Activity size={16} />;
 }
@@ -571,7 +592,13 @@ function EventIcon({ eventType }: { eventType: string }) {
 function eventFamily(eventType: string) {
   if (eventType.includes("failed")) return "failed";
   if (eventType.startsWith("agent.")) return "agent";
-  if (eventType.includes("tool") || eventType.includes("execution")) return "tool";
+  if (
+    eventType.includes("tool") ||
+    eventType.includes("execution") ||
+    eventType.startsWith("terminal.")
+  ) {
+    return "tool";
+  }
   if (eventType.startsWith("user.")) return "user";
   return "run";
 }

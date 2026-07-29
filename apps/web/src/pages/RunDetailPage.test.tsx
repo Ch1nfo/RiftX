@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RunDetailPage } from "./RunDetailPage";
 
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
+vi.mock("../components/TerminalPanel", () => ({ TerminalPanel: () => null }));
 vi.mock("../hooks/queries", () => ({
   useRun: () => ({
     isLoading: false,

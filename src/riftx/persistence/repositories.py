@@ -22,6 +22,8 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunStatus,
+    TerminalSession,
+    TerminalStatus,
     ToolCall,
 )
 from riftx.domain.base import utc_now
@@ -30,6 +32,7 @@ from .mappers import (
     apply_approval_to_record,
     apply_execution_to_record,
     apply_run_to_record,
+    apply_terminal_to_record,
     approval_from_record,
     approval_grant_from_record,
     approval_grant_to_record,
@@ -44,6 +47,8 @@ from .mappers import (
     finding_to_record,
     run_from_record,
     run_to_record,
+    terminal_from_record,
+    terminal_to_record,
     tool_call_from_record,
     tool_call_to_record,
 )
@@ -55,6 +60,7 @@ from .orm import (
     FindingRecord,
     RunEventRecord,
     RunRecord,
+    TerminalSessionRecord,
     ToolCallRecord,
 )
 
@@ -389,6 +395,46 @@ class SQLAlchemyApprovalRepository:
         async with self._session_factory() as session:
             record = await session.scalar(statement)
         return approval_grant_from_record(record) if record is not None else None
+
+
+class SQLAlchemyTerminalRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, terminal: TerminalSession) -> TerminalSession:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(terminal_to_record(terminal))
+                await session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflictError(
+                f"could not create terminal session {terminal.id!r}"
+            ) from exc
+        return terminal
+
+    async def get(self, session_id: str) -> TerminalSession | None:
+        async with self._session_factory() as session:
+            record = await session.get(TerminalSessionRecord, session_id)
+        return terminal_from_record(record) if record is not None else None
+
+    async def save(self, terminal: TerminalSession) -> TerminalSession:
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(TerminalSessionRecord, terminal.id)
+            if record is None:
+                raise EntityNotFoundError("TerminalSession", terminal.id)
+            apply_terminal_to_record(terminal, record)
+            await session.flush()
+        return terminal
+
+    async def list_open(self) -> Sequence[TerminalSession]:
+        statement = (
+            select(TerminalSessionRecord)
+            .where(TerminalSessionRecord.status == TerminalStatus.OPEN.value)
+            .order_by(TerminalSessionRecord.created_at, TerminalSessionRecord.id)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [terminal_from_record(record) for record in records]
 
 
 class SQLAlchemyExecutionRepository:

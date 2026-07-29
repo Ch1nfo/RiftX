@@ -135,3 +135,21 @@ class TerminalSession(DomainModel):
         self.status = target
         if target in {TerminalStatus.CLOSED, TerminalStatus.LOST}:
             self.closed_at = at or utc_now()
+
+    def take_over(self) -> None:
+        if self.status is not TerminalStatus.OPEN:
+            raise InvalidStateTransitionError("TerminalSession", self.status, TerminalOwner.USER)
+        self.owner = TerminalOwner.USER
+
+    def release(self) -> None:
+        if self.status is not TerminalStatus.OPEN:
+            raise InvalidStateTransitionError("TerminalSession", self.status, TerminalOwner.AGENT)
+        self.owner = TerminalOwner.AGENT
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self.status is not TerminalStatus.OPEN:
+            raise InvalidStateTransitionError("TerminalSession", self.status, "resize")
+        if cols < 1 or rows < 1:
+            raise ValueError("terminal dimensions must be positive")
+        self.cols = cols
+        self.rows = rows
