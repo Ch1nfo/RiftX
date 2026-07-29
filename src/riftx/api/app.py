@@ -7,10 +7,29 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
-from .errors import install_error_handlers
+from .errors import APIError, install_error_handlers
 from .routes import events_router, findings_router, runs_router, tools_router
 from .runtime import APISettings, ControlPlane, build_control_plane
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve Vite assets and fall back to index.html for client routes."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            response = await super().get_response(path, scope)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            return await super().get_response("index.html", scope)
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
 
 
 def create_app(
@@ -54,6 +73,22 @@ def create_app(
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.api_route(
+        "/api/{unmatched_path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def api_not_found(unmatched_path: str) -> None:
+        raise APIError(
+            404,
+            "route_not_found",
+            f"API route '/api/{unmatched_path}' was not found",
+        )
+
+    web_dist = configured_settings.web_dist_path
+    if (web_dist / "index.html").is_file():
+        app.mount("/", SPAStaticFiles(directory=web_dist, html=True), name="web")
 
     return app
 

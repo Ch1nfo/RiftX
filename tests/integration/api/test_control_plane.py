@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import httpx
@@ -297,6 +297,10 @@ async def test_unified_errors_and_temporal_outage(tmp_path: Path) -> None:
             assert invalid.status_code == 422
             assert invalid.json()["error"]["code"] == "validation_error"
 
+            missing_route = await client.get("/api/v1/not-a-route")
+            assert missing_route.status_code == 404
+            assert missing_route.json()["error"]["code"] == "route_not_found"
+
             unavailable = await client.post(
                 "/api/v1/runs",
                 json={"objective": "Saved despite outage"},
@@ -334,3 +338,32 @@ async def test_api_restart_recovers_runs_from_sqlite(tmp_path: Path) -> None:
             assert recovered.json()["objective"]["description"] == "Inspect the local service"
     finally:
         await second.control_plane.close()
+
+
+def test_api_settings_load_web_dist_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    web_dist = tmp_path / "web-dist"
+    monkeypatch.setenv("RIFTX_WEB_DIST", str(web_dist))
+
+    assert APISettings.from_environment().web_dist_path == web_dist
+
+
+@pytest.mark.asyncio
+async def test_built_web_ui_uses_spa_fallback(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    web_dist = tmp_path / "web-dist"
+    web_dist.mkdir()
+    (web_dist / "index.html").write_text("<html><body>RiftX WebUI</body></html>")
+    runtime.control_plane.settings = replace(
+        runtime.control_plane.settings,
+        web_dist_path=web_dist,
+    )
+    try:
+        async for client in _client(runtime.control_plane):
+            response = await client.get("/runs/example-run")
+            assert response.status_code == 200
+            assert "RiftX WebUI" in response.text
+    finally:
+        await runtime.control_plane.close()

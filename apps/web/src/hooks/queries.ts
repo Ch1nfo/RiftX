@@ -1,0 +1,93 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { api } from "../api/client";
+import type { CreateRunPayload, RunStatus } from "../api/types";
+
+export const queryKeys = {
+  runs: (status?: RunStatus) => ["runs", status ?? "all"] as const,
+  run: (runId: string) => ["run", runId] as const,
+  events: (runId: string) => ["run-events", runId] as const,
+  findings: (runId: string) => ["run-findings", runId] as const,
+  tools: (nodeId: string) => ["tools", nodeId] as const,
+};
+
+export function useRuns(status?: RunStatus) {
+  return useQuery({
+    queryKey: queryKeys.runs(status),
+    queryFn: () => api.listRuns(status),
+    refetchInterval: 10_000,
+  });
+}
+
+export function useRun(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.run(runId),
+    queryFn: () => api.getRun(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useRunEvents(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.events(runId),
+    queryFn: () => api.listEvents(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useFindings(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.findings(runId),
+    queryFn: () => api.listFindings(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useTools(nodeId = "local") {
+  return useQuery({
+    queryKey: queryKeys.tools(nodeId),
+    queryFn: () => api.listTools(nodeId),
+  });
+}
+
+export function useCreateRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: CreateRunPayload) => api.createRun(payload),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.run(run.id), run);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+}
+
+export function useRunControl(runId: string) {
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+    void queryClient.invalidateQueries({ queryKey: ["runs"] });
+  };
+  return {
+    pause: useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: refresh }),
+    resume: useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: refresh }),
+    cancel: useMutation({
+      mutationFn: () => api.cancelCurrentExecution(runId),
+      onSuccess: refresh,
+    }),
+    message: useMutation({
+      mutationFn: (message: string) => api.appendMessage(runId, message),
+      onSuccess: refresh,
+    }),
+  };
+}
+
+export function useRefreshTools(nodeId = "local") {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.refreshTools(nodeId),
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(queryKeys.tools(nodeId), snapshot);
+    },
+  });
+}

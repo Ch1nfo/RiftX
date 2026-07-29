@@ -35,6 +35,7 @@ class APISettings:
     tools_config_path: Path = Path("configs/tools.example.yaml")
     node_id: str = "local"
     workspace_root: Path = Path(".riftx/workspaces")
+    web_dist_path: Path = Path("apps/web/dist")
     temporal_address: str = "127.0.0.1:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "riftx-v2"
@@ -56,6 +57,7 @@ class APISettings:
             ),
             node_id=os.getenv("RIFTX_NODE_ID", defaults.node_id),
             workspace_root=Path(os.getenv("RIFTX_WORKSPACE_ROOT", str(defaults.workspace_root))),
+            web_dist_path=Path(os.getenv("RIFTX_WEB_DIST", str(defaults.web_dist_path))),
             temporal_address=os.getenv("RIFTX_TEMPORAL_ADDRESS", defaults.temporal_address),
             temporal_namespace=os.getenv("RIFTX_TEMPORAL_NAMESPACE", defaults.temporal_namespace),
             temporal_task_queue=os.getenv(
