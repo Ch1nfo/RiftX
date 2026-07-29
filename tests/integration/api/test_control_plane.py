@@ -1,0 +1,336 @@
+"""End-to-end tests for the shared FastAPI control plane."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import httpx
+import pytest
+
+from riftx.api import APISettings, ControlPlane, create_app
+from riftx.application.services import (
+    EventApplicationService,
+    FindingApplicationService,
+    RunApplicationService,
+    ToolApplicationService,
+)
+from riftx.domain import Finding, FindingSeverity
+from riftx.persistence import (
+    Database,
+    SQLAlchemyEngagementRepository,
+    SQLAlchemyFindingRepository,
+    SQLAlchemyRunEventRepository,
+    SQLAlchemyRunRepository,
+)
+from riftx.tools import ToolRegistry
+
+
+@dataclass
+class FakeWorkflowClient:
+    fail: bool = False
+    calls: list[tuple[str, str, str | None]] = field(default_factory=list)
+
+    async def start_run(self, run_id: str) -> object:
+        self._record("start", run_id)
+        return object()
+
+    async def pause(self, run_id: str) -> None:
+        self._record("pause", run_id)
+
+    async def resume(self, run_id: str) -> None:
+        self._record("resume", run_id)
+
+    async def cancel_current_execution(self, run_id: str) -> None:
+        self._record("cancel_current_execution", run_id)
+
+    async def append_user_message(self, run_id: str, message: str) -> None:
+        self._record("message", run_id, message)
+
+    def workflow_id(self, run_id: str) -> str:
+        return f"test-workflow-{run_id}"
+
+    def _record(self, action: str, run_id: str, detail: str | None = None) -> None:
+        if self.fail:
+            raise RuntimeError("Temporal test outage")
+        self.calls.append((action, run_id, detail))
+
+
+@dataclass
+class RuntimeFixture:
+    control_plane: ControlPlane
+    workflow: FakeWorkflowClient
+    finding_repository: SQLAlchemyFindingRepository
+
+
+async def _build_runtime(
+    tmp_path: Path,
+    *,
+    database_path: Path | None = None,
+    workflow: FakeWorkflowClient | None = None,
+) -> RuntimeFixture:
+    db_path = database_path or (tmp_path / "riftx.db")
+    database = Database(f"sqlite+aiosqlite:///{db_path}")
+    await database.create_schema()
+
+    tools_path = tmp_path / "tools.yaml"
+    if not tools_path.exists():
+        tools_path.write_text(
+            """\
+version: 1
+execution_policy: registered_only
+tools:
+  python:
+    command: [python]
+    capabilities: [scripting]
+"""
+        )
+    registry = ToolRegistry(tools_path, node_id="local")
+    await registry.refresh()
+
+    engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
+    run_repository = SQLAlchemyRunRepository(database.session_factory)
+    event_repository = SQLAlchemyRunEventRepository(database.session_factory)
+    finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    workflow_client = workflow or FakeWorkflowClient()
+    settings = APISettings(
+        database_url=database.url,
+        tools_config_path=tools_path,
+        workspace_root=tmp_path / "workspaces",
+        sse_poll_interval_seconds=0.001,
+        sse_heartbeat_seconds=0.005,
+    )
+    return RuntimeFixture(
+        control_plane=ControlPlane(
+            settings=settings,
+            database=database,
+            run_service=RunApplicationService(
+                engagement_repository=engagement_repository,
+                run_repository=run_repository,
+                event_repository=event_repository,
+                workflow_client=workflow_client,
+                workspace_root=settings.workspace_root,
+            ),
+            event_service=EventApplicationService(
+                run_repository=run_repository,
+                event_repository=event_repository,
+            ),
+            finding_service=FindingApplicationService(
+                run_repository=run_repository,
+                finding_repository=finding_repository,
+            ),
+            tool_service=ToolApplicationService(registry),
+        ),
+        workflow=workflow_client,
+        finding_repository=finding_repository,
+    )
+
+
+async def _client(control_plane: ControlPlane) -> AsyncIterator[httpx.AsyncClient]:
+    app = create_app(control_plane=control_plane)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            yield client
+
+
+async def _create_run(client: httpx.AsyncClient) -> dict[str, object]:
+    response = await client.post(
+        "/api/v1/runs",
+        json={
+            "objective": "Inspect the local service",
+            "engagement": {"name": "Local authorized test"},
+            "success_criteria": [{"description": "Identify the exposed service", "required": True}],
+            "entry_points": [{"kind": "url", "value": "http://127.0.0.1"}],
+            "scope": {"ips": ["127.0.0.1"]},
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+@pytest.mark.asyncio
+async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            assert created["node_id"] == "local"
+            assert created["status"] == "created"
+            assert created["temporal_workflow_id"] == f"test-workflow-{run_id}"
+
+            listed = await client.get("/api/v1/runs")
+            assert listed.status_code == 200
+            assert [item["id"] for item in listed.json()["items"]] == [run_id]
+
+            shown = await client.get(f"/api/v1/runs/{run_id}")
+            assert shown.status_code == 200
+            assert shown.json()["objective"]["description"] == "Inspect the local service"
+
+            assert (await client.post(f"/api/v1/runs/{run_id}/pause")).status_code == 202
+            assert (await client.post(f"/api/v1/runs/{run_id}/resume")).status_code == 202
+            assert (
+                await client.post(f"/api/v1/runs/{run_id}/cancel-current-execution")
+            ).status_code == 202
+            message = await client.post(
+                f"/api/v1/runs/{run_id}/message",
+                json={"message": "Focus on the HTTP endpoint"},
+            )
+            assert message.status_code == 202
+
+            assert [call[0] for call in runtime.workflow.calls] == [
+                "start",
+                "pause",
+                "resume",
+                "cancel_current_execution",
+                "message",
+            ]
+            events = await client.get(f"/api/v1/runs/{run_id}/events", params={"limit": 20})
+            assert events.status_code == 200
+            event_types = [item["event_type"] for item in events.json()["items"]]
+            assert event_types == [
+                "run.created",
+                "workflow.started",
+                "run.pause_requested",
+                "run.resume_requested",
+                "execution.cancel_requested",
+                "user.message_queued",
+            ]
+            assert events.json()["items"][-1]["payload"]["message"] == (
+                "Focus on the HTTP endpoint"
+            )
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_sse_resumes_from_last_event_id(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            await client.post(
+                f"/api/v1/runs/{run_id}/message",
+                json={"message": "Continue from here"},
+            )
+
+            response = await client.get(
+                f"/api/v1/runs/{run_id}/events/stream",
+                headers={"Last-Event-ID": "2"},
+                params={"follow": "false"},
+            )
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert "id: 3" in response.text
+            assert "event: user.message_queued" in response.text
+            assert "id: 1" not in response.text
+            assert "id: 2" not in response.text
+
+            invalid = await client.get(
+                f"/api/v1/runs/{run_id}/events/stream",
+                headers={"Last-Event-ID": "not-a-sequence"},
+                params={"follow": "false"},
+            )
+            assert invalid.status_code == 400
+            assert invalid.json()["error"]["code"] == "invalid_last_event_id"
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_tools_and_findings_share_persisted_control_plane(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            tools = await client.get("/api/v1/nodes/local/tools")
+            assert tools.status_code == 200
+            assert tools.json()["execution_policy"] == "registered_only"
+            assert tools.json()["tools"][0]["definition"]["id"] == "python"
+            assert tools.json()["tools"][0]["state"]["availability"] == "available"
+
+            refreshed = await client.post("/api/v1/nodes/local/refresh-tools")
+            assert refreshed.status_code == 200
+            assert refreshed.json()["generation"] == tools.json()["generation"] + 1
+
+            missing_node = await client.get("/api/v1/nodes/remote/tools")
+            assert missing_node.status_code == 404
+            assert missing_node.json()["error"]["code"] == "node_not_found"
+
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            finding = Finding(
+                run_id=run_id,
+                title="Exposed development service",
+                severity=FindingSeverity.MEDIUM,
+                description="The endpoint exposes development metadata.",
+            )
+            await runtime.finding_repository.create(finding)
+
+            findings = await client.get(f"/api/v1/runs/{run_id}/findings")
+            assert findings.status_code == 200
+            assert findings.json()["items"][0]["id"] == finding.id
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_unified_errors_and_temporal_outage(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path, workflow=FakeWorkflowClient(fail=True))
+    try:
+        async for client in _client(runtime.control_plane):
+            missing = await client.get("/api/v1/runs/missing")
+            assert missing.status_code == 404
+            assert missing.json() == {
+                "error": {
+                    "code": "run_not_found",
+                    "message": "Run 'missing' was not found",
+                    "details": {"entity": "Run", "entity_id": "missing"},
+                }
+            }
+
+            invalid = await client.post("/api/v1/runs", json={"objective": ""})
+            assert invalid.status_code == 422
+            assert invalid.json()["error"]["code"] == "validation_error"
+
+            unavailable = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Saved despite outage"},
+            )
+            assert unavailable.status_code == 503
+            assert unavailable.json()["error"]["code"] == "temporal_unavailable"
+            run_id = unavailable.json()["error"]["details"]["run_id"]
+
+            persisted = await client.get(f"/api/v1/runs/{run_id}")
+            assert persisted.status_code == 200
+            events = await client.get(f"/api/v1/runs/{run_id}/events")
+            assert [item["event_type"] for item in events.json()["items"]] == [
+                "run.created",
+                "workflow.start_failed",
+            ]
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_api_restart_recovers_runs_from_sqlite(tmp_path: Path) -> None:
+    database_path = tmp_path / "durable.db"
+    first = await _build_runtime(tmp_path, database_path=database_path)
+    async for client in _client(first.control_plane):
+        created = await _create_run(client)
+        run_id = str(created["id"])
+    await first.control_plane.close()
+
+    second = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(second.control_plane):
+            recovered = await client.get(f"/api/v1/runs/{run_id}")
+            assert recovered.status_code == 200
+            assert recovered.json()["id"] == run_id
+            assert recovered.json()["objective"]["description"] == "Inspect the local service"
+    finally:
+        await second.control_plane.close()

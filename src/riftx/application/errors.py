@@ -1,4 +1,6 @@
-"""Errors exposed by application ports."""
+"""Errors exposed by application ports and services."""
+
+from __future__ import annotations
 
 
 class RepositoryError(RuntimeError):
@@ -14,3 +16,27 @@ class EntityNotFoundError(RepositoryError):
 
 class RepositoryConflictError(RepositoryError):
     """Raised when a database constraint rejects an operation."""
+
+
+class ApplicationServiceError(RuntimeError):
+    """Base error carrying a stable machine-readable control-plane code."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+
+class ApplicationConflictError(ApplicationServiceError):
+    """The requested action conflicts with current durable state."""
+
+
+class ServiceUnavailableError(ApplicationServiceError):
+    """A required infrastructure service is currently unavailable."""
