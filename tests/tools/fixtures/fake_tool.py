@@ -14,6 +14,10 @@ def main() -> int:
     if "--bad-version" in sys.argv:
         print("probe failed", file=sys.stderr)
         return 7
+    if "--large" in sys.argv:
+        sys.stdout.write("z" * 100_000)
+        sys.stdout.flush()
+        return 0
     if "--version" in sys.argv:
         print("fake-tool 1.2.3")
         return 0
