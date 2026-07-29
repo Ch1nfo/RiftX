@@ -145,6 +145,30 @@ class FakeAPIClient:
         self.calls.append(("get_artifact", artifact_id))
         return self._artifact(artifact_id, "run-1")
 
+    def generate_reports(self, run_id: str, **kwargs: object) -> dict[str, Any]:
+        self.calls.append(("generate_reports", (run_id, kwargs)))
+        return {"items": [self._report("report-1", run_id)]}
+
+    def list_reports(self, run_id: str, **kwargs: object) -> dict[str, Any]:
+        self.calls.append(("list_reports", (run_id, kwargs)))
+        return {"items": [self._report("report-1", run_id)]}
+
+    def get_report(self, report_id: str) -> dict[str, Any]:
+        self.calls.append(("get_report", report_id))
+        return self._report(report_id, "run-1")
+
+    @staticmethod
+    def _report(report_id: str, run_id: str) -> dict[str, Any]:
+        return {
+            "id": report_id,
+            "run_id": run_id,
+            "format": "markdown",
+            "artifact_id": "artifact-report-1",
+            "finding_ids": ["finding-1"],
+            "created_at": "2026-07-29T00:00:00Z",
+            "content_url": "/api/v1/artifacts/artifact-report-1/content",
+        }
+
     @staticmethod
     def _artifact(artifact_id: str, run_id: str) -> dict[str, Any]:
         return {
@@ -274,6 +298,32 @@ def test_terminal_commands_delegate_to_shared_control_plane() -> None:
     ]
     assert FakeAPIClient.instances[1].calls == [("get_terminal", "terminal-1")]
     assert FakeAPIClient.instances[2].calls == [("close_terminal", "terminal-1")]
+
+
+def test_report_commands_delegate_to_shared_control_plane() -> None:
+    generated = runner.invoke(
+        cli_module.app,
+        ["report", "generate", "run-1", "--format", "markdown", "--format", "json"],
+    )
+    listed = runner.invoke(
+        cli_module.app,
+        ["report", "list", "run-1", "--format", "markdown", "--limit", "10"],
+    )
+    shown = runner.invoke(cli_module.app, ["report", "show", "report-1"])
+
+    assert generated.exit_code == 0, generated.output
+    assert listed.exit_code == 0, listed.output
+    assert shown.exit_code == 0, shown.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("generate_reports", ("run-1", {"formats": ["markdown", "json"]}))
+    ]
+    assert FakeAPIClient.instances[1].calls == [
+        (
+            "list_reports",
+            ("run-1", {"format": "markdown", "limit": 10, "offset": 0}),
+        )
+    ]
+    assert FakeAPIClient.instances[2].calls == [("get_report", "report-1")]
 
 
 def test_artifact_commands_delegate_to_shared_control_plane() -> None:

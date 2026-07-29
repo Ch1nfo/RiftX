@@ -33,6 +33,14 @@ class RegisterArtifact:
     execution_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RegisterArtifactContent:
+    content: bytes
+    name: str
+    mime_type: str
+    description: str = ""
+
+
 class ArtifactApplicationService:
     def __init__(
         self,
@@ -108,6 +116,59 @@ class ArtifactApplicationService:
             {
                 "artifact_id": artifact.id,
                 "execution_id": artifact.execution_id,
+                "name": artifact.name,
+                "mime_type": artifact.mime_type,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+            },
+        )
+        return artifact
+
+    async def register_content(
+        self,
+        run_id: str,
+        command: RegisterArtifactContent,
+    ) -> Artifact:
+        if await self._run_repository.get(run_id) is None:
+            raise EntityNotFoundError("Run", run_id)
+        name = _safe_artifact_name(command.name)
+        mime_type = command.mime_type.strip()
+        if not mime_type or len(mime_type) > 255:
+            raise ApplicationConflictError(
+                "invalid_artifact_mime_type",
+                "Artifact MIME type must contain between 1 and 255 characters",
+            )
+
+        artifact_id = new_id()
+        destination = self._paths.artifact(run_id, artifact_id, name)
+        try:
+            sha256, size = await asyncio.to_thread(
+                _snapshot_bytes,
+                command.content,
+                destination.directory,
+                destination.content,
+            )
+            artifact = Artifact(
+                id=artifact_id,
+                run_id=run_id,
+                name=name,
+                path=str(destination.content),
+                mime_type=mime_type,
+                sha256=sha256,
+                size=size,
+                description=command.description.strip(),
+            )
+            await self._artifact_repository.create(artifact)
+        except Exception:
+            await asyncio.to_thread(shutil.rmtree, destination.directory, True)
+            raise
+
+        await self._event_repository.append(
+            run_id,
+            "artifact.registered",
+            {
+                "artifact_id": artifact.id,
+                "execution_id": None,
                 "name": artifact.name,
                 "mime_type": artifact.mime_type,
                 "sha256": artifact.sha256,
@@ -249,6 +310,21 @@ def _snapshot_file(source: Path, directory: Path, destination: Path) -> tuple[st
     finally:
         temporary.unlink(missing_ok=True)
     return digest.hexdigest(), size
+
+
+def _snapshot_bytes(content: bytes, directory: Path, destination: Path) -> tuple[str, int]:
+    directory.mkdir(parents=True, exist_ok=False)
+    temporary = directory / ".content.partial"
+    try:
+        with temporary.open("xb") as writer:
+            writer.write(content)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(temporary, destination)
+        destination.chmod(0o444)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return hashlib.sha256(content).hexdigest(), len(content)
 
 
 def _hash_file(path: Path) -> tuple[str, int]:

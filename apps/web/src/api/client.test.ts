@@ -153,6 +153,35 @@ describe("RiftX API client", () => {
   });
 
 
+  it("generates and lists structured reports through the control plane", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.generateReports("run-1", { formats: ["markdown", "html", "json"] });
+    await api.listReports("run-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/runs/run-1/reports",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ formats: ["markdown", "html", "json"] }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/runs/run-1/reports",
+      expect.any(Object),
+    );
+  });
+
   it("creates, fetches, and closes terminal sessions through the shared API", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(

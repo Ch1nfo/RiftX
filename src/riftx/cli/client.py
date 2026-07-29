@@ -151,6 +151,34 @@ class APIClient:
     def get_artifact(self, artifact_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/artifacts/{artifact_id}")
 
+    def generate_reports(
+        self,
+        run_id: str,
+        *,
+        formats: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/runs/{run_id}/reports",
+            json={"formats": formats or ["markdown", "html", "json"]},
+        )
+
+    def list_reports(
+        self,
+        run_id: str,
+        *,
+        format: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        params: dict[str, object] = {"limit": limit, "offset": offset}
+        if format is not None:
+            params["format"] = format
+        return self._json("GET", f"/api/v1/runs/{run_id}/reports", params=params)
+
+    def get_report(self, report_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/reports/{report_id}")
+
     def stream_events(
         self,
         run_id: str,

@@ -164,6 +164,42 @@ def render_artifact(console: Console, artifact: dict[str, Any]) -> None:
     console.print(Panel(body, title="Artifact", border_style="cyan"))
 
 
+def render_reports(console: Console, reports: Iterable[dict[str, Any]]) -> None:
+    items = list(reports)
+    if not items:
+        console.print("[dim]No reports found.[/dim]")
+        return
+    table = Table(title="Run Reports", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Format")
+    table.add_column("Artifact")
+    table.add_column("Findings", justify="right")
+    table.add_column("Created")
+    for report in items:
+        table.add_row(
+            str(report.get("id", "")),
+            str(report.get("format", "")),
+            str(report.get("artifact_id", "")),
+            str(len(report.get("finding_ids", []))),
+            str(report.get("created_at", "")),
+        )
+    console.print(table)
+
+
+def render_report(console: Console, report: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("ID", str(report.get("id", "")))
+    body.add_row("Run", str(report.get("run_id", "")))
+    body.add_row("Format", str(report.get("format", "")))
+    body.add_row("Artifact", str(report.get("artifact_id", "")))
+    body.add_row("Findings", ", ".join(str(item) for item in report.get("finding_ids", [])) or "—")
+    body.add_row("Content", str(report.get("content_url", "")))
+    body.add_row("Created", str(report.get("created_at", "")))
+    console.print(Panel(body, title="Report", border_style="green"))
+
+
 def render_event(console: Console, event: object) -> None:
     if not isinstance(event, dict):
         console.print(event)

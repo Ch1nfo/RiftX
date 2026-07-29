@@ -15,6 +15,8 @@ from riftx.domain import (
     Finding,
     FindingSeverity,
     FindingStatus,
+    Report,
+    ReportFormat,
     Run,
     RunEvent,
     RunStatus,
@@ -153,3 +155,18 @@ class FindingRepository(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Finding]: ...
+
+
+class ReportRepository(Protocol):
+    async def create(self, report: Report) -> Report: ...
+
+    async def get(self, report_id: str) -> Report | None: ...
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        format: ReportFormat | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Report]: ...

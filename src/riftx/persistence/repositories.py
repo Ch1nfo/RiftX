@@ -20,6 +20,8 @@ from riftx.domain import (
     Finding,
     FindingSeverity,
     FindingStatus,
+    Report,
+    ReportFormat,
     Run,
     RunEvent,
     RunStatus,
@@ -49,6 +51,8 @@ from .mappers import (
     execution_to_record,
     finding_from_record,
     finding_to_record,
+    report_from_record,
+    report_to_record,
     run_from_record,
     run_to_record,
     terminal_from_record,
@@ -63,6 +67,7 @@ from .orm import (
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
+    ReportRecord,
     RunEventRecord,
     RunRecord,
     TerminalSessionRecord,
@@ -331,6 +336,47 @@ class SQLAlchemyFindingRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [finding_from_record(record) for record in records]
+
+
+class SQLAlchemyReportRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, report: Report) -> Report:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(report_to_record(report))
+                await session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflictError(f"could not create report {report.id!r}") from exc
+        return report
+
+    async def get(self, report_id: str) -> Report | None:
+        async with self._session_factory() as session:
+            record = await session.get(ReportRecord, report_id)
+        return report_from_record(record) if record is not None else None
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        format: ReportFormat | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Report]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        statement = select(ReportRecord).where(ReportRecord.run_id == run_id)
+        if format is not None:
+            statement = statement.where(ReportRecord.format == format.value)
+        statement = (
+            statement.order_by(ReportRecord.created_at, ReportRecord.id).limit(limit).offset(offset)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [report_from_record(record) for record in records]
 
 
 class SQLAlchemyApprovalRepository:

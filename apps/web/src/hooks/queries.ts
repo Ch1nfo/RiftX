@@ -6,6 +6,7 @@ import type {
   CreateRunPayload,
   CreateTerminalPayload,
   RegisterArtifactPayload,
+  GenerateReportsPayload,
   UpdateFindingPayload,
   RunStatus,
 } from "../api/types";
@@ -16,6 +17,7 @@ export const queryKeys = {
   events: (runId: string) => ["run-events", runId] as const,
   findings: (runId: string) => ["run-findings", runId] as const,
   artifacts: (runId: string) => ["run-artifacts", runId] as const,
+  reports: (runId: string) => ["run-reports", runId] as const,
   approvals: (runId: string) => ["run-approvals", runId] as const,
   terminal: (sessionId: string) => ["terminal", sessionId] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
@@ -87,6 +89,29 @@ export function useArtifactControl(runId: string) {
       mutationFn: (payload: RegisterArtifactPayload) =>
         api.registerArtifact(runId, payload),
       onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(runId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+      },
+    }),
+  };
+}
+
+export function useReports(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.reports(runId),
+    queryFn: () => api.listReports(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useReportControl(runId: string) {
+  const queryClient = useQueryClient();
+  return {
+    generate: useMutation({
+      mutationFn: (payload?: GenerateReportsPayload) =>
+        api.generateReports(runId, payload),
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.reports(runId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(runId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
       },

@@ -7,9 +7,22 @@ from .approvals import (
     ApprovalWorkflowClient,
     DecideApproval,
 )
-from .artifacts import ArtifactApplicationService, RegisterArtifact
+from .artifacts import (
+    ArtifactApplicationService,
+    RegisterArtifact,
+    RegisterArtifactContent,
+)
 from .events import EventApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
+from .reports import (
+    DeterministicReportComposer,
+    GenerateReports,
+    ReportApplicationService,
+    ReportComposer,
+    ReportSource,
+    StructuredReport,
+    render_report,
+)
 from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflowClient
 from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
@@ -28,6 +41,14 @@ __all__ = [
     "FindingApplicationService",
     "RegisteredToolView",
     "RegisterArtifact",
+    "RegisterArtifactContent",
+    "ReportApplicationService",
+    "ReportComposer",
+    "ReportSource",
+    "StructuredReport",
+    "DeterministicReportComposer",
+    "GenerateReports",
+    "render_report",
     "RunApplicationService",
     "RunWorkflowClient",
     "ToolApplicationService",

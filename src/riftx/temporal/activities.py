@@ -22,8 +22,13 @@ from riftx.application.ports import (
     RunEventRepository,
     RunRepository,
 )
-from riftx.application.services import ApprovalInterruption, ApprovalRequestRecorder
-from riftx.domain import Run, RunStatus
+from riftx.application.services import (
+    ApprovalInterruption,
+    ApprovalRequestRecorder,
+    GenerateReports,
+    ReportApplicationService,
+)
+from riftx.domain import ReportFormat, Run, RunStatus
 from riftx.runner import ProcessSupervisor
 from riftx.tools import ToolRegistry
 
@@ -65,6 +70,7 @@ class RiftXActivities:
         supervisor: ProcessSupervisor,
         agent_cycle: AgentCycleRunner,
         approval_recorder: ApprovalRequestRecorder,
+        report_service: ReportApplicationService,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._run_repository = run_repository
@@ -74,6 +80,7 @@ class RiftXActivities:
         self._supervisor = supervisor
         self._agent_cycle = agent_cycle
         self._approval_recorder = approval_recorder
+        self._report_service = report_service
         self._session_factory = session_factory
 
     @activity.defn(name="prepare_run_activity")
@@ -201,12 +208,15 @@ class RiftXActivities:
         input: GenerateReportInput,
     ) -> GenerateReportResult:
         await self._require_run(input.run_id)
-        await self._event_repository.append(
+        reports = await self._report_service.generate(
             input.run_id,
-            "report.generation_requested",
-            {"implementation": "deferred_to_v2_m8"},
+            GenerateReports(reuse_existing=True),
         )
-        return GenerateReportResult()
+        markdown = next(
+            (item for item in reports if item.format is ReportFormat.MARKDOWN),
+            reports[0] if reports else None,
+        )
+        return GenerateReportResult(report_id=markdown.id if markdown else None)
 
     @activity.defn(name="cleanup_run_activity")
     async def cleanup_run_activity(self, input: CleanupRunInput) -> CleanupRunResult:

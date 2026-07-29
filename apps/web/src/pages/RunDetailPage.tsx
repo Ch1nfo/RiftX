@@ -11,6 +11,7 @@ import {
   Clock3,
   Download,
   ExternalLink,
+  FileText,
   FileWarning,
   Loader2,
   MessageSquareText,
@@ -35,6 +36,7 @@ import type {
   Artifact,
   Finding,
   FindingEvidence,
+  Report,
   RunEvent,
 } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
@@ -49,6 +51,8 @@ import {
   useArtifacts,
   useFindingControl,
   useFindings,
+  useReportControl,
+  useReports,
   useRun,
   useRunControl,
   useRunEvents,
@@ -71,9 +75,11 @@ export function RunDetailPage() {
   const findings = useFindings(runId);
   const artifacts = useArtifacts(runId);
   const approvals = useApprovals(runId);
+  const reports = useReports(runId);
   const approvalControls = useApprovalControl(runId);
   const artifactControls = useArtifactControl(runId);
   const findingControls = useFindingControl(runId);
+  const reportControls = useReportControl(runId);
   const controls = useRunControl(runId);
   const [tab, setTab] = useState<DetailTab>("timeline");
   const [message, setMessage] = useState("");
@@ -182,7 +188,7 @@ export function RunDetailPage() {
                 ["terminal", "Terminal"],
                 ["artifacts", `Artifacts ${artifacts.data?.items.length ?? 0}`],
                 ["findings", `Findings ${findings.data?.items.length ?? 0}`],
-                ["report", "Report"],
+                ["report", `Reports ${reports.data?.items.length ?? 0}`],
               ] as Array<[DetailTab, string]>
             ).map(([value, label]) => (
               <button
@@ -230,7 +236,14 @@ export function RunDetailPage() {
                 controls={findingControls}
               />
             ) : null}
-            {tab === "report" ? <ReportPlaceholder completed={run.data.status === "completed"} /> : null}
+            {tab === "report" ? (
+              <Reports
+                reports={reports.data?.items ?? []}
+                loading={reports.isLoading}
+                reportable={isFinal}
+                controls={reportControls}
+              />
+            ) : null}
           </div>
 
           {!isFinal ? (
@@ -1017,13 +1030,75 @@ function Approvals({
   );
 }
 
-function ReportPlaceholder({ completed }: { completed: boolean }) {
+function Reports({
+  reports,
+  loading,
+  reportable,
+  controls,
+}: {
+  reports: Report[];
+  loading: boolean;
+  reportable: boolean;
+  controls: ReturnType<typeof useReportControl>;
+}) {
+  if (loading) return <LoadingState label="Loading generated reports" />;
+  const grouped = [...reports].sort(
+    (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
+  );
   return (
-    <EmptyState icon={completed ? CheckCircle2 : FileWarning} title="Report generation is queued for M8">
-      {completed
-        ? "The run is complete. The structured report pipeline will attach Markdown and HTML outputs in V2-M8."
-        : "RiftX generates a report after the Agent completes the run and enters the reporting phase."}
-    </EmptyState>
+    <div className="report-stack">
+      <div className="section-toolbar">
+        <div>
+          <span className="panel-kicker">Restricted source · immutable output</span>
+          <h3>Run reports</h3>
+          <p>
+            {reportable
+              ? "Generate Markdown, HTML, and JSON from findings, artifact summaries, and key activity only."
+              : "Report generation unlocks after the Run reaches a final status."}
+          </p>
+        </div>
+        <button
+          className="primary-button"
+          disabled={!reportable || controls.generate.isPending}
+          onClick={() => controls.generate.mutate(undefined)}
+        >
+          {controls.generate.isPending ? (
+            <Loader2 className="spin" size={16} />
+          ) : (
+            <FileText size={16} />
+          )}
+          Generate reports
+        </button>
+      </div>
+      {controls.generate.error ? <ErrorState error={controls.generate.error} /> : null}
+      {!grouped.length ? (
+        <EmptyState icon={FileText} title="No reports generated yet">
+          Generate a report set now, or let the durable workflow create one after Agent completion.
+        </EmptyState>
+      ) : (
+        <div className="report-grid">
+          {grouped.map((report) => (
+            <article className="report-card" key={report.id}>
+              <div className="report-format">
+                <FileText size={19} />
+                <strong>{report.format.toUpperCase()}</strong>
+              </div>
+              <p>{report.finding_ids.length} linked finding{report.finding_ids.length === 1 ? "" : "s"}</p>
+              <code>{report.id}</code>
+              <span>{formatTimestamp(report.created_at)}</span>
+              <a
+                className="secondary-button report-open-button"
+                href={api.artifactContentUrl({ content_url: report.content_url })}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={14} /> Open report
+              </a>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

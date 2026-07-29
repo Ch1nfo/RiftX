@@ -11,6 +11,8 @@ import type {
   CreateFindingPayload,
   UpdateFindingPayload,
   RegisterArtifactPayload,
+  GenerateReportsPayload,
+  ReportList,
   Run,
   RunEventList,
   RunList,
@@ -183,6 +185,20 @@ export const api = {
 
   artifactContentUrlById(artifactId: string): string {
     return `${API_BASE_URL}/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
+  },
+
+  listReports(runId: string): Promise<ReportList> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/reports`);
+  },
+
+  generateReports(
+    runId: string,
+    payload: GenerateReportsPayload = { formats: ["markdown", "html", "json"] },
+  ): Promise<ReportList> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/reports`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
 
   listApprovals(runId: string): Promise<ApprovalList> {

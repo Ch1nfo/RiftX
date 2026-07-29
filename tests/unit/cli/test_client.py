@@ -178,6 +178,40 @@ def test_terminal_client_uses_rest_endpoints_and_builds_websocket_url() -> None:
     )
 
 
+def test_report_client_uses_control_plane_endpoints() -> None:
+    requests: list[tuple[str, str, object, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append(
+            (request.method, request.url.path, body, dict(request.url.params.multi_items()))
+        )
+        if request.method == "GET" and request.url.path.endswith("/reports"):
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"id": "report-1"})
+
+    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+        client.generate_reports("run-1", formats=["markdown", "json"])
+        client.list_reports("run-1", format="markdown", limit=20, offset=5)
+        client.get_report("report-1")
+
+    assert requests == [
+        (
+            "POST",
+            "/api/v1/runs/run-1/reports",
+            {"formats": ["markdown", "json"]},
+            {},
+        ),
+        (
+            "GET",
+            "/api/v1/runs/run-1/reports",
+            None,
+            {"limit": "20", "offset": "5", "format": "markdown"},
+        ),
+        ("GET", "/api/v1/reports/report-1", None, {}),
+    ]
+
+
 def test_artifact_client_uses_control_plane_endpoints() -> None:
     requests: list[tuple[str, str, object, dict[str, str]]] = []
 

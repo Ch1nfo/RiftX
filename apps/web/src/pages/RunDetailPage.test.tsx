@@ -1,11 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RunDetailPage } from "./RunDetailPage";
 
-const mocks = vi.hoisted(() => ({ updateFinding: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  updateFinding: vi.fn(),
+  generateReports: vi.fn(),
+  runStatus: "waiting_approval",
+}));
 
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../components/TerminalPanel", () => ({ TerminalPanel: () => null }));
@@ -18,7 +22,7 @@ vi.mock("../hooks/queries", () => ({
       objective: { description: "Inspect local service" },
       node_id: "local",
       approval_mode: "balanced",
-      status: "waiting_approval",
+      status: mocks.runStatus,
       success_criteria: [],
       scope: { cidrs: [], ips: ["127.0.0.1"], domains: [], url_prefixes: [], exclusions: [] },
       created_at: "2026-07-29T00:00:00Z",
@@ -76,6 +80,22 @@ vi.mock("../hooks/queries", () => ({
       ],
     },
   }),
+  useReports: () => ({
+    isLoading: false,
+    data: {
+      items: [
+        {
+          id: "report-1",
+          run_id: "run-1",
+          format: "markdown",
+          artifact_id: "artifact-report-1",
+          finding_ids: ["finding-1"],
+          created_at: "2026-07-29T00:00:04Z",
+          content_url: "/api/v1/artifacts/artifact-report-1/content",
+        },
+      ],
+    },
+  }),
   useApprovals: () => ({
     isLoading: false,
     data: {
@@ -118,9 +138,21 @@ vi.mock("../hooks/queries", () => ({
       mutateAsync: mocks.updateFinding,
     },
   }),
+  useReportControl: () => ({
+    generate: {
+      isPending: false,
+      error: null,
+      mutate: mocks.generateReports,
+    },
+  }),
 }));
 
 describe("RunDetailPage approvals", () => {
+  beforeEach(() => {
+    mocks.runStatus = "waiting_approval";
+    vi.clearAllMocks();
+  });
+
   it("shows the exact pending command and decision actions", async () => {
     const queryClient = new QueryClient();
     render(
@@ -198,4 +230,27 @@ describe("RunDetailPage approvals", () => {
       }),
     );
   });
+  it("opens generated reports and can request a fresh report set", async () => {
+    mocks.runStatus = "completed";
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    screen.getAllByRole("tab", { name: /reports 1/i }).at(-1)?.click();
+    expect(await screen.findByText("MARKDOWN")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open report/i })).toHaveAttribute(
+      "href",
+      "/api/v1/artifacts/artifact-report-1/content",
+    );
+    screen.getByRole("button", { name: /generate reports/i }).click();
+    expect(mocks.generateReports).toHaveBeenCalled();
+  });
+
 });

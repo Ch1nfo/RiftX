@@ -14,6 +14,7 @@ from riftx.application.services import (
     ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
+    ReportApplicationService,
     RunApplicationService,
     RunWorkflowClient,
     TerminalApplicationService,
@@ -26,6 +27,7 @@ from riftx.persistence import (
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
@@ -109,6 +111,7 @@ class ControlPlane:
     run_service: RunApplicationService
     event_service: EventApplicationService
     finding_service: FindingApplicationService
+    report_service: ReportApplicationService
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
     artifact_service: ArtifactApplicationService
@@ -183,6 +186,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
+    report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
@@ -194,6 +198,13 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         paths=runner_paths,
     )
     await terminal_supervisor.recover()
+    artifact_service = ArtifactApplicationService(
+        run_repository=run_repository,
+        execution_repository=execution_repository,
+        artifact_repository=artifact_repository,
+        event_repository=event_repository,
+        paths=runner_paths,
+    )
 
     return ControlPlane(
         settings=settings,
@@ -216,6 +227,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             execution_repository=execution_repository,
             event_repository=event_repository,
         ),
+        report_service=ReportApplicationService(
+            run_repository=run_repository,
+            finding_repository=finding_repository,
+            artifact_repository=artifact_repository,
+            report_repository=report_repository,
+            event_repository=event_repository,
+            artifact_service=artifact_service,
+        ),
         tool_service=ToolApplicationService(registry),
         approval_service=ApprovalApplicationService(
             approval_repository=approval_repository,
@@ -223,13 +242,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             event_repository=event_repository,
             workflow_client=workflow_client,
         ),
-        artifact_service=ArtifactApplicationService(
-            run_repository=run_repository,
-            execution_repository=execution_repository,
-            artifact_repository=artifact_repository,
-            event_repository=event_repository,
-            paths=runner_paths,
-        ),
+        artifact_service=artifact_service,
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_supervisor,

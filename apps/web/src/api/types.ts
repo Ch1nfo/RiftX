@@ -227,6 +227,28 @@ export interface RegisterArtifactPayload {
   execution_id?: string;
 }
 
+export type ReportFormat = "markdown" | "html" | "json";
+
+export interface Report {
+  id: string;
+  run_id: string;
+  format: ReportFormat;
+  artifact_id: string;
+  finding_ids: string[];
+  created_at: string;
+  content_url: string;
+}
+
+export interface ReportList {
+  items: Report[];
+  limit: number;
+  offset: number;
+}
+
+export interface GenerateReportsPayload {
+  formats: ReportFormat[];
+}
+
 export interface APIErrorEnvelope {
   error: {
     code: string;

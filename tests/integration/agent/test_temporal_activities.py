@@ -15,13 +15,20 @@ from riftx.agent import (
     RiftXAgentContext,
     RiftXDatabaseSession,
 )
-from riftx.application.services import ApprovalRequestRecorder
+from riftx.application.services import (
+    ApprovalRequestRecorder,
+    ArtifactApplicationService,
+    ReportApplicationService,
+)
 from riftx.domain import Engagement, Objective, Run, RunStatus
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
+    SQLAlchemyFindingRepository,
+    SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
 )
@@ -113,6 +120,16 @@ async def _runtime(
     )
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
+    artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
+    finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    report_repository = SQLAlchemyReportRepository(database.session_factory)
+    artifact_service = ArtifactApplicationService(
+        run_repository=run_repository,
+        execution_repository=execution_repository,
+        artifact_repository=artifact_repository,
+        event_repository=event_repository,
+        paths=RunnerPaths(tmp_path / "state"),
+    )
     activities = RiftXActivities(
         run_repository=run_repository,
         event_repository=event_repository,
@@ -124,6 +141,14 @@ async def _runtime(
             approval_repository=approval_repository,
             event_repository=event_repository,
             tool_registry=registry,
+        ),
+        report_service=ReportApplicationService(
+            run_repository=run_repository,
+            finding_repository=finding_repository,
+            artifact_repository=artifact_repository,
+            report_repository=report_repository,
+            event_repository=event_repository,
+            artifact_service=artifact_service,
         ),
         session_factory=database.session_factory,
     )
@@ -182,7 +207,18 @@ async def test_temporal_activities_prepare_interrupt_resume_and_complete(tmp_pat
     event_types = [event.event_type for event in await events.list_after("run-1")]
     assert "run.prepared" in event_types
 
-    await activities.generate_report_activity(GenerateReportInput(run_id="run-1"))
+    report_result = await activities.generate_report_activity(GenerateReportInput(run_id="run-1"))
+    assert report_result.report_id is not None
+    report_result_retry = await activities.generate_report_activity(
+        GenerateReportInput(run_id="run-1")
+    )
+    assert report_result_retry.report_id == report_result.report_id
+    generated_events = [
+        event
+        for event in await events.list_after("run-1")
+        if event.event_type == "report.generated"
+    ]
+    assert len(generated_events) == 3
     await activities.cleanup_run_activity(CleanupRunInput(run_id="run-1", final_status="completed"))
     await supervisor.close()
     await database.dispose()

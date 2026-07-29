@@ -18,6 +18,8 @@ from riftx.domain import (
     FindingSeverity,
     FindingStatus,
     Objective,
+    Report,
+    ReportFormat,
     Run,
     RunEvent,
     RunStatus,
@@ -36,6 +38,7 @@ from .orm import (
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
+    ReportRecord,
     RunEventRecord,
     RunRecord,
     TerminalSessionRecord,
@@ -412,4 +415,26 @@ def terminal_from_record(record: TerminalSessionRecord) -> TerminalSession:
         rows=record.rows,
         created_at=record.created_at,
         closed_at=record.closed_at,
+    )
+
+
+def report_to_record(report: Report) -> ReportRecord:
+    return ReportRecord(
+        id=report.id,
+        run_id=report.run_id,
+        format=report.format.value,
+        artifact_id=report.artifact_id,
+        finding_ids_json=report.finding_ids,
+        created_at=report.created_at,
+    )
+
+
+def report_from_record(record: ReportRecord) -> Report:
+    return Report(
+        id=record.id,
+        run_id=record.run_id,
+        format=ReportFormat(record.format),
+        artifact_id=record.artifact_id,
+        finding_ids=record.finding_ids_json or [],
+        created_at=record.created_at,
     )

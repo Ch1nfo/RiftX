@@ -19,11 +19,12 @@ from riftx.application.services import (
     ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
+    ReportApplicationService,
     RunApplicationService,
     TerminalApplicationService,
     ToolApplicationService,
 )
-from riftx.domain import Approval, Finding, FindingSeverity, ToolCall
+from riftx.domain import Approval, Finding, FindingSeverity, RunStatus, ToolCall
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -31,6 +32,7 @@ from riftx.persistence import (
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
@@ -82,6 +84,8 @@ class RuntimeFixture:
     finding_repository: SQLAlchemyFindingRepository
     approval_repository: SQLAlchemyApprovalRepository
     artifact_repository: SQLAlchemyArtifactRepository
+    report_repository: SQLAlchemyReportRepository
+    run_repository: SQLAlchemyRunRepository
 
 
 async def _build_runtime(
@@ -114,6 +118,7 @@ tools:
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
+    report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
@@ -132,6 +137,13 @@ tools:
         runner_state_path=tmp_path / "runner",
         sse_poll_interval_seconds=0.001,
         sse_heartbeat_seconds=0.005,
+    )
+    artifact_service = ArtifactApplicationService(
+        run_repository=run_repository,
+        execution_repository=execution_repository,
+        artifact_repository=artifact_repository,
+        event_repository=event_repository,
+        paths=RunnerPaths(settings.runner_state_path),
     )
     return RuntimeFixture(
         control_plane=ControlPlane(
@@ -155,6 +167,14 @@ tools:
                 execution_repository=execution_repository,
                 event_repository=event_repository,
             ),
+            report_service=ReportApplicationService(
+                run_repository=run_repository,
+                finding_repository=finding_repository,
+                artifact_repository=artifact_repository,
+                report_repository=report_repository,
+                event_repository=event_repository,
+                artifact_service=artifact_service,
+            ),
             tool_service=ToolApplicationService(registry),
             approval_service=ApprovalApplicationService(
                 approval_repository=approval_repository,
@@ -162,13 +182,7 @@ tools:
                 event_repository=event_repository,
                 workflow_client=workflow_client,
             ),
-            artifact_service=ArtifactApplicationService(
-                run_repository=run_repository,
-                execution_repository=execution_repository,
-                artifact_repository=artifact_repository,
-                event_repository=event_repository,
-                paths=RunnerPaths(settings.runner_state_path),
-            ),
+            artifact_service=artifact_service,
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_supervisor,
@@ -179,6 +193,8 @@ tools:
         finding_repository=finding_repository,
         approval_repository=approval_repository,
         artifact_repository=artifact_repository,
+        report_repository=report_repository,
+        run_repository=run_repository,
     )
 
 
@@ -927,5 +943,74 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
                 "finding.created",
                 "finding.updated",
             ]
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_reports_generate_list_get_and_link_finding_evidence(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            run = await _create_run(client)
+            run_id = str(run["id"])
+            premature = await client.post(
+                f"/api/v1/runs/{run_id}/reports",
+                json={"formats": ["markdown"]},
+            )
+            assert premature.status_code == 409
+            assert premature.json()["error"]["code"] == "run_not_reportable"
+            await runtime.run_repository.update_status(run_id, RunStatus.PREPARING)
+            await runtime.run_repository.update_status(run_id, RunStatus.RUNNING)
+            await runtime.run_repository.update_status(run_id, RunStatus.COMPLETED)
+            source = Path(str(run["workspace_path"])) / "proof.txt"
+            source.write_text("service exposed")
+            artifact_response = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(source), "description": "Banner proof"},
+            )
+            assert artifact_response.status_code == 201
+            evidence_artifact_id = str(artifact_response.json()["id"])
+            finding_response = await client.post(
+                f"/api/v1/runs/{run_id}/findings",
+                json={
+                    "title": "Exposed service",
+                    "severity": "high",
+                    "description": "A development endpoint is reachable.",
+                    "evidence": [
+                        {
+                            "artifact_id": evidence_artifact_id,
+                            "description": "Open banner proof",
+                        }
+                    ],
+                },
+            )
+            assert finding_response.status_code == 201
+            finding_id = str(finding_response.json()["id"])
+
+            generated = await client.post(
+                f"/api/v1/runs/{run_id}/reports",
+                json={"formats": ["markdown", "html", "json"]},
+            )
+            assert generated.status_code == 201, generated.text
+            reports = generated.json()["items"]
+            assert [item["format"] for item in reports] == ["markdown", "html", "json"]
+            assert all(item["finding_ids"] == [finding_id] for item in reports)
+            assert all(item["content_url"].startswith("/api/v1/artifacts/") for item in reports)
+
+            listed = await client.get(f"/api/v1/runs/{run_id}/reports")
+            assert {item["id"] for item in listed.json()["items"]} == {
+                item["id"] for item in reports
+            }
+            markdown_report = reports[0]
+            fetched = await client.get(f"/api/v1/reports/{markdown_report['id']}")
+            assert fetched.json() == markdown_report
+            content = await client.get(markdown_report["content_url"])
+            assert content.status_code == 200
+            assert f"/api/v1/artifacts/{evidence_artifact_id}/content" in content.text
+
+            events = await client.get(f"/api/v1/runs/{run_id}/events")
+            event_types = [item["event_type"] for item in events.json()["items"]]
+            assert event_types.count("report.generated") == 3
     finally:
         await runtime.control_plane.close()

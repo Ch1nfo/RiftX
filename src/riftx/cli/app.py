@@ -21,6 +21,8 @@ from .render import (
     render_artifacts,
     render_error,
     render_event,
+    render_report,
+    render_reports,
     render_run,
     render_runs,
     render_terminal,
@@ -40,10 +42,12 @@ run_app = typer.Typer(help="Create, inspect, and control Runs.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
 artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
+report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 app.add_typer(run_app, name="run")
 app.add_typer(tools_app, name="tools")
 app.add_typer(terminal_app, name="terminal")
 app.add_typer(artifact_app, name="artifact")
+app.add_typer(report_app, name="report")
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +218,63 @@ def show_artifact(
     _run_with_client(
         context,
         lambda client: render_artifact(console, client.get_artifact(artifact_id)),
+    )
+
+
+@report_app.command("generate")
+def generate_reports(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    formats: Annotated[
+        list[str] | None,
+        typer.Option("--format", help="Output format; repeat for multiple formats."),
+    ] = None,
+) -> None:
+    """Generate immutable Markdown, HTML, and/or JSON reports."""
+
+    _run_with_client(
+        context,
+        lambda client: render_reports(
+            console,
+            client.generate_reports(run_id, formats=formats).get("items", []),
+        ),
+    )
+
+
+@report_app.command("list")
+def list_reports(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    report_format: Annotated[str | None, typer.Option("--format")] = None,
+    limit: Annotated[int, typer.Option(min=1, max=1000)] = 100,
+    offset: Annotated[int, typer.Option(min=0)] = 0,
+) -> None:
+    """List generated reports for a Run."""
+
+    _run_with_client(
+        context,
+        lambda client: render_reports(
+            console,
+            client.list_reports(
+                run_id,
+                format=report_format,
+                limit=limit,
+                offset=offset,
+            ).get("items", []),
+        ),
+    )
+
+
+@report_app.command("show")
+def show_report(
+    context: typer.Context,
+    report_id: Annotated[str, typer.Argument(help="Report ID.")],
+) -> None:
+    """Show generated Report metadata and its immutable content URL."""
+
+    _run_with_client(
+        context,
+        lambda client: render_report(console, client.get_report(report_id)),
     )
 
 
