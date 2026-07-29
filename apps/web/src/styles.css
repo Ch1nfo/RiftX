@@ -1821,3 +1821,151 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+.approval-alert {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid rgba(245, 185, 66, 0.45);
+  border-radius: 12px;
+  color: #ffe0a1;
+  background: rgba(245, 185, 66, 0.08);
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.approval-alert span {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+}
+
+.approval-alert strong {
+  color: #ffe0a1;
+}
+
+.approval-list {
+  display: grid;
+  gap: 16px;
+}
+
+.approval-card {
+  border: 1px solid var(--line);
+  border-left: 3px solid #f5b942;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+  padding: 18px;
+}
+
+.approval-approved {
+  border-left-color: var(--mint);
+}
+
+.approval-rejected,
+.approval-cancelled {
+  border-left-color: #ff7777;
+}
+
+.approval-card-head,
+.approval-actions > div {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.approval-card-head h3 {
+  margin: 4px 0 0;
+}
+
+.approval-facts {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.approval-facts > div {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr);
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.approval-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.approval-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.approval-facts code,
+.approval-facts pre {
+  color: #b8e4d4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-facts pre {
+  margin: 0;
+}
+
+.approval-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.approval-actions textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.approval-actions > div {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.approval-decision {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .approval-alert {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .approval-alert > svg:last-child {
+    display: none;
+  }
+
+  .approval-card-head,
+  .approval-actions > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .approval-facts > div {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .approval-actions button {
+    width: 100%;
+  }
+}

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from riftx.domain import (
+    Approval,
+    ApprovalGrant,
     ApprovalMode,
+    ApprovalStatus,
     Engagement,
     EntryPoint,
     Execution,
@@ -19,14 +22,18 @@ from riftx.domain import (
     RunStatus,
     Scope,
     SuccessCriterion,
+    ToolCall,
 )
 
 from .orm import (
+    ApprovalGrantRecord,
+    ApprovalRecord,
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
     RunEventRecord,
     RunRecord,
+    ToolCallRecord,
 )
 
 
@@ -179,7 +186,7 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         argv=record.argv_json,
         command_text=record.command_text,
         cwd=record.cwd,
-        env_diff=record.env_diff_json,
+        env_diff=record.env_diff_json or {},
         status=ExecutionStatus(record.status),
         pid=record.pid,
         process_group_id=record.process_group_id,
@@ -224,4 +231,97 @@ def finding_from_record(record: FindingRecord) -> Finding:
         recommendation=record.recommendation,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+def tool_call_to_record(tool_call: ToolCall) -> ToolCallRecord:
+    return ToolCallRecord(
+        id=tool_call.id,
+        sdk_call_id=tool_call.sdk_call_id,
+        run_id=tool_call.run_id,
+        agent_step_id=tool_call.agent_step_id,
+        tool_id=tool_call.tool_id,
+        skill_id=tool_call.skill_id,
+        arguments_json=tool_call.arguments,
+        approval_status=tool_call.approval_status.value,
+        execution_id=tool_call.execution_id,
+        created_at=tool_call.created_at,
+    )
+
+
+def tool_call_from_record(record: ToolCallRecord) -> ToolCall:
+    return ToolCall(
+        id=record.id,
+        sdk_call_id=record.sdk_call_id or record.id,
+        run_id=record.run_id,
+        agent_step_id=record.agent_step_id,
+        tool_id=record.tool_id,
+        skill_id=record.skill_id,
+        arguments=record.arguments_json,
+        approval_status=ApprovalStatus(record.approval_status),
+        execution_id=record.execution_id,
+        created_at=record.created_at,
+    )
+
+
+def approval_to_record(approval: Approval) -> ApprovalRecord:
+    return ApprovalRecord(
+        id=approval.id,
+        run_id=approval.run_id,
+        tool_call_id=approval.tool_call_id,
+        status=approval.status.value,
+        tool_name=approval.tool_name,
+        command_json=approval.command,
+        cwd=approval.cwd,
+        target_summary=approval.target_summary,
+        env_diff_json=approval.env_diff,
+        reason=approval.reason,
+        decided_by=approval.decided_by,
+        created_at=approval.created_at,
+        decided_at=approval.decided_at,
+    )
+
+
+def apply_approval_to_record(approval: Approval, record: ApprovalRecord) -> None:
+    record.status = approval.status.value
+    record.reason = approval.reason
+    record.decided_by = approval.decided_by
+    record.decided_at = approval.decided_at
+
+
+def approval_from_record(record: ApprovalRecord) -> Approval:
+    return Approval(
+        id=record.id,
+        run_id=record.run_id,
+        tool_call_id=record.tool_call_id,
+        status=ApprovalStatus(record.status),
+        tool_name=record.tool_name,
+        command=record.command_json or [],
+        cwd=record.cwd,
+        target_summary=record.target_summary,
+        env_diff=record.env_diff_json or {},
+        reason=record.reason,
+        decided_by=record.decided_by,
+        created_at=record.created_at,
+        decided_at=record.decided_at,
+    )
+
+
+def approval_grant_to_record(grant: ApprovalGrant) -> ApprovalGrantRecord:
+    return ApprovalGrantRecord(
+        id=grant.id,
+        run_id=grant.run_id,
+        tool_id=grant.tool_id,
+        created_by=grant.created_by,
+        created_at=grant.created_at,
+    )
+
+
+def approval_grant_from_record(record: ApprovalGrantRecord) -> ApprovalGrant:
+    return ApprovalGrant(
+        id=record.id,
+        run_id=record.run_id,
+        tool_id=record.tool_id,
+        created_by=record.created_by,
+        created_at=record.created_at,
     )

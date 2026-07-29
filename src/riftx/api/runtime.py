@@ -10,6 +10,7 @@ from pathlib import Path
 from temporalio.client import Client
 
 from riftx.application.services import (
+    ApprovalApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
@@ -18,6 +19,7 @@ from riftx.application.services import (
 )
 from riftx.persistence import (
     Database,
+    SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyRunEventRepository,
@@ -98,6 +100,7 @@ class ControlPlane:
     event_service: EventApplicationService
     finding_service: FindingApplicationService
     tool_service: ToolApplicationService
+    approval_service: ApprovalApplicationService
 
     async def close(self) -> None:
         await self.database.dispose()
@@ -117,6 +120,12 @@ class UnavailableRunWorkflowClient:
         self._raise(run_id)
 
     async def resume(self, run_id: str) -> None:
+        self._raise(run_id)
+
+    async def approve(self, run_id: str, call_id: str) -> None:
+        self._raise(run_id)
+
+    async def reject(self, run_id: str, call_id: str) -> None:
         self._raise(run_id)
 
     async def cancel_current_execution(self, run_id: str) -> None:
@@ -159,6 +168,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
 
     return ControlPlane(
         settings=settings,
@@ -179,6 +189,12 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             finding_repository=finding_repository,
         ),
         tool_service=ToolApplicationService(registry),
+        approval_service=ApprovalApplicationService(
+            approval_repository=approval_repository,
+            run_repository=run_repository,
+            event_repository=event_repository,
+            workflow_client=workflow_client,
+        ),
     )
 
 

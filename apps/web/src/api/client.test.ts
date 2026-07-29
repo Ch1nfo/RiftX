@@ -55,4 +55,24 @@ describe("RiftX API client", () => {
       details: { run_id: "missing" },
     });
   });
+
+  it("sends durable approval decisions through the control plane", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "approval-1", status: "approved" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.approve("approval-1", { approve_for_run: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/approvals/approval-1/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ approve_for_run: true }),
+      }),
+    );
+  });
 });

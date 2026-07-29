@@ -5,6 +5,7 @@ EXPECTED_TABLES = {
     "agent_messages",
     "alembic_version",
     "approvals",
+    "approval_grants",
     "artifacts",
     "engagements",
     "executions",

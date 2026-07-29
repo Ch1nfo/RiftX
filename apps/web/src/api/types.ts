@@ -88,6 +88,34 @@ export interface RunEventList {
   after_sequence: number;
 }
 
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+export interface Approval {
+  id: string;
+  run_id: string;
+  tool_call_id: string;
+  status: ApprovalStatus;
+  tool_name: string;
+  command: string[];
+  cwd: string;
+  target_summary: string;
+  env_diff: Record<string, string | null>;
+  reason: string;
+  decided_by: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface ApprovalList {
+  items: Approval[];
+}
+
+export interface ApprovalDecisionPayload {
+  decided_by?: string;
+  reason?: string | null;
+  approve_for_run?: boolean;
+}
+
 export type ToolAvailability =
   | "available"
   | "unavailable"

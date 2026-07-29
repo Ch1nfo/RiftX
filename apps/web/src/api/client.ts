@@ -1,4 +1,7 @@
 import type {
+  Approval,
+  ApprovalDecisionPayload,
+  ApprovalList,
   APIErrorEnvelope,
   CreateRunPayload,
   FindingList,
@@ -129,6 +132,27 @@ export const api = {
 
   listFindings(runId: string): Promise<FindingList> {
     return request(`/api/v1/runs/${encodeURIComponent(runId)}/findings`);
+  },
+
+  listApprovals(runId: string): Promise<ApprovalList> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/approvals`);
+  },
+
+  approve(
+    approvalId: string,
+    payload: ApprovalDecisionPayload = {},
+  ): Promise<Approval> {
+    return request(`/api/v1/approvals/${encodeURIComponent(approvalId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  reject(approvalId: string, payload: ApprovalDecisionPayload = {}): Promise<Approval> {
+    return request(`/api/v1/approvals/${encodeURIComponent(approvalId)}/reject`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
 
   listTools(nodeId = "local"): Promise<ToolRegistrySnapshot> {

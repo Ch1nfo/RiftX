@@ -22,6 +22,7 @@ from riftx.application.ports import (
     RunEventRepository,
     RunRepository,
 )
+from riftx.application.services import ApprovalInterruption, ApprovalRequestRecorder
 from riftx.domain import Run, RunStatus
 from riftx.runner import ProcessSupervisor
 from riftx.tools import ToolRegistry
@@ -63,6 +64,7 @@ class RiftXActivities:
         tool_registry: ToolRegistry,
         supervisor: ProcessSupervisor,
         agent_cycle: AgentCycleRunner,
+        approval_recorder: ApprovalRequestRecorder,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._run_repository = run_repository
@@ -71,6 +73,7 @@ class RiftXActivities:
         self._tool_registry = tool_registry
         self._supervisor = supervisor
         self._agent_cycle = agent_cycle
+        self._approval_recorder = approval_recorder
         self._session_factory = session_factory
 
     @activity.defn(name="prepare_run_activity")
@@ -130,6 +133,19 @@ class RiftXActivities:
         )
 
         if result.status is AgentCycleStatus.INTERRUPTED:
+            await self._approval_recorder.record(
+                run,
+                agent_step_id=input.agent_step_id,
+                checkpoint_id=result.checkpoint_id,
+                interruptions=[
+                    ApprovalInterruption(
+                        call_id=item.call_id,
+                        tool_name=item.tool_name,
+                        arguments=item.arguments,
+                    )
+                    for item in result.interruptions
+                ],
+            )
             await self._run_repository.update_status(run.id, RunStatus.WAITING_APPROVAL)
             return AgentCycleActivityResult(
                 status=AgentCycleActivityStatus.WAITING_APPROVAL,

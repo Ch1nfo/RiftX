@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api/client";
-import type { CreateRunPayload, RunStatus } from "../api/types";
+import type { ApprovalDecisionPayload, CreateRunPayload, RunStatus } from "../api/types";
 
 export const queryKeys = {
   runs: (status?: RunStatus) => ["runs", status ?? "all"] as const,
   run: (runId: string) => ["run", runId] as const,
   events: (runId: string) => ["run-events", runId] as const,
   findings: (runId: string) => ["run-findings", runId] as const,
+  approvals: (runId: string) => ["run-approvals", runId] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
 };
 
@@ -41,6 +42,46 @@ export function useFindings(runId: string) {
     queryFn: () => api.listFindings(runId),
     enabled: Boolean(runId),
   });
+}
+
+export function useApprovals(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.approvals(runId),
+    queryFn: () => api.listApprovals(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useApprovalControl(runId: string) {
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(runId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+    void queryClient.invalidateQueries({ queryKey: ["runs"] });
+  };
+  return {
+    approve: useMutation({
+      mutationFn: ({
+        approvalId,
+        payload,
+      }: {
+        approvalId: string;
+        payload?: ApprovalDecisionPayload;
+      }) => api.approve(approvalId, payload),
+      onSuccess: refresh,
+    }),
+    reject: useMutation({
+      mutationFn: ({
+        approvalId,
+        payload,
+      }: {
+        approvalId: string;
+        payload?: ApprovalDecisionPayload;
+      }) => api.reject(approvalId, payload),
+      onSuccess: refresh,
+    }),
+  };
 }
 
 export function useTools(nodeId = "local") {

@@ -15,7 +15,14 @@ from riftx.domain import ApprovalMode, EntryPointKind, RunStatus
 
 from .client import APIClient, RiftXAPIError
 from .interactive import run_interactive
-from .render import render_error, render_event, render_run, render_runs, render_tools
+from .render import (
+    render_approvals,
+    render_error,
+    render_event,
+    render_run,
+    render_runs,
+    render_tools,
+)
 
 console = Console()
 app = typer.Typer(
@@ -80,6 +87,58 @@ def serve(
         reload=reload,
         log_level="info",
     )
+
+
+@app.command("approvals")
+def list_approvals(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+) -> None:
+    """List durable approval requests for a Run."""
+
+    _run_with_client(
+        context,
+        lambda client: render_approvals(
+            console,
+            client.list_approvals(run_id).get("items", []),
+        ),
+    )
+
+
+@app.command("approve")
+def approve(
+    context: typer.Context,
+    approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
+    for_run: Annotated[
+        bool,
+        typer.Option("--for-run", help="Approve this Tool for the rest of the Run."),
+    ] = False,
+) -> None:
+    """Approve a paused Tool call once or for the rest of its Run."""
+
+    _run_with_client(
+        context,
+        lambda client: client.approve(approval_id, approve_for_run=for_run),
+    )
+    console.print("[green]Approval saved and workflow signaled.[/green]")
+
+
+@app.command("reject")
+def reject(
+    context: typer.Context,
+    approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Reason returned to the durable Agent."),
+    ] = None,
+) -> None:
+    """Reject a paused Tool call."""
+
+    _run_with_client(
+        context,
+        lambda client: client.reject(approval_id, reason=reason),
+    )
+    console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
 
 
 @run_app.command("create")

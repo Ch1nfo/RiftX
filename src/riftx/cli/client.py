@@ -134,6 +134,48 @@ class APIClient:
     def refresh_tools(self, node_id: str = "local") -> dict[str, Any]:
         return self._json("POST", f"/api/v1/nodes/{node_id}/refresh-tools")
 
+    def list_approvals(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        params = {"status": status} if status else None
+        return self._json(
+            "GET",
+            f"/api/v1/runs/{run_id}/approvals",
+            params=params,
+        )
+
+    def approve(
+        self,
+        approval_id: str,
+        *,
+        approve_for_run: bool = False,
+        decided_by: str = "local-user",
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/approvals/{approval_id}/approve",
+            json={
+                "decided_by": decided_by,
+                "approve_for_run": approve_for_run,
+            },
+        )
+
+    def reject(
+        self,
+        approval_id: str,
+        *,
+        reason: str | None = None,
+        decided_by: str = "local-user",
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/approvals/{approval_id}/reject",
+            json={"decided_by": decided_by, "reason": reason},
+        )
+
     def _json(self, method: str, path: str, **kwargs: object) -> dict[str, Any]:
         response = self._client.request(method, path, **kwargs)
         self._raise_for_error(response)

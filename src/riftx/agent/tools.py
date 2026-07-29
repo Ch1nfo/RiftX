@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agents import FunctionTool, function_tool
+from agents import FunctionTool, RunContextWrapper, function_tool
 from agents.tool_context import ToolContext
 
-from riftx.domain import Finding, FindingEvidence, FindingSeverity
+from riftx.domain import (
+    ApprovalLevel,
+    Finding,
+    FindingEvidence,
+    FindingSeverity,
+    requires_approval,
+)
 from riftx.skills import RegisteredToolArguments, ShellArguments, SkillContext
 from riftx.tools import ExecutionPolicy, ToolUnavailableError
 
@@ -18,6 +24,48 @@ from .services import AgentRuntimeServices
 
 def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
     """Build only the base tools allowed by the current node execution policy."""
+
+    async def _registered_tool_needs_approval(
+        wrapper: RunContextWrapper[RiftXAgentContext],
+        arguments: dict[str, object],
+        _call_id: str,
+    ) -> bool:
+        context = wrapper.context
+        tool_id = str(arguments.get("tool_id") or "")
+        snapshot = next(
+            (item for item in context.available_tools if item.id == tool_id),
+            None,
+        )
+        if snapshot is None:
+            return False
+        level = snapshot.approval_level
+        granted = (
+            await services.approval_repository.is_granted(context.run_id, tool_id)
+            if services.approval_repository is not None and tool_id
+            else False
+        )
+        return requires_approval(
+            context.approval_mode,
+            level,
+            granted_for_run=granted,
+        )
+
+    async def _shell_needs_approval(
+        wrapper: RunContextWrapper[RiftXAgentContext],
+        _arguments: dict[str, object],
+        _call_id: str,
+    ) -> bool:
+        context = wrapper.context
+        granted = (
+            await services.approval_repository.is_granted(context.run_id, "run_shell")
+            if services.approval_repository is not None
+            else False
+        )
+        return requires_approval(
+            context.approval_mode,
+            ApprovalLevel.SENSITIVE,
+            granted_for_run=granted,
+        )
 
     async def _tool_failed(
         context: RiftXAgentContext,
@@ -44,12 +92,13 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
             ensure_ascii=False,
         )
 
-    @function_tool
+    @function_tool(needs_approval=_registered_tool_needs_approval)
     async def run_registered_tool(
         ctx: ToolContext[RiftXAgentContext],
         tool_id: str,
         args: list[str],
         timeout_seconds: float | None = None,
+        reason: str = "",
     ) -> str:
         """Run one available registered tool with an argv list, never a shell string."""
 
@@ -177,11 +226,12 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
 
     if services.tool_registry.config.execution_policy is ExecutionPolicy.OPEN:
 
-        @function_tool
+        @function_tool(needs_approval=_shell_needs_approval)
         async def run_shell(
             ctx: ToolContext[RiftXAgentContext],
             script: str,
             timeout_seconds: float | None = None,
+            reason: str = "",
         ) -> str:
             """Run an explicit shell script only when the node execution policy permits it."""
 

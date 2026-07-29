@@ -3,6 +3,7 @@
 from .database import Database
 from .orm import Base
 from .repositories import (
+    SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -13,6 +14,7 @@ from .repositories import (
 __all__ = [
     "Base",
     "Database",
+    "SQLAlchemyApprovalRepository",
     "SQLAlchemyEngagementRepository",
     "SQLAlchemyExecutionRepository",
     "SQLAlchemyFindingRepository",

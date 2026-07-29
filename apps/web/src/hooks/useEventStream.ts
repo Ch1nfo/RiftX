@@ -40,6 +40,9 @@ export function useEventStream(runId: string, enabled = true) {
       "agent.tool_started",
       "agent.tool_completed",
       "agent.tool_failed",
+      "tool.approval_required",
+      "tool.approved",
+      "tool.rejected",
       "execution.cancel_requested",
       "finding.created",
       "report.generation_requested",
@@ -67,6 +70,9 @@ export function useEventStream(runId: string, enabled = true) {
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
       if (event.event_type === "finding.created") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.findings(runId) });
+      }
+      if (event.event_type.startsWith("tool.approval") || event.event_type === "tool.approved" || event.event_type === "tool.rejected") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(runId) });
       }
     }
 

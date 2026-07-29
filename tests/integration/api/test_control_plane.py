@@ -11,14 +11,16 @@ import pytest
 
 from riftx.api import APISettings, ControlPlane, create_app
 from riftx.application.services import (
+    ApprovalApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
     ToolApplicationService,
 )
-from riftx.domain import Finding, FindingSeverity
+from riftx.domain import Approval, Finding, FindingSeverity, ToolCall
 from riftx.persistence import (
     Database,
+    SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyRunEventRepository,
@@ -42,6 +44,12 @@ class FakeWorkflowClient:
     async def resume(self, run_id: str) -> None:
         self._record("resume", run_id)
 
+    async def approve(self, run_id: str, call_id: str) -> None:
+        self._record("approve", run_id, call_id)
+
+    async def reject(self, run_id: str, call_id: str) -> None:
+        self._record("reject", run_id, call_id)
+
     async def cancel_current_execution(self, run_id: str) -> None:
         self._record("cancel_current_execution", run_id)
 
@@ -62,6 +70,7 @@ class RuntimeFixture:
     control_plane: ControlPlane
     workflow: FakeWorkflowClient
     finding_repository: SQLAlchemyFindingRepository
+    approval_repository: SQLAlchemyApprovalRepository
 
 
 async def _build_runtime(
@@ -93,6 +102,7 @@ tools:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     workflow_client = workflow or FakeWorkflowClient()
     settings = APISettings(
         database_url=database.url,
@@ -121,9 +131,16 @@ tools:
                 finding_repository=finding_repository,
             ),
             tool_service=ToolApplicationService(registry),
+            approval_service=ApprovalApplicationService(
+                approval_repository=approval_repository,
+                run_repository=run_repository,
+                event_repository=event_repository,
+                workflow_client=workflow_client,
+            ),
         ),
         workflow=workflow_client,
         finding_repository=finding_repository,
+        approval_repository=approval_repository,
     )
 
 
@@ -367,3 +384,114 @@ async def test_built_web_ui_uses_spa_fallback(tmp_path: Path) -> None:
             assert "RiftX WebUI" in response.text
     finally:
         await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Path) -> None:
+    database_path = tmp_path / "approval-control-plane.db"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    async for client in _client(runtime.control_plane):
+        run = await _create_run(client)
+        tool_call = ToolCall(
+            id="tool-call-1",
+            sdk_call_id="sdk-call-1",
+            run_id=str(run["id"]),
+            agent_step_id="step-1",
+            tool_id="python",
+            arguments={"args": ["--version"]},
+        )
+        approval = Approval(
+            id="approval-1",
+            run_id=str(run["id"]),
+            tool_call_id=tool_call.id,
+            tool_name="python",
+            command=["python", "--version"],
+            cwd=str(tmp_path),
+            target_summary="ip:127.0.0.1",
+            env_diff={"RIFTX_TEST": "1"},
+            reason="Verify the local runtime.",
+        )
+        await runtime.approval_repository.create_request(tool_call, approval)
+
+        listed = await client.get(f"/api/v1/runs/{run['id']}/approvals")
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["command"] == ["python", "--version"]
+
+        approved = await client.post(
+            "/api/v1/approvals/approval-1/approve",
+            json={"decided_by": "api-user", "approve_for_run": True},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "approved"
+        assert await runtime.approval_repository.is_granted(str(run["id"]), "python")
+        assert ("approve", str(run["id"]), "sdk-call-1") in runtime.workflow.calls
+
+        rejected_call = ToolCall(
+            id="tool-call-2",
+            sdk_call_id="sdk-call-2",
+            run_id=str(run["id"]),
+            agent_step_id="step-1",
+            tool_id="python",
+            arguments={"args": ["unsafe.py"]},
+        )
+        rejected_request = Approval(
+            id="approval-2",
+            run_id=str(run["id"]),
+            tool_call_id=rejected_call.id,
+            tool_name="python",
+            command=["python", "unsafe.py"],
+            cwd=str(tmp_path),
+            target_summary="ip:127.0.0.1",
+            reason="Execute a follow-up action.",
+        )
+        await runtime.approval_repository.create_request(rejected_call, rejected_request)
+        rejected = await client.post(
+            "/api/v1/approvals/approval-2/reject",
+            json={"decided_by": "api-user", "reason": "Outside authorized scope"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["reason"] == "Outside authorized scope"
+        assert ("reject", str(run["id"]), "sdk-call-2") in runtime.workflow.calls
+
+    await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    async for client in _client(restarted.control_plane):
+        response = await client.get(f"/api/v1/runs/{run['id']}/approvals?status=approved")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["items"]] == ["approval-1"]
+    await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_decision_remains_durable_when_temporal_signal_fails(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    async for client in _client(runtime.control_plane):
+        run = await _create_run(client)
+        tool_call = ToolCall(
+            id="tool-call-outage",
+            sdk_call_id="sdk-call-outage",
+            run_id=str(run["id"]),
+            agent_step_id="step-outage",
+            tool_id="python",
+        )
+        approval = Approval(
+            id="approval-outage",
+            run_id=str(run["id"]),
+            tool_call_id=tool_call.id,
+            tool_name="python",
+        )
+        await runtime.approval_repository.create_request(tool_call, approval)
+        runtime.workflow.fail = True
+
+        response = await client.post(
+            "/api/v1/approvals/approval-outage/approve",
+            json={"decided_by": "api-user"},
+        )
+        assert response.status_code == 503
+        persisted = await runtime.approval_repository.get("approval-outage")
+        assert persisted is not None
+        assert persisted.status.value == "approved"
+    await runtime.control_plane.close()

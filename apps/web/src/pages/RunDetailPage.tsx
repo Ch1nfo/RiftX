@@ -21,26 +21,30 @@ import { FormEvent, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
-import type { Finding, RunEvent } from "../api/types";
+import type { Approval, Finding, RunEvent } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import {
   useFindings,
+  useApprovalControl,
+  useApprovals,
   useRun,
   useRunControl,
   useRunEvents,
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
 
-type DetailTab = "overview" | "timeline" | "findings" | "report";
+type DetailTab = "overview" | "timeline" | "approvals" | "findings" | "report";
 
 export function RunDetailPage() {
   const { runId = "" } = useParams();
   const run = useRun(runId);
   const events = useRunEvents(runId);
   const findings = useFindings(runId);
+  const approvals = useApprovals(runId);
+  const approvalControls = useApprovalControl(runId);
   const controls = useRunControl(runId);
   const [tab, setTab] = useState<DetailTab>("timeline");
   const [message, setMessage] = useState("");
@@ -50,6 +54,8 @@ export function RunDetailPage() {
   const planEvent = [...eventItems]
     .reverse()
     .find((event) => event.event_type === "agent.plan_updated");
+  const pendingApprovals =
+    approvals.data?.items.filter((approval) => approval.status === "pending") ?? [];
 
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -117,6 +123,17 @@ export function RunDetailPage() {
         />
       ) : null}
 
+      {pendingApprovals.length ? (
+        <button className="approval-alert" onClick={() => setTab("approvals")}>
+          <ShieldAlert size={19} />
+          <span>
+            <strong>{pendingApprovals.length} tool call{pendingApprovals.length === 1 ? "" : "s"} awaiting approval</strong>
+            Review the exact command, target, and environment before resuming the Agent.
+          </span>
+          <ChevronRight size={18} />
+        </button>
+      ) : null}
+
       <div className="detail-layout">
         <section className="detail-main panel">
           <div className="detail-tabs" role="tablist">
@@ -124,6 +141,7 @@ export function RunDetailPage() {
               [
                 ["overview", "Overview"],
                 ["timeline", `Timeline ${eventItems.length}`],
+                ["approvals", `Approvals ${pendingApprovals.length}`],
                 ["findings", `Findings ${findings.data?.items.length ?? 0}`],
                 ["report", "Report"],
               ] as Array<[DetailTab, string]>
@@ -149,6 +167,13 @@ export function RunDetailPage() {
               />
             ) : null}
             {tab === "timeline" ? <Timeline events={eventItems} loading={events.isLoading} /> : null}
+            {tab === "approvals" ? (
+              <Approvals
+                approvals={approvals.data?.items ?? []}
+                loading={approvals.isLoading}
+                controls={approvalControls}
+              />
+            ) : null}
             {tab === "findings" ? (
               <Findings findings={findings.data?.items ?? []} loading={findings.isLoading} />
             ) : null}
@@ -397,6 +422,128 @@ function Findings({ findings, loading }: { findings: Finding[]; loading: boolean
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+function Approvals({
+  approvals,
+  loading,
+  controls,
+}: {
+  approvals: Approval[];
+  loading: boolean;
+  controls: ReturnType<typeof useApprovalControl>;
+}) {
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  if (loading) return <LoadingState label="Loading approvals" />;
+  if (!approvals.length) {
+    return (
+      <EmptyState icon={ShieldAlert} title="No approval requests">
+        Sensitive or manually controlled Tool calls will appear here with their exact execution
+        snapshot.
+      </EmptyState>
+    );
+  }
+  return (
+    <div className="approval-list">
+      {[...approvals].reverse().map((approval) => {
+        const pending = approval.status === "pending";
+        const busy = controls.approve.isPending || controls.reject.isPending;
+        return (
+          <article className={`approval-card approval-${approval.status}`} key={approval.id}>
+            <div className="approval-card-head">
+              <div>
+                <span className="panel-kicker">{approval.status.replaceAll("_", " ")}</span>
+                <h3>{approval.tool_name}</h3>
+              </div>
+              <span className="mono-chip">{approval.id}</span>
+            </div>
+            <dl className="approval-facts">
+              <div>
+                <dt>Command</dt>
+                <dd><code>{approval.command.join(" ") || "No command snapshot"}</code></dd>
+              </div>
+              <div>
+                <dt>Working directory</dt>
+                <dd><code>{approval.cwd || "—"}</code></dd>
+              </div>
+              <div>
+                <dt>Target</dt>
+                <dd>{approval.target_summary || "—"}</dd>
+              </div>
+              <div>
+                <dt>Environment changes</dt>
+                <dd>
+                  {Object.keys(approval.env_diff).length ? (
+                    <pre>{JSON.stringify(approval.env_diff, null, 2)}</pre>
+                  ) : "None"}
+                </dd>
+              </div>
+              <div>
+                <dt>Agent reason</dt>
+                <dd>{approval.reason || "No reason supplied."}</dd>
+              </div>
+            </dl>
+            {pending ? (
+              <div className="approval-actions">
+                <textarea
+                  value={reasons[approval.id] ?? ""}
+                  onChange={(event) =>
+                    setReasons((current) => ({ ...current, [approval.id]: event.target.value }))
+                  }
+                  placeholder="Optional rejection reason…"
+                  aria-label={`Rejection reason for ${approval.tool_name}`}
+                  rows={2}
+                />
+                <div>
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      controls.reject.mutate({
+                        approvalId: approval.id,
+                        payload: { reason: reasons[approval.id]?.trim() || null },
+                      })
+                    }
+                  >
+                    <Ban size={15} /> Reject
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      controls.approve.mutate({ approvalId: approval.id })
+                    }
+                  >
+                    <CheckCircle2 size={15} /> Approve once
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      controls.approve.mutate({
+                        approvalId: approval.id,
+                        payload: { approve_for_run: true },
+                      })
+                    }
+                  >
+                    <ShieldAlert size={15} /> Approve for Run
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="approval-decision">
+                Decided by {approval.decided_by ?? "unknown"}
+                {approval.decided_at ? ` · ${formatTimestamp(approval.decided_at)}` : ""}
+              </p>
+            )}
+          </article>
+        );
+      })}
+      {controls.approve.error || controls.reject.error ? (
+        <ErrorState error={controls.approve.error ?? controls.reject.error ?? new Error()} />
+      ) : null}
     </div>
   );
 }

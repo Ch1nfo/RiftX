@@ -56,6 +56,7 @@ def representative_models() -> list[object]:
         AgentStep(id="step-1", run_id=run.id, sequence=1),
         ToolCall(
             id="call-1",
+            sdk_call_id="sdk-call-1",
             run_id=run.id,
             agent_step_id="step-1",
             tool_id="printf",

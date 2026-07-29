@@ -38,3 +38,75 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path: Path) -> None:
 
     run_alembic(database_path, "base")
     assert sqlite_tables(database_path) == {"alembic_version"}
+
+
+def test_m7_migration_backfills_existing_approval_rows(tmp_path: Path) -> None:
+    database_path = tmp_path / "existing.db"
+    run_alembic(database_path, "2f14cbcea74b")
+    now = "2026-07-29 00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO engagements "
+            "(id, name, description, authorization_reference, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("engagement-1", "Existing", "", None, now, now),
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id, engagement_id, node_id, objective, success_criteria_json, "
+            "entry_points_json, scope_json, status, approval_mode, workspace_path, "
+            "temporal_workflow_id, created_at, started_at, finished_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "run-1",
+                "engagement-1",
+                "local",
+                "Existing run",
+                "[]",
+                "[]",
+                "{}",
+                "waiting_approval",
+                "balanced",
+                "/tmp/run-1",
+                "workflow-1",
+                now,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO tool_calls "
+            "(id, run_id, agent_step_id, tool_id, skill_id, arguments_json, "
+            "approval_status, execution_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("call-1", "run-1", "step-1", "tool-1", None, "{}", "pending", None, now),
+        )
+        connection.execute(
+            "INSERT INTO approvals "
+            "(id, run_id, tool_call_id, status, reason, decided_by, created_at, decided_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("approval-1", "run-1", "call-1", "pending", "Existing", None, now, None),
+        )
+        connection.commit()
+
+    run_alembic(database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        sdk_call_id = connection.execute(
+            "SELECT sdk_call_id FROM tool_calls WHERE id = 'call-1'"
+        ).fetchone()[0]
+        command_json, env_diff_json = connection.execute(
+            "SELECT command_json, env_diff_json FROM approvals WHERE id = 'approval-1'"
+        ).fetchone()
+        tool_columns = {
+            row[1]: row[3] for row in connection.execute("PRAGMA table_info(tool_calls)").fetchall()
+        }
+        approval_columns = {
+            row[1]: row[3] for row in connection.execute("PRAGMA table_info(approvals)").fetchall()
+        }
+    assert sdk_call_id == "call-1"
+    assert command_json == "[]"
+    assert env_diff_json == "{}"
+    assert tool_columns["sdk_call_id"] == 1
+    assert approval_columns["command_json"] == 1
+    assert approval_columns["env_diff_json"] == 1

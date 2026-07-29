@@ -70,6 +70,18 @@ class FakeAPIClient:
             ],
         }
 
+    def list_approvals(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("list_approvals", run_id))
+        return {"items": []}
+
+    def approve(self, approval_id: str, *, approve_for_run: bool = False) -> dict[str, Any]:
+        self.calls.append(("approve", (approval_id, approve_for_run)))
+        return {"id": approval_id, "status": "approved"}
+
+    def reject(self, approval_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        self.calls.append(("reject", (approval_id, reason)))
+        return {"id": approval_id, "status": "rejected"}
+
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,3 +138,19 @@ def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:
     FakeAPIClient.unhealthy = True
     result = runner.invoke(cli_module.app, ["tools", "doctor", "--node", "local"])
     assert result.exit_code == 1
+
+
+def test_approval_commands_delegate_to_shared_http_client() -> None:
+    listed = runner.invoke(cli_module.app, ["approvals", "run-1"])
+    approved = runner.invoke(cli_module.app, ["approve", "approval-1", "--for-run"])
+    rejected = runner.invoke(
+        cli_module.app,
+        ["reject", "approval-2", "--reason", "Outside scope"],
+    )
+
+    assert listed.exit_code == 0, listed.output
+    assert approved.exit_code == 0, approved.output
+    assert rejected.exit_code == 0, rejected.output
+    assert FakeAPIClient.instances[0].calls == [("list_approvals", "run-1")]
+    assert FakeAPIClient.instances[1].calls == [("approve", ("approval-1", True))]
+    assert FakeAPIClient.instances[2].calls == [("reject", ("approval-2", "Outside scope"))]

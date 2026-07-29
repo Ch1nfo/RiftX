@@ -13,7 +13,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from .errors import APIError, install_error_handlers
-from .routes import events_router, findings_router, runs_router, tools_router
+from .routes import approvals_router, events_router, findings_router, runs_router, tools_router
 from .runtime import APISettings, ControlPlane, build_control_plane
 
 
@@ -69,6 +69,7 @@ def create_app(
     app.include_router(tools_router, prefix="/api/v1")
     app.include_router(events_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
+    app.include_router(approvals_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:

@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from riftx.application.services import (
+    ApprovalApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
@@ -32,7 +33,15 @@ def get_tool_service(request: Request) -> ToolApplicationService:
     return request.app.state.control_plane.tool_service
 
 
+def get_approval_service(request: Request) -> ApprovalApplicationService:
+    return request.app.state.control_plane.approval_service
+
+
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 FindingServiceDependency = Annotated[FindingApplicationService, Depends(get_finding_service)]
 ToolServiceDependency = Annotated[ToolApplicationService, Depends(get_tool_service)]
+ApprovalServiceDependency = Annotated[
+    ApprovalApplicationService,
+    Depends(get_approval_service),
+]

@@ -1,6 +1,6 @@
 """Infrastructure-independent RiftX domain models."""
 
-from .approval import Approval
+from .approval import Approval, ApprovalGrant, requires_approval
 from .artifact import Artifact
 from .engagement import Engagement
 from .enums import (
@@ -38,6 +38,7 @@ __all__ = [
     "AgentStep",
     "AgentStepStatus",
     "Approval",
+    "ApprovalGrant",
     "ApprovalLevel",
     "ApprovalMode",
     "ApprovalStatus",
@@ -73,4 +74,5 @@ __all__ = [
     "ToolAvailability",
     "ToolCall",
     "ToolState",
+    "requires_approval",
 ]

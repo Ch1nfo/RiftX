@@ -1,5 +1,6 @@
 """Public schemas for the RiftX control plane."""
 
+from .approvals import ApprovalDecisionRequest, ApprovalListResponse, ApprovalResponse
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
 from .findings import FindingListResponse
@@ -17,6 +18,9 @@ from .runs import (
 from .tools import RegisteredToolResponse, ToolRegistryResponse
 
 __all__ = [
+    "ApprovalDecisionRequest",
+    "ApprovalListResponse",
+    "ApprovalResponse",
     "CreateRunRequest",
     "EngagementCreateRequest",
     "EntryPointRequest",

@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .client import APIClient, RiftXAPIError
-from .render import render_error, render_run, render_runs, render_tools
+from .render import render_approvals, render_error, render_run, render_runs, render_tools
 
 _COMMANDS = [
     "/new",
@@ -26,6 +26,9 @@ _COMMANDS = [
     "/continue",
     "/cancel",
     "/watch",
+    "/approvals",
+    "/approve",
+    "/reject",
     "/help",
     "/exit",
 ]
@@ -94,6 +97,9 @@ def _handle_command(
             "[bold]/pause[/bold], [bold]/continue[/bold], "
             "[bold]/cancel[/bold] control the active run\n"
             "[bold]/watch[/bold] stream active run events\n"
+            "[bold]/approvals[/bold] list approval requests\n"
+            "[bold]/approve APPROVAL_ID [--for-run][/bold] approve a tool call\n"
+            "[bold]/reject APPROVAL_ID [REASON][/bold] reject a tool call\n"
             "[bold]/exit[/bold] close interactive mode"
         )
         return False
@@ -135,6 +141,24 @@ def _handle_command(
         return False
     if command == "/watch":
         _watch(client, _require_active(state), console)
+        return False
+    if command == "/approvals":
+        render_approvals(
+            console,
+            client.list_approvals(_require_active(state)).get("items", []),
+        )
+        return False
+    if command == "/approve":
+        if not args:
+            raise ValueError("Usage: /approve APPROVAL_ID [--for-run]")
+        client.approve(args[0], approve_for_run="--for-run" in args[1:])
+        console.print("[green]Approval saved and workflow signaled.[/green]")
+        return False
+    if command == "/reject":
+        if not args:
+            raise ValueError("Usage: /reject APPROVAL_ID [REASON]")
+        client.reject(args[0], reason=" ".join(args[1:]).strip() or None)
+        console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
         return False
     raise ValueError(f"Unknown command {command!r}; use /help")
 

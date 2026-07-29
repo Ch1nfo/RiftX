@@ -26,9 +26,10 @@ from riftx.agent import (
     SQLAlchemyCheckpointStore,
     build_agent_tools,
 )
-from riftx.domain import Engagement, FindingSeverity, Objective, Run
+from riftx.domain import ApprovalMode, Engagement, FindingSeverity, Objective, Run
 from riftx.persistence import (
     Database,
+    SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -75,6 +76,8 @@ async def _runtime(
     tmp_path: Path,
     *,
     execution_policy: str = "registered_only",
+    approval_mode: ApprovalMode = ApprovalMode.BALANCED,
+    tool_approval: str = "never",
 ) -> tuple[
     Database,
     Run,
@@ -93,6 +96,7 @@ async def _runtime(
         engagement_id="engagement-1",
         node_id="node-1",
         objective=Objective(description="Run the configured verification tool"),
+        approval_mode=approval_mode,
         workspace_path=str(tmp_path),
     )
     await SQLAlchemyRunRepository(database.session_factory).create(run)
@@ -109,6 +113,7 @@ async def _runtime(
                         "executor": "process",
                         "capabilities": ["custom_verification"],
                         "timeout": 30,
+                        "approval": tool_approval,
                     },
                     "missing-binary": {
                         "command": ["definitely-not-a-riftx-command"],
@@ -133,6 +138,7 @@ async def _runtime(
         supervisor=supervisor,
         finding_repository=SQLAlchemyFindingRepository(database.session_factory),
         event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        approval_repository=SQLAlchemyApprovalRepository(database.session_factory),
     )
     context = RiftXAgentContext.from_run(run, registry, agent_step_id="step-1")
     return database, run, context, services, supervisor
@@ -376,5 +382,124 @@ async def test_agent_tools_follow_shell_execution_policy(tmp_path: Path) -> None
     )
     open_names = {tool.name for tool in build_agent_tools(open_services)}
     assert "run_shell" in open_names
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_balanced_sensitive_tool_interrupts_and_run_grant_skips_future_prompt(
+    tmp_path: Path,
+) -> None:
+    database, _, context, services, supervisor = await _runtime(
+        tmp_path,
+        tool_approval="sensitive",
+    )
+    first_cycle = AgentCycle(
+        services=services,
+        session_factory=database.session_factory,
+        checkpoint_store=SQLAlchemyCheckpointStore(database.session_factory),
+        model=SequenceModel(
+            [
+                _tool_call(
+                    "run_registered_tool",
+                    {"tool_id": "custom", "args": ["hello"], "timeout_seconds": None},
+                    call_id="approval-call",
+                )
+            ]
+        ),
+    )
+
+    interrupted = await first_cycle.run(context)
+    assert interrupted.status is AgentCycleStatus.INTERRUPTED
+    assert [item.call_id for item in interrupted.interruptions] == ["approval-call"]
+
+    assert services.approval_repository is not None
+    await services.approval_repository.grant_for_run(
+        context.run_id,
+        "custom",
+        created_by="tester",
+    )
+    granted_cycle = AgentCycle(
+        services=services,
+        session_factory=database.session_factory,
+        checkpoint_store=SQLAlchemyCheckpointStore(database.session_factory),
+        model=SequenceModel(
+            [
+                _tool_call(
+                    "run_registered_tool",
+                    {"tool_id": "custom", "args": ["hello"], "timeout_seconds": None},
+                    call_id="granted-call",
+                ),
+                _message(
+                    AgentCycleOutput(
+                        assistant_message="The granted tool completed.",
+                        plan_summary="Continue with the approved tool.",
+                    )
+                ),
+            ]
+        ),
+    )
+    completed = await granted_cycle.run(context)
+    assert completed.status is AgentCycleStatus.COMPLETED
+
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_manual_mode_interrupts_never_approval_tool(tmp_path: Path) -> None:
+    database, _, context, services, supervisor = await _runtime(
+        tmp_path,
+        approval_mode=ApprovalMode.MANUAL,
+        tool_approval="never",
+    )
+    cycle = AgentCycle(
+        services=services,
+        session_factory=database.session_factory,
+        checkpoint_store=SQLAlchemyCheckpointStore(database.session_factory),
+        model=SequenceModel(
+            [
+                _tool_call(
+                    "run_registered_tool",
+                    {"tool_id": "custom", "args": [], "timeout_seconds": None},
+                )
+            ]
+        ),
+    )
+
+    result = await cycle.run(context)
+    assert result.status is AgentCycleStatus.INTERRUPTED
+
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_auto_mode_runs_sensitive_tool_without_interruption(tmp_path: Path) -> None:
+    database, _, context, services, supervisor = await _runtime(
+        tmp_path,
+        approval_mode=ApprovalMode.AUTO,
+        tool_approval="always",
+    )
+    cycle = AgentCycle(
+        services=services,
+        session_factory=database.session_factory,
+        checkpoint_store=SQLAlchemyCheckpointStore(database.session_factory),
+        model=SequenceModel(
+            [
+                _tool_call(
+                    "run_registered_tool",
+                    {"tool_id": "custom", "args": [], "timeout_seconds": None},
+                ),
+                _message(
+                    AgentCycleOutput(
+                        assistant_message="Auto mode completed the tool.",
+                        plan_summary="Run without prompting in auto mode.",
+                    )
+                ),
+            ]
+        ),
+    )
+
+    result = await cycle.run(context)
+    assert result.status is AgentCycleStatus.COMPLETED
+
     await supervisor.close()
     await database.dispose()

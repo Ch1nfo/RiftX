@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
 from riftx.domain import (
+    Approval,
+    ApprovalGrant,
+    ApprovalStatus,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -19,12 +22,18 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunStatus,
+    ToolCall,
 )
 from riftx.domain.base import utc_now
 
 from .mappers import (
+    apply_approval_to_record,
     apply_execution_to_record,
     apply_run_to_record,
+    approval_from_record,
+    approval_grant_from_record,
+    approval_grant_to_record,
+    approval_to_record,
     engagement_from_record,
     engagement_to_record,
     event_from_record,
@@ -35,13 +44,18 @@ from .mappers import (
     finding_to_record,
     run_from_record,
     run_to_record,
+    tool_call_from_record,
+    tool_call_to_record,
 )
 from .orm import (
+    ApprovalGrantRecord,
+    ApprovalRecord,
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
     RunEventRecord,
     RunRecord,
+    ToolCallRecord,
 )
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -249,6 +263,132 @@ class SQLAlchemyFindingRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [finding_from_record(record) for record in records]
+
+
+class SQLAlchemyApprovalRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create_request(
+        self,
+        tool_call: ToolCall,
+        approval: Approval,
+    ) -> tuple[Approval, bool]:
+        existing = await self._get_by_sdk_call_id(tool_call.run_id, tool_call.sdk_call_id)
+        if existing is not None:
+            return existing, False
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(tool_call_to_record(tool_call))
+                await session.flush()
+                session.add(approval_to_record(approval))
+                await session.flush()
+            return approval, True
+        except IntegrityError as exc:
+            existing = await self._get_by_sdk_call_id(tool_call.run_id, tool_call.sdk_call_id)
+            if existing is not None:
+                return existing, False
+            raise RepositoryConflictError(
+                f"could not create approval request {approval.id!r}"
+            ) from exc
+
+    async def get(self, approval_id: str) -> Approval | None:
+        async with self._session_factory() as session:
+            record = await session.get(ApprovalRecord, approval_id)
+        return approval_from_record(record) if record is not None else None
+
+    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
+        async with self._session_factory() as session:
+            record = await session.get(ToolCallRecord, tool_call_id)
+        return tool_call_from_record(record) if record is not None else None
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        status: ApprovalStatus | None = None,
+    ) -> Sequence[Approval]:
+        statement = select(ApprovalRecord).where(ApprovalRecord.run_id == run_id)
+        if status is not None:
+            statement = statement.where(ApprovalRecord.status == status.value)
+        statement = statement.order_by(ApprovalRecord.created_at, ApprovalRecord.id)
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [approval_from_record(record) for record in records]
+
+    async def decide(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+        *,
+        decided_by: str,
+        reason: str | None = None,
+    ) -> tuple[Approval, bool]:
+        async with self._session_factory() as session, session.begin():
+            record = await session.scalar(
+                select(ApprovalRecord).where(ApprovalRecord.id == approval_id).with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("Approval", approval_id)
+            approval = approval_from_record(record)
+            if approval.status is status:
+                return approval, False
+            approval.decide(status, decided_by=decided_by, reason=reason)
+            apply_approval_to_record(approval, record)
+            tool_call = await session.get(ToolCallRecord, approval.tool_call_id)
+            if tool_call is not None:
+                tool_call.approval_status = status.value
+            await session.flush()
+        return approval, True
+
+    async def grant_for_run(
+        self,
+        run_id: str,
+        tool_id: str,
+        *,
+        created_by: str,
+    ) -> ApprovalGrant:
+        existing = await self._get_grant(run_id, tool_id)
+        if existing is not None:
+            return existing
+        grant = ApprovalGrant(run_id=run_id, tool_id=tool_id, created_by=created_by)
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(approval_grant_to_record(grant))
+                await session.flush()
+            return grant
+        except IntegrityError as exc:
+            existing = await self._get_grant(run_id, tool_id)
+            if existing is not None:
+                return existing
+            raise RepositoryConflictError(
+                f"could not grant approval for tool {tool_id!r} in run {run_id!r}"
+            ) from exc
+
+    async def is_granted(self, run_id: str, tool_id: str) -> bool:
+        return await self._get_grant(run_id, tool_id) is not None
+
+    async def _get_by_sdk_call_id(self, run_id: str, sdk_call_id: str) -> Approval | None:
+        statement = (
+            select(ApprovalRecord)
+            .join(ToolCallRecord, ToolCallRecord.id == ApprovalRecord.tool_call_id)
+            .where(
+                ToolCallRecord.run_id == run_id,
+                ToolCallRecord.sdk_call_id == sdk_call_id,
+            )
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return approval_from_record(record) if record is not None else None
+
+    async def _get_grant(self, run_id: str, tool_id: str) -> ApprovalGrant | None:
+        statement = select(ApprovalGrantRecord).where(
+            ApprovalGrantRecord.run_id == run_id,
+            ApprovalGrantRecord.tool_id == tool_id,
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return approval_grant_from_record(record) if record is not None else None
 
 
 class SQLAlchemyExecutionRepository:

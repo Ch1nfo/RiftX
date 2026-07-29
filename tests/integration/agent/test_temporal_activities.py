@@ -15,9 +15,11 @@ from riftx.agent import (
     RiftXAgentContext,
     RiftXDatabaseSession,
 )
+from riftx.application.services import ApprovalRequestRecorder
 from riftx.domain import Engagement, Objective, Run, RunStatus
 from riftx.persistence import (
     Database,
+    SQLAlchemyApprovalRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyRunEventRepository,
@@ -110,6 +112,7 @@ async def _runtime(
         termination_grace_seconds=0.1,
     )
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
+    approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     activities = RiftXActivities(
         run_repository=run_repository,
         event_repository=event_repository,
@@ -117,6 +120,11 @@ async def _runtime(
         tool_registry=registry,
         supervisor=supervisor,
         agent_cycle=cycle,
+        approval_recorder=ApprovalRequestRecorder(
+            approval_repository=approval_repository,
+            event_repository=event_repository,
+            tool_registry=registry,
+        ),
         session_factory=database.session_factory,
     )
     return database, run_repository, event_repository, activities, supervisor
@@ -199,5 +207,43 @@ async def test_compact_context_activity_keeps_latest_messages(tmp_path: Path) ->
     ]
     event_types = [event.event_type for event in await events.list_after("run-1")]
     assert "agent.context_compacted" in event_types
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_interrupted_activity_retry_records_one_durable_approval(tmp_path: Path) -> None:
+    interruption = AgentCycleResult(
+        status=AgentCycleStatus.INTERRUPTED,
+        checkpoint_id="checkpoint-retry",
+        interruptions=[
+            AgentInterruption(
+                call_id="call-retry",
+                tool_name="run_shell",
+                arguments='{"script":"printf retry","reason":"Validate retry safety."}',
+            )
+        ],
+    )
+    cycle = FakeAgentCycle(deque([interruption, interruption]))
+    database, _, events, activities, supervisor = await _runtime(tmp_path, cycle)
+    await activities.prepare_run_activity(PrepareRunInput(run_id="run-1"))
+
+    await activities.agent_cycle_activity(
+        AgentCycleActivityInput(run_id="run-1", agent_step_id="step-retry")
+    )
+    await activities.agent_cycle_activity(
+        AgentCycleActivityInput(run_id="run-1", agent_step_id="step-retry")
+    )
+
+    approvals = await SQLAlchemyApprovalRepository(database.session_factory).list("run-1")
+    approval_events = [
+        event
+        for event in await events.list_after("run-1")
+        if event.event_type == "tool.approval_required"
+    ]
+    assert len(approvals) == 1
+    assert approvals[0].command[-1] == "printf retry"
+    assert approvals[0].reason == "Validate retry safety."
+    assert len(approval_events) == 1
+
     await supervisor.close()
     await database.dispose()

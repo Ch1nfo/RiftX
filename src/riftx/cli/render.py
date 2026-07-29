@@ -83,6 +83,30 @@ def render_tools(console: Console, payload: dict[str, Any]) -> None:
     console.print(table)
 
 
+def render_approvals(console: Console, approvals: Iterable[dict[str, Any]]) -> None:
+    items = list(approvals)
+    if not items:
+        console.print("[dim]No approvals found.[/dim]")
+        return
+    for approval in items:
+        body = Table.grid(padding=(0, 2))
+        body.add_column(style="bold", no_wrap=True)
+        body.add_column(overflow="fold")
+        command = approval.get("command", [])
+        env_diff = approval.get("env_diff", {})
+        body.add_row("ID", str(approval.get("id", "")))
+        body.add_row("Status", _status_text(str(approval.get("status", "unknown"))))
+        body.add_row("Tool", str(approval.get("tool_name", "")))
+        body.add_row("Command", " ".join(str(item) for item in command))
+        body.add_row("Working dir", str(approval.get("cwd", "")))
+        body.add_row("Target", str(approval.get("target_summary", "")))
+        body.add_row("Environment", JSON.from_data(env_diff) if env_diff else "—")
+        body.add_row("Reason", str(approval.get("reason", "")))
+        if approval.get("decided_by"):
+            body.add_row("Decided by", str(approval["decided_by"]))
+        console.print(Panel(body, title="Approval", border_style="yellow"))
+
+
 def render_event(console: Console, event: object) -> None:
     if not isinstance(event, dict):
         console.print(event)

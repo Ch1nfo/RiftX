@@ -61,6 +61,7 @@ class AgentStep(DomainModel):
 
 class ToolCall(DomainModel):
     id: str = Field(default_factory=new_id)
+    sdk_call_id: str = Field(min_length=1)
     run_id: str
     agent_step_id: str
     tool_id: str

@@ -102,3 +102,33 @@ def test_parse_sse_lines_handles_multiline_and_raw_data() -> None:
         )
     )
     assert events[0].data == "first\nsecond"
+
+
+def test_approval_client_uses_control_plane_endpoints() -> None:
+    requests: list[tuple[str, str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.method == "GET":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"id": "approval-1", "status": "approved"})
+
+    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+        client.list_approvals("run-1")
+        client.approve("approval-1", approve_for_run=True)
+        client.reject("approval-2", reason="Denied")
+
+    assert requests == [
+        ("GET", "/api/v1/runs/run-1/approvals", None),
+        (
+            "POST",
+            "/api/v1/approvals/approval-1/approve",
+            {"decided_by": "local-user", "approve_for_run": True},
+        ),
+        (
+            "POST",
+            "/api/v1/approvals/approval-2/reject",
+            {"decided_by": "local-user", "reason": "Denied"},
+        ),
+    ]

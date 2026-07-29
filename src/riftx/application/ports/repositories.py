@@ -6,6 +6,9 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from riftx.domain import (
+    Approval,
+    ApprovalGrant,
+    ApprovalStatus,
     Engagement,
     Execution,
     Finding,
@@ -14,6 +17,7 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunStatus,
+    ToolCall,
 )
 
 
@@ -54,6 +58,44 @@ class RunEventRepository(Protocol):
         after_sequence: int = 0,
         limit: int = 100,
     ) -> Sequence[RunEvent]: ...
+
+
+class ApprovalRepository(Protocol):
+    async def create_request(
+        self,
+        tool_call: ToolCall,
+        approval: Approval,
+    ) -> tuple[Approval, bool]: ...
+
+    async def get(self, approval_id: str) -> Approval | None: ...
+
+    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None: ...
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        status: ApprovalStatus | None = None,
+    ) -> Sequence[Approval]: ...
+
+    async def decide(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+        *,
+        decided_by: str,
+        reason: str | None = None,
+    ) -> tuple[Approval, bool]: ...
+
+    async def grant_for_run(
+        self,
+        run_id: str,
+        tool_id: str,
+        *,
+        created_by: str,
+    ) -> ApprovalGrant: ...
+
+    async def is_granted(self, run_id: str, tool_id: str) -> bool: ...
 
 
 class ExecutionRepository(Protocol):

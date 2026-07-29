@@ -95,8 +95,10 @@ class AgentCheckpointRecord(Base):
 
 class ToolCallRecord(Base):
     __tablename__ = "tool_calls"
+    __table_args__ = (UniqueConstraint("run_id", "sdk_call_id", name="uq_tool_calls_run_sdk_call"),)
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    sdk_call_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -162,10 +164,28 @@ class ApprovalRecord(Base):
         ForeignKey("tool_calls.id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    command_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    cwd: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    target_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    env_diff_json: Mapped[dict[str, str | None]] = mapped_column(JSON, nullable=False, default=dict)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     decided_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ApprovalGrantRecord(Base):
+    __tablename__ = "approval_grants"
+    __table_args__ = (UniqueConstraint("run_id", "tool_id", name="uq_approval_grants_run_tool"),)
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class RunEventRecord(Base):

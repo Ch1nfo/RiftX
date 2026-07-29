@@ -80,6 +80,7 @@ describe("useEventStream", () => {
     });
 
     expect(FakeEventSource.latest?.listeners.has("agent.tool_completed")).toBe(true);
+    expect(FakeEventSource.latest?.listeners.has("tool.approval_required")).toBe(true);
     expect(FakeEventSource.latest?.listeners.has("tool.execution_completed")).toBe(false);
 
     act(() => {
