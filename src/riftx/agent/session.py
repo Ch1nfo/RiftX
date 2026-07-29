@@ -108,6 +108,29 @@ class RiftXDatabaseSession:
                 delete(AgentMessageRecord).where(AgentMessageRecord.run_id == self.session_id)
             )
 
+    async def trim_history(self, max_items: int) -> tuple[int, int]:
+        """Keep the latest items and return ``(removed, retained)``."""
+
+        if max_items < 1:
+            raise ValueError("max_items must be positive")
+        async with self._session_factory() as session, session.begin():
+            records = list(
+                (
+                    await session.scalars(
+                        select(AgentMessageRecord)
+                        .where(AgentMessageRecord.run_id == self.session_id)
+                        .order_by(AgentMessageRecord.sequence.desc())
+                    )
+                ).all()
+            )
+            retained = min(len(records), max_items)
+            stale_ids = [record.id for record in records[max_items:]]
+            if stale_ids:
+                await session.execute(
+                    delete(AgentMessageRecord).where(AgentMessageRecord.id.in_(stale_ids))
+                )
+            return len(stale_ids), retained
+
 
 def _serialize_item(item: TResponseInputItem) -> tuple[dict[str, Any], str]:
     if isinstance(item, BaseModel):
