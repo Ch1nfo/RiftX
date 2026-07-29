@@ -15,6 +15,8 @@ from riftx.domain import (
     Finding,
     FindingSeverity,
     FindingStatus,
+    Node,
+    NodeStatus,
     Report,
     ReportFormat,
     Run,
@@ -29,6 +31,22 @@ class EngagementRepository(Protocol):
     async def create(self, engagement: Engagement) -> Engagement: ...
 
     async def get(self, engagement_id: str) -> Engagement | None: ...
+
+
+class NodeRepository(Protocol):
+    async def create(self, node: Node) -> Node: ...
+
+    async def get(self, node_id: str) -> Node | None: ...
+
+    async def save(self, node: Node) -> Node: ...
+
+    async def list(
+        self,
+        *,
+        status: NodeStatus | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> Sequence[Node]: ...
 
 
 class RunRepository(Protocol):

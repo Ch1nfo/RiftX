@@ -51,6 +51,18 @@ class FakeAPIClient:
             )
         return {"items": []}
 
+    def list_nodes(self, *, status: str | None = None) -> dict[str, Any]:
+        self.calls.append(("list_nodes", status))
+        return {"items": [self._node("node-1")]}
+
+    def get_node(self, node_id: str) -> dict[str, Any]:
+        self.calls.append(("get_node", node_id))
+        return self._node(node_id)
+
+    def disconnect_node(self, node_id: str) -> dict[str, Any]:
+        self.calls.append(("disconnect_node", node_id))
+        return {**self._node(node_id), "status": "offline"}
+
     def refresh_tools(self, node_id: str) -> dict[str, Any]:
         self.calls.append(("refresh_tools", node_id))
         availability = "unavailable" if self.unhealthy else "available"
@@ -156,6 +168,20 @@ class FakeAPIClient:
     def get_report(self, report_id: str) -> dict[str, Any]:
         self.calls.append(("get_report", report_id))
         return self._report(report_id, "run-1")
+
+    @staticmethod
+    def _node(node_id: str) -> dict[str, Any]:
+        return {
+            "id": node_id,
+            "name": "Runner One",
+            "status": "online",
+            "platform": "linux",
+            "architecture": "x86_64",
+            "runner_version": "2.0.0",
+            "capabilities": ["scripting"],
+            "labels": {},
+            "last_seen_at": "2026-07-29T00:00:00Z",
+        }
 
     @staticmethod
     def _report(report_id: str, run_id: str) -> dict[str, Any]:
@@ -378,3 +404,16 @@ def test_artifact_commands_delegate_to_shared_control_plane() -> None:
         )
     ]
     assert FakeAPIClient.instances[2].calls == [("get_artifact", "artifact-1")]
+
+
+def test_node_commands_delegate_to_shared_control_plane() -> None:
+    listed = runner.invoke(cli_module.app, ["node", "list", "--status", "online"])
+    shown = runner.invoke(cli_module.app, ["node", "show", "node-1"])
+    disconnected = runner.invoke(cli_module.app, ["node", "disconnect", "node-1"])
+
+    assert listed.exit_code == 0, listed.output
+    assert shown.exit_code == 0, shown.output
+    assert disconnected.exit_code == 0, disconnected.output
+    assert FakeAPIClient.instances[0].calls == [("list_nodes", "online")]
+    assert FakeAPIClient.instances[1].calls == [("get_node", "node-1")]
+    assert FakeAPIClient.instances[2].calls == [("disconnect_node", "node-1")]

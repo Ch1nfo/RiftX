@@ -6,6 +6,7 @@ import {
   Menu,
   Network,
   Radar,
+  Server,
   ShieldCheck,
   Wrench,
   X,
@@ -17,12 +18,14 @@ import { useUIStore } from "../store/ui";
 const navigation = [
   { to: "/", label: "Dashboard", icon: Radar, end: true },
   { to: "/runs/new", label: "New run", icon: CirclePlus },
+  { to: "/nodes", label: "Nodes", icon: Server },
   { to: "/tools", label: "Tools", icon: Wrench },
 ];
 
 const titles: Record<string, { eyebrow: string; title: string }> = {
   "/": { eyebrow: "Control plane", title: "Operations dashboard" },
   "/runs/new": { eyebrow: "Run configuration", title: "Launch a durable run" },
+  "/nodes": { eyebrow: "Runner fleet", title: "Execution nodes" },
   "/tools": { eyebrow: "Execution environment", title: "Tool registry" },
 };
 

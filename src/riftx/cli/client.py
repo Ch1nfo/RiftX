@@ -199,6 +199,41 @@ class APIClient:
             self._raise_for_error(response)
             yield from parse_sse_lines(response.iter_lines())
 
+    def list_nodes(self, *, status: str | None = None) -> dict[str, Any]:
+        params = {"status": status} if status else None
+        return self._json("GET", "/api/v1/nodes", params=params)
+
+    def get_node(self, node_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/nodes/{node_id}")
+
+    def register_node(
+        self,
+        *,
+        node_id: str,
+        name: str,
+        platform: str,
+        architecture: str,
+        runner_version: str = "unknown",
+        capabilities: list[str] | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            "/api/v1/nodes/register",
+            json={
+                "node_id": node_id,
+                "name": name,
+                "platform": platform,
+                "architecture": architecture,
+                "runner_version": runner_version,
+                "capabilities": capabilities or [],
+                "labels": labels or {},
+            },
+        )
+
+    def disconnect_node(self, node_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/api/v1/nodes/{node_id}/disconnect")
+
     def list_tools(self, node_id: str = "local") -> dict[str, Any]:
         return self._json("GET", f"/api/v1/nodes/{node_id}/tools")
 

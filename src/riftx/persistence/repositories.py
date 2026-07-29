@@ -20,6 +20,8 @@ from riftx.domain import (
     Finding,
     FindingSeverity,
     FindingStatus,
+    Node,
+    NodeStatus,
     Report,
     ReportFormat,
     Run,
@@ -35,6 +37,7 @@ from .mappers import (
     apply_approval_to_record,
     apply_execution_to_record,
     apply_finding_to_record,
+    apply_node_to_record,
     apply_run_to_record,
     apply_terminal_to_record,
     approval_from_record,
@@ -51,6 +54,8 @@ from .mappers import (
     execution_to_record,
     finding_from_record,
     finding_to_record,
+    node_from_record,
+    node_to_record,
     report_from_record,
     report_to_record,
     run_from_record,
@@ -67,6 +72,7 @@ from .orm import (
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
+    NodeRecord,
     ReportRecord,
     RunEventRecord,
     RunRecord,
@@ -138,6 +144,49 @@ class SQLAlchemyEngagementRepository:
         async with self._session_factory() as session:
             record = await session.get(EngagementRecord, engagement_id)
             return engagement_from_record(record) if record else None
+
+
+class SQLAlchemyNodeRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, node: Node) -> Node:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(node_to_record(node))
+                await session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflictError(f"could not create node {node.id!r}") from exc
+        return node
+
+    async def get(self, node_id: str) -> Node | None:
+        async with self._session_factory() as session:
+            record = await session.get(NodeRecord, node_id)
+        return node_from_record(record) if record is not None else None
+
+    async def save(self, node: Node) -> Node:
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(NodeRecord, node.id)
+            if record is None:
+                raise EntityNotFoundError("Node", node.id)
+            apply_node_to_record(node, record)
+            await session.flush()
+        return node
+
+    async def list(
+        self,
+        *,
+        status: NodeStatus | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> Sequence[Node]:
+        statement = select(NodeRecord).order_by(NodeRecord.name, NodeRecord.id)
+        if status is not None:
+            statement = statement.where(NodeRecord.status == status.value)
+        statement = statement.limit(limit).offset(offset)
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [node_from_record(record) for record in records]
 
 
 class SQLAlchemyRunRepository:

@@ -266,10 +266,13 @@ class NodeRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     platform: Mapped[str] = mapped_column(String(64), nullable=False)
     architecture: Mapped[str] = mapped_column(String(64), nullable=False)
+    runner_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    capabilities_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     labels_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class ToolStateRecord(Base):

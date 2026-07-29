@@ -21,6 +21,8 @@ from .render import (
     render_artifacts,
     render_error,
     render_event,
+    render_node,
+    render_nodes,
     render_report,
     render_reports,
     render_run,
@@ -39,11 +41,13 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
+nodes_app = typer.Typer(help="Register and inspect execution nodes.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
 artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 app.add_typer(run_app, name="run")
+app.add_typer(nodes_app, name="node")
 app.add_typer(tools_app, name="tools")
 app.add_typer(terminal_app, name="terminal")
 app.add_typer(artifact_app, name="artifact")
@@ -503,6 +507,45 @@ def watch_run(
     except (RiftXAPIError, httpx.HTTPError) as exc:
         render_error(console, exc)
         raise typer.Exit(1) from exc
+
+
+@nodes_app.command("list")
+def list_nodes(
+    context: typer.Context,
+    status: Annotated[str | None, typer.Option("--status")] = None,
+) -> None:
+    """List registered local and remote execution nodes."""
+
+    _run_with_client(
+        context,
+        lambda client: render_nodes(
+            console,
+            client.list_nodes(status=status).get("items", []),
+        ),
+    )
+
+
+@nodes_app.command("show")
+def show_node(
+    context: typer.Context,
+    node_id: Annotated[str, typer.Argument(help="Node ID.")],
+) -> None:
+    """Show durable metadata for one execution node."""
+
+    _run_with_client(context, lambda client: render_node(console, client.get_node(node_id)))
+
+
+@nodes_app.command("disconnect")
+def disconnect_node(
+    context: typer.Context,
+    node_id: Annotated[str, typer.Argument(help="Node ID.")],
+) -> None:
+    """Mark an execution node offline."""
+
+    _run_with_client(
+        context,
+        lambda client: render_node(console, client.disconnect_node(node_id)),
+    )
 
 
 @tools_app.command("list")

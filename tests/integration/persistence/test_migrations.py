@@ -110,3 +110,33 @@ def test_m7_migration_backfills_existing_approval_rows(tmp_path: Path) -> None:
     assert tool_columns["sdk_call_id"] == 1
     assert approval_columns["command_json"] == 1
     assert approval_columns["env_diff_json"] == 1
+
+
+def test_m9_migration_backfills_existing_node_lifecycle_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "existing-node.db"
+    run_alembic(database_path, "6b5e4f7a8c91")
+    now = "2026-07-29 00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO nodes "
+            "(id, name, platform, architecture, status, labels_json, last_seen_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("node-1", "Existing Node", "linux", "x86_64", "online", "{}", now, now),
+        )
+        connection.commit()
+
+    run_alembic(database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        runner_version, capabilities_json, updated_at = connection.execute(
+            "SELECT runner_version, capabilities_json, updated_at FROM nodes WHERE id = 'node-1'"
+        ).fetchone()
+        columns = {
+            row[1]: row[3] for row in connection.execute("PRAGMA table_info(nodes)").fetchall()
+        }
+    assert runner_version == "unknown"
+    assert capabilities_json == "[]"
+    assert updated_at == now
+    assert columns["runner_version"] == 1
+    assert columns["capabilities_json"] == 1
+    assert columns["updated_at"] == 1

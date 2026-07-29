@@ -9,6 +9,13 @@ from .artifacts import (
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
+from .nodes import (
+    HeartbeatNodeRequest,
+    NodeListResponse,
+    NodeRegistrationResponse,
+    NodeResponse,
+    RegisterNodeRequest,
+)
 from .reports import GenerateReportsRequest, ReportListResponse, ReportResponse
 from .runs import (
     CreateRunRequest,
@@ -38,6 +45,11 @@ __all__ = [
     "ErrorResponse",
     "FindingListResponse",
     "GenerateReportsRequest",
+    "HeartbeatNodeRequest",
+    "NodeListResponse",
+    "NodeRegistrationResponse",
+    "NodeResponse",
+    "RegisterNodeRequest",
     "RegisteredToolResponse",
     "RunActionResponse",
     "RunEventListResponse",

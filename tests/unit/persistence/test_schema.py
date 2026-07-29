@@ -51,3 +51,19 @@ def test_event_sequence_is_unique_per_run() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("run_id", "sequence") in unique_columns
+
+
+def test_node_table_matches_runner_lifecycle_contract() -> None:
+    assert set(Base.metadata.tables["nodes"].columns.keys()) == {
+        "id",
+        "name",
+        "platform",
+        "architecture",
+        "runner_version",
+        "status",
+        "capabilities_json",
+        "labels_json",
+        "last_seen_at",
+        "created_at",
+        "updated_at",
+    }

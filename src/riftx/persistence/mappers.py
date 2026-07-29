@@ -17,6 +17,8 @@ from riftx.domain import (
     FindingEvidence,
     FindingSeverity,
     FindingStatus,
+    Node,
+    NodeStatus,
     Objective,
     Report,
     ReportFormat,
@@ -38,12 +40,57 @@ from .orm import (
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
+    NodeRecord,
     ReportRecord,
     RunEventRecord,
     RunRecord,
     TerminalSessionRecord,
     ToolCallRecord,
 )
+
+
+def node_to_record(node: Node) -> NodeRecord:
+    return NodeRecord(
+        id=node.id,
+        name=node.name,
+        platform=node.platform,
+        architecture=node.architecture,
+        runner_version=node.runner_version,
+        status=node.status.value,
+        capabilities_json=node.capabilities,
+        labels_json=node.labels,
+        last_seen_at=node.last_seen_at,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
+def apply_node_to_record(node: Node, record: NodeRecord) -> None:
+    record.name = node.name
+    record.platform = node.platform
+    record.architecture = node.architecture
+    record.runner_version = node.runner_version
+    record.status = node.status.value
+    record.capabilities_json = node.capabilities
+    record.labels_json = node.labels
+    record.last_seen_at = node.last_seen_at
+    record.updated_at = node.updated_at
+
+
+def node_from_record(record: NodeRecord) -> Node:
+    return Node(
+        id=record.id,
+        name=record.name,
+        platform=record.platform,
+        architecture=record.architecture,
+        runner_version=record.runner_version,
+        status=NodeStatus(record.status),
+        capabilities=record.capabilities_json or [],
+        labels=record.labels_json or {},
+        last_seen_at=record.last_seen_at,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def artifact_to_record(artifact: Artifact) -> ArtifactRecord:

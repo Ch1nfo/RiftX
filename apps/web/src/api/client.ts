@@ -12,6 +12,8 @@ import type {
   UpdateFindingPayload,
   RegisterArtifactPayload,
   GenerateReportsPayload,
+  NodeList,
+  NodeStatus,
   ReportList,
   Run,
   RunEventList,
@@ -251,6 +253,11 @@ export const api = {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("cursor", String(Math.max(cursor, 0)));
     return url.toString();
+  },
+
+  listNodes(status?: NodeStatus): Promise<NodeList> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<NodeList>(`/api/v1/nodes${query}`);
   },
 
   listTools(nodeId = "local"): Promise<ToolRegistrySnapshot> {

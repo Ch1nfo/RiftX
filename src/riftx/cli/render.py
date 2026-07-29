@@ -12,6 +12,53 @@ from rich.table import Table
 from rich.text import Text
 
 
+def render_nodes(console: Console, nodes: Iterable[dict[str, Any]]) -> None:
+    items = list(nodes)
+    if not items:
+        console.print("[dim]No execution nodes found.[/dim]")
+        return
+    table = Table(title="Execution Nodes", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Platform")
+    table.add_column("Runner")
+    table.add_column("Capabilities")
+    table.add_column("Last seen")
+    for node in items:
+        table.add_row(
+            str(node.get("id", "")),
+            str(node.get("name", "")),
+            _status_text(str(node.get("status", "unknown"))),
+            f"{node.get('platform', '')}/{node.get('architecture', '')}",
+            str(node.get("runner_version", "unknown")),
+            ", ".join(str(item) for item in node.get("capabilities", [])) or "—",
+            str(node.get("last_seen_at") or "—"),
+        )
+    console.print(table)
+
+
+def render_node(console: Console, node: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("ID", str(node.get("id", "")))
+    body.add_row("Name", str(node.get("name", "")))
+    body.add_row("Status", str(node.get("status", "unknown")))
+    body.add_row(
+        "Platform",
+        f"{node.get('platform', '')}/{node.get('architecture', '')}",
+    )
+    body.add_row("Runner", str(node.get("runner_version", "unknown")))
+    body.add_row(
+        "Capabilities",
+        ", ".join(str(item) for item in node.get("capabilities", [])) or "—",
+    )
+    body.add_row("Labels", str(node.get("labels", {})))
+    body.add_row("Last seen", str(node.get("last_seen_at") or "—"))
+    console.print(Panel(body, title="Execution Node", border_style="cyan"))
+
+
 def render_runs(console: Console, runs: Iterable[dict[str, Any]]) -> None:
     table = Table(title="RiftX Runs", expand=True)
     table.add_column("ID", style="cyan", no_wrap=True)
@@ -238,6 +285,10 @@ def _status_text(status: str) -> Text:
         "cancelled": "red",
         "created": "blue",
         "preparing": "blue",
+        "online": "green",
+        "degraded": "yellow",
+        "offline": "red",
+        "lost": "bright_red",
     }
     return Text(status, style=colors.get(status, "white"))
 

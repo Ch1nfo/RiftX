@@ -19,6 +19,7 @@ from riftx.application.services import (
     ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
+    NodeApplicationService,
     ReportApplicationService,
     RunApplicationService,
     TerminalApplicationService,
@@ -32,6 +33,7 @@ from riftx.persistence import (
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
@@ -117,6 +119,7 @@ tools:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    node_repository = SQLAlchemyNodeRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
@@ -160,6 +163,7 @@ tools:
                 run_repository=run_repository,
                 event_repository=event_repository,
             ),
+            node_service=NodeApplicationService(node_repository),
             finding_service=FindingApplicationService(
                 run_repository=run_repository,
                 finding_repository=finding_repository,
@@ -1014,3 +1018,66 @@ async def test_reports_generate_list_get_and_link_finding_evidence(tmp_path: Pat
             assert event_types.count("report.generated") == 3
     finally:
         await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    async for client in _client(runtime.control_plane):
+        registered = await client.post(
+            "/api/v1/nodes/register",
+            json={
+                "node_id": "windows-a",
+                "name": "Windows Runner A",
+                "platform": "windows",
+                "architecture": "amd64",
+                "runner_version": "2.0.0",
+                "capabilities": ["powershell", "conpty"],
+                "labels": {"zone": "internal"},
+            },
+        )
+        assert registered.status_code == 200
+        assert registered.json()["created"] is True
+        assert registered.json()["node"]["status"] == "online"
+
+        repeated = await client.post(
+            "/api/v1/nodes/register",
+            json={
+                "node_id": "windows-a",
+                "name": "Windows Runner Primary",
+                "platform": "windows",
+                "architecture": "amd64",
+                "runner_version": "2.0.1",
+                "capabilities": ["powershell"],
+            },
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["created"] is False
+
+        invalid_heartbeat = await client.post(
+            "/api/v1/nodes/windows-a/heartbeat",
+            json={"status": "offline"},
+        )
+        assert invalid_heartbeat.status_code == 422
+        assert invalid_heartbeat.json()["error"]["code"] == "validation_error"
+
+        heartbeat = await client.post(
+            "/api/v1/nodes/windows-a/heartbeat",
+            json={"status": "degraded", "labels": {"load": "high"}},
+        )
+        assert heartbeat.status_code == 200
+        assert heartbeat.json()["status"] == "degraded"
+        assert heartbeat.json()["labels"] == {"load": "high"}
+
+        listed = await client.get("/api/v1/nodes?status=degraded")
+        assert listed.status_code == 200
+        assert [node["id"] for node in listed.json()["items"]] == ["windows-a"]
+
+        disconnected = await client.post("/api/v1/nodes/windows-a/disconnect")
+        assert disconnected.status_code == 200
+        assert disconnected.json()["status"] == "offline"
+
+        missing = await client.get("/api/v1/nodes/missing")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "node_not_found"
+    await runtime.control_plane.close()

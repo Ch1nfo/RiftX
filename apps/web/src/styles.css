@@ -646,7 +646,8 @@ button:disabled {
 
 .status-running,
 .status-completed,
-.status-available {
+.status-available,
+.status-online {
   border-color: rgba(69, 214, 164, 0.23);
   color: var(--mint-bright);
   background: rgba(69, 214, 164, 0.07);
@@ -654,7 +655,8 @@ button:disabled {
 
 .status-waiting_approval,
 .status-paused,
-.status-misconfigured {
+.status-misconfigured,
+.status-degraded {
   border-color: rgba(242, 185, 93, 0.25);
   color: var(--amber);
   background: rgba(242, 185, 93, 0.07);
@@ -662,7 +664,9 @@ button:disabled {
 
 .status-failed,
 .status-cancelled,
-.status-unavailable {
+.status-unavailable,
+.status-offline,
+.status-lost {
   border-color: rgba(255, 116, 121, 0.24);
   color: #ff9095;
   background: rgba(255, 116, 121, 0.07);

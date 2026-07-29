@@ -4,11 +4,12 @@ import { Link, useNavigate } from "react-router-dom";
 
 import type { ApprovalMode, CreateRunPayload, EntryPoint } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
-import { useCreateRun } from "../hooks/queries";
+import { useCreateRun, useNodes } from "../hooks/queries";
 
 export function NewRunPage() {
   const navigate = useNavigate();
   const createRun = useCreateRun();
+  const nodes = useNodes();
   const [objective, setObjective] = useState("");
   const [engagementName, setEngagementName] = useState("");
   const [authorization, setAuthorization] = useState("");
@@ -168,7 +169,20 @@ export function NewRunPage() {
           </div>
           <label className="field">
             <span>Execution node</span>
-            <input value={nodeId} onChange={(event) => setNodeId(event.target.value)} />
+            <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
+              {!nodes.data?.items.some((node) => node.id === nodeId) ? (
+                <option value={nodeId}>{nodeId}</option>
+              ) : null}
+              {nodes.data?.items.map((node) => (
+                <option
+                  key={node.id}
+                  value={node.id}
+                  disabled={["offline", "lost"].includes(node.status)}
+                >
+                  {node.name} · {node.platform}/{node.architecture} · {node.status}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="field">
             <span>Workspace</span>

@@ -7,6 +7,7 @@ import type {
   CreateTerminalPayload,
   RegisterArtifactPayload,
   GenerateReportsPayload,
+  NodeStatus,
   UpdateFindingPayload,
   RunStatus,
 } from "../api/types";
@@ -20,8 +21,18 @@ export const queryKeys = {
   reports: (runId: string) => ["run-reports", runId] as const,
   approvals: (runId: string) => ["run-approvals", runId] as const,
   terminal: (sessionId: string) => ["terminal", sessionId] as const,
+  nodes: (status?: NodeStatus) => ["nodes", status ?? "all"] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
 };
+
+export function useNodes(status?: NodeStatus) {
+  return useQuery({
+    queryKey: queryKeys.nodes(status),
+    queryFn: () => api.listNodes(status),
+    refetchInterval: 10_000,
+  });
+}
+
 
 export function useRuns(status?: RunStatus) {
   return useQuery({

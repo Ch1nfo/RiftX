@@ -116,6 +116,26 @@ export interface ApprovalDecisionPayload {
   approve_for_run?: boolean;
 }
 
+export type NodeStatus = "online" | "offline" | "degraded" | "lost" | "unknown";
+
+export interface Node {
+  id: string;
+  name: string;
+  platform: string;
+  architecture: string;
+  runner_version: string;
+  status: NodeStatus;
+  capabilities: string[];
+  labels: Record<string, string>;
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NodeList {
+  items: Node[];
+}
+
 export type ToolAvailability =
   | "available"
   | "unavailable"

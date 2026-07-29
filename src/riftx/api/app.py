@@ -18,6 +18,7 @@ from .routes import (
     artifacts_router,
     events_router,
     findings_router,
+    nodes_router,
     reports_router,
     runs_router,
     terminals_router,
@@ -75,6 +76,7 @@ def create_app(
             allow_headers=["*"],
         )
     app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(nodes_router, prefix="/api/v1")
     app.include_router(tools_router, prefix="/api/v1")
     app.include_router(events_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")

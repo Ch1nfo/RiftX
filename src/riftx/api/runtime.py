@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 from temporalio.client import Client
 
+from riftx import __version__
 from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
+    NodeApplicationService,
+    NodeRegistration,
     ReportApplicationService,
     RunApplicationService,
     RunWorkflowClient,
@@ -27,6 +32,7 @@ from riftx.persistence import (
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
@@ -53,6 +59,8 @@ class APISettings:
     temporal_workflow_id_prefix: str = "riftx-run"
     sse_poll_interval_seconds: float = 0.5
     sse_heartbeat_seconds: float = 15.0
+    node_offline_after_seconds: float = 30.0
+    node_lost_after_seconds: float = 300.0
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -93,6 +101,18 @@ class APISettings:
                     str(defaults.sse_heartbeat_seconds),
                 )
             ),
+            node_offline_after_seconds=float(
+                os.getenv(
+                    "RIFTX_NODE_OFFLINE_AFTER_SECONDS",
+                    str(defaults.node_offline_after_seconds),
+                )
+            ),
+            node_lost_after_seconds=float(
+                os.getenv(
+                    "RIFTX_NODE_LOST_AFTER_SECONDS",
+                    str(defaults.node_lost_after_seconds),
+                )
+            ),
             cors_origins=tuple(
                 item.strip()
                 for item in os.getenv(
@@ -111,6 +131,7 @@ class ControlPlane:
     run_service: RunApplicationService
     event_service: EventApplicationService
     finding_service: FindingApplicationService
+    node_service: NodeApplicationService
     report_service: ReportApplicationService
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
@@ -164,7 +185,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     await database.create_schema()
 
     registry = ToolRegistry(settings.tools_config_path, node_id=settings.node_id)
-    await registry.refresh()
+    tool_snapshot = await registry.refresh()
 
     temporal_config = TemporalRuntimeConfig(
         task_queue=settings.temporal_task_queue,
@@ -185,11 +206,37 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    node_repository = SQLAlchemyNodeRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    node_service = NodeApplicationService(
+        node_repository,
+        offline_after=timedelta(seconds=settings.node_offline_after_seconds),
+        lost_after=timedelta(seconds=settings.node_lost_after_seconds),
+    )
+    await node_service.register(
+        NodeRegistration(
+            node_id=settings.node_id,
+            name=platform.node() or settings.node_id,
+            platform=platform.system().lower() or os.name,
+            architecture=platform.machine() or "unknown",
+            runner_version=__version__,
+            capabilities=tuple(
+                sorted(
+                    {
+                        capability
+                        for tool_id, definition in tool_snapshot.definitions.items()
+                        if tool_snapshot.states[tool_id].availability.value == "available"
+                        for capability in definition.capabilities
+                    }
+                )
+            ),
+            labels={"mode": "local"},
+        )
+    )
     runner_paths = RunnerPaths(settings.runner_state_path)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
@@ -220,6 +267,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             run_repository=run_repository,
             event_repository=event_repository,
         ),
+        node_service=node_service,
         finding_service=FindingApplicationService(
             run_repository=run_repository,
             finding_repository=finding_repository,

@@ -61,6 +61,7 @@ class NodeStatus(StrEnum):
     ONLINE = "online"
     OFFLINE = "offline"
     DEGRADED = "degraded"
+    LOST = "lost"
     UNKNOWN = "unknown"
 
 

@@ -13,6 +13,9 @@ const NewRunPage = lazy(() =>
 const RunDetailPage = lazy(() =>
   import("./pages/RunDetailPage").then((module) => ({ default: module.RunDetailPage })),
 );
+const NodesPage = lazy(() =>
+  import("./pages/NodesPage").then((module) => ({ default: module.NodesPage })),
+);
 const ToolsPage = lazy(() =>
   import("./pages/ToolsPage").then((module) => ({ default: module.ToolsPage })),
 );
@@ -28,6 +31,7 @@ export function App() {
           <Route index element={<DashboardPage />} />
           <Route path="runs/new" element={<NewRunPage />} />
           <Route path="runs/:runId" element={<RunDetailPage />} />
+          <Route path="nodes" element={<NodesPage />} />
           <Route path="tools" element={<ToolsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

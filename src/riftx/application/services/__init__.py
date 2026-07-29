@@ -14,6 +14,7 @@ from .artifacts import (
 )
 from .events import EventApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
+from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
 from .reports import (
     DeterministicReportComposer,
     GenerateReports,
@@ -39,6 +40,9 @@ __all__ = [
     "EventApplicationService",
     "CreateFinding",
     "FindingApplicationService",
+    "NodeApplicationService",
+    "NodeHeartbeat",
+    "NodeRegistration",
     "RegisteredToolView",
     "RegisterArtifact",
     "RegisterArtifactContent",
