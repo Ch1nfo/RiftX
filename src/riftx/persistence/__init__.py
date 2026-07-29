@@ -11,6 +11,8 @@ from .repositories import (
     SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
+    SQLAlchemyRunnerCommandRepository,
+    SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
@@ -25,6 +27,8 @@ __all__ = [
     "SQLAlchemyFindingRepository",
     "SQLAlchemyNodeRepository",
     "SQLAlchemyReportRepository",
+    "SQLAlchemyRunnerCommandRepository",
+    "SQLAlchemyRunnerCredentialRepository",
     "SQLAlchemyRunEventRepository",
     "SQLAlchemyRunRepository",
     "SQLAlchemyTerminalRepository",

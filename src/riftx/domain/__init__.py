@@ -16,6 +16,8 @@ from .enums import (
     MessageRole,
     NodeStatus,
     ReportFormat,
+    RunnerCommandKind,
+    RunnerCommandStatus,
     RunStatus,
     TerminalOwner,
     TerminalStatus,
@@ -29,6 +31,7 @@ from .message import AgentCheckpoint, AgentMessage
 from .node import Node
 from .report import Report
 from .run import EntryPoint, Objective, Run, Scope, SuccessCriterion
+from .runner import RunnerCommand, RunnerCredential
 from .skill import Skill
 from .tool import Tool, ToolState
 
@@ -61,6 +64,10 @@ __all__ = [
     "Objective",
     "Report",
     "ReportFormat",
+    "RunnerCommand",
+    "RunnerCommandKind",
+    "RunnerCommandStatus",
+    "RunnerCredential",
     "Run",
     "RunEvent",
     "RunStatus",

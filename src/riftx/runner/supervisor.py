@@ -55,7 +55,7 @@ class ProcessSupervisor:
         self._managed: dict[str, _ManagedExecution] = {}
 
     async def start(self, request: ExecutionLaunchRequest) -> Execution:
-        execution_id = new_id()
+        execution_id = request.execution_id or new_id()
         self._paths.ensure_run_layout(request.run_id)
         output_paths = self._paths.execution(request.run_id, execution_id)
         execution = Execution(
@@ -173,6 +173,19 @@ class ProcessSupervisor:
                 await self._repository.save(execution)
             recovered.append(execution)
         return recovered
+
+    async def reconcile(self, execution_id: str) -> Execution:
+        """Refresh a recovered execution that is no longer a child of this process."""
+
+        execution = await self.get(execution_id)
+        if (
+            execution.status in {ExecutionStatus.STARTING, ExecutionStatus.RUNNING}
+            and execution.id not in self._managed
+            and not await self._inspector.matches(execution)
+        ):
+            execution.transition_to(ExecutionStatus.LOST)
+            await self._repository.save(execution)
+        return execution
 
     async def close(self, *, cancel_running: bool = False) -> None:
         managed = list(self._managed.items())

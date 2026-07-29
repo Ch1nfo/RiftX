@@ -6,6 +6,7 @@ import asyncio
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +23,21 @@ from riftx.application.services import (
     NodeApplicationService,
     ReportApplicationService,
     RunApplicationService,
+    RunnerControlService,
     TerminalApplicationService,
     ToolApplicationService,
 )
-from riftx.domain import Approval, Finding, FindingSeverity, RunStatus, ToolCall
+from riftx.domain import (
+    Approval,
+    Execution,
+    ExecutionStatus,
+    ExecutorType,
+    Finding,
+    FindingSeverity,
+    RunnerCommandKind,
+    RunStatus,
+    ToolCall,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -36,6 +48,8 @@ from riftx.persistence import (
     SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
+    SQLAlchemyRunnerCommandRepository,
+    SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
@@ -88,6 +102,7 @@ class RuntimeFixture:
     artifact_repository: SQLAlchemyArtifactRepository
     report_repository: SQLAlchemyReportRepository
     run_repository: SQLAlchemyRunRepository
+    execution_repository: SQLAlchemyExecutionRepository
 
 
 async def _build_runtime(
@@ -125,6 +140,9 @@ tools:
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
+    runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
+    node_service = NodeApplicationService(node_repository)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
         execution_repository=execution_repository,
@@ -140,6 +158,8 @@ tools:
         runner_state_path=tmp_path / "runner",
         sse_poll_interval_seconds=0.001,
         sse_heartbeat_seconds=0.005,
+        runner_registration_token="test-bootstrap",
+        runner_command_lease_seconds=0.05,
     )
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
@@ -163,7 +183,16 @@ tools:
                 run_repository=run_repository,
                 event_repository=event_repository,
             ),
-            node_service=NodeApplicationService(node_repository),
+            node_service=node_service,
+            runner_control_service=RunnerControlService(
+                credentials=runner_credential_repository,
+                commands=runner_command_repository,
+                nodes=node_service,
+                executions=execution_repository,
+                paths=RunnerPaths(settings.runner_state_path),
+                registration_token=settings.runner_registration_token,
+                lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
+            ),
             finding_service=FindingApplicationService(
                 run_repository=run_repository,
                 finding_repository=finding_repository,
@@ -199,6 +228,7 @@ tools:
         artifact_repository=artifact_repository,
         report_repository=report_repository,
         run_repository=run_repository,
+        execution_repository=execution_repository,
     )
 
 
@@ -1024,8 +1054,33 @@ async def test_reports_generate_list_get_and_link_finding_evidence(tmp_path: Pat
 async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path) -> None:
     runtime = await _build_runtime(tmp_path)
     async for client in _client(runtime.control_plane):
+        missing_auth = await client.post(
+            "/api/v1/nodes/register",
+            json={
+                "node_id": "missing-auth",
+                "name": "Missing Auth",
+                "platform": "linux",
+                "architecture": "x86_64",
+            },
+        )
+        assert missing_auth.status_code == 401
+
+        denied = await client.post(
+            "/api/v1/nodes/register",
+            headers={"Authorization": "Bearer wrong"},
+            json={
+                "node_id": "windows-a",
+                "name": "Windows Runner A",
+                "platform": "windows",
+                "architecture": "amd64",
+            },
+        )
+        assert denied.status_code == 401
+        assert denied.json()["error"]["code"] == "runner_registration_denied"
+
         registered = await client.post(
             "/api/v1/nodes/register",
+            headers={"Authorization": "Bearer test-bootstrap"},
             json={
                 "node_id": "windows-a",
                 "name": "Windows Runner A",
@@ -1039,9 +1094,11 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
         assert registered.status_code == 200
         assert registered.json()["created"] is True
         assert registered.json()["node"]["status"] == "online"
+        first_token = registered.json()["runner_token"]
 
         repeated = await client.post(
             "/api/v1/nodes/register",
+            headers={"Authorization": "Bearer test-bootstrap"},
             json={
                 "node_id": "windows-a",
                 "name": "Windows Runner Primary",
@@ -1053,9 +1110,29 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
         )
         assert repeated.status_code == 200
         assert repeated.json()["created"] is False
+        runner_token = repeated.json()["runner_token"]
+        assert runner_token != first_token
+
+        stale_token = await client.post(
+            "/api/v1/nodes/windows-a/heartbeat",
+            headers={"Authorization": f"Bearer {first_token}"},
+            json={},
+        )
+        assert stale_token.status_code == 401
+
+        runner_headers = {
+            "Authorization": f"Bearer {runner_token}",
+            "X-RiftX-Node-ID": "windows-a",
+        }
+        unauthenticated_heartbeat = await client.post(
+            "/api/v1/nodes/windows-a/heartbeat",
+            json={},
+        )
+        assert unauthenticated_heartbeat.status_code == 401
 
         invalid_heartbeat = await client.post(
             "/api/v1/nodes/windows-a/heartbeat",
+            headers=runner_headers,
             json={"status": "offline"},
         )
         assert invalid_heartbeat.status_code == 422
@@ -1063,6 +1140,7 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
 
         heartbeat = await client.post(
             "/api/v1/nodes/windows-a/heartbeat",
+            headers=runner_headers,
             json={"status": "degraded", "labels": {"load": "high"}},
         )
         assert heartbeat.status_code == 200
@@ -1080,4 +1158,176 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
         missing = await client.get("/api/v1/nodes/missing")
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "node_not_found"
+    await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    async for client in _client(runtime.control_plane):
+        registration = await client.post(
+            "/api/v1/nodes/register",
+            headers={"Authorization": "Bearer test-bootstrap"},
+            json={
+                "node_id": "runner-a",
+                "name": "Runner A",
+                "platform": "linux",
+                "architecture": "x86_64",
+            },
+        )
+        token = registration.json()["runner_token"]
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-RiftX-Node-ID": "runner-a",
+        }
+        other_registration = await client.post(
+            "/api/v1/nodes/register",
+            headers={"Authorization": "Bearer test-bootstrap"},
+            json={
+                "node_id": "runner-b",
+                "name": "Runner B",
+                "platform": "linux",
+                "architecture": "x86_64",
+            },
+        )
+        other_headers = {
+            "Authorization": f"Bearer {other_registration.json()['runner_token']}",
+            "X-RiftX-Node-ID": "runner-b",
+        }
+        run_response = await client.post(
+            "/api/v1/runs",
+            json={
+                "objective": "Remote execution channel test",
+                "node_id": "runner-a",
+                "engagement": {"name": "Authorized remote test"},
+            },
+        )
+        assert run_response.status_code == 201
+        run = run_response.json()
+        paths = RunnerPaths(runtime.control_plane.settings.runner_state_path)
+        output_paths = paths.execution(str(run["id"]), "execution-remote")
+        execution = Execution(
+            id="execution-remote",
+            execution_key="remote-key",
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            executor_type=ExecutorType.PROCESS,
+            argv=["echo", "hello"],
+            cwd=str(run["workspace_path"]),
+            stdout_path=str(output_paths.stdout),
+            stderr_path=str(output_paths.stderr),
+        )
+        execution.transition_to(ExecutionStatus.STARTING)
+        _, created = await runtime.execution_repository.create_if_absent(execution)
+        assert created is True
+
+        command, command_created = await runtime.control_plane.runner_control_service.enqueue(
+            "runner-a",
+            kind=RunnerCommandKind.EXECUTE,
+            idempotency_key="execute:remote-key",
+            payload={"execution_id": execution.id, "argv": execution.argv},
+        )
+        repeated, repeated_created = await runtime.control_plane.runner_control_service.enqueue(
+            "runner-a",
+            kind=RunnerCommandKind.EXECUTE,
+            idempotency_key="execute:remote-key",
+            payload={"execution_id": execution.id, "argv": ["ignored"]},
+        )
+        assert command_created is True
+        assert repeated_created is False
+        assert repeated.id == command.id
+
+        leased = await client.get("/api/v1/runner/commands/next", headers=headers)
+        leased_command = leased.json()["command"]
+        assert leased_command["id"] == command.id
+        assert leased_command["kind"] == "execute"
+        first_lease = leased_command["lease_id"]
+
+        await asyncio.sleep(0.06)
+        re_leased = await client.get("/api/v1/runner/commands/next", headers=headers)
+        re_leased_command = re_leased.json()["command"]
+        assert re_leased_command["id"] == command.id
+        assert re_leased_command["attempts"] == 2
+        assert re_leased_command["lease_id"] != first_lease
+
+        stale_finish = await client.post(
+            f"/api/v1/runner/commands/{command.id}/finish",
+            headers=headers,
+            json={"lease_id": first_lease, "succeeded": True},
+        )
+        assert stale_finish.status_code == 409
+
+        running = await client.post(
+            f"/api/v1/runner/executions/{execution.id}/status",
+            headers=headers,
+            json={"status": "running", "pid": 4242, "process_group_id": 4242},
+        )
+        assert running.status_code == 200
+        assert running.json()["status"] == "running"
+
+        cross_node_status = await client.post(
+            f"/api/v1/runner/executions/{execution.id}/status",
+            headers=other_headers,
+            json={"status": "running", "pid": 4243},
+        )
+        assert cross_node_status.status_code == 401
+        assert cross_node_status.json()["error"]["code"] == ("runner_execution_scope_mismatch")
+
+        output = await client.post(
+            f"/api/v1/runner/executions/{execution.id}/output",
+            headers=headers,
+            json={"stream": "stdout", "offset": 0, "data": "aGVsbG8K"},
+        )
+        assert output.status_code == 200
+        assert output.json()["next_offset"] == 6
+        assert output_paths.stdout.read_bytes() == b"hello\n"
+
+        replay = await client.post(
+            f"/api/v1/runner/executions/{execution.id}/output",
+            headers=headers,
+            json={"stream": "stdout", "offset": 0, "data": "aGVsbG8K"},
+        )
+        assert replay.status_code == 409
+        assert replay.json()["error"]["code"] == "runner_output_offset_mismatch"
+
+        exited = await client.post(
+            f"/api/v1/runner/executions/{execution.id}/status",
+            headers=headers,
+            json={"status": "exited", "exit_code": 0},
+        )
+        assert exited.status_code == 200
+        assert exited.json()["exit_code"] == 0
+
+        oversized_result = await client.post(
+            f"/api/v1/runner/commands/{command.id}/finish",
+            headers=headers,
+            json={
+                "lease_id": re_leased_command["lease_id"],
+                "succeeded": True,
+                "result": {"value": "x" * (64 * 1024)},
+            },
+        )
+        assert oversized_result.status_code == 409
+        assert oversized_result.json()["error"]["code"] == "runner_result_too_large"
+
+        finished = await client.post(
+            f"/api/v1/runner/commands/{command.id}/finish",
+            headers=headers,
+            json={
+                "lease_id": re_leased_command["lease_id"],
+                "succeeded": True,
+                "result": {"execution_id": execution.id},
+            },
+        )
+        assert finished.status_code == 200
+        assert finished.json()["status"] == "completed"
+
+        empty = await client.get(
+            "/api/v1/runner/commands/next?wait_seconds=0.01",
+            headers=headers,
+        )
+        assert empty.status_code == 200
+        assert empty.json()["command"] is None
     await runtime.control_plane.close()

@@ -65,6 +65,23 @@ class NodeStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class RunnerCommandKind(StrEnum):
+    EXECUTE = "execute"
+    CANCEL = "cancel"
+    TERMINAL_START = "terminal_start"
+    TERMINAL_WRITE = "terminal_write"
+    TERMINAL_RESIZE = "terminal_resize"
+    TERMINAL_INTERRUPT = "terminal_interrupt"
+    TERMINAL_CLOSE = "terminal_close"
+
+
+class RunnerCommandStatus(StrEnum):
+    PENDING = "pending"
+    LEASED = "leased"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class AgentStepStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"

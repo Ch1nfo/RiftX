@@ -14,6 +14,7 @@ class ExecutionLaunchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_key: str = Field(min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
     run_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
     executor_type: ExecutorType

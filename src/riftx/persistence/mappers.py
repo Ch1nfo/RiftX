@@ -24,6 +24,10 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunnerCommand,
+    RunnerCommandKind,
+    RunnerCommandStatus,
+    RunnerCredential,
     RunStatus,
     Scope,
     SuccessCriterion,
@@ -43,6 +47,8 @@ from .orm import (
     NodeRecord,
     ReportRecord,
     RunEventRecord,
+    RunnerCommandRecord,
+    RunnerCredentialRecord,
     RunRecord,
     TerminalSessionRecord,
     ToolCallRecord,
@@ -142,6 +148,76 @@ def engagement_from_record(record: EngagementRecord) -> Engagement:
         authorization_reference=record.authorization_reference,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+def runner_credential_to_record(credential: RunnerCredential) -> RunnerCredentialRecord:
+    return RunnerCredentialRecord(
+        node_id=credential.node_id,
+        token_hash=credential.token_hash,
+        token_prefix=credential.token_prefix,
+        created_at=credential.created_at,
+        rotated_at=credential.rotated_at,
+        revoked_at=credential.revoked_at,
+    )
+
+
+def apply_runner_credential_to_record(
+    credential: RunnerCredential,
+    record: RunnerCredentialRecord,
+) -> None:
+    record.token_hash = credential.token_hash
+    record.token_prefix = credential.token_prefix
+    record.rotated_at = credential.rotated_at
+    record.revoked_at = credential.revoked_at
+
+
+def runner_credential_from_record(record: RunnerCredentialRecord) -> RunnerCredential:
+    return RunnerCredential(
+        node_id=record.node_id,
+        token_hash=record.token_hash,
+        token_prefix=record.token_prefix,
+        created_at=record.created_at,
+        rotated_at=record.rotated_at,
+        revoked_at=record.revoked_at,
+    )
+
+
+def runner_command_to_record(command: RunnerCommand) -> RunnerCommandRecord:
+    return RunnerCommandRecord(
+        id=command.id,
+        node_id=command.node_id,
+        kind=command.kind.value,
+        idempotency_key=command.idempotency_key,
+        payload_json=command.payload,
+        status=command.status.value,
+        attempts=command.attempts,
+        lease_id=command.lease_id,
+        lease_expires_at=command.lease_expires_at,
+        result_json=command.result,
+        error=command.error,
+        created_at=command.created_at,
+        updated_at=command.updated_at,
+        completed_at=command.completed_at,
+    )
+
+
+def runner_command_from_record(record: RunnerCommandRecord) -> RunnerCommand:
+    return RunnerCommand(
+        id=record.id,
+        node_id=record.node_id,
+        kind=RunnerCommandKind(record.kind),
+        idempotency_key=record.idempotency_key,
+        payload=record.payload_json or {},
+        status=RunnerCommandStatus(record.status),
+        attempts=record.attempts,
+        lease_id=record.lease_id,
+        lease_expires_at=record.lease_expires_at,
+        result=record.result_json or {},
+        error=record.error,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        completed_at=record.completed_at,
     )
 
 

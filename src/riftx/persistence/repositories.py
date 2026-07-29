@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,6 +27,9 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunnerCommand,
+    RunnerCommandStatus,
+    RunnerCredential,
     RunStatus,
     TerminalSession,
     TerminalStatus,
@@ -39,6 +43,7 @@ from .mappers import (
     apply_finding_to_record,
     apply_node_to_record,
     apply_run_to_record,
+    apply_runner_credential_to_record,
     apply_terminal_to_record,
     approval_from_record,
     approval_grant_from_record,
@@ -60,6 +65,10 @@ from .mappers import (
     report_to_record,
     run_from_record,
     run_to_record,
+    runner_command_from_record,
+    runner_command_to_record,
+    runner_credential_from_record,
+    runner_credential_to_record,
     terminal_from_record,
     terminal_to_record,
     tool_call_from_record,
@@ -75,6 +84,8 @@ from .orm import (
     NodeRecord,
     ReportRecord,
     RunEventRecord,
+    RunnerCommandRecord,
+    RunnerCredentialRecord,
     RunRecord,
     TerminalSessionRecord,
     ToolCallRecord,
@@ -187,6 +198,148 @@ class SQLAlchemyNodeRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [node_from_record(record) for record in records]
+
+
+class SQLAlchemyRunnerCredentialRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def get(self, node_id: str) -> RunnerCredential | None:
+        async with self._session_factory() as session:
+            record = await session.get(RunnerCredentialRecord, node_id)
+        return runner_credential_from_record(record) if record is not None else None
+
+    async def save(self, credential: RunnerCredential) -> RunnerCredential:
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(RunnerCredentialRecord, credential.node_id)
+            if record is None:
+                session.add(runner_credential_to_record(credential))
+            else:
+                apply_runner_credential_to_record(credential, record)
+            await session.flush()
+        return credential
+
+
+class SQLAlchemyRunnerCommandRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def enqueue(self, command: RunnerCommand) -> tuple[RunnerCommand, bool]:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(runner_command_to_record(command))
+                await session.flush()
+            return command, True
+        except IntegrityError as exc:
+            statement = select(RunnerCommandRecord).where(
+                RunnerCommandRecord.node_id == command.node_id,
+                RunnerCommandRecord.idempotency_key == command.idempotency_key,
+            )
+            async with self._session_factory() as session:
+                existing = await session.scalar(statement)
+            if existing is not None:
+                return runner_command_from_record(existing), False
+            raise RepositoryConflictError(
+                f"could not enqueue runner command {command.id!r}"
+            ) from exc
+
+    async def get(self, command_id: str) -> RunnerCommand | None:
+        async with self._session_factory() as session:
+            record = await session.get(RunnerCommandRecord, command_id)
+        return runner_command_from_record(record) if record is not None else None
+
+    async def lease_next(
+        self,
+        node_id: str,
+        *,
+        lease_id: str,
+        leased_until: datetime,
+        now: datetime,
+    ) -> RunnerCommand | None:
+        if leased_until <= now:
+            raise ValueError("leased_until must be later than now")
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                update(RunnerCommandRecord)
+                .where(
+                    RunnerCommandRecord.node_id == node_id,
+                    RunnerCommandRecord.status == RunnerCommandStatus.LEASED.value,
+                    RunnerCommandRecord.lease_expires_at <= now,
+                )
+                .values(
+                    status=RunnerCommandStatus.PENDING.value,
+                    lease_id=None,
+                    lease_expires_at=None,
+                    updated_at=now,
+                )
+            )
+
+            candidate_id = await session.scalar(
+                select(RunnerCommandRecord.id)
+                .where(
+                    RunnerCommandRecord.node_id == node_id,
+                    RunnerCommandRecord.status == RunnerCommandStatus.PENDING.value,
+                )
+                .order_by(RunnerCommandRecord.created_at, RunnerCommandRecord.id)
+                .limit(1)
+            )
+            if candidate_id is None:
+                return None
+            claimed = await session.execute(
+                update(RunnerCommandRecord)
+                .where(
+                    RunnerCommandRecord.id == candidate_id,
+                    RunnerCommandRecord.status == RunnerCommandStatus.PENDING.value,
+                )
+                .values(
+                    status=RunnerCommandStatus.LEASED.value,
+                    lease_id=lease_id,
+                    lease_expires_at=leased_until,
+                    attempts=RunnerCommandRecord.attempts + 1,
+                    updated_at=now,
+                )
+            )
+            if claimed.rowcount != 1:  # type: ignore[attr-defined]
+                return None
+            record = await session.get(RunnerCommandRecord, candidate_id)
+            if record is None:
+                raise EntityNotFoundError("RunnerCommand", candidate_id)
+            command = runner_command_from_record(record)
+        return command
+
+    async def finish(
+        self,
+        command_id: str,
+        *,
+        lease_id: str,
+        status: RunnerCommandStatus,
+        result: dict[str, object],
+        error: str,
+        completed_at: datetime,
+    ) -> RunnerCommand:
+        if status not in {RunnerCommandStatus.COMPLETED, RunnerCommandStatus.FAILED}:
+            raise ValueError("runner command final status must be completed or failed")
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(RunnerCommandRecord, command_id, with_for_update=True)
+            if record is None:
+                raise EntityNotFoundError("RunnerCommand", command_id)
+            if record.status in {
+                RunnerCommandStatus.COMPLETED.value,
+                RunnerCommandStatus.FAILED.value,
+            }:
+                if record.lease_id == lease_id:
+                    return runner_command_from_record(record)
+                raise RepositoryConflictError("runner command was already completed")
+            if record.status != RunnerCommandStatus.LEASED.value or record.lease_id != lease_id:
+                raise RepositoryConflictError("runner command lease does not match")
+            record.status = status.value
+            record.result_json = result
+            record.error = error
+            record.updated_at = completed_at
+            record.completed_at = completed_at
+            await session.flush()
+            command = runner_command_from_record(record)
+        return command
 
 
 class SQLAlchemyRunRepository:

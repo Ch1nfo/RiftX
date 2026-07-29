@@ -40,3 +40,7 @@ class ApplicationConflictError(ApplicationServiceError):
 
 class ServiceUnavailableError(ApplicationServiceError):
     """A required infrastructure service is currently unavailable."""
+
+
+class AuthenticationError(ApplicationServiceError):
+    """Runner or registration credentials were missing or invalid."""

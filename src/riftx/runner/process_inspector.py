@@ -35,13 +35,16 @@ def _pid_exists(pid: int) -> bool:
 
 
 def _read_posix_command(pid: int) -> str | None:
-    completed = subprocess.run(
-        ["ps", "-o", "command=", "-p", str(pid)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=2,
-    )
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     if completed.returncode != 0:
         return None
     command = completed.stdout.strip()

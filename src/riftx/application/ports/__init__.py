@@ -8,6 +8,8 @@ from .repositories import (
     FindingRepository,
     ReportRepository,
     RunEventRepository,
+    RunnerCommandRepository,
+    RunnerCredentialRepository,
     RunRepository,
     TerminalRepository,
 )
@@ -19,6 +21,8 @@ __all__ = [
     "ExecutionRepository",
     "FindingRepository",
     "ReportRepository",
+    "RunnerCommandRepository",
+    "RunnerCredentialRepository",
     "RunEventRepository",
     "RunRepository",
     "TerminalRepository",

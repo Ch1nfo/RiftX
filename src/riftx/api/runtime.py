@@ -21,6 +21,7 @@ from riftx.application.services import (
     NodeRegistration,
     ReportApplicationService,
     RunApplicationService,
+    RunnerControlService,
     RunWorkflowClient,
     TerminalApplicationService,
     ToolApplicationService,
@@ -35,10 +36,13 @@ from riftx.persistence import (
     SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
+    SQLAlchemyRunnerCommandRepository,
+    SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
-from riftx.runner import RunnerPaths, TerminalSupervisor
+from riftx.runner import ExecutionRunner, ProcessSupervisor, RunnerPaths, TerminalSupervisor
+from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
 
@@ -61,6 +65,8 @@ class APISettings:
     sse_heartbeat_seconds: float = 15.0
     node_offline_after_seconds: float = 30.0
     node_lost_after_seconds: float = 300.0
+    runner_registration_token: str | None = None
+    runner_command_lease_seconds: float = 30.0
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -113,6 +119,13 @@ class APISettings:
                     str(defaults.node_lost_after_seconds),
                 )
             ),
+            runner_registration_token=os.getenv("RIFTX_RUNNER_REGISTRATION_TOKEN"),
+            runner_command_lease_seconds=float(
+                os.getenv(
+                    "RIFTX_RUNNER_COMMAND_LEASE_SECONDS",
+                    str(defaults.runner_command_lease_seconds),
+                )
+            ),
             cors_origins=tuple(
                 item.strip()
                 for item in os.getenv(
@@ -132,15 +145,20 @@ class ControlPlane:
     event_service: EventApplicationService
     finding_service: FindingApplicationService
     node_service: NodeApplicationService
+    runner_control_service: RunnerControlService
     report_service: ReportApplicationService
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
     artifact_service: ArtifactApplicationService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
+    process_supervisor: ProcessSupervisor | None = None
+    execution_runner: ExecutionRunner | None = None
 
     async def close(self) -> None:
         await self.terminal_supervisor.close_all()
+        if self.process_supervisor is not None:
+            await self.process_supervisor.close()
         await self.database.dispose()
 
 
@@ -212,6 +230,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
+    runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     node_service = NodeApplicationService(
         node_repository,
         offline_after=timedelta(seconds=settings.node_offline_after_seconds),
@@ -238,6 +258,15 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         )
     )
     runner_paths = RunnerPaths(settings.runner_state_path)
+    runner_control_service = RunnerControlService(
+        credentials=runner_credential_repository,
+        commands=runner_command_repository,
+        nodes=node_service,
+        executions=execution_repository,
+        paths=runner_paths,
+        registration_token=settings.runner_registration_token,
+        lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
+    )
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
         execution_repository=execution_repository,
@@ -245,6 +274,20 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         paths=runner_paths,
     )
     await terminal_supervisor.recover()
+    process_supervisor = ProcessSupervisor(execution_repository, runner_paths)
+    await process_supervisor.recover()
+    remote_supervisor = RemoteExecutionSupervisor(
+        execution_repository,
+        runner_paths,
+        runner_control_service,
+        node_service,
+    )
+    execution_runner = NodeExecutionRouter(
+        local_node_id=settings.node_id,
+        repository=execution_repository,
+        local=process_supervisor,
+        remote=remote_supervisor,
+    )
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
         execution_repository=execution_repository,
@@ -268,6 +311,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             event_repository=event_repository,
         ),
         node_service=node_service,
+        runner_control_service=runner_control_service,
         finding_service=FindingApplicationService(
             run_repository=run_repository,
             finding_repository=finding_repository,
@@ -296,6 +340,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             supervisor=terminal_supervisor,
         ),
         terminal_supervisor=terminal_supervisor,
+        process_supervisor=process_supervisor,
+        execution_runner=execution_runner,
     )
 
 

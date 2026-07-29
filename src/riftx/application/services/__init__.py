@@ -24,6 +24,11 @@ from .reports import (
     StructuredReport,
     render_report,
 )
+from .runner_control import (
+    ExecutionStatusReport,
+    RunnerControlService,
+    RunnerRegistrationResult,
+)
 from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflowClient
 from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
@@ -53,6 +58,9 @@ __all__ = [
     "DeterministicReportComposer",
     "GenerateReports",
     "render_report",
+    "RunnerControlService",
+    "RunnerRegistrationResult",
+    "ExecutionStatusReport",
     "RunApplicationService",
     "RunWorkflowClient",
     "ToolApplicationService",

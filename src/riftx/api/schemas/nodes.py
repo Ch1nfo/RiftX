@@ -68,6 +68,7 @@ class NodeResponse(BaseModel):
 class NodeRegistrationResponse(BaseModel):
     node: NodeResponse
     created: bool
+    runner_token: str
 
 
 class NodeListResponse(BaseModel):

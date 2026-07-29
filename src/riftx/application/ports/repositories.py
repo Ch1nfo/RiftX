@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 from riftx.domain import (
@@ -21,6 +22,9 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunnerCommand,
+    RunnerCommandStatus,
+    RunnerCredential,
     RunStatus,
     TerminalSession,
     ToolCall,
@@ -47,6 +51,38 @@ class NodeRepository(Protocol):
         limit: int = 1000,
         offset: int = 0,
     ) -> Sequence[Node]: ...
+
+
+class RunnerCredentialRepository(Protocol):
+    async def get(self, node_id: str) -> RunnerCredential | None: ...
+
+    async def save(self, credential: RunnerCredential) -> RunnerCredential: ...
+
+
+class RunnerCommandRepository(Protocol):
+    async def enqueue(self, command: RunnerCommand) -> tuple[RunnerCommand, bool]: ...
+
+    async def get(self, command_id: str) -> RunnerCommand | None: ...
+
+    async def lease_next(
+        self,
+        node_id: str,
+        *,
+        lease_id: str,
+        leased_until: datetime,
+        now: datetime,
+    ) -> RunnerCommand | None: ...
+
+    async def finish(
+        self,
+        command_id: str,
+        *,
+        lease_id: str,
+        status: RunnerCommandStatus,
+        result: dict[str, object],
+        error: str,
+        completed_at: datetime,
+    ) -> RunnerCommand: ...
 
 
 class RunRepository(Protocol):

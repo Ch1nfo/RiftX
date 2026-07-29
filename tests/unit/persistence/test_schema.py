@@ -12,6 +12,8 @@ EXPECTED_TABLES = {
     "findings",
     "nodes",
     "reports",
+    "runner_commands",
+    "runner_credentials",
     "run_events",
     "runs",
     "terminal_sessions",
@@ -67,3 +69,39 @@ def test_node_table_matches_runner_lifecycle_contract() -> None:
         "created_at",
         "updated_at",
     }
+
+
+def test_runner_control_tables_match_durable_channel_contract() -> None:
+    credentials = Base.metadata.tables["runner_credentials"]
+    assert set(credentials.columns.keys()) == {
+        "node_id",
+        "token_hash",
+        "token_prefix",
+        "created_at",
+        "rotated_at",
+        "revoked_at",
+    }
+
+    commands = Base.metadata.tables["runner_commands"]
+    assert set(commands.columns.keys()) == {
+        "id",
+        "node_id",
+        "kind",
+        "idempotency_key",
+        "payload_json",
+        "status",
+        "attempts",
+        "lease_id",
+        "lease_expires_at",
+        "result_json",
+        "error",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    }
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in commands.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("node_id", "idempotency_key") in unique_columns

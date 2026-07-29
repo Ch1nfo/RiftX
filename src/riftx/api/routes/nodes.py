@@ -2,12 +2,13 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Header, Query
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
 from riftx.domain import NodeStatus
 
-from ..dependencies import NodeServiceDependency
+from ..auth import bearer_token
+from ..dependencies import NodeServiceDependency, RunnerControlServiceDependency
 from ..schemas import (
     ErrorResponse,
     HeartbeatNodeRequest,
@@ -23,13 +24,14 @@ router = APIRouter(prefix="/nodes", tags=["nodes"])
 @router.post(
     "/register",
     response_model=NodeRegistrationResponse,
-    responses={422: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
 async def register_node(
     payload: RegisterNodeRequest,
-    service: NodeServiceDependency,
+    service: RunnerControlServiceDependency,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> NodeRegistrationResponse:
-    node, created = await service.register(
+    result = await service.register(
         NodeRegistration(
             node_id=payload.node_id,
             name=payload.name,
@@ -38,23 +40,34 @@ async def register_node(
             runner_version=payload.runner_version,
             capabilities=tuple(payload.capabilities),
             labels=payload.labels,
-        )
+        ),
+        bootstrap_token=bearer_token(authorization),
     )
-    return NodeRegistrationResponse(node=NodeResponse.from_domain(node), created=created)
+    return NodeRegistrationResponse(
+        node=NodeResponse.from_domain(result.node),
+        created=result.created,
+        runner_token=result.token,
+    )
 
 
 @router.post(
     "/{node_id}/heartbeat",
     response_model=NodeResponse,
-    responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
 )
 async def heartbeat_node(
     node_id: str,
     payload: HeartbeatNodeRequest,
-    service: NodeServiceDependency,
+    service: RunnerControlServiceDependency,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> NodeResponse:
     node = await service.heartbeat(
         node_id,
+        bearer_token(authorization),
         NodeHeartbeat(
             status=payload.status,
             capabilities=(

@@ -10,7 +10,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from riftx.domain import ApprovalLevel, ExecutionStatus
-from riftx.runner import ProcessSupervisor
+from riftx.runner import ExecutionRunner
 from riftx.tools import ToolRegistry
 
 
@@ -20,7 +20,7 @@ class SkillContext:
     node_id: str
     agent_step_id: str
     cwd: Path
-    supervisor: ProcessSupervisor
+    supervisor: ExecutionRunner
     tool_registry: ToolRegistry
     node_environment: dict[str, str | None] = field(default_factory=dict)
     run_environment: dict[str, str | None] = field(default_factory=dict)

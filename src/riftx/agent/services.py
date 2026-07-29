@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from riftx.application.ports import ApprovalRepository, FindingRepository, RunEventRepository
 from riftx.application.services import FindingApplicationService
-from riftx.runner import ProcessSupervisor
+from riftx.runner import ExecutionRunner
 from riftx.skills import SkillRegistry
 from riftx.tools import ToolRegistry
 
@@ -15,7 +15,7 @@ from riftx.tools import ToolRegistry
 class AgentRuntimeServices:
     tool_registry: ToolRegistry
     skill_registry: SkillRegistry
-    supervisor: ProcessSupervisor
+    supervisor: ExecutionRunner
     finding_repository: FindingRepository
     event_repository: RunEventRepository
     finding_service: FindingApplicationService

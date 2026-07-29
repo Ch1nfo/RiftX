@@ -32,6 +32,7 @@ dependencies = [
 
 [project.scripts]
 riftx = "riftx.cli.app:app"
+riftx-runner = "riftx.runner.daemon:app"
 
 [project.optional-dependencies]
 dev = [

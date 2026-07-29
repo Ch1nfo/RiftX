@@ -29,7 +29,7 @@ from riftx.application.services import (
     ReportApplicationService,
 )
 from riftx.domain import ReportFormat, Run, RunStatus
-from riftx.runner import ProcessSupervisor
+from riftx.runner import ExecutionRunner
 from riftx.tools import ToolRegistry
 
 from .models import (
@@ -67,7 +67,7 @@ class RiftXActivities:
         event_repository: RunEventRepository,
         execution_repository: ExecutionRepository,
         tool_registry: ToolRegistry,
-        supervisor: ProcessSupervisor,
+        supervisor: ExecutionRunner,
         agent_cycle: AgentCycleRunner,
         approval_recorder: ApprovalRequestRecorder,
         report_service: ReportApplicationService,
