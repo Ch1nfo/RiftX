@@ -109,6 +109,48 @@ class APIClient:
             params={"after_sequence": after_sequence, "limit": limit},
         )
 
+    def register_artifact(
+        self,
+        run_id: str,
+        source_path: str,
+        *,
+        name: str | None = None,
+        mime_type: str | None = None,
+        description: str = "",
+        execution_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, object] = {
+            "source_path": source_path,
+            "description": description,
+        }
+        if name is not None:
+            payload["name"] = name
+        if mime_type is not None:
+            payload["mime_type"] = mime_type
+        if execution_id is not None:
+            payload["execution_id"] = execution_id
+        return self._json("POST", f"/api/v1/runs/{run_id}/artifacts", json=payload)
+
+    def list_artifacts(
+        self,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        params: dict[str, object] = {"limit": limit, "offset": offset}
+        if execution_id is not None:
+            params["execution_id"] = execution_id
+        return self._json(
+            "GET",
+            f"/api/v1/runs/{run_id}/artifacts",
+            params=params,
+        )
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/artifacts/{artifact_id}")
+
     def stream_events(
         self,
         run_id: str,

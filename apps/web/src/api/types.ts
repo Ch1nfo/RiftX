@@ -186,6 +186,33 @@ export interface FindingList {
   offset: number;
 }
 
+export interface Artifact {
+  id: string;
+  run_id: string;
+  execution_id: string | null;
+  name: string;
+  mime_type: string;
+  sha256: string;
+  size: number;
+  description: string;
+  created_at: string;
+  content_url: string;
+}
+
+export interface ArtifactList {
+  items: Artifact[];
+  limit: number;
+  offset: number;
+}
+
+export interface RegisterArtifactPayload {
+  source_path: string;
+  name?: string;
+  mime_type?: string;
+  description?: string;
+  execution_id?: string;
+}
+
 export interface APIErrorEnvelope {
   error: {
     code: string;

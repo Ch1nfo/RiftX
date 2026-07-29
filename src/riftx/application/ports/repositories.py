@@ -9,6 +9,7 @@ from riftx.domain import (
     Approval,
     ApprovalGrant,
     ApprovalStatus,
+    Artifact,
     Engagement,
     Execution,
     Finding,
@@ -119,6 +120,21 @@ class TerminalRepository(Protocol):
     async def save(self, terminal: TerminalSession) -> TerminalSession: ...
 
     async def list_open(self) -> Sequence[TerminalSession]: ...
+
+
+class ArtifactRepository(Protocol):
+    async def create(self, artifact: Artifact) -> Artifact: ...
+
+    async def get(self, artifact_id: str) -> Artifact | None: ...
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]: ...
 
 
 class FindingRepository(Protocol):

@@ -7,6 +7,7 @@ from .approvals import (
     ApprovalWorkflowClient,
     DecideApproval,
 )
+from .artifacts import ArtifactApplicationService, RegisterArtifact
 from .events import EventApplicationService
 from .findings import FindingApplicationService
 from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflowClient
@@ -18,12 +19,14 @@ __all__ = [
     "ApprovalInterruption",
     "ApprovalRequestRecorder",
     "ApprovalWorkflowClient",
+    "ArtifactApplicationService",
     "CreateEngagement",
     "CreateRun",
     "DecideApproval",
     "EventApplicationService",
     "FindingApplicationService",
     "RegisteredToolView",
+    "RegisterArtifact",
     "RunApplicationService",
     "RunWorkflowClient",
     "ToolApplicationService",

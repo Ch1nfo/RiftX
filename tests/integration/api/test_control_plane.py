@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from riftx.api import APISettings, ControlPlane, create_app
 from riftx.application.services import (
     ApprovalApplicationService,
+    ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
@@ -26,6 +27,7 @@ from riftx.domain import Approval, Finding, FindingSeverity, ToolCall
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -79,6 +81,7 @@ class RuntimeFixture:
     workflow: FakeWorkflowClient
     finding_repository: SQLAlchemyFindingRepository
     approval_repository: SQLAlchemyApprovalRepository
+    artifact_repository: SQLAlchemyArtifactRepository
 
 
 async def _build_runtime(
@@ -110,6 +113,7 @@ tools:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
@@ -125,6 +129,7 @@ tools:
         database_url=database.url,
         tools_config_path=tools_path,
         workspace_root=tmp_path / "workspaces",
+        runner_state_path=tmp_path / "runner",
         sse_poll_interval_seconds=0.001,
         sse_heartbeat_seconds=0.005,
     )
@@ -154,6 +159,13 @@ tools:
                 event_repository=event_repository,
                 workflow_client=workflow_client,
             ),
+            artifact_service=ArtifactApplicationService(
+                run_repository=run_repository,
+                execution_repository=execution_repository,
+                artifact_repository=artifact_repository,
+                event_repository=event_repository,
+                paths=RunnerPaths(settings.runner_state_path),
+            ),
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_supervisor,
@@ -163,6 +175,7 @@ tools:
         workflow=workflow_client,
         finding_repository=finding_repository,
         approval_repository=approval_repository,
+        artifact_repository=artifact_repository,
     )
 
 
@@ -660,3 +673,145 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
                 assert error["code"] == "terminal_session_not_found"
     finally:
         asyncio.run(runtime.control_plane.close())
+
+
+@pytest.mark.asyncio
+async def test_artifact_registration_snapshots_and_recovers_content(tmp_path: Path) -> None:
+    database_path = tmp_path / "artifact.db"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    artifact_id = ""
+    run_id = ""
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            source = Path(str(created["workspace_path"])) / "scan output.txt"
+            source.write_text("original evidence\n")
+
+            response = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={
+                    "source_path": str(source),
+                    "name": "scan.txt",
+                    "description": "Service scan output",
+                },
+            )
+            assert response.status_code == 201
+            artifact = response.json()
+            artifact_id = str(artifact["id"])
+            assert artifact["mime_type"] == "text/plain"
+            assert artifact["size"] == len(b"original evidence\n")
+            assert artifact["sha256"] == (
+                "62b0c0767a0d936528c5e12e349eb572c57ff271930d84715d43ad1e4599d279"
+            )
+            assert artifact["content_url"] == (f"/api/v1/artifacts/{artifact_id}/content")
+            assert "path" not in artifact
+
+            source.write_text("mutated source\n")
+            content = await client.get(artifact["content_url"])
+            assert content.status_code == 200
+            assert content.content == b"original evidence\n"
+            assert content.headers["etag"] == f'"sha256:{artifact["sha256"]}"'
+            assert "attachment" in content.headers["content-disposition"]
+
+            listed = await client.get(f"/api/v1/runs/{run_id}/artifacts")
+            assert listed.status_code == 200
+            assert listed.json()["items"] == [artifact]
+            fetched = await client.get(f"/api/v1/artifacts/{artifact_id}")
+            assert fetched.json() == artifact
+
+            events = await client.get(f"/api/v1/runs/{run_id}/events")
+            assert events.json()["items"][-1]["event_type"] == "artifact.registered"
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            content = await client.get(f"/api/v1/artifacts/{artifact_id}/content")
+            assert content.status_code == 200
+            assert content.content == b"original evidence\n"
+            listed = await client.get(f"/api/v1/runs/{run_id}/artifacts")
+            assert listed.json()["items"][0]["id"] == artifact_id
+    finally:
+        await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_artifact_registration_rejects_escaped_and_invalid_sources(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            workspace = Path(str(created["workspace_path"]))
+            outside = tmp_path / "outside.txt"
+            outside.write_text("not run evidence")
+
+            escaped = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(outside)},
+            )
+            assert escaped.status_code == 409
+            assert escaped.json()["error"]["code"] == "artifact_source_outside_run"
+
+            symlink = workspace / "escaped-link.txt"
+            symlink.symlink_to(outside)
+            linked = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(symlink)},
+            )
+            assert linked.status_code == 409
+            assert linked.json()["error"]["code"] == "artifact_source_outside_run"
+
+            missing = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(workspace / "missing.txt")},
+            )
+            assert missing.status_code == 409
+            assert missing.json()["error"]["code"] == "artifact_source_unavailable"
+
+            directory = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(workspace)},
+            )
+            assert directory.status_code == 409
+            assert directory.json()["error"]["code"] == "artifact_source_not_file"
+
+            source = workspace / "valid.txt"
+            source.write_text("valid")
+            invalid_name = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(source), "name": "../escape.txt"},
+            )
+            assert invalid_name.status_code == 409
+            assert invalid_name.json()["error"]["code"] == "invalid_artifact_name"
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_detects_snapshot_tampering(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            source = Path(str(created["workspace_path"])) / "evidence.txt"
+            source.write_text("trusted")
+            response = await client.post(
+                f"/api/v1/runs/{run_id}/artifacts",
+                json={"source_path": str(source)},
+            )
+            artifact_id = str(response.json()["id"])
+            artifact = await runtime.artifact_repository.get(artifact_id)
+            assert artifact is not None
+            snapshot = Path(artifact.path)
+            await asyncio.to_thread(snapshot.chmod, 0o644)
+            await asyncio.to_thread(snapshot.write_text, "tampered")
+
+            content = await client.get(f"/api/v1/artifacts/{artifact_id}/content")
+            assert content.status_code == 409
+            assert content.json()["error"]["code"] == "artifact_integrity_mismatch"
+    finally:
+        await runtime.control_plane.close()

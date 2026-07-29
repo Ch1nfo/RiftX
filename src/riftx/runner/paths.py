@@ -19,6 +19,12 @@ class TerminalPaths:
     transcript: Path
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactPaths:
+    directory: Path
+    content: Path
+
+
 class RunnerPaths:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
@@ -50,6 +56,10 @@ class RunnerPaths:
     def terminal(self, run_id: str, session_id: str) -> TerminalPaths:
         directory = self.run_directory(run_id) / "terminals" / _safe_component(session_id)
         return TerminalPaths(directory=directory, transcript=directory / "transcript.log")
+
+    def artifact(self, run_id: str, artifact_id: str, name: str) -> ArtifactPaths:
+        directory = self.run_directory(run_id) / "artifacts" / _safe_component(artifact_id)
+        return ArtifactPaths(directory=directory, content=directory / _safe_component(name))
 
 
 def _safe_component(value: str) -> str:

@@ -3,8 +3,11 @@ import type {
   ApprovalDecisionPayload,
   ApprovalList,
   APIErrorEnvelope,
+  Artifact,
+  ArtifactList,
   CreateRunPayload,
   FindingList,
+  RegisterArtifactPayload,
   Run,
   RunEventList,
   RunList,
@@ -134,6 +137,24 @@ export const api = {
 
   listFindings(runId: string): Promise<FindingList> {
     return request(`/api/v1/runs/${encodeURIComponent(runId)}/findings`);
+  },
+
+  listArtifacts(runId: string): Promise<ArtifactList> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/artifacts`);
+  },
+
+  registerArtifact(
+    runId: string,
+    payload: RegisterArtifactPayload,
+  ): Promise<Artifact> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/artifacts`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  artifactContentUrl(artifact: Pick<Artifact, "content_url">): string {
+    return `${API_BASE_URL}${artifact.content_url}`;
   },
 
   listApprovals(runId: string): Promise<ApprovalList> {

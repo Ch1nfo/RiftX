@@ -51,6 +51,7 @@ export function useEventStream(runId: string, enabled = true) {
       "terminal.released",
       "terminal.closed",
       "terminal.lost",
+      "artifact.registered",
       "finding.created",
       "report.generation_requested",
       "run.cleaned_up",
@@ -77,6 +78,9 @@ export function useEventStream(runId: string, enabled = true) {
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
       if (event.event_type === "finding.created") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.findings(runId) });
+      }
+      if (event.event_type === "artifact.registered") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(runId) });
       }
       if (event.event_type.startsWith("tool.approval") || event.event_type === "tool.approved" || event.event_type === "tool.rejected") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(runId) });

@@ -1,5 +1,6 @@
 import {
   Activity,
+  Archive,
   AlertTriangle,
   ArrowLeft,
   Ban,
@@ -8,10 +9,12 @@ import {
   ChevronRight,
   CirclePause,
   Clock3,
+  Download,
   FileWarning,
   Loader2,
   MessageSquareText,
   Play,
+  Plus,
   Send,
   ShieldAlert,
   TerminalSquare,
@@ -21,16 +24,19 @@ import { FormEvent, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
-import type { Approval, Finding, RunEvent } from "../api/types";
+import { api } from "../api/client";
+import type { Approval, Artifact, Finding, RunEvent } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { TerminalPanel } from "../components/TerminalPanel";
 import {
-  useFindings,
   useApprovalControl,
   useApprovals,
+  useArtifactControl,
+  useArtifacts,
+  useFindings,
   useRun,
   useRunControl,
   useRunEvents,
@@ -42,6 +48,7 @@ type DetailTab =
   | "timeline"
   | "approvals"
   | "terminal"
+  | "artifacts"
   | "findings"
   | "report";
 
@@ -50,8 +57,10 @@ export function RunDetailPage() {
   const run = useRun(runId);
   const events = useRunEvents(runId);
   const findings = useFindings(runId);
+  const artifacts = useArtifacts(runId);
   const approvals = useApprovals(runId);
   const approvalControls = useApprovalControl(runId);
+  const artifactControls = useArtifactControl(runId);
   const controls = useRunControl(runId);
   const [tab, setTab] = useState<DetailTab>("timeline");
   const [message, setMessage] = useState("");
@@ -158,6 +167,7 @@ export function RunDetailPage() {
                 ["timeline", `Timeline ${eventItems.length}`],
                 ["approvals", `Approvals ${pendingApprovals.length}`],
                 ["terminal", "Terminal"],
+                ["artifacts", `Artifacts ${artifacts.data?.items.length ?? 0}`],
                 ["findings", `Findings ${findings.data?.items.length ?? 0}`],
                 ["report", "Report"],
               ] as Array<[DetailTab, string]>
@@ -192,6 +202,13 @@ export function RunDetailPage() {
             ) : null}
             {tab === "terminal" ? (
               <TerminalPanel runId={runId} initialSessionId={terminalSessionId} />
+            ) : null}
+            {tab === "artifacts" ? (
+              <Artifacts
+                artifacts={artifacts.data?.items ?? []}
+                loading={artifacts.isLoading}
+                controls={artifactControls}
+              />
             ) : null}
             {tab === "findings" ? (
               <Findings findings={findings.data?.items ?? []} loading={findings.isLoading} />
@@ -445,6 +462,123 @@ function Findings({ findings, loading }: { findings: Finding[]; loading: boolean
   );
 }
 
+function Artifacts({
+  artifacts,
+  loading,
+  controls,
+}: {
+  artifacts: Artifact[];
+  loading: boolean;
+  controls: ReturnType<typeof useArtifactControl>;
+}) {
+  const [sourcePath, setSourcePath] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalized = sourcePath.trim();
+    if (!normalized) return;
+    await controls.register.mutateAsync({
+      source_path: normalized,
+      ...(name.trim() ? { name: name.trim() } : {}),
+      ...(description.trim() ? { description: description.trim() } : {}),
+    });
+    setSourcePath("");
+    setName("");
+    setDescription("");
+  }
+
+  return (
+    <div className="artifact-stack">
+      <form className="artifact-register" onSubmit={(event) => void submit(event)}>
+        <div>
+          <span className="panel-kicker">Immutable evidence</span>
+          <h3>Register a Run-owned file</h3>
+          <p>The path must be inside this Run workspace or its Runner state directory.</p>
+        </div>
+        <div className="artifact-register-grid">
+          <label className="artifact-source-field">
+            <span>Source path</span>
+            <input
+              value={sourcePath}
+              onChange={(event) => setSourcePath(event.target.value)}
+              placeholder="/path/to/run/workspace/result.xml"
+              required
+            />
+          </label>
+          <label>
+            <span>Name (optional)</span>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="result.xml"
+            />
+          </label>
+          <label className="artifact-description-field">
+            <span>Description (optional)</span>
+            <input
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="What this evidence proves"
+            />
+          </label>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={!sourcePath.trim() || controls.register.isPending}
+          >
+            {controls.register.isPending ? (
+              <Loader2 className="spin" size={15} />
+            ) : (
+              <Plus size={15} />
+            )}
+            Register
+          </button>
+        </div>
+        {controls.register.error ? <ErrorState error={controls.register.error} /> : null}
+      </form>
+
+      {loading ? <LoadingState label="Loading artifacts" /> : null}
+      {!loading && !artifacts.length ? (
+        <EmptyState icon={Archive} title="No artifacts registered">
+          Tool outputs, screenshots, logs, and report attachments will appear here.
+        </EmptyState>
+      ) : null}
+      {!loading && artifacts.length ? (
+        <div className="artifact-list">
+          {artifacts.map((artifact) => (
+            <article className="artifact-card" key={artifact.id}>
+              <span className="artifact-icon">
+                <Archive size={18} />
+              </span>
+              <div className="artifact-main">
+                <div className="artifact-head">
+                  <h3>{artifact.name}</h3>
+                  <span>{formatBytes(artifact.size)}</span>
+                </div>
+                <p>{artifact.description || "No description supplied."}</p>
+                <div className="artifact-meta">
+                  <span>{artifact.mime_type}</span>
+                  <code title={artifact.sha256}>sha256:{artifact.sha256}</code>
+                  {artifact.execution_id ? <span>exec / {artifact.execution_id}</span> : null}
+                </div>
+              </div>
+              <a
+                className="secondary-button artifact-download"
+                href={api.artifactContentUrl(artifact)}
+                download={artifact.name}
+              >
+                <Download size={15} /> Download
+              </a>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Approvals({
   approvals,
   loading,
@@ -619,4 +753,16 @@ function formatTimestamp(value: string) {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let amount = value / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${unit}`;
 }

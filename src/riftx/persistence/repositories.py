@@ -13,6 +13,7 @@ from riftx.domain import (
     Approval,
     ApprovalGrant,
     ApprovalStatus,
+    Artifact,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -37,6 +38,8 @@ from .mappers import (
     approval_grant_from_record,
     approval_grant_to_record,
     approval_to_record,
+    artifact_from_record,
+    artifact_to_record,
     engagement_from_record,
     engagement_to_record,
     event_from_record,
@@ -55,6 +58,7 @@ from .mappers import (
 from .orm import (
     ApprovalGrantRecord,
     ApprovalRecord,
+    ArtifactRecord,
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
@@ -65,6 +69,50 @@ from .orm import (
 )
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+class SQLAlchemyArtifactRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, artifact: Artifact) -> Artifact:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(artifact_to_record(artifact))
+                await session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflictError(f"could not create artifact {artifact.id!r}") from exc
+        return artifact
+
+    async def get(self, artifact_id: str) -> Artifact | None:
+        async with self._session_factory() as session:
+            record = await session.get(ArtifactRecord, artifact_id)
+        return artifact_from_record(record) if record is not None else None
+
+    async def list(
+        self,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+
+        statement = select(ArtifactRecord).where(ArtifactRecord.run_id == run_id)
+        if execution_id is not None:
+            statement = statement.where(ArtifactRecord.execution_id == execution_id)
+        statement = (
+            statement.order_by(ArtifactRecord.created_at, ArtifactRecord.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [artifact_from_record(record) for record in records]
 
 
 class SQLAlchemyEngagementRepository:

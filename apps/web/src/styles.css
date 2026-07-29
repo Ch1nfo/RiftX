@@ -2079,3 +2079,164 @@ button:disabled {
     min-height: 280px;
   }
 }
+
+.artifact-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.artifact-register {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(7, 17, 15, 0.45);
+  padding: 17px;
+}
+
+.artifact-register h3 {
+  margin: 5px 0 4px;
+  font-size: 14px;
+}
+
+.artifact-register p {
+  margin: 0 0 14px;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.artifact-register-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(150px, 0.65fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.artifact-register-grid label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.artifact-register-grid input {
+  width: 100%;
+  min-height: 39px;
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  outline: 0;
+  color: var(--text);
+  background: rgba(5, 13, 11, 0.72);
+  padding: 0 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.artifact-register-grid input:focus {
+  border-color: rgba(69, 214, 164, 0.56);
+  box-shadow: 0 0 0 3px rgba(69, 214, 164, 0.08);
+}
+
+.artifact-description-field {
+  grid-column: 1 / 3;
+}
+
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.artifact-card {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(7, 17, 15, 0.45);
+  padding: 14px;
+}
+
+.artifact-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+  color: var(--mint);
+  background: var(--mint-soft);
+}
+
+.artifact-main {
+  min-width: 0;
+}
+
+.artifact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.artifact-head h3 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-head > span {
+  flex: none;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+}
+
+.artifact-main > p {
+  margin: 5px 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.artifact-meta {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.artifact-meta code {
+  overflow: hidden;
+  color: #78958b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-download {
+  min-height: 36px;
+  text-decoration: none;
+}
+
+@media (max-width: 900px) {
+  .artifact-register-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .artifact-description-field {
+    grid-column: auto;
+  }
+
+  .artifact-card {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .artifact-download {
+    grid-column: 1 / -1;
+  }
+}

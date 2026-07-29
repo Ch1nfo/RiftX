@@ -124,6 +124,46 @@ def render_approvals(console: Console, approvals: Iterable[dict[str, Any]]) -> N
         console.print(Panel(body, title="Approval", border_style="yellow"))
 
 
+def render_artifacts(console: Console, artifacts: Iterable[dict[str, Any]]) -> None:
+    items = list(artifacts)
+    if not items:
+        console.print("[dim]No artifacts found.[/dim]")
+        return
+    table = Table(title="Run Artifacts", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("MIME")
+    table.add_column("Size", justify="right")
+    table.add_column("SHA-256", overflow="ellipsis")
+    table.add_column("Execution")
+    for artifact in items:
+        table.add_row(
+            str(artifact.get("id", "")),
+            str(artifact.get("name", "")),
+            str(artifact.get("mime_type", "")),
+            str(artifact.get("size", 0)),
+            str(artifact.get("sha256", "")),
+            str(artifact.get("execution_id") or "—"),
+        )
+    console.print(table)
+
+
+def render_artifact(console: Console, artifact: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("ID", str(artifact.get("id", "")))
+    body.add_row("Run", str(artifact.get("run_id", "")))
+    body.add_row("Name", str(artifact.get("name", "")))
+    body.add_row("MIME", str(artifact.get("mime_type", "")))
+    body.add_row("Size", str(artifact.get("size", 0)))
+    body.add_row("SHA-256", str(artifact.get("sha256", "")))
+    body.add_row("Execution", str(artifact.get("execution_id") or "—"))
+    body.add_row("Description", str(artifact.get("description", "")) or "—")
+    body.add_row("Content", str(artifact.get("content_url", "")))
+    console.print(Panel(body, title="Artifact", border_style="cyan"))
+
+
 def render_event(console: Console, event: object) -> None:
     if not isinstance(event, dict):
         console.print(event)

@@ -128,6 +128,37 @@ class FakeAPIClient:
             "pid": 123,
         }
 
+    def register_artifact(
+        self,
+        run_id: str,
+        source_path: str,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        self.calls.append(("register_artifact", (run_id, source_path, kwargs)))
+        return self._artifact("artifact-1", run_id)
+
+    def list_artifacts(self, run_id: str, **kwargs: object) -> dict[str, Any]:
+        self.calls.append(("list_artifacts", (run_id, kwargs)))
+        return {"items": [self._artifact("artifact-1", run_id)]}
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+        self.calls.append(("get_artifact", artifact_id))
+        return self._artifact(artifact_id, "run-1")
+
+    @staticmethod
+    def _artifact(artifact_id: str, run_id: str) -> dict[str, Any]:
+        return {
+            "id": artifact_id,
+            "run_id": run_id,
+            "name": "scan.txt",
+            "mime_type": "text/plain",
+            "sha256": "a" * 64,
+            "size": 4,
+            "execution_id": None,
+            "description": "scan",
+            "content_url": f"/api/v1/artifacts/{artifact_id}/content",
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,3 +274,57 @@ def test_terminal_commands_delegate_to_shared_control_plane() -> None:
     ]
     assert FakeAPIClient.instances[1].calls == [("get_terminal", "terminal-1")]
     assert FakeAPIClient.instances[2].calls == [("close_terminal", "terminal-1")]
+
+
+def test_artifact_commands_delegate_to_shared_control_plane() -> None:
+    registered = runner.invoke(
+        cli_module.app,
+        [
+            "artifact",
+            "register",
+            "run-1",
+            "/tmp/run-1/scan.txt",
+            "--name",
+            "evidence.txt",
+            "--mime-type",
+            "text/plain",
+            "--description",
+            "scan output",
+            "--execution-id",
+            "execution-1",
+        ],
+    )
+    listed = runner.invoke(
+        cli_module.app,
+        ["artifact", "list", "run-1", "--execution-id", "execution-1"],
+    )
+    shown = runner.invoke(cli_module.app, ["artifact", "show", "artifact-1"])
+
+    assert registered.exit_code == 0, registered.output
+    assert listed.exit_code == 0, listed.output
+    assert shown.exit_code == 0, shown.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "register_artifact",
+            (
+                "run-1",
+                "/tmp/run-1/scan.txt",
+                {
+                    "name": "evidence.txt",
+                    "mime_type": "text/plain",
+                    "description": "scan output",
+                    "execution_id": "execution-1",
+                },
+            ),
+        )
+    ]
+    assert FakeAPIClient.instances[1].calls == [
+        (
+            "list_artifacts",
+            (
+                "run-1",
+                {"execution_id": "execution-1", "limit": 100, "offset": 0},
+            ),
+        )
+    ]
+    assert FakeAPIClient.instances[2].calls == [("get_artifact", "artifact-1")]

@@ -11,6 +11,7 @@ from temporalio.client import Client
 
 from riftx.application.services import (
     ApprovalApplicationService,
+    ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
@@ -21,6 +22,7 @@ from riftx.application.services import (
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -109,6 +111,7 @@ class ControlPlane:
     finding_service: FindingApplicationService
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
+    artifact_service: ArtifactApplicationService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
 
@@ -179,14 +182,16 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
+    artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    runner_paths = RunnerPaths(settings.runner_state_path)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
         execution_repository=execution_repository,
         event_repository=event_repository,
-        paths=RunnerPaths(settings.runner_state_path),
+        paths=runner_paths,
     )
     await terminal_supervisor.recover()
 
@@ -214,6 +219,13 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             run_repository=run_repository,
             event_repository=event_repository,
             workflow_client=workflow_client,
+        ),
+        artifact_service=ArtifactApplicationService(
+            run_repository=run_repository,
+            execution_repository=execution_repository,
+            artifact_repository=artifact_repository,
+            event_repository=event_repository,
+            paths=runner_paths,
         ),
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,

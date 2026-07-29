@@ -7,6 +7,7 @@ from riftx.domain import (
     ApprovalGrant,
     ApprovalMode,
     ApprovalStatus,
+    Artifact,
     Engagement,
     EntryPoint,
     Execution,
@@ -31,6 +32,7 @@ from riftx.domain import (
 from .orm import (
     ApprovalGrantRecord,
     ApprovalRecord,
+    ArtifactRecord,
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
@@ -39,6 +41,36 @@ from .orm import (
     TerminalSessionRecord,
     ToolCallRecord,
 )
+
+
+def artifact_to_record(artifact: Artifact) -> ArtifactRecord:
+    return ArtifactRecord(
+        id=artifact.id,
+        run_id=artifact.run_id,
+        execution_id=artifact.execution_id,
+        name=artifact.name,
+        path=artifact.path,
+        mime_type=artifact.mime_type,
+        sha256=artifact.sha256,
+        size=artifact.size,
+        description=artifact.description,
+        created_at=artifact.created_at,
+    )
+
+
+def artifact_from_record(record: ArtifactRecord) -> Artifact:
+    return Artifact(
+        id=record.id,
+        run_id=record.run_id,
+        execution_id=record.execution_id,
+        name=record.name,
+        path=record.path,
+        mime_type=record.mime_type,
+        sha256=record.sha256,
+        size=record.size,
+        description=record.description,
+        created_at=record.created_at,
+    )
 
 
 def engagement_to_record(engagement: Engagement) -> EngagementRecord:

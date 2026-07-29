@@ -5,6 +5,7 @@ import type {
   ApprovalDecisionPayload,
   CreateRunPayload,
   CreateTerminalPayload,
+  RegisterArtifactPayload,
   RunStatus,
 } from "../api/types";
 
@@ -13,6 +14,7 @@ export const queryKeys = {
   run: (runId: string) => ["run", runId] as const,
   events: (runId: string) => ["run-events", runId] as const,
   findings: (runId: string) => ["run-findings", runId] as const,
+  artifacts: (runId: string) => ["run-artifacts", runId] as const,
   approvals: (runId: string) => ["run-approvals", runId] as const,
   terminal: (sessionId: string) => ["terminal", sessionId] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
@@ -48,6 +50,28 @@ export function useFindings(runId: string) {
     queryFn: () => api.listFindings(runId),
     enabled: Boolean(runId),
   });
+}
+
+export function useArtifacts(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.artifacts(runId),
+    queryFn: () => api.listArtifacts(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useArtifactControl(runId: string) {
+  const queryClient = useQueryClient();
+  return {
+    register: useMutation({
+      mutationFn: (payload: RegisterArtifactPayload) =>
+        api.registerArtifact(runId, payload),
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(runId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+      },
+    }),
+  };
 }
 
 export function useApprovals(runId: string) {

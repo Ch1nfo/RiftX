@@ -17,6 +17,8 @@ from .client import APIClient, RiftXAPIError
 from .interactive import run_interactive
 from .render import (
     render_approvals,
+    render_artifact,
+    render_artifacts,
     render_error,
     render_event,
     render_run,
@@ -37,9 +39,11 @@ app = typer.Typer(
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
+artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 app.add_typer(run_app, name="run")
 app.add_typer(tools_app, name="tools")
 app.add_typer(terminal_app, name="terminal")
+app.add_typer(artifact_app, name="artifact")
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +147,74 @@ def reject(
         lambda client: client.reject(approval_id, reason=reason),
     )
     console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
+
+
+@artifact_app.command("register")
+def register_artifact(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    source_path: Annotated[
+        str,
+        typer.Argument(help="Path visible to the Control Plane host."),
+    ],
+    name: Annotated[str | None, typer.Option(help="Artifact display/file name.")] = None,
+    mime_type: Annotated[str | None, typer.Option("--mime-type")] = None,
+    description: Annotated[str, typer.Option(help="Evidence description.")] = "",
+    execution_id: Annotated[str | None, typer.Option("--execution-id")] = None,
+) -> None:
+    """Snapshot a Run-owned file into immutable artifact storage."""
+
+    _run_with_client(
+        context,
+        lambda client: render_artifact(
+            console,
+            client.register_artifact(
+                run_id,
+                source_path,
+                name=name,
+                mime_type=mime_type,
+                description=description,
+                execution_id=execution_id,
+            ),
+        ),
+    )
+
+
+@artifact_app.command("list")
+def list_artifacts(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    execution_id: Annotated[str | None, typer.Option("--execution-id")] = None,
+    limit: Annotated[int, typer.Option(min=1, max=1000)] = 100,
+    offset: Annotated[int, typer.Option(min=0)] = 0,
+) -> None:
+    """List immutable artifacts registered for a Run."""
+
+    _run_with_client(
+        context,
+        lambda client: render_artifacts(
+            console,
+            client.list_artifacts(
+                run_id,
+                execution_id=execution_id,
+                limit=limit,
+                offset=offset,
+            ).get("items", []),
+        ),
+    )
+
+
+@artifact_app.command("show")
+def show_artifact(
+    context: typer.Context,
+    artifact_id: Annotated[str, typer.Argument(help="Artifact ID.")],
+) -> None:
+    """Show immutable Artifact metadata and content URL."""
+
+    _run_with_client(
+        context,
+        lambda client: render_artifact(console, client.get_artifact(artifact_id)),
+    )
 
 
 @terminal_app.command("create")

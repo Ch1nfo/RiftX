@@ -27,6 +27,25 @@ vi.mock("../hooks/queries", () => ({
   }),
   useRunEvents: () => ({ isSuccess: true, isLoading: false, data: { items: [] } }),
   useFindings: () => ({ isLoading: false, data: { items: [] } }),
+  useArtifacts: () => ({
+    isLoading: false,
+    data: {
+      items: [
+        {
+          id: "artifact-1",
+          run_id: "run-1",
+          execution_id: null,
+          name: "scan.txt",
+          mime_type: "text/plain",
+          sha256: "a".repeat(64),
+          size: 128,
+          description: "Service scan output",
+          created_at: "2026-07-29T00:00:03Z",
+          content_url: "/api/v1/artifacts/artifact-1/content",
+        },
+      ],
+    },
+  }),
   useApprovals: () => ({
     isLoading: false,
     data: {
@@ -59,6 +78,9 @@ vi.mock("../hooks/queries", () => ({
     approve: { isPending: false, error: null, mutate: vi.fn() },
     reject: { isPending: false, error: null, mutate: vi.fn() },
   }),
+  useArtifactControl: () => ({
+    register: { isPending: false, error: null, mutateAsync: vi.fn() },
+  }),
 }));
 
 describe("RunDetailPage approvals", () => {
@@ -80,5 +102,26 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByRole("button", { name: /approve once/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /approve for run/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
+  });
+
+  it("shows immutable artifacts and their download link", async () => {
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    screen.getAllByRole("tab", { name: /artifacts 1/i }).at(-1)?.click();
+    expect(await screen.findByText("scan.txt")).toBeInTheDocument();
+    expect(screen.getByText("Service scan output")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download/i })).toHaveAttribute(
+      "href",
+      "/api/v1/artifacts/artifact-1/content",
+    );
   });
 });

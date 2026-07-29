@@ -76,6 +76,41 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("registers and lists immutable artifacts through the control plane", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: "artifact-1", name: "scan.xml" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.registerArtifact("run-1", {
+      source_path: "/tmp/run-1/scan.xml",
+      description: "scan output",
+    });
+    await api.listArtifacts("run-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/runs/run-1/artifacts",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          source_path: "/tmp/run-1/scan.xml",
+          description: "scan output",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/runs/run-1/artifacts",
+      expect.any(Object),
+    );
+  });
+
 
   it("creates, fetches, and closes terminal sessions through the shared API", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>

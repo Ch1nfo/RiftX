@@ -6,6 +6,7 @@ from fastapi import Depends, Request
 
 from riftx.application.services import (
     ApprovalApplicationService,
+    ArtifactApplicationService,
     EventApplicationService,
     FindingApplicationService,
     RunApplicationService,
@@ -38,6 +39,10 @@ def get_approval_service(request: Request) -> ApprovalApplicationService:
     return request.app.state.control_plane.approval_service
 
 
+def get_artifact_service(request: Request) -> ArtifactApplicationService:
+    return request.app.state.control_plane.artifact_service
+
+
 def get_terminal_service(request: Request) -> TerminalApplicationService:
     return request.app.state.control_plane.terminal_service
 
@@ -49,6 +54,10 @@ ToolServiceDependency = Annotated[ToolApplicationService, Depends(get_tool_servi
 ApprovalServiceDependency = Annotated[
     ApprovalApplicationService,
     Depends(get_approval_service),
+]
+ArtifactServiceDependency = Annotated[
+    ArtifactApplicationService,
+    Depends(get_artifact_service),
 ]
 TerminalServiceDependency = Annotated[
     TerminalApplicationService,

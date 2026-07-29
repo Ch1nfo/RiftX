@@ -2,6 +2,7 @@
 
 from .repositories import (
     ApprovalRepository,
+    ArtifactRepository,
     EngagementRepository,
     ExecutionRepository,
     FindingRepository,
@@ -12,6 +13,7 @@ from .repositories import (
 
 __all__ = [
     "ApprovalRepository",
+    "ArtifactRepository",
     "EngagementRepository",
     "ExecutionRepository",
     "FindingRepository",

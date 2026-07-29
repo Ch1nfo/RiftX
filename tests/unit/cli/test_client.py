@@ -176,3 +176,50 @@ def test_terminal_client_uses_rest_endpoints_and_builds_websocket_url() -> None:
     assert websocket_url == (
         "wss://control-plane.example/riftx/api/v1/terminals/terminal-1/ws?cursor=42"
     )
+
+
+def test_artifact_client_uses_control_plane_endpoints() -> None:
+    requests: list[tuple[str, str, object, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append(
+            (request.method, request.url.path, body, dict(request.url.params.multi_items()))
+        )
+        if request.method == "GET" and request.url.path.endswith("/artifacts"):
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"id": "artifact-1"})
+
+    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+        client.register_artifact(
+            "run-1",
+            "/tmp/run-1/scan.xml",
+            name="scan.xml",
+            mime_type="application/xml",
+            description="scan output",
+            execution_id="execution-1",
+        )
+        client.list_artifacts("run-1", execution_id="execution-1", limit=20, offset=5)
+        client.get_artifact("artifact-1")
+
+    assert requests == [
+        (
+            "POST",
+            "/api/v1/runs/run-1/artifacts",
+            {
+                "source_path": "/tmp/run-1/scan.xml",
+                "description": "scan output",
+                "name": "scan.xml",
+                "mime_type": "application/xml",
+                "execution_id": "execution-1",
+            },
+            {},
+        ),
+        (
+            "GET",
+            "/api/v1/runs/run-1/artifacts",
+            None,
+            {"limit": "20", "offset": "5", "execution_id": "execution-1"},
+        ),
+        ("GET", "/api/v1/artifacts/artifact-1", None, {}),
+    ]
