@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave F are complete; Wave G is active and WEB-01 is unblocked.
+Wave A through Wave F are complete; Wave G is active and WEB-02 is unblocked.
 
 ## Completed
 
@@ -28,6 +28,7 @@ Wave A through Wave F are complete; Wave G is active and WEB-01 is unblocked.
 - [x] MEM-03 Subagent 与 Hook
 - [x] EXT-01 MCP Governance
 - [x] EXT-02 Fact Promotion 与 Attack Graph
+- [x] WEB-01 Source Registry 与 Public Fetch
 
 ## Task Record
 
@@ -591,6 +592,31 @@ Wave A through Wave F are complete; Wave G is active and WEB-01 is unblocked.
 - Verification note:
   - During the monolithic suite the host intermittently denied `SIGTERM` to the existing PTY test process group after all assertions. The same PTY test passes in isolation, and every other test passes in the combined run; this is an execution-environment cleanup limitation, not an EXT-02 code failure.
 - Next dependency: WEB-01 is unblocked.
+
+### WEB-01
+
+- Branch: `codex/web-01-source-fetch`
+- Commit: `c9c837d feat(web): add canonical public source fetch`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: `554 passed, 2 skipped`; Ruff passed; Alembic has one head `a7d9e1f3c205`; diff check clean.
+- Migration: `a7d9e1f3c205_add_web_source_registry.py`
+- Core delivery:
+  - Added durable `WebDocument`, ordered `WebDocumentChunk`, canonical `SourceReference`, and validated `EvidenceSpan` contracts. A formal Source is created only after a successful Fetch and normalization; redirect and Browser Fallback results cannot carry one.
+  - Added anonymous HTTPX streaming Fetch with a decoded response-size cap, timeout, URL normalization, tracking-parameter removal, public DNS/IP validation before both cache access and each request, credential-header rejection, and redirect revalidation.
+  - Same-origin redirects follow by default; cross-origin redirects return an explicit typed result, while opt-in cross-origin following still rechecks the new destination against the public-network boundary.
+  - Added raw and normalized immutable Run Artifacts, persisted Run-scoped cache records, and extraction for HTML, Markdown, text, JSON, XML, PDF text layers, unknown encodings, binary-only content, and JavaScript-shell Browser handoff.
+  - HTML normalization retains heading structure and page metadata while removing script, style, navigation, and footer content. Normalized documents are split into token-counted overlapping chunks with stable offsets and heading paths.
+  - Added `pypdf` as a declared runtime dependency for PDF text-layer extraction.
+- Verification coverage:
+  - Static and large HTML, Markdown, text, JSON, XML, PDF, same-origin and cross-origin redirects, JavaScript Shell, malformed charset fallback, response truncation, cache hits, durable registry round trips, and literal/DNS private-address rejection.
+- Environment note:
+  - The existing `agent` environment still has `rich 13.9.4` while the project declares `rich>=14`; this pre-existing environment drift does not affect the passing WEB-01 or full-suite verification.
+- Next dependency: WEB-02 is unblocked.
 
 ## Architecture Deviations
 
