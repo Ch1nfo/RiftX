@@ -114,3 +114,9 @@ __pycache__/
 # Occasional local cargo/target overrides outside crate dirs
 **/target/
 !**/src-tauri/icons/**
+
+# Local architecture/design and implementation task documents (do not commit)
+/**/*_DESIGN.md
+/**/*_IMPLEMENTATION_GUIDE.md
+/**/*_REFERENCE_IMPLEMENTATION_GUIDE.md
+/**/*_CODEX_TASK_PACK.md
