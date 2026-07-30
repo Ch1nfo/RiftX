@@ -26,6 +26,7 @@ EXPECTED_TABLES = {
     "tool_call_intents",
     "tool_calls",
     "tool_states",
+    "working_memories",
 }
 
 
@@ -78,6 +79,17 @@ def test_context_compilation_table_records_manifest_and_actual_usage() -> None:
         "loaded_memory_ids_json",
         "checkpoint_id",
         "created_at",
+    }
+
+
+def test_working_memory_table_is_versioned_structured_state() -> None:
+    assert set(Base.metadata.tables["working_memories"].columns.keys()) == {
+        "id",
+        "run_id",
+        "version",
+        "state_json",
+        "created_at",
+        "updated_at",
     }
 
 

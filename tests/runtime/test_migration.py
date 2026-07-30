@@ -13,6 +13,7 @@ RUNTIME_TABLES = {
     "tool_call_intents",
     "run_leases",
     "context_compilations",
+    "working_memories",
 }
 
 
@@ -109,6 +110,9 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
         "actual_input_tokens",
         "actual_output_tokens",
     } <= sqlite_columns(database_path, "context_compilations")
+    assert {"version", "state_json", "updated_at"} <= sqlite_columns(
+        database_path, "working_memories"
+    )
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
             "Existing V2 run",
