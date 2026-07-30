@@ -14,8 +14,13 @@ from .models import MemoryAuthor, MemoryRecord, MemoryScope, MemoryStatus, Memor
 from .service import MemoryRepository
 
 _SENSITIVE = re.compile(
-    r"(?i)(?:\b(?:cookie|token|api[_-]?key|authorization)\b\s*[:=]\s*\S+"
-    r"|[?&](?:x-amz-signature|signature|sig)=)"
+    r"(?ix)(?:"
+    r"\b(?:set-cookie|cookie|authorization|api[_ -]?key|"
+    r"access[_-]?token|refresh[_-]?token|id[_-]?token|token)\b\s*[:=]\s*\S+"
+    r"|\bbearer\s+\S+"
+    r"|[?&](?:x-amz-signature|x-goog-signature|signature|sig|"
+    r"access_token|token)="
+    r")"
 )
 
 
@@ -93,7 +98,16 @@ class MemoryWriteResult:
 
 class PromotionPolicy:
     def assess(self, candidate: MemoryCandidate) -> PromotionAssessment:
-        if _SENSITIVE.search(candidate.content):
+        inspected = "\n".join(
+            (
+                candidate.title,
+                candidate.content,
+                candidate.summary,
+                *candidate.retrieval_keywords,
+                *candidate.source_refs,
+            )
+        )
+        if _SENSITIVE.search(inspected):
             return PromotionAssessment(PromotionDecision.REJECT, "sensitive or signed data")
         if candidate.valid_until is not None and candidate.valid_until <= utc_now():
             return PromotionAssessment(PromotionDecision.REJECT, "candidate already expired")

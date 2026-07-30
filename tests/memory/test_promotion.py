@@ -65,12 +65,27 @@ def test_promotion_policy_enforces_candidate_origin(
     assert PromotionPolicy().assess(candidate("candidate-1", origin=origin)).decision is decision
 
 
-def test_promotion_policy_rejects_secrets_and_requires_independent_sources() -> None:
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Authorization: Bearer top-secret",
+        "Cookie: session=top-secret",
+        "access_token=top-secret",
+        "https://storage.example/object?X-Amz-Signature=top-secret",
+        "https://storage.example/object?X-Goog-Signature=top-secret",
+    ],
+)
+def test_promotion_policy_rejects_secrets_and_signed_urls(content: str) -> None:
     secret = candidate(
         "secret",
         origin=MemoryCandidateOrigin.USER_EXPLICIT,
-        content="Authorization: Bearer top-secret",
+        content=content,
     )
+
+    assert PromotionPolicy().assess(secret).decision is PromotionDecision.REJECT
+
+
+def test_promotion_policy_requires_independent_sources() -> None:
     one_source = candidate(
         "one-source",
         origin=MemoryCandidateOrigin.MULTI_SOURCE_CONFIRMATION,
@@ -81,7 +96,6 @@ def test_promotion_policy_rejects_secrets_and_requires_independent_sources() -> 
         sources=["parser://nmap/1", "parser://nuclei/2"],
     )
 
-    assert PromotionPolicy().assess(secret).decision is PromotionDecision.REJECT
     assert PromotionPolicy().assess(one_source).decision is PromotionDecision.CANDIDATE_ONLY
     assert PromotionPolicy().assess(two_sources).decision is PromotionDecision.PROMOTE
 
