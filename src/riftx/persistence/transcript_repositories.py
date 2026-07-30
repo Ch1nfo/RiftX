@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select, update
@@ -52,48 +53,58 @@ class SQLAlchemyTranscriptRepository:
     ) -> list[AgentMessage]:
         if not drafts:
             return []
-        try:
-            async with self._session_factory() as database_session, database_session.begin():
-                agent_session = await database_session.scalar(
-                    select(AgentSessionRecord)
-                    .where(AgentSessionRecord.id == session_id)
-                    .with_for_update()
-                )
-                if agent_session is None:
-                    raise EntityNotFoundError("AgentSession", session_id)
-                self._require_writable(agent_session)
-                current = int(
-                    await database_session.scalar(
-                        select(func.max(AgentMessageRecord.sequence)).where(
-                            AgentMessageRecord.session_id == session_id
+        attempts = 1 if expected_last_sequence is not None else 10
+        last_conflict: IntegrityError | OperationalError | None = None
+        for attempt in range(attempts):
+            try:
+                async with (
+                    self._session_factory() as database_session,
+                    database_session.begin(),
+                ):
+                    agent_session = await database_session.scalar(
+                        select(AgentSessionRecord)
+                        .where(AgentSessionRecord.id == session_id)
+                        .with_for_update()
+                    )
+                    if agent_session is None:
+                        raise EntityNotFoundError("AgentSession", session_id)
+                    self._require_writable(agent_session)
+                    current = int(
+                        await database_session.scalar(
+                            select(func.max(AgentMessageRecord.sequence)).where(
+                                AgentMessageRecord.session_id == session_id
+                            )
                         )
+                        or 0
                     )
-                    or 0
-                )
-                if expected_last_sequence is not None and current != expected_last_sequence:
-                    raise RepositoryConflictError(
-                        f"transcript {session_id!r} sequence conflict; "
-                        f"expected {expected_last_sequence}, found {current}"
+                    if expected_last_sequence is not None and current != expected_last_sequence:
+                        raise RepositoryConflictError(
+                            f"transcript {session_id!r} sequence conflict; "
+                            f"expected {expected_last_sequence}, found {current}"
+                        )
+                    await self._validate_parents(database_session, session_id, drafts)
+                    messages = [
+                        AgentMessage(
+                            run_id=agent_session.run_id,
+                            session_id=session_id,
+                            sequence=current + offset,
+                            **draft.model_dump(),
+                        )
+                        for offset, draft in enumerate(drafts, start=1)
+                    ]
+                    database_session.add_all(
+                        agent_message_to_record(item) for item in messages
                     )
-                await self._validate_parents(database_session, session_id, drafts)
-                messages = [
-                    AgentMessage(
-                        run_id=agent_session.run_id,
-                        session_id=session_id,
-                        sequence=current + offset,
-                        **draft.model_dump(),
-                    )
-                    for offset, draft in enumerate(drafts, start=1)
-                ]
-                database_session.add_all(agent_message_to_record(item) for item in messages)
-                await database_session.flush()
-                return messages
-        except RepositoryConflictError:
-            raise
-        except (IntegrityError, OperationalError) as exc:
-            raise RepositoryConflictError(
-                f"transcript {session_id!r} concurrent append conflict"
-            ) from exc
+                    await database_session.flush()
+                    return messages
+            except RepositoryConflictError:
+                raise
+            except (IntegrityError, OperationalError) as exc:
+                last_conflict = exc
+                await asyncio.sleep(attempt / 1000)
+        raise RepositoryConflictError(
+            f"transcript {session_id!r} concurrent append conflict"
+        ) from last_conflict
 
     async def get(self, message_id: str) -> AgentMessage | None:
         async with self._session_factory() as session:

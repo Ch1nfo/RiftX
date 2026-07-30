@@ -9,6 +9,7 @@ from .models import (
     SubagentResult,
     SubagentStatus,
 )
+from .orchestrator import SubagentOrchestrator, SubagentTaskRunner
 
 __all__ = [
     "DelegationPacket",
@@ -18,6 +19,8 @@ __all__ = [
     "PrimaryResultMerger",
     "SubagentResult",
     "SubagentStatus",
+    "SubagentOrchestrator",
+    "SubagentTaskRunner",
     "SubagentHandle",
     "SubagentLimitError",
     "SubagentManager",

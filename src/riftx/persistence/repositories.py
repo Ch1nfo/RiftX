@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -446,25 +447,31 @@ class SQLAlchemyRunEventRepository:
         event_type: str,
         payload: dict[str, object] | None = None,
     ) -> RunEvent:
-        try:
-            async with self._session_factory() as session, session.begin():
-                run_exists = await session.scalar(
-                    select(RunRecord.id).where(RunRecord.id == run_id).with_for_update()
-                )
-                if run_exists is None:
-                    raise EntityNotFoundError("Run", run_id)
+        last_conflict: IntegrityError | None = None
+        for attempt in range(10):
+            try:
+                async with self._session_factory() as session, session.begin():
+                    run_exists = await session.scalar(
+                        select(RunRecord.id).where(RunRecord.id == run_id).with_for_update()
+                    )
+                    if run_exists is None:
+                        raise EntityNotFoundError("Run", run_id)
 
-                event = RunEvent(
-                    run_id=run_id,
-                    sequence=await _next_event_sequence(session, run_id),
-                    event_type=event_type,
-                    payload=payload or {},
-                )
-                session.add(event_to_record(event))
-                await session.flush()
-                return event
-        except IntegrityError as exc:
-            raise RepositoryConflictError(f"could not append event for run {run_id!r}") from exc
+                    event = RunEvent(
+                        run_id=run_id,
+                        sequence=await _next_event_sequence(session, run_id),
+                        event_type=event_type,
+                        payload=payload or {},
+                    )
+                    session.add(event_to_record(event))
+                    await session.flush()
+                    return event
+            except IntegrityError as exc:
+                last_conflict = exc
+                await asyncio.sleep(attempt / 1000)
+        raise RepositoryConflictError(
+            f"could not append event for run {run_id!r} after concurrent retries"
+        ) from last_conflict
 
     async def get(self, event_id: str) -> RunEvent | None:
         async with self._session_factory() as session:

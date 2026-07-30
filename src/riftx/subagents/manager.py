@@ -14,6 +14,7 @@ from riftx.domain import (
     MessageVisibility,
     TranscriptMessageDraft,
 )
+from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository
 from riftx.persistence.runtime_repositories import SQLAlchemyAgentSessionRepository
 from riftx.runtime.session import SessionManager
@@ -53,6 +54,7 @@ class SubagentManager:
         limits: SubagentConfig | None = None,
         events: SQLAlchemyRunEventRepository | None = None,
         result_merger: ResultMerger | None = None,
+        hooks: HookBus | None = None,
     ) -> None:
         self._sessions = sessions
         self._session_repository = session_repository
@@ -60,6 +62,7 @@ class SubagentManager:
         self._limits = limits or SubagentConfig()
         self._events = events
         self._result_merger = result_merger
+        self._hooks = hooks
         self._run_locks: dict[str, asyncio.Lock] = {}
 
     async def start(
@@ -72,6 +75,7 @@ class SubagentManager:
         parent = await self._require_session(parent_session_id)
         if parent.parent_session_id is not None:
             raise SubagentLimitError("Subagents cannot delegate another Subagent")
+        delegation = await self._hook_delegation(parent, delegation)
         self._validate_tools(delegation)
         lock = self._run_locks.setdefault(parent.run_id, asyncio.Lock())
         async with lock:
@@ -119,13 +123,21 @@ class SubagentManager:
         self._apply_tool_allowlist(session, delegation)
         return SubagentHandle(session, delegation)
 
-    async def complete(self, session_id: str, result: SubagentResult) -> AgentSession:
+    async def list_sessions(self, run_id: str) -> list[AgentSession]:
+        return [
+            session
+            for session in await self._session_repository.list_by_run(run_id)
+            if session.parent_session_id is not None
+        ]
+
+    async def complete(self, session_id: str, result: SubagentResult) -> SubagentResult:
         session = await self._require_session(session_id)
         if session.parent_session_id is None:
             raise RepositoryConflictError(f"session {session_id!r} is not a Subagent")
         delegation = await self._load_delegation(session.id)
         if result.task_id != delegation.task_id:
             raise RepositoryConflictError("Subagent Result belongs to another delegation task")
+        result = await self._hook_result(session, result)
         parent = await self._require_session(session.parent_session_id)
         result_payload = result.model_dump(mode="json")
         loaded_child = await self._sessions.load_session(session.id)
@@ -178,7 +190,7 @@ class SubagentManager:
         if existing_primary is None and self._result_merger is not None:
             await self._result_merger.merge(session.run_id, result)
         target_status = _session_status(result.status)
-        closed = await self._sessions.close_session(session.id, status=target_status)
+        await self._sessions.close_session(session.id, status=target_status)
         if existing_primary is None:
             await self._sessions.append_message(
                 parent.id,
@@ -201,7 +213,7 @@ class SubagentManager:
                 "status": result.status.value,
             },
         )
-        return closed
+        return result
 
     async def _enforce_run_limits(self, run_id: str) -> None:
         sessions = list(await self._session_repository.list_by_run(run_id))
@@ -285,6 +297,66 @@ class SubagentManager:
         if self._events is not None:
             await self._events.append(run_id, event_type, payload)
 
+    async def _hook_delegation(
+        self,
+        parent: AgentSession,
+        delegation: DelegationPacket,
+    ) -> DelegationPacket:
+        if self._hooks is None:
+            return delegation
+        outcome = await self._hooks.dispatch(
+            HookRequest(
+                point=HookPoint.SUBAGENT_START,
+                run_id=parent.run_id,
+                session_id=parent.id,
+                payload=delegation.model_dump(mode="json"),
+            )
+        )
+        await self._emit_hook_events(parent.run_id, outcome.emitted_events)
+        _require_hook_continue(outcome.decision, HookPoint.SUBAGENT_START)
+        payload = dict(outcome.payload)
+        if payload.get("task_id") != delegation.task_id:
+            raise RepositoryConflictError("Subagent Start Hook cannot change task identity")
+        constraints = payload.get("constraints")
+        if outcome.additional_context and isinstance(constraints, list):
+            payload["constraints"] = [*constraints, *outcome.additional_context]
+        return DelegationPacket.model_validate(payload)
+
+    async def _hook_result(
+        self,
+        session: AgentSession,
+        result: SubagentResult,
+    ) -> SubagentResult:
+        if self._hooks is None:
+            return result
+        outcome = await self._hooks.dispatch(
+            HookRequest(
+                point=HookPoint.SUBAGENT_STOP,
+                run_id=session.run_id,
+                session_id=session.id,
+                payload=result.model_dump(mode="json"),
+            )
+        )
+        await self._emit_hook_events(session.run_id, outcome.emitted_events)
+        _require_hook_continue(outcome.decision, HookPoint.SUBAGENT_STOP)
+        if outcome.payload.get("task_id") != result.task_id:
+            raise RepositoryConflictError("Subagent Stop Hook cannot change task identity")
+        return SubagentResult.model_validate(outcome.payload)
+
+    async def _emit_hook_events(
+        self,
+        run_id: str,
+        emitted_events: list[dict[str, object]],
+    ) -> None:
+        for emitted in emitted_events:
+            event_type = emitted.get("event_type")
+            if isinstance(event_type, str) and event_type:
+                await self._append_event(
+                    run_id,
+                    event_type,
+                    {key: value for key, value in emitted.items() if key != "event_type"},
+                )
+
 
 def _session_status(status: SubagentStatus) -> SessionStatus:
     if status is SubagentStatus.FAILED:
@@ -292,3 +364,8 @@ def _session_status(status: SubagentStatus) -> SessionStatus:
     if status is SubagentStatus.CANCELLED:
         return SessionStatus.CANCELLED
     return SessionStatus.COMPLETED
+
+
+def _require_hook_continue(decision: HookDecision, point: HookPoint) -> None:
+    if decision in {HookDecision.BLOCK, HookDecision.REQUIRE_APPROVAL}:
+        raise RepositoryConflictError(f"Runtime Hook stopped {point.value}")
