@@ -44,3 +44,11 @@ tools:
 
 web:
   dist_path: apps/web/dist
+
+models:
+  path: configs/models.example.yaml
+  # profile: primary
+
+agent:
+  max_history_items: 100
+  max_turns: 10

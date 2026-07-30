@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -82,6 +83,24 @@ class FakeAPIClient:
                         "capabilities": ["scripting"],
                     },
                     "state": {"availability": availability},
+                }
+            ],
+        }
+
+    def list_tools(self, node_id: str) -> dict[str, Any]:
+        self.calls.append(("list_tools", node_id))
+        return {
+            "node_id": node_id,
+            "generation": 1,
+            "tools": [
+                {
+                    "definition": {
+                        "id": "python",
+                        "enabled": True,
+                        "executor": "process",
+                        "capabilities": ["scripting"],
+                    },
+                    "state": {"availability": "available"},
                 }
             ],
         }
@@ -464,3 +483,100 @@ def test_serve_applies_cli_overrides_after_config(
     assert result.exit_code == 0, result.output
     assert calls[0]["host"] == "0.0.0.0"
     assert calls[0]["port"] == 9001
+
+
+def test_tools_show_filters_registry_response() -> None:
+    result = runner.invoke(cli_module.app, ["tools", "show", "python", "--node", "node-1"])
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [("list_tools", "node-1")]
+    assert "python" in result.output
+
+
+def test_tools_show_fails_for_unknown_tool() -> None:
+    result = runner.invoke(cli_module.app, ["tools", "show", "missing"])
+
+    assert result.exit_code == 2
+    assert "was not found" in result.output
+
+
+def test_worker_command_builds_and_runs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    class FakeRuntime:
+        async def run(self) -> None:
+            calls.append("run")
+
+    async def fake_build(config: object) -> FakeRuntime:
+        calls.append(config)
+        return FakeRuntime()
+
+    monkeypatch.setattr(cli_module, "build_temporal_worker", fake_build)
+
+    result = runner.invoke(cli_module.app, ["worker"])
+
+    assert result.exit_code == 0, result.output
+    assert isinstance(calls[0], cli_module.RiftXConfig)
+    assert calls[1] == "run"
+
+
+def test_runner_command_applies_cli_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[cli_module.RunnerDaemonConfig] = []
+
+    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+        calls.append(config)
+
+    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    state_path = tmp_path / "runner-state"
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "runner",
+            "--server-url",
+            "http://control.test:8787",
+            "--node-id",
+            "node-7",
+            "--name",
+            "Runner Seven",
+            "--state-path",
+            str(state_path),
+            "--registration-token",
+            "bootstrap-token",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        cli_module.RunnerDaemonConfig(
+            server_url="http://control.test:8787",
+            node_id="node-7",
+            name="Runner Seven",
+            state_path=state_path,
+            registration_token="bootstrap-token",
+        )
+    ]
+
+
+def test_web_command_prints_and_optionally_opens_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(cli_module.webbrowser, "open", lambda url: opened.append(url))
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--api-url", "http://control.test:8787/", "web"],
+    )
+    no_open = runner.invoke(
+        cli_module.app,
+        ["--api-url", "http://control.test:8787", "web", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert no_open.exit_code == 0, no_open.output
+    assert "http://control.test:8787/" in result.output
+    assert opened == ["http://control.test:8787/"]

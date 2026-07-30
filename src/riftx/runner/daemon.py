@@ -360,7 +360,7 @@ def _required_string(payload: dict[str, object], key: str) -> str:
     return value
 
 
-async def _run(config: RunnerDaemonConfig) -> None:
+async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
     config.state_path.mkdir(parents=True, exist_ok=True)
     executions = FileExecutionRepository(config.state_path / "executions.json")
     terminals = FileTerminalRepository(config.state_path / "terminals.json")
@@ -427,7 +427,7 @@ def serve(
 
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
-        _run(
+        run_runner_daemon(
             RunnerDaemonConfig(
                 server_url=server_url,
                 node_id=node_id,

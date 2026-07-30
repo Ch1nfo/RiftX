@@ -118,6 +118,16 @@ class WebConfig(_ConfigModel):
     dist_path: Path = Path("apps/web/dist")
 
 
+class ModelsRuntimeConfig(_ConfigModel):
+    path: Path = Path("configs/models.example.yaml")
+    profile: str | None = None
+
+
+class AgentConfig(_ConfigModel):
+    max_history_items: int = Field(default=100, ge=1)
+    max_turns: int = Field(default=10, ge=1, le=100)
+
+
 class RiftXConfig(_ConfigModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -128,6 +138,8 @@ class RiftXConfig(_ConfigModel):
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
 
 _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
@@ -154,6 +166,10 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_DEFAULT_APPROVAL_MODE": ("approval", "default_mode"),
     "RIFTX_TOOLS_CONFIG": ("tools", "path"),
     "RIFTX_WEB_DIST": ("web", "dist_path"),
+    "RIFTX_MODELS_CONFIG": ("models", "path"),
+    "RIFTX_MODEL_PROFILE": ("models", "profile"),
+    "RIFTX_AGENT_MAX_HISTORY_ITEMS": ("agent", "max_history_items"),
+    "RIFTX_AGENT_MAX_TURNS": ("agent", "max_turns"),
 }
 
 

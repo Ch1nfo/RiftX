@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import platform
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +19,8 @@ from rich.console import Console
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
 from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
+from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
+from riftx.temporal.worker_runtime import build_temporal_worker
 
 from .client import APIClient, RiftXAPIError
 from .interactive import run_interactive
@@ -138,6 +144,76 @@ def serve(
         reload=reload,
         log_level="info",
     )
+
+
+@app.command()
+def worker(context: typer.Context) -> None:
+    """Start the production Temporal Worker."""
+
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(_run_temporal_worker(_state(context).config))
+
+
+@app.command("runner")
+def runner_daemon(
+    context: typer.Context,
+    server_url: Annotated[
+        str | None,
+        typer.Option("--server-url", help="Control Plane URL override."),
+    ] = None,
+    node_id: Annotated[
+        str | None,
+        typer.Option("--node-id", help="Stable Runner node ID override."),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Runner display name."),
+    ] = None,
+    state_path: Annotated[
+        Path | None,
+        typer.Option("--state-path", help="Runner state directory override."),
+    ] = None,
+    registration_token: Annotated[
+        str | None,
+        typer.Option("--registration-token", help="Bootstrap registration token override."),
+    ] = None,
+) -> None:
+    """Start the outbound Runner daemon using the shared RiftX configuration."""
+
+    config = _state(context).config
+    resolved_node_id = node_id or config.runner.node_id
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(
+        run_runner_daemon(
+            RunnerDaemonConfig(
+                server_url=server_url or config.runner.endpoint,
+                node_id=resolved_node_id,
+                name=name or platform.node() or resolved_node_id,
+                state_path=(state_path or config.runner.state_path).expanduser(),
+                registration_token=(
+                    registration_token
+                    if registration_token is not None
+                    else config.runner.registration_token
+                ),
+            )
+        )
+    )
+
+
+@app.command()
+def web(
+    context: typer.Context,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the Control Plane UI in a browser."),
+    ] = True,
+) -> None:
+    """Print and optionally open the RiftX WebUI."""
+
+    url = f"{_state(context).api_url.rstrip('/')}/"
+    console.print(url)
+    if open_browser:
+        webbrowser.open(url)
 
 
 @app.command("approvals")
@@ -604,6 +680,28 @@ def list_tools(
     )
 
 
+@tools_app.command("show")
+def show_tool(
+    context: typer.Context,
+    tool_id: Annotated[str, typer.Argument(help="Tool definition ID.")],
+    node_id: Annotated[str, typer.Option("--node")] = "local",
+) -> None:
+    """Show one configured tool and its probed availability."""
+
+    def operation(client: APIClient) -> None:
+        payload = client.list_tools(node_id)
+        tools = [
+            item
+            for item in payload.get("tools", [])
+            if item.get("definition", {}).get("id") == tool_id
+        ]
+        if not tools:
+            raise typer.BadParameter(f"tool {tool_id!r} was not found", param_hint="TOOL_ID")
+        render_tools(console, {**payload, "tools": tools})
+
+    _run_with_client(context, operation)
+
+
 @tools_app.command("reload")
 def reload_tools(
     context: typer.Context,
@@ -639,6 +737,11 @@ def doctor_tools(
     _run_with_client(context, operation)
     if unhealthy:
         raise typer.Exit(1)
+
+
+async def _run_temporal_worker(config: RiftXConfig) -> None:
+    runtime = await build_temporal_worker(config)
+    await runtime.run()
 
 
 def _run_with_client(
