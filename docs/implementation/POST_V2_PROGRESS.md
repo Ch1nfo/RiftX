@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-01 is unblocked.
+Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-02 is unblocked.
 
 ## Completed
 
@@ -23,6 +23,7 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-01 is 
 - [x] DUR-02 Approval 与 User Input 恢复
 - [x] DUR-03 PTY Runtime 与所有权
 - [x] DUR-04 Checkpoint、Compaction 与模型切换
+- [x] MEM-01 Long-Term Memory Store
 
 ## Task Record
 
@@ -448,6 +449,34 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-01 is 
 - Known limitations:
   - Real ConPTY and PowerShell smoke tests remain host-dependent and were skipped on this macOS host; all portable and mocked recovery tests passed.
 - Next dependency: MEM-01 is unblocked.
+
+### MEM-01
+
+- Branch: `codex/mem-01-long-term-memory`
+- Commits:
+  - `7924ffc feat(memory): persist scoped long-term records`
+  - `e7cdab1 feat(context): retrieve scoped long-term memory`
+  - `e9bc765 feat(memory): expose manual management controls`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `497 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `e2f5a7c9d104_add_long_term_memories.py`
+- Core delivery:
+  - Added Instruction, User Preference, Procedural, Semantic, and Episodic Memory records with explicit USER, NODE, WORKSPACE, RUN, ENGAGEMENT, ASSET, TOOL, or SKILL Scope.
+  - Every Memory requires source references and persists content, summary, confidence, importance, validity window, supersede relationship, lifecycle status, and Pin state.
+  - The SQLAlchemy Memory Store supports manual create, edit, soft-delete, Pin/unpin, atomic same-Scope supersede, TTL filtering, and auditable inactive records.
+  - Deterministic retrieval applies Scope filtering before keyword ranking, excludes expired/deleted/superseded records, prioritizes in-Scope pinned records, and degrades to an empty result if retrieval storage fails.
+  - Retrieved Memory is a first-class Context layer; selected IDs are recorded in Context Compilation manifests and production Workers load only relevant Scope values from the current Run contract.
+  - Control-plane API and `riftx memory` CLI commands expose manual lifecycle operations, exact-Scope inspection, and source visibility.
+- Required scenarios:
+  - Cross-Engagement isolation, TTL, Supersede, deletion, Pin, missing-source rejection, keyword retrieval, Context injection, and retrieval failure degradation are covered by executable tests.
+- Known limitations:
+  - Embedding retrieval, automatic candidates, promotion policy, deduplication, and conflict resolution are intentionally deferred to MEM-02.
+  - Asset Scope IDs use the deterministic `engagement_id::asset` form when derived from a Run contract, preventing same-address assets from crossing Engagement boundaries.
+- Next dependency: MEM-02 is unblocked.
 
 ## Architecture Deviations
 
