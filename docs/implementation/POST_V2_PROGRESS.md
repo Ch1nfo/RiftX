@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave E are complete; Wave F is active and EXT-01 is unblocked.
+Wave A through Wave E are complete; Wave F is active and EXT-02 is unblocked.
 
 ## Completed
 
@@ -26,6 +26,7 @@ Wave A through Wave E are complete; Wave F is active and EXT-01 is unblocked.
 - [x] MEM-01 Long-Term Memory Store
 - [x] MEM-02 Memory Candidate 与自动 Promotion
 - [x] MEM-03 Subagent 与 Hook
+- [x] EXT-01 MCP Governance
 
 ## Task Record
 
@@ -542,6 +543,28 @@ Wave A through Wave E are complete; Wave F is active and EXT-01 is unblocked.
   - Subagents deliberately return a partial Result Packet instead of opening nested Approval or User Input waits; depth remains fixed at one by contract.
   - Real external model and security-tool execution depends on operator-supplied provider credentials and installed tools; the production dependency graph and deterministic test engines/runners are verified locally without secrets.
 - Next dependency: EXT-01 is unblocked.
+
+### EXT-01
+
+- Branch: `codex/ext-01-mcp-governance`
+- Commit: `37e7040 feat(mcp): govern concurrency and failures`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check .`
+  - `git diff --check`
+  - Result: `535 passed, 2 skipped`; Ruff passed; diff check clean.
+- Core delivery:
+  - Added an external MCP Adapter boundary with a global semaphore and lazily allocated per-server semaphores; defaults are sixteen total calls and two calls per server.
+  - Consecutive adapter failures open a per-server circuit after the configured threshold, reject calls during cooldown with a typed retry delay, and admit exactly one Half-open Probe after cooldown.
+  - A successful call or probe closes the circuit and resets its failure count; a failed probe reopens it and starts a fresh cooldown. Cancellation is not counted as an upstream failure and cannot strand the probe slot.
+  - Health snapshots expose global and per-server active calls, completed and failed counts, circuit state, failure count, cooldown remaining, and Half-open Probe occupancy.
+  - Runtime YAML and environment overrides expose all concurrency, threshold, and cooldown settings using the task-pack defaults.
+- Isolation boundary:
+  - Governance is implemented only by `GovernedMCPAdapter`; existing Process, Shell, PTY, target HTTP, Execution Service, and Runner paths are unchanged.
+- Verification note:
+  - The sandboxed full run passed all non-PTY tests but could not signal one PTY process group during cleanup. The targeted PTY/MCP tests and complete suite passed outside that sandbox under the approved `conda` test command.
+- Next dependency: EXT-02 is unblocked.
 
 ## Architecture Deviations
 
