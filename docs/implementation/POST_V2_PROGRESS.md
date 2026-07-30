@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-03 is unblocked.
+Wave A through Wave E are complete; Wave F is active and EXT-01 is unblocked.
 
 ## Completed
 
@@ -25,6 +25,7 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-03 is 
 - [x] DUR-04 Checkpoint、Compaction 与模型切换
 - [x] MEM-01 Long-Term Memory Store
 - [x] MEM-02 Memory Candidate 与自动 Promotion
+- [x] MEM-03 Subagent 与 Hook
 
 ## Task Record
 
@@ -506,6 +507,41 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-03 is 
   - Engagement Fact and Attack Graph persistence remain intentionally deferred to EXT-02.
   - Candidate decisions are returned to the invoking Runtime component; a separate candidate-review inbox is not part of the MEM-02 contract.
 - Next dependency: MEM-03 is unblocked.
+
+### MEM-03
+
+- Branch: `codex/mem-03-subagents-hooks`
+- Commits:
+  - `de4c912 feat(subagents): define isolated result contracts`
+  - `4a7268f feat(subagents): schedule isolated sessions`
+  - `d69f01b feat(subagents): merge validated result packets`
+  - `e977ab8 feat(hooks): add audited runtime hook bus`
+  - `f639f47 feat(runtime): invoke lifecycle hooks`
+  - `73b29c9 feat(subagents): run bounded parallel delegations`
+  - `186e654 feat(context): isolate subagent compilations`
+  - `5df799a feat(runtime): execute model delegation batches`
+  - `9212e0a test(subagents): cover Wave E continuation gate`
+  - `8dc001a feat(subagents): wire durable worker execution`
+  - `0692447 feat(hooks): cover memory and terminal lifecycle`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check .`
+  - `git diff --check`
+  - Result: `533 passed, 2 skipped`; Ruff passed; diff check clean.
+- Core delivery:
+  - Added validated Delegation and Result Packet contracts, independent child Agent Sessions, child-only Transcripts, selected Fact/Memory Context inputs, scoped Tool allowlists, and authoritative Primary Reducer merging.
+  - Enforced depth one, four concurrent Subagents per Run, twenty total Subagents per Run, per-delegation model/tool/time budgets, and idempotent child/parent Result Packet persistence.
+  - Primary Context receives only the allowlisted Summary, Fact Candidates, Hypothesis Updates, Finding Candidates, Evidence Refs, and Recommended Actions; child tool traffic and full Transcript remain private.
+  - The production Worker exposes the resident `delegate` tool, executes model-requested batches through bounded child Runtime cycles, waits for deferred child executions, validates final structured results, and resumes the Primary cycle without letting child cycles acquire the Primary Run lease or complete its lifecycle.
+  - Added an audited Hook Bus with deterministic priority resolution, bounded timeouts, fail-open/fail-closed policy, payload modification, approval escalation, additional Context, and emitted events.
+  - Python, Command, and HTTP Hook adapters cover Context Compile, Model Call, Tool Execution, Approval, Subagent, Memory, and Terminal lifecycle points in the Worker and control plane.
+- Wave E gate:
+  - One Primary launches three parallel Subagents; each writes an independent Tool Result, returns a Result Packet, merges through the Primary reducer, survives Context Compaction, and allows the same Run to continue.
+- Known limitations:
+  - Subagents deliberately return a partial Result Packet instead of opening nested Approval or User Input waits; depth remains fixed at one by contract.
+  - Real external model and security-tool execution depends on operator-supplied provider credentials and installed tools; the production dependency graph and deterministic test engines/runners are verified locally without secrets.
+- Next dependency: EXT-01 is unblocked.
 
 ## Architecture Deviations
 
