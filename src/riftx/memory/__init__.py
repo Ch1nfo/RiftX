@@ -9,6 +9,18 @@ from .models import (
     MemoryStatus,
     MemoryType,
 )
+from .promotion import (
+    ConflictAction,
+    MemoryCandidate,
+    MemoryCandidateOrigin,
+    MemoryConflictResolver,
+    MemoryDeduplicator,
+    MemoryWriter,
+    MemoryWriteResult,
+    PromotionAssessment,
+    PromotionDecision,
+    PromotionPolicy,
+)
 from .service import CreateMemory, MemoryService
 
 __all__ = [
@@ -21,4 +33,14 @@ __all__ = [
     "MemoryType",
     "CreateMemory",
     "MemoryService",
+    "ConflictAction",
+    "MemoryCandidate",
+    "MemoryCandidateOrigin",
+    "MemoryConflictResolver",
+    "MemoryDeduplicator",
+    "MemoryWriteResult",
+    "MemoryWriter",
+    "PromotionAssessment",
+    "PromotionDecision",
+    "PromotionPolicy",
 ]
