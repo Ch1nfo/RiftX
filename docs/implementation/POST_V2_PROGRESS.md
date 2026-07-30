@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and Wave B are complete; Wave C is active and CTX-05 is unblocked.
+Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-01 is unblocked.
 
 ## Completed
 
@@ -18,6 +18,7 @@ Wave A and Wave B are complete; Wave C is active and CTX-05 is unblocked.
 - [x] CTX-02 Context Manifest 与 Token Accounting
 - [x] CTX-03 Working Memory 与 Reducer
 - [x] CTX-04 Context Compiler 与 Token Budgeter
+- [x] CTX-05 Stable Instructions
 
 ## Task Record
 
@@ -297,6 +298,34 @@ Wave A and Wave B are complete; Wave C is active and CTX-05 is unblocked.
   - Token estimates remain deterministic and provider-neutral; actual provider Usage continues to be authoritative after the model call.
   - The filesystem-backed Stable Instruction source is intentionally deferred to CTX-05 and will plug into the Stable Instructions layer without creating another compiler.
 - Next dependency: CTX-05 is unblocked.
+
+### CTX-05
+
+- Branch: `codex/ctx-05-stable-instructions`
+- Commit: `61418ed feat(context): add stable instruction hierarchy`
+- Completed at: `2026-07-30 16:54 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q tests/context/test_instructions.py tests/context/test_wave_c_gate.py tests/runtime/coordinator/test_coordinator.py`
+  - `conda run --no-capture-output -n agent pytest -q tests/context tests/runtime`
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py migrations/versions/c3b8a7d5e921_add_context_compilations.py migrations/versions/d9f4a6c2b731_add_working_memories.py`
+  - `git diff --check`
+  - Result: `466 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: None.
+- Core delivery:
+  - Added the filesystem-backed `StableInstructionSource` for `~/.config/riftx/RIFTX.md`, `<engagement>/.riftx/RIFTX.md`, `<workspace>/.riftx/RIFTX.md`, and `<current-path>/.riftx/RIFTX.md`.
+  - Instructions render from global to current path so the most specific scope is last and authoritative; duplicate roots are loaded once under their most specific scope.
+  - Engagement, Workspace, and current-path containment is validated before reading, and instruction symlinks cannot escape their configured roots.
+  - Stable Instructions have a configurable hard cap with a 4,096-token default. Allocation preserves more-specific files first, deterministically truncates the boundary file, and records selected, dropped, and truncated paths in the Context Manifest.
+  - `MinimalContextCompiler` and `DynamicToolContextCompiler` now enable the source by default. Runtime Coordinator passes the persisted Workspace plus explicit Engagement/current-path roots into every Context compilation.
+  - `processed_tool_result_context_item(...)` creates the model-facing Tool Result layer from bounded summaries and logical Artifact URIs only; raw previews and Runner paths are excluded.
+- Wave C gate:
+  - `tests/context/test_wave_c_gate.py` performs 30 consecutive Tool Result / model-context compilations, persists one exact Manifest for every call, keeps Objective, Scope, and failed Attempts, rejects an unexplained repeated failed Attempt, and holds an 80-tool catalog to the resident control schemas.
+  - Every synthetic processed Tool Result carries a unique raw-output trap string in its preview; none appears in any compiled model input, while bounded summaries and immutable Artifact references remain available.
+- Known limitations:
+  - The Engagement filesystem root is an explicit Runtime Cycle input because the current persisted Engagement domain does not own a filesystem path; Workspace and current path are wired automatically by Runtime Coordinator.
+  - The 30-call Wave C gate is provider-neutral and deterministic; live provider behavior and cross-platform Runner execution remain separate integration/CI evidence.
+- Next dependency: DUR-01 is unblocked.
 
 ## Architecture Deviations
 
