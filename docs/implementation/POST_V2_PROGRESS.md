@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and Wave B are complete; CTX-01 is unblocked.
+Wave A and Wave B are complete; Wave C is active and CTX-02 is unblocked.
 
 ## Completed
 
@@ -14,6 +14,7 @@ Wave A and Wave B are complete; CTX-01 is unblocked.
 - [x] EX-02 Wait、Cancel 与 Deferred Execution
 - [x] EX-03 Execution Reconciliation
 - [x] EX-04 动态 Tool Search 与 Progressive Skill
+- [x] CTX-01 Artifact Spill 与 Tool Result Processor
 
 ## Task Record
 
@@ -190,6 +191,31 @@ Wave A and Wave B are complete; CTX-01 is unblocked.
   - `DynamicToolContextCompiler` remains a transitional extension of `MinimalContextCompiler`; Wave C will replace the broader compiler while preserving the visibility manifest and progressive payload contracts.
   - Provider-specific Agent factories remain responsible for binding the resident control schemas to the existing Tool Proxy, Execution Service, and Skill context operations; execution still always crosses the Runner boundary.
 - Next dependency: CTX-01 is unblocked.
+
+### CTX-01
+
+- Branch: `codex/ctx-01-artifact-tool-results`
+- Commit: `84be341 feat(context): add artifact spill and tool result processing`
+- Completed at: `2026-07-30 14:17 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py`
+  - `git diff --check`
+  - Result: `434 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migrations: None.
+- Core delivery:
+  - Every completed Execution can now produce the required three layers: immutable Raw Artifact references, deterministic Structured Result data, and a bounded Context Summary.
+  - `ExecutionArtifactStore` reuses the existing Artifact application service and immutable Runner storage while exposing only canonical `artifact://runs/{run_id}/executions/{execution_id}/{stdout|stderr}` URIs to model-facing data.
+  - Artifact reads are bounded by offset and byte count, validate immutable content through the existing service, and return stable missing/integrity failures without exposing local Runner paths.
+  - `ToolResultProcessor` implements configurable inline limits, stderr-first head/tail previews, UTF-8/binary handling, parser fallback, key observations, errors, statistics, and logical Artifact references within the context token budget.
+  - Deterministic parsers cover Generic Text, Generic JSON, Nmap XML, Nuclei JSONL, and Shell Result; Masscan compatibility remains intact through the existing adapter.
+  - Runtime configuration and the example YAML now include the required `execution_output` defaults and validation boundaries.
+- Required scenarios:
+  - 1 KB inline text, 200 KB head/tail spill, 50 MB incremental preservation, UTF-8, binary output, deterministic parser selection, parser failure fallback, missing Artifact content, stderr larger than stdout, URI validation, bounded reads, and configuration validation are covered by executable tests.
+- Known limitations:
+  - Deterministic structured parsing is capped at 8 MiB per output; larger machine-readable output remains fully preserved as a Raw Artifact and falls back to bounded generic summarization.
+  - CTX-01 provides the processing contract but does not yet persist Context Manifest or model token usage; those are CTX-02 responsibilities.
+- Next dependency: CTX-02 is unblocked.
 
 ## Architecture Deviations
 
