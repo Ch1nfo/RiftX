@@ -172,3 +172,18 @@ def test_interactive_rejects_invalid_mode_and_compaction_limit() -> None:
         interactive._handle_command("/mode risky", state, client, console)
     with pytest.raises(ValueError, match="MAX_ITEMS"):
         interactive._handle_command("/compact 0", state, client, console)
+
+
+def test_interactive_help_uses_selected_language() -> None:
+    from riftx.cli.i18n import set_language
+
+    client = FakeClient()
+    state = InteractiveState()
+    console, output = make_console()
+    try:
+        set_language("zh")
+        interactive._handle_command("/help", state, client, console)
+        assert "创建任务" in output.getvalue()
+        assert "退出交互模式" in output.getvalue()
+    finally:
+        set_language("en")

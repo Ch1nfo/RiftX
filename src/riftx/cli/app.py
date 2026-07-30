@@ -24,6 +24,7 @@ from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 from riftx.temporal.worker_runtime import build_temporal_worker
 
 from .client import APIClient, RiftXAPIError
+from .i18n import Language, normalize_language, set_language, tr
 from .interactive import run_interactive
 from .render import (
     render_approvals,
@@ -79,6 +80,7 @@ class CLIState:
     api_url: str
     config: RiftXConfig
     config_path: Path | None
+    language: Language
 
 
 @app.callback()
@@ -100,8 +102,23 @@ def main(
             help="Explicit RiftX YAML configuration file.",
         ),
     ] = None,
+    language: Annotated[
+        str | None,
+        typer.Option(
+            "--language",
+            "-L",
+            envvar="RIFTX_LANGUAGE",
+            help="Language for CLI output (en or zh).",
+        ),
+    ] = None,
 ) -> None:
     """Run a command, or enter interactive mode when no command is given."""
+
+    try:
+        resolved_language = normalize_language(language)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--language") from exc
+    set_language(resolved_language)
 
     try:
         config = load_riftx_config(explicit_path=config_path)
@@ -112,6 +129,7 @@ def main(
         api_url=resolved_api_url,
         config=config,
         config_path=config_path,
+        language=resolved_language,
     )
     if context.invoked_subcommand is None:
         with APIClient(resolved_api_url) as client:
@@ -258,7 +276,7 @@ def approve(
         context,
         lambda client: client.approve(approval_id, approve_for_run=for_run),
     )
-    console.print("[green]Approval saved and workflow signaled.[/green]")
+    console.print(f"[green]{tr('Approval saved and workflow signaled.')}[/green]")
 
 
 @app.command("reject")
@@ -276,7 +294,7 @@ def reject(
         context,
         lambda client: client.reject(approval_id, reason=reason),
     )
-    console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
+    console.print(f"[yellow]{tr('Approval rejected and workflow signaled.')}[/yellow]")
 
 
 @artifact_app.command("register")
@@ -483,7 +501,11 @@ def attach(
     state = _state(context)
     try:
         with APIClient(state.api_url) as client:
-            console.print(f"[dim]Attaching to {session_id}; press Ctrl+] to detach.[/dim]")
+            attach_message = tr(
+                "Attaching to {session_id}; press Ctrl+] to detach.",
+                session_id=session_id,
+            )
+            console.print(f"[dim]{attach_message}[/dim]")
             attach_terminal(
                 client,
                 session_id,
@@ -596,7 +618,7 @@ def pause_run(context: typer.Context, run_id: str) -> None:
     """Request that a Run pause at a durable workflow boundary."""
 
     _run_with_client(context, lambda client: client.pause_run(run_id))
-    console.print("[yellow]Pause requested.[/yellow]")
+    console.print(f"[yellow]{tr('Pause requested.')}[/yellow]")
 
 
 @run_app.command("resume")
@@ -604,7 +626,7 @@ def resume_run(context: typer.Context, run_id: str) -> None:
     """Resume a paused Run."""
 
     _run_with_client(context, lambda client: client.resume_run(run_id))
-    console.print("[green]Resume requested.[/green]")
+    console.print(f"[green]{tr('Resume requested.')}[/green]")
 
 
 @run_app.command("cancel-current")
@@ -612,7 +634,7 @@ def cancel_current(context: typer.Context, run_id: str) -> None:
     """Cancel only the Run's current active execution."""
 
     _run_with_client(context, lambda client: client.cancel_current_execution(run_id))
-    console.print("[yellow]Current execution cancellation requested.[/yellow]")
+    console.print(f"[yellow]{tr('Current execution cancellation requested.')}[/yellow]")
 
 
 @run_app.command("cancel")
@@ -620,7 +642,7 @@ def cancel_run(context: typer.Context, run_id: str) -> None:
     """Cancel the durable Run and clean up its active executions."""
 
     _run_with_client(context, lambda client: client.cancel_run(run_id))
-    console.print("[yellow]Run cancellation requested.[/yellow]")
+    console.print(f"[yellow]{tr('Run cancellation requested.')}[/yellow]")
 
 
 @run_app.command("compact")
@@ -638,7 +660,7 @@ def compact_run(
         context,
         lambda client: client.compact_run(run_id, max_history_items=max_history_items),
     )
-    console.print("[green]Context compaction requested.[/green]")
+    console.print(f"[green]{tr('Context compaction requested.')}[/green]")
 
 
 @run_app.command("model")
@@ -653,7 +675,9 @@ def switch_run_model(
         context,
         lambda client: client.switch_run_model(run_id, model_profile),
     )
-    console.print(f"[green]Model switch to {model_profile!r} requested.[/green]")
+    console.print(
+        f"[green]{tr('Model switch to {model} requested.', model=repr(model_profile))}[/green]"
+    )
 
 
 @run_app.command("message")
@@ -665,7 +689,7 @@ def send_message(
     """Queue a user message through the durable workflow."""
 
     _run_with_client(context, lambda client: client.append_message(run_id, message))
-    console.print("[green]Message queued.[/green]")
+    console.print(f"[green]{tr('Message queued.')}[/green]")
 
 
 @run_app.command("watch")
@@ -685,7 +709,7 @@ def watch_run(
             for event in client.stream_events(run_id, last_event_id=after):
                 render_event(console, event.data)
     except KeyboardInterrupt:
-        console.print("[dim]Stopped watching.[/dim]")
+        console.print(f"[dim]{tr('Stopped watching.')}[/dim]")
     except (RiftXAPIError, httpx.HTTPError) as exc:
         render_error(console, exc)
         raise typer.Exit(1) from exc
@@ -797,7 +821,7 @@ def forget_memory(context: typer.Context, memory_id: str) -> None:
     """Soft-delete Memory so it is never retrieved again."""
 
     _run_with_client(context, lambda client: client.delete_memory(memory_id))
-    console.print("[green]Memory deleted.[/green]")
+    console.print(f"[green]{tr('Memory deleted.')}[/green]")
 
 
 @memory_app.command("pin")
@@ -812,7 +836,7 @@ def pin_memory(
         context,
         lambda client: client.pin_memory(memory_id, pinned=pinned),
     )
-    console.print("[green]Memory pin updated.[/green]")
+    console.print(f"[green]{tr('Memory pin updated.')}[/green]")
 
 
 @execution_app.command("show")
@@ -854,9 +878,7 @@ def wait_execution(
     ] = 30.0,
     stdout_cursor: Annotated[int, typer.Option("--stdout-cursor", min=0)] = 0,
     stderr_cursor: Annotated[int, typer.Option("--stderr-cursor", min=0)] = 0,
-    max_bytes: Annotated[int, typer.Option("--max-bytes", min=1, max=1024 * 1024)] = (
-        64 * 1024
-    ),
+    max_bytes: Annotated[int, typer.Option("--max-bytes", min=1, max=1024 * 1024)] = (64 * 1024),
 ) -> None:
     """Wait for an Execution without treating a wait timeout as tool failure."""
 

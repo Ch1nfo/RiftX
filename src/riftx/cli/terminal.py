@@ -17,6 +17,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from .client import APIClient
+from .i18n import tr
 
 _DETACH_BYTE = b"\x1d"  # Ctrl+]
 _INTERRUPT_BYTE = b"\x03"  # Ctrl+C
@@ -33,7 +34,9 @@ def attach_terminal(
     """Attach the local TTY to a terminal WebSocket until Ctrl+] or remote close."""
 
     if take_over and not sys.stdin.isatty():
-        raise ValueError("terminal attach requires an interactive TTY; use --read-only otherwise")
+        raise ValueError(
+            tr("terminal attach requires an interactive TTY; use --read-only otherwise")
+        )
 
     url = client.terminal_websocket_url(session_id, cursor=cursor)
     stop = threading.Event()
@@ -91,7 +94,7 @@ def control_terminal(
     """Send a one-shot ownership command and return the resulting state."""
 
     if action not in {"takeover", "release"}:
-        raise ValueError(f"unsupported terminal control action {action!r}")
+        raise ValueError(tr("unsupported terminal control action {action}", action=repr(action)))
     with connect(client.terminal_websocket_url(session_id), open_timeout=10, close_timeout=2) as ws:
         ws.send(json.dumps({"type": action}))
         while True:
@@ -100,7 +103,7 @@ def control_terminal(
                 raw = raw.decode("utf-8", errors="replace")
             message = json.loads(raw)
             if message.get("type") == "error":
-                raise ValueError(str(message.get("message", "terminal control failed")))
+                raise ValueError(str(message.get("message", tr("terminal control failed"))))
             if message.get("type") == "state":
                 session = message.get("session")
                 if isinstance(session, dict):
@@ -126,7 +129,7 @@ def _receive_messages(
                 _write_output(output, str(message.get("data", "")).encode())
             elif message_type == "error":
                 error_output.print(
-                    f"[red]{message.get('message', 'Terminal error')}[/red] "
+                    f"[red]{message.get('message', tr('Terminal error'))}[/red] "
                     f"[dim]({message.get('code', 'terminal_error')})[/dim]"
                 )
             elif message_type == "state":
@@ -143,7 +146,7 @@ def _forward_input(
     resize_requested: threading.Event,
 ) -> None:
     if os.name != "posix":
-        raise ValueError("interactive terminal attach currently requires a Unix TTY")
+        raise ValueError(tr("interactive terminal attach currently requires a Unix TTY"))
 
     import termios
     import tty

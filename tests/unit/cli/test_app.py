@@ -96,9 +96,7 @@ class FakeAPIClient:
         self.calls.append(("get_execution", execution_id))
         return self._execution(execution_id)
 
-    def list_executions(
-        self, run_id: str, *, limit: int = 100, offset: int = 0
-    ) -> dict[str, Any]:
+    def list_executions(self, run_id: str, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
         self.calls.append(("list_executions", (run_id, limit, offset)))
         return {"items": [self._execution("execution-1")]}
 
@@ -413,9 +411,7 @@ def test_run_model_switch_delegates_to_shared_http_client() -> None:
     result = runner.invoke(cli_module.app, ["run", "model", "run-1", "deep"])
 
     assert result.exit_code == 0, result.output
-    assert FakeAPIClient.instances[0].calls == [
-        ("switch_run_model", ("run-1", "deep"))
-    ]
+    assert FakeAPIClient.instances[0].calls == [("switch_run_model", ("run-1", "deep"))]
 
 
 def test_memory_commands_delegate_to_shared_http_client() -> None:
@@ -627,9 +623,7 @@ def test_execution_commands_query_and_cancel_durable_execution() -> None:
     assert "wait_timeout" in waited.output.lower()
     assert cancelled.exit_code == 0, cancelled.output
     assert FakeAPIClient.instances[0].calls == [("get_execution", "execution-1")]
-    assert FakeAPIClient.instances[1].calls == [
-        ("list_executions", ("run-1", 100, 0))
-    ]
+    assert FakeAPIClient.instances[1].calls == [("list_executions", ("run-1", 100, 0))]
     assert FakeAPIClient.instances[2].calls == [
         ("wait_execution", ("execution-1", 0.5, 0, 0, 65536, 10))
     ]
@@ -780,3 +774,22 @@ def test_web_command_prints_and_optionally_opens_url(
     assert no_open.exit_code == 0, no_open.output
     assert "http://control.test:8787/" in result.output
     assert opened == ["http://control.test:8787/"]
+
+
+def test_cli_language_option_and_environment_switch_output() -> None:
+    chinese = runner.invoke(cli_module.app, ["--language", "zh", "run", "list"])
+    environment = runner.invoke(
+        cli_module.app,
+        ["run", "list"],
+        env={"RIFTX_LANGUAGE": "zh-CN"},
+    )
+    english = runner.invoke(cli_module.app, ["--language", "en", "run", "list"])
+    invalid = runner.invoke(cli_module.app, ["--language", "fr", "run", "list"])
+
+    assert chinese.exit_code == 0, chinese.output
+    assert "未找到任务" in chinese.output
+    assert environment.exit_code == 0, environment.output
+    assert "未找到任务" in environment.output
+    assert english.exit_code == 0, english.output
+    assert "No runs found" in english.output
+    assert invalid.exit_code == 2

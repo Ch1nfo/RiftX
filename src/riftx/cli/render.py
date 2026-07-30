@@ -11,6 +11,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .i18n import tr
+
 _CONTEXT_CATEGORY_LABELS = {
     "runtime_contract": "Runtime Contract",
     "stable_instructions": "Stable Instructions",
@@ -27,16 +29,16 @@ _CONTEXT_CATEGORY_LABELS = {
 def render_nodes(console: Console, nodes: Iterable[dict[str, Any]]) -> None:
     items = list(nodes)
     if not items:
-        console.print("[dim]No execution nodes found.[/dim]")
+        console.print(f"[dim]{tr('No execution nodes found.')}[/dim]")
         return
-    table = Table(title="Execution Nodes", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Name")
-    table.add_column("Status")
-    table.add_column("Platform")
-    table.add_column("Runner")
-    table.add_column("Capabilities")
-    table.add_column("Last seen")
+    table = Table(title=tr("Execution Nodes"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Name"))
+    table.add_column(tr("Status"))
+    table.add_column(tr("Platform"))
+    table.add_column(tr("Runner"))
+    table.add_column(tr("Capabilities"))
+    table.add_column(tr("Last seen"))
     for node in items:
         table.add_row(
             str(node.get("id", "")),
@@ -54,35 +56,35 @@ def render_node(console: Console, node: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("ID", str(node.get("id", "")))
-    body.add_row("Name", str(node.get("name", "")))
-    body.add_row("Status", str(node.get("status", "unknown")))
+    body.add_row(tr("ID"), str(node.get("id", "")))
+    body.add_row(tr("Name"), str(node.get("name", "")))
+    body.add_row(tr("Status"), tr(str(node.get("status", "unknown"))))
     body.add_row(
-        "Platform",
+        tr("Platform"),
         f"{node.get('platform', '')}/{node.get('architecture', '')}",
     )
-    body.add_row("Runner", str(node.get("runner_version", "unknown")))
+    body.add_row(tr("Runner"), str(node.get("runner_version", "unknown")))
     body.add_row(
-        "Capabilities",
+        tr("Capabilities"),
         ", ".join(str(item) for item in node.get("capabilities", [])) or "—",
     )
-    body.add_row("Labels", str(node.get("labels", {})))
-    body.add_row("Last seen", str(node.get("last_seen_at") or "—"))
-    console.print(Panel(body, title="Execution Node", border_style="cyan"))
+    body.add_row(tr("Labels"), str(node.get("labels", {})))
+    body.add_row(tr("Last seen"), str(node.get("last_seen_at") or "—"))
+    console.print(Panel(body, title=tr("Execution Node"), border_style="cyan"))
 
 
 def render_context(console: Console, compilation: dict[str, Any]) -> None:
     manifest = compilation.get("manifest") or {}
     categories = manifest.get("categories") or {}
-    table = Table(title="Context Inspector", expand=True)
-    table.add_column("Category", style="cyan")
-    table.add_column("Items", justify="right")
-    table.add_column("Characters", justify="right")
-    table.add_column("Estimated tokens", justify="right")
+    table = Table(title=tr("Context Inspector"), expand=True)
+    table.add_column(tr("Category"), style="cyan")
+    table.add_column(tr("Items"), justify="right")
+    table.add_column(tr("Characters"), justify="right")
+    table.add_column(tr("Estimated tokens"), justify="right")
     for key, label in _CONTEXT_CATEGORY_LABELS.items():
         usage = categories.get(key) or {}
         table.add_row(
-            label,
+            tr(label),
             str(usage.get("item_count", 0)),
             str(usage.get("character_count", 0)),
             str(usage.get("estimated_tokens", 0)),
@@ -91,8 +93,11 @@ def render_context(console: Console, compilation: dict[str, Any]) -> None:
     actual_input = compilation.get("actual_input_tokens")
     actual_output = compilation.get("actual_output_tokens")
     console.print(
-        "Model: [cyan]{}[/cyan]  Estimated input: [bold]{}[/bold]  "
-        "Actual input/output: [bold]{}/{}[/bold]  Compilation: [dim]{}[/dim]".format(
+        (
+            f"{tr('Model')}: [cyan]{{}}[/cyan]  {tr('Estimated input')}: [bold]{{}}[/bold]  "
+            f"{tr('Actual input/output')}: [bold]{{}}/{{}}[/bold]  "
+            f"{tr('Compilation')}: [dim]{{}}[/dim]"
+        ).format(
             compilation.get("model_profile", "unknown"),
             compilation.get("estimated_tokens", 0),
             actual_input if actual_input is not None else "—",
@@ -103,12 +108,12 @@ def render_context(console: Console, compilation: dict[str, Any]) -> None:
 
 
 def render_runs(console: Console, runs: Iterable[dict[str, Any]]) -> None:
-    table = Table(title="RiftX Runs", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Status")
-    table.add_column("Objective")
-    table.add_column("Node")
-    table.add_column("Created")
+    table = Table(title=tr("RiftX Runs"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Status"))
+    table.add_column(tr("Objective"))
+    table.add_column(tr("Node"))
+    table.add_column(tr("Created"))
     count = 0
     for run in runs:
         count += 1
@@ -126,7 +131,7 @@ def render_runs(console: Console, runs: Iterable[dict[str, Any]]) -> None:
     if count:
         console.print(table)
     else:
-        console.print("[dim]No runs found.[/dim]")
+        console.print(f"[dim]{tr('No runs found.')}[/dim]")
 
 
 def render_run(console: Console, run: dict[str, Any]) -> None:
@@ -137,36 +142,36 @@ def render_run(console: Console, run: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold")
     body.add_column()
-    body.add_row("ID", str(run.get("id", "")))
-    body.add_row("Status", _status_text(str(run.get("status", "unknown"))))
-    body.add_row("Objective", str(description))
-    body.add_row("Node", str(run.get("node_id", "")))
-    body.add_row("Approval", str(run.get("approval_mode", "")))
-    body.add_row("Model", str(run.get("model_profile") or "default"))
-    body.add_row("Workspace", str(run.get("workspace_path", "")))
-    body.add_row("Workflow", str(run.get("temporal_workflow_id", "")))
-    console.print(Panel(body, title="RiftX Run", border_style="cyan"))
+    body.add_row(tr("ID"), str(run.get("id", "")))
+    body.add_row(tr("Status"), _status_text(str(run.get("status", "unknown"))))
+    body.add_row(tr("Objective"), str(description))
+    body.add_row(tr("Node"), str(run.get("node_id", "")))
+    body.add_row(tr("Approval"), str(run.get("approval_mode", "")))
+    body.add_row(tr("Model"), tr(str(run.get("model_profile") or "default")))
+    body.add_row(tr("Workspace"), str(run.get("workspace_path", "")))
+    body.add_row(tr("Workflow"), str(run.get("temporal_workflow_id", "")))
+    console.print(Panel(body, title=tr("RiftX Run"), border_style="cyan"))
 
 
 def render_memories(console: Console, memories: Iterable[dict[str, Any]]) -> None:
     items = list(memories)
     if not items:
-        console.print("[dim]No long-term memories found.[/dim]")
+        console.print(f"[dim]{tr('No long-term memories found.')}[/dim]")
         return
-    table = Table(title="Long-Term Memory", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Type")
-    table.add_column("Scope")
-    table.add_column("Status")
-    table.add_column("Pin")
-    table.add_column("Summary")
+    table = Table(title=tr("Long-Term Memory"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Type"))
+    table.add_column(tr("Scope"))
+    table.add_column(tr("Status"))
+    table.add_column(tr("Pin"))
+    table.add_column(tr("Summary"))
     for memory in items:
         table.add_row(
             str(memory.get("id", "")),
             str(memory.get("memory_type", "")),
             f"{memory.get('scope_type', '')}:{memory.get('scope_id', '')}",
             _status_text(str(memory.get("status", "unknown"))),
-            "yes" if memory.get("pinned") else "no",
+            tr("yes") if memory.get("pinned") else tr("no"),
             str(memory.get("summary", "")),
         )
     console.print(table)
@@ -176,33 +181,33 @@ def render_memory(console: Console, memory: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("ID", str(memory.get("id", "")))
-    body.add_row("Type", str(memory.get("memory_type", "")))
+    body.add_row(tr("ID"), str(memory.get("id", "")))
+    body.add_row(tr("Type"), str(memory.get("memory_type", "")))
     body.add_row(
-        "Scope",
+        tr("Scope"),
         f"{memory.get('scope_type', '')}:{memory.get('scope_id', '')}",
     )
-    body.add_row("Status", str(memory.get("status", "")))
-    body.add_row("Pinned", "yes" if memory.get("pinned") else "no")
-    body.add_row("Title", str(memory.get("title", "")))
-    body.add_row("Summary", str(memory.get("summary", "")))
-    body.add_row("Content", str(memory.get("content", "")))
-    body.add_row("Sources", "\n".join(memory.get("source_refs", [])) or "—")
-    console.print(Panel(body, title="Long-Term Memory", border_style="cyan"))
+    body.add_row(tr("Status"), tr(str(memory.get("status", ""))))
+    body.add_row(tr("Pinned"), tr("yes") if memory.get("pinned") else tr("no"))
+    body.add_row(tr("Title"), str(memory.get("title", "")))
+    body.add_row(tr("Summary"), str(memory.get("summary", "")))
+    body.add_row(tr("Content"), str(memory.get("content", "")))
+    body.add_row(tr("Sources"), "\n".join(memory.get("source_refs", [])) or "—")
+    console.print(Panel(body, title=tr("Long-Term Memory"), border_style="cyan"))
 
 
 def render_executions(console: Console, executions: Iterable[dict[str, Any]]) -> None:
     items = list(executions)
     if not items:
-        console.print("[dim]No executions found.[/dim]")
+        console.print(f"[dim]{tr('No executions found.')}[/dim]")
         return
-    table = Table(title="Executions", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Status")
-    table.add_column("Session")
-    table.add_column("Tool Call")
-    table.add_column("Attempt")
-    table.add_column("Command")
+    table = Table(title=tr("Executions"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Status"))
+    table.add_column(tr("Session"))
+    table.add_column(tr("Tool Call"))
+    table.add_column(tr("Attempt"))
+    table.add_column(tr("Command"))
     for execution in items:
         command = execution.get("command_text") or " ".join(execution.get("argv", []))
         table.add_row(
@@ -220,51 +225,52 @@ def render_execution(console: Console, execution: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("ID", str(execution.get("id", "")))
-    body.add_row("Status", _status_text(str(execution.get("status", "unknown"))))
-    body.add_row("Run", str(execution.get("run_id", "")))
-    body.add_row("Session", str(execution.get("session_id") or "—"))
-    body.add_row("Tool Call", str(execution.get("tool_call_id") or "—"))
-    body.add_row("Attempt", str(execution.get("attempt_group") or "—"))
-    body.add_row("Node", str(execution.get("node_id", "")))
-    body.add_row("PID", str(execution.get("pid") or "—"))
+    body.add_row(tr("ID"), str(execution.get("id", "")))
+    body.add_row(tr("Status"), _status_text(str(execution.get("status", "unknown"))))
+    body.add_row(tr("Run"), str(execution.get("run_id", "")))
+    body.add_row(tr("Session"), str(execution.get("session_id") or "—"))
+    body.add_row(tr("Tool Call"), str(execution.get("tool_call_id") or "—"))
+    body.add_row(tr("Attempt"), str(execution.get("attempt_group") or "—"))
+    body.add_row(tr("Node"), str(execution.get("node_id", "")))
+    body.add_row(tr("PID"), str(execution.get("pid") or "—"))
     exit_code = execution.get("exit_code")
-    body.add_row("Exit code", str(exit_code if exit_code is not None else "—"))
-    body.add_row("Execution key", str(execution.get("execution_key", "")))
-    console.print(Panel(body, title="Execution", border_style="cyan"))
+    body.add_row(tr("Exit code"), str(exit_code if exit_code is not None else "—"))
+    body.add_row(tr("Execution key"), str(execution.get("execution_key", "")))
+    console.print(Panel(body, title=tr("Execution"), border_style="cyan"))
 
 
 def render_execution_wait(console: Console, result: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("Wait status", _status_text(str(result.get("wait_status", "unknown"))))
+    body.add_row(tr("Wait status"), _status_text(str(result.get("wait_status", "unknown"))))
     body.add_row(
-        "Execution status",
+        tr("Execution status"),
         _status_text(str(result.get("execution_status", "unknown"))),
     )
-    body.add_row("Execution", str(result.get("execution_id", "")))
+    body.add_row(tr("Execution"), str(result.get("execution_id", "")))
     next_poll = result.get("next_poll_after_seconds")
-    body.add_row("Next poll", f"{next_poll}s" if next_poll is not None else "—")
+    body.add_row(tr("Next poll"), f"{next_poll}s" if next_poll is not None else "—")
     partial_output = result.get("partial_output")
     if partial_output:
-        body.add_row("Output", str(partial_output))
-    console.print(Panel(body, title="Execution Wait", border_style="cyan"))
+        body.add_row(tr("Output"), str(partial_output))
+    console.print(Panel(body, title=tr("Execution Wait"), border_style="cyan"))
 
 
 def render_tools(console: Console, payload: dict[str, Any]) -> None:
     table = Table(
-        title=(
-            f"Tools on {payload.get('node_id', 'unknown')} "
-            f"(generation {payload.get('generation', '?')})"
+        title=tr(
+            "Tools on {node} (generation {generation})",
+            node=payload.get("node_id", "unknown"),
+            generation=payload.get("generation", "?"),
         ),
         expand=True,
     )
-    table.add_column("Tool", style="cyan")
-    table.add_column("Availability")
-    table.add_column("Version")
-    table.add_column("Executor")
-    table.add_column("Capabilities")
+    table.add_column(tr("Tool"), style="cyan")
+    table.add_column(tr("Availability"))
+    table.add_column(tr("Version"))
+    table.add_column(tr("Executor"))
+    table.add_column(tr("Capabilities"))
     for item in payload.get("tools", []):
         definition = item.get("definition", {})
         state = item.get("state", {})
@@ -282,23 +288,23 @@ def render_terminal(console: Console, terminal: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("Session", str(terminal.get("id", "")))
-    body.add_row("Run", str(terminal.get("run_id", "")))
-    body.add_row("Status", _status_text(str(terminal.get("status", "unknown"))))
-    body.add_row("Owner", str(terminal.get("owner", "")))
-    body.add_row("Command", " ".join(str(item) for item in terminal.get("argv", [])))
-    body.add_row("Working dir", str(terminal.get("cwd", "")))
-    body.add_row("Size", f"{terminal.get('cols', '?')} × {terminal.get('rows', '?')}")
-    body.add_row("PID", str(terminal.get("pid") or "—"))
+    body.add_row(tr("Session"), str(terminal.get("id", "")))
+    body.add_row(tr("Run"), str(terminal.get("run_id", "")))
+    body.add_row(tr("Status"), _status_text(str(terminal.get("status", "unknown"))))
+    body.add_row(tr("Owner"), str(terminal.get("owner", "")))
+    body.add_row(tr("Command"), " ".join(str(item) for item in terminal.get("argv", [])))
+    body.add_row(tr("Working dir"), str(terminal.get("cwd", "")))
+    body.add_row(tr("Size"), f"{terminal.get('cols', '?')} × {terminal.get('rows', '?')}")
+    body.add_row(tr("PID"), str(terminal.get("pid") or "—"))
     if terminal.get("exit_code") is not None:
-        body.add_row("Exit code", str(terminal["exit_code"]))
-    console.print(Panel(body, title="Terminal", border_style="cyan"))
+        body.add_row(tr("Exit code"), str(terminal["exit_code"]))
+    console.print(Panel(body, title=tr("Terminal"), border_style="cyan"))
 
 
 def render_approvals(console: Console, approvals: Iterable[dict[str, Any]]) -> None:
     items = list(approvals)
     if not items:
-        console.print("[dim]No approvals found.[/dim]")
+        console.print(f"[dim]{tr('No approvals found.')}[/dim]")
         return
     for approval in items:
         body = Table.grid(padding=(0, 2))
@@ -306,31 +312,31 @@ def render_approvals(console: Console, approvals: Iterable[dict[str, Any]]) -> N
         body.add_column(overflow="fold")
         command = approval.get("command", [])
         env_diff = approval.get("env_diff", {})
-        body.add_row("ID", str(approval.get("id", "")))
-        body.add_row("Status", _status_text(str(approval.get("status", "unknown"))))
-        body.add_row("Tool", str(approval.get("tool_name", "")))
-        body.add_row("Command", " ".join(str(item) for item in command))
-        body.add_row("Working dir", str(approval.get("cwd", "")))
-        body.add_row("Target", str(approval.get("target_summary", "")))
-        body.add_row("Environment", JSON.from_data(env_diff) if env_diff else "—")
-        body.add_row("Reason", str(approval.get("reason", "")))
+        body.add_row(tr("ID"), str(approval.get("id", "")))
+        body.add_row(tr("Status"), _status_text(str(approval.get("status", "unknown"))))
+        body.add_row(tr("Tool"), str(approval.get("tool_name", "")))
+        body.add_row(tr("Command"), " ".join(str(item) for item in command))
+        body.add_row(tr("Working dir"), str(approval.get("cwd", "")))
+        body.add_row(tr("Target"), str(approval.get("target_summary", "")))
+        body.add_row(tr("Environment"), JSON.from_data(env_diff) if env_diff else "—")
+        body.add_row(tr("Reason"), str(approval.get("reason", "")))
         if approval.get("decided_by"):
-            body.add_row("Decided by", str(approval["decided_by"]))
-        console.print(Panel(body, title="Approval", border_style="yellow"))
+            body.add_row(tr("Decided by"), str(approval["decided_by"]))
+        console.print(Panel(body, title=tr("Approval"), border_style="yellow"))
 
 
 def render_artifacts(console: Console, artifacts: Iterable[dict[str, Any]]) -> None:
     items = list(artifacts)
     if not items:
-        console.print("[dim]No artifacts found.[/dim]")
+        console.print(f"[dim]{tr('No artifacts found.')}[/dim]")
         return
-    table = Table(title="Run Artifacts", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Name")
-    table.add_column("MIME")
-    table.add_column("Size", justify="right")
-    table.add_column("SHA-256", overflow="ellipsis")
-    table.add_column("Execution")
+    table = Table(title=tr("Run Artifacts"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Name"))
+    table.add_column(tr("MIME"))
+    table.add_column(tr("Size"), justify="right")
+    table.add_column(tr("SHA-256"), overflow="ellipsis")
+    table.add_column(tr("Execution"))
     for artifact in items:
         table.add_row(
             str(artifact.get("id", "")),
@@ -347,29 +353,29 @@ def render_artifact(console: Console, artifact: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("ID", str(artifact.get("id", "")))
-    body.add_row("Run", str(artifact.get("run_id", "")))
-    body.add_row("Name", str(artifact.get("name", "")))
-    body.add_row("MIME", str(artifact.get("mime_type", "")))
-    body.add_row("Size", str(artifact.get("size", 0)))
-    body.add_row("SHA-256", str(artifact.get("sha256", "")))
-    body.add_row("Execution", str(artifact.get("execution_id") or "—"))
-    body.add_row("Description", str(artifact.get("description", "")) or "—")
-    body.add_row("Content", str(artifact.get("content_url", "")))
-    console.print(Panel(body, title="Artifact", border_style="cyan"))
+    body.add_row(tr("ID"), str(artifact.get("id", "")))
+    body.add_row(tr("Run"), str(artifact.get("run_id", "")))
+    body.add_row(tr("Name"), str(artifact.get("name", "")))
+    body.add_row(tr("MIME"), str(artifact.get("mime_type", "")))
+    body.add_row(tr("Size"), str(artifact.get("size", 0)))
+    body.add_row(tr("SHA-256"), str(artifact.get("sha256", "")))
+    body.add_row(tr("Execution"), str(artifact.get("execution_id") or "—"))
+    body.add_row(tr("Description"), str(artifact.get("description", "")) or "—")
+    body.add_row(tr("Content"), str(artifact.get("content_url", "")))
+    console.print(Panel(body, title=tr("Artifact"), border_style="cyan"))
 
 
 def render_reports(console: Console, reports: Iterable[dict[str, Any]]) -> None:
     items = list(reports)
     if not items:
-        console.print("[dim]No reports found.[/dim]")
+        console.print(f"[dim]{tr('No reports found.')}[/dim]")
         return
-    table = Table(title="Run Reports", expand=True)
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("Format")
-    table.add_column("Artifact")
-    table.add_column("Findings", justify="right")
-    table.add_column("Created")
+    table = Table(title=tr("Run Reports"), expand=True)
+    table.add_column(tr("ID"), style="cyan", no_wrap=True)
+    table.add_column(tr("Format"))
+    table.add_column(tr("Artifact"))
+    table.add_column(tr("Findings"), justify="right")
+    table.add_column(tr("Created"))
     for report in items:
         table.add_row(
             str(report.get("id", "")),
@@ -385,14 +391,16 @@ def render_report(console: Console, report: dict[str, Any]) -> None:
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold", no_wrap=True)
     body.add_column(overflow="fold")
-    body.add_row("ID", str(report.get("id", "")))
-    body.add_row("Run", str(report.get("run_id", "")))
-    body.add_row("Format", str(report.get("format", "")))
-    body.add_row("Artifact", str(report.get("artifact_id", "")))
-    body.add_row("Findings", ", ".join(str(item) for item in report.get("finding_ids", [])) or "—")
-    body.add_row("Content", str(report.get("content_url", "")))
-    body.add_row("Created", str(report.get("created_at", "")))
-    console.print(Panel(body, title="Report", border_style="green"))
+    body.add_row(tr("ID"), str(report.get("id", "")))
+    body.add_row(tr("Run"), str(report.get("run_id", "")))
+    body.add_row(tr("Format"), str(report.get("format", "")))
+    body.add_row(tr("Artifact"), str(report.get("artifact_id", "")))
+    body.add_row(
+        tr("Findings"), ", ".join(str(item) for item in report.get("finding_ids", [])) or "—"
+    )
+    body.add_row(tr("Content"), str(report.get("content_url", "")))
+    body.add_row(tr("Created"), str(report.get("created_at", "")))
+    console.print(Panel(body, title=tr("Report"), border_style="green"))
 
 
 def render_event(console: Console, event: object) -> None:
@@ -415,12 +423,12 @@ def render_error(console: Console, error: Exception) -> None:
             Panel(
                 f"[bold]{error.message}[/bold]\n[dim]code={error.code} "
                 f"status={error.status_code}[/dim]",
-                title="RiftX API error",
+                title=tr("RiftX API error"),
                 border_style="red",
             )
         )
     else:
-        console.print(Panel(str(error), title="Error", border_style="red"))
+        console.print(Panel(str(error), title=tr("Error"), border_style="red"))
 
 
 def _status_text(status: str) -> Text:
@@ -441,7 +449,7 @@ def _status_text(status: str) -> Text:
         "offline": "red",
         "lost": "bright_red",
     }
-    return Text(status, style=colors.get(status, "white"))
+    return Text(tr(status), style=colors.get(status, "white"))
 
 
 def _availability_text(availability: str) -> Text:
@@ -451,7 +459,8 @@ def _availability_text(availability: str) -> Text:
         "misconfigured": "yellow",
         "disabled": "dim",
     }
-    return Text(availability, style=colors.get(availability, "white"))
+    return Text(tr(availability), style=colors.get(availability, "white"))
+
 
 _METRIC_LABELS = {
     "task_completion_rate": "Task Completion Rate",
@@ -470,19 +479,19 @@ _METRIC_LABELS = {
 
 def render_runtime_metrics(console: Console, snapshot: dict[str, Any]) -> None:
     metrics = snapshot.get("metrics") or {}
-    table = Table(title=f"Runtime Metrics · {snapshot.get('run_id', '')}", expand=True)
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", justify="right")
-    table.add_column("Counts", justify="right")
-    table.add_column("Direction")
+    table = Table(title=f"{tr('Runtime Metrics')} · {snapshot.get('run_id', '')}", expand=True)
+    table.add_column(tr("Metric"), style="cyan")
+    table.add_column(tr("Value"), justify="right")
+    table.add_column(tr("Counts"), justify="right")
+    table.add_column(tr("Direction"))
     for name, label in _METRIC_LABELS.items():
         metric = metrics.get(name) or {}
         value = metric.get("value")
         table.add_row(
-            label,
+            tr(label),
             f"{float(value) * 100:.2f}%" if value is not None else "—",
             f"{metric.get('numerator', 0)}/{metric.get('denominator', 0)}",
             str(metric.get("direction", "")),
         )
     console.print(table)
-    console.print(f"Generated: [dim]{snapshot.get('generated_at', '—')}[/dim]")
+    console.print(f"{tr('Generated')}: [dim]{snapshot.get('generated_at', '—')}[/dim]")

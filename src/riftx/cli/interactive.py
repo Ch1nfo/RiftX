@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .client import APIClient, RiftXAPIError
+from .i18n import get_language, tr
 from .render import (
     render_approvals,
     render_context,
@@ -66,6 +67,56 @@ class InteractiveState:
     approval_mode: str = "balanced"
 
 
+def _help_text() -> str:
+    if get_language() == "zh":
+        return (
+            "[bold]/new OBJECTIVE[/bold] 创建任务\n"
+            "[bold]/resume RUN_ID[/bold] 选择已有任务\n"
+            "[bold]/runs[/bold] 列出任务\n"
+            "[bold]/status[/bold] 显示当前任务\n"
+            "[bold]/tools [NODE][/bold] 列出工具\n"
+            "[bold]/node [NODE][/bold] 列出节点或为新任务选择节点\n"
+            "[bold]/model [PROFILE][/bold] 查看或选择新任务模型\n"
+            "[bold]/mode [auto|balanced|manual][/bold] 查看或选择审批模式\n"
+            "[bold]/plan[/bold] 显示最新 Agent 计划\n"
+            "[bold]/context[/bold] 检查最新模型上下文清单\n"
+            "[bold]/pause[/bold]、[bold]/continue[/bold]、[bold]/cancel[/bold] 控制当前任务\n"
+            "[bold]/watch[/bold] 流式显示当前任务事件\n"
+            "[bold]/approvals[/bold] 列出审批请求\n"
+            "[bold]/terminal [COMMAND ...][/bold] 为当前任务启动终端\n"
+            "[bold]/attach [SESSION_ID][/bold] 接管并连接终端（Ctrl+] 分离）\n"
+            "[bold]/release [SESSION_ID][/bold] 将终端所有权归还 Agent\n"
+            "[bold]/approve APPROVAL_ID [--for-run][/bold] 批准工具调用\n"
+            "[bold]/reject APPROVAL_ID [REASON][/bold] 拒绝工具调用\n"
+            "[bold]/compact [MAX_ITEMS][/bold] 压缩持久化 Agent 历史\n"
+            "[bold]/web[/bold] 在 WebUI 中打开当前任务\n"
+            "[bold]/exit[/bold] 退出交互模式"
+        )
+    return (
+        "[bold]/new OBJECTIVE[/bold] create a run\n"
+        "[bold]/resume RUN_ID[/bold] select an existing run\n"
+        "[bold]/runs[/bold] list runs\n"
+        "[bold]/status[/bold] show the active run\n"
+        "[bold]/tools [NODE][/bold] list tools\n"
+        "[bold]/node [NODE][/bold] list nodes or select the node for new runs\n"
+        "[bold]/model [PROFILE][/bold] show or select the model for new runs\n"
+        "[bold]/mode [auto|balanced|manual][/bold] show or select approval mode\n"
+        "[bold]/plan[/bold] show the latest Agent plan\n"
+        "[bold]/context[/bold] inspect the latest model Context Manifest\n"
+        "[bold]/pause[/bold], [bold]/continue[/bold], [bold]/cancel[/bold] control the active run\n"
+        "[bold]/watch[/bold] stream active run events\n"
+        "[bold]/approvals[/bold] list approval requests\n"
+        "[bold]/terminal [COMMAND ...][/bold] start a terminal for the active run\n"
+        "[bold]/attach [SESSION_ID][/bold] take over and attach (Ctrl+] detaches)\n"
+        "[bold]/release [SESSION_ID][/bold] return terminal ownership to the Agent\n"
+        "[bold]/approve APPROVAL_ID [--for-run][/bold] approve a tool call\n"
+        "[bold]/reject APPROVAL_ID [REASON][/bold] reject a tool call\n"
+        "[bold]/compact [MAX_ITEMS][/bold] compact persisted Agent history\n"
+        "[bold]/web[/bold] open the active Run in the WebUI\n"
+        "[bold]/exit[/bold] close interactive mode"
+    )
+
+
 def run_interactive(client: APIClient, console: Console) -> None:
     state = InteractiveState()
     session: PromptSession[str] = PromptSession(
@@ -75,8 +126,10 @@ def run_interactive(client: APIClient, console: Console) -> None:
     )
     console.print(
         Panel(
-            "Type an objective to create a Run, or use [bold]/help[/bold].",
-            title="RiftX Interactive",
+            tr("Type an objective to create a Run, or use /help.").replace(
+                "/help", "[bold]/help[/bold]"
+            ),
+            title=tr("RiftX Interactive"),
             border_style="cyan",
         )
     )
@@ -86,10 +139,10 @@ def run_interactive(client: APIClient, console: Console) -> None:
             with patch_stdout():
                 text = session.prompt(_prompt(state)).strip()
         except EOFError:
-            console.print("[dim]Session closed.[/dim]")
+            console.print(f"[dim]{tr('Session closed.')}[/dim]")
             return
         except KeyboardInterrupt:
-            console.print("[dim]Use /exit to leave RiftX.[/dim]")
+            console.print(f"[dim]{tr('Use /exit to leave RiftX.')}[/dim]")
             continue
         if not text:
             continue
@@ -115,30 +168,7 @@ def _handle_command(
     if command == "/exit":
         return True
     if command == "/help":
-        console.print(
-            "[bold]/new OBJECTIVE[/bold] create a run\n"
-            "[bold]/resume RUN_ID[/bold] select an existing run\n"
-            "[bold]/runs[/bold] list runs\n"
-            "[bold]/status[/bold] show the active run\n"
-            "[bold]/tools [NODE][/bold] list tools\n"
-            "[bold]/node [NODE][/bold] list nodes or select the node for new runs\n"
-            "[bold]/model [PROFILE][/bold] show or select the model for new runs\n"
-            "[bold]/mode [auto|balanced|manual][/bold] show or select approval mode\n"
-            "[bold]/plan[/bold] show the latest Agent plan\n"
-            "[bold]/context[/bold] inspect the latest model Context Manifest\n"
-            "[bold]/pause[/bold], [bold]/continue[/bold], "
-            "[bold]/cancel[/bold] control the active run\n"
-            "[bold]/watch[/bold] stream active run events\n"
-            "[bold]/approvals[/bold] list approval requests\n"
-            "[bold]/terminal [COMMAND ...][/bold] start a terminal for the active run\n"
-            "[bold]/attach [SESSION_ID][/bold] take over and attach (Ctrl+] detaches)\n"
-            "[bold]/release [SESSION_ID][/bold] return terminal ownership to the Agent\n"
-            "[bold]/approve APPROVAL_ID [--for-run][/bold] approve a tool call\n"
-            "[bold]/reject APPROVAL_ID [REASON][/bold] reject a tool call\n"
-            "[bold]/compact [MAX_ITEMS][/bold] compact persisted Agent history\n"
-            "[bold]/web[/bold] open the active Run in the WebUI\n"
-            "[bold]/exit[/bold] close interactive mode"
-        )
+        console.print(_help_text())
         return False
     if command == "/new":
         objective = " ".join(args).strip()
@@ -174,24 +204,33 @@ def _handle_command(
         selected = client.get_node(args[0])
         state.node_id = str(selected["id"])
         render_node(console, selected)
-        console.print(f"[green]New runs will use node {state.node_id}.[/green]")
+        console.print(f"[green]{tr('New runs will use node {node}.', node=state.node_id)}[/green]")
         return False
     if command == "/model":
         if not args:
-            console.print(f"Model for new runs: [cyan]{state.model_profile or 'default'}[/cyan]")
+            console.print(
+                tr(
+                    "Model for new runs: {model}",
+                    model=f"[cyan]{tr(state.model_profile or 'default')}[/cyan]",
+                )
+            )
             return False
         state.model_profile = args[0]
-        console.print(f"[green]New runs will use model profile {args[0]}.[/green]")
+        console.print(
+            f"[green]{tr('New runs will use model profile {model}.', model=args[0])}[/green]"
+        )
         return False
     if command == "/mode":
         if not args:
-            console.print(f"Approval mode for new runs: [cyan]{state.approval_mode}[/cyan]")
+            console.print(
+                tr("Approval mode for new runs: {mode}", mode=f"[cyan]{state.approval_mode}[/cyan]")
+            )
             return False
         mode = args[0].lower()
         if mode not in {"auto", "balanced", "manual"}:
             raise ValueError("Usage: /mode [auto|balanced|manual]")
         state.approval_mode = mode
-        console.print(f"[green]New runs will use {mode} approval mode.[/green]")
+        console.print(f"[green]{tr('New runs will use {mode} approval mode.', mode=mode)}[/green]")
         return False
     if command == "/plan":
         events = client.list_events(_require_active(state), limit=1000).get("items", [])
@@ -205,8 +244,8 @@ def _handle_command(
         )
         console.print(
             Panel(
-                str(plan or "The Agent has not published a plan yet."),
-                title="Latest plan",
+                str(plan or tr("The Agent has not published a plan yet.")),
+                title=tr("Latest plan"),
                 border_style="cyan",
             )
         )
@@ -219,15 +258,15 @@ def _handle_command(
         return False
     if command == "/pause":
         client.pause_run(_require_active(state))
-        console.print("[yellow]Pause requested.[/yellow]")
+        console.print(f"[yellow]{tr('Pause requested.')}[/yellow]")
         return False
     if command == "/continue":
         client.resume_run(_require_active(state))
-        console.print("[green]Resume requested.[/green]")
+        console.print(f"[green]{tr('Resume requested.')}[/green]")
         return False
     if command == "/cancel":
         client.cancel_run(_require_active(state))
-        console.print("[yellow]Run cancellation requested.[/yellow]")
+        console.print(f"[yellow]{tr('Run cancellation requested.')}[/yellow]")
         return False
     if command == "/compact":
         max_history_items = int(args[0]) if args else 100
@@ -237,7 +276,7 @@ def _handle_command(
             _require_active(state),
             max_history_items=max_history_items,
         )
-        console.print("[green]Context compaction requested.[/green]")
+        console.print(f"[green]{tr('Context compaction requested.')}[/green]")
         return False
     if command == "/web":
         path = f"/runs/{state.active_run_id}" if state.active_run_id else "/"
@@ -272,13 +311,13 @@ def _handle_command(
         if not args:
             raise ValueError("Usage: /approve APPROVAL_ID [--for-run]")
         client.approve(args[0], approve_for_run="--for-run" in args[1:])
-        console.print("[green]Approval saved and workflow signaled.[/green]")
+        console.print(f"[green]{tr('Approval saved and workflow signaled.')}[/green]")
         return False
     if command == "/reject":
         if not args:
             raise ValueError("Usage: /reject APPROVAL_ID [REASON]")
         client.reject(args[0], reason=" ".join(args[1:]).strip() or None)
-        console.print("[yellow]Approval rejected and workflow signaled.[/yellow]")
+        console.print(f"[yellow]{tr('Approval rejected and workflow signaled.')}[/yellow]")
         return False
     raise ValueError(f"Unknown command {command!r}; use /help")
 
@@ -295,11 +334,13 @@ def _handle_message(
         render_run(console, created)
         return
     client.append_message(state.active_run_id, text)
-    console.print("[green]Message queued.[/green]")
+    console.print(f"[green]{tr('Message queued.')}[/green]")
 
 
 def _watch(client: APIClient, run_id: str, console: Console) -> None:
-    console.print(f"[dim]Streaming events for {run_id}; press Ctrl+C to stop.[/dim]")
+    console.print(
+        f"[dim]{tr('Streaming events for {run_id}; press Ctrl+C to stop.', run_id=run_id)}[/dim]"
+    )
     try:
         for event in client.stream_events(run_id):
             if isinstance(event.data, dict):
@@ -310,7 +351,7 @@ def _watch(client: APIClient, run_id: str, console: Console) -> None:
                 if payload:
                     console.print(payload)
     except KeyboardInterrupt:
-        console.print("[dim]Stopped watching.[/dim]")
+        console.print(f"[dim]{tr('Stopped watching.')}[/dim]")
 
 
 def _new_run_payload(objective: str, state: InteractiveState) -> dict[str, object]:
@@ -326,13 +367,13 @@ def _new_run_payload(objective: str, state: InteractiveState) -> dict[str, objec
 
 def _require_active(state: InteractiveState) -> str:
     if state.active_run_id is None:
-        raise ValueError("No active run; use /new OBJECTIVE or /resume RUN_ID")
+        raise ValueError(tr("No active run; use /new OBJECTIVE or /resume RUN_ID"))
     return state.active_run_id
 
 
 def _require_active_terminal(state: InteractiveState) -> str:
     if state.active_terminal_id is None:
-        raise ValueError("No active terminal; use /terminal or /attach SESSION_ID")
+        raise ValueError(tr("No active terminal; use /terminal or /attach SESSION_ID"))
     return state.active_terminal_id
 
 
