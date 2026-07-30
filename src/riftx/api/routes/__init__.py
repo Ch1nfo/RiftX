@@ -3,6 +3,7 @@
 from .approvals import router as approvals_router
 from .artifacts import router as artifacts_router
 from .events import router as events_router
+from .executions import router as executions_router
 from .findings import router as findings_router
 from .nodes import router as nodes_router
 from .reports import router as reports_router
@@ -15,6 +16,7 @@ __all__ = [
     "approvals_router",
     "artifacts_router",
     "events_router",
+    "executions_router",
     "findings_router",
     "nodes_router",
     "reports_router",

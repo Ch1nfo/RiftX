@@ -74,6 +74,7 @@ class RegisteredToolSkill(BaseSkill):
             parsed.environment,
         )
         timeout = parsed.timeout_seconds or definition.timeout_seconds
+        tool_state = context.tool_registry.snapshot.states[definition.id]
         execution_key = parsed.execution_key or _default_execution_key(
             context.run_id, context.agent_step_id, self.id, definition.id
         )
@@ -86,6 +87,8 @@ class RegisteredToolSkill(BaseSkill):
                 executor_type=ExecutorType.PROCESS,
                 cwd=context.cwd,
                 argv=argv,
+                tool_id=definition.id,
+                tool_version=tool_state.version,
                 env=environment,
                 timeout_seconds=timeout,
             )
@@ -98,6 +101,8 @@ class RegisteredToolSkill(BaseSkill):
                 executor_type=ExecutorType.SHELL,
                 cwd=context.cwd,
                 command_text=_join_shell_words(argv),
+                tool_id=definition.id,
+                tool_version=tool_state.version,
                 shell=shell,
                 shell_path=shell_path,
                 env=environment,

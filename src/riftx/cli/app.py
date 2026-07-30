@@ -97,7 +97,7 @@ def main(
         config_path=config_path,
     )
     if context.invoked_subcommand is None:
-        with APIClient(api_url) as client:
+        with APIClient(resolved_api_url) as client:
             run_interactive(client, console)
 
 
@@ -507,6 +507,14 @@ def cancel_current(context: typer.Context, run_id: str) -> None:
 
     _run_with_client(context, lambda client: client.cancel_current_execution(run_id))
     console.print("[yellow]Current execution cancellation requested.[/yellow]")
+
+
+@run_app.command("cancel")
+def cancel_run(context: typer.Context, run_id: str) -> None:
+    """Cancel the durable Run and clean up its active executions."""
+
+    _run_with_client(context, lambda client: client.cancel_run(run_id))
+    console.print("[yellow]Run cancellation requested.[/yellow]")
 
 
 @run_app.command("message")

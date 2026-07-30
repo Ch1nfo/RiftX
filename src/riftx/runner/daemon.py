@@ -339,6 +339,17 @@ class RunnerDaemon:
                 execution.process_group_id if execution.status is ExecutionStatus.RUNNING else None
             ),
             exit_code=(execution.exit_code if execution.status in _TERMINAL_STATUSES else None),
+            executable_path=execution.executable_path,
+            tool_id=execution.tool_id,
+            tool_version=execution.tool_version,
+            platform_system=execution.platform_system,
+            platform_release=execution.platform_release,
+            platform_architecture=execution.platform_architecture,
+            process_created_at=(
+                execution.process_created_at.isoformat()
+                if execution.process_created_at is not None
+                else None
+            ),
         )
 
 

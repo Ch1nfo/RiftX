@@ -16,6 +16,7 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
+    ExecutionApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     NodeRegistration,
@@ -107,6 +108,7 @@ class ControlPlane:
     database: Database
     run_service: RunApplicationService
     event_service: EventApplicationService
+    execution_service: ExecutionApplicationService
     finding_service: FindingApplicationService
     node_service: NodeApplicationService
     runner_control_service: RunnerControlService
@@ -149,6 +151,9 @@ class UnavailableRunWorkflowClient:
         self._raise(run_id)
 
     async def cancel_current_execution(self, run_id: str) -> None:
+        self._raise(run_id)
+
+    async def cancel(self, run_id: str) -> None:
         self._raise(run_id)
 
     async def append_user_message(self, run_id: str, message: str) -> None:
@@ -289,6 +294,12 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         event_service=EventApplicationService(
             run_repository=run_repository,
             event_repository=event_repository,
+        ),
+        execution_service=ExecutionApplicationService(
+            run_repository=run_repository,
+            execution_repository=execution_repository,
+            event_repository=event_repository,
+            runner=execution_runner,
         ),
         node_service=node_service,
         runner_control_service=runner_control_service,

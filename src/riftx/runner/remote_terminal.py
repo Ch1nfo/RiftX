@@ -61,6 +61,8 @@ class RemoteTerminalSupervisor:
             node_id=request.node_id,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
+            tool_id=request.tool_id,
+            tool_version=request.tool_version,
             cwd=str(request.cwd),
             env_diff=request.env,
             stdout_path=str(terminal_paths.transcript),

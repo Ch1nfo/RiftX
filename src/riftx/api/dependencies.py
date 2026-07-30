@@ -8,6 +8,7 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
+    ExecutionApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     ReportApplicationService,
@@ -28,6 +29,10 @@ def get_run_service(request: Request) -> RunApplicationService:
 
 def get_event_service(request: Request) -> EventApplicationService:
     return request.app.state.control_plane.event_service
+
+
+def get_execution_service(request: Request) -> ExecutionApplicationService:
+    return request.app.state.control_plane.execution_service
 
 
 def get_finding_service(request: Request) -> FindingApplicationService:
@@ -64,6 +69,7 @@ def get_terminal_service(request: Request) -> TerminalApplicationService:
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
+ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
 FindingServiceDependency = Annotated[FindingApplicationService, Depends(get_finding_service)]
 NodeServiceDependency = Annotated[NodeApplicationService, Depends(get_node_service)]
 ReportServiceDependency = Annotated[ReportApplicationService, Depends(get_report_service)]

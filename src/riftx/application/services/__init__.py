@@ -13,6 +13,7 @@ from .artifacts import (
     RegisterArtifactContent,
 )
 from .events import EventApplicationService
+from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
 from .reports import (
@@ -43,6 +44,7 @@ __all__ = [
     "CreateRun",
     "DecideApproval",
     "EventApplicationService",
+    "ExecutionApplicationService",
     "CreateFinding",
     "FindingApplicationService",
     "NodeApplicationService",

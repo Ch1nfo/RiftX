@@ -21,6 +21,8 @@ class ExecutionLaunchRequest(BaseModel):
     cwd: Path
     argv: list[str] = Field(default_factory=list)
     command_text: str | None = None
+    tool_id: str | None = Field(default=None, min_length=1)
+    tool_version: str | None = None
     shell: ShellKind | None = None
     shell_path: Path | None = None
     environment_mode: EnvironmentMode = EnvironmentMode.INHERIT
@@ -76,6 +78,8 @@ class TerminalLaunchRequest(BaseModel):
     node_id: str = Field(min_length=1)
     cwd: Path
     argv: list[str]
+    tool_id: str | None = Field(default=None, min_length=1)
+    tool_version: str | None = None
     environment_mode: EnvironmentMode = EnvironmentMode.INHERIT
     env: dict[str, str | None] = Field(default_factory=dict)
     cols: int = Field(default=120, gt=0, le=1000)

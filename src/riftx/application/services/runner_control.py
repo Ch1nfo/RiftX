@@ -58,6 +58,13 @@ class ExecutionStatusReport:
     pid: int | None = None
     process_group_id: int | None = None
     exit_code: int | None = None
+    executable_path: str | None = None
+    tool_id: str | None = None
+    tool_version: str | None = None
+    platform_system: str = ""
+    platform_release: str = ""
+    platform_architecture: str = ""
+    process_created_at: datetime | None = None
 
 
 class RunnerControlService:
@@ -230,7 +237,7 @@ class RunnerControlService:
         execution = await self._require_execution(execution_id)
         self._require_execution_scope(execution, node_id)
         if execution.status is report.status:
-            changed = False
+            changed = _apply_execution_provenance(execution, report)
             if report.status is ExecutionStatus.RUNNING:
                 if report.pid is not None and execution.pid != report.pid:
                     execution.pid = report.pid
@@ -268,6 +275,7 @@ class RunnerControlService:
         if report.status is ExecutionStatus.RUNNING:
             execution.pid = report.pid
             execution.process_group_id = report.process_group_id
+        _apply_execution_provenance(execution, report)
         execution.transition_to(report.status, exit_code=report.exit_code)
         execution = await self._executions.save(execution)
         await self._sync_terminal_status(execution, report.status)
@@ -379,6 +387,27 @@ class RunnerControlService:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _apply_execution_provenance(
+    execution: Execution,
+    report: ExecutionStatusReport,
+) -> bool:
+    changed = False
+    for name in (
+        "executable_path",
+        "tool_id",
+        "tool_version",
+        "platform_system",
+        "platform_release",
+        "platform_architecture",
+        "process_created_at",
+    ):
+        value = getattr(report, name)
+        if value not in {None, ""} and getattr(execution, name) != value:
+            setattr(execution, name, value)
+            changed = True
+    return changed
 
 
 def _append_exact(path: Path, offset: int, data: bytes) -> int:

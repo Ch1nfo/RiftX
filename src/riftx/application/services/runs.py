@@ -41,6 +41,8 @@ class RunWorkflowClient(Protocol):
 
     async def cancel_current_execution(self, run_id: str) -> None: ...
 
+    async def cancel(self, run_id: str) -> None: ...
+
     async def append_user_message(self, run_id: str, message: str) -> None: ...
 
     def workflow_id(self, run_id: str) -> str: ...
@@ -168,6 +170,12 @@ class RunApplicationService:
             self._workflow_client.cancel_current_execution,
         )
         await self._event_repository.append(run.id, "execution.cancel_requested")
+        return run
+
+    async def cancel(self, run_id: str) -> Run:
+        run = await self._require_controllable_run(run_id, action="cancel")
+        await self._invoke_workflow(run, "cancel", self._workflow_client.cancel)
+        await self._event_repository.append(run.id, "run.cancel_requested")
         return run
 
     async def append_user_message(self, run_id: str, message: str) -> Run:

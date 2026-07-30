@@ -45,6 +45,7 @@ class RiftXRunWorkflow:
         self._user_messages: list[str] = []
         self._active_execution_id: str | None = None
         self._cancel_current_execution_requested = False
+        self._cancel_requested = False
 
     @workflow.run
     async def run(self, input: RunWorkflowInput) -> RunWorkflowResult:
@@ -57,14 +58,22 @@ class RiftXRunWorkflow:
             retry_policy=_ACTIVITY_RETRY_POLICY,
         )
 
-        while not self._finished:
+        while not self._finished and not self._cancel_requested:
             await self._wait_until_runnable()
+            if self._cancel_requested:
+                break
             if self._checkpoint_id is not None:
                 await self._wait_for_approval_decisions()
+                if self._cancel_requested:
+                    break
                 if self._paused:
                     continue
             elif self._phase is WorkflowPhase.WAITING_INPUT and not self._user_messages:
-                await workflow.wait_condition(lambda: bool(self._user_messages) or self._paused)
+                await workflow.wait_condition(
+                    lambda: bool(self._user_messages) or self._paused or self._cancel_requested
+                )
+                if self._cancel_requested:
+                    break
                 if self._paused:
                     continue
 
@@ -111,6 +120,18 @@ class RiftXRunWorkflow:
                 self._checkpoint_id = None
                 self._pending_approvals.clear()
 
+        if self._cancel_requested:
+            self._phase = WorkflowPhase.CLEANUP
+            await workflow.execute_activity(
+                "cleanup_run_activity",
+                CleanupRunInput(run_id=self._run_id, final_status="cancelled"),
+                result_type=CleanupRunResult,
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=_ACTIVITY_RETRY_POLICY,
+            )
+            self._phase = WorkflowPhase.CANCELLED
+            return RunWorkflowResult(run_id=self._run_id, phase=self._phase)
+
         self._phase = WorkflowPhase.REPORTING
         report = await workflow.execute_activity(
             "generate_report_activity",
@@ -138,13 +159,14 @@ class RiftXRunWorkflow:
         if not self._paused:
             return
         self._phase = WorkflowPhase.PAUSED
-        await workflow.wait_condition(lambda: not self._paused)
+        await workflow.wait_condition(lambda: not self._paused or self._cancel_requested)
 
     async def _wait_for_approval_decisions(self) -> None:
         self._phase = WorkflowPhase.WAITING_APPROVAL
         await workflow.wait_condition(
             lambda: (
                 self._paused
+                or self._cancel_requested
                 or all(item.call_id in self._approval_decisions for item in self._pending_approvals)
             )
         )
@@ -172,6 +194,12 @@ class RiftXRunWorkflow:
         self._cancel_current_execution_requested = True
 
     @workflow.signal
+    def cancel(self) -> None:
+        self._cancel_requested = True
+        self._cancel_current_execution_requested = True
+        self._paused = False
+
+    @workflow.signal
     def append_user_message(self, message: str) -> None:
         normalized = message.strip()
         if normalized:
@@ -189,6 +217,7 @@ class RiftXRunWorkflow:
             active_execution_id=self._active_execution_id,
             queued_user_messages=len(self._user_messages),
             cancel_current_execution_requested=self._cancel_current_execution_requested,
+            cancel_requested=self._cancel_requested,
         )
 
     @workflow.query

@@ -83,6 +83,9 @@ class APIClient:
     def resume_run(self, run_id: str) -> dict[str, Any]:
         return self._json("POST", f"/api/v1/runs/{run_id}/resume")
 
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/api/v1/runs/{run_id}/cancel")
+
     def cancel_current_execution(self, run_id: str) -> dict[str, Any]:
         return self._json(
             "POST",

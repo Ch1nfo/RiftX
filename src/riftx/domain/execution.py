@@ -82,14 +82,21 @@ class Execution(DomainModel):
     executor_type: ExecutorType
     argv: list[str] = Field(default_factory=list)
     command_text: str | None = None
+    tool_id: str | None = None
+    tool_version: str | None = None
+    executable_path: str | None = None
     cwd: str
     env_diff: dict[str, str | None] = Field(default_factory=dict)
+    platform_system: str = ""
+    platform_release: str = ""
+    platform_architecture: str = ""
     status: ExecutionStatus = ExecutionStatus.CREATED
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)
     exit_code: int | None = None
     stdout_path: str
     stderr_path: str
+    process_created_at: AwareDatetime | None = None
     started_at: AwareDatetime | None = None
     finished_at: AwareDatetime | None = None
 

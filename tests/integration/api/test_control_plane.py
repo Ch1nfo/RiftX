@@ -20,6 +20,7 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
+    ExecutionApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     ReportApplicationService,
@@ -56,7 +57,7 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
-from riftx.runner import RunnerPaths, TerminalSupervisor
+from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.tools import ToolRegistry
 
@@ -84,6 +85,9 @@ class FakeWorkflowClient:
 
     async def cancel_current_execution(self, run_id: str) -> None:
         self._record("cancel_current_execution", run_id)
+
+    async def cancel(self, run_id: str) -> None:
+        self._record("cancel", run_id)
 
     async def append_user_message(self, run_id: str, message: str) -> None:
         self._record("message", run_id, message)
@@ -167,6 +171,7 @@ tools:
         runner_command_lease_seconds=0.05,
     )
     runner_paths = RunnerPaths(settings.runner_state_path)
+    process_supervisor = ProcessSupervisor(execution_repository, runner_paths)
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
         execution_repository=execution_repository,
@@ -214,6 +219,12 @@ tools:
                 run_repository=run_repository,
                 event_repository=event_repository,
             ),
+            execution_service=ExecutionApplicationService(
+                run_repository=run_repository,
+                execution_repository=execution_repository,
+                event_repository=event_repository,
+                runner=process_supervisor,
+            ),
             node_service=node_service,
             runner_control_service=runner_control_service,
             finding_service=FindingApplicationService(
@@ -244,6 +255,7 @@ tools:
                 supervisor=terminal_controller,
             ),
             terminal_supervisor=terminal_supervisor,
+            process_supervisor=process_supervisor,
         ),
         workflow=workflow_client,
         finding_repository=finding_repository,
@@ -310,6 +322,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 json={"message": "Focus on the HTTP endpoint"},
             )
             assert message.status_code == 202
+            assert (await client.post(f"/api/v1/runs/{run_id}/cancel")).status_code == 202
 
             assert [call[0] for call in runtime.workflow.calls] == [
                 "start",
@@ -317,6 +330,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "resume",
                 "cancel_current_execution",
                 "message",
+                "cancel",
             ]
             events = await client.get(f"/api/v1/runs/{run_id}/events", params={"limit": 20})
             assert events.status_code == 200
@@ -328,8 +342,9 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "run.resume_requested",
                 "execution.cancel_requested",
                 "user.message_queued",
+                "run.cancel_requested",
             ]
-            assert events.json()["items"][-1]["payload"]["message"] == (
+            assert events.json()["items"][-2]["payload"]["message"] == (
                 "Focus on the HTTP endpoint"
             )
     finally:
@@ -1311,10 +1326,24 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         running = await client.post(
             f"/api/v1/runner/executions/{execution.id}/status",
             headers=headers,
-            json={"status": "running", "pid": 4242, "process_group_id": 4242},
+            json={
+                "status": "running",
+                "pid": 4242,
+                "process_group_id": 4242,
+                "executable_path": "/usr/bin/echo",
+                "tool_id": "echo",
+                "tool_version": "9.1",
+                "platform_system": "linux",
+                "platform_release": "6.10",
+                "platform_architecture": "x86_64",
+                "process_created_at": "2026-07-30T00:00:00Z",
+            },
         )
         assert running.status_code == 200
         assert running.json()["status"] == "running"
+        assert running.json()["executable_path"] == "/usr/bin/echo"
+        assert running.json()["tool_version"] == "9.1"
+        assert running.json()["platform_architecture"] == "x86_64"
 
         cross_node_status = await client.post(
             f"/api/v1/runner/executions/{execution.id}/status",
@@ -1528,5 +1557,64 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
             fetched = await client.get(f"/api/v1/terminals/{terminal['id']}")
             assert fetched.json()["pid"] == 5150
             assert fetched.json()["exit_code"] == 130
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            run = await _create_run(client)
+            run_id = str(run["id"])
+            paths = RunnerPaths(runtime.control_plane.settings.runner_state_path).execution(
+                run_id, "execution-public"
+            )
+            paths.stdout.parent.mkdir(parents=True, exist_ok=True)
+            paths.stdout.write_bytes(b"hello execution\n")
+            paths.stderr.write_bytes(b"diagnostic\n")
+            execution = Execution(
+                id="execution-public",
+                execution_key="public-key",
+                run_id=run_id,
+                node_id="local",
+                executor_type=ExecutorType.PROCESS,
+                argv=["/usr/bin/printf", "hello"],
+                tool_id="printf",
+                tool_version="coreutils 9",
+                executable_path="/usr/bin/printf",
+                cwd=str(run["workspace_path"]),
+                env_diff={"LANG": "C.UTF-8"},
+                platform_system="linux",
+                platform_release="6.10",
+                platform_architecture="x86_64",
+                stdout_path=str(paths.stdout),
+                stderr_path=str(paths.stderr),
+            )
+            execution.transition_to(ExecutionStatus.STARTING)
+            execution.transition_to(ExecutionStatus.RUNNING)
+            execution.transition_to(ExecutionStatus.EXITED, exit_code=0)
+            await runtime.execution_repository.create_if_absent(execution)
+
+            listed = await client.get(f"/api/v1/runs/{run_id}/executions")
+            fetched = await client.get(f"/api/v1/executions/{execution.id}")
+            output = await client.get(
+                f"/api/v1/executions/{execution.id}/output",
+                params={"max_bytes": 5},
+            )
+
+            assert listed.status_code == 200
+            assert [item["id"] for item in listed.json()["items"]] == [execution.id]
+            assert fetched.status_code == 200
+            assert fetched.json()["tool_id"] == "printf"
+            assert fetched.json()["tool_version"] == "coreutils 9"
+            assert fetched.json()["executable_path"] == "/usr/bin/printf"
+            assert fetched.json()["platform_system"] == "linux"
+            assert fetched.json()["platform_architecture"] == "x86_64"
+            assert output.status_code == 200
+            assert output.json()["stdout"]["data"] == "aGVsbG8="
+            assert output.json()["stdout"]["next_cursor"] == 5
+            assert output.json()["stdout"]["eof"] is False
     finally:
         await runtime.control_plane.close()

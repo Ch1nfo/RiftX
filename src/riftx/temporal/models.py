@@ -15,6 +15,7 @@ class WorkflowPhase(StrEnum):
     REPORTING = "reporting"
     CLEANUP = "cleanup"
     COMPLETED = "completed"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -111,6 +112,7 @@ class RunWorkflowStatus:
     active_execution_id: str | None = None
     queued_user_messages: int = 0
     cancel_current_execution_requested: bool = False
+    cancel_requested: bool = False
 
 
 @dataclass

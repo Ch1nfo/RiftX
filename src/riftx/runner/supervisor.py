@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
+import shutil
 import signal
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,8 +68,13 @@ class ProcessSupervisor:
             executor_type=request.executor_type,
             argv=request.argv,
             command_text=request.command_text,
+            tool_id=request.tool_id,
+            tool_version=request.tool_version,
             cwd=str(request.cwd),
             env_diff=request.env,
+            platform_system=platform.system().lower() or os.name,
+            platform_release=platform.release(),
+            platform_architecture=platform.machine() or "unknown",
             stdout_path=str(output_paths.stdout),
             stderr_path=str(output_paths.stderr),
         )
@@ -77,6 +84,10 @@ class ProcessSupervisor:
             return execution
 
         effective_environment = merge_environment(request.env, mode=request.environment_mode)
+        execution.executable_path = _resolve_executable(
+            request.argv[0] if request.argv else request.shell_path,
+            effective_environment,
+        )
 
         execution.transition_to(ExecutionStatus.STARTING)
         await self._repository.save(execution)
@@ -88,8 +99,12 @@ class ProcessSupervisor:
             return execution
 
         execution.argv = handle.request.argv
+        execution.executable_path = _resolve_executable(
+            handle.request.argv[0], effective_environment
+        )
         execution.pid = handle.pid
         execution.process_group_id = handle.process_group_id
+        execution.process_created_at = handle.started_at
         execution.transition_to(ExecutionStatus.RUNNING, at=handle.started_at)
         await self._repository.save(execution)
 
@@ -263,6 +278,18 @@ def _managed_task(managed: _ManagedExecution) -> asyncio.Task[None]:
     if managed.task is None:
         raise RuntimeError("managed execution monitor has not been initialized")
     return managed.task
+
+
+def _resolve_executable(
+    executable: str | Path | None,
+    environment: dict[str, str],
+) -> str | None:
+    if executable is None:
+        return None
+    path = Path(executable)
+    if path.is_absolute():
+        return str(path.resolve(strict=False))
+    return shutil.which(str(executable), path=environment.get("PATH"))
 
 
 def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:

@@ -308,14 +308,21 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
         executor_type=execution.executor_type.value,
         argv_json=execution.argv,
         command_text=execution.command_text,
+        tool_id=execution.tool_id,
+        tool_version=execution.tool_version,
+        executable_path=execution.executable_path,
         cwd=execution.cwd,
         env_diff_json=execution.env_diff,
+        platform_system=execution.platform_system,
+        platform_release=execution.platform_release,
+        platform_architecture=execution.platform_architecture,
         status=execution.status.value,
         pid=execution.pid,
         process_group_id=execution.process_group_id,
         exit_code=execution.exit_code,
         stdout_path=execution.stdout_path,
         stderr_path=execution.stderr_path,
+        process_created_at=execution.process_created_at,
         started_at=execution.started_at,
         finished_at=execution.finished_at,
     )
@@ -326,14 +333,21 @@ def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> 
     record.executor_type = execution.executor_type.value
     record.argv_json = execution.argv
     record.command_text = execution.command_text
+    record.tool_id = execution.tool_id
+    record.tool_version = execution.tool_version
+    record.executable_path = execution.executable_path
     record.cwd = execution.cwd
     record.env_diff_json = execution.env_diff
+    record.platform_system = execution.platform_system
+    record.platform_release = execution.platform_release
+    record.platform_architecture = execution.platform_architecture
     record.status = execution.status.value
     record.pid = execution.pid
     record.process_group_id = execution.process_group_id
     record.exit_code = execution.exit_code
     record.stdout_path = execution.stdout_path
     record.stderr_path = execution.stderr_path
+    record.process_created_at = execution.process_created_at
     record.started_at = execution.started_at
     record.finished_at = execution.finished_at
 
@@ -347,14 +361,21 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         executor_type=ExecutorType(record.executor_type),
         argv=record.argv_json,
         command_text=record.command_text,
+        tool_id=record.tool_id,
+        tool_version=record.tool_version,
+        executable_path=record.executable_path,
         cwd=record.cwd,
         env_diff=record.env_diff_json or {},
+        platform_system=record.platform_system,
+        platform_release=record.platform_release,
+        platform_architecture=record.platform_architecture,
         status=ExecutionStatus(record.status),
         pid=record.pid,
         process_group_id=record.process_group_id,
         exit_code=record.exit_code,
         stdout_path=record.stdout_path,
         stderr_path=record.stderr_path,
+        process_created_at=record.process_created_at,
         started_at=record.started_at,
         finished_at=record.finished_at,
     )

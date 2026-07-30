@@ -202,6 +202,13 @@ class RunnerControlClient:
         pid: int | None = None,
         process_group_id: int | None = None,
         exit_code: int | None = None,
+        executable_path: str | None = None,
+        tool_id: str | None = None,
+        tool_version: str | None = None,
+        platform_system: str = "",
+        platform_release: str = "",
+        platform_architecture: str = "",
+        process_created_at: str | None = None,
     ) -> None:
         await self._request(
             "POST",
@@ -211,6 +218,13 @@ class RunnerControlClient:
                 "pid": pid,
                 "process_group_id": process_group_id,
                 "exit_code": exit_code,
+                "executable_path": executable_path,
+                "tool_id": tool_id,
+                "tool_version": tool_version,
+                "platform_system": platform_system,
+                "platform_release": platform_release,
+                "platform_architecture": platform_architecture,
+                "process_created_at": process_created_at,
             },
         )
 

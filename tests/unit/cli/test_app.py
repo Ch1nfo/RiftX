@@ -51,6 +51,10 @@ class FakeAPIClient:
             )
         return {"items": []}
 
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("cancel_run", run_id))
+        return {"run": {"id": run_id, "status": "running"}}
+
     def list_nodes(self, *, status: str | None = None) -> dict[str, Any]:
         self.calls.append(("list_nodes", status))
         return {"items": [self._node("node-1")]}
@@ -259,6 +263,13 @@ def test_api_error_produces_nonzero_exit() -> None:
     FakeAPIClient.fail = True
     result = runner.invoke(cli_module.app, ["run", "list"])
     assert result.exit_code == 1
+
+
+def test_run_cancel_delegates_to_shared_http_client() -> None:
+    result = runner.invoke(cli_module.app, ["run", "cancel", "run-1"])
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [("cancel_run", "run-1")]
 
 
 def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:

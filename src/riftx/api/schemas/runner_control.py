@@ -59,6 +59,13 @@ class ExecutionStatusReportRequest(BaseModel):
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)
     exit_code: int | None = None
+    executable_path: str | None = None
+    tool_id: str | None = None
+    tool_version: str | None = None
+    platform_system: str = ""
+    platform_release: str = ""
+    platform_architecture: str = ""
+    process_created_at: datetime | None = None
 
 
 class ExecutionOutputReportRequest(BaseModel):

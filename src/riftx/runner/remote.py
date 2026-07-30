@@ -56,6 +56,8 @@ class RemoteExecutionSupervisor:
             executor_type=request.executor_type,
             argv=request.argv,
             command_text=request.command_text,
+            tool_id=request.tool_id,
+            tool_version=request.tool_version,
             cwd=str(request.cwd),
             env_diff=request.env,
             stdout_path=str(output_paths.stdout),

@@ -165,6 +165,14 @@ class ExecutionRepository(Protocol):
 
     async def save(self, execution: Execution) -> Execution: ...
 
+    async def list(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Execution]: ...
+
     async def list_active(self) -> Sequence[Execution]: ...
 
 

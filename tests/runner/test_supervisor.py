@@ -15,6 +15,7 @@ from riftx.persistence import (
 from riftx.runner import ExecutionLaunchRequest, ProcessSupervisor, RunnerPaths
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fake_process.py"
+PYTHON_EXECUTABLE = str(Path(sys.executable).resolve())
 
 
 def wait_for_nonempty_file(path: Path, deadline_seconds: float = 2.0) -> None:
@@ -65,6 +66,8 @@ def launch_request(
         executor_type=ExecutorType.PROCESS,
         cwd=tmp_path,
         argv=[sys.executable, str(FIXTURE), *fixture_args],
+        tool_id="fake-process",
+        tool_version="1.2.3",
         env={"RIFTX_TEST_VALUE": "supervised"},
         timeout_seconds=timeout_seconds,
     )
@@ -87,6 +90,13 @@ async def test_supervisor_persists_lifecycle_and_reads_output_by_cursor(
 
     assert completed.status is ExecutionStatus.EXITED
     assert completed.exit_code == 0
+    assert completed.tool_id == "fake-process"
+    assert completed.tool_version == "1.2.3"
+    assert completed.executable_path == PYTHON_EXECUTABLE
+    assert completed.platform_system
+    assert completed.platform_release
+    assert completed.platform_architecture
+    assert completed.process_created_at == completed.started_at
     assert first.stdout.data + second.stdout.data == (
         b"stdout: \xe4\xbd\xa0\xe5\xa5\xbd RiftX\nenv: supervised\n"
     )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -22,7 +24,7 @@ from riftx.domain import (
     TerminalSession,
     TerminalStatus,
 )
-from riftx.domain.base import new_id
+from riftx.domain.base import new_id, utc_now
 from riftx.executors import merge_environment
 
 from .models import OutputSlice, TerminalLaunchRequest
@@ -110,8 +112,13 @@ class TerminalSupervisor:
             node_id=request.node_id,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
+            tool_id=request.tool_id,
+            tool_version=request.tool_version,
             cwd=str(request.cwd),
             env_diff=request.env,
+            platform_system=platform.system().lower() or os.name,
+            platform_release=platform.release(),
+            platform_architecture=platform.machine() or "unknown",
             stdout_path=str(terminal_paths.transcript),
             stderr_path=str(terminal_paths.transcript),
         )
@@ -134,6 +141,7 @@ class TerminalSupervisor:
         execution.transition_to(ExecutionStatus.STARTING)
         await self._executions.save(execution)
         environment = merge_environment(request.env, mode=request.environment_mode)
+        execution.executable_path = _resolve_terminal_executable(request.argv[0], environment)
         try:
             handle = await backend.start(
                 request,
@@ -149,7 +157,9 @@ class TerminalSupervisor:
 
         execution.pid = handle.pid
         execution.process_group_id = handle.pid
-        execution.transition_to(ExecutionStatus.RUNNING)
+        started_at = utc_now()
+        execution.process_created_at = started_at
+        execution.transition_to(ExecutionStatus.RUNNING, at=started_at)
         await self._executions.save(execution)
         terminal.transition_to(TerminalStatus.OPEN)
         await self._terminals.save(terminal)
@@ -382,6 +392,16 @@ class TerminalSupervisor:
                 f"Terminal input belongs to {terminal.owner.value!r}, not {actor.value!r}",
                 details={"session_id": terminal.id, "owner": terminal.owner.value},
             )
+
+
+def _resolve_terminal_executable(
+    executable: str,
+    environment: dict[str, str],
+) -> str | None:
+    path = Path(executable)
+    if path.is_absolute():
+        return str(path.resolve(strict=False))
+    return shutil.which(executable, path=environment.get("PATH"))
 
 
 def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:

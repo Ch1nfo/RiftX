@@ -794,6 +794,28 @@ class SQLAlchemyExecutionRepository:
             await session.flush()
         return execution
 
+    async def list(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Execution]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        statement = (
+            select(ExecutionRecord)
+            .where(ExecutionRecord.run_id == run_id)
+            .order_by(ExecutionRecord.started_at, ExecutionRecord.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [execution_from_record(record) for record in records]
+
     async def list_active(self) -> Sequence[Execution]:
         statement = (
             select(ExecutionRecord)

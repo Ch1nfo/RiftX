@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from riftx.domain import Engagement, Execution, ExecutionStatus, ExecutorType, Objective, Run
@@ -32,9 +33,16 @@ async def test_execution_repository_claim_is_idempotent(tmp_path: Path) -> None:
         node_id="node-1",
         executor_type=ExecutorType.PROCESS,
         argv=["printf", "ok"],
+        tool_id="printf",
+        tool_version="coreutils 9",
+        executable_path="/usr/bin/printf",
         cwd=str(tmp_path),
+        platform_system="linux",
+        platform_release="6.10",
+        platform_architecture="x86_64",
         stdout_path=str(tmp_path / "stdout.log"),
         stderr_path=str(tmp_path / "stderr.log"),
+        process_created_at=datetime(2026, 7, 30, tzinfo=UTC),
     )
 
     first, first_created = await repository.create_if_absent(execution)
@@ -43,9 +51,17 @@ async def test_execution_repository_claim_is_idempotent(tmp_path: Path) -> None:
     first.transition_to(ExecutionStatus.STARTING)
     await repository.save(first)
     active = await repository.list_active()
+    listed = await repository.list("run-1")
 
     assert first_created is True
     assert second_created is False
     assert second.id == first.id
     assert [item.id for item in active] == [first.id]
+    assert [item.id for item in listed] == [first.id]
+    assert listed[0].tool_id == "printf"
+    assert listed[0].tool_version == "coreutils 9"
+    assert listed[0].executable_path == "/usr/bin/printf"
+    assert listed[0].platform_system == "linux"
+    assert listed[0].platform_architecture == "x86_64"
+    assert listed[0].process_created_at == datetime(2026, 7, 30, tzinfo=UTC)
     await database.dispose()

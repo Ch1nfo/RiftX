@@ -197,10 +197,13 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
             args=args or [],
             argv=argv or [],
         )
+        tool_state = services.tool_registry.snapshot.states.get(tool_id) if tool_id else None
         view = await services.terminal_service.create(
             context.run_id,
             CreateTerminal(
                 argv=command,
+                tool_id=tool_id,
+                tool_version=tool_state.version if tool_state is not None else None,
                 cwd=cwd,
                 cols=cols,
                 rows=rows,

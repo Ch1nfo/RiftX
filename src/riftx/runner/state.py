@@ -60,6 +60,26 @@ class FileExecutionRepository:
             items = await asyncio.to_thread(self._read)
             return [_copy(item) for item in items.values() if item.status in _ACTIVE_STATUSES]
 
+    async def list(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Execution]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        async with self._lock:
+            matches = [
+                _copy(item)
+                for item in (await asyncio.to_thread(self._read)).values()
+                if item.run_id == run_id
+            ]
+        matches.sort(key=lambda item: (item.started_at is None, item.started_at, item.id))
+        return matches[offset : offset + limit]
+
     def _read(self) -> dict[str, Execution]:
         try:
             raw = json.loads(self.path.read_text())

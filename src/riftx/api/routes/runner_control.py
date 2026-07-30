@@ -91,6 +91,13 @@ async def report_execution_status(
             pid=payload.pid,
             process_group_id=payload.process_group_id,
             exit_code=payload.exit_code,
+            executable_path=payload.executable_path,
+            tool_id=payload.tool_id,
+            tool_version=payload.tool_version,
+            platform_system=payload.platform_system,
+            platform_release=payload.platform_release,
+            platform_architecture=payload.platform_architecture,
+            process_created_at=payload.process_created_at,
         ),
     )
     return execution.model_dump(mode="json")

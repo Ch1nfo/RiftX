@@ -36,6 +36,7 @@ class FakeActivities:
     cycle_inputs: list[AgentCycleActivityInput] = field(default_factory=list)
     prepared_runs: list[str] = field(default_factory=list)
     cleaned_runs: list[str] = field(default_factory=list)
+    cleanup_inputs: list[CleanupRunInput] = field(default_factory=list)
 
     @activity.defn(name="prepare_run_activity")
     async def prepare_run(self, input: PrepareRunInput) -> PrepareRunResult:
@@ -54,6 +55,7 @@ class FakeActivities:
     @activity.defn(name="cleanup_run_activity")
     async def cleanup(self, input: CleanupRunInput) -> CleanupRunResult:
         self.cleaned_runs.append(input.run_id)
+        self.cleanup_inputs.append(input)
         return CleanupRunResult()
 
     def registered(self) -> list[object]:
@@ -214,4 +216,34 @@ async def test_agent_cycle_activity_retry_reuses_stable_agent_step_id() -> None:
     assert result.phase is WorkflowPhase.COMPLETED
     assert len(activities.cycle_inputs) == 2
     assert activities.cycle_inputs[0].agent_step_id == activities.cycle_inputs[1].agent_step_id
+    await environment.shutdown()
+
+
+async def test_workflow_cancel_signal_cleans_up_without_generating_report() -> None:
+    environment = await WorkflowEnvironment.start_time_skipping()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = FakeActivities(
+        cycle_results=deque([AgentCycleActivityResult(status=AgentCycleActivityStatus.NEEDS_INPUT)])
+    )
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-cancel"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await _wait_for_phase(handle, WorkflowPhase.WAITING_INPUT)
+        await handle.signal(RiftXRunWorkflow.cancel)
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.CANCELLED
+    assert result.report_id is None
+    assert activities.cleanup_inputs[-1].final_status == "cancelled"
     await environment.shutdown()

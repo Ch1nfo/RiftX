@@ -17,6 +17,8 @@ from riftx.runner import OutputSlice, TerminalController, TerminalLaunchRequest
 @dataclass(frozen=True, slots=True)
 class CreateTerminal:
     argv: list[str] = field(default_factory=list)
+    tool_id: str | None = None
+    tool_version: str | None = None
     cwd: str | None = None
     env: dict[str, str | None] = field(default_factory=dict)
     cols: int = 120
@@ -55,6 +57,8 @@ class TerminalApplicationService:
                     node_id=run.node_id,
                     cwd=cwd,
                     argv=argv,
+                    tool_id=command.tool_id,
+                    tool_version=command.tool_version,
                     environment_mode=EnvironmentMode.INHERIT,
                     env=command.env,
                     cols=command.cols,
