@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-04 is unblocked.
+Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-01 is unblocked.
 
 ## Completed
 
@@ -22,6 +22,7 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-04 is unblocke
 - [x] DUR-01 Temporal Durable Cycle
 - [x] DUR-02 Approval 与 User Input 恢复
 - [x] DUR-03 PTY Runtime 与所有权
+- [x] DUR-04 Checkpoint、Compaction 与模型切换
 
 ## Task Record
 
@@ -417,6 +418,36 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-04 is unblocke
   - Real ConPTY and PowerShell smoke tests remain host-dependent and were skipped on this macOS host; mocked ConPTY lifecycle tests passed in the full suite.
   - Provider-neutral checkpoint compaction and model switching are intentionally owned by DUR-04.
 - Next dependency: DUR-04 is unblocked.
+
+### DUR-04
+
+- Branch: `codex/dur-04-checkpoint-compaction`
+- Commits:
+  - `3bdb4cc feat(context): persist provider-neutral checkpoints`
+  - `4123d70 feat(context): recover canonical compaction checkpoints`
+  - `759a78a feat(runtime): switch models through neutral checkpoints`
+  - `8cdedf7 test(runtime): recover compaction after worker restart`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `489 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `c1d4e6f8a203_add_context_checkpoints.py`
+- Core delivery:
+  - Provider-neutral Context Checkpoints persist the complete canonical resume state plus model-facing compilation, manifest, Working Memory, Provider State, retained Message, and retained Tool Result references.
+  - The 55%, 70%, 82%, and 90% usage thresholds map to Tool Preview cleanup, Conversation Summary, Canonical Checkpoint, and Emergency Compaction stages.
+  - Compaction permanently retains the authoritative Transcript, marks superseded messages with their checkpoint, and excludes only those marked messages from later model-facing Context compilation.
+  - Temporal generates one deterministic checkpoint ID per compaction request; Activity retries repair a checkpoint-written/message-marker-missing crash window without deleting state or duplicating the checkpoint.
+  - Model switching preserves the previous Provider State ID in a soft-reference checkpoint, changes the Session and Run model profile, clears provider-native resume state, recompiles and persists Context for the target profile, then continues the same Run.
+  - `POST /api/v1/runs/{run_id}/model` and `riftx run model` expose durable model switching through the existing Workflow control boundary.
+- Required scenarios:
+  - Explicit required-context overflow, expired Provider State recovery, recovery after compaction, model switching, Worker shutdown during compaction, Pending Approval retention, and active Execution/Terminal retention are covered by executable tests.
+- Wave D gate:
+  - Tool execution Worker restart, approval and user-input restart recovery, in-flight compaction Worker replacement, PTY Runner restart to `LOST`, and same-Run model switching all pass in the full suite.
+- Known limitations:
+  - Real ConPTY and PowerShell smoke tests remain host-dependent and were skipped on this macOS host; all portable and mocked recovery tests passed.
+- Next dependency: MEM-01 is unblocked.
 
 ## Architecture Deviations
 
