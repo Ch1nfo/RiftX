@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave F are complete; Wave G is active and WEB-03 is unblocked.
+Wave A through Wave F are complete; Wave G is active and WEB-04 is unblocked.
 
 ## Completed
 
@@ -30,6 +30,7 @@ Wave A through Wave F are complete; Wave G is active and WEB-03 is unblocked.
 - [x] EXT-02 Fact Promotion 与 Attack Graph
 - [x] WEB-01 Source Registry 与 Public Fetch
 - [x] WEB-02 Search Provider 与 Research Pipeline
+- [x] WEB-03 Target HTTP
 
 ## Task Record
 
@@ -644,6 +645,35 @@ Wave A through Wave F are complete; Wave G is active and WEB-03 is unblocked.
 - Contract coverage:
   - Ordinary/empty search, domain allow/block filters, duplicate URLs, timestamps, Unicode, timeout, 429/5xx, OpenAI citation normalization, multi-query planning, source diversity, failed-query recovery, canonical Fetch gating, Evidence offsets, prompt-injection identity, Context budget, migration, and durable round trips.
 - Next dependency: WEB-03 is unblocked.
+
+### WEB-03
+
+- Branch: `codex/web-03-target-http`
+- Commits:
+  - `c0b53a1 feat(web): execute scoped target HTTP on runner`
+  - `6f45670 feat(runner): route target HTTP to remote nodes`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest tests/target_http tests/runner/test_remote_control.py tests/integration/api/test_control_plane.py -q`
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent pytest tests/runtime/test_terminal_runtime.py::test_runtime_opens_one_durable_pty_and_yields_terminal_open -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: WEB-03 targeted coverage `21 passed`; related Target HTTP, Runner, and API integration coverage `45 passed`; monolithic suite `585 passed, 2 skipped` plus the sole environment-denied PTY cleanup test `1 passed` in isolation; Ruff passed; Alembic has one head `c9f1a3b5e407`; diff check clean.
+- Migration: `c9f1a3b5e407_add_target_http_requests.py`
+- Core delivery:
+  - Added a typed Target HTTP request/result contract for method, URL, headers, query, text or binary body, JSON body, cookies, proxy, TLS verification, Runner-local client-certificate references, redirect policy, timeout, and bounded response capture.
+  - Target requests execute with the selected Runner host network and inherit its DNS, VPN, `/etc/hosts`, proxy environment, and local certificate access. Every initial request and redirect is rechecked against the immutable Run Scope before network I/O.
+  - Added deterministic execution keys and request fingerprints, durable request state, ToolCallIntent readiness checks, idempotent replay, and structured Run events. Raw request and response bodies are registered as immutable Run Artifacts according to the request save policy.
+  - Added a local/remote node router. Independently deployed Runners advertise `target_http`, receive durable authenticated commands, reconstruct binary-safe requests, perform the exchange locally, and upload bounded response bytes with exact-offset chunking and reconnect-safe resume behavior.
+  - Control Plane command output is node-, command-kind-, lease-, chunk-, and declared-size-scoped. Structured completion metadata remains under the existing command-result cap, and the Control Plane verifies returned execution identity before accepting the response.
+  - Public Fetch remains a separate anonymous public-network path with private/local destination rejection. Scope-authorized targets, host-network proxy use, and client certificates are available only through Target HTTP.
+- Contract coverage:
+  - Structured request construction, host proxy/TLS inheritance, client-certificate resolution, binary transport, private-IP Scope authorization, redirect reauthorization, bounded/truncated responses, request/response Artifacts, replay/conflict behavior, remote node routing, daemon chunk upload, exact-offset replay rejection, declared response caps, and durable API round trips.
+- Known limitation:
+  - The monolithic sandbox run consistently denies `SIGTERM` to one pre-existing PTY process group after its assertions. That test passes in isolation, and all WEB-03 plus all other combined tests pass; this is an execution-environment cleanup limitation rather than a Target HTTP regression.
+- Next dependency: WEB-04 is unblocked.
 
 ## Architecture Deviations
 
