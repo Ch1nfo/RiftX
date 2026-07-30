@@ -89,6 +89,9 @@ class FakeWorkflowClient:
     async def cancel(self, run_id: str) -> None:
         self._record("cancel", run_id)
 
+    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+        self._record("compact", run_id, str(max_history_items))
+
     async def append_user_message(self, run_id: str, message: str) -> None:
         self._record("message", run_id, message)
 
@@ -324,6 +327,12 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 json={"message": "Focus on the HTTP endpoint"},
             )
             assert message.status_code == 202
+            compact = await client.post(
+                f"/api/v1/runs/{run_id}/compact",
+                json={"max_history_items": 25},
+            )
+            assert compact.status_code == 202
+            assert ("compact", run_id, "25") in runtime.workflow.calls
             assert (await client.post(f"/api/v1/runs/{run_id}/cancel")).status_code == 202
 
             assert [call[0] for call in runtime.workflow.calls] == [
@@ -332,6 +341,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "resume",
                 "cancel_current_execution",
                 "message",
+                "compact",
                 "cancel",
             ]
             events = await client.get(f"/api/v1/runs/{run_id}/events", params={"limit": 20})
@@ -344,9 +354,10 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "run.resume_requested",
                 "execution.cancel_requested",
                 "user.message_queued",
+                "agent.context_compaction_requested",
                 "run.cancel_requested",
             ]
-            assert events.json()["items"][-2]["payload"]["message"] == (
+            assert events.json()["items"][-3]["payload"]["message"] == (
                 "Focus on the HTTP endpoint"
             )
     finally:

@@ -17,6 +17,8 @@ from riftx.temporal import (
     AgentCycleActivityStatus,
     CleanupRunInput,
     CleanupRunResult,
+    CompactContextInput,
+    CompactContextResult,
     GenerateReportInput,
     GenerateReportResult,
     PendingApproval,
@@ -37,6 +39,7 @@ class FakeActivities:
     prepared_runs: list[str] = field(default_factory=list)
     cleaned_runs: list[str] = field(default_factory=list)
     cleanup_inputs: list[CleanupRunInput] = field(default_factory=list)
+    compact_inputs: list[CompactContextInput] = field(default_factory=list)
 
     @activity.defn(name="prepare_run_activity")
     async def prepare_run(self, input: PrepareRunInput) -> PrepareRunResult:
@@ -58,8 +61,19 @@ class FakeActivities:
         self.cleanup_inputs.append(input)
         return CleanupRunResult()
 
+    @activity.defn(name="compact_context_activity")
+    async def compact(self, input: CompactContextInput) -> CompactContextResult:
+        self.compact_inputs.append(input)
+        return CompactContextResult(compacted=True, retained_items=input.max_history_items)
+
     def registered(self) -> list[object]:
-        return [self.prepare_run, self.agent_cycle, self.generate_report, self.cleanup]
+        return [
+            self.prepare_run,
+            self.agent_cycle,
+            self.generate_report,
+            self.cleanup,
+            self.compact,
+        ]
 
 
 @dataclass
@@ -216,6 +230,49 @@ async def test_agent_cycle_activity_retry_reuses_stable_agent_step_id() -> None:
     assert result.phase is WorkflowPhase.COMPLETED
     assert len(activities.cycle_inputs) == 2
     assert activities.cycle_inputs[0].agent_step_id == activities.cycle_inputs[1].agent_step_id
+    await environment.shutdown()
+
+
+async def test_workflow_compacts_context_while_waiting_for_input() -> None:
+    environment = await WorkflowEnvironment.start_time_skipping()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = FakeActivities(
+        cycle_results=deque(
+            [
+                AgentCycleActivityResult(status=AgentCycleActivityStatus.NEEDS_INPUT),
+                AgentCycleActivityResult(status=AgentCycleActivityStatus.COMPLETED),
+            ]
+        )
+    )
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-compact"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await _wait_for_phase(handle, WorkflowPhase.WAITING_INPUT)
+        await handle.signal(RiftXRunWorkflow.compact, 12)
+        for _ in range(100):
+            if activities.compact_inputs:
+                break
+            await asyncio.sleep(0.01)
+        assert activities.compact_inputs == [
+            CompactContextInput(run_id="run-compact", max_history_items=12)
+        ]
+        status = await _wait_for_phase(handle, WorkflowPhase.WAITING_INPUT)
+        assert status.compact_requested is False
+        await handle.signal(RiftXRunWorkflow.append_user_message, "continue")
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.COMPLETED
     await environment.shutdown()
 
 

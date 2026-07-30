@@ -12,6 +12,7 @@ class WorkflowPhase(StrEnum):
     WAITING_APPROVAL = "waiting_approval"
     WAITING_INPUT = "waiting_input"
     PAUSED = "paused"
+    COMPACTING = "compacting"
     REPORTING = "reporting"
     CLEANUP = "cleanup"
     COMPLETED = "completed"
@@ -113,6 +114,7 @@ class RunWorkflowStatus:
     queued_user_messages: int = 0
     cancel_current_execution_requested: bool = False
     cancel_requested: bool = False
+    compact_requested: bool = False
 
 
 @dataclass

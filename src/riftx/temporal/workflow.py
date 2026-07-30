@@ -13,6 +13,8 @@ from .models import (
     AgentCycleActivityStatus,
     CleanupRunInput,
     CleanupRunResult,
+    CompactContextInput,
+    CompactContextResult,
     GenerateReportInput,
     GenerateReportResult,
     PendingApproval,
@@ -46,6 +48,7 @@ class RiftXRunWorkflow:
         self._active_execution_id: str | None = None
         self._cancel_current_execution_requested = False
         self._cancel_requested = False
+        self._compact_history_items: int | None = None
 
     @workflow.run
     async def run(self, input: RunWorkflowInput) -> RunWorkflowResult:
@@ -62,18 +65,30 @@ class RiftXRunWorkflow:
             await self._wait_until_runnable()
             if self._cancel_requested:
                 break
+            if self._compact_history_items is not None:
+                await self._compact_context()
+                continue
             if self._checkpoint_id is not None:
                 await self._wait_for_approval_decisions()
                 if self._cancel_requested:
                     break
+                if self._compact_history_items is not None:
+                    continue
                 if self._paused:
                     continue
             elif self._phase is WorkflowPhase.WAITING_INPUT and not self._user_messages:
                 await workflow.wait_condition(
-                    lambda: bool(self._user_messages) or self._paused or self._cancel_requested
+                    lambda: (
+                        bool(self._user_messages)
+                        or self._paused
+                        or self._cancel_requested
+                        or self._compact_history_items is not None
+                    )
                 )
                 if self._cancel_requested:
                     break
+                if self._compact_history_items is not None:
+                    continue
                 if self._paused:
                     continue
 
@@ -159,7 +174,32 @@ class RiftXRunWorkflow:
         if not self._paused:
             return
         self._phase = WorkflowPhase.PAUSED
-        await workflow.wait_condition(lambda: not self._paused or self._cancel_requested)
+        await workflow.wait_condition(
+            lambda: (
+                not self._paused
+                or self._cancel_requested
+                or self._compact_history_items is not None
+            )
+        )
+
+    async def _compact_context(self) -> None:
+        max_history_items = self._compact_history_items
+        if max_history_items is None:
+            return
+        resume_phase = self._phase
+        self._compact_history_items = None
+        self._phase = WorkflowPhase.COMPACTING
+        await workflow.execute_activity(
+            "compact_context_activity",
+            CompactContextInput(
+                run_id=self._run_id,
+                max_history_items=max_history_items,
+            ),
+            result_type=CompactContextResult,
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=_ACTIVITY_RETRY_POLICY,
+        )
+        self._phase = resume_phase
 
     async def _wait_for_approval_decisions(self) -> None:
         self._phase = WorkflowPhase.WAITING_APPROVAL
@@ -167,6 +207,7 @@ class RiftXRunWorkflow:
             lambda: (
                 self._paused
                 or self._cancel_requested
+                or self._compact_history_items is not None
                 or all(item.call_id in self._approval_decisions for item in self._pending_approvals)
             )
         )
@@ -200,6 +241,10 @@ class RiftXRunWorkflow:
         self._paused = False
 
     @workflow.signal
+    def compact(self, max_history_items: int = 100) -> None:
+        self._compact_history_items = max(1, min(max_history_items, 10_000))
+
+    @workflow.signal
     def append_user_message(self, message: str) -> None:
         normalized = message.strip()
         if normalized:
@@ -218,6 +263,7 @@ class RiftXRunWorkflow:
             queued_user_messages=len(self._user_messages),
             cancel_current_execution_requested=self._cancel_current_execution_requested,
             cancel_requested=self._cancel_requested,
+            compact_requested=self._compact_history_items is not None,
         )
 
     @workflow.query

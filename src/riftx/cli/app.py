@@ -502,6 +502,10 @@ def create_run(
         ApprovalMode,
         typer.Option("--mode", case_sensitive=False, help="Approval mode."),
     ] = ApprovalMode.BALANCED,
+    model_profile: Annotated[
+        str | None,
+        typer.Option("--model", help="Model profile for this Run."),
+    ] = None,
     success: Annotated[
         list[str] | None,
         typer.Option("--success", help="Repeatable success criterion."),
@@ -525,6 +529,8 @@ def create_run(
         payload["node_id"] = node_id
     if workspace:
         payload["workspace_path"] = workspace
+    if model_profile:
+        payload["model_profile"] = model_profile
     _run_with_client(context, lambda client: render_run(console, client.create_run(payload)))
 
 
@@ -591,6 +597,24 @@ def cancel_run(context: typer.Context, run_id: str) -> None:
 
     _run_with_client(context, lambda client: client.cancel_run(run_id))
     console.print("[yellow]Run cancellation requested.[/yellow]")
+
+
+@run_app.command("compact")
+def compact_run(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    max_history_items: Annotated[
+        int,
+        typer.Option("--max-items", min=1, max=10_000),
+    ] = 100,
+) -> None:
+    """Request durable Agent context compaction."""
+
+    _run_with_client(
+        context,
+        lambda client: client.compact_run(run_id, max_history_items=max_history_items),
+    )
+    console.print("[green]Context compaction requested.[/green]")
 
 
 @run_app.command("message")

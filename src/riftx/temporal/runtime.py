@@ -54,6 +54,9 @@ class TemporalRunClient:
     async def cancel(self, run_id: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.cancel)
 
+    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.compact, max_history_items)
+
     async def append_user_message(self, run_id: str, message: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.append_user_message, message)
 

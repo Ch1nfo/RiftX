@@ -56,6 +56,10 @@ class FakeAPIClient:
         self.calls.append(("cancel_run", run_id))
         return {"run": {"id": run_id, "status": "running"}}
 
+    def compact_run(self, run_id: str, *, max_history_items: int = 100) -> dict[str, Any]:
+        self.calls.append(("compact_run", (run_id, max_history_items)))
+        return {"run": {"id": run_id, "status": "running"}}
+
     def list_nodes(self, *, status: str | None = None) -> dict[str, Any]:
         self.calls.append(("list_nodes", status))
         return {"items": [self._node("node-1")]}
@@ -254,6 +258,8 @@ def test_run_create_builds_api_payload() -> None:
             "Authorized test",
             "--mode",
             "manual",
+            "--model",
+            "fast",
             "--success",
             "Identify version",
             "--entry",
@@ -270,6 +276,7 @@ def test_run_create_builds_api_payload() -> None:
             {
                 "objective": "Inspect service",
                 "approval_mode": "manual",
+                "model_profile": "fast",
                 "success_criteria": [{"description": "Identify version", "required": True}],
                 "entry_points": [{"kind": "url", "value": "https://example.test"}],
                 "engagement": {"name": "Authorized test"},
@@ -289,6 +296,16 @@ def test_run_cancel_delegates_to_shared_http_client() -> None:
 
     assert result.exit_code == 0, result.output
     assert FakeAPIClient.instances[0].calls == [("cancel_run", "run-1")]
+
+
+def test_run_compact_delegates_to_shared_http_client() -> None:
+    result = runner.invoke(
+        cli_module.app,
+        ["run", "compact", "run-1", "--max-items", "25"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [("compact_run", ("run-1", 25))]
 
 
 def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:

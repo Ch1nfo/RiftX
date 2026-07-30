@@ -43,6 +43,8 @@ class RunWorkflowClient(Protocol):
 
     async def cancel(self, run_id: str) -> None: ...
 
+    async def compact(self, run_id: str, max_history_items: int = 100) -> None: ...
+
     async def append_user_message(self, run_id: str, message: str) -> None: ...
 
     def workflow_id(self, run_id: str) -> str: ...
@@ -178,6 +180,20 @@ class RunApplicationService:
         run = await self._require_controllable_run(run_id, action="cancel")
         await self._invoke_workflow(run, "cancel", self._workflow_client.cancel)
         await self._event_repository.append(run.id, "run.cancel_requested")
+        return run
+
+    async def compact(self, run_id: str, *, max_history_items: int = 100) -> Run:
+        run = await self._require_controllable_run(run_id, action="compact context for")
+        await self._invoke_workflow(
+            run,
+            "compact context",
+            lambda target: self._workflow_client.compact(target, max_history_items),
+        )
+        await self._event_repository.append(
+            run.id,
+            "agent.context_compaction_requested",
+            {"max_history_items": max_history_items},
+        )
         return run
 
     async def append_user_message(self, run_id: str, message: str) -> Run:

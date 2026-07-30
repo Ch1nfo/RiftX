@@ -8,6 +8,7 @@ from riftx.domain import RunStatus
 
 from ..dependencies import RunServiceDependency, ToolServiceDependency
 from ..schemas import (
+    CompactRunRequest,
     CreateRunRequest,
     ErrorResponse,
     RunActionResponse,
@@ -89,6 +90,24 @@ async def resume_run(run_id: str, run_service: RunServiceDependency) -> RunActio
 )
 async def cancel_run(run_id: str, run_service: RunServiceDependency) -> RunActionResponse:
     return RunActionResponse(run=RunResponse.from_domain(await run_service.cancel(run_id)))
+
+
+@router.post(
+    "/{run_id}/compact",
+    response_model=RunActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERROR_RESPONSES,
+)
+async def compact_run(
+    run_id: str,
+    request: CompactRunRequest,
+    run_service: RunServiceDependency,
+) -> RunActionResponse:
+    return RunActionResponse(
+        run=RunResponse.from_domain(
+            await run_service.compact(run_id, max_history_items=request.max_history_items)
+        )
+    )
 
 
 @router.post(

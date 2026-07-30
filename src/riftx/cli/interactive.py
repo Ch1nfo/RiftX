@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import webbrowser
 from dataclasses import dataclass
 
 import httpx
@@ -17,6 +18,8 @@ from .client import APIClient, RiftXAPIError
 from .render import (
     render_approvals,
     render_error,
+    render_node,
+    render_nodes,
     render_run,
     render_runs,
     render_terminal,
@@ -30,9 +33,15 @@ _COMMANDS = [
     "/runs",
     "/status",
     "/tools",
+    "/node",
+    "/model",
+    "/mode",
+    "/plan",
     "/pause",
     "/continue",
     "/cancel",
+    "/compact",
+    "/web",
     "/watch",
     "/approvals",
     "/terminal",
@@ -50,6 +59,9 @@ _COMMANDS = [
 class InteractiveState:
     active_run_id: str | None = None
     active_terminal_id: str | None = None
+    node_id: str = "local"
+    model_profile: str | None = None
+    approval_mode: str = "balanced"
 
 
 def run_interactive(client: APIClient, console: Console) -> None:
@@ -107,6 +119,10 @@ def _handle_command(
             "[bold]/runs[/bold] list runs\n"
             "[bold]/status[/bold] show the active run\n"
             "[bold]/tools [NODE][/bold] list tools\n"
+            "[bold]/node [NODE][/bold] list nodes or select the node for new runs\n"
+            "[bold]/model [PROFILE][/bold] show or select the model for new runs\n"
+            "[bold]/mode [auto|balanced|manual][/bold] show or select approval mode\n"
+            "[bold]/plan[/bold] show the latest Agent plan\n"
             "[bold]/pause[/bold], [bold]/continue[/bold], "
             "[bold]/cancel[/bold] control the active run\n"
             "[bold]/watch[/bold] stream active run events\n"
@@ -116,6 +132,8 @@ def _handle_command(
             "[bold]/release [SESSION_ID][/bold] return terminal ownership to the Agent\n"
             "[bold]/approve APPROVAL_ID [--for-run][/bold] approve a tool call\n"
             "[bold]/reject APPROVAL_ID [REASON][/bold] reject a tool call\n"
+            "[bold]/compact [MAX_ITEMS][/bold] compact persisted Agent history\n"
+            "[bold]/web[/bold] open the active Run in the WebUI\n"
             "[bold]/exit[/bold] close interactive mode"
         )
         return False
@@ -123,7 +141,7 @@ def _handle_command(
         objective = " ".join(args).strip()
         if not objective:
             raise ValueError("Usage: /new OBJECTIVE")
-        created = client.create_run({"objective": objective})
+        created = client.create_run(_new_run_payload(objective, state))
         state.active_run_id = str(created["id"])
         render_run(console, created)
         return False
@@ -132,6 +150,9 @@ def _handle_command(
             raise ValueError("Usage: /resume RUN_ID")
         selected = client.get_run(args[0])
         state.active_run_id = str(selected["id"])
+        state.node_id = str(selected.get("node_id") or state.node_id)
+        state.model_profile = selected.get("model_profile") or None
+        state.approval_mode = str(selected.get("approval_mode") or state.approval_mode)
         render_run(console, selected)
         return False
     if command == "/runs":
@@ -141,7 +162,51 @@ def _handle_command(
         render_run(console, client.get_run(_require_active(state)))
         return False
     if command == "/tools":
-        render_tools(console, client.list_tools(args[0] if args else "local"))
+        render_tools(console, client.list_tools(args[0] if args else state.node_id))
+        return False
+    if command == "/node":
+        if not args:
+            render_nodes(console, client.list_nodes().get("items", []))
+            return False
+        selected = client.get_node(args[0])
+        state.node_id = str(selected["id"])
+        render_node(console, selected)
+        console.print(f"[green]New runs will use node {state.node_id}.[/green]")
+        return False
+    if command == "/model":
+        if not args:
+            console.print(f"Model for new runs: [cyan]{state.model_profile or 'default'}[/cyan]")
+            return False
+        state.model_profile = args[0]
+        console.print(f"[green]New runs will use model profile {args[0]}.[/green]")
+        return False
+    if command == "/mode":
+        if not args:
+            console.print(f"Approval mode for new runs: [cyan]{state.approval_mode}[/cyan]")
+            return False
+        mode = args[0].lower()
+        if mode not in {"auto", "balanced", "manual"}:
+            raise ValueError("Usage: /mode [auto|balanced|manual]")
+        state.approval_mode = mode
+        console.print(f"[green]New runs will use {mode} approval mode.[/green]")
+        return False
+    if command == "/plan":
+        events = client.list_events(_require_active(state), limit=1000).get("items", [])
+        plan = next(
+            (
+                event.get("payload", {}).get("plan_summary")
+                for event in reversed(events)
+                if event.get("event_type") == "agent.plan_updated"
+            ),
+            None,
+        )
+        console.print(
+            Panel(
+                str(plan or "The Agent has not published a plan yet."),
+                title="Latest plan",
+                border_style="cyan",
+            )
+        )
         return False
     if command == "/pause":
         client.pause_run(_require_active(state))
@@ -152,8 +217,24 @@ def _handle_command(
         console.print("[green]Resume requested.[/green]")
         return False
     if command == "/cancel":
-        client.cancel_current_execution(_require_active(state))
-        console.print("[yellow]Current execution cancellation requested.[/yellow]")
+        client.cancel_run(_require_active(state))
+        console.print("[yellow]Run cancellation requested.[/yellow]")
+        return False
+    if command == "/compact":
+        max_history_items = int(args[0]) if args else 100
+        if max_history_items < 1 or max_history_items > 10_000:
+            raise ValueError("Usage: /compact [MAX_ITEMS between 1 and 10000]")
+        client.compact_run(
+            _require_active(state),
+            max_history_items=max_history_items,
+        )
+        console.print("[green]Context compaction requested.[/green]")
+        return False
+    if command == "/web":
+        path = f"/runs/{state.active_run_id}" if state.active_run_id else "/"
+        url = f"{client.base_url}{path}"
+        console.print(url)
+        webbrowser.open(url)
         return False
     if command == "/watch":
         _watch(client, _require_active(state), console)
@@ -200,7 +281,7 @@ def _handle_message(
     console: Console,
 ) -> None:
     if state.active_run_id is None:
-        created = client.create_run({"objective": text})
+        created = client.create_run(_new_run_payload(text, state))
         state.active_run_id = str(created["id"])
         render_run(console, created)
         return
@@ -221,6 +302,17 @@ def _watch(client: APIClient, run_id: str, console: Console) -> None:
                     console.print(payload)
     except KeyboardInterrupt:
         console.print("[dim]Stopped watching.[/dim]")
+
+
+def _new_run_payload(objective: str, state: InteractiveState) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "objective": objective,
+        "node_id": state.node_id,
+        "approval_mode": state.approval_mode,
+    }
+    if state.model_profile is not None:
+        payload["model_profile"] = state.model_profile
+    return payload
 
 
 def _require_active(state: InteractiveState) -> str:

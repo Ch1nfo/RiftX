@@ -86,6 +86,13 @@ class APIClient:
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self._json("POST", f"/api/v1/runs/{run_id}/cancel")
 
+    def compact_run(self, run_id: str, *, max_history_items: int = 100) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/runs/{run_id}/compact",
+            json={"max_history_items": max_history_items},
+        )
+
     def cancel_current_execution(self, run_id: str) -> dict[str, Any]:
         return self._json(
             "POST",

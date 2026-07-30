@@ -142,3 +142,9 @@ class RunMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1)
+
+
+class CompactRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_history_items: int = Field(default=100, ge=1, le=10_000)

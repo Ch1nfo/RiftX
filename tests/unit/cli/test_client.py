@@ -19,6 +19,8 @@ def test_api_client_uses_shared_run_endpoints() -> None:
             return httpx.Response(201, json={"id": "run-1", "status": "created"})
         if request.url.path.endswith("/message"):
             return httpx.Response(202, json={"accepted": True, "run": {"id": "run-1"}})
+        if request.url.path.endswith("/compact"):
+            return httpx.Response(202, json={"accepted": True, "run": {"id": "run-1"}})
         return httpx.Response(404, json={"error": {"code": "missing", "message": "missing"}})
 
     with APIClient(
@@ -27,13 +29,17 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     ) as client:
         created = client.create_run({"objective": "test"})
         queued = client.append_message("run-1", "continue")
+        compacted = client.compact_run("run-1", max_history_items=25)
 
     assert created["id"] == "run-1"
     assert queued["accepted"] is True
+    assert compacted["accepted"] is True
     assert requests[0].url == httpx.URL("http://control-plane/api/v1/runs")
     assert json.loads(requests[0].content) == {"objective": "test"}
     assert requests[1].url.path == "/api/v1/runs/run-1/message"
     assert json.loads(requests[1].content) == {"message": "continue"}
+    assert requests[2].url.path == "/api/v1/runs/run-1/compact"
+    assert json.loads(requests[2].content) == {"max_history_items": 25}
 
 
 def test_api_client_preserves_unified_error_details() -> None:

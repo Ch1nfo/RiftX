@@ -32,6 +32,7 @@ from .runner_control import (
     RunnerPollResponse,
 )
 from .runs import (
+    CompactRunRequest,
     CreateRunRequest,
     EngagementCreateRequest,
     EntryPointRequest,
@@ -52,6 +53,7 @@ __all__ = [
     "ArtifactListResponse",
     "ArtifactResponse",
     "CreateRunRequest",
+    "CompactRunRequest",
     "CreateFindingRequest",
     "EngagementCreateRequest",
     "EntryPointRequest",
