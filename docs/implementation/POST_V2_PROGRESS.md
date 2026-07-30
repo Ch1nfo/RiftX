@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave F are complete; Wave G is active and WEB-02 is unblocked.
+Wave A through Wave F are complete; Wave G is active and WEB-03 is unblocked.
 
 ## Completed
 
@@ -29,6 +29,7 @@ Wave A through Wave F are complete; Wave G is active and WEB-02 is unblocked.
 - [x] EXT-01 MCP Governance
 - [x] EXT-02 Fact Promotion 与 Attack Graph
 - [x] WEB-01 Source Registry 与 Public Fetch
+- [x] WEB-02 Search Provider 与 Research Pipeline
 
 ## Task Record
 
@@ -617,6 +618,32 @@ Wave A through Wave F are complete; Wave G is active and WEB-02 is unblocked.
 - Environment note:
   - The existing `agent` environment still has `rich 13.9.4` while the project declares `rich>=14`; this pre-existing environment drift does not affect the passing WEB-01 or full-suite verification.
 - Next dependency: WEB-02 is unblocked.
+
+### WEB-02
+
+- Branch: `codex/web-02-research-pipeline`
+- Commits:
+  - `d7cb2c2 feat(web): add pluggable search providers`
+  - `7190e7e feat(web): build durable research pipeline`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: `568 passed, 2 skipped`; Ruff passed; Alembic has one head `b8e0f2a4d306`; diff check clean.
+- Migration: `b8e0f2a4d306_add_web_research_pipeline.py`
+- Core delivery:
+  - Added a provider-neutral `SearchProvider` contract and normalized discovery-only Search Requests, Responses, and Results. Search candidates remain separate from the Source Registry and cannot be cited until WEB-01 successfully fetches them.
+  - Added OpenAI Responses hosted Web Search and SearXNG JSON adapters with uniform domain filtering, URL normalization, duplicate removal, timestamps, Unicode handling, and typed retryability for timeout, rate-limit, transport, and upstream failures.
+  - Added a bounded deterministic Query Planner, concurrent two-to-four-query execution, cross-query URL deduplication, relevance/authority/freshness ranking, domain-diverse selection, and concurrent Canonical Fetch of at most six sources.
+  - Added question-focused extraction that selects relevant Document Chunks without inventing facts and retains exact Source, Chunk, heading, quote, and offset evidence.
+  - Added bounded cross-source Research Packets and Web Context Packs. Primary Context receives only summaries, cited Claims, IDs, and unresolved questions under a 6000-token budget; complete search result sets and page bodies remain outside Primary Context.
+  - Every Research Note, Packet, and Context Pack carries the immutable `UNTRUSTED_EXTERNAL_CONTENT` identity, so prompt-like text from a webpage remains external data rather than Runtime instructions.
+  - Added durable Search Query/Result audit rows, Research Notes, and Research Packets while preserving the database boundary between discovery candidates and canonical Sources.
+- Contract coverage:
+  - Ordinary/empty search, domain allow/block filters, duplicate URLs, timestamps, Unicode, timeout, 429/5xx, OpenAI citation normalization, multi-query planning, source diversity, failed-query recovery, canonical Fetch gating, Evidence offsets, prompt-injection identity, Context budget, migration, and durable round trips.
+- Next dependency: WEB-03 is unblocked.
 
 ## Architecture Deviations
 
