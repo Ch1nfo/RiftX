@@ -38,6 +38,8 @@ class ContextCompileRequest(DomainModel):
     current_path: str | None = None
     input_text: str | None = None
     input_items: list[dict[str, object]] = Field(default_factory=list)
+    selected_fact_ids: list[str] = Field(default_factory=list)
+    selected_memory_ids: list[str] = Field(default_factory=list)
 
 
 class CompiledContext(DomainModel):

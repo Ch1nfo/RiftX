@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from riftx.domain import AgentMessage, MessageRole, MessageType
-from riftx.runtime.lifecycle import ContextCompileRequest
+from riftx.runtime.lifecycle import ContextCompileRequest, ContextPurpose
 
 from .items import ContextItem, ContextItemKind, ContextLayer
 from .models import ProcessedToolResult
@@ -32,6 +32,23 @@ class WorkingMemoryContextSource:
         if memory is None:
             return []
         ref = f"working-memory://{memory.id}/versions/{memory.version}"
+        if request.purpose is ContextPurpose.SUBAGENT_DELEGATION:
+            selected = set(request.selected_fact_ids)
+            facts = [fact for fact in memory.confirmed_facts if fact.id in selected]
+            if not facts:
+                return []
+            return [
+                _memory_item(
+                    memory.id,
+                    "selected-facts",
+                    [fact.model_dump(mode="json") for fact in facts],
+                    ref,
+                    kind=ContextItemKind.CONFIRMED_FACT,
+                    priority=100,
+                    required=True,
+                    compressible=False,
+                )
+            ]
         items: list[ContextItem] = []
         if memory.current_focus is not None:
             items.append(

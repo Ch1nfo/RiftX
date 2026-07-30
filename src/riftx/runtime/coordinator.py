@@ -66,6 +66,7 @@ from riftx.runtime.leases import DatabaseRunLeaseManager
 from riftx.runtime.lifecycle import (
     ContextCompiler,
     ContextCompileRequest,
+    ContextPurpose,
     CycleLimits,
     RunCycleRequest,
     RunCycleResult,
@@ -205,33 +206,60 @@ class RuntimeCoordinator:
                     YieldReason.COMPACTION_REQUIRED,
                 )
 
+            delegation = await self._subagent_delegation(session)
+            run_contract = {
+                "objective": run.objective.description,
+                "success_criteria": [
+                    item.model_dump(mode="json") for item in run.success_criteria
+                ],
+                "entry_points": [
+                    item.model_dump(mode="json") for item in run.entry_points
+                ],
+                "scope": run.scope.model_dump(mode="json"),
+                "approval_mode": run.approval_mode.value,
+                "node_id": run.node_id,
+                "engagement_id": run.engagement_id,
+                "workspace": run.workspace_path,
+                "current_path": request.current_path or run.workspace_path,
+            }
+            if delegation is not None:
+                run_contract = {
+                    "run_contract_summary": delegation.get("run_contract_summary", ""),
+                    "relevant_scope": delegation.get("relevant_scope", []),
+                    "constraints": delegation.get("constraints", []),
+                    "stop_conditions": delegation.get("stop_conditions", []),
+                    "workspace": delegation.get("workspace", run.workspace_path),
+                    "node_id": run.node_id,
+                    "engagement_id": run.engagement_id,
+                }
             context_request = ContextCompileRequest(
                 run_id=run.id,
                 session_id=session.id,
                 agent_id=session.agent_type,
+                purpose=(
+                    ContextPurpose.SUBAGENT_DELEGATION
+                    if delegation is not None
+                    else ContextPurpose.PRIMARY_REASONING
+                ),
                 model_profile=session.model_profile,
                 latest_user_message_id=latest_user_message_id,
-                objective=run.objective.description,
-                run_contract={
-                    "objective": run.objective.description,
-                    "success_criteria": [
-                        item.model_dump(mode="json") for item in run.success_criteria
-                    ],
-                    "entry_points": [
-                        item.model_dump(mode="json") for item in run.entry_points
-                    ],
-                    "scope": run.scope.model_dump(mode="json"),
-                    "approval_mode": run.approval_mode.value,
-                    "node_id": run.node_id,
-                    "engagement_id": run.engagement_id,
-                    "workspace": run.workspace_path,
-                    "current_path": request.current_path or run.workspace_path,
-                },
+                objective=(
+                    str(delegation.get("task") or "")
+                    if delegation is not None
+                    else run.objective.description
+                ),
+                run_contract=run_contract,
                 engagement_path=request.engagement_path,
                 workspace_path=run.workspace_path,
                 current_path=request.current_path or run.workspace_path,
                 input_text=request.input_text,
                 input_items=request.input_items,
+                selected_fact_ids=_string_list(
+                    delegation.get("selected_fact_ids") if delegation is not None else None
+                ),
+                selected_memory_ids=_string_list(
+                    delegation.get("selected_memory_ids") if delegation is not None else None
+                ),
             )
             before_context = await self._dispatch_hook(
                 HookPoint.BEFORE_CONTEXT_COMPILE,
@@ -710,6 +738,28 @@ class RuntimeCoordinator:
             await self._sessions.save(session)
             await self._append(session.run_id, SESSION_ACTIVATED, {"session_id": session.id})
 
+    async def _subagent_delegation(
+        self,
+        session: AgentSession,
+    ) -> dict[str, object] | None:
+        if session.parent_session_id is None:
+            return None
+        if self._transcript is None:
+            raise DomainError("Subagent Context requires its independent Transcript")
+        messages = await self._transcript.list_by_session(session.id)
+        delegation = next(
+            (
+                item.structured_content
+                for item in messages
+                if item.message_type is MessageType.SUBAGENT_DELEGATION
+                and item.structured_content is not None
+            ),
+            None,
+        )
+        if delegation is None:
+            raise DomainError(f"Subagent session {session.id!r} has no Delegation Packet")
+        return dict(delegation)
+
     async def _persist_cycle_input(
         self, session: AgentSession, request: RunCycleRequest
     ) -> str | None:
@@ -1072,6 +1122,10 @@ def _object_list(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: object) -> list[str]:
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
 def _working_memory_version(manifest: Mapping[str, object]) -> int | None:

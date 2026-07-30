@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from riftx.context.items import ContextItem, ContextItemKind, ContextLayer
-from riftx.runtime.lifecycle import ContextCompileRequest
+from riftx.runtime.lifecycle import ContextCompileRequest, ContextPurpose
 
 from .models import MemoryRetrievalScope
 from .service import MemoryService
@@ -23,6 +23,9 @@ class RetrievedMemoryContextSource:
             )
         except Exception:
             return []
+        if request.purpose is ContextPurpose.SUBAGENT_DELEGATION:
+            selected = set(request.selected_memory_ids)
+            memories = [memory for memory in memories if memory.id in selected]
         return [
             ContextItem(
                 id=f"memory:{memory.id}",

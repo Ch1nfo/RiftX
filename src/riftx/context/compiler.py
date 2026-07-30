@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from riftx.runtime.lifecycle import (
     CompiledContext,
     ContextCompileRequest,
+    ContextPurpose,
 )
 from riftx.runtime.lifecycle import (
     ContextCompiler as RuntimeContextCompiler,
@@ -35,6 +36,10 @@ from .manifest import (
 from .token_counter import estimate_context_tokens
 
 _RUNTIME_CONTRACT = "You are the RiftX primary agent. Follow the authorized run contract."
+_SUBAGENT_RUNTIME_CONTRACT = (
+    "You are an isolated RiftX Subagent. Follow only the Delegation Packet and authorized "
+    "scope, do not delegate another Subagent, and return one structured Result Packet."
+)
 _SYSTEM_LAYERS = {
     ContextLayer.RUNTIME_CONTRACT,
     ContextLayer.STABLE_INSTRUCTIONS,
@@ -199,12 +204,17 @@ class ContextCompiler:
         run_contract.setdefault("run_id", request.run_id)
         if request.objective:
             run_contract.setdefault("objective", request.objective)
+        runtime_contract = (
+            _SUBAGENT_RUNTIME_CONTRACT
+            if request.purpose is ContextPurpose.SUBAGENT_DELEGATION
+            else self._runtime_contract
+        )
         return [
             ContextItem(
                 id="runtime-contract",
                 layer=ContextLayer.RUNTIME_CONTRACT,
                 kind=ContextItemKind.RUNTIME_CONTRACT,
-                content=self._runtime_contract,
+                content=runtime_contract,
                 priority=100,
                 required=True,
                 compressible=False,
