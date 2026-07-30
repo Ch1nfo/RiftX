@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and the EX-01/EX-02 long-execution loop are complete; Wave B continues with EX-03.
+Wave A and the Wave B execution lifecycle through EX-03 are complete; EX-04 is unblocked.
 
 ## Completed
 
@@ -12,6 +12,7 @@ Wave A and the EX-01/EX-02 long-execution loop are complete; Wave B continues wi
 - [x] RT-04 Transcript 与 Session Manager
 - [x] EX-01 Execution Service 与幂等性
 - [x] EX-02 Wait、Cancel 与 Deferred Execution
+- [x] EX-03 Execution Reconciliation
 
 ## Task Record
 
@@ -135,6 +136,31 @@ Wave A and the EX-01/EX-02 long-execution loop are complete; Wave B continues wi
   - The dispatcher consumes launch data already resolved by the Tool Proxy; dynamic Tool Registry resolution is intentionally deferred to EX-04.
   - Temporal workflow signal wiring will consume `waiting_execution_id`; EX-02 establishes the durable Runtime contract without broadening into orchestration refactors.
 - Next dependency: EX-03 is unblocked.
+
+### EX-03
+
+- Branch: `codex/ex-03-execution-reconciliation`
+- Commit: `cf77e0e feat(execution): reconcile persisted runner state`
+- Completed at: `2026-07-30 13:16 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py`
+  - `git diff --check`
+  - Result: `403 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migrations: None.
+- Core delivery:
+  - `ExecutionReconciler.reconcile_execution` and `reconcile_run` preserve terminal states, inspect active local processes, and reconcile multiple Executions with bounded concurrency.
+  - Process identity now checks PID existence, process creation time, executable/argument summary, Runner node ID, and current Execution status to detect PID reuse safely.
+  - A matching active process remains `RUNNING`; a missing or mismatched local process becomes `LOST`; an unavailable remote Runner also produces an explicit `LOST` state.
+  - Online remote Runners remain authoritative for their processes, and completed Executions are never modified.
+  - Reconciliation outcomes emit durable Run events with PID, Runner ID, creation time, command summary, and decision metadata.
+- Required scenarios:
+  - Runner restart/re-association, reused PID by timestamp, reused PID by command, process disappearance, completed Execution, offline and online remote Runners, concurrent multi-Execution reconciliation, and native PTY deferral are covered.
+- Known limitations:
+  - Native PTY recovery remains intentionally deferred, as required by EX-03.
+  - An online remote Runner remains authoritative until it reports status or its heartbeat becomes unavailable; the Control Plane does not inspect remote host PIDs directly.
+  - Reconciliation never restarts a command; explicit retry continues to require a new `attempt_group`.
+- Next dependency: EX-04 is unblocked.
 
 ## Architecture Deviations
 
