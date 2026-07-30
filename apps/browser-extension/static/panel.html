@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="panel.css"></head>
+<body>
+  <header><h1>RiftX</h1><input id="api-url" aria-label="RiftX API URL"></header>
+  <section class="controls">
+    <select id="run-select"></select><button id="refresh-runs">Refresh Runs</button>
+    <input id="objective" placeholder="New Run objective">
+    <input id="engagement" placeholder="New engagement name">
+    <button id="send-selected" class="primary">Send selected</button>
+    <button id="cancel-run">Cancel Run</button><button id="open-webui">Open WebUI</button>
+  </section>
+  <main><div><h2>Captured XHR / Fetch</h2><div id="captures"></div></div><div><h2>Run progress</h2><pre id="status"></pre></div></main>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

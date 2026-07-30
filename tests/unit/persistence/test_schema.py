@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "browser_pages",
     "browser_sessions",
     "browser_takeover_summaries",
+    "connector_submissions",
     "context_compilations",
     "context_checkpoints",
     "engagements",
@@ -178,6 +179,21 @@ def test_browser_schema_preserves_bounded_observations_and_ownership() -> None:
         "result_observation_id",
         "download_artifact_id",
     } <= set(Base.metadata.tables["browser_actions"].columns.keys())
+
+
+def test_connector_schema_keeps_raw_http_in_artifacts() -> None:
+    assert {
+        "run_id",
+        "source",
+        "capture_id",
+        "fingerprint",
+        "request_artifact_id",
+        "response_artifact_id",
+        "manifest_artifact_id",
+        "summary_json",
+    } <= set(Base.metadata.tables["connector_submissions"].columns.keys())
+    assert "request_body" not in Base.metadata.tables["connector_submissions"].columns
+    assert "response_body" not in Base.metadata.tables["connector_submissions"].columns
 
 
 def test_context_compilation_table_records_manifest_and_actual_usage() -> None:

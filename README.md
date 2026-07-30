@@ -94,3 +94,23 @@ network summaries, and Artifact IDs instead of the complete DOM. Runner-local pr
 paths and CDP endpoints are not included in API or agent tool results. During user
 takeover, Agent write actions are rejected while sanitized observations continue;
 release produces a durable takeover summary.
+
+## Browser and Burp connectors
+
+Both external connectors use the same `/api/v1/connectors` protocol to import complete
+HTTP request/response Artifacts, append to an existing Run or create a scoped Run,
+follow Run events over SSE, cancel the Run, and open its WebUI. Connectors are capture
+and control clients only; they do not contain an Agent runtime.
+
+```bash
+# Chrome/Chromium DevTools extension
+pnpm --filter @riftx/browser-extension test
+pnpm --filter @riftx/browser-extension build
+
+# Dependency-free Burp connector core test
+apps/burp-extension/scripts/test-core.sh
+```
+
+Load `apps/browser-extension/dist` as an unpacked extension after building. Build the
+Burp Montoya JAR from `apps/burp-extension` with JDK 21+ and Gradle, then load it from
+Burp's Extensions tab.

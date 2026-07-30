@@ -17,6 +17,7 @@ from .routes import (
     approvals_router,
     artifacts_router,
     browser_router,
+    connectors_router,
     context_router,
     events_router,
     executions_router,
@@ -77,6 +78,7 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(configured_settings.cors_origins),
+            allow_origin_regex=r"chrome-extension://.*",
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -94,6 +96,7 @@ def create_app(
     app.include_router(context_router, prefix="/api/v1")
     app.include_router(terminals_router, prefix="/api/v1")
     app.include_router(browser_router, prefix="/api/v1")
+    app.include_router(connectors_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:

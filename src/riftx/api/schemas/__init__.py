@@ -12,6 +12,11 @@ from .browser import (
     BrowserSessionCreateRequest,
     BrowserViewResponse,
 )
+from .connectors import (
+    ConnectorReceiptResponse,
+    ConnectorSubmissionRequest,
+    ConnectorWebUIResponse,
+)
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
 from .executions import (
@@ -72,6 +77,9 @@ __all__ = [
     "BrowserObserveRequest",
     "BrowserSessionCreateRequest",
     "BrowserViewResponse",
+    "ConnectorReceiptResponse",
+    "ConnectorSubmissionRequest",
+    "ConnectorWebUIResponse",
     "CreateRunRequest",
     "CreateMemoryRequest",
     "CompactRunRequest",

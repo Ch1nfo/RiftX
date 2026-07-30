@@ -31,6 +31,7 @@ RUNTIME_TABLES = {
     "browser_observations",
     "browser_actions",
     "browser_takeover_summaries",
+    "connector_submissions",
 }
 
 

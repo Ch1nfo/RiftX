@@ -916,6 +916,33 @@ class BrowserTakeoverSummaryRecord(Base):
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     released_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
+class ConnectorSubmissionRecord(Base):
+    __tablename__ = "connector_submissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "capture_id", name="uq_connector_submissions_source_capture"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capture_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    request_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    response_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    manifest_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
 
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"

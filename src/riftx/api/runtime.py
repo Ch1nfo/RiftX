@@ -29,6 +29,7 @@ from riftx.application.services import (
 )
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig, load_riftx_config
+from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
 from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
@@ -51,6 +52,9 @@ from riftx.persistence import (
     SQLAlchemyToolCallIntentRepository,
 )
 from riftx.persistence.browser_repositories import SQLAlchemyBrowserRepository
+from riftx.persistence.connector_repositories import (
+    SQLAlchemyConnectorSubmissionRepository,
+)
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.target_http_repositories import (
@@ -146,6 +150,7 @@ class ControlPlane:
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
     browser_service: BrowserApplicationService | None = None
+    connector_service: ConnectorApplicationService | None = None
     browser_manager: RunnerBrowserManager | None = None
     process_supervisor: ProcessSupervisor | None = None
     execution_runner: ExecutionRunner | None = None
@@ -347,17 +352,18 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         hooks=hooks,
         events=event_repository,
     )
+    run_service = RunApplicationService(
+        engagement_repository=engagement_repository,
+        run_repository=run_repository,
+        event_repository=event_repository,
+        workflow_client=workflow_client,
+        workspace_root=settings.workspace_root,
+    )
 
     return ControlPlane(
         settings=settings,
         database=database,
-        run_service=RunApplicationService(
-            engagement_repository=engagement_repository,
-            run_repository=run_repository,
-            event_repository=event_repository,
-            workflow_client=workflow_client,
-            workspace_root=settings.workspace_root,
-        ),
+        run_service=run_service,
         event_service=EventApplicationService(
             run_repository=run_repository,
             event_repository=event_repository,
@@ -411,6 +417,13 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             runner=browser_router,
             artifacts=artifact_service,
             events=event_repository,
+        ),
+        connector_service=ConnectorApplicationService(
+            runs=run_service,
+            submissions=SQLAlchemyConnectorSubmissionRepository(
+                database.session_factory
+            ),
+            artifacts=artifact_service,
         ),
         terminal_supervisor=terminal_supervisor,
         browser_manager=browser_manager,
