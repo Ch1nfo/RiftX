@@ -22,6 +22,17 @@ from .models import (
     WebSourceClass,
 )
 from .repository import WebSourceRepository
+from .search import (
+    OpenAIHostedSearchProvider,
+    SearchFreshness,
+    SearchProvider,
+    SearchProviderError,
+    SearchRequest,
+    SearchResponse,
+    SearchResult,
+    SearchType,
+    SearXNGSearchProvider,
+)
 
 __all__ = [
     "ApplicationWebArtifactStore",
@@ -36,6 +47,15 @@ __all__ = [
     "RedirectPolicy",
     "SourceReference",
     "SourceType",
+    "OpenAIHostedSearchProvider",
+    "SearchFreshness",
+    "SearchProvider",
+    "SearchProviderError",
+    "SearchRequest",
+    "SearchResponse",
+    "SearchResult",
+    "SearchType",
+    "SearXNGSearchProvider",
     "WebDestinationClass",
     "WebDocument",
     "WebDocumentChunk",
