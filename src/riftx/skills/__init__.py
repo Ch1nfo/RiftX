@@ -1,6 +1,7 @@
 """Executable Skill contracts, registries, and built-in skills."""
 
 from .base import BaseSkill, SkillContext, SkillResult
+from .context import ProgressiveSkillContextManager, SkillVisibilitySnapshot
 from .generic import (
     PortScanArguments,
     PortScanSkill,
@@ -8,6 +9,18 @@ from .generic import (
     RegisteredToolSkill,
     ShellArguments,
     ShellSkill,
+)
+from .models import (
+    SkillDocument,
+    SkillFrontMatter,
+    SkillReference,
+    SkillSearchResult,
+    SkillSummary,
+)
+from .progressive import (
+    ProgressiveSkillRegistry,
+    SkillDocumentError,
+    SkillReferenceNotFoundError,
 )
 from .registry import DuplicateSkillError, SkillNotFoundError, SkillRegistry
 
@@ -24,6 +37,16 @@ __all__ = [
     "BaseSkill",
     "DuplicateSkillError",
     "PortScanArguments",
+    "ProgressiveSkillContextManager",
+    "ProgressiveSkillRegistry",
+    "SkillDocument",
+    "SkillDocumentError",
+    "SkillFrontMatter",
+    "SkillReference",
+    "SkillReferenceNotFoundError",
+    "SkillSearchResult",
+    "SkillSummary",
+    "SkillVisibilitySnapshot",
     "PortScanSkill",
     "RegisteredToolArguments",
     "RegisteredToolSkill",

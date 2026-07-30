@@ -52,7 +52,11 @@ class RawToolDefinition(BaseModel):
     enabled: bool = True
     command: list[str]
     executor: ExecutorType = ExecutorType.PROCESS
+    short_description: str | None = None
+    description: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    synonyms: list[str] = Field(default_factory=list)
+    input_schema: dict[str, object] | None = None
     version_probe: VersionProbe | None = None
     approval: ApprovalLevel = ApprovalLevel.NEVER
     timeout: float = Field(default=1800, gt=0)
@@ -64,13 +68,21 @@ class RawToolDefinition(BaseModel):
     def validate_command(cls, command: list[str]) -> list[str]:
         return _validate_command(command, "tool command")
 
-    @field_validator("capabilities")
+    @field_validator("short_description", "description")
     @classmethod
-    def normalize_capabilities(cls, capabilities: list[str]) -> list[str]:
+    def normalize_descriptions(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+    @field_validator("capabilities", "synonyms")
+    @classmethod
+    def normalize_search_terms(cls, values: list[str]) -> list[str]:
         normalized: list[str] = []
         seen: set[str] = set()
-        for capability in capabilities:
-            value = capability.strip()
+        for item in values:
+            value = item.strip()
             if value and value not in seen:
                 normalized.append(value)
                 seen.add(value)
@@ -101,7 +113,11 @@ class ToolDefinition(BaseModel):
     enabled: bool
     command: list[str]
     executor: ExecutorType
+    short_description: str | None
+    description: str | None
     capabilities: list[str]
+    synonyms: list[str]
+    input_schema: dict[str, object] | None
     version_probe: VersionProbe | None
     approval_level: ApprovalLevel
     timeout_seconds: float
@@ -115,7 +131,11 @@ class ToolDefinition(BaseModel):
             enabled=raw.enabled,
             command=raw.command,
             executor=raw.executor,
+            short_description=raw.short_description,
+            description=raw.description,
             capabilities=raw.capabilities,
+            synonyms=raw.synonyms,
+            input_schema=raw.input_schema,
             version_probe=raw.version_probe,
             approval_level=raw.approval,
             timeout_seconds=raw.timeout,

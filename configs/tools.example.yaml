@@ -10,6 +10,8 @@ shells:
 tools:
   nmap:
     enabled: true
+    short_description: Discover ports, services, and operating systems
+    description: Run authorized Nmap discovery and service fingerprinting through the RiftX Runner.
     command:
       - nmap
     executor: process
@@ -28,6 +30,8 @@ tools:
 
   nuclei:
     enabled: true
+    short_description: Scan targets with versioned vulnerability templates
+    description: Run authorized Nuclei template scans and emit structured JSONL findings.
     command:
       - nuclei
     executor: process
@@ -45,6 +49,8 @@ tools:
 
   masscan:
     enabled: true
+    short_description: Perform high-speed TCP port discovery
+    description: Run authorized Masscan discovery through the RiftX Runner.
     command:
       - masscan
     executor: process
@@ -61,6 +67,8 @@ tools:
 
   msfconsole:
     enabled: true
+    short_description: Search and operate Metasploit modules in a managed terminal
+    description: Start an approval-gated Metasploit PTY through the RiftX Runner.
     command:
       - msfconsole
       - -q
@@ -73,6 +81,8 @@ tools:
 
   custom_poc:
     enabled: false
+    short_description: Execute an operator-provided proof of concept
+    description: Run a registered custom verifier after normal policy and approval checks.
     command:
       - python3
       - /opt/redteam/pocs/custom.py

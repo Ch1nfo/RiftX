@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from importlib import metadata
+from pathlib import Path
 
 from riftx.domain import ToolAvailability
 from riftx.tools import ToolDefinition, ToolRegistry, ToolUnavailableError
 
 from .base import BaseSkill
+from .models import SkillDocument, SkillReference, SkillSearchResult, SkillSummary
+from .progressive import ProgressiveSkillRegistry
 
 
 class SkillNotFoundError(KeyError):
@@ -19,8 +22,11 @@ class DuplicateSkillError(ValueError):
 
 
 class SkillRegistry:
-    def __init__(self) -> None:
+    def __init__(self, skill_root: Path | None = None) -> None:
         self._skills: dict[str, BaseSkill] = {}
+        self._progressive = (
+            ProgressiveSkillRegistry(skill_root) if skill_root is not None else None
+        )
 
     def register(self, skill: BaseSkill, *, replace: bool = False) -> None:
         if skill.id in self._skills and not replace:
@@ -51,6 +57,46 @@ class SkillRegistry:
             self.register(skill)
             loaded.append(skill)
         return loaded
+
+    @property
+    def progressive_generation(self) -> int:
+        return self._require_progressive().generation
+
+    def refresh_documents(self) -> int:
+        return self._require_progressive().refresh()
+
+    def reload_documents_if_changed(self) -> int:
+        return self._require_progressive().reload_if_changed()
+
+    def list_skill_summaries(self) -> list[SkillSummary]:
+        return self._require_progressive().list_summaries()
+
+    def search_skill_documents(
+        self,
+        query: str,
+        *,
+        capability: str | None = None,
+        max_results: int = 8,
+    ) -> list[SkillSearchResult]:
+        return self._require_progressive().search(
+            query,
+            capability=capability,
+            max_results=max_results,
+        )
+
+    def load_skill_document(self, skill_id: str) -> SkillDocument:
+        return self._require_progressive().load_document(skill_id)
+
+    def load_skill_references(self, skill_id: str) -> SkillReference:
+        return self._require_progressive().load_references(skill_id)
+
+    def validate_skill_documents(self) -> list[SkillDocument]:
+        return self._require_progressive().validate()
+
+    def _require_progressive(self) -> ProgressiveSkillRegistry:
+        if self._progressive is None:
+            raise RuntimeError("SkillRegistry was created without a file-backed skill_root")
+        return self._progressive
 
     @staticmethod
     def select_tool(

@@ -9,6 +9,8 @@ from pydantic import Field
 
 from riftx.domain.base import DomainModel
 from riftx.runtime.types import AgentSession, YieldReason
+from riftx.skills import ProgressiveSkillContextManager
+from riftx.tools import ToolContextManager
 
 
 class ContextPurpose(StrEnum):
@@ -38,6 +40,9 @@ class CompiledContext(DomainModel):
     system_instructions: str
     input_items: list[dict[str, object]] = Field(default_factory=list)
     available_tools: list[dict[str, object]] = Field(default_factory=list)
+    available_skills: list[dict[str, object]] = Field(default_factory=list)
+    loaded_skill_documents: list[dict[str, object]] = Field(default_factory=list)
+    loaded_skill_references: list[dict[str, object]] = Field(default_factory=list)
     token_estimate: int = Field(default=0, ge=0)
     loaded_memory_ids: list[str] = Field(default_factory=list)
     checkpoint_id: str | None = None
@@ -70,6 +75,62 @@ class MinimalContextCompiler:
                 "purpose": request.purpose.value,
             },
         )
+
+
+class DynamicToolContextCompiler(MinimalContextCompiler):
+    """EX-04 compiler that exposes resident and explicitly selected Tool schemas."""
+
+    def __init__(
+        self,
+        tool_context: ToolContextManager,
+        skill_context: ProgressiveSkillContextManager | None = None,
+    ) -> None:
+        self._tool_context = tool_context
+        self._skill_context = skill_context
+
+    async def compile(self, request: ContextCompileRequest) -> CompiledContext:
+        compiled = await super().compile(request)
+        visibility = self._tool_context.visibility(
+            run_id=request.run_id,
+            session_id=request.session_id,
+            agent_id=request.agent_id,
+        )
+        manifest = dict(compiled.context_manifest)
+        manifest.update(visibility.manifest())
+        available_tools = visibility.available_tools if request.include_tool_schemas else []
+        tool_schema_characters = sum(len(str(schema)) for schema in available_tools)
+        manifest["tool_schema_count"] = len(available_tools)
+        manifest["tool_schema_token_estimate"] = tool_schema_characters // 4
+        compiled.available_tools = available_tools
+        compiled.token_estimate += tool_schema_characters // 4
+        if self._skill_context is not None:
+            skills = self._skill_context.visibility(
+                run_id=request.run_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+            )
+            available_skills = [
+                skill.model_dump(mode="json") for skill in skills.available_skills
+            ]
+            loaded_documents = [
+                skill.model_dump(mode="json") for skill in skills.loaded_skill_documents
+            ]
+            loaded_references = [
+                reference.model_dump(mode="json")
+                for reference in skills.loaded_skill_references
+            ]
+            skill_payload_characters = sum(
+                len(str(payload))
+                for payload in (*available_skills, *loaded_documents, *loaded_references)
+            )
+            compiled.available_skills = available_skills
+            compiled.loaded_skill_documents = loaded_documents
+            compiled.loaded_skill_references = loaded_references
+            compiled.token_estimate += skill_payload_characters // 4
+            manifest.update(skills.manifest())
+            manifest["skill_context_token_estimate"] = skill_payload_characters // 4
+        compiled.context_manifest = manifest
+        return compiled
 
 
 class CycleLimits(DomainModel):

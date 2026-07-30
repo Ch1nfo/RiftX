@@ -8,6 +8,18 @@ from .adapters import (
     parse_tool_output,
 )
 from .config import ToolConfigError, load_tool_config, parse_tool_config
+from .discovery import (
+    RESIDENT_TOOL_IDS,
+    DynamicToolIndex,
+    ToolContextManager,
+    ToolDetail,
+    ToolIndexEntry,
+    ToolSchema,
+    ToolSearchRequest,
+    ToolSearchResult,
+    ToolSelection,
+    ToolVisibilitySnapshot,
+)
 from .models import (
     ExecutionPolicy,
     PlatformShells,
@@ -23,6 +35,16 @@ from .registry import ToolNotFoundError, ToolRegistry, ToolUnavailableError
 
 __all__ = [
     "ExecutionPolicy",
+    "RESIDENT_TOOL_IDS",
+    "DynamicToolIndex",
+    "ToolContextManager",
+    "ToolDetail",
+    "ToolIndexEntry",
+    "ToolSchema",
+    "ToolSelection",
+    "ToolSearchRequest",
+    "ToolSearchResult",
+    "ToolVisibilitySnapshot",
     "PlatformShells",
     "RawToolDefinition",
     "ShellConfig",
