@@ -1,5 +1,6 @@
 """Scope-aware, auditable long-term memory contracts."""
 
+from .candidates import MemoryCandidateFactory
 from .models import (
     MemoryAuthor,
     MemoryRecord,
@@ -25,6 +26,7 @@ from .service import CreateMemory, MemoryService
 
 __all__ = [
     "MemoryAuthor",
+    "MemoryCandidateFactory",
     "MemoryRecord",
     "MemoryRetrievalScope",
     "MemoryScope",
