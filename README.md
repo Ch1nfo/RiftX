@@ -28,6 +28,67 @@ conda run --no-capture-output -n agent python -m pytest
 The package uses a `src/` layout and requires Python 3.12.
 
 
+## Quick start
+
+Install the Python package in the repository's `agent` environment and install the
+workspace's Node dependencies:
+
+```bash
+conda run --no-capture-output -n agent python -m pip install -e ".[dev]"
+pnpm install
+```
+
+Build the WebUI, then start the shared FastAPI Control Plane. The production-style
+server serves the built WebUI and API from the same address:
+
+```bash
+pnpm web:build
+conda run --no-capture-output -n agent riftx \
+  --config configs/riftx.example.yaml serve
+```
+
+Open <http://127.0.0.1:8787/> or print/open it with:
+
+```bash
+conda run --no-capture-output -n agent riftx web
+```
+
+For frontend development, keep the Control Plane running and start Vite in a second
+terminal. Vite proxies `/api` and `/healthz` to port `8787`:
+
+```bash
+pnpm web:dev
+# Open http://127.0.0.1:5173/
+```
+
+The API and read-only UI can start while Temporal is unavailable. Creating and running
+durable Agent workflows additionally requires a Temporal server at `127.0.0.1:7233`
+and a RiftX worker:
+
+```bash
+conda run --no-capture-output -n agent riftx \
+  --config configs/riftx.example.yaml worker
+```
+
+### English and Chinese
+
+The WebUI selects Chinese automatically when the browser locale starts with `zh`.
+Use the `中文 / EN` button in the top bar to switch languages; the selection is stored
+in browser local storage.
+
+CLI output defaults to English for backward compatibility. Select Chinese or English
+with the global option or environment variable:
+
+```bash
+conda run --no-capture-output -n agent riftx --language zh run list
+RIFTX_LANGUAGE=zh conda run --no-capture-output -n agent riftx run list
+conda run --no-capture-output -n agent riftx --language en run list
+```
+
+The language setting applies to Rich tables, empty states, statuses, errors, operation
+feedback, and interactive-mode guidance. Command names and machine identifiers remain
+unchanged.
+
 ## Remote Runners
 
 Remote nodes use an outbound authenticated long-poll connection, so the Runner host
