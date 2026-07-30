@@ -15,6 +15,13 @@ from .executions import (
     ExecutionWaitResponse,
 )
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
+from .memories import (
+    CreateMemoryRequest,
+    MemoryListResponse,
+    MemoryResponse,
+    PinMemoryRequest,
+    UpdateMemoryRequest,
+)
 from .nodes import (
     HeartbeatNodeRequest,
     NodeListResponse,
@@ -55,6 +62,7 @@ __all__ = [
     "ArtifactListResponse",
     "ArtifactResponse",
     "CreateRunRequest",
+    "CreateMemoryRequest",
     "CompactRunRequest",
     "CreateFindingRequest",
     "EngagementCreateRequest",
@@ -66,6 +74,8 @@ __all__ = [
     "ExecutionResponse",
     "ExecutionWaitResponse",
     "FindingListResponse",
+    "MemoryListResponse",
+    "MemoryResponse",
     "GenerateReportsRequest",
     "HeartbeatNodeRequest",
     "NodeListResponse",
@@ -89,12 +99,14 @@ __all__ = [
     "RegisterArtifactRequest",
     "ReportListResponse",
     "ReportResponse",
+    "PinMemoryRequest",
     "ScopeRequest",
     "SuccessCriterionRequest",
     "SwitchRunModelRequest",
     "ToolRegistryResponse",
     "ToolUpdateRequest",
     "UpdateFindingRequest",
+    "UpdateMemoryRequest",
     "TerminalCreateRequest",
     "TerminalResponse",
 ]

@@ -6,6 +6,7 @@ from .context import router as context_router
 from .events import router as events_router
 from .executions import router as executions_router
 from .findings import router as findings_router
+from .memories import router as memories_router
 from .nodes import router as nodes_router
 from .reports import router as reports_router
 from .runner_control import router as runner_control_router
@@ -20,6 +21,7 @@ __all__ = [
     "events_router",
     "executions_router",
     "findings_router",
+    "memories_router",
     "nodes_router",
     "reports_router",
     "runner_control_router",

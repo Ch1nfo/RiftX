@@ -60,6 +60,30 @@ class FakeAPIClient:
         self.calls.append(("compact_run", (run_id, max_history_items)))
         return {"run": {"id": run_id, "status": "running"}}
 
+    def create_memory(self, payload: dict[str, object]) -> dict[str, Any]:
+        self.calls.append(("create_memory", payload))
+        return {"id": "memory-1", **payload, "status": "active"}
+
+    def list_memories(self, **kwargs: object) -> dict[str, Any]:
+        self.calls.append(("list_memories", kwargs))
+        return {"items": []}
+
+    def get_memory(self, memory_id: str) -> dict[str, Any]:
+        self.calls.append(("get_memory", memory_id))
+        return {"id": memory_id, "source_refs": []}
+
+    def update_memory(self, memory_id: str, payload: dict[str, object]) -> dict[str, Any]:
+        self.calls.append(("update_memory", (memory_id, payload)))
+        return {"id": memory_id, **payload, "source_refs": payload.get("source_refs", [])}
+
+    def delete_memory(self, memory_id: str) -> dict[str, Any]:
+        self.calls.append(("delete_memory", memory_id))
+        return {"id": memory_id, "status": "deleted"}
+
+    def pin_memory(self, memory_id: str, *, pinned: bool = True) -> dict[str, Any]:
+        self.calls.append(("pin_memory", (memory_id, pinned)))
+        return {"id": memory_id, "pinned": pinned}
+
     def switch_run_model(self, run_id: str, model_profile: str) -> dict[str, Any]:
         self.calls.append(("switch_run_model", (run_id, model_profile)))
         return {"run": {"id": run_id, "status": "running"}}
@@ -380,6 +404,55 @@ def test_run_model_switch_delegates_to_shared_http_client() -> None:
     assert FakeAPIClient.instances[0].calls == [
         ("switch_run_model", ("run-1", "deep"))
     ]
+
+
+def test_memory_commands_delegate_to_shared_http_client() -> None:
+    created = runner.invoke(
+        cli_module.app,
+        [
+            "memory",
+            "create",
+            "procedural",
+            "node",
+            "node-1",
+            "Nuclei WAF",
+            "Lower the rate limit",
+            "--source",
+            "user://messages/message-1",
+            "--keyword",
+            "nuclei",
+            "--pin",
+        ],
+    )
+    listed = runner.invoke(
+        cli_module.app,
+        ["memory", "list", "--scope", "node", "--scope-id", "node-1"],
+    )
+    edited = runner.invoke(
+        cli_module.app,
+        ["memory", "edit", "memory-1", "--summary", "Updated"],
+    )
+    pinned = runner.invoke(cli_module.app, ["memory", "pin", "memory-1", "--off"])
+    deleted = runner.invoke(cli_module.app, ["memory", "forget", "memory-1"])
+
+    for result in (created, listed, edited, pinned, deleted):
+        assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls[0][0] == "create_memory"
+    assert FakeAPIClient.instances[1].calls == [
+        (
+            "list_memories",
+            {
+                "scope_type": "node",
+                "scope_id": "node-1",
+                "include_inactive": False,
+            },
+        )
+    ]
+    assert FakeAPIClient.instances[2].calls == [
+        ("update_memory", ("memory-1", {"summary": "Updated"}))
+    ]
+    assert FakeAPIClient.instances[3].calls == [("pin_memory", ("memory-1", False))]
+    assert FakeAPIClient.instances[4].calls == [("delete_memory", "memory-1")]
 
 
 def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:

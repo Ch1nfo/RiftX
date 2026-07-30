@@ -77,6 +77,39 @@ class APIClient:
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}")
 
+    def create_memory(self, payload: dict[str, object]) -> dict[str, Any]:
+        return self._json("POST", "/api/v1/memories", json=payload)
+
+    def list_memories(
+        self,
+        *,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        include_inactive: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, object] = {"include_inactive": include_inactive}
+        if scope_type is not None:
+            params["scope_type"] = scope_type
+        if scope_id is not None:
+            params["scope_id"] = scope_id
+        return self._json("GET", "/api/v1/memories", params=params)
+
+    def get_memory(self, memory_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/memories/{memory_id}")
+
+    def update_memory(self, memory_id: str, payload: dict[str, object]) -> dict[str, Any]:
+        return self._json("PATCH", f"/api/v1/memories/{memory_id}", json=payload)
+
+    def delete_memory(self, memory_id: str) -> dict[str, Any]:
+        return self._json("DELETE", f"/api/v1/memories/{memory_id}")
+
+    def pin_memory(self, memory_id: str, *, pinned: bool = True) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/memories/{memory_id}/pin",
+            json={"pinned": pinned},
+        )
+
     def get_run_context(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}/context")
 

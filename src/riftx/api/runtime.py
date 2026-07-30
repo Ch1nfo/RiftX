@@ -29,6 +29,7 @@ from riftx.application.services import (
 )
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.context import ContextApplicationService
+from riftx.memory import MemoryService
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -46,6 +47,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
+from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.runner import ExecutionRunner, ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
@@ -120,6 +122,7 @@ class ControlPlane:
     approval_service: ApprovalApplicationService
     artifact_service: ArtifactApplicationService
     context_service: ContextApplicationService
+    memory_service: MemoryService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
     process_supervisor: ProcessSupervisor | None = None
@@ -161,6 +164,9 @@ class UnavailableRunWorkflowClient:
         self._raise(run_id)
 
     async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+        self._raise(run_id)
+
+    async def switch_model(self, run_id: str, model_profile: str) -> None:
         self._raise(run_id)
 
     async def append_user_message(self, run_id: str, message: str) -> None:
@@ -210,6 +216,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
+    memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
     node_service = NodeApplicationService(
         node_repository,
         offline_after=timedelta(seconds=settings.node_offline_after_seconds),
@@ -342,6 +349,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         artifact_service=artifact_service,
         context_service=ContextApplicationService(context_repository),
+        memory_service=MemoryService(memory_repository),
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_controller,

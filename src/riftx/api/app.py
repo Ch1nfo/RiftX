@@ -20,6 +20,7 @@ from .routes import (
     events_router,
     executions_router,
     findings_router,
+    memories_router,
     nodes_router,
     reports_router,
     runner_control_router,
@@ -85,6 +86,7 @@ def create_app(
     app.include_router(events_router, prefix="/api/v1")
     app.include_router(executions_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
+    app.include_router(memories_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(approvals_router, prefix="/api/v1")
     app.include_router(artifacts_router, prefix="/api/v1")

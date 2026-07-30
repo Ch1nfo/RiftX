@@ -18,6 +18,7 @@ from riftx.application.services import (
     ToolApplicationService,
 )
 from riftx.context import ContextApplicationService
+from riftx.memory import MemoryService
 
 
 def get_control_plane(request: Request) -> object:
@@ -72,6 +73,10 @@ def get_context_service(request: Request) -> ContextApplicationService:
     return request.app.state.control_plane.context_service
 
 
+def get_memory_service(request: Request) -> MemoryService:
+    return request.app.state.control_plane.memory_service
+
+
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
@@ -98,3 +103,4 @@ ContextServiceDependency = Annotated[
     ContextApplicationService,
     Depends(get_context_service),
 ]
+MemoryServiceDependency = Annotated[MemoryService, Depends(get_memory_service)]

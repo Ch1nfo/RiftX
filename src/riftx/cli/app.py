@@ -19,6 +19,7 @@ from rich.console import Console
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
 from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
+from riftx.memory import MemoryScopeType, MemoryType
 from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 from riftx.temporal.worker_runtime import build_temporal_worker
 
@@ -33,6 +34,8 @@ from .render import (
     render_execution,
     render_execution_wait,
     render_executions,
+    render_memories,
+    render_memory,
     render_node,
     render_nodes,
     render_report,
@@ -59,6 +62,7 @@ tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
 artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
+memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
 app.add_typer(run_app, name="run")
 app.add_typer(execution_app, name="execution")
 app.add_typer(nodes_app, name="node")
@@ -66,6 +70,7 @@ app.add_typer(tools_app, name="tools")
 app.add_typer(terminal_app, name="terminal")
 app.add_typer(artifact_app, name="artifact")
 app.add_typer(report_app, name="report")
+app.add_typer(memory_app, name="memory")
 
 
 @dataclass(frozen=True, slots=True)
@@ -670,6 +675,130 @@ def watch_run(
     except (RiftXAPIError, httpx.HTTPError) as exc:
         render_error(console, exc)
         raise typer.Exit(1) from exc
+
+
+@memory_app.command("list")
+def list_memories(
+    context: typer.Context,
+    scope_type: Annotated[
+        MemoryScopeType | None,
+        typer.Option("--scope", case_sensitive=False),
+    ] = None,
+    scope_id: Annotated[str | None, typer.Option("--scope-id")] = None,
+    include_inactive: Annotated[bool, typer.Option("--all")] = False,
+) -> None:
+    """List current Memory, optionally restricted to one exact Scope."""
+
+    _run_with_client(
+        context,
+        lambda client: render_memories(
+            console,
+            client.list_memories(
+                scope_type=scope_type.value if scope_type else None,
+                scope_id=scope_id,
+                include_inactive=include_inactive,
+            ).get("items", []),
+        ),
+    )
+
+
+@memory_app.command("show")
+def show_memory(context: typer.Context, memory_id: str) -> None:
+    """Show one long-term Memory record and its sources."""
+
+    _run_with_client(
+        context,
+        lambda client: render_memory(console, client.get_memory(memory_id)),
+    )
+
+
+@memory_app.command("create")
+def create_memory(
+    context: typer.Context,
+    memory_type: Annotated[MemoryType, typer.Argument(case_sensitive=False)],
+    scope_type: Annotated[MemoryScopeType, typer.Argument(case_sensitive=False)],
+    scope_id: Annotated[str, typer.Argument()],
+    title: Annotated[str, typer.Argument()],
+    content: Annotated[str, typer.Argument()],
+    source_refs: Annotated[list[str] | None, typer.Option("--source")] = None,
+    summary: Annotated[str | None, typer.Option("--summary")] = None,
+    keywords: Annotated[list[str] | None, typer.Option("--keyword")] = None,
+    confidence: Annotated[float, typer.Option(min=0.0, max=1.0)] = 1.0,
+    importance: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.5,
+    pinned: Annotated[bool, typer.Option("--pin")] = False,
+) -> None:
+    """Manually create a sourced long-term Memory record."""
+
+    payload: dict[str, object] = {
+        "memory_type": memory_type.value,
+        "scope_type": scope_type.value,
+        "scope_id": scope_id,
+        "title": title,
+        "content": content,
+        "summary": summary or title,
+        "source_refs": source_refs or [],
+        "retrieval_keywords": keywords or [],
+        "confidence": confidence,
+        "importance": importance,
+        "pinned": pinned,
+    }
+    _run_with_client(
+        context,
+        lambda client: render_memory(console, client.create_memory(payload)),
+    )
+
+
+@memory_app.command("edit")
+def edit_memory(
+    context: typer.Context,
+    memory_id: str,
+    title: Annotated[str | None, typer.Option()] = None,
+    content: Annotated[str | None, typer.Option()] = None,
+    summary: Annotated[str | None, typer.Option()] = None,
+    sources: Annotated[list[str] | None, typer.Option("--source")] = None,
+) -> None:
+    """Edit the user-facing content or source references of active Memory."""
+
+    payload: dict[str, object] = {
+        key: value
+        for key, value in {
+            "title": title,
+            "content": content,
+            "summary": summary,
+            "source_refs": sources,
+        }.items()
+        if value is not None
+    }
+    _run_with_client(
+        context,
+        lambda client: render_memory(
+            console,
+            client.update_memory(memory_id, payload),
+        ),
+    )
+
+
+@memory_app.command("forget")
+def forget_memory(context: typer.Context, memory_id: str) -> None:
+    """Soft-delete Memory so it is never retrieved again."""
+
+    _run_with_client(context, lambda client: client.delete_memory(memory_id))
+    console.print("[green]Memory deleted.[/green]")
+
+
+@memory_app.command("pin")
+def pin_memory(
+    context: typer.Context,
+    memory_id: str,
+    pinned: Annotated[bool, typer.Option("--on/--off")] = True,
+) -> None:
+    """Pin or unpin active Memory within its existing Scope."""
+
+    _run_with_client(
+        context,
+        lambda client: client.pin_memory(memory_id, pinned=pinned),
+    )
+    console.print("[green]Memory pin updated.[/green]")
 
 
 @execution_app.command("show")

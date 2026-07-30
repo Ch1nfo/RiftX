@@ -62,6 +62,7 @@ from riftx.domain import (
     TerminalStatus,
     ToolCall,
 )
+from riftx.memory import MemoryService
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -78,6 +79,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
+from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.skills import create_default_skill_registry
@@ -388,6 +390,9 @@ tools:
             ),
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
+            memory_service=MemoryService(
+                SQLAlchemyMemoryRepository(database.session_factory)
+            ),
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_controller,
@@ -509,6 +514,113 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             )
             assert message_event["payload"]["message"] == "Focus on the HTTP endpoint"
             assert ("message", run_id, message_event["id"]) in runtime.workflow.calls
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_memory_management_scope_search_and_lifecycle(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            missing_source = await client.post(
+                "/api/v1/memories",
+                json={
+                    "memory_type": "semantic",
+                    "scope_type": "engagement",
+                    "scope_id": "engagement-1",
+                    "title": "Invalid",
+                    "content": "No source",
+                    "summary": "No source",
+                    "source_refs": [],
+                },
+            )
+            assert missing_source.status_code == 422
+            first = await client.post(
+                "/api/v1/memories",
+                json={
+                    "memory_type": "semantic",
+                    "scope_type": "engagement",
+                    "scope_id": "engagement-1",
+                    "title": "Staging proxy",
+                    "content": "Use SOCKS5 on 127.0.0.1:1080.",
+                    "summary": "Staging SOCKS5 proxy",
+                    "retrieval_keywords": ["proxy", "socks5"],
+                    "confidence": 0.9,
+                    "importance": 0.8,
+                    "source_refs": ["user://messages/message-1"],
+                },
+            )
+            assert first.status_code == 201, first.text
+            first_id = first.json()["id"]
+            other = await client.post(
+                "/api/v1/memories",
+                json={
+                    "memory_type": "semantic",
+                    "scope_type": "engagement",
+                    "scope_id": "engagement-2",
+                    "title": "Other customer proxy",
+                    "content": "Use another proxy.",
+                    "summary": "Other proxy",
+                    "retrieval_keywords": ["proxy"],
+                    "source_refs": ["user://messages/message-2"],
+                },
+            )
+            assert other.status_code == 201
+
+            scoped = await client.get(
+                "/api/v1/memories",
+                params={"scope_type": "engagement", "scope_id": "engagement-1"},
+            )
+            assert [item["id"] for item in scoped.json()["items"]] == [first_id]
+            edited = await client.patch(
+                f"/api/v1/memories/{first_id}",
+                json={"summary": "Updated staging proxy"},
+            )
+            assert edited.status_code == 200
+            assert edited.json()["summary"] == "Updated staging proxy"
+            pinned = await client.post(
+                f"/api/v1/memories/{first_id}/pin",
+                json={"pinned": True},
+            )
+            assert pinned.json()["pinned"] is True
+            search = await client.get(
+                "/api/v1/memories/search",
+                params={"q": "unrelated", "engagement_id": "engagement-1"},
+            )
+            assert [item["id"] for item in search.json()["items"]] == [first_id]
+
+            replacement = await client.post(
+                "/api/v1/memories",
+                json={
+                    "memory_type": "semantic",
+                    "scope_type": "engagement",
+                    "scope_id": "engagement-1",
+                    "title": "Replacement proxy",
+                    "content": "Use SOCKS5 on 127.0.0.1:2080.",
+                    "summary": "Replacement SOCKS5 proxy",
+                    "retrieval_keywords": ["proxy", "socks5"],
+                    "source_refs": ["artifact://runs/run-1/executions/ex-1/stdout"],
+                    "supersedes": first_id,
+                },
+            )
+            assert replacement.status_code == 201, replacement.text
+            replacement_id = replacement.json()["id"]
+            deleted = await client.delete(f"/api/v1/memories/{replacement_id}")
+            assert deleted.status_code == 200
+            assert deleted.json()["status"] == "deleted"
+            inactive = await client.get(
+                "/api/v1/memories",
+                params={
+                    "scope_type": "engagement",
+                    "scope_id": "engagement-1",
+                    "include_inactive": True,
+                },
+            )
+            assert {item["status"] for item in inactive.json()["items"]} == {
+                "superseded",
+                "deleted",
+            }
     finally:
         await runtime.control_plane.close()
 

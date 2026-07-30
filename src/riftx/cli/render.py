@@ -148,6 +148,49 @@ def render_run(console: Console, run: dict[str, Any]) -> None:
     console.print(Panel(body, title="RiftX Run", border_style="cyan"))
 
 
+def render_memories(console: Console, memories: Iterable[dict[str, Any]]) -> None:
+    items = list(memories)
+    if not items:
+        console.print("[dim]No long-term memories found.[/dim]")
+        return
+    table = Table(title="Long-Term Memory", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Type")
+    table.add_column("Scope")
+    table.add_column("Status")
+    table.add_column("Pin")
+    table.add_column("Summary")
+    for memory in items:
+        table.add_row(
+            str(memory.get("id", "")),
+            str(memory.get("memory_type", "")),
+            f"{memory.get('scope_type', '')}:{memory.get('scope_id', '')}",
+            _status_text(str(memory.get("status", "unknown"))),
+            "yes" if memory.get("pinned") else "no",
+            str(memory.get("summary", "")),
+        )
+    console.print(table)
+
+
+def render_memory(console: Console, memory: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("ID", str(memory.get("id", "")))
+    body.add_row("Type", str(memory.get("memory_type", "")))
+    body.add_row(
+        "Scope",
+        f"{memory.get('scope_type', '')}:{memory.get('scope_id', '')}",
+    )
+    body.add_row("Status", str(memory.get("status", "")))
+    body.add_row("Pinned", "yes" if memory.get("pinned") else "no")
+    body.add_row("Title", str(memory.get("title", "")))
+    body.add_row("Summary", str(memory.get("summary", "")))
+    body.add_row("Content", str(memory.get("content", "")))
+    body.add_row("Sources", "\n".join(memory.get("source_refs", [])) or "—")
+    console.print(Panel(body, title="Long-Term Memory", border_style="cyan"))
+
+
 def render_executions(console: Console, executions: Iterable[dict[str, Any]]) -> None:
     items = list(executions)
     if not items:

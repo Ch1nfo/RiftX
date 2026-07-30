@@ -8,9 +8,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, ValidationError
 
-from riftx.application.errors import EntityNotFoundError
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -73,7 +73,14 @@ class MemoryService:
         self._repository = repository
 
     async def create(self, command: CreateMemory) -> MemoryRecord:
-        memory = MemoryRecord.model_validate(asdict(command))
+        try:
+            memory = MemoryRecord.model_validate(asdict(command))
+        except ValidationError as exc:
+            raise ApplicationConflictError(
+                "invalid_memory",
+                "Memory content, Scope, source, or validity window is invalid",
+                details={"validation": exc.errors(include_url=False)},
+            ) from exc
         if memory.supersedes is not None:
             return await self._repository.supersede(memory)
         return await self._repository.create(memory)
@@ -91,13 +98,27 @@ class MemoryService:
     ) -> MemoryRecord:
         memory = await self.get(memory_id)
         if memory.status is not MemoryStatus.ACTIVE:
-            raise ValueError("only active Memory can be edited")
+            raise ApplicationConflictError(
+                "memory_not_active",
+                "Only active Memory can be edited",
+                details={"memory_id": memory.id, "status": memory.status.value},
+            )
         unknown = set(changes) - _EDITABLE_FIELDS
         if unknown:
-            raise ValueError(f"unsupported Memory fields: {sorted(unknown)!r}")
-        candidate = MemoryRecord.model_validate(
-            {**memory.model_dump(), **dict(changes), "updated_at": utc_now()}
-        )
+            raise ApplicationConflictError(
+                "invalid_memory_update",
+                f"Unsupported Memory fields: {sorted(unknown)!r}",
+            )
+        try:
+            candidate = MemoryRecord.model_validate(
+                {**memory.model_dump(), **dict(changes), "updated_at": utc_now()}
+            )
+        except ValidationError as exc:
+            raise ApplicationConflictError(
+                "invalid_memory_update",
+                "Memory update is invalid",
+                details={"validation": exc.errors(include_url=False)},
+            ) from exc
         return await self._repository.save(candidate)
 
     async def delete(self, memory_id: str) -> MemoryRecord:
@@ -111,7 +132,11 @@ class MemoryService:
     async def pin(self, memory_id: str, *, pinned: bool = True) -> MemoryRecord:
         memory = await self.get(memory_id)
         if memory.status is not MemoryStatus.ACTIVE:
-            raise ValueError("only active Memory can be pinned")
+            raise ApplicationConflictError(
+                "memory_not_active",
+                "Only active Memory can be pinned",
+                details={"memory_id": memory.id, "status": memory.status.value},
+            )
         memory.pinned = pinned
         return await self._repository.save(memory)
 
@@ -125,6 +150,30 @@ class MemoryService:
         memories = await self._repository.list_all()
         if scope is not None:
             memories = [item for item in memories if scope.allows(item)]
+        if not include_inactive:
+            memories = [item for item in memories if item.is_current(at=at)]
+        return memories
+
+    async def list_scope(
+        self,
+        *,
+        scope_type: MemoryScopeType | None = None,
+        scope_id: str | None = None,
+        include_inactive: bool = False,
+        at: AwareDatetime | None = None,
+    ) -> list[MemoryRecord]:
+        if (scope_type is None) != (scope_id is None):
+            raise ApplicationConflictError(
+                "invalid_memory_scope",
+                "scope_type and scope_id must be provided together",
+            )
+        memories = await self._repository.list_all()
+        if scope_type is not None and scope_id is not None:
+            memories = [
+                item
+                for item in memories
+                if item.scope_type is scope_type and item.scope_id == scope_id
+            ]
         if not include_inactive:
             memories = [item for item in memories if item.is_current(at=at)]
         return memories
