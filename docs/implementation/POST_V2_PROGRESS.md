@@ -7,7 +7,7 @@ Wave A
 ## Completed
 
 - [x] RT-01 Runtime Domain 与状态机
-- [ ] RT-02 Agent Engine 抽象
+- [x] RT-02 Agent Engine 抽象
 - [ ] RT-03 Runtime Coordinator 与有限 Cycle
 - [ ] RT-04 Transcript 与 Session Manager
 
@@ -27,6 +27,21 @@ Wave A
   - `PREPARING` remains as a V2 compatibility `RunStatus`; new Runtime flows use `INITIALIZING -> READY`.
   - Runtime Coordinator, engine integration, and cycle limits are intentionally deferred to RT-02/RT-03.
 - Next dependency: RT-02 is unblocked.
+
+### RT-02
+
+- Branch: `codex/rt-02-agent-engine`
+- Commit: `980a2a4 feat(runtime): add agent engine abstraction`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py`
+  - Result: `358 passed, 2 skipped`; Ruff passed.
+- Migrations: None.
+- Known limitations:
+  - The first adapter targets OpenAI Agents SDK 0.19; additional provider adapters are deferred.
+  - Context compilation and durable cycle orchestration remain RT-03 responsibilities.
+- Next dependency: RT-03 is unblocked.
 
 ## Architecture Deviations
 
