@@ -42,6 +42,7 @@ from riftx.persistence import (
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
@@ -203,6 +204,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
+    runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
@@ -336,6 +338,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             run_repository=run_repository,
             event_repository=event_repository,
             workflow_client=workflow_client,
+            runtime_approval_repository=runtime_approval_repository,
         ),
         artifact_service=artifact_service,
         context_service=ContextApplicationService(context_repository),

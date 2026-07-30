@@ -6,6 +6,7 @@ from .approvals import (
     ApprovalRequestRecorder,
     ApprovalWorkflowClient,
     DecideApproval,
+    RuntimeApprovalRequestRecorder,
 )
 from .artifacts import (
     ArtifactApplicationService,
@@ -39,6 +40,7 @@ __all__ = [
     "ApprovalInterruption",
     "ApprovalRequestRecorder",
     "ApprovalWorkflowClient",
+    "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
     "CreateEngagement",
     "CreateRun",

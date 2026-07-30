@@ -114,6 +114,7 @@ class RunCycleRequest(DomainModel):
     input_text: str | None = None
     input_items: list[dict[str, object]] = Field(default_factory=list)
     latest_user_message_id: str | None = None
+    approval_id: str | None = None
     engagement_path: str | None = None
     current_path: str | None = None
     compaction_required: bool = False
@@ -127,6 +128,7 @@ class RunCycleResult(DomainModel):
     model_call_count: int = Field(ge=0)
     tool_call_count: int = Field(ge=0)
     provider_state_id: str | None = None
+    waiting_object_id: str | None = None
     waiting_execution_id: str | None = None
 
 

@@ -14,6 +14,14 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import ApprovalRepository, RunEventRepository, RunRepository
 from riftx.domain import Approval, ApprovalStatus, Run, ToolCall
+from riftx.runtime.types import (
+    AgentCycle,
+    AgentSession,
+    AgentStep,
+    ApprovalDecision,
+    RuntimeApprovalRequest,
+    ToolCallIntent,
+)
 from riftx.tools import ToolRegistry
 
 
@@ -21,6 +29,14 @@ class ApprovalWorkflowClient(Protocol):
     async def approve(self, run_id: str, approval_id: str) -> None: ...
 
     async def reject(self, run_id: str, approval_id: str) -> None: ...
+
+
+class RuntimeApprovalRepository(Protocol):
+    async def create(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest: ...
+
+    async def get(self, approval_id: str) -> RuntimeApprovalRequest | None: ...
+
+    async def save(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +153,87 @@ class ApprovalRequestRecorder:
         return function_name, function_name, [], {}
 
 
+class RuntimeApprovalRequestRecorder:
+    """Bridge a durable ToolCallIntent into the control-plane approval API."""
+
+    def __init__(
+        self,
+        *,
+        approval_repository: ApprovalRepository,
+        runtime_repository: RuntimeApprovalRepository,
+        event_repository: RunEventRepository,
+    ) -> None:
+        self._approvals = approval_repository
+        self._runtime = runtime_repository
+        self._events = event_repository
+
+    async def record(
+        self,
+        run: Run,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        step: AgentStep,
+        intent: ToolCallIntent,
+        context_compilation_id: str | None,
+        working_memory_version: int | None,
+    ) -> RuntimeApprovalRequest:
+        call_id = intent.engine_call_id or intent.id
+        tool_id = intent.tool_id or intent.skill_id or "unknown"
+        tool_call = ToolCall(
+            sdk_call_id=call_id,
+            run_id=run.id,
+            agent_step_id=step.id,
+            tool_id=tool_id,
+            skill_id=intent.skill_id,
+            arguments=intent.arguments,
+        )
+        command, cwd, env = _intent_execution_summary(intent)
+        approval = Approval(
+            run_id=run.id,
+            tool_call_id=tool_call.id,
+            tool_name=tool_id,
+            command=command,
+            cwd=cwd or run.workspace_path,
+            target_summary=intent.target_summary or _target_summary(run),
+            env_diff=env,
+            reason=intent.reason or f"Agent requested {tool_id!r} during step {step.id}.",
+        )
+        approval, created = await self._approvals.create_request(tool_call, approval)
+        request = await self._runtime.create(
+            RuntimeApprovalRequest(
+                id=approval.id,
+                run_id=run.id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                tool_call_intent_id=intent.id,
+                context_compilation_id=context_compilation_id,
+                working_memory_version=working_memory_version,
+            )
+        )
+        if created:
+            await self._events.append(
+                run.id,
+                "tool.approval_required",
+                {
+                    "approval_id": request.id,
+                    "tool_call_id": approval.tool_call_id,
+                    "tool_call_intent_id": intent.id,
+                    "sdk_call_id": call_id,
+                    "tool_name": approval.tool_name,
+                    "command": approval.command,
+                    "cwd": approval.cwd,
+                    "target_summary": approval.target_summary,
+                    "env_diff": approval.env_diff,
+                    "reason": approval.reason,
+                    "context_compilation_id": context_compilation_id,
+                    "working_memory_version": working_memory_version,
+                    "agent_step_id": step.id,
+                },
+            )
+        return request
+
+
 class ApprovalApplicationService:
     def __init__(
         self,
@@ -145,11 +242,13 @@ class ApprovalApplicationService:
         run_repository: RunRepository,
         event_repository: RunEventRepository,
         workflow_client: ApprovalWorkflowClient,
+        runtime_approval_repository: RuntimeApprovalRepository | None = None,
     ) -> None:
         self._approval_repository = approval_repository
         self._run_repository = run_repository
         self._event_repository = event_repository
         self._workflow_client = workflow_client
+        self._runtime_approvals = runtime_approval_repository
 
     async def list(
         self,
@@ -191,6 +290,16 @@ class ApprovalApplicationService:
             decided_by=command.decided_by,
             reason=command.reason,
         )
+        if self._runtime_approvals is not None:
+            runtime_request = await self._runtime_approvals.get(approval_id)
+            if runtime_request is not None:
+                decision = _runtime_decision(target, command)
+                runtime_request.decide(
+                    decision,
+                    decided_by=command.decided_by,
+                    feedback=command.reason,
+                )
+                await self._runtime_approvals.save(runtime_request)
         if target is ApprovalStatus.APPROVED and command.approve_for_run:
             await self._approval_repository.grant_for_run(
                 approval.run_id,
@@ -224,6 +333,40 @@ class ApprovalApplicationService:
                 details={"approval_id": approval.id, "run_id": approval.run_id},
             ) from exc
         return approval
+
+
+def _runtime_decision(target: ApprovalStatus, command: DecideApproval) -> ApprovalDecision:
+    if target is ApprovalStatus.APPROVED:
+        return (
+            ApprovalDecision.APPROVE_TOOL_FOR_RUN
+            if command.approve_for_run
+            else ApprovalDecision.APPROVE_ONCE
+        )
+    return (
+        ApprovalDecision.REJECT_WITH_FEEDBACK
+        if command.reason and command.reason.strip()
+        else ApprovalDecision.REJECT
+    )
+
+
+def _intent_execution_summary(
+    intent: ToolCallIntent,
+) -> tuple[list[str], str, dict[str, str | None]]:
+    spec = intent.execution_spec or {}
+    argv = spec.get("argv")
+    command = [str(value) for value in argv] if isinstance(argv, list) else []
+    command_text = spec.get("command_text")
+    shell_path = spec.get("shell_path")
+    if not command and isinstance(command_text, str) and command_text:
+        command = [str(shell_path or "shell"), "-lc", command_text]
+    cwd = str(spec.get("cwd") or "")
+    raw_env = spec.get("env")
+    env = (
+        {str(key): None if value is None else str(value) for key, value in raw_env.items()}
+        if isinstance(raw_env, dict)
+        else {}
+    )
+    return command, cwd, env
 
 
 def _decode_arguments(value: str | None) -> dict[str, object]:

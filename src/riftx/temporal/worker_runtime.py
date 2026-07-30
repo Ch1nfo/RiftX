@@ -23,6 +23,7 @@ from riftx.application.services import (
     NodeRegistration,
     ReportApplicationService,
     RunnerControlService,
+    RuntimeApprovalRequestRecorder,
     TerminalApplicationService,
 )
 from riftx.config import RiftXConfig
@@ -33,6 +34,7 @@ from riftx.context import (
     StableInstructionSource,
     ToolResultProcessor,
     TranscriptContextSource,
+    WorkingMemoryContextSource,
     processed_tool_result_context_item,
 )
 from riftx.domain import (
@@ -65,11 +67,13 @@ from riftx.persistence import (
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
+from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
@@ -313,6 +317,9 @@ async def build_temporal_worker(
         agent_step_repository = SQLAlchemyAgentStepRepository(database.session_factory)
         provider_state_repository = SQLAlchemyProviderStateRepository(database.session_factory)
         run_lease_repository = SQLAlchemyRunLeaseRepository(database.session_factory)
+        runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(
+            database.session_factory
+        )
         tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(
             database.session_factory
         )
@@ -320,6 +327,7 @@ async def build_temporal_worker(
         context_compilation_repository = SQLAlchemyContextCompilationRepository(
             database.session_factory
         )
+        working_memory_repository = SQLAlchemyWorkingMemoryRepository(database.session_factory)
 
         node_service = NodeApplicationService(
             node_repository,
@@ -471,7 +479,8 @@ async def build_temporal_worker(
                 TranscriptContextSource(
                     transcript_repository,
                     max_items=config.agent.max_history_items or 100,
-                )
+                ),
+                WorkingMemoryContextSource(working_memory_repository),
             ],
             stable_instruction_source=StableInstructionSource(),
             tool_context=tool_context,
@@ -507,6 +516,13 @@ async def build_temporal_worker(
             ),
             transcript_repository=transcript_repository,
             deferred_execution_dispatcher=deferred_dispatcher,
+            approval_repository=approval_repository,
+            runtime_approval_repository=runtime_approval_repository,
+            approval_recorder=RuntimeApprovalRequestRecorder(
+                approval_repository=approval_repository,
+                runtime_repository=runtime_approval_repository,
+                event_repository=event_repository,
+            ),
         )
         runtime_cycle_activities = RuntimeCycleActivities(
             runtime_coordinator,

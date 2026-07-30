@@ -94,14 +94,6 @@ class RuntimeCycleActivities:
                         "source_refs": [f"execution://{input.completed_execution_id}"],
                     }
                 )
-        if input.approval_id is not None:
-            input_items.append(
-                {
-                    "type": "approval_decision",
-                    "approval_id": input.approval_id,
-                    "source_refs": [f"approval://{input.approval_id}"],
-                }
-            )
         result = await _await_with_heartbeats(
             self._coordinator.run_cycle(
                 RunCycleRequest(
@@ -110,6 +102,7 @@ class RuntimeCycleActivities:
                     worker_id=self._worker_id,
                     cycle_id=input.cycle_id,
                     latest_user_message_id=latest_user_message_id,
+                    approval_id=input.approval_id,
                     input_items=input_items,
                 )
             ),
@@ -120,7 +113,7 @@ class RuntimeCycleActivities:
             session_id=result.session_id,
             cycle_id=result.cycle_id,
             yield_reason=RuntimeYieldReason(result.yield_reason.value),
-            waiting_object_id=result.waiting_execution_id,
+            waiting_object_id=result.waiting_object_id,
             checkpoint_id=result.provider_state_id,
         )
 

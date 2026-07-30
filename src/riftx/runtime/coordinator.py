@@ -8,7 +8,10 @@ from time import monotonic
 from typing import Protocol, cast
 
 from riftx.application.errors import EntityNotFoundError
+from riftx.application.ports import ApprovalRepository
+from riftx.application.services import RuntimeApprovalRequestRecorder
 from riftx.domain import (
+    ApprovalLevel,
     DomainError,
     MessageRole,
     MessageType,
@@ -16,6 +19,7 @@ from riftx.domain import (
     Run,
     RunStatus,
     TranscriptMessageDraft,
+    requires_approval,
 )
 from riftx.domain.base import new_id
 from riftx.execution import DeferredExecutionDispatcher
@@ -25,6 +29,7 @@ from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
     SQLAlchemyProviderStateRepository,
+    SQLAlchemyRuntimeApprovalRepository,
 )
 from riftx.persistence.transcript_repositories import SQLAlchemyTranscriptRepository
 from riftx.runtime.engine import (
@@ -62,10 +67,12 @@ from riftx.runtime.types import (
     AgentSession,
     AgentStep,
     AgentStepType,
+    ApprovalDecision,
     CycleStatus,
     RuntimeStateMachine,
     SessionStatus,
     StepStatus,
+    ToolCallStatus,
     YieldReason,
 )
 
@@ -102,6 +109,9 @@ class RuntimeCoordinator:
         context_usage_recorder: _ContextUsageRecorder | None = None,
         transcript_repository: SQLAlchemyTranscriptRepository | None = None,
         deferred_execution_dispatcher: DeferredExecutionDispatcher | None = None,
+        approval_repository: ApprovalRepository | None = None,
+        runtime_approval_repository: SQLAlchemyRuntimeApprovalRepository | None = None,
+        approval_recorder: RuntimeApprovalRequestRecorder | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -122,6 +132,9 @@ class RuntimeCoordinator:
         self._agent_engine = agent_engine
         self._transcript = transcript_repository
         self._deferred_executions = deferred_execution_dispatcher
+        self._approvals = approval_repository
+        self._runtime_approvals = runtime_approval_repository
+        self._approval_recorder = approval_recorder
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -157,6 +170,16 @@ class RuntimeCoordinator:
             self._state_machine.transition_cycle(cycle, CycleStatus.RUNNING)
             await self._cycles.save(cycle)
             await self._append(run.id, CYCLE_STARTED, {"cycle_id": cycle.id})
+
+            if request.approval_id is not None:
+                approval_result = await self._resume_approval(
+                    run,
+                    session,
+                    cycle,
+                    request,
+                )
+                if approval_result is not None:
+                    return approval_result
 
             if request.compaction_required:
                 return await self._yield_cycle(
@@ -230,6 +253,7 @@ class RuntimeCoordinator:
             assistant_message_seen = False
             step_sequence = 0
             waiting_execution_id: str | None = None
+            waiting_approval_id: str | None = None
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
@@ -285,9 +309,19 @@ class RuntimeCoordinator:
                     persisted_step = await self._persist_step(cycle, step_sequence, event)
                 if event.event_type is AgentEngineEventType.TOOL_CALL_READY:
                     pending_tool = True
-                    approval_required = approval_required or bool(
-                        event.data.get("approval_required", False)
+                    event_requires_approval = bool(event.data.get("approval_required", False))
+                    tool_id = _event_tool_id(event)
+                    approval_level = ApprovalLevel(
+                        str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
                     )
+                    if self._approvals is not None:
+                        granted = await self._approvals.is_granted(run.id, tool_id)
+                        event_requires_approval = requires_approval(
+                            run.approval_mode,
+                            approval_level,
+                            granted_for_run=granted,
+                        )
+                    approval_required = approval_required or event_requires_approval
                     cycle.tool_call_count += 1
                     await self._cycles.save(cycle)
                     if cycle.tool_call_count >= self._limits.max_tool_calls:
@@ -298,17 +332,45 @@ class RuntimeCoordinator:
                             YieldReason.CYCLE_LIMIT_REACHED,
                             engine_run=engine_run,
                         )
-                    if (
-                        not approval_required
-                        and self._deferred_executions is not None
-                        and persisted_step is not None
-                    ):
-                        execution = await self._deferred_executions.dispatch(
+                    if self._deferred_executions is not None and persisted_step is not None:
+                        intent = await self._deferred_executions.prepare(
                             session=session,
                             cycle=cycle,
                             step=persisted_step,
                             event=event,
+                            status=(
+                                ToolCallStatus.WAITING_APPROVAL
+                                if event_requires_approval
+                                else ToolCallStatus.READY
+                            ),
                         )
+                        if event_requires_approval:
+                            if self._approval_recorder is None:
+                                raise DomainError(
+                                    "Runtime approval recorder is required for an approval "
+                                    "Tool Call"
+                                )
+                            request_record = await self._approval_recorder.record(
+                                run,
+                                session=session,
+                                cycle=cycle,
+                                step=persisted_step,
+                                intent=intent,
+                                context_compilation_id=compiled.compilation_id,
+                                working_memory_version=_working_memory_version(
+                                    compiled.context_manifest
+                                ),
+                            )
+                            if (
+                                waiting_approval_id is not None
+                                and waiting_approval_id != request_record.id
+                            ):
+                                raise DomainError(
+                                    "one Runtime cycle cannot defer multiple Approvals"
+                                )
+                            waiting_approval_id = request_record.id
+                            continue
+                        execution = await self._deferred_executions.execute_intent(intent)
                         if (
                             waiting_execution_id is not None
                             and waiting_execution_id != execution.id
@@ -353,6 +415,11 @@ class RuntimeCoordinator:
                             waiting_execution_id
                             if reason is YieldReason.TOOL_RUNNING
                             else None
+                        ),
+                        waiting_object_id=(
+                            waiting_approval_id
+                            if reason is YieldReason.APPROVAL_REQUIRED
+                            else waiting_execution_id
                         ),
                     )
 
@@ -400,6 +467,7 @@ class RuntimeCoordinator:
             tool_call_count=cycle.tool_call_count,
             provider_state_id=cycle.checkpoint_id,
             waiting_execution_id=cycle.waiting_object_id,
+            waiting_object_id=cycle.waiting_object_id,
         )
 
     async def _ensure_run_running(self, run: Run) -> Run:
@@ -568,8 +636,9 @@ class RuntimeCoordinator:
         *,
         engine_run: AgentEngineRun | None = None,
         waiting_execution_id: str | None = None,
+        waiting_object_id: str | None = None,
     ) -> RunCycleResult:
-        provider_state_id = None
+        provider_state_id = session.provider_state_id
         if engine_run is not None:
             state = await engine_run.suspend()
             provider_state = state.to_provider_state(session.id)
@@ -591,6 +660,7 @@ class RuntimeCoordinator:
                         "yield_reason": reason.value,
                         "provider_state_id": provider_state_id,
                         "waiting_execution_id": waiting_execution_id,
+                        "waiting_object_id": waiting_object_id,
                     },
                     visibility=MessageVisibility.INTERNAL_STATE,
                 ),
@@ -601,7 +671,7 @@ class RuntimeCoordinator:
             CycleStatus.YIELDED,
             yield_reason=reason,
         )
-        cycle.waiting_object_id = waiting_execution_id
+        cycle.waiting_object_id = waiting_object_id or waiting_execution_id
         cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
         await self._cycles.save(cycle)
         await self._transition_run_for_yield(run_id, reason)
@@ -614,8 +684,18 @@ class RuntimeCoordinator:
                 "model_call_count": cycle.model_call_count,
                 "tool_call_count": cycle.tool_call_count,
                 "waiting_execution_id": waiting_execution_id,
+                "waiting_object_id": cycle.waiting_object_id,
             },
         )
+        if (
+            reason is YieldReason.APPROVAL_REQUIRED
+            and cycle.waiting_object_id is not None
+            and self._runtime_approvals is not None
+        ):
+            approval = await self._runtime_approvals.get(cycle.waiting_object_id)
+            if approval is not None and approval.provider_state_id != provider_state_id:
+                approval.provider_state_id = provider_state_id
+                await self._runtime_approvals.save(approval)
         return RunCycleResult(
             run_id=run_id,
             session_id=session.id,
@@ -624,8 +704,61 @@ class RuntimeCoordinator:
             model_call_count=cycle.model_call_count,
             tool_call_count=cycle.tool_call_count,
             provider_state_id=provider_state_id,
+            waiting_object_id=cycle.waiting_object_id,
             waiting_execution_id=waiting_execution_id,
         )
+
+    async def _resume_approval(
+        self,
+        run: Run,
+        session: AgentSession,
+        cycle: AgentCycle,
+        request: RunCycleRequest,
+    ) -> RunCycleResult | None:
+        approval_id = request.approval_id
+        if (
+            approval_id is None
+            or self._runtime_approvals is None
+            or self._deferred_executions is None
+        ):
+            raise DomainError("Runtime approval recovery dependencies are unavailable")
+        approval = await self._runtime_approvals.get(approval_id)
+        if approval is None:
+            raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
+        if approval.run_id != run.id or approval.session_id != session.id:
+            raise DomainError("Runtime Approval does not belong to this Run and Session")
+        if approval.decision in {
+            ApprovalDecision.APPROVE_ONCE,
+            ApprovalDecision.APPROVE_TOOL_FOR_RUN,
+        }:
+            execution = await self._deferred_executions.execute_approved_intent(
+                approval.tool_call_intent_id
+            )
+            return await self._yield_cycle(
+                run.id,
+                session,
+                cycle,
+                YieldReason.TOOL_RUNNING,
+                waiting_execution_id=execution.id,
+                waiting_object_id=execution.id,
+            )
+        if approval.decision in {
+            ApprovalDecision.REJECT,
+            ApprovalDecision.REJECT_WITH_FEEDBACK,
+        }:
+            await self._deferred_executions.reject_intent(approval.tool_call_intent_id)
+            request.input_items.append(
+                {
+                    "type": "approval_decision",
+                    "approval_id": approval.id,
+                    "decision": approval.decision.value,
+                    "feedback": approval.feedback,
+                    "tool_call_intent_id": approval.tool_call_intent_id,
+                    "source_refs": [f"approval://{approval.id}"],
+                }
+            )
+            return None
+        raise DomainError(f"Runtime Approval {approval.id!r} has no durable decision")
 
     async def _append_engine_event(
         self, run_id: str, cycle_id: str, event: AgentEngineEvent
@@ -651,3 +784,32 @@ def _event_content(data: dict[str, object]) -> str:
         if isinstance(value, str):
             return value
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _event_tool_id(event: AgentEngineEvent) -> str:
+    value = event.data.get("tool_id") or event.data.get("name")
+    arguments = event.data.get("arguments")
+    if value == "run_registered_tool" and isinstance(arguments, dict):
+        value = arguments.get("tool_id")
+    if not isinstance(value, str) or not value:
+        raise DomainError("Tool Call event is missing a tool ID")
+    return value
+
+
+def _working_memory_version(manifest: Mapping[str, object]) -> int | None:
+    categories = manifest.get("categories")
+    if not isinstance(categories, Mapping):
+        return None
+    for category in categories.values():
+        if not isinstance(category, Mapping):
+            continue
+        refs = category.get("source_refs")
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if not isinstance(ref, str) or not ref.startswith("working-memory://"):
+                continue
+            _, separator, version = ref.rpartition("/versions/")
+            if separator and version.isdigit() and int(version) >= 1:
+                return int(version)
+    return None

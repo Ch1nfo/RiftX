@@ -223,6 +223,37 @@ class DeferredExecutionDispatcher:
             )
         )
 
+    async def execute_approved_intent(self, intent_id: str) -> Execution:
+        """Approve and execute a persisted snapshot without consulting the model again."""
+        intent = await self._require_intent(intent_id)
+        if intent.status is ToolCallStatus.WAITING_APPROVAL:
+            intent.status = ToolCallStatus.READY
+            await self._tool_calls.save(intent)
+        elif intent.status is ToolCallStatus.REJECTED:
+            raise ApplicationConflictError(
+                "tool_call_rejected",
+                f"Tool Call {intent.id!r} was rejected and cannot execute",
+            )
+        return await self.execute_intent(intent)
+
+    async def reject_intent(self, intent_id: str) -> ToolCallIntent:
+        intent = await self._require_intent(intent_id)
+        if intent.status is ToolCallStatus.REJECTED:
+            return intent
+        if intent.status is not ToolCallStatus.WAITING_APPROVAL:
+            raise ApplicationConflictError(
+                "tool_call_not_waiting_approval",
+                f"Tool Call {intent.id!r} cannot be rejected from {intent.status.value!r}",
+            )
+        intent.status = ToolCallStatus.REJECTED
+        return await self._tool_calls.save(intent)
+
+    async def _require_intent(self, intent_id: str) -> ToolCallIntent:
+        intent = await self._tool_calls.get(intent_id)
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", intent_id)
+        return intent
+
     async def _persist_intent(
         self,
         *,

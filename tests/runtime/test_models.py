@@ -126,6 +126,13 @@ def test_runtime_approval_decisions_and_user_input_transitions() -> None:
     )
     assert approval.status is ApprovalStatus.REJECTED
     assert approval.decision is ApprovalDecision.REJECT_WITH_FEEDBACK
+    approval.decide(
+        ApprovalDecision.REJECT_WITH_FEEDBACK,
+        decided_by="operator",
+        feedback="Use the authorized staging host instead.",
+    )
+    with pytest.raises(ValueError, match="already decided"):
+        approval.decide(ApprovalDecision.REJECT, decided_by="operator")
 
     request = UserInputRequest(
         run_id="run-1",

@@ -129,6 +129,12 @@ class RuntimeApprovalRequest(DomainModel):
         feedback: str | None = None,
     ) -> None:
         if self.status is not ApprovalStatus.PENDING:
+            if (
+                self.decision is decision
+                and self.decided_by == decided_by
+                and self.feedback == feedback
+            ):
+                return
             raise ValueError("runtime approval request is already decided")
         if decision is ApprovalDecision.REJECT_WITH_FEEDBACK and not feedback:
             raise ValueError("reject_with_feedback requires feedback")
