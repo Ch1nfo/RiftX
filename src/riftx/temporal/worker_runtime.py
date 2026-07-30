@@ -50,6 +50,7 @@ from riftx.execution import (
     ExecutionService,
     RegistryDeferredExecutionResolver,
 )
+from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import RiftXModelProvider, load_models_config
@@ -568,6 +569,7 @@ async def build_temporal_worker(
             ),
             user_input_repository=user_input_repository,
             terminal_service=terminal_service,
+            hooks=HookBus(audit_sink=RunEventHookAuditSink(event_repository)),
         )
         runtime_cycle_activities = RuntimeCycleActivities(
             runtime_coordinator,

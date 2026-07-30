@@ -29,6 +29,7 @@ from riftx.domain import (
 )
 from riftx.domain.base import new_id
 from riftx.execution import DeferredExecutionDispatcher, DeferredExecutionSpec
+from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentCycleRepository,
@@ -123,6 +124,7 @@ class RuntimeCoordinator:
         approval_recorder: RuntimeApprovalRequestRecorder | None = None,
         user_input_repository: SQLAlchemyUserInputRequestRepository | None = None,
         terminal_service: TerminalApplicationService | None = None,
+        hooks: HookBus | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -148,6 +150,7 @@ class RuntimeCoordinator:
         self._approval_recorder = approval_recorder
         self._user_inputs = user_input_repository
         self._terminal_service = terminal_service
+        self._hooks = hooks
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -202,35 +205,59 @@ class RuntimeCoordinator:
                     YieldReason.COMPACTION_REQUIRED,
                 )
 
-            compiled = await self._context_compiler.compile(
-                ContextCompileRequest(
-                    run_id=run.id,
-                    session_id=session.id,
-                    agent_id=session.agent_type,
-                    model_profile=session.model_profile,
-                    latest_user_message_id=latest_user_message_id,
-                    objective=run.objective.description,
-                    run_contract={
-                        "objective": run.objective.description,
-                        "success_criteria": [
-                            item.model_dump(mode="json") for item in run.success_criteria
-                        ],
-                        "entry_points": [
-                            item.model_dump(mode="json") for item in run.entry_points
-                        ],
-                        "scope": run.scope.model_dump(mode="json"),
-                        "approval_mode": run.approval_mode.value,
-                        "node_id": run.node_id,
-                        "engagement_id": run.engagement_id,
-                        "workspace": run.workspace_path,
-                        "current_path": request.current_path or run.workspace_path,
-                    },
-                    engagement_path=request.engagement_path,
-                    workspace_path=run.workspace_path,
-                    current_path=request.current_path or run.workspace_path,
-                    input_text=request.input_text,
-                    input_items=request.input_items,
-                )
+            context_request = ContextCompileRequest(
+                run_id=run.id,
+                session_id=session.id,
+                agent_id=session.agent_type,
+                model_profile=session.model_profile,
+                latest_user_message_id=latest_user_message_id,
+                objective=run.objective.description,
+                run_contract={
+                    "objective": run.objective.description,
+                    "success_criteria": [
+                        item.model_dump(mode="json") for item in run.success_criteria
+                    ],
+                    "entry_points": [
+                        item.model_dump(mode="json") for item in run.entry_points
+                    ],
+                    "scope": run.scope.model_dump(mode="json"),
+                    "approval_mode": run.approval_mode.value,
+                    "node_id": run.node_id,
+                    "engagement_id": run.engagement_id,
+                    "workspace": run.workspace_path,
+                    "current_path": request.current_path or run.workspace_path,
+                },
+                engagement_path=request.engagement_path,
+                workspace_path=run.workspace_path,
+                current_path=request.current_path or run.workspace_path,
+                input_text=request.input_text,
+                input_items=request.input_items,
+            )
+            before_context = await self._dispatch_hook(
+                HookPoint.BEFORE_CONTEXT_COMPILE,
+                run_id=run.id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                payload={
+                    "input_text": context_request.input_text,
+                    "input_items": context_request.input_items,
+                },
+            )
+            context_request.input_text = _optional_string(
+                before_context.get("input_text")
+            )
+            context_request.input_items = _object_list(before_context.get("input_items"))
+            compiled = await self._context_compiler.compile(context_request)
+            await self._dispatch_hook(
+                HookPoint.AFTER_CONTEXT_COMPILE,
+                run_id=run.id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                payload={
+                    "compilation_id": compiled.compilation_id,
+                    "token_estimate": compiled.token_estimate,
+                    "context_manifest": compiled.context_manifest,
+                },
             )
             await self._append(
                 run.id,
@@ -248,6 +275,20 @@ class RuntimeCoordinator:
                 context=compiled,
                 max_turns=self._limits.max_model_calls,
             )
+            before_model = await self._dispatch_hook(
+                HookPoint.BEFORE_MODEL_CALL,
+                run_id=run.id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                payload={
+                    "model": engine_request.model,
+                    "input_items": engine_request.input_items,
+                    "max_turns": engine_request.max_turns,
+                },
+            )
+            engine_request.input_items = _object_list(before_model.get("input_items"))
+            if isinstance(before_model.get("max_turns"), int):
+                engine_request.max_turns = int(before_model["max_turns"])
             if session.provider_state_id is not None:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
@@ -322,18 +363,38 @@ class RuntimeCoordinator:
                     step_sequence += 1
                     persisted_step = await self._persist_step(cycle, step_sequence, event)
                 if event.event_type is AgentEngineEventType.TOOL_CALL_READY:
+                    hook_result = await self._dispatch_hook(
+                        HookPoint.BEFORE_TOOL_EXECUTION,
+                        run_id=run.id,
+                        session_id=session.id,
+                        cycle_id=cycle.id,
+                        step_id=persisted_step.id if persisted_step is not None else None,
+                        payload=event.data,
+                        allow_require_approval=True,
+                    )
+                    event.data = hook_result
                     pending_tool = True
                     event_requires_approval = bool(event.data.get("approval_required", False))
+                    hook_requires_approval = bool(
+                        hook_result.pop("_hook_require_approval", False)
+                    )
                     tool_id = _event_tool_id(event)
                     approval_level = ApprovalLevel(
                         str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
                     )
                     if self._approvals is not None:
                         granted = await self._approvals.is_granted(run.id, tool_id)
-                        event_requires_approval = requires_approval(
-                            run.approval_mode,
-                            approval_level,
-                            granted_for_run=granted,
+                        event_requires_approval = (
+                            hook_requires_approval
+                            or requires_approval(
+                                run.approval_mode,
+                                approval_level,
+                                granted_for_run=granted,
+                            )
+                        )
+                    else:
+                        event_requires_approval = (
+                            event_requires_approval or hook_requires_approval
                         )
                     approval_required = approval_required or event_requires_approval
                     cycle.tool_call_count += 1
@@ -359,6 +420,18 @@ class RuntimeCoordinator:
                             ),
                         )
                         if event_requires_approval:
+                            await self._dispatch_hook(
+                                HookPoint.APPROVAL_REQUIRED,
+                                run_id=run.id,
+                                session_id=session.id,
+                                cycle_id=cycle.id,
+                                step_id=persisted_step.id,
+                                payload={
+                                    "tool_call_intent_id": intent.id,
+                                    "tool_id": intent.tool_id,
+                                    "approval_level": intent.approval_level.value,
+                                },
+                            )
                             if self._approval_recorder is None:
                                 raise DomainError(
                                     "Runtime approval recorder is required for an approval "
@@ -386,6 +459,19 @@ class RuntimeCoordinator:
                             continue
                         pending_yield_reason, execution_id = (
                             await self._execute_prepared_intent(run, intent)
+                        )
+                        await self._dispatch_hook(
+                            HookPoint.AFTER_TOOL_EXECUTION,
+                            run_id=run.id,
+                            session_id=session.id,
+                            cycle_id=cycle.id,
+                            step_id=persisted_step.id,
+                            payload={
+                                "tool_call_intent_id": intent.id,
+                                "tool_id": intent.tool_id,
+                                "execution_id": execution_id,
+                                "yield_reason": pending_yield_reason.value,
+                            },
                         )
                         if (
                             waiting_execution_id is not None
@@ -433,6 +519,13 @@ class RuntimeCoordinator:
                         waiting_object_id=waiting_input_id,
                     )
                 if event.event_type is AgentEngineEventType.ERROR:
+                    await self._dispatch_hook(
+                        HookPoint.AFTER_MODEL_CALL,
+                        run_id=run.id,
+                        session_id=session.id,
+                        cycle_id=cycle.id,
+                        payload={"status": "error", "event": event.data},
+                    )
                     reason = (
                         YieldReason.RETRYABLE_FAILURE
                         if event.data.get("retryable", False)
@@ -442,6 +535,17 @@ class RuntimeCoordinator:
                         run.id, session, cycle, reason, engine_run=engine_run
                     )
                 if event.event_type is AgentEngineEventType.RUN_COMPLETED:
+                    await self._dispatch_hook(
+                        HookPoint.AFTER_MODEL_CALL,
+                        run_id=run.id,
+                        session_id=session.id,
+                        cycle_id=cycle.id,
+                        payload={
+                            "status": "completed",
+                            "model_call_count": cycle.model_call_count,
+                            "tool_call_count": cycle.tool_call_count,
+                        },
+                    )
                     if approval_required:
                         reason = YieldReason.APPROVAL_REQUIRED
                     elif pending_tool:
@@ -489,6 +593,56 @@ class RuntimeCoordinator:
         finally:
             await lease.release()
             await self._append(request.run_id, LEASE_RELEASED, {"owner_id": request.worker_id})
+
+    async def _dispatch_hook(
+        self,
+        point: HookPoint,
+        *,
+        run_id: str,
+        session_id: str | None,
+        cycle_id: str | None,
+        payload: dict[str, object],
+        step_id: str | None = None,
+        allow_require_approval: bool = False,
+    ) -> dict[str, object]:
+        if self._hooks is None:
+            return dict(payload)
+        outcome = await self._hooks.dispatch(
+            HookRequest(
+                point=point,
+                run_id=run_id,
+                session_id=session_id,
+                cycle_id=cycle_id,
+                step_id=step_id,
+                payload=payload,
+            )
+        )
+        for emitted in outcome.emitted_events:
+            event_type = emitted.get("event_type")
+            if isinstance(event_type, str) and event_type:
+                event_payload = {
+                    key: value for key, value in emitted.items() if key != "event_type"
+                }
+                await self._append(run_id, event_type, event_payload)
+        if outcome.decision is HookDecision.BLOCK:
+            raise DomainError(f"Runtime Hook blocked {point.value}")
+        result = dict(outcome.payload)
+        if outcome.additional_context and "input_items" in result:
+            items = _object_list(result.get("input_items"))
+            items.extend(
+                {
+                    "type": "hook_context",
+                    "content": content,
+                    "source_refs": [f"hook://{point.value}"],
+                }
+                for content in outcome.additional_context
+            )
+            result["input_items"] = items
+        if outcome.decision is HookDecision.REQUIRE_APPROVAL:
+            if not allow_require_approval:
+                raise DomainError(f"Runtime Hook requires unsupported approval at {point.value}")
+            result["_hook_require_approval"] = True
+        return result
 
     def _completed_cycle_result(
         self,
@@ -786,6 +940,17 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        await self._dispatch_hook(
+            HookPoint.APPROVAL_RESOLVED,
+            run_id=run.id,
+            session_id=session.id,
+            cycle_id=cycle.id,
+            payload={
+                "approval_id": approval.id,
+                "decision": approval.decision.value if approval.decision is not None else None,
+                "tool_call_intent_id": approval.tool_call_intent_id,
+            },
+        )
         if approval.decision in {
             ApprovalDecision.APPROVE_ONCE,
             ApprovalDecision.APPROVE_TOOL_FOR_RUN,
@@ -849,6 +1014,18 @@ class RuntimeCoordinator:
             ),
         )
         await self._deferred_executions.mark_intent_executing(intent)
+        await self._dispatch_hook(
+            HookPoint.TERMINAL_OPEN,
+            run_id=run.id,
+            session_id=intent.session_id,
+            cycle_id=intent.cycle_id,
+            step_id=intent.step_id,
+            payload={
+                "terminal_session_id": view.terminal.id,
+                "execution_id": view.execution.id,
+                "tool_call_intent_id": intent.id,
+            },
+        )
         return YieldReason.TERMINAL_OPEN, view.execution.id
 
     async def _append_engine_event(
@@ -885,6 +1062,16 @@ def _event_tool_id(event: AgentEngineEvent) -> str:
     if not isinstance(value, str) or not value:
         raise DomainError("Tool Call event is missing a tool ID")
     return value
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _object_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _working_memory_version(manifest: Mapping[str, object]) -> int | None:

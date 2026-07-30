@@ -7,7 +7,16 @@ import pytest
 
 from riftx.application.errors import RepositoryConflictError
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
-from riftx.domain import Engagement, Objective, Run, RunStatus
+from riftx.domain import DomainError, Engagement, Objective, Run, RunStatus
+from riftx.hooks import (
+    HookBus,
+    HookDecision,
+    HookPoint,
+    HookRegistration,
+    HookRequest,
+    HookResult,
+    PythonHook,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -92,6 +101,7 @@ async def build_runtime(
     start_error: Exception | None = None,
     observable_context: bool = False,
     workspace_path: Path | None = None,
+    hooks: HookBus | None = None,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
@@ -136,10 +146,95 @@ async def build_runtime(
         lease_manager=DatabaseRunLeaseManager(repos["leases"]),
         context_compiler=context_compiler,
         agent_engine=engine,
+        hooks=hooks,
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_runtime_hooks_wrap_context_and_model_lifecycle(tmp_path: Path) -> None:
+    seen: list[HookPoint] = []
+
+    def observe(request: HookRequest) -> HookResult:
+        seen.append(request.point)
+        if request.point is HookPoint.BEFORE_CONTEXT_COMPILE:
+            return HookResult(
+                decision=HookDecision.MODIFY,
+                modified_payload={"input_text": "hooked", "input_items": []},
+            )
+        if request.point is HookPoint.BEFORE_MODEL_CALL:
+            return HookResult(
+                decision=HookDecision.CONTINUE,
+                additional_context="Hook-provided bounded context",
+            )
+        return HookResult(decision=HookDecision.CONTINUE)
+
+    hooks = HookBus()
+    for point in (
+        HookPoint.BEFORE_CONTEXT_COMPILE,
+        HookPoint.AFTER_CONTEXT_COMPILE,
+        HookPoint.BEFORE_MODEL_CALL,
+        HookPoint.AFTER_MODEL_CALL,
+    ):
+        hooks.register(HookRegistration(point.value, point, PythonHook(observe)))
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        hooks=hooks,
+    )
+
+    await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            input_text="original",
+        )
+    )
+
+    request_items = engine.requests[0].input_items
+    assert any("hooked" in str(item.get("content")) for item in request_items)
+    assert any(
+        item.get("content") == "Hook-provided bounded context" for item in request_items
+    )
+    assert seen == [
+        HookPoint.BEFORE_CONTEXT_COMPILE,
+        HookPoint.AFTER_CONTEXT_COMPILE,
+        HookPoint.BEFORE_MODEL_CALL,
+        HookPoint.AFTER_MODEL_CALL,
+    ]
+    await database.dispose()
+
+
+async def test_blocking_model_hook_fails_cycle_before_provider_call(tmp_path: Path) -> None:
+    hooks = HookBus()
+    hooks.register(
+        HookRegistration(
+            "block-model",
+            HookPoint.BEFORE_MODEL_CALL,
+            PythonHook(lambda _: HookResult(decision=HookDecision.BLOCK)),
+        )
+    )
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        hooks=hooks,
+    )
+
+    with pytest.raises(DomainError, match="blocked before_model_call"):
+        await coordinator.run_cycle(
+            RunCycleRequest(
+                run_id="run-1",
+                session_id="session-1",
+                worker_id="worker-1",
+            )
+        )
+
+    assert engine.requests == []
+    cycles = await repos["cycles"].list_by_session("session-1")
+    assert cycles[0].status is CycleStatus.FAILED
+    await database.dispose()
 
 
 async def test_usage_event_backfills_the_persisted_context_compilation(
