@@ -169,3 +169,145 @@ async def test_shell_skill_respects_registered_only_policy(tmp_path: Path) -> No
 
     await supervisor.close()
     await database.dispose()
+
+
+async def test_registered_tool_parses_machine_output_and_falls_back_on_failure(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'adapter.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-adapter", name="Adapter tests")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-adapter",
+            node_id="node-1",
+            objective=Objective(description="Parse scanner output"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    config_path = tmp_path / "adapter-tools.yaml"
+    scanner = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_nmap.py"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "tools": {
+                    "nmap": {
+                        "command": [sys.executable, str(scanner)],
+                        "capabilities": ["port_scan"],
+                        "output": {"preferred": "xml"},
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    registry = ToolRegistry(config_path, node_id="node-1")
+    await registry.refresh()
+    supervisor = ProcessSupervisor(
+        SQLAlchemyExecutionRepository(database.session_factory),
+        RunnerPaths(tmp_path / "adapter-state"),
+    )
+    context = SkillContext(
+        run_id="run-1",
+        node_id="node-1",
+        agent_step_id="step-adapter",
+        cwd=tmp_path,
+        supervisor=supervisor,
+        tool_registry=registry,
+    )
+
+    parsed = await RegisteredToolSkill().execute(
+        context,
+        RegisteredToolArguments(tool_id="nmap"),
+    )
+    fallback = await RegisteredToolSkill().execute(
+        context,
+        RegisteredToolArguments(
+            tool_id="nmap",
+            args=["--invalid"],
+            execution_key="invalid-adapter-output",
+        ),
+    )
+
+    assert parsed.structured["open_port_count"] == 1
+    assert parsed.structured["hosts"][0]["ports"][0]["port"] == 80  # type: ignore[index]
+    assert fallback.structured == {}
+    assert "structured parser fallback" in fallback.summary
+    assert fallback.stdout_excerpt == b"not xml\n"
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_port_scan_skill_enforces_scope_and_builds_machine_output_args(
+    tmp_path: Path,
+) -> None:
+    from riftx.domain import Scope
+    from riftx.scope import ScopeViolationError
+    from riftx.skills import PortScanArguments, PortScanSkill
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'port-scan.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-port-scan", name="Port scan tests")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-port-scan",
+            node_id="node-1",
+            objective=Objective(description="Run an authorized port scan"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    scanner = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_nmap.py"
+    config_path = tmp_path / "port-scan-tools.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "tools": {
+                    "nmap": {
+                        "command": [sys.executable, str(scanner)],
+                        "capabilities": ["port_scan"],
+                        "output": {"preferred": "xml"},
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    registry = ToolRegistry(config_path, node_id="node-1")
+    await registry.refresh()
+    supervisor = ProcessSupervisor(
+        SQLAlchemyExecutionRepository(database.session_factory),
+        RunnerPaths(tmp_path / "port-scan-state"),
+    )
+    context = SkillContext(
+        run_id="run-1",
+        node_id="node-1",
+        agent_step_id="step-port-scan",
+        cwd=tmp_path,
+        supervisor=supervisor,
+        tool_registry=registry,
+        scope=Scope(cidrs=["192.0.2.0/24"]),
+    )
+
+    result = await PortScanSkill().execute(
+        context,
+        PortScanArguments(target="192.0.2.10", ports="80", service_detection=True),
+    )
+    execution = await supervisor.get(result.execution_id)
+
+    assert execution.argv[-6:] == ["-oX", "-", "-sV", "-p", "80", "192.0.2.10"]
+    assert result.structured["open_port_count"] == 1
+    with pytest.raises(ScopeViolationError, match="outside authorized scope"):
+        await PortScanSkill().execute(
+            context,
+            PortScanArguments(target="203.0.113.10"),
+        )
+    await supervisor.close()
+    await database.dispose()

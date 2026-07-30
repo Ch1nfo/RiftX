@@ -9,7 +9,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from riftx.domain import ApprovalLevel, ExecutionStatus
+from riftx.domain import ApprovalLevel, ExecutionStatus, Scope
 from riftx.runner import ExecutionRunner
 from riftx.tools import ToolRegistry
 
@@ -22,10 +22,12 @@ class SkillContext:
     cwd: Path
     supervisor: ExecutionRunner
     tool_registry: ToolRegistry
+    scope: Scope = field(default_factory=Scope)
     node_environment: dict[str, str | None] = field(default_factory=dict)
     run_environment: dict[str, str | None] = field(default_factory=dict)
     stdout_excerpt_bytes: int = 16 * 1024
     stderr_excerpt_bytes: int = 8 * 1024
+    structured_output_bytes: int = 1024 * 1024
 
 
 class SkillResult(BaseModel):

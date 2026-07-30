@@ -1,0 +1,8 @@
+{
+  "adapter": "nuclei_jsonl",
+  "findings": [
+    {"template_id":"http-missing-security-headers","name":"HTTP Missing Security Headers","severity":"info","matched_at":"https://example.test/","host":"https://example.test","type":"http","matcher_name":"content-security-policy","cve_ids":[]},
+    {"template_id":"CVE-2025-0001","name":"Example vulnerability","severity":"high","matched_at":"https://example.test/admin","host":"https://example.test","type":"http","matcher_name":null,"cve_ids":["CVE-2025-0001"]}
+  ],
+  "finding_count": 2
+}

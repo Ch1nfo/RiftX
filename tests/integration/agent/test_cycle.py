@@ -26,7 +26,11 @@ from riftx.agent import (
     SQLAlchemyCheckpointStore,
     build_agent_tools,
 )
-from riftx.application.services import FindingApplicationService
+from riftx.application.services import (
+    ArtifactApplicationService,
+    FindingApplicationService,
+    TerminalApplicationService,
+)
 from riftx.domain import ApprovalMode, Engagement, FindingSeverity, Objective, Run
 from riftx.persistence import (
     Database,
@@ -37,8 +41,9 @@ from riftx.persistence import (
     SQLAlchemyFindingRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTerminalRepository,
 )
-from riftx.runner import ProcessSupervisor, RunnerPaths
+from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.skills import create_default_skill_registry
 from riftx.tools import ToolRegistry
 
@@ -129,16 +134,30 @@ async def _runtime(
     )
     registry = ToolRegistry(config_path, node_id="node-1")
     await registry.refresh()
+    paths = RunnerPaths(tmp_path / "state")
+    execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     supervisor = ProcessSupervisor(
-        SQLAlchemyExecutionRepository(database.session_factory),
-        RunnerPaths(tmp_path / "state"),
+        execution_repository,
+        paths,
         termination_grace_seconds=0.1,
     )
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
-    execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
+    terminal_supervisor = TerminalSupervisor(
+        terminal_repository=SQLAlchemyTerminalRepository(database.session_factory),
+        execution_repository=execution_repository,
+        event_repository=event_repository,
+        paths=paths,
+    )
+    artifact_service = ArtifactApplicationService(
+        run_repository=run_repository,
+        execution_repository=execution_repository,
+        artifact_repository=artifact_repository,
+        event_repository=event_repository,
+        paths=paths,
+    )
     services = AgentRuntimeServices(
         tool_registry=registry,
         skill_registry=create_default_skill_registry(),
@@ -146,6 +165,11 @@ async def _runtime(
         finding_repository=finding_repository,
         event_repository=event_repository,
         approval_repository=SQLAlchemyApprovalRepository(database.session_factory),
+        artifact_service=artifact_service,
+        terminal_service=TerminalApplicationService(
+            run_repository=run_repository,
+            supervisor=terminal_supervisor,
+        ),
         finding_service=FindingApplicationService(
             run_repository=run_repository,
             finding_repository=finding_repository,
@@ -219,7 +243,12 @@ async def test_agent_cycle_runs_configured_tool_and_persists_timeline(tmp_path: 
     assert set(model.calls[0]["tool_names"]) == {
         "list_available_tools",
         "run_registered_tool",
+        "open_terminal",
+        "read_terminal",
+        "send_terminal_input",
+        "close_terminal",
         "create_finding",
+        "add_artifact",
         "update_plan",
         "complete_run",
     }
@@ -515,5 +544,118 @@ async def test_auto_mode_runs_sensitive_tool_without_interruption(tmp_path: Path
     result = await cycle.run(context)
     assert result.status is AgentCycleStatus.COMPLETED
 
+    await supervisor.close()
+    await database.dispose()
+
+
+async def _invoke_agent_tool(
+    services: AgentRuntimeServices,
+    context: RiftXAgentContext,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    call_id: str,
+) -> str:
+    tool = next(item for item in build_agent_tools(services) if item.name == name)
+    tool_context = ToolContext(
+        context,
+        usage=Usage(),
+        tool_name=name,
+        tool_call_id=call_id,
+        tool_arguments=json.dumps(arguments),
+    )
+    result = await tool.on_invoke_tool(tool_context, json.dumps(arguments))
+    assert isinstance(result, str)
+    return result
+
+
+async def test_agent_base_tools_manage_artifacts_and_terminal_sessions(tmp_path: Path) -> None:
+    database, _, context, services, supervisor = await _runtime(
+        tmp_path,
+        execution_policy="open",
+        approval_mode=ApprovalMode.AUTO,
+    )
+    evidence = tmp_path / "evidence.txt"
+    evidence.write_text("durable evidence")
+
+    artifact_payload = json.loads(
+        await _invoke_agent_tool(
+            services,
+            context,
+            "add_artifact",
+            {"source_path": str(evidence), "description": "Agent evidence"},
+            call_id="artifact-call",
+        )
+    )
+    terminal_payload = json.loads(
+        await _invoke_agent_tool(
+            services,
+            context,
+            "open_terminal",
+            {
+                "argv": [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "print('ready'); print(input())",
+                ]
+            },
+            call_id="terminal-open",
+        )
+    )
+    session_id = terminal_payload["id"]
+
+    for _ in range(100):
+        first_read = json.loads(
+            await _invoke_agent_tool(
+                services,
+                context,
+                "read_terminal",
+                {"session_id": session_id, "cursor": 0},
+                call_id="terminal-read-ready",
+            )
+        )
+        if "ready" in first_read["data"]:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("terminal did not emit readiness output")
+
+    await _invoke_agent_tool(
+        services,
+        context,
+        "send_terminal_input",
+        {"session_id": session_id, "data": "hello-agent\n"},
+        call_id="terminal-write",
+    )
+    cursor = first_read["next_cursor"]
+    for _ in range(100):
+        second_read = json.loads(
+            await _invoke_agent_tool(
+                services,
+                context,
+                "read_terminal",
+                {"session_id": session_id, "cursor": cursor},
+                call_id="terminal-read-result",
+            )
+        )
+        if "hello-agent" in second_read["data"]:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("terminal did not echo Agent input")
+
+    closed = json.loads(
+        await _invoke_agent_tool(
+            services,
+            context,
+            "close_terminal",
+            {"session_id": session_id},
+            call_id="terminal-close",
+        )
+    )
+    assert artifact_payload["sha256"]
+    assert artifact_payload["size"] == len("durable evidence")
+    assert closed["status"] == "closed"
     await supervisor.close()
     await database.dispose()

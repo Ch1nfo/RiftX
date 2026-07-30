@@ -1,5 +1,12 @@
 """Tool configuration, detection, and capability lookup."""
 
+from .adapters import (
+    ToolOutputParseError,
+    parse_masscan_json,
+    parse_nmap_xml,
+    parse_nuclei_jsonl,
+    parse_tool_output,
+)
 from .config import ToolConfigError, load_tool_config, parse_tool_config
 from .models import (
     ExecutionPolicy,
@@ -23,11 +30,16 @@ __all__ = [
     "ToolDefinition",
     "ToolNotFoundError",
     "ToolOutputConfig",
+    "ToolOutputParseError",
     "ToolRegistry",
     "ToolRegistryConfig",
     "ToolSnapshot",
     "ToolUnavailableError",
     "VersionProbe",
     "load_tool_config",
+    "parse_masscan_json",
+    "parse_nmap_xml",
+    "parse_nuclei_jsonl",
+    "parse_tool_output",
     "parse_tool_config",
 ]

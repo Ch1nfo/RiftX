@@ -1,0 +1,17 @@
+{
+  "adapter": "nmap_xml",
+  "hosts": [
+    {
+      "status": "up",
+      "addresses": [{"address": "192.0.2.10", "type": "ipv4"}],
+      "hostnames": ["web.example.test"],
+      "ports": [
+        {"protocol": "tcp", "port": 22, "state": "open", "service": "ssh", "product": "OpenSSH", "version": "9.6"},
+        {"protocol": "tcp", "port": 80, "state": "open", "service": "http", "product": "nginx", "version": "1.25"},
+        {"protocol": "tcp", "port": 443, "state": "closed", "service": "https", "product": null, "version": null}
+      ]
+    }
+  ],
+  "host_count": 1,
+  "open_port_count": 2
+}

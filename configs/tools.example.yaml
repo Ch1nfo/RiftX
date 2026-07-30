@@ -40,6 +40,24 @@ tools:
         - -version
     approval: never
     timeout: 3600
+    output:
+      preferred: jsonl
+
+  masscan:
+    enabled: true
+    command:
+      - masscan
+    executor: process
+    capabilities:
+      - port_scan
+    version_probe:
+      command:
+        - masscan
+        - --version
+    approval: never
+    timeout: 1800
+    output:
+      preferred: json
 
   msfconsole:
     enabled: true

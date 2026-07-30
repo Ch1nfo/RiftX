@@ -1,4 +1,4 @@
-"""Generic skills that execute registered tools or explicit shell scripts."""
+"""Generic and first-party structured skills."""
 
 from __future__ import annotations
 
@@ -10,9 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from riftx.domain import ApprovalLevel, Execution, ExecutorType
 from riftx.executors import ShellKind
 from riftx.runner import ExecutionLaunchRequest
-from riftx.tools import ExecutionPolicy, ToolUnavailableError
+from riftx.scope import ScopeGuard
+from riftx.tools import (
+    ExecutionPolicy,
+    ToolDefinition,
+    ToolOutputParseError,
+    ToolUnavailableError,
+    parse_tool_output,
+)
 
 from .base import BaseSkill, SkillContext, SkillResult
+from .registry import SkillRegistry
 
 
 class RegisteredToolArguments(BaseModel):
@@ -31,6 +39,17 @@ class ShellArguments(BaseModel):
     script: str = Field(min_length=1)
     shell: ShellKind | None = None
     environment: dict[str, str | None] = Field(default_factory=dict)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    execution_key: str | None = None
+
+
+class PortScanArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=1)
+    ports: str | None = None
+    service_detection: bool = False
+    tool_id: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
     execution_key: str | None = None
 
@@ -86,7 +105,7 @@ class RegisteredToolSkill(BaseSkill):
             )
         execution = await context.supervisor.start(request)
         execution = await context.supervisor.wait(execution.id)
-        return await _skill_result(context, execution, definition.id)
+        return await _skill_result(context, execution, definition)
 
 
 class ShellSkill(BaseSkill):
@@ -130,24 +149,117 @@ class ShellSkill(BaseSkill):
         return await _skill_result(context, execution, "shell")
 
 
-async def _skill_result(context: SkillContext, execution: Execution, label: str) -> SkillResult:
+class PortScanSkill(BaseSkill):
+    """Run an authorized port scan using nmap or masscan machine output."""
+
+    id = "port_scan"
+    description = "Scan an in-scope IP, CIDR, or domain and return structured open ports"
+    required_capabilities = frozenset({"port_scan"})
+    preferred_tools = ("nmap", "masscan")
+    approval_level = ApprovalLevel.NEVER
+    arguments_model = PortScanArguments
+
+    async def execute(self, context: SkillContext, arguments: BaseModel) -> SkillResult:
+        parsed = PortScanArguments.model_validate(arguments)
+        ScopeGuard(context.scope).require(parsed.target)
+        definition = SkillRegistry.select_tool(
+            context.tool_registry,
+            required_capabilities=self.required_capabilities,
+            preferred_tools=self.preferred_tools,
+            requested_tool_id=parsed.tool_id,
+        )
+        args = _port_scan_arguments(definition, parsed)
+        return await RegisteredToolSkill().execute(
+            context,
+            RegisteredToolArguments(
+                tool_id=definition.id,
+                args=args,
+                timeout_seconds=parsed.timeout_seconds,
+                execution_key=parsed.execution_key,
+            ),
+        )
+
+
+async def _skill_result(
+    context: SkillContext,
+    execution: Execution,
+    tool: ToolDefinition | str,
+) -> SkillResult:
     output = await context.supervisor.read_output(
         execution.id,
-        max_bytes=max(context.stdout_excerpt_bytes, context.stderr_excerpt_bytes),
+        max_bytes=max(
+            context.stdout_excerpt_bytes,
+            context.stderr_excerpt_bytes,
+            context.structured_output_bytes,
+        ),
     )
     stdout = output.stdout.data[: context.stdout_excerpt_bytes]
     stderr = output.stderr.data[: context.stderr_excerpt_bytes]
+    label = tool.id if isinstance(tool, ToolDefinition) else tool
+    structured: dict[str, object] = {}
+    parse_note = ""
+    preferred = tool.output.preferred if isinstance(tool, ToolDefinition) else None
+    if preferred and output.stdout.eof:
+        try:
+            structured = parse_tool_output(_adapter_name(tool.id, preferred), output.stdout.data)
+        except ToolOutputParseError as exc:
+            parse_note = f"; structured parser fallback: {exc}"
+    elif preferred:
+        parse_note = "; structured parser fallback: output exceeded parser limit"
     summary = (
         f"{label} finished with status={execution.status.value} exit_code={execution.exit_code}"
+        f"{_structured_summary(structured)}{parse_note}"
     )
     return SkillResult(
         summary=summary,
+        structured=structured,
         stdout_excerpt=stdout,
         stderr_excerpt=stderr,
         execution_id=execution.id,
         status=execution.status,
         exit_code=execution.exit_code,
     )
+
+
+def _adapter_name(tool_id: str, preferred: str) -> str:
+    normalized = preferred.strip().lower()
+    if normalized in {"xml", "json", "jsonl"}:
+        candidate = f"{tool_id.lower()}_{normalized}"
+        if candidate in {"nmap_xml", "masscan_json", "nuclei_jsonl"}:
+            return candidate
+    return normalized
+
+
+def _structured_summary(structured: dict[str, object]) -> str:
+    if not structured:
+        return ""
+    if "open_port_count" in structured:
+        return f" open_ports={structured['open_port_count']}"
+    if "finding_count" in structured:
+        return f" findings={structured['finding_count']}"
+    return " structured_output=true"
+
+
+def _port_scan_arguments(definition: ToolDefinition, parsed: PortScanArguments) -> list[str]:
+    tool_id = definition.id.lower()
+    if tool_id == "nmap":
+        args = ["-oX", "-"]
+        if parsed.service_detection:
+            args.append("-sV")
+        if parsed.ports:
+            args.extend(["-p", parsed.ports])
+        args.append(parsed.target)
+        return args
+    if tool_id == "masscan":
+        args = [parsed.target, "-oJ", "-"]
+        if parsed.ports:
+            args.extend(["-p", parsed.ports])
+        return args
+    args = []
+    if parsed.ports:
+        args.extend(["--ports", parsed.ports])
+    args.append(parsed.target)
+    return args
 
 
 def _default_execution_key(

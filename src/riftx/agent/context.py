@@ -48,8 +48,6 @@ class RiftXAgentContext(BaseModel):
     ) -> RiftXAgentContext:
         tools = []
         for definition in tool_registry.available_tools():
-            if definition.executor is ExecutorType.PTY:
-                continue
             state = tool_registry.snapshot.states[definition.id]
             tools.append(
                 AgentToolSnapshot(
@@ -85,4 +83,8 @@ def _scope_items(run: Run) -> list[str]:
         ("exclude", run.scope.exclusions),
     ):
         values.extend(f"{prefix}:{item}" for item in items)
+    if run.scope.starts_at is not None:
+        values.append(f"starts_at:{run.scope.starts_at.isoformat()}")
+    if run.scope.ends_at is not None:
+        values.append(f"ends_at:{run.scope.ends_at.isoformat()}")
     return values

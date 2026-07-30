@@ -66,6 +66,7 @@ def test_default_registry_contains_generic_skills() -> None:
     assert [skill.id for skill in registry.list()] == [
         "run_registered_tool",
         "run_shell",
+        "port_scan",
     ]
 
 

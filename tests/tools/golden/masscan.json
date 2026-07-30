@@ -1,0 +1,9 @@
+{
+  "adapter": "masscan_json",
+  "hosts": [
+    {"ip":"192.0.2.10","timestamp":"1767225600","ports":[{"port":80,"protocol":"tcp","status":"open","reason":"syn-ack","ttl":64}]},
+    {"ip":"192.0.2.11","timestamp":"1767225601","ports":[{"port":443,"protocol":"tcp","status":"open","reason":"syn-ack","ttl":63}]}
+  ],
+  "host_count": 2,
+  "open_port_count": 2
+}
