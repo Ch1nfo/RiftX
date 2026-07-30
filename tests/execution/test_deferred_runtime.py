@@ -151,6 +151,8 @@ async def test_runtime_retry_yields_same_deferred_execution_without_relaunch(
     intent = await tool_calls.get(persisted[0].tool_call_id or "")
     assert intent is not None
     assert intent.status in {ToolCallStatus.EXECUTING, ToolCallStatus.COMPLETED}
+    assert intent.execution_spec is not None
+    assert intent.execution_spec["argv"] == events[0].data["execution"]["argv"]
 
     completed = await execution_service.wait(first.waiting_execution_id, timeout_seconds=2)
     assert completed.execution.status is ExecutionStatus.COMPLETED

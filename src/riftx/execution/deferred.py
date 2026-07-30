@@ -144,6 +144,24 @@ class DeferredExecutionDispatcher:
         step: AgentStep,
         event: AgentEngineEvent,
     ) -> Execution:
+        intent = await self.prepare(
+            session=session,
+            cycle=cycle,
+            step=step,
+            event=event,
+        )
+        return await self.execute_intent(intent)
+
+    async def prepare(
+        self,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        step: AgentStep,
+        event: AgentEngineEvent,
+        status: ToolCallStatus = ToolCallStatus.READY,
+    ) -> ToolCallIntent:
+        """Resolve and persist the immutable execution snapshot without launching it."""
         call_id = _required_string(event.data, "call_id")
         tool_id = _tool_id(event.data)
         raw_spec = event.data.get("execution")
@@ -160,7 +178,7 @@ class DeferredExecutionDispatcher:
                 "deferred_execution_missing",
                 f"Tool Call {call_id!r} is missing resolved execution data",
             )
-        intent = await self._persist_intent(
+        return await self._persist_intent(
             session=session,
             cycle=cycle,
             step=step,
@@ -168,11 +186,26 @@ class DeferredExecutionDispatcher:
             call_id=call_id,
             tool_id=tool_id,
             spec=spec,
+            status=status,
         )
+
+    async def execute_intent(self, intent: ToolCallIntent) -> Execution:
+        """Launch exactly the execution snapshot stored with an approved intent."""
+        if intent.execution_spec is None:
+            raise ApplicationConflictError(
+                "deferred_execution_missing",
+                f"Tool Call {intent.id!r} has no persisted execution data",
+            )
+        if intent.tool_id is None:
+            raise ApplicationConflictError(
+                "invalid_tool_call_intent",
+                f"Tool Call {intent.id!r} has no tool ID",
+            )
+        spec = DeferredExecutionSpec.model_validate(intent.execution_spec)
         return await self._executions.submit(
             SubmitExecutionRequest(
-                run_id=session.run_id,
-                session_id=session.id,
+                run_id=intent.run_id,
+                session_id=intent.session_id,
                 tool_call_id=intent.id,
                 attempt_group=spec.attempt_group,
                 node_id=spec.node_id,
@@ -180,7 +213,7 @@ class DeferredExecutionDispatcher:
                 cwd=spec.cwd,
                 argv=spec.argv,
                 command_text=spec.command_text,
-                tool_id=tool_id,
+                tool_id=intent.tool_id,
                 tool_version=spec.tool_version,
                 shell=spec.shell,
                 shell_path=spec.shell_path,
@@ -200,6 +233,7 @@ class DeferredExecutionDispatcher:
         call_id: str,
         tool_id: str,
         spec: DeferredExecutionSpec,
+        status: ToolCallStatus,
     ) -> ToolCallIntent:
         intent_id = build_tool_call_intent_id(
             run_id=session.run_id,
@@ -225,8 +259,9 @@ class DeferredExecutionDispatcher:
             approval_level=ApprovalLevel(
                 str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
             ),
-            status=ToolCallStatus.READY,
+            status=status,
             engine_call_id=call_id,
+            execution_spec=spec.model_dump(mode="json"),
         )
         try:
             return await self._tool_calls.create(intent)
