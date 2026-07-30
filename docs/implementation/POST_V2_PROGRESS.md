@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave F are complete; Wave G is active and WEB-05 is unblocked.
+Wave A through Wave G are complete; Wave H is active and QA-01 is unblocked.
 
 ## Completed
 
@@ -32,6 +32,7 @@ Wave A through Wave F are complete; Wave G is active and WEB-05 is unblocked.
 - [x] WEB-02 Search Provider 与 Research Pipeline
 - [x] WEB-03 Target HTTP
 - [x] WEB-04 Managed Browser 与用户接管
+- [x] WEB-05 Browser 与 Burp Connector
 
 ## Task Record
 
@@ -704,6 +705,38 @@ Wave A through Wave F are complete; Wave G is active and WEB-05 is unblocked.
   - A Runner process restart cannot reattach an in-memory managed context. Durable records and persistent profile data remain available, but an active session must currently be reopened (or reattached through CDP).
   - CDP attachment is Chromium-only and inherits Playwright's lower capability guarantees compared with a native Playwright connection. CAPTCHA solving and automated credential entry remain intentionally out of scope.
 - Next dependency: WEB-05 is unblocked.
+
+### WEB-05
+
+- Branch: `codex/web-05-connectors`
+- Commit: `91123be feat(connectors): ingest browser and Burp traffic`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `pnpm --filter @riftx/web test`
+  - `pnpm --filter @riftx/web build`
+  - `pnpm --filter @riftx/browser-extension test`
+  - `pnpm --filter @riftx/browser-extension build`
+  - `apps/burp-extension/scripts/test-core.sh`
+  - Official Montoya API source compilation with `javac`.
+  - `git diff --check`
+  - Result: `604 passed, 2 skipped`; Ruff passed; Web `20 passed` and production build passed; Browser extension `2 passed` and production build passed; Burp core test and official Montoya API compilation passed; Alembic has one head `e4b7c1d9a305`; diff check clean.
+- Migration: `e4b7c1d9a305_add_connector_submissions.py`
+- Core delivery:
+  - Added a unified Connector API for complete HTTP capture submission, existing/new Run selection, Run event subscription, cancellation, and WebUI routing. Connectors remain ingress clients and do not host an independent Agent Runtime.
+  - Added durable, content-fingerprinted idempotency on `(source, capture_id)`, exact-one Run-target validation, derived host Scope for newly created Runs, and Scope reauthorization immediately before immutable Artifact creation.
+  - Preserved Browser structured request/response bodies and exact Burp raw request/response bytes as immutable Run Artifacts. Durable submission rows retain sanitized metadata and Artifact IDs, while the model-facing manifest is explicitly marked `UNTRUSTED_EXTERNAL_CONTENT`.
+  - Added a Manifest V3 Chrome DevTools extension that captures XHR/Fetch HAR entries, lets users select captures and existing/new Runs, follows SSE progress, cancels Runs, and opens the WebUI.
+  - Added a Burp Montoya extension with context-menu submission, existing/new Run selection, SSE progress, cancellation, and WebUI controls. Its production source compiles against `net.portswigger.burp.extensions:montoya-api:2025.2`.
+- Contract coverage:
+  - Existing/new Run targeting, Scope derivation and rejection, startup-failure ingestion fallback, immutable request/response/manifest Artifacts, raw-byte preservation, durable replay/conflict behavior, sanitized persistence, Agent notification, CORS for Chrome extensions, redirect-aware SSE, browser capture selection, Burp raw HTTP parsing, and no embedded Agent Runtime.
+- Known limitations:
+  - Gradle is not installed locally; Burp production source was nevertheless compiled directly against the official Montoya API JAR and the dependency-free core test passed.
+  - The Browser extension is covered by HAR/client unit tests and a production build, but was not exercised in an interactive Chrome DevTools smoke session.
+  - The Burp UI was API-compiled and core-tested, but was not loaded into a live Burp installation.
+- Next dependency: QA-01 is unblocked.
 
 ## Architecture Deviations
 
