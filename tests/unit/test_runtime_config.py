@@ -111,4 +111,29 @@ def test_example_runtime_config_is_valid(tmp_path: Path) -> None:
 
     assert config.server.port == 8787
     assert config.execution.policy.value == "open"
+    assert config.execution_output.max_inline_bytes == 32768
+    assert config.execution_output.preview_head_bytes == 8192
+    assert config.execution_output.preview_tail_bytes == 8192
+    assert config.execution_output.max_context_tokens == 2000
     assert config.approval.default_mode.value == "balanced"
+
+
+def test_execution_output_config_rejects_unsafe_limits(tmp_path: Path) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    write_yaml(
+        config_path,
+        {
+            "execution_output": {
+                "max_inline_bytes": 512,
+                "max_context_tokens": 99,
+            }
+        },
+    )
+
+    with pytest.raises(RiftXConfigError, match="invalid RiftX configuration"):
+        load_riftx_config(
+            system_path=tmp_path / "missing-system.yaml",
+            user_path=tmp_path / "missing-user.yaml",
+            explicit_path=config_path,
+            environment={},
+        )

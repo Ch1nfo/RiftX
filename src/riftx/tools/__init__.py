@@ -2,6 +2,7 @@
 
 from .adapters import (
     ToolOutputParseError,
+    parse_generic_json,
     parse_masscan_json,
     parse_nmap_xml,
     parse_nuclei_jsonl,
@@ -59,6 +60,7 @@ __all__ = [
     "ToolUnavailableError",
     "VersionProbe",
     "load_tool_config",
+    "parse_generic_json",
     "parse_masscan_json",
     "parse_nmap_xml",
     "parse_nuclei_jsonl",

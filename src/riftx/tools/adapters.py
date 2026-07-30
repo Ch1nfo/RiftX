@@ -22,6 +22,7 @@ def parse_tool_output(format_name: str, content: bytes) -> dict[str, object]:
         "xml": parse_nmap_xml,
         "nuclei_jsonl": parse_nuclei_jsonl,
         "jsonl": parse_nuclei_jsonl,
+        "generic_json": parse_generic_json,
         "masscan_json": parse_masscan_json,
         "json": parse_masscan_json,
     }
@@ -35,6 +36,32 @@ def parse_tool_output(format_name: str, content: bytes) -> dict[str, object]:
         raise
     except Exception as exc:
         raise ToolOutputParseError(f"unable to parse {format_name!r} tool output: {exc}") from exc
+
+
+def parse_generic_json(content: bytes) -> dict[str, object]:
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolOutputParseError(f"invalid generic JSON: {exc}") from exc
+    if isinstance(value, dict):
+        item_count = len(value)
+        top_level_keys = sorted(str(key) for key in value)[:100]
+        top_level_type = "object"
+    elif isinstance(value, list):
+        item_count = len(value)
+        top_level_keys = []
+        top_level_type = "array"
+    else:
+        item_count = 1
+        top_level_keys = []
+        top_level_type = type(value).__name__
+    return {
+        "adapter": "generic_json",
+        "value": value,
+        "top_level_type": top_level_type,
+        "item_count": item_count,
+        "top_level_keys": top_level_keys,
+    }
 
 
 def parse_nmap_xml(content: bytes) -> dict[str, object]:

@@ -102,6 +102,13 @@ class ExecutionConfig(_ConfigModel):
     environment_mode: EnvironmentMode = EnvironmentMode.INHERIT
 
 
+class ExecutionOutputConfig(_ConfigModel):
+    max_inline_bytes: int = Field(default=32768, ge=1024)
+    preview_head_bytes: int = Field(default=8192, ge=0)
+    preview_tail_bytes: int = Field(default=8192, ge=0)
+    max_context_tokens: int = Field(default=2000, ge=100)
+
+
 class WorkspaceConfig(_ConfigModel):
     root: Path = Path(".riftx/workspaces")
 
@@ -134,6 +141,7 @@ class RiftXConfig(_ConfigModel):
     temporal: TemporalConfig = Field(default_factory=TemporalConfig)
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    execution_output: ExecutionOutputConfig = Field(default_factory=ExecutionOutputConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
