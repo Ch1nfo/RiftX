@@ -135,6 +135,12 @@ class AgentConfig(_ConfigModel):
     max_turns: int = Field(default=10, ge=1, le=100)
 
 
+class SubagentConfig(_ConfigModel):
+    max_depth: int = Field(default=1, ge=1, le=1)
+    max_parallel_per_run: int = Field(default=4, ge=1, le=64)
+    max_total_per_run: int = Field(default=20, ge=1, le=1000)
+
+
 class RiftXConfig(_ConfigModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -148,6 +154,7 @@ class RiftXConfig(_ConfigModel):
     web: WebConfig = Field(default_factory=WebConfig)
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    subagents: SubagentConfig = Field(default_factory=SubagentConfig)
 
 
 _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
@@ -178,6 +185,8 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_MODEL_PROFILE": ("models", "profile"),
     "RIFTX_AGENT_MAX_HISTORY_ITEMS": ("agent", "max_history_items"),
     "RIFTX_AGENT_MAX_TURNS": ("agent", "max_turns"),
+    "RIFTX_SUBAGENT_MAX_PARALLEL_PER_RUN": ("subagents", "max_parallel_per_run"),
+    "RIFTX_SUBAGENT_MAX_TOTAL_PER_RUN": ("subagents", "max_total_per_run"),
 }
 
 
