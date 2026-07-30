@@ -123,13 +123,17 @@ class ContextCompiler:
         self,
         *,
         sources: Sequence[ContextSource] = (),
+        stable_instruction_source: ContextSource | None = None,
         budgeter: TokenBudgeter | None = None,
         tool_context: ToolContextManager | None = None,
         skill_context: ProgressiveSkillContextManager | None = None,
         context_service: ContextApplicationService | None = None,
         runtime_contract: str = _RUNTIME_CONTRACT,
     ) -> None:
-        self._sources = tuple(sources)
+        self._sources = (
+            *((stable_instruction_source,) if stable_instruction_source is not None else ()),
+            *sources,
+        )
         self._budgeter = budgeter or TokenBudgeter()
         self._tool_context = tool_context
         self._skill_context = skill_context
@@ -411,6 +415,10 @@ class ContextCompiler:
         budget: ContextBudgetResult,
         visibility: Mapping[str, object],
     ) -> dict[str, object]:
+        instruction_metadata: dict[str, object] = {}
+        for item in budget.selected_items:
+            if item.kind is ContextItemKind.STABLE_INSTRUCTION:
+                instruction_metadata.update(item.metadata)
         return {
             "compiler": "layered",
             "input_budget": budget.input_budget,
@@ -422,6 +430,7 @@ class ContextCompiler:
             "context_item_tokens": {
                 item.id: item.estimated_tokens for item in budget.selected_items
             },
+            **instruction_metadata,
             **visibility,
         }
 

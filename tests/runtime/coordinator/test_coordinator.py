@@ -89,6 +89,7 @@ async def build_runtime(
     clock: object | None = None,
     start_error: Exception | None = None,
     observable_context: bool = False,
+    workspace_path: Path | None = None,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
@@ -101,7 +102,7 @@ async def build_runtime(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Map the authorized target"),
-            workspace_path="/tmp/riftx/run-1",
+            workspace_path=str(workspace_path or tmp_path / "workspace"),
         )
     )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
@@ -198,6 +199,50 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert session.status is SessionStatus.ACTIVE
     run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
     assert run is not None and run.status is RunStatus.COMPLETED
+    await database.dispose()
+
+
+async def test_coordinator_passes_instruction_roots_to_context_compiler(
+    tmp_path: Path,
+) -> None:
+    engagement = tmp_path / "engagement"
+    workspace = engagement / "workspace"
+    current = workspace / "src"
+    for root, marker in (
+        (engagement, "ENGAGEMENT-RULE"),
+        (workspace, "WORKSPACE-RULE"),
+        (current, "CURRENT-RULE"),
+    ):
+        instruction = root / ".riftx" / "RIFTX.md"
+        instruction.parent.mkdir(parents=True, exist_ok=True)
+        instruction.write_text(marker, encoding="utf-8")
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        workspace_path=workspace,
+    )
+
+    await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            engagement_path=str(engagement),
+            current_path=str(current),
+        )
+    )
+
+    engine_request = engine.requests[0]
+    context = engine_request.context
+    assert "ENGAGEMENT-RULE" in context.system_instructions
+    assert "WORKSPACE-RULE" in context.system_instructions
+    assert "CURRENT-RULE" in context.system_instructions
+    assert context.context_manifest["instruction_scopes"][-3:] == [
+        "engagement",
+        "workspace",
+        "current_path",
+    ]
+    assert context.input_items == []
     await database.dispose()
 
 

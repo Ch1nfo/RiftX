@@ -13,6 +13,11 @@ from .budget import (
 )
 from .compiler import ContextCompiler, ContextManifestBuilder, ManifestingContextCompiler
 from .inspector import ContextApplicationService
+from .instructions import (
+    StableInstructionLoadError,
+    StableInstructionScope,
+    StableInstructionSource,
+)
 from .items import (
     CONTEXT_LAYER_ORDER,
     ContextItem,
@@ -45,7 +50,11 @@ from .reducer import (
     WorkingMemoryReductionError,
     WorkingMemoryVersionConflict,
 )
-from .sources import TranscriptContextSource, WorkingMemoryContextSource
+from .sources import (
+    TranscriptContextSource,
+    WorkingMemoryContextSource,
+    processed_tool_result_context_item,
+)
 from .token_counter import estimate_context_tokens
 from .tool_results import ToolResultProcessor
 from .working_memory import (
@@ -84,6 +93,9 @@ __all__ = [
     "ContextSource",
     "RequiredContextOverflowError",
     "StaticContextSource",
+    "StableInstructionLoadError",
+    "StableInstructionScope",
+    "StableInstructionSource",
     "TokenBudgeter",
     "TranscriptContextSource",
     "WorkingMemoryContextSource",
@@ -136,5 +148,6 @@ __all__ = [
     "execution_artifact_uri",
     "estimate_context_tokens",
     "parse_execution_artifact_uri",
+    "processed_tool_result_context_item",
     "usage_token_counts",
 ]

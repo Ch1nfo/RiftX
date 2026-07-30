@@ -33,6 +33,9 @@ class ContextCompileRequest(DomainModel):
     include_tool_schemas: bool = True
     objective: str = ""
     run_contract: dict[str, object] = Field(default_factory=dict)
+    engagement_path: str | None = None
+    workspace_path: str | None = None
+    current_path: str | None = None
     input_text: str | None = None
     input_items: list[dict[str, object]] = Field(default_factory=list)
 
@@ -64,8 +67,11 @@ class MinimalContextCompiler:
     async def compile(self, request: ContextCompileRequest) -> CompiledContext:
         if self._delegate is None:
             from riftx.context.compiler import ContextCompiler as LayeredContextCompiler
+            from riftx.context.instructions import StableInstructionSource
 
-            self._delegate = LayeredContextCompiler()
+            self._delegate = LayeredContextCompiler(
+                stable_instruction_source=StableInstructionSource()
+            )
         return await self._delegate.compile(request)
 
 
@@ -84,10 +90,12 @@ class DynamicToolContextCompiler(MinimalContextCompiler):
     async def compile(self, request: ContextCompileRequest) -> CompiledContext:
         if self._delegate is None:
             from riftx.context.compiler import ContextCompiler as LayeredContextCompiler
+            from riftx.context.instructions import StableInstructionSource
 
             self._delegate = LayeredContextCompiler(
                 tool_context=self._tool_context,
                 skill_context=self._skill_context,
+                stable_instruction_source=StableInstructionSource(),
             )
         return await self._delegate.compile(request)
 
@@ -105,6 +113,8 @@ class RunCycleRequest(DomainModel):
     input_text: str | None = None
     input_items: list[dict[str, object]] = Field(default_factory=list)
     latest_user_message_id: str | None = None
+    engagement_path: str | None = None
+    current_path: str | None = None
     compaction_required: bool = False
 
 

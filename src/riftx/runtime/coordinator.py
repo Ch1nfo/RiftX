@@ -177,8 +177,13 @@ class RuntimeCoordinator:
                         "scope": run.scope.model_dump(mode="json"),
                         "approval_mode": run.approval_mode.value,
                         "node_id": run.node_id,
+                        "engagement_id": run.engagement_id,
                         "workspace": run.workspace_path,
+                        "current_path": request.current_path or run.workspace_path,
                     },
+                    engagement_path=request.engagement_path,
+                    workspace_path=run.workspace_path,
+                    current_path=request.current_path or run.workspace_path,
                     input_text=request.input_text,
                     input_items=request.input_items,
                 )

@@ -8,6 +8,7 @@ from riftx.domain import AgentMessage, MessageRole, MessageType
 from riftx.runtime.lifecycle import ContextCompileRequest
 
 from .items import ContextItem, ContextItemKind, ContextLayer
+from .models import ProcessedToolResult
 from .working_memory import AttemptStatus, WorkingMemoryRepository
 
 
@@ -224,6 +225,35 @@ class TranscriptContextSource:
             source_refs=[f"message://{message.id}"],
             sequence=message.sequence,
         )
+
+
+def processed_tool_result_context_item(
+    result: ProcessedToolResult,
+    *,
+    sequence: int = 0,
+) -> ContextItem:
+    """Expose only the bounded summary and logical Artifact refs to the model."""
+
+    artifact_refs = [reference.uri for reference in result.raw_artifacts]
+    return ContextItem(
+        id=f"tool-result:{result.execution_id}",
+        layer=ContextLayer.RELEVANT_TOOL_RESULTS,
+        kind=ContextItemKind.TOOL_PREVIEW,
+        content={
+            "execution_id": result.execution_id,
+            "tool_id": result.tool_id,
+            "status": result.status.value,
+            "exit_code": result.exit_code,
+            "context_summary": result.context_summary,
+            "artifact_refs": artifact_refs,
+        },
+        priority=75,
+        compressible=True,
+        removable=True,
+        source_refs=artifact_refs or [f"execution://{result.execution_id}"],
+        sequence=sequence,
+        metadata={"execution_id": result.execution_id},
+    )
 
 
 def _memory_item(
