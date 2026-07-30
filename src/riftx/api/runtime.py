@@ -46,12 +46,23 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
+    SQLAlchemyToolCallIntentRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
-from riftx.runner import ExecutionRunner, ProcessSupervisor, RunnerPaths, TerminalSupervisor
+from riftx.persistence.target_http_repositories import (
+    SQLAlchemyTargetHttpRequestRepository,
+)
+from riftx.runner import (
+    ExecutionRunner,
+    ProcessSupervisor,
+    RunnerPaths,
+    RunnerTargetHttpClient,
+    TerminalSupervisor,
+)
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
 
@@ -128,6 +139,7 @@ class ControlPlane:
     terminal_supervisor: TerminalSupervisor
     process_supervisor: ProcessSupervisor | None = None
     execution_runner: ExecutionRunner | None = None
+    target_http_service: TargetHttpApplicationService | None = None
 
     async def close(self) -> None:
         await self.terminal_supervisor.close_all()
@@ -213,6 +225,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
@@ -369,6 +382,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         terminal_supervisor=terminal_supervisor,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,
+        target_http_service=TargetHttpApplicationService(
+            runs=run_repository,
+            tool_calls=tool_call_intent_repository,
+            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+            runner=RunnerTargetHttpClient(node_id=settings.node_id),
+            artifacts=artifact_service,
+            events=event_repository,
+        ),
     )
 
 

@@ -765,6 +765,26 @@ class WebResearchPacketRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
+class TargetHttpRequestRecord(Base):
+    __tablename__ = "target_http_requests"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    execution_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    tool_call_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    request_artifact_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    response_artifact_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
 

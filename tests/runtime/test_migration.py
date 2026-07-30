@@ -25,6 +25,7 @@ RUNTIME_TABLES = {
     "web_research_notes",
     "web_research_packets",
     "source_references",
+    "target_http_requests",
 }
 
 

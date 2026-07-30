@@ -24,6 +24,8 @@ def test_scope_guard_matches_network_domain_and_url_targets() -> None:
     assert guard.require("api.example.test").allowed
     assert guard.require("https://example.test/app").allowed
     assert guard.require("https://other.test/allowed/page").allowed
+    assert guard.require("http://192.0.2.8/admin").allowed
+    assert guard.require("https://198.51.100.7/").allowed
 
 
 @pytest.mark.parametrize(
@@ -48,6 +50,14 @@ def test_scope_guard_rejects_out_of_scope_targets(target: str) -> None:
         guard.require(target)
 
 
+def test_url_prefix_does_not_authorize_a_sibling_path() -> None:
+    guard = ScopeGuard(Scope(url_prefixes=["https://example.test/allowed"]))
+
+    assert guard.require("https://example.test/allowed/page").allowed
+    with pytest.raises(ScopeViolationError):
+        guard.require("https://example.test/allowed-evil")
+
+
 def test_scope_guard_exclusions_override_positive_scope() -> None:
     guard = ScopeGuard(
         Scope(
@@ -61,6 +71,8 @@ def test_scope_guard_exclusions_override_positive_scope() -> None:
         guard.require("192.0.2.8")
     with pytest.raises(ScopeViolationError, match="scope exclusion"):
         guard.require("api.admin.example.test")
+    with pytest.raises(ScopeViolationError, match="scope exclusion"):
+        guard.require("http://192.0.2.8/admin")
 
 
 def test_scope_guard_enforces_time_window() -> None:

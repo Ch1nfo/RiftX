@@ -6,6 +6,7 @@ from .paths import ExecutionPaths, RunnerPaths, TerminalPaths
 from .process_inspector import ProcessIdentity, ProcessInspector
 from .protocols import ExecutionRunner
 from .supervisor import ProcessSupervisor
+from .target_http import RunnerTargetHttpClient, TargetHttpRunner
 from .terminal import TerminalController, TerminalSupervisor
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "ProcessInspector",
     "ProcessSupervisor",
     "RunnerPaths",
+    "RunnerTargetHttpClient",
+    "TargetHttpRunner",
     "TerminalController",
     "TerminalLaunchRequest",
     "TerminalPaths",

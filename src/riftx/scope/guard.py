@@ -103,10 +103,18 @@ class ScopeGuard:
             domain = _normalize_domain(value)
             return any(_domain_matches(domain, item) for item in scope.domains)
         url = _normalize_url(value)
-        if any(url.startswith(_normalize_url(prefix)) for prefix in scope.url_prefixes):
+        if any(_url_prefix_matches(url, prefix) for prefix in scope.url_prefixes):
             return True
         hostname = urlsplit(url).hostname
-        return bool(hostname and any(_domain_matches(hostname, item) for item in scope.domains))
+        if not hostname:
+            return False
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            return any(_domain_matches(hostname, item) for item in scope.domains)
+        return hostname in scope.ips or any(
+            address in ipaddress.ip_network(item, strict=False) for item in scope.cidrs
+        )
 
     def _is_excluded(self, value: str, kind: ScopeTargetKind) -> bool:
         for exclusion in self._scope.exclusions:
@@ -126,11 +134,22 @@ class ScopeGuard:
                 if _domain_matches(_normalize_domain(value), exclusion):
                     return True
             elif kind is ScopeTargetKind.URL and exclusion_kind is ScopeTargetKind.URL:
-                if _normalize_url(value).startswith(_normalize_url(exclusion)):
+                if _url_prefix_matches(_normalize_url(value), exclusion):
                     return True
             elif kind is ScopeTargetKind.URL and exclusion_kind is ScopeTargetKind.DOMAIN:
                 hostname = urlsplit(_normalize_url(value)).hostname
                 if hostname and _domain_matches(hostname, exclusion):
+                    return True
+            elif kind is ScopeTargetKind.URL and exclusion_kind in {
+                ScopeTargetKind.IP,
+                ScopeTargetKind.CIDR,
+            }:
+                hostname = urlsplit(_normalize_url(value)).hostname
+                try:
+                    ipaddress.ip_address(hostname or "")
+                except ValueError:
+                    continue
+                if _network_overlap(hostname or "", ScopeTargetKind.IP, exclusion, exclusion_kind):
                     return True
         return False
 
@@ -190,3 +209,10 @@ def _normalize_url(value: str) -> str:
     path = parsed.path or "/"
     query = f"?{parsed.query}" if parsed.query else ""
     return f"{parsed.scheme.lower()}://{hostname}{port}{path}{query}"
+
+
+def _url_prefix_matches(normalized_url: str, configured: str) -> bool:
+    prefix = _normalize_url(configured)
+    if prefix.endswith("/"):
+        return normalized_url.startswith(prefix)
+    return normalized_url == prefix or normalized_url.startswith((prefix + "/", prefix + "?"))

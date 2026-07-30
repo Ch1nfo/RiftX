@@ -28,6 +28,7 @@ EXPECTED_TABLES = {
     "run_leases",
     "runs",
     "source_references",
+    "target_http_requests",
     "terminal_sessions",
     "tool_call_intents",
     "tool_calls",
@@ -127,6 +128,20 @@ def test_web_research_schema_separates_candidates_from_sources() -> None:
         "artifact_ids_json",
         "content_trust",
     } <= set(Base.metadata.tables["web_research_packets"].columns.keys())
+
+
+def test_target_http_schema_preserves_execution_identity_and_artifacts() -> None:
+    assert {
+        "execution_key",
+        "run_id",
+        "session_id",
+        "tool_call_id",
+        "node_id",
+        "request_json",
+        "result_json",
+        "request_artifact_id",
+        "response_artifact_id",
+    } <= set(Base.metadata.tables["target_http_requests"].columns.keys())
 
 
 def test_context_compilation_table_records_manifest_and_actual_usage() -> None:
