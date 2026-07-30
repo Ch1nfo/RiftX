@@ -182,7 +182,8 @@ class FindingApplicationService:
                 self._memory_candidates.from_finding(
                     finding,
                     engagement_id=run.engagement_id,
-                )
+                ),
+                run_id=finding.run_id,
             )
             await self._append_event(
                 finding.run_id,

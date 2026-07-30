@@ -8,7 +8,10 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field, model_validator
 
+from riftx.application.ports import RunEventRepository
+from riftx.domain import DomainError
 from riftx.domain.base import DomainModel, new_id, utc_now
+from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 
 from .models import MemoryAuthor, MemoryRecord, MemoryScope, MemoryStatus, MemoryType
 from .service import MemoryRepository
@@ -184,13 +187,23 @@ class MemoryWriter:
         policy: PromotionPolicy | None = None,
         deduplicator: MemoryDeduplicator | None = None,
         conflict_resolver: MemoryConflictResolver | None = None,
+        hooks: HookBus | None = None,
+        events: RunEventRepository | None = None,
     ) -> None:
         self._repository = repository
         self._policy = policy or PromotionPolicy()
         self._deduplicator = deduplicator or MemoryDeduplicator()
         self._conflicts = conflict_resolver or MemoryConflictResolver()
+        self._hooks = hooks
+        self._events = events
 
-    async def write(self, candidate: MemoryCandidate) -> MemoryWriteResult:
+    async def write(
+        self,
+        candidate: MemoryCandidate,
+        *,
+        run_id: str | None = None,
+    ) -> MemoryWriteResult:
+        candidate = await self._candidate_hook(candidate, run_id=run_id)
         assessment = self._policy.assess(candidate)
         if assessment.decision is not PromotionDecision.PROMOTE:
             return MemoryWriteResult(candidate.id, assessment)
@@ -203,12 +216,14 @@ class MemoryWriter:
             duplicate.confidence = max(duplicate.confidence, candidate.confidence)
             duplicate.importance = max(duplicate.importance, candidate.importance)
             duplicate = await self._repository.save(duplicate)
-            return MemoryWriteResult(
+            result = MemoryWriteResult(
                 candidate.id,
                 assessment,
                 ConflictAction.MERGE,
                 duplicate,
             )
+            await self._written_hook(result, run_id=run_id)
+            return result
         resolution = self._conflicts.resolve(candidate, existing)
         if resolution.action is ConflictAction.IGNORE:
             return MemoryWriteResult(candidate.id, assessment, resolution.action)
@@ -225,7 +240,74 @@ class MemoryWriter:
             memory = await self._repository.supersede(memory)
         else:
             memory = await self._repository.create(memory)
-        return MemoryWriteResult(candidate.id, assessment, resolution.action, memory)
+        result = MemoryWriteResult(candidate.id, assessment, resolution.action, memory)
+        await self._written_hook(result, run_id=run_id)
+        return result
+
+    async def _candidate_hook(
+        self,
+        candidate: MemoryCandidate,
+        *,
+        run_id: str | None,
+    ) -> MemoryCandidate:
+        if self._hooks is None or run_id is None:
+            return candidate
+        outcome = await self._hooks.dispatch(
+            HookRequest(
+                point=HookPoint.MEMORY_CANDIDATE,
+                run_id=run_id,
+                payload=candidate.model_dump(mode="json"),
+            )
+        )
+        await self._emit(run_id, outcome.emitted_events)
+        _require_memory_hook_continue(outcome.decision, HookPoint.MEMORY_CANDIDATE)
+        updated = MemoryCandidate.model_validate(outcome.payload)
+        if updated.id != candidate.id:
+            raise DomainError("Memory Candidate Hook cannot change candidate identity")
+        return updated
+
+    async def _written_hook(
+        self,
+        result: MemoryWriteResult,
+        *,
+        run_id: str | None,
+    ) -> None:
+        if self._hooks is None or run_id is None or result.memory is None:
+            return
+        outcome = await self._hooks.dispatch(
+            HookRequest(
+                point=HookPoint.MEMORY_WRITTEN,
+                run_id=run_id,
+                payload={
+                    "candidate_id": result.candidate_id,
+                    "action": result.action.value if result.action is not None else None,
+                    "memory": result.memory.model_dump(mode="json"),
+                },
+            )
+        )
+        await self._emit(run_id, outcome.emitted_events)
+        _require_memory_hook_continue(outcome.decision, HookPoint.MEMORY_WRITTEN)
+
+    async def _emit(
+        self,
+        run_id: str,
+        emitted_events: list[dict[str, object]],
+    ) -> None:
+        if self._events is None:
+            return
+        for emitted in emitted_events:
+            event_type = emitted.get("event_type")
+            if isinstance(event_type, str) and event_type:
+                await self._events.append(
+                    run_id,
+                    event_type,
+                    {key: value for key, value in emitted.items() if key != "event_type"},
+                )
+
+
+def _require_memory_hook_continue(decision: HookDecision, point: HookPoint) -> None:
+    if decision in {HookDecision.BLOCK, HookDecision.REQUIRE_APPROVAL}:
+        raise DomainError(f"Runtime Hook blocked {point.value}")
 
 
 def _to_memory(candidate: MemoryCandidate, *, supersedes: str | None) -> MemoryRecord:

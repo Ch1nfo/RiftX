@@ -2,6 +2,14 @@ from pathlib import Path
 
 import pytest
 
+from riftx.hooks import (
+    HookBus,
+    HookDecision,
+    HookPoint,
+    HookRegistration,
+    HookResult,
+    PythonHook,
+)
 from riftx.memory import (
     ConflictAction,
     MemoryCandidate,
@@ -136,4 +144,34 @@ async def test_writer_deduplicates_and_supersedes_conflicting_facts(tmp_path: Pa
     previous = await repository.get(created.memory.id)
     assert previous is not None and previous.status is MemoryStatus.SUPERSEDED
     assert superseded.memory.supersedes == previous.id
+    await database.dispose()
+
+
+async def test_writer_invokes_candidate_and_written_hooks(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'promotion-hooks.db'}")
+    await database.create_schema()
+    seen: list[HookPoint] = []
+
+    def hook(request) -> HookResult:
+        seen.append(request.point)
+        if request.point is HookPoint.MEMORY_CANDIDATE:
+            return HookResult(
+                decision=HookDecision.MODIFY,
+                modified_payload={"title": "Hook-validated HTTPS service"},
+            )
+        return HookResult(decision=HookDecision.CONTINUE)
+
+    hooks = HookBus()
+    for point in (HookPoint.MEMORY_CANDIDATE, HookPoint.MEMORY_WRITTEN):
+        hooks.register(HookRegistration(point.value, point, PythonHook(hook)))
+    writer = MemoryWriter(
+        SQLAlchemyMemoryRepository(database.session_factory),
+        hooks=hooks,
+    )
+
+    result = await writer.write(candidate("candidate-hook"), run_id="run-1")
+
+    assert result.memory is not None
+    assert result.memory.title == "Hook-validated HTTPS service"
+    assert seen == [HookPoint.MEMORY_CANDIDATE, HookPoint.MEMORY_WRITTEN]
     await database.dispose()

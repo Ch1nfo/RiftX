@@ -43,7 +43,9 @@ class PrimaryResultMerger:
         memory_results: list[MemoryWriteResult] = []
         if self._memory_writer is not None:
             for candidate in result.memory_candidates:
-                memory_results.append(await self._memory_writer.write(candidate))
+                memory_results.append(
+                    await self._memory_writer.write(candidate, run_id=run_id)
+                )
         return PrimaryMergeResult(
             task_id=result.task_id,
             working_memory_version=version,

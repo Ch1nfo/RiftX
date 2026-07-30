@@ -10,12 +10,14 @@ from pathlib import Path
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import RunEventRepository, RunRepository
 from riftx.domain import (
+    DomainError,
     Execution,
     TerminalOwner,
     TerminalSession,
     TerminalTakeoverSummary,
 )
 from riftx.executors import EnvironmentMode
+from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 from riftx.runner import OutputSlice, TerminalController, TerminalLaunchRequest
 
 from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArtifactContent
@@ -52,11 +54,13 @@ class TerminalApplicationService:
         supervisor: TerminalController,
         artifact_service: ArtifactApplicationService | None = None,
         event_repository: RunEventRepository | None = None,
+        hooks: HookBus | None = None,
     ) -> None:
         self._runs = run_repository
         self._supervisor = supervisor
         self._artifacts = artifact_service
         self._events = event_repository
+        self._hooks = hooks
 
     async def create(self, run_id: str, command: CreateTerminal) -> TerminalView:
         run = await self._runs.get(run_id)
@@ -66,6 +70,17 @@ class TerminalApplicationService:
             lambda: Path(command.cwd or run.workspace_path).expanduser().resolve()
         )
         argv = command.argv or [_default_shell()]
+        await self._terminal_hook(
+            HookPoint.TERMINAL_OPEN,
+            run.id,
+            {
+                "session_id": command.session_id,
+                "agent_session_id": command.agent_session_id,
+                "argv": argv,
+                "cwd": str(cwd),
+                "owner": command.owner.value,
+            },
+        )
         try:
             terminal = await self._supervisor.start(
                 TerminalLaunchRequest(
@@ -130,6 +145,16 @@ class TerminalApplicationService:
         await self._supervisor.interrupt(session_id, actor=actor)
 
     async def take_over(self, session_id: str) -> TerminalView:
+        before = await self._supervisor.get(session_id)
+        await self._terminal_hook(
+            HookPoint.TERMINAL_OWNER_CHANGED,
+            before.run_id,
+            {
+                "terminal_id": before.id,
+                "previous_owner": before.owner.value,
+                "owner": TerminalOwner.USER.value,
+            },
+        )
         terminal = await self._supervisor.take_over(session_id)
         return TerminalView(
             terminal=terminal,
@@ -138,6 +163,15 @@ class TerminalApplicationService:
 
     async def release(self, session_id: str) -> TerminalView:
         before = await self._supervisor.get(session_id)
+        await self._terminal_hook(
+            HookPoint.TERMINAL_OWNER_CHANGED,
+            before.run_id,
+            {
+                "terminal_id": before.id,
+                "previous_owner": before.owner.value,
+                "owner": TerminalOwner.AGENT.value,
+            },
+        )
         execution = await self._supervisor.get_execution(session_id)
         started_cursor = before.takeover_cursor
         takeover_started_at = before.takeover_started_at
@@ -182,6 +216,16 @@ class TerminalApplicationService:
         )
 
     async def close(self, session_id: str) -> TerminalView:
+        before = await self._supervisor.get(session_id)
+        await self._terminal_hook(
+            HookPoint.TERMINAL_CLOSE,
+            before.run_id,
+            {
+                "terminal_id": before.id,
+                "owner": before.owner.value,
+                "status": before.status.value,
+            },
+        )
         terminal = await self._supervisor.close(session_id)
         execution = await self._supervisor.get_execution(session_id)
         if terminal.transcript_artifact_id is None and self._artifacts is not None:
@@ -203,6 +247,33 @@ class TerminalApplicationService:
             terminal=terminal,
             execution=execution,
         )
+
+    async def _terminal_hook(
+        self,
+        point: HookPoint,
+        run_id: str,
+        payload: dict[str, object],
+    ) -> None:
+        if self._hooks is None:
+            return
+        outcome = await self._hooks.dispatch(
+            HookRequest(point=point, run_id=run_id, payload=payload)
+        )
+        if self._events is not None:
+            for emitted in outcome.emitted_events:
+                event_type = emitted.get("event_type")
+                if isinstance(event_type, str) and event_type:
+                    await self._events.append(
+                        run_id,
+                        event_type,
+                        {
+                            key: value
+                            for key, value in emitted.items()
+                            if key != "event_type"
+                        },
+                    )
+        if outcome.decision in {HookDecision.BLOCK, HookDecision.REQUIRE_APPROVAL}:
+            raise DomainError(f"Runtime Hook blocked {point.value}")
 
     async def _read_range(self, session_id: str, start: int, end: int) -> bytes:
         chunks: list[bytes] = []

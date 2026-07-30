@@ -1115,18 +1115,6 @@ class RuntimeCoordinator:
             ),
         )
         await self._deferred_executions.mark_intent_executing(intent)
-        await self._dispatch_hook(
-            HookPoint.TERMINAL_OPEN,
-            run_id=run.id,
-            session_id=intent.session_id,
-            cycle_id=intent.cycle_id,
-            step_id=intent.step_id,
-            payload={
-                "terminal_session_id": view.terminal.id,
-                "execution_id": view.execution.id,
-                "tool_call_intent_id": intent.id,
-            },
-        )
         return YieldReason.TERMINAL_OPEN, view.execution.id
 
     async def _append_engine_event(

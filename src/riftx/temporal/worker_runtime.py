@@ -394,8 +394,12 @@ async def build_temporal_worker(
         )
         memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
         memory_service = MemoryService(memory_repository)
-        memory_writer = MemoryWriter(memory_repository)
         hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
+        memory_writer = MemoryWriter(
+            memory_repository,
+            hooks=hooks,
+            events=event_repository,
+        )
 
         node_service = NodeApplicationService(
             node_repository,
@@ -522,6 +526,7 @@ async def build_temporal_worker(
             supervisor=terminal_router,
             artifact_service=artifact_service,
             event_repository=event_repository,
+            hooks=hooks,
         )
 
         skill_registry = create_default_skill_registry()

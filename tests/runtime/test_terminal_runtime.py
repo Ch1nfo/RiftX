@@ -7,6 +7,14 @@ from pathlib import Path
 from riftx.application.services import TerminalApplicationService
 from riftx.domain import Engagement, Objective, Run, TerminalStatus
 from riftx.execution import DeferredExecutionDispatcher, ExecutionService
+from riftx.hooks import (
+    HookBus,
+    HookDecision,
+    HookPoint,
+    HookRegistration,
+    HookResult,
+    PythonHook,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -95,9 +103,19 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
         paths=RunnerPaths(tmp_path / "runner"),
         termination_grace_seconds=0.1,
     )
+    seen_hooks: list[HookPoint] = []
+
+    def terminal_hook(request) -> HookResult:
+        seen_hooks.append(request.point)
+        return HookResult(decision=HookDecision.CONTINUE)
+
+    hooks = HookBus()
+    for point in (HookPoint.TERMINAL_OPEN, HookPoint.TERMINAL_CLOSE):
+        hooks.register(HookRegistration(point.value, point, PythonHook(terminal_hook)))
     terminal_service = TerminalApplicationService(
         run_repository=runs,
         supervisor=supervisor,
+        hooks=hooks,
     )
     intents = SQLAlchemyToolCallIntentRepository(database.session_factory)
     dispatcher = DeferredExecutionDispatcher(
@@ -174,5 +192,6 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
     await terminal_service.write(terminal.id, b"done\n", actor=terminal.owner)
     closed = await terminal_service.close(terminal.id)
     assert closed.terminal.status is TerminalStatus.CLOSED
+    assert seen_hooks == [HookPoint.TERMINAL_OPEN, HookPoint.TERMINAL_CLOSE]
     await supervisor.close_all()
     await database.dispose()

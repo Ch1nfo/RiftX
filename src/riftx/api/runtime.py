@@ -29,6 +29,7 @@ from riftx.application.services import (
 )
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.context import ContextApplicationService
+from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.persistence import (
     Database,
@@ -302,6 +303,13 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         paths=runner_paths,
     )
 
+    hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
+    memory_writer = MemoryWriter(
+        memory_repository,
+        hooks=hooks,
+        events=event_repository,
+    )
+
     return ControlPlane(
         settings=settings,
         database=database,
@@ -330,7 +338,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             artifact_repository=artifact_repository,
             execution_repository=execution_repository,
             event_repository=event_repository,
-            memory_writer=MemoryWriter(memory_repository),
+            memory_writer=memory_writer,
         ),
         report_service=ReportApplicationService(
             run_repository=run_repository,
@@ -356,6 +364,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             supervisor=terminal_controller,
             artifact_service=artifact_service,
             event_repository=event_repository,
+            hooks=hooks,
         ),
         terminal_supervisor=terminal_supervisor,
         process_supervisor=process_supervisor,
