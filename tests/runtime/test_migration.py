@@ -13,6 +13,7 @@ RUNTIME_TABLES = {
     "tool_call_intents",
     "run_leases",
     "context_compilations",
+    "context_checkpoints",
     "working_memories",
     "runtime_approval_requests",
     "user_input_requests",

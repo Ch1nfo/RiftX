@@ -491,6 +491,34 @@ class ContextCompilationRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
+class ContextCheckpointRecord(Base):
+    __tablename__ = "context_checkpoints"
+    __table_args__ = (
+        Index("ix_context_checkpoints_session_created", "session_id", "created_at"),
+        Index("ix_context_checkpoints_run_created", "run_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    checkpoint_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    compaction_stage: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_profile: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    working_memory_version: Mapped[int | None] = mapped_column(Integer)
+    provider_state_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_states.id", ondelete="SET NULL"), index=True
+    )
+    context_compilation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("context_compilations.id", ondelete="SET NULL"), index=True
+    )
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
 

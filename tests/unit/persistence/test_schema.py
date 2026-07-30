@@ -11,6 +11,7 @@ EXPECTED_TABLES = {
     "approval_grants",
     "artifacts",
     "context_compilations",
+    "context_checkpoints",
     "engagements",
     "executions",
     "findings",

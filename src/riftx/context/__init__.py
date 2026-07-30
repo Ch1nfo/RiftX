@@ -11,6 +11,12 @@ from .budget import (
     RequiredContextOverflowError,
     TokenBudgeter,
 )
+from .checkpoints import (
+    CheckpointType,
+    CompactionStage,
+    ContextCheckpoint,
+    compaction_stage_for_usage,
+)
 from .compiler import ContextCompiler, ContextManifestBuilder, ManifestingContextCompiler
 from .inspector import ContextApplicationService
 from .instructions import (
@@ -87,6 +93,10 @@ __all__ = [
     "CONTEXT_LAYER_ORDER",
     "ContextBudgetResult",
     "ContextCompiler",
+    "ContextCheckpoint",
+    "CheckpointType",
+    "CompactionStage",
+    "compaction_stage_for_usage",
     "ContextItem",
     "ContextItemKind",
     "ContextLayer",
