@@ -168,6 +168,8 @@ class ProcessSupervisor:
     async def recover(self) -> list[Execution]:
         recovered: list[Execution] = []
         for execution in await self._repository.list_active():
+            if execution.executor_type is ExecutorType.PTY:
+                continue
             if not await self._inspector.matches(execution):
                 execution.transition_to(ExecutionStatus.LOST)
                 await self._repository.save(execution)

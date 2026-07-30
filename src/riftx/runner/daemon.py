@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import platform as platform_module
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ import typer
 from riftx import __version__
 from riftx.application.ports import ExecutionRepository
 from riftx.application.services import NodeRegistration
-from riftx.domain import Execution, ExecutionStatus, RunnerCommandKind
+from riftx.domain import Execution, ExecutionStatus, ExecutorType, RunnerCommandKind
 from riftx.executors import PowerShellNotFoundError, PowerShellResolver
 
 from .control_client import (
@@ -27,8 +28,14 @@ from .control_client import (
 from .models import ExecutionLaunchRequest
 from .paths import RunnerPaths
 from .protocols import ExecutionRunner
-from .state import FileExecutionRepository
+from .state import FileExecutionRepository, FileTerminalRepository
 from .supervisor import ProcessSupervisor
+from .terminal import TerminalSupervisor
+from .terminal_manager import (
+    NullRunEventRepository,
+    OperationJournal,
+    RemoteTerminalManager,
+)
 
 logger = logging.getLogger(__name__)
 app = typer.Typer(help="Run an outbound RiftX execution node.", no_args_is_help=True)
@@ -59,6 +66,8 @@ def _default_capabilities() -> tuple[str, ...]:
         pass
     else:
         capabilities.append("powershell")
+    if platform_module.system().lower() == "windows" and importlib.util.find_spec("winpty"):
+        capabilities.append("conpty")
     return tuple(capabilities)
 
 
@@ -156,6 +165,19 @@ class RunnerDaemon:
                 raise RuntimeError(f"Unsupported Runner command {command.kind.value!r}")
         except Exception as exc:
             logger.exception("Runner command %s failed", command.id)
+            if command.kind is RunnerCommandKind.TERMINAL_START:
+                execution_id = command.payload.get("execution_id")
+                if isinstance(execution_id, str) and execution_id:
+                    try:
+                        await self._client.report_status(
+                            execution_id,
+                            ExecutionStatus.FAILED,
+                        )
+                    except RunnerControlClientError:
+                        logger.warning(
+                            "Unable to report failed terminal start for %s",
+                            execution_id,
+                        )
             await self._client.finish(command, succeeded=False, error=str(exc))
             return
         await self._client.finish(command, succeeded=True, result=result)
@@ -169,6 +191,9 @@ class RunnerDaemon:
         close = getattr(self._supervisor, "close", None)
         if close is not None:
             await close()
+        terminal_close = getattr(self._terminal_handler, "close", None)
+        if terminal_close is not None:
+            await terminal_close()
         await self._client.close()
 
     async def _handle_execute(self, payload: dict[str, object]) -> dict[str, object]:
@@ -251,7 +276,11 @@ class RunnerDaemon:
 
     async def resume_active(self) -> None:
         for execution in await self._executions.list_active():
-            self._start_monitor(execution.id, execution.id)
+            if execution.executor_type is not ExecutorType.PTY:
+                self._start_monitor(execution.id, execution.id)
+        terminal_resume = getattr(self._terminal_handler, "resume_active", None)
+        if terminal_resume is not None:
+            await terminal_resume()
 
     async def _refresh_local_execution(self, execution_id: str) -> Execution:
         reconcile = getattr(self._supervisor, "reconcile", None)
@@ -323,18 +352,36 @@ def _required_string(payload: dict[str, object], key: str) -> str:
 async def _run(config: RunnerDaemonConfig) -> None:
     config.state_path.mkdir(parents=True, exist_ok=True)
     executions = FileExecutionRepository(config.state_path / "executions.json")
-    supervisor = ProcessSupervisor(executions, RunnerPaths(config.state_path))
+    terminals = FileTerminalRepository(config.state_path / "terminals.json")
+    runner_paths = RunnerPaths(config.state_path)
+    supervisor = ProcessSupervisor(executions, runner_paths)
     client = RunnerControlClient(
         server_url=config.server_url,
         node_id=config.node_id,
         credentials=RunnerCredentialStore(config.state_path / "credentials.json"),
         registration_token=config.registration_token,
     )
+    terminal_supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=NullRunEventRepository(),
+        paths=runner_paths,
+    )
+    terminal_manager = RemoteTerminalManager(
+        node_id=config.node_id,
+        supervisor=terminal_supervisor,
+        terminals=terminals,
+        executions=executions,
+        client=client,
+        operation_journal=OperationJournal(config.state_path / "terminal-operations.json"),
+        output_poll_seconds=config.output_poll_seconds,
+    )
     daemon = RunnerDaemon(
         config=config,
         client=client,
         supervisor=supervisor,
         executions=executions,
+        terminal_handler=terminal_manager,
     )
     try:
         await supervisor.recover()

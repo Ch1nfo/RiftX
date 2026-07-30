@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from riftx.application.errors import EntityNotFoundError
-from riftx.domain import Execution, ExecutionStatus
+from riftx.domain import Execution, ExecutionStatus, TerminalSession, TerminalStatus
 
 _ACTIVE_STATUSES = {
     ExecutionStatus.CREATED,
@@ -84,5 +84,80 @@ class FileExecutionRepository:
         temporary.replace(self.path)
 
 
+class FileTerminalRepository:
+    """Atomic JSON state for native terminals owned by a standalone Runner."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = asyncio.Lock()
+
+    async def create(self, terminal: TerminalSession) -> TerminalSession:
+        async with self._lock:
+            items = await asyncio.to_thread(self._read)
+            if terminal.id in items:
+                raise RuntimeError(f"terminal session already exists: {terminal.id}")
+            items[terminal.id] = _copy_terminal(terminal)
+            await asyncio.to_thread(self._write, items)
+        return _copy_terminal(terminal)
+
+    async def get(self, session_id: str) -> TerminalSession | None:
+        async with self._lock:
+            terminal = (await asyncio.to_thread(self._read)).get(session_id)
+            return _copy_terminal(terminal) if terminal is not None else None
+
+    async def get_by_execution(self, execution_id: str) -> TerminalSession | None:
+        async with self._lock:
+            for terminal in (await asyncio.to_thread(self._read)).values():
+                if terminal.execution_id == execution_id:
+                    return _copy_terminal(terminal)
+        return None
+
+    async def save(self, terminal: TerminalSession) -> TerminalSession:
+        async with self._lock:
+            items = await asyncio.to_thread(self._read)
+            if terminal.id not in items:
+                raise EntityNotFoundError("TerminalSession", terminal.id)
+            items[terminal.id] = _copy_terminal(terminal)
+            await asyncio.to_thread(self._write, items)
+        return _copy_terminal(terminal)
+
+    async def list_open(self) -> Sequence[TerminalSession]:
+        async with self._lock:
+            items = await asyncio.to_thread(self._read)
+            return [
+                _copy_terminal(item)
+                for item in items.values()
+                if item.status is TerminalStatus.OPEN
+            ]
+
+    def _read(self) -> dict[str, TerminalSession]:
+        try:
+            raw = json.loads(self.path.read_text())
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Runner terminal state is corrupted: {self.path}") from exc
+        if not isinstance(raw, list):
+            raise RuntimeError(f"Runner terminal state has an invalid shape: {self.path}")
+        terminals = (TerminalSession.model_validate(value) for value in raw)
+        return {item.id: item for item in terminals}
+
+    def _write(self, items: dict[str, TerminalSession]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(
+                [item.model_dump(mode="json") for item in items.values()],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        temporary.replace(self.path)
+
+
 def _copy(execution: Execution) -> Execution:
     return Execution.model_validate(execution.model_dump())
+
+
+def _copy_terminal(terminal: TerminalSession) -> TerminalSession:
+    return TerminalSession.model_validate(terminal.model_dump())

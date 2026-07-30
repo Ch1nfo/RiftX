@@ -1,19 +1,12 @@
-"""Unix PTY lifecycle, durable transcript, and single-writer ownership."""
+"""Cross-platform native terminal lifecycle and durable transcript management."""
 
 from __future__ import annotations
 
 import asyncio
-import errno
-import fcntl
 import os
-import pty
-import shutil
-import signal
-import struct
-import sys
-import termios
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import (
@@ -34,21 +27,52 @@ from riftx.executors import merge_environment
 
 from .models import OutputSlice, TerminalLaunchRequest
 from .paths import RunnerPaths
+from .terminal_backend import NativeTerminalBackend, NativeTerminalHandle
+
+
+class TerminalController(Protocol):
+    async def start(self, request: TerminalLaunchRequest) -> TerminalSession: ...
+
+    async def get(self, session_id: str) -> TerminalSession: ...
+
+    async def get_execution(self, session_id: str) -> Execution: ...
+
+    async def read(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> OutputSlice: ...
+
+    async def write(
+        self,
+        session_id: str,
+        data: bytes,
+        *,
+        actor: TerminalOwner,
+    ) -> None: ...
+
+    async def resize(self, session_id: str, *, cols: int, rows: int) -> TerminalSession: ...
+
+    async def interrupt(self, session_id: str, *, actor: TerminalOwner) -> None: ...
+
+    async def take_over(self, session_id: str) -> TerminalSession: ...
+
+    async def release(self, session_id: str) -> TerminalSession: ...
+
+    async def close(self, session_id: str) -> TerminalSession: ...
 
 
 @dataclass(slots=True)
 class _ManagedTerminal:
-    process: asyncio.subprocess.Process
-    master_fd: int
-    transcript_path: Path
-    reader_task: asyncio.Task[None]
+    handle: NativeTerminalHandle
     monitor_task: asyncio.Task[None] | None = None
-    write_lock: asyncio.Lock | None = None
     close_requested: bool = False
 
 
 class TerminalSupervisor:
-    """Own native PTYs while durable state and transcripts live in repositories/files."""
+    """Own native PTY/ConPTY sessions while state and transcripts remain durable."""
 
     def __init__(
         self,
@@ -58,20 +82,22 @@ class TerminalSupervisor:
         event_repository: RunEventRepository,
         paths: RunnerPaths,
         termination_grace_seconds: float = 2.0,
+        native_backend: NativeTerminalBackend | None = None,
+        platform_name: str | None = None,
     ) -> None:
         self._terminals = terminal_repository
         self._executions = execution_repository
         self._events = event_repository
         self._paths = paths
         self._termination_grace_seconds = termination_grace_seconds
+        self._native_backend = native_backend
+        self._platform_name = platform_name or os.name
         self._managed: dict[str, _ManagedTerminal] = {}
 
     async def start(self, request: TerminalLaunchRequest) -> TerminalSession:
-        if os.name != "posix":
-            raise RuntimeError("native PTY sessions are currently supported only on Unix")
-
-        session_id = new_id()
-        execution_id = new_id()
+        backend = self._backend()
+        session_id = request.session_id or new_id()
+        execution_id = request.execution_id or new_id()
         self._paths.ensure_run_layout(request.run_id)
         terminal_paths = self._paths.terminal(request.run_id, session_id)
         terminal_paths.directory.mkdir(parents=True, exist_ok=True)
@@ -107,50 +133,28 @@ class TerminalSupervisor:
 
         execution.transition_to(ExecutionStatus.STARTING)
         await self._executions.save(execution)
-        master_fd, slave_fd = pty.openpty()
+        environment = merge_environment(request.env, mode=request.environment_mode)
         try:
-            _set_window_size(master_fd, request.cols, request.rows)
-            environment = merge_environment(request.env, mode=request.environment_mode)
-            _validate_target(request.argv[0], request.cwd, environment)
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(Path(__file__).with_name("_pty_child.py")),
-                *request.argv,
-                cwd=request.cwd,
-                env=environment,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True,
+            handle = await backend.start(
+                request,
+                transcript_path=terminal_paths.transcript,
+                environment=environment,
             )
-        except (OSError, ValueError):
-            os.close(master_fd)
+        except Exception:
             execution.transition_to(ExecutionStatus.FAILED)
             await self._executions.save(execution)
             terminal.transition_to(TerminalStatus.CLOSED)
             await self._terminals.save(terminal)
             raise
-        finally:
-            os.close(slave_fd)
 
-        execution.pid = process.pid
-        execution.process_group_id = process.pid
+        execution.pid = handle.pid
+        execution.process_group_id = handle.pid
         execution.transition_to(ExecutionStatus.RUNNING)
         await self._executions.save(execution)
         terminal.transition_to(TerminalStatus.OPEN)
         await self._terminals.save(terminal)
 
-        reader_task = asyncio.create_task(
-            self._pump_output(master_fd, terminal_paths.transcript),
-            name=f"riftx-terminal-reader-{session_id}",
-        )
-        managed = _ManagedTerminal(
-            process=process,
-            master_fd=master_fd,
-            transcript_path=terminal_paths.transcript,
-            reader_task=reader_task,
-            write_lock=asyncio.Lock(),
-        )
+        managed = _ManagedTerminal(handle=handle)
         self._managed[session_id] = managed
         managed.monitor_task = asyncio.create_task(
             self._monitor(session_id, managed),
@@ -167,6 +171,7 @@ class TerminalSupervisor:
                 "owner": terminal.owner.value,
                 "cols": terminal.cols,
                 "rows": terminal.rows,
+                "backend": "conpty" if self._platform_name == "nt" else "pty",
             },
         )
         return terminal
@@ -210,22 +215,12 @@ class TerminalSupervisor:
     ) -> None:
         terminal = await self.get(session_id)
         self._require_writer(terminal, actor)
-        managed = self._require_managed(session_id)
-        if not data:
-            return
-        lock = managed.write_lock
-        if lock is None:
-            raise RuntimeError("terminal write lock was not initialized")
-        async with lock:
-            await asyncio.to_thread(os.write, managed.master_fd, data)
+        await self._require_managed(session_id).handle.write(data)
 
     async def resize(self, session_id: str, *, cols: int, rows: int) -> TerminalSession:
         terminal = await self.get(session_id)
         terminal.resize(cols, rows)
-        managed = self._require_managed(session_id)
-        await asyncio.to_thread(_set_window_size, managed.master_fd, cols, rows)
-        if managed.process.returncode is None:
-            _signal_process_group(managed.process.pid, signal.SIGWINCH)
+        await self._require_managed(session_id).handle.resize(cols, rows)
         await self._terminals.save(terminal)
         await self._events.append(
             terminal.run_id,
@@ -237,9 +232,7 @@ class TerminalSupervisor:
     async def interrupt(self, session_id: str, *, actor: TerminalOwner) -> None:
         terminal = await self.get(session_id)
         self._require_writer(terminal, actor)
-        managed = self._require_managed(session_id)
-        if managed.process.returncode is None:
-            _signal_process_group(managed.process.pid, signal.SIGINT)
+        await self._require_managed(session_id).handle.interrupt()
         await self._events.append(
             terminal.run_id,
             "terminal.interrupted",
@@ -273,7 +266,7 @@ class TerminalSupervisor:
         managed = self._managed.get(session_id)
         if managed is not None:
             managed.close_requested = True
-            await _terminate_process(managed.process, self._termination_grace_seconds)
+            await managed.handle.terminate(self._termination_grace_seconds)
             if managed.monitor_task is not None:
                 await asyncio.shield(managed.monitor_task)
             return await self.get(session_id)
@@ -290,16 +283,18 @@ class TerminalSupervisor:
             await self._events.append(
                 terminal.run_id,
                 "terminal.lost",
-                {"session_id": terminal.id, "reason": "native_pty_not_attached"},
+                {"session_id": terminal.id, "reason": "native_terminal_not_attached"},
             )
         return terminal
 
-    async def recover(self) -> list[TerminalSession]:
+    async def recover(self, *, node_id: str | None = None) -> list[TerminalSession]:
         lost: list[TerminalSession] = []
         for terminal in await self._terminals.list_open():
+            execution = await self._executions.get(terminal.execution_id)
+            if node_id is not None and (execution is None or execution.node_id != node_id):
+                continue
             terminal.transition_to(TerminalStatus.LOST)
             await self._terminals.save(terminal)
-            execution = await self._executions.get(terminal.execution_id)
             if execution is not None and execution.status in {
                 ExecutionStatus.STARTING,
                 ExecutionStatus.RUNNING,
@@ -320,29 +315,9 @@ class TerminalSupervisor:
             return_exceptions=True,
         )
 
-    async def _pump_output(self, master_fd: int, transcript_path: Path) -> None:
-        with transcript_path.open("ab", buffering=0) as transcript:
-            while True:
-                try:
-                    data = await asyncio.to_thread(os.read, master_fd, 64 * 1024)
-                except OSError as exc:
-                    if exc.errno in {errno.EIO, errno.EBADF}:
-                        return
-                    raise
-                if not data:
-                    return
-                transcript.write(data)
-
     async def _monitor(self, session_id: str, managed: _ManagedTerminal) -> None:
-        exit_code = await managed.process.wait()
-        try:
-            await asyncio.wait_for(asyncio.shield(managed.reader_task), timeout=1.0)
-        except TimeoutError:
-            os.close(managed.master_fd)
-            await asyncio.gather(managed.reader_task, return_exceptions=True)
-        else:
-            os.close(managed.master_fd)
-
+        exit_code = await managed.handle.wait()
+        await managed.handle.close_output()
         terminal = await self.get(session_id)
         execution = await self._executions.get(terminal.execution_id)
         if execution is not None and execution.status in {
@@ -369,12 +344,27 @@ class TerminalSupervisor:
         )
         self._managed.pop(session_id, None)
 
+    def _backend(self) -> NativeTerminalBackend:
+        if self._native_backend is not None:
+            return self._native_backend
+        if self._platform_name == "posix":
+            from .unix_pty import UnixPTYBackend
+
+            self._native_backend = UnixPTYBackend()
+            return self._native_backend
+        if self._platform_name == "nt":
+            from .conpty import ConPTYBackend
+
+            self._native_backend = ConPTYBackend()
+            return self._native_backend
+        raise RuntimeError(f"native terminals are unsupported on {self._platform_name!r}")
+
     def _require_managed(self, session_id: str) -> _ManagedTerminal:
         managed = self._managed.get(session_id)
         if managed is None:
             raise ApplicationConflictError(
                 "terminal_not_attached",
-                "The native PTY is not attached to this Runner process",
+                "The native terminal is not attached to this Runner process",
                 details={"session_id": session_id},
             )
         return managed
@@ -394,24 +384,6 @@ class TerminalSupervisor:
             )
 
 
-def _validate_target(executable: str, cwd: Path, environment: dict[str, str]) -> None:
-    if os.path.dirname(executable):
-        path = Path(executable)
-        if not path.is_absolute():
-            path = cwd / path
-        if not path.exists():
-            raise FileNotFoundError(executable)
-        if not path.is_file() or not os.access(path, os.X_OK):
-            raise PermissionError(executable)
-        return
-    if shutil.which(executable, path=environment.get("PATH")) is None:
-        raise FileNotFoundError(executable)
-
-
-def _set_window_size(fd: int, cols: int, rows: int) -> None:
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-
-
 def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
     if cursor < 0:
         raise ValueError("output cursor must not be negative")
@@ -419,7 +391,7 @@ def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
         return OutputSlice(data=b"", cursor=cursor, next_cursor=cursor, eof=True)
     size = path.stat().st_size
     if cursor > size:
-        raise ValueError(f"output cursor {cursor} is beyond file size {size}")
+        raise ValueError(f"terminal cursor {cursor} is beyond transcript size {size}")
     with path.open("rb") as stream:
         stream.seek(cursor)
         data = stream.read(max_bytes)
@@ -430,26 +402,3 @@ def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
         next_cursor=next_cursor,
         eof=next_cursor >= size,
     )
-
-
-def _signal_process_group(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(pid, sig)
-    except ProcessLookupError:
-        return
-
-
-async def _terminate_process(
-    process: asyncio.subprocess.Process,
-    grace_seconds: float,
-) -> None:
-    if process.returncode is not None:
-        return
-    _signal_process_group(process.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=grace_seconds)
-        return
-    except TimeoutError:
-        pass
-    _signal_process_group(process.pid, signal.SIGKILL)
-    await process.wait()

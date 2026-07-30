@@ -42,7 +42,9 @@ _EXECUTION_TRANSITIONS: Mapping[ExecutionStatus, frozenset[ExecutionStatus]] = {
 }
 
 _TERMINAL_TRANSITIONS: Mapping[TerminalStatus, frozenset[TerminalStatus]] = {
-    TerminalStatus.CREATED: frozenset({TerminalStatus.OPEN, TerminalStatus.CLOSED}),
+    TerminalStatus.CREATED: frozenset(
+        {TerminalStatus.OPEN, TerminalStatus.CLOSED, TerminalStatus.LOST}
+    ),
     TerminalStatus.OPEN: frozenset({TerminalStatus.CLOSED, TerminalStatus.LOST}),
     TerminalStatus.CLOSED: frozenset(),
     TerminalStatus.LOST: frozenset(),

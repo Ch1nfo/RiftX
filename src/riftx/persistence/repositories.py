@@ -727,6 +727,14 @@ class SQLAlchemyTerminalRepository:
             record = await session.get(TerminalSessionRecord, session_id)
         return terminal_from_record(record) if record is not None else None
 
+    async def get_by_execution(self, execution_id: str) -> TerminalSession | None:
+        statement = select(TerminalSessionRecord).where(
+            TerminalSessionRecord.execution_id == execution_id
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return terminal_from_record(record) if record is not None else None
+
     async def save(self, terminal: TerminalSession) -> TerminalSession:
         async with self._session_factory() as session, session.begin():
             record = await session.get(TerminalSessionRecord, terminal.id)

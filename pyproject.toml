@@ -28,6 +28,7 @@ dependencies = [
   "typer>=0.26,<1",
   "uvicorn>=0.51,<1",
   "websockets>=16,<17",
+  "pywinpty>=2.0,<3; platform_system == 'Windows'",
 ]
 
 [project.scripts]

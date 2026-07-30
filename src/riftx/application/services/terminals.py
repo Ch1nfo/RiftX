@@ -11,7 +11,7 @@ from riftx.application.errors import ApplicationConflictError, EntityNotFoundErr
 from riftx.application.ports import RunRepository
 from riftx.domain import Execution, TerminalOwner, TerminalSession
 from riftx.executors import EnvironmentMode
-from riftx.runner import OutputSlice, TerminalLaunchRequest, TerminalSupervisor
+from riftx.runner import OutputSlice, TerminalController, TerminalLaunchRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +35,7 @@ class TerminalApplicationService:
         self,
         *,
         run_repository: RunRepository,
-        supervisor: TerminalSupervisor,
+        supervisor: TerminalController,
     ) -> None:
         self._runs = run_repository
         self._supervisor = supervisor

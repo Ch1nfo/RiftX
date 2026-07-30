@@ -43,6 +43,7 @@ from riftx.persistence import (
 )
 from riftx.runner import ExecutionRunner, ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
+from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
 
@@ -265,6 +266,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         executions=execution_repository,
         paths=runner_paths,
         registration_token=settings.runner_registration_token,
+        terminals=terminal_repository,
+        events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
     )
     terminal_supervisor = TerminalSupervisor(
@@ -273,7 +276,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         event_repository=event_repository,
         paths=runner_paths,
     )
-    await terminal_supervisor.recover()
+    await terminal_supervisor.recover(node_id=settings.node_id)
     process_supervisor = ProcessSupervisor(execution_repository, runner_paths)
     await process_supervisor.recover()
     remote_supervisor = RemoteExecutionSupervisor(
@@ -287,6 +290,20 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         repository=execution_repository,
         local=process_supervisor,
         remote=remote_supervisor,
+    )
+    remote_terminal_supervisor = RemoteTerminalSupervisor(
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        event_repository=event_repository,
+        control=runner_control_service,
+        paths=runner_paths,
+    )
+    terminal_controller = NodeTerminalRouter(
+        local_node_id=settings.node_id,
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        local=terminal_supervisor,
+        remote=remote_terminal_supervisor,
     )
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
@@ -337,7 +354,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         artifact_service=artifact_service,
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
-            supervisor=terminal_supervisor,
+            supervisor=terminal_controller,
         ),
         terminal_supervisor=terminal_supervisor,
         process_supervisor=process_supervisor,

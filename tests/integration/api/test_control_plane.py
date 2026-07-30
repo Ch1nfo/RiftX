@@ -36,6 +36,8 @@ from riftx.domain import (
     FindingSeverity,
     RunnerCommandKind,
     RunStatus,
+    TerminalSession,
+    TerminalStatus,
     ToolCall,
 )
 from riftx.persistence import (
@@ -54,6 +56,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
 )
 from riftx.runner import RunnerPaths, TerminalSupervisor
+from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.tools import ToolRegistry
 
 
@@ -103,6 +106,7 @@ class RuntimeFixture:
     report_repository: SQLAlchemyReportRepository
     run_repository: SQLAlchemyRunRepository
     execution_repository: SQLAlchemyExecutionRepository
+    terminal_repository: SQLAlchemyTerminalRepository
 
 
 async def _build_runtime(
@@ -161,12 +165,38 @@ tools:
         runner_registration_token="test-bootstrap",
         runner_command_lease_seconds=0.05,
     )
+    runner_paths = RunnerPaths(settings.runner_state_path)
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
         execution_repository=execution_repository,
         artifact_repository=artifact_repository,
         event_repository=event_repository,
-        paths=RunnerPaths(settings.runner_state_path),
+        paths=runner_paths,
+    )
+    runner_control_service = RunnerControlService(
+        credentials=runner_credential_repository,
+        commands=runner_command_repository,
+        nodes=node_service,
+        executions=execution_repository,
+        paths=runner_paths,
+        registration_token=settings.runner_registration_token,
+        terminals=terminal_repository,
+        events=event_repository,
+        lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
+    )
+    remote_terminal_supervisor = RemoteTerminalSupervisor(
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        event_repository=event_repository,
+        control=runner_control_service,
+        paths=runner_paths,
+    )
+    terminal_controller = NodeTerminalRouter(
+        local_node_id=settings.node_id,
+        terminal_repository=terminal_repository,
+        execution_repository=execution_repository,
+        local=terminal_supervisor,
+        remote=remote_terminal_supervisor,
     )
     return RuntimeFixture(
         control_plane=ControlPlane(
@@ -184,15 +214,7 @@ tools:
                 event_repository=event_repository,
             ),
             node_service=node_service,
-            runner_control_service=RunnerControlService(
-                credentials=runner_credential_repository,
-                commands=runner_command_repository,
-                nodes=node_service,
-                executions=execution_repository,
-                paths=RunnerPaths(settings.runner_state_path),
-                registration_token=settings.runner_registration_token,
-                lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
-            ),
+            runner_control_service=runner_control_service,
             finding_service=FindingApplicationService(
                 run_repository=run_repository,
                 finding_repository=finding_repository,
@@ -218,7 +240,7 @@ tools:
             artifact_service=artifact_service,
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
-                supervisor=terminal_supervisor,
+                supervisor=terminal_controller,
             ),
             terminal_supervisor=terminal_supervisor,
         ),
@@ -229,6 +251,7 @@ tools:
         report_repository=report_repository,
         run_repository=run_repository,
         execution_repository=execution_repository,
+        terminal_repository=terminal_repository,
     )
 
 
@@ -1300,6 +1323,55 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert exited.status_code == 200
         assert exited.json()["exit_code"] == 0
 
+        terminal_paths = paths.terminal(str(run["id"]), "terminal-remote")
+        terminal_execution = Execution(
+            id="execution-terminal-remote",
+            execution_key="terminal:terminal-remote",
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            executor_type=ExecutorType.PTY,
+            argv=["pwsh.exe"],
+            cwd=str(run["workspace_path"]),
+            stdout_path=str(terminal_paths.transcript),
+            stderr_path=str(terminal_paths.transcript),
+        )
+        terminal_execution.transition_to(ExecutionStatus.STARTING)
+        await runtime.execution_repository.create_if_absent(terminal_execution)
+        await runtime.terminal_repository.create(
+            TerminalSession(
+                id="terminal-remote",
+                run_id=str(run["id"]),
+                execution_id=terminal_execution.id,
+            )
+        )
+        terminal_running = await client.post(
+            f"/api/v1/runner/executions/{terminal_execution.id}/status",
+            headers=headers,
+            json={"status": "running", "pid": 5150, "process_group_id": 5150},
+        )
+        assert terminal_running.status_code == 200
+        persisted_terminal = await runtime.terminal_repository.get("terminal-remote")
+        assert persisted_terminal is not None
+        assert persisted_terminal.status is TerminalStatus.OPEN
+
+        terminal_output = await client.post(
+            f"/api/v1/runner/executions/{terminal_execution.id}/output",
+            headers=headers,
+            json={"stream": "stdout", "offset": 0, "data": "UkVBRFkK"},
+        )
+        assert terminal_output.status_code == 200
+        assert terminal_paths.transcript.read_bytes() == b"READY\n"
+
+        terminal_exited = await client.post(
+            f"/api/v1/runner/executions/{terminal_execution.id}/status",
+            headers=headers,
+            json={"status": "exited", "exit_code": 0},
+        )
+        assert terminal_exited.status_code == 200
+        persisted_terminal = await runtime.terminal_repository.get("terminal-remote")
+        assert persisted_terminal is not None
+        assert persisted_terminal.status is TerminalStatus.CLOSED
+
         oversized_result = await client.post(
             f"/api/v1/runner/commands/{command.id}/finish",
             headers=headers,
@@ -1331,3 +1403,104 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert empty.status_code == 200
         assert empty.json()["command"] is None
     await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_api_routes_commands_and_streams_transcript(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            registration = await client.post(
+                "/api/v1/nodes/register",
+                headers={"Authorization": "Bearer test-bootstrap"},
+                json={
+                    "node_id": "windows-a",
+                    "name": "Windows Runner A",
+                    "platform": "windows",
+                    "architecture": "amd64",
+                    "capabilities": ["powershell", "conpty"],
+                },
+            )
+            token = registration.json()["runner_token"]
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "X-RiftX-Node-ID": "windows-a",
+            }
+            run_response = await client.post(
+                "/api/v1/runs",
+                json={
+                    "objective": "Remote Windows terminal",
+                    "node_id": "windows-a",
+                    "engagement": {"name": "Remote terminal E2E"},
+                },
+            )
+            run = run_response.json()
+            created = await client.post(
+                f"/api/v1/runs/{run['id']}/terminals",
+                json={
+                    "argv": ["pwsh.exe", "-NoLogo", "-NoProfile"],
+                    "cols": 132,
+                    "rows": 48,
+                },
+            )
+            assert created.status_code == 201, created.text
+            terminal = created.json()
+            assert terminal["status"] == "open"
+            assert terminal["execution_status"] == "running"
+
+            leased = await client.get("/api/v1/runner/commands/next", headers=headers)
+            start_command = leased.json()["command"]
+            assert start_command["kind"] == "terminal_start"
+            assert start_command["payload"]["session_id"] == terminal["id"]
+            assert start_command["payload"]["execution_id"] == terminal["execution_id"]
+            assert start_command["payload"]["request"]["node_id"] == "windows-a"
+
+            running = await client.post(
+                f"/api/v1/runner/executions/{terminal['execution_id']}/status",
+                headers=headers,
+                json={"status": "running", "pid": 5150, "process_group_id": 5150},
+            )
+            assert running.status_code == 200
+            assert running.json()["pid"] == 5150
+            await client.post(
+                f"/api/v1/runner/commands/{start_command['id']}/finish",
+                headers=headers,
+                json={
+                    "lease_id": start_command["lease_id"],
+                    "succeeded": True,
+                    "result": {"session_id": terminal["id"]},
+                },
+            )
+
+            uploaded = await client.post(
+                f"/api/v1/runner/executions/{terminal['execution_id']}/output",
+                headers=headers,
+                json={"stream": "stdout", "offset": 0, "data": "UkVBRFkNCg=="},
+            )
+            assert uploaded.status_code == 200
+            output = await runtime.control_plane.terminal_service.read(terminal["id"])
+            assert output.data == b"READY\r\n"
+
+            closed = await client.delete(f"/api/v1/terminals/{terminal['id']}")
+            assert closed.status_code == 200
+            assert closed.json()["status"] == "closed"
+            assert closed.json()["execution_status"] == "cancelled"
+            close_lease = await client.get("/api/v1/runner/commands/next", headers=headers)
+            close_command = close_lease.json()["command"]
+            assert close_command["kind"] == "terminal_close"
+            assert close_command["payload"]["operation_id"] == (f"terminal-close:{terminal['id']}")
+
+            cancelled = await client.post(
+                f"/api/v1/runner/executions/{terminal['execution_id']}/status",
+                headers=headers,
+                json={"status": "cancelled", "exit_code": 130},
+            )
+            assert cancelled.status_code == 200
+            assert cancelled.json()["exit_code"] == 130
+            fetched = await client.get(f"/api/v1/terminals/{terminal['id']}")
+            assert fetched.json()["pid"] == 5150
+            assert fetched.json()["exit_code"] == 130
+    finally:
+        await runtime.control_plane.close()

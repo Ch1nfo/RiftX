@@ -19,18 +19,22 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import (
     ExecutionRepository,
+    RunEventRepository,
     RunnerCommandRepository,
     RunnerCredentialRepository,
+    TerminalRepository,
 )
 from riftx.domain import (
     Execution,
     ExecutionStatus,
+    ExecutorType,
     Node,
     NodeStatus,
     RunnerCommand,
     RunnerCommandKind,
     RunnerCommandStatus,
     RunnerCredential,
+    TerminalStatus,
 )
 from riftx.domain.base import new_id, utc_now
 from riftx.runner.paths import RunnerPaths
@@ -68,6 +72,8 @@ class RunnerControlService:
         executions: ExecutionRepository,
         paths: RunnerPaths,
         registration_token: str | None,
+        terminals: TerminalRepository | None = None,
+        events: RunEventRepository | None = None,
         lease_duration: timedelta = timedelta(seconds=30),
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
@@ -79,6 +85,8 @@ class RunnerControlService:
         self._executions = executions
         self._paths = paths
         self._registration_token = registration_token
+        self._terminals = terminals
+        self._events = events
         self._lease_duration = lease_duration
         self._clock = clock
         self._output_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -222,6 +230,23 @@ class RunnerControlService:
         execution = await self._require_execution(execution_id)
         self._require_execution_scope(execution, node_id)
         if execution.status is report.status:
+            changed = False
+            if report.status is ExecutionStatus.RUNNING:
+                if report.pid is not None and execution.pid != report.pid:
+                    execution.pid = report.pid
+                    changed = True
+                if (
+                    report.process_group_id is not None
+                    and execution.process_group_id != report.process_group_id
+                ):
+                    execution.process_group_id = report.process_group_id
+                    changed = True
+            elif report.exit_code is not None and execution.exit_code is None:
+                execution.exit_code = report.exit_code
+                changed = True
+            if changed:
+                execution = await self._executions.save(execution)
+            await self._sync_terminal_status(execution, report.status)
             return execution
         if report.status not in {
             ExecutionStatus.RUNNING,
@@ -244,7 +269,53 @@ class RunnerControlService:
             execution.pid = report.pid
             execution.process_group_id = report.process_group_id
         execution.transition_to(report.status, exit_code=report.exit_code)
-        return await self._executions.save(execution)
+        execution = await self._executions.save(execution)
+        await self._sync_terminal_status(execution, report.status)
+        return execution
+
+    async def _sync_terminal_status(
+        self,
+        execution: Execution,
+        status: ExecutionStatus,
+    ) -> None:
+        if self._terminals is None or execution.executor_type is not ExecutorType.PTY:
+            return
+        terminal = await self._terminals.get_by_execution(execution.id)
+        if terminal is None:
+            return
+        target: TerminalStatus | None = None
+        event_type: str | None = None
+        if status is ExecutionStatus.RUNNING and terminal.status is TerminalStatus.CREATED:
+            target = TerminalStatus.OPEN
+            event_type = "terminal.opened"
+        elif status is ExecutionStatus.LOST and terminal.status in {
+            TerminalStatus.CREATED,
+            TerminalStatus.OPEN,
+        }:
+            target = TerminalStatus.LOST
+            event_type = "terminal.lost"
+        elif status in {
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+        } and terminal.status in {TerminalStatus.CREATED, TerminalStatus.OPEN}:
+            target = TerminalStatus.CLOSED
+            event_type = "terminal.closed"
+        if target is None:
+            return
+        terminal.transition_to(target)
+        await self._terminals.save(terminal)
+        if self._events is not None and event_type is not None:
+            await self._events.append(
+                terminal.run_id,
+                event_type,
+                {
+                    "session_id": terminal.id,
+                    "execution_id": execution.id,
+                    "status": status.value,
+                    "backend": "remote",
+                },
+            )
 
     async def append_output(
         self,
@@ -266,8 +337,7 @@ class RunnerControlService:
                 "runner_output_chunk_too_large",
                 f"Runner output chunks must not exceed {_MAX_OUTPUT_CHUNK_BYTES} bytes",
             )
-        output_paths = self._paths.execution(execution.run_id, execution.id)
-        path = output_paths.stdout if stream == "stdout" else output_paths.stderr
+        path = Path(execution.stdout_path if stream == "stdout" else execution.stderr_path)
         key = (execution_id, stream)
         lock = self._output_locks.setdefault(key, asyncio.Lock())
         async with lock:

@@ -122,3 +122,7 @@ def test_terminal_session_has_explicit_lifecycle() -> None:
     assert session.closed_at is not None
     with pytest.raises(InvalidStateTransitionError):
         session.transition_to(TerminalStatus.OPEN)
+
+    never_attached = TerminalSession(run_id="run-1", execution_id="execution-2")
+    never_attached.transition_to(TerminalStatus.LOST)
+    assert never_attached.closed_at is not None

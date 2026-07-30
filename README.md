@@ -60,3 +60,18 @@ Windows PowerShell (`powershell.exe`). RiftX always launches it with an explicit
 (`-NoLogo -NoProfile -Command`) rather than `shell=True`. Windows child processes are
 created in a new process group; cancellation escalates from normal termination to a
 `taskkill /T /F` process-tree cleanup after the grace period.
+
+## Windows interactive terminals
+
+Interactive terminal requests are routed by the Run's node. Local Unix nodes use a
+native PTY; remote Windows nodes use the Windows ConPTY API through the conditional
+`pywinpty` dependency. The remote Runner preserves the Control Plane's terminal and
+execution IDs, forwards transcript bytes with exact offsets, and handles input, resize,
+Ctrl+C, ownership, and close commands through the same durable outbound channel.
+
+ConPTY is advertised as a Runner capability only when `pywinpty` is installed. Native
+PTY and ConPTY handles cannot be reattached after the Runner process itself restarts, so
+any previously open session is reported as `LOST`; its durable transcript remains
+available from the Control Plane. Windows ConPTY behavior is covered with a fake native
+backend on every platform, while the real PowerShell/ConPTY smoke path requires a
+Windows host.
