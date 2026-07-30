@@ -21,27 +21,79 @@ class RuntimeCycleRunner(Protocol):
     async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult: ...
 
 
+class RuntimeSessionInitializer(Protocol):
+    async def ensure_primary_session(self, run_id: str, session_id: str) -> None: ...
+
+
+class RuntimeUserInputResolver(Protocol):
+    async def resolve_user_input(
+        self,
+        run_id: str,
+        session_id: str,
+        user_input_id: str,
+    ) -> str: ...
+
+
+class RuntimeExecutionInputResolver(Protocol):
+    async def resolve_execution_input(
+        self,
+        run_id: str,
+        execution_id: str,
+    ) -> dict[str, object]: ...
+
+
 class RuntimeCycleActivities:
     """Execute one idempotent Runtime Cycle outside Temporal Workflow History."""
 
-    def __init__(self, coordinator: RuntimeCycleRunner, *, worker_id: str) -> None:
+    def __init__(
+        self,
+        coordinator: RuntimeCycleRunner,
+        *,
+        worker_id: str,
+        session_initializer: RuntimeSessionInitializer | None = None,
+        user_input_resolver: RuntimeUserInputResolver | None = None,
+        execution_input_resolver: RuntimeExecutionInputResolver | None = None,
+    ) -> None:
         self._coordinator = coordinator
         self._worker_id = worker_id
+        self._session_initializer = session_initializer
+        self._user_input_resolver = user_input_resolver
+        self._execution_input_resolver = execution_input_resolver
 
     @activity.defn(name="run_agent_cycle_activity")
     async def run_agent_cycle_activity(
         self,
         input: RunAgentCycleActivityInput,
     ) -> RunAgentCycleActivityResult:
+        if self._session_initializer is not None:
+            await self._session_initializer.ensure_primary_session(
+                input.run_id,
+                input.session_id,
+            )
+        latest_user_message_id = input.latest_user_message_id
+        if latest_user_message_id is not None and self._user_input_resolver is not None:
+            latest_user_message_id = await self._user_input_resolver.resolve_user_input(
+                input.run_id,
+                input.session_id,
+                latest_user_message_id,
+            )
         input_items: list[dict[str, object]] = []
         if input.completed_execution_id is not None:
-            input_items.append(
-                {
-                    "type": "execution_completion",
-                    "execution_id": input.completed_execution_id,
-                    "source_refs": [f"execution://{input.completed_execution_id}"],
-                }
-            )
+            if self._execution_input_resolver is not None:
+                input_items.append(
+                    await self._execution_input_resolver.resolve_execution_input(
+                        input.run_id,
+                        input.completed_execution_id,
+                    )
+                )
+            else:
+                input_items.append(
+                    {
+                        "type": "execution_completion",
+                        "execution_id": input.completed_execution_id,
+                        "source_refs": [f"execution://{input.completed_execution_id}"],
+                    }
+                )
         if input.approval_id is not None:
             input_items.append(
                 {
@@ -57,7 +109,7 @@ class RuntimeCycleActivities:
                     session_id=input.session_id,
                     worker_id=self._worker_id,
                     cycle_id=input.cycle_id,
-                    latest_user_message_id=input.latest_user_message_id,
+                    latest_user_message_id=latest_user_message_id,
                     input_items=input_items,
                 )
             ),

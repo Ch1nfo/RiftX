@@ -45,7 +45,7 @@ class RunWorkflowClient(Protocol):
 
     async def compact(self, run_id: str, max_history_items: int = 100) -> None: ...
 
-    async def append_user_message(self, run_id: str, message: str) -> None: ...
+    async def append_user_message(self, run_id: str, user_input_id: str) -> None: ...
 
     def workflow_id(self, run_id: str) -> str: ...
 
@@ -204,15 +204,15 @@ class RunApplicationService:
                 "empty_message",
                 "A run message must not be empty",
             )
-        await self._invoke_workflow(
-            run,
-            "send a message",
-            lambda target: self._workflow_client.append_user_message(target, normalized),
-        )
-        await self._event_repository.append(
+        event = await self._event_repository.append(
             run.id,
             "user.message_queued",
             {"message": normalized},
+        )
+        await self._invoke_workflow(
+            run,
+            "send a message",
+            lambda target: self._workflow_client.append_user_message(target, event.id),
         )
         return run
 

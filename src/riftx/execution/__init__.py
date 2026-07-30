@@ -2,7 +2,9 @@
 
 from .deferred import (
     DeferredExecutionDispatcher,
+    DeferredExecutionResolver,
     DeferredExecutionSpec,
+    RegistryDeferredExecutionResolver,
     build_tool_call_intent_id,
 )
 from .models import (
@@ -16,11 +18,13 @@ from .service import ExecutionService
 
 __all__ = [
     "DeferredExecutionDispatcher",
+    "DeferredExecutionResolver",
     "DeferredExecutionSpec",
     "ExecutionReconciler",
     "ExecutionService",
     "ExecutionWaitResult",
     "ExecutionWaitStatus",
+    "RegistryDeferredExecutionResolver",
     "SubmitExecutionRequest",
     "build_execution_key",
     "build_tool_call_intent_id",

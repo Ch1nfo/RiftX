@@ -17,9 +17,19 @@ from riftx.config import (
     ToolsConfig,
     WorkspaceConfig,
 )
-from riftx.persistence import SQLAlchemyNodeRepository
+from riftx.domain import Engagement, Objective, Run
+from riftx.persistence import (
+    SQLAlchemyAgentSessionRepository,
+    SQLAlchemyEngagementRepository,
+    SQLAlchemyNodeRepository,
+    SQLAlchemyRunEventRepository,
+    SQLAlchemyRunRepository,
+    SQLAlchemyTranscriptRepository,
+)
+from riftx.runtime.types import AgentSession
 from riftx.temporal import worker_runtime
 from riftx.temporal.runtime import TemporalRuntimeConfig
+from riftx.temporal.worker_runtime import _RunEventUserInputResolver
 
 
 @dataclass
@@ -77,8 +87,19 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     captured: dict[str, Any] = {}
     fake_worker = FakeWorker()
 
-    def fake_create_worker(client: object, activities: object, config: object) -> FakeWorker:
-        captured.update(client=client, activities=activities, config=config)
+    def fake_create_worker(
+        client: object,
+        activities: object,
+        config: object,
+        *,
+        runtime_cycle_activities: object | None = None,
+    ) -> FakeWorker:
+        captured.update(
+            client=client,
+            activities=activities,
+            config=config,
+            runtime_cycle_activities=runtime_cycle_activities,
+        )
         return fake_worker
 
     monkeypatch.setattr(worker_runtime, "create_worker", fake_create_worker)
@@ -99,6 +120,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         max_cached_workflows=11,
     )
     assert len(captured["activities"].registered()) > 0
+    assert captured["runtime_cycle_activities"] is not None
+    assert len(captured["runtime_cycle_activities"].registered()) == 1
     assert (tmp_path / "workspaces").is_dir()
     assert (tmp_path / "runner").is_dir()
     node = await SQLAlchemyNodeRepository(runtime.database.session_factory).get("worker-local")
@@ -128,10 +151,67 @@ async def test_build_temporal_worker_connects_with_configured_namespace(
         return client
 
     monkeypatch.setattr(worker_runtime.Client, "connect", fake_connect)
-    monkeypatch.setattr(worker_runtime, "create_worker", lambda *_: FakeWorker())
+    monkeypatch.setattr(worker_runtime, "create_worker", lambda *_, **__: FakeWorker())
 
     runtime = await worker_runtime.build_temporal_worker(runtime_config(tmp_path))
     try:
         assert calls == [("temporal.test:7233", "test-namespace")]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_user_input_resolver_moves_event_content_to_transcript_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker_runtime, "create_worker", lambda *_, **__: FakeWorker())
+    runtime = await worker_runtime.build_temporal_worker(
+        runtime_config(tmp_path),
+        temporal_client=object(),  # type: ignore[arg-type]
+    )
+    try:
+        await SQLAlchemyEngagementRepository(runtime.database.session_factory).create(
+            Engagement(id="engagement-1", name="Runtime input")
+        )
+        runs = SQLAlchemyRunRepository(runtime.database.session_factory)
+        await runs.create(
+            Run(
+                id="run-1",
+                engagement_id="engagement-1",
+                node_id="worker-local",
+                objective=Objective(description="Resume input"),
+                workspace_path=str(tmp_path / "workspaces" / "run-1"),
+            )
+        )
+        sessions = SQLAlchemyAgentSessionRepository(runtime.database.session_factory)
+        await sessions.create(
+            AgentSession(id="session-1", run_id="run-1", model_profile="test")
+        )
+        events = SQLAlchemyRunEventRepository(runtime.database.session_factory)
+        event = await events.append(
+            "run-1",
+            "user.message_queued",
+            {"message": "Continue safely"},
+        )
+        transcript = SQLAlchemyTranscriptRepository(runtime.database.session_factory)
+        resolver = _RunEventUserInputResolver(
+            events=events,
+            sessions=sessions,
+            transcript=transcript,
+        )
+
+        first = await resolver.resolve_user_input("run-1", "session-1", event.id)
+        retried = await resolver.resolve_user_input("run-1", "session-1", event.id)
+
+        assert retried == first
+        messages = await transcript.list_by_session("session-1")
+        assert len(messages) == 1
+        assert messages[0].content == "Continue safely"
+        assert messages[0].structured_content == {
+            "role": "user",
+            "content": "Continue safely",
+            "source_event_id": event.id,
+        }
     finally:
         await runtime.close()

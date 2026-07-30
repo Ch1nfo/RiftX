@@ -1,5 +1,6 @@
 """Agent Engine abstraction and provider adapters."""
 
+from .agent_factory import DeferredRuntimeAgentFactory
 from .errors import (
     AgentEngineError,
     InvalidProviderStateError,
@@ -25,6 +26,7 @@ __all__ = [
     "AgentEngineResumeRequest",
     "AgentEngineRun",
     "AgentEngineState",
+    "DeferredRuntimeAgentFactory",
     "InvalidProviderStateError",
     "OpenAIAgentsEngine",
     "ProviderStateSerializationError",

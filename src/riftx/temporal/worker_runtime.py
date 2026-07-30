@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from temporalio.worker import Worker
 
 from riftx import __version__
 from riftx.agent import AgentCycle, AgentRuntimeServices, SQLAlchemyCheckpointStore
+from riftx.application.errors import RepositoryConflictError
 from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
@@ -24,29 +26,220 @@ from riftx.application.services import (
     TerminalApplicationService,
 )
 from riftx.config import RiftXConfig
+from riftx.context import (
+    ContextApplicationService,
+    ContextCompiler,
+    ExecutionArtifactStore,
+    StableInstructionSource,
+    ToolResultProcessor,
+    TranscriptContextSource,
+    processed_tool_result_context_item,
+)
+from riftx.domain import (
+    ExecutorType,
+    MessageRole,
+    MessageType,
+    MessageVisibility,
+    TranscriptMessageDraft,
+)
+from riftx.execution import (
+    DeferredExecutionDispatcher,
+    ExecutionService,
+    RegistryDeferredExecutionResolver,
+)
 from riftx.models import RiftXModelProvider, load_models_config
 from riftx.persistence import (
     Database,
+    SQLAlchemyAgentCycleRepository,
+    SQLAlchemyAgentSessionRepository,
+    SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyProviderStateRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
+    SQLAlchemyRunLeaseRepository,
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
+    SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyTranscriptRepository,
 )
+from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.runtime.coordinator import RuntimeCoordinator
+from riftx.runtime.engine import DeferredRuntimeAgentFactory, OpenAIAgentsEngine
+from riftx.runtime.leases import DatabaseRunLeaseManager
+from riftx.runtime.types import AgentSession
 from riftx.skills import create_default_skill_registry
-from riftx.tools import ToolRegistry
+from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
 
 from .activities import RiftXActivities
-from .runtime import TemporalRuntimeConfig, create_worker
+from .runtime import TemporalRunClient, TemporalRuntimeConfig, create_worker
+from .runtime_activity import RuntimeCycleActivities
+
+
+class _PrimarySessionInitializer:
+    def __init__(
+        self,
+        *,
+        runs: SQLAlchemyRunRepository,
+        sessions: SQLAlchemyAgentSessionRepository,
+        default_model_profile: str,
+    ) -> None:
+        self._runs = runs
+        self._sessions = sessions
+        self._default_model_profile = default_model_profile
+
+    async def ensure_primary_session(self, run_id: str, session_id: str) -> None:
+        existing = await self._sessions.get(session_id)
+        if existing is not None:
+            if existing.run_id != run_id:
+                raise RepositoryConflictError(
+                    f"agent session {session_id!r} belongs to another Run"
+                )
+            return
+        run = await self._runs.get(run_id)
+        if run is None:
+            return
+        session = AgentSession(
+            id=session_id,
+            run_id=run_id,
+            model_profile=run.model_profile or self._default_model_profile,
+        )
+        try:
+            await self._sessions.create(session)
+        except RepositoryConflictError:
+            raced = await self._sessions.get(session_id)
+            if raced is None or raced.run_id != run_id:
+                raise
+
+
+class _RunEventUserInputResolver:
+    def __init__(
+        self,
+        *,
+        events: SQLAlchemyRunEventRepository,
+        sessions: SQLAlchemyAgentSessionRepository,
+        transcript: SQLAlchemyTranscriptRepository,
+    ) -> None:
+        self._events = events
+        self._sessions = sessions
+        self._transcript = transcript
+
+    async def resolve_user_input(
+        self,
+        run_id: str,
+        session_id: str,
+        user_input_id: str,
+    ) -> str:
+        existing = await self._find_message(session_id, user_input_id)
+        if existing is not None:
+            return existing
+        event = await self._events.get(user_input_id)
+        if event is None or event.run_id != run_id or event.event_type != "user.message_queued":
+            raise RepositoryConflictError(
+                f"user input {user_input_id!r} does not belong to Run {run_id!r}"
+            )
+        message = event.payload.get("message")
+        if not isinstance(message, str) or not message:
+            raise RepositoryConflictError(f"user input {user_input_id!r} has no message")
+        session = await self._sessions.get(session_id)
+        if session is None or session.run_id != run_id:
+            raise RepositoryConflictError(
+                f"agent session {session_id!r} does not belong to Run {run_id!r}"
+            )
+        draft = TranscriptMessageDraft(
+            agent_id=session.agent_type,
+            role=MessageRole.USER,
+            message_type=MessageType.USER_MESSAGE,
+            content=message,
+            structured_content={
+                "role": MessageRole.USER.value,
+                "content": message,
+                "source_event_id": user_input_id,
+            },
+            visibility=MessageVisibility.USER_VISIBLE,
+        )
+        try:
+            persisted = await self._transcript.append(session_id, draft)
+            return persisted.id
+        except RepositoryConflictError:
+            raced = await self._find_message(session_id, user_input_id)
+            if raced is None:
+                raise
+            return raced
+
+    async def _find_message(self, session_id: str, user_input_id: str) -> str | None:
+        for message in await self._transcript.list_by_session(session_id):
+            content = message.structured_content
+            if isinstance(content, dict) and content.get("source_event_id") == user_input_id:
+                return message.id
+        return None
+
+
+class _CompletedExecutionInputResolver:
+    def __init__(
+        self,
+        *,
+        executions: ExecutionService,
+        registry: ToolRegistry,
+        processor: ToolResultProcessor,
+    ) -> None:
+        self._executions = executions
+        self._registry = registry
+        self._processor = processor
+
+    async def resolve_execution_input(
+        self,
+        run_id: str,
+        execution_id: str,
+    ) -> dict[str, object]:
+        execution = (
+            await self._executions.wait(
+                execution_id,
+                timeout_seconds=0.1,
+            )
+        ).execution
+        if execution.run_id != run_id:
+            raise RepositoryConflictError(
+                f"execution {execution_id!r} does not belong to Run {run_id!r}"
+            )
+        tool = self._tool_definition(execution.tool_id, execution.executor_type)
+        item = processed_tool_result_context_item(
+            await self._processor.process(execution, tool)
+        )
+        return {
+            "id": item.id,
+            "type": "tool_result",
+            "content": item.content,
+            "source_refs": item.source_refs,
+            "priority": 100,
+            "required": True,
+            "compressible": False,
+            "removable": False,
+        }
+
+    def _tool_definition(
+        self,
+        tool_id: str | None,
+        executor_type: ExecutorType,
+    ) -> ToolDefinition:
+        if tool_id is not None and tool_id in self._registry.snapshot.definitions:
+            return self._registry.snapshot.definitions[tool_id]
+        return ToolDefinition.from_raw(
+            tool_id or "runtime_execution",
+            RawToolDefinition(
+                command=["runtime-execution"],
+                executor=executor_type,
+            ),
+        )
 
 
 @dataclass(slots=True)
@@ -90,6 +283,17 @@ async def build_temporal_worker(
         await database.create_schema()
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
+        worker_config = TemporalRuntimeConfig(
+            task_queue=config.temporal.task_queue,
+            workflow_id_prefix=config.temporal.workflow_id_prefix,
+            max_concurrent_activities=config.temporal.max_concurrent_activities,
+            max_cached_workflows=config.temporal.max_cached_workflows,
+        )
+        client = temporal_client or await Client.connect(
+            config.temporal.target,
+            namespace=config.temporal.namespace,
+        )
+        workflow_client = TemporalRunClient(client, worker_config)
 
         run_repository = SQLAlchemyRunRepository(database.session_factory)
         event_repository = SQLAlchemyRunEventRepository(database.session_factory)
@@ -104,6 +308,18 @@ async def build_temporal_worker(
             database.session_factory
         )
         runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
+        agent_session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
+        agent_cycle_repository = SQLAlchemyAgentCycleRepository(database.session_factory)
+        agent_step_repository = SQLAlchemyAgentStepRepository(database.session_factory)
+        provider_state_repository = SQLAlchemyProviderStateRepository(database.session_factory)
+        run_lease_repository = SQLAlchemyRunLeaseRepository(database.session_factory)
+        tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(
+            database.session_factory
+        )
+        transcript_repository = SQLAlchemyTranscriptRepository(database.session_factory)
+        context_compilation_repository = SQLAlchemyContextCompilationRepository(
+            database.session_factory
+        )
 
         node_service = NodeApplicationService(
             node_repository,
@@ -148,7 +364,15 @@ async def build_temporal_worker(
             events=event_repository,
             lease_duration=timedelta(seconds=config.runner.command_lease_seconds),
         )
-        process_supervisor = ProcessSupervisor(execution_repository, paths)
+        process_supervisor = ProcessSupervisor(
+            execution_repository,
+            paths,
+            on_completed=lambda execution: _signal_execution_completion(
+                workflow_client,
+                run_id=execution.run_id,
+                execution_id=execution.id,
+            ),
+        )
         await process_supervisor.recover()
         remote_supervisor = RemoteExecutionSupervisor(
             execution_repository,
@@ -191,6 +415,10 @@ async def build_temporal_worker(
             artifact_repository=artifact_repository,
             event_repository=event_repository,
             paths=paths,
+        )
+        tool_result_processor = ToolResultProcessor(
+            ExecutionArtifactStore(artifact_service),
+            config=config.execution_output,
         )
         finding_service = FindingApplicationService(
             run_repository=run_repository,
@@ -237,6 +465,68 @@ async def build_temporal_worker(
             max_history_items=config.agent.max_history_items,
             max_turns=config.agent.max_turns,
         )
+        tool_context = ToolContextManager(registry)
+        context_compiler = ContextCompiler(
+            sources=[
+                TranscriptContextSource(
+                    transcript_repository,
+                    max_items=config.agent.max_history_items or 100,
+                )
+            ],
+            stable_instruction_source=StableInstructionSource(),
+            tool_context=tool_context,
+            context_service=ContextApplicationService(context_compilation_repository),
+        )
+        execution_service = ExecutionService(
+            execution_repository=execution_repository,
+            session_repository=agent_session_repository,
+            tool_call_repository=tool_call_intent_repository,
+            runner=execution_runner,
+            event_repository=event_repository,
+        )
+        deferred_dispatcher = DeferredExecutionDispatcher(
+            tool_call_repository=tool_call_intent_repository,
+            execution_service=execution_service,
+            resolver=RegistryDeferredExecutionResolver(
+                runs=run_repository,
+                registry=registry,
+            ),
+        )
+        runtime_coordinator = RuntimeCoordinator(
+            run_repository=run_repository,
+            session_repository=agent_session_repository,
+            cycle_repository=agent_cycle_repository,
+            step_repository=agent_step_repository,
+            provider_state_repository=provider_state_repository,
+            event_repository=event_repository,
+            lease_manager=DatabaseRunLeaseManager(run_lease_repository),
+            context_compiler=context_compiler,
+            agent_engine=OpenAIAgentsEngine(
+                DeferredRuntimeAgentFactory(),
+                model_provider=model_provider,
+            ),
+            transcript_repository=transcript_repository,
+            deferred_execution_dispatcher=deferred_dispatcher,
+        )
+        runtime_cycle_activities = RuntimeCycleActivities(
+            runtime_coordinator,
+            worker_id=config.runner.node_id,
+            session_initializer=_PrimarySessionInitializer(
+                runs=run_repository,
+                sessions=agent_session_repository,
+                default_model_profile=profile,
+            ),
+            user_input_resolver=_RunEventUserInputResolver(
+                events=event_repository,
+                sessions=agent_session_repository,
+                transcript=transcript_repository,
+            ),
+            execution_input_resolver=_CompletedExecutionInputResolver(
+                executions=execution_service,
+                registry=registry,
+                processor=tool_result_processor,
+            ),
+        )
         activities = RiftXActivities(
             run_repository=run_repository,
             event_repository=event_repository,
@@ -252,18 +542,13 @@ async def build_temporal_worker(
             report_service=report_service,
             session_factory=database.session_factory,
         )
-        client = temporal_client or await Client.connect(
-            config.temporal.target,
-            namespace=config.temporal.namespace,
-        )
-        worker_config = TemporalRuntimeConfig(
-            task_queue=config.temporal.task_queue,
-            workflow_id_prefix=config.temporal.workflow_id_prefix,
-            max_concurrent_activities=config.temporal.max_concurrent_activities,
-            max_cached_workflows=config.temporal.max_cached_workflows,
-        )
         return TemporalWorkerRuntime(
-            worker=create_worker(client, activities, worker_config),
+            worker=create_worker(
+                client,
+                activities,
+                worker_config,
+                runtime_cycle_activities=runtime_cycle_activities,
+            ),
             database=database,
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
@@ -287,3 +572,19 @@ def _prepare_local_paths(config: RiftXConfig) -> None:
         raw_path = config.database.url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
             Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
+async def _signal_execution_completion(
+    workflow_client: TemporalRunClient,
+    *,
+    run_id: str,
+    execution_id: str,
+) -> None:
+    for attempt in range(3):
+        try:
+            await workflow_client.execution_completed(run_id, execution_id)
+            return
+        except Exception:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2**attempt)

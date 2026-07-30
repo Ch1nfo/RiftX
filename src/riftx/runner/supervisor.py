@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import signal
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class ProcessSupervisor:
         shell_executor: ShellExecutor | None = None,
         inspector: ProcessInspector | None = None,
         termination_grace_seconds: float = 2.0,
+        on_completed: Callable[[Execution], Awaitable[None]] | None = None,
     ) -> None:
         self._repository = repository
         self._paths = paths
@@ -54,6 +56,7 @@ class ProcessSupervisor:
         self._shell_executor = shell_executor or ShellExecutor(self._process_executor)
         self._inspector = inspector or ProcessInspector()
         self._termination_grace_seconds = termination_grace_seconds
+        self._on_completed = on_completed
         self._managed: dict[str, _ManagedExecution] = {}
 
     async def start(self, request: ExecutionLaunchRequest) -> Execution:
@@ -287,6 +290,8 @@ class ProcessSupervisor:
             target = result.status
         execution.transition_to(target, exit_code=result.exit_code)
         await self._repository.save(execution)
+        if self._on_completed is not None:
+            await self._on_completed(execution)
 
 
 def _managed_task(managed: _ManagedExecution) -> asyncio.Task[None]:

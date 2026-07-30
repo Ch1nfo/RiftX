@@ -9,6 +9,7 @@ from temporalio.worker import Worker
 
 from .activities import RiftXActivities
 from .models import RunWorkflowInput, RunWorkflowResult, RunWorkflowStatus
+from .runtime_activity import RuntimeCycleActivities
 from .workflow import RiftXRunWorkflow
 
 
@@ -42,11 +43,11 @@ class TemporalRunClient:
     async def resume(self, run_id: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.resume)
 
-    async def approve(self, run_id: str, call_id: str) -> None:
-        await self.get_handle(run_id).signal(RiftXRunWorkflow.approve, call_id)
+    async def approve(self, run_id: str, approval_id: str) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.approve, approval_id)
 
-    async def reject(self, run_id: str, call_id: str) -> None:
-        await self.get_handle(run_id).signal(RiftXRunWorkflow.reject, call_id)
+    async def reject(self, run_id: str, approval_id: str) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.reject, approval_id)
 
     async def execution_completed(self, run_id: str, execution_id: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.execution_completed, execution_id)
@@ -77,12 +78,19 @@ def create_worker(
     client: Client,
     activities: RiftXActivities,
     config: TemporalRuntimeConfig,
+    *,
+    runtime_cycle_activities: RuntimeCycleActivities | None = None,
 ) -> Worker:
+    registered = activities.registered(
+        include_runtime_cycle_compat=runtime_cycle_activities is None
+    )
+    if runtime_cycle_activities is not None:
+        registered.extend(runtime_cycle_activities.registered())
     return Worker(
         client,
         task_queue=config.task_queue,
         workflows=[RiftXRunWorkflow],
-        activities=activities.registered(),
+        activities=registered,
         max_concurrent_activities=config.max_concurrent_activities,
         max_cached_workflows=config.max_cached_workflows,
     )

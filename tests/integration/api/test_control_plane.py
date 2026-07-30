@@ -492,6 +492,12 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             assert events.json()["items"][-3]["payload"]["message"] == (
                 "Focus on the HTTP endpoint"
             )
+            message_event = next(
+                item
+                for item in events.json()["items"]
+                if item["event_type"] == "user.message_queued"
+            )
+            assert ("message", run_id, message_event["id"]) in runtime.workflow.calls
     finally:
         await runtime.control_plane.close()
 
@@ -721,7 +727,7 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
         assert approved.status_code == 200
         assert approved.json()["status"] == "approved"
         assert await runtime.approval_repository.is_granted(str(run["id"]), "python")
-        assert ("approve", str(run["id"]), "sdk-call-1") in runtime.workflow.calls
+        assert ("approve", str(run["id"]), "approval-1") in runtime.workflow.calls
 
         rejected_call = ToolCall(
             id="tool-call-2",
@@ -748,7 +754,7 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
         )
         assert rejected.status_code == 200
         assert rejected.json()["reason"] == "Outside authorized scope"
-        assert ("reject", str(run["id"]), "sdk-call-2") in runtime.workflow.calls
+        assert ("reject", str(run["id"]), "approval-2") in runtime.workflow.calls
 
     await runtime.control_plane.close()
 

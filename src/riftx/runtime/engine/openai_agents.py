@@ -57,6 +57,7 @@ class OpenAIAgentsEngine:
             result,
             provider=self._provider,
             model=request.model,
+            tool_schemas=_tool_schemas(request.context),
         )
 
     async def resume(self, request: AgentEngineResumeRequest) -> AgentEngineRun:
@@ -96,6 +97,7 @@ class OpenAIAgentsEngine:
             provider=self._provider,
             model=request.model,
             previous_response_id=request.state.previous_response_id,
+            tool_schemas=_tool_schemas(request.context),
         )
 
     def _run_config(self) -> RunConfig:
@@ -122,11 +124,13 @@ class OpenAIAgentsEngineRun:
         provider: str,
         model: str,
         previous_response_id: str | None = None,
+        tool_schemas: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self._result = result
         self._provider = provider
         self._model = model
         self._previous_response_id = previous_response_id
+        self._tool_schemas = tool_schemas or {}
         self._events_started = False
         self._cancelled = False
 
@@ -144,7 +148,10 @@ class OpenAIAgentsEngineRun:
         failed = False
         try:
             async for sdk_event in self._result.stream_events():
-                for event_type, data in _translate_sdk_event(sdk_event):
+                for event_type, data in _translate_sdk_event(
+                    sdk_event,
+                    tool_schemas=self._tool_schemas,
+                ):
                     yield AgentEngineEvent(
                         sequence=sequence,
                         event_type=event_type,
@@ -210,7 +217,11 @@ class OpenAIAgentsEngineRun:
         )
 
 
-def _translate_sdk_event(event: Any) -> list[tuple[AgentEngineEventType, dict[str, object]]]:
+def _translate_sdk_event(
+    event: Any,
+    *,
+    tool_schemas: dict[str, dict[str, object]] | None = None,
+) -> list[tuple[AgentEngineEventType, dict[str, object]]]:
     event_kind = getattr(event, "type", None)
     if event_kind == "raw_response_event":
         data = getattr(event, "data", None)
@@ -250,12 +261,20 @@ def _translate_sdk_event(event: Any) -> list[tuple[AgentEngineEventType, dict[st
             return [(AgentEngineEventType.ASSISTANT_MESSAGE, payload)]
         if name == "tool_called":
             tool_name = _tool_name(item)
-            payload = _tool_call_payload(item, payload, tool_name=tool_name)
+            schema = (tool_schemas or {}).get(tool_name or "", {})
+            payload = _tool_call_payload(
+                item,
+                payload,
+                tool_name=tool_name,
+                schema=schema,
+            )
             event_type = (
                 AgentEngineEventType.PLAN_UPDATE
                 if tool_name == "update_plan"
                 else AgentEngineEventType.SUBAGENT_REQUESTED
                 if tool_name in {"delegate", "spawn_subagent"}
+                else AgentEngineEventType.TOOL_CALL_STARTED
+                if not _is_deferred_execution_schema(tool_name, schema)
                 else AgentEngineEventType.TOOL_CALL_READY
             )
             return [(event_type, payload)]
@@ -270,7 +289,11 @@ def _tool_name(item: Any) -> str | None:
 
 
 def _tool_call_payload(
-    item: Any, payload: dict[str, object], *, tool_name: str | None
+    item: Any,
+    payload: dict[str, object],
+    *,
+    tool_name: str | None,
+    schema: dict[str, object],
 ) -> dict[str, object]:
     if set(payload) == {"value"}:
         payload = {}
@@ -287,7 +310,47 @@ def _tool_call_payload(
         payload.setdefault("tool_id", tool_name)
     if isinstance(arguments, dict | str):
         payload.setdefault("arguments", arguments)
+    metadata = schema.get("x-riftx")
+    if isinstance(metadata, dict):
+        approval_level = metadata.get("approval_level")
+        payload.setdefault("approval_level", approval_level or "sensitive")
+        payload.setdefault("approval_required", approval_level != "never")
     return payload
+
+
+def _tool_schemas(context: object | None) -> dict[str, dict[str, object]]:
+    schemas = getattr(context, "available_tools", None)
+    if not isinstance(schemas, list):
+        return {}
+    return {
+        str(schema["name"]): schema
+        for schema in schemas
+        if isinstance(schema, dict) and isinstance(schema.get("name"), str)
+    }
+
+
+def _is_deferred_execution_schema(
+    tool_name: str | None,
+    schema: dict[str, object],
+) -> bool:
+    if tool_name in {"run_registered_tool", "run_shell"}:
+        return True
+    if not schema:
+        return tool_name not in {
+            "search_tools",
+            "list_tools",
+            "get_tool",
+            "get_execution",
+            "wait_execution",
+            "cancel_execution",
+            "read_artifact",
+            "complete_run",
+        }
+    metadata = schema.get("x-riftx")
+    return isinstance(metadata, dict) and metadata.get("execution_type") in {
+        "process",
+        "shell",
+    }
 
 
 def _collect_usage(responses: list[Any]) -> dict[str, object]:

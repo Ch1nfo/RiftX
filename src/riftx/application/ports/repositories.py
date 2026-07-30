@@ -109,6 +109,8 @@ class RunEventRepository(Protocol):
         payload: dict[str, object] | None = None,
     ) -> RunEvent: ...
 
+    async def get(self, event_id: str) -> RunEvent | None: ...
+
     async def list_after(
         self,
         run_id: str,

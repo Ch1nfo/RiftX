@@ -283,15 +283,17 @@ class RiftXActivities:
         )
         return CleanupRunResult()
 
-    def registered(self) -> list[object]:
-        return [
+    def registered(self, *, include_runtime_cycle_compat: bool = True) -> list[object]:
+        activities = [
             self.prepare_run_activity,
             self.agent_cycle_activity,
-            self.run_agent_cycle_activity,
             self.compact_context_activity,
             self.generate_report_activity,
             self.cleanup_run_activity,
         ]
+        if include_runtime_cycle_compat:
+            activities.append(self.run_agent_cycle_activity)
+        return activities
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self._run_repository.get(run_id)

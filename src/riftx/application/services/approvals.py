@@ -18,9 +18,9 @@ from riftx.tools import ToolRegistry
 
 
 class ApprovalWorkflowClient(Protocol):
-    async def approve(self, run_id: str, call_id: str) -> None: ...
+    async def approve(self, run_id: str, approval_id: str) -> None: ...
 
-    async def reject(self, run_id: str, call_id: str) -> None: ...
+    async def reject(self, run_id: str, approval_id: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,9 +214,9 @@ class ApprovalApplicationService:
 
         try:
             if target is ApprovalStatus.APPROVED:
-                await self._workflow_client.approve(approval.run_id, tool_call.sdk_call_id)
+                await self._workflow_client.approve(approval.run_id, approval.id)
             else:
-                await self._workflow_client.reject(approval.run_id, tool_call.sdk_call_id)
+                await self._workflow_client.reject(approval.run_id, approval.id)
         except Exception as exc:
             raise ServiceUnavailableError(
                 "temporal_unavailable",

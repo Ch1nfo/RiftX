@@ -454,6 +454,11 @@ class SQLAlchemyRunEventRepository:
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not append event for run {run_id!r}") from exc
 
+    async def get(self, event_id: str) -> RunEvent | None:
+        async with self._session_factory() as session:
+            record = await session.get(RunEventRecord, event_id)
+        return event_from_record(record) if record is not None else None
+
     async def list_after(
         self,
         run_id: str,

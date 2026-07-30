@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from riftx.domain import Engagement, Execution, ExecutionStatus, ExecutorType, Objective, Run
@@ -29,6 +30,8 @@ def wait_for_nonempty_file(path: Path, deadline_seconds: float = 2.0) -> None:
 
 async def make_supervisor(
     tmp_path: Path,
+    *,
+    on_completed: Callable[[Execution], Awaitable[None]] | None = None,
 ) -> tuple[Database, SQLAlchemyExecutionRepository, ProcessSupervisor]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}")
     await database.create_schema()
@@ -49,6 +52,7 @@ async def make_supervisor(
         executions,
         RunnerPaths(tmp_path / "state"),
         termination_grace_seconds=0.1,
+        on_completed=on_completed,
     )
     return database, executions, supervisor
 
@@ -103,6 +107,26 @@ async def test_supervisor_persists_lifecycle_and_reads_output_by_cursor(
     assert first.stderr.data + second.stderr.data == b"stderr: diagnostic\n"
     assert second.stdout.eof is True
     assert second.stderr.eof is True
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_supervisor_notifies_after_persisting_completion(tmp_path: Path) -> None:
+    completed_ids: list[str] = []
+
+    async def notify(execution: Execution) -> None:
+        completed_ids.append(execution.id)
+
+    database, executions, supervisor = await make_supervisor(
+        tmp_path,
+        on_completed=notify,
+    )
+    started = await supervisor.start(launch_request(tmp_path, "notify-key", "success"))
+    completed = await supervisor.wait(started.id)
+
+    assert completed_ids == [completed.id]
+    persisted = await executions.get(completed.id)
+    assert persisted is not None and persisted.status is ExecutionStatus.EXITED
     await supervisor.close()
     await database.dispose()
 
