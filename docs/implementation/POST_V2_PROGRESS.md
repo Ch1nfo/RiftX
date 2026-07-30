@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-03 is unblocked.
+Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-04 is unblocked.
 
 ## Completed
 
@@ -21,6 +21,7 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-03 is unblocke
 - [x] CTX-05 Stable Instructions
 - [x] DUR-01 Temporal Durable Cycle
 - [x] DUR-02 Approval 与 User Input 恢复
+- [x] DUR-03 PTY Runtime 与所有权
 
 ## Task Record
 
@@ -387,6 +388,35 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-03 is unblocke
   - Interactive PTY ownership and user takeover are intentionally owned by DUR-03.
   - Provider-neutral checkpoint compaction and model switching remain DUR-04 scope.
 - Next dependency: DUR-03 is unblocked.
+
+### DUR-03
+
+- Branch: `codex/dur-03-pty-runtime`
+- Commits:
+  - `4a5b881 feat(terminal): enforce shared read-only ownership`
+  - `ace680e feat(terminal): persist takeover runtime state`
+  - `3ff2e89 feat(terminal): archive takeover streams and summaries`
+  - `ca7c08e feat(runtime): yield durable interactive terminals`
+  - `e3440cb test(terminal): reject agent writes during takeover`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `483 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `a9c3e5f7b102_add_terminal_runtime_state.py`
+- Core delivery:
+  - Unix PTY and Windows ConPTY controllers retain bounded read, write, resize, interrupt, and close operations while Terminal ownership now exposes `AGENT`, `USER`, and `SHARED_READ_ONLY`; legacy `shared` rows remain readable with read-only semantics.
+  - TerminalSession durably stores Runner, shell, cwd, output/takeover cursors, takeover start time, and final Transcript Artifact ID. Runner reconstruction marks unattached PTY/ConPTY sessions `LOST` without trying to reattach them.
+  - User takeover immediately rejects Agent writes while preserving Agent reads. Release archives the complete takeover character delta as an immutable Artifact and emits a bounded `TerminalTakeoverSummary` before returning ownership to the Agent.
+  - Terminal close archives the complete character stream as an Artifact; raw terminal bytes never enter the ordinary Transcript.
+  - Runtime-selected PTY tools persist the original ToolCallIntent, launch deterministic terminal and execution IDs through TerminalService, yield `TERMINAL_OPEN`, reuse the same terminal on Activity retry, and signal Temporal with the terminal Execution ID after completion.
+- Required scenarios:
+  - Interactive PTY fixture, Ctrl+C, resize, user takeover, rejected Agent writes, user release and summary, Runtime retry, and Runner restart to `LOST` are covered by executable tests.
+- Known limitations:
+  - Real ConPTY and PowerShell smoke tests remain host-dependent and were skipped on this macOS host; mocked ConPTY lifecycle tests passed in the full suite.
+  - Provider-neutral checkpoint compaction and model switching are intentionally owned by DUR-04.
+- Next dependency: DUR-04 is unblocked.
 
 ## Architecture Deviations
 
