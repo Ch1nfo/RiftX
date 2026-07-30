@@ -146,6 +146,19 @@ class HooksConfig(_ConfigModel):
     failure_policy: str = Field(default="warn", pattern="^(warn|block)$")
 
 
+class MCPCircuitBreakerConfig(_ConfigModel):
+    failure_threshold: int = Field(default=3, ge=1, le=1000)
+    cooldown_seconds: float = Field(default=60, gt=0)
+
+
+class MCPConfig(_ConfigModel):
+    max_concurrent_per_server: int = Field(default=2, ge=1, le=1000)
+    max_concurrent_total: int = Field(default=16, ge=1, le=10_000)
+    circuit_breaker: MCPCircuitBreakerConfig = Field(
+        default_factory=MCPCircuitBreakerConfig
+    )
+
+
 class RiftXConfig(_ConfigModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -161,6 +174,7 @@ class RiftXConfig(_ConfigModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     subagents: SubagentConfig = Field(default_factory=SubagentConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
@@ -195,6 +209,10 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_SUBAGENT_MAX_TOTAL_PER_RUN": ("subagents", "max_total_per_run"),
     "RIFTX_HOOK_DEFAULT_TIMEOUT_SECONDS": ("hooks", "default_timeout_seconds"),
     "RIFTX_HOOK_FAILURE_POLICY": ("hooks", "failure_policy"),
+    "RIFTX_MCP_MAX_CONCURRENT_PER_SERVER": ("mcp", "max_concurrent_per_server"),
+    "RIFTX_MCP_MAX_CONCURRENT_TOTAL": ("mcp", "max_concurrent_total"),
+    "RIFTX_MCP_FAILURE_THRESHOLD": ("mcp", "circuit_breaker", "failure_threshold"),
+    "RIFTX_MCP_COOLDOWN_SECONDS": ("mcp", "circuit_breaker", "cooldown_seconds"),
 }
 
 

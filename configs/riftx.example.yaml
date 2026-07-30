@@ -58,3 +58,19 @@ models:
 agent:
   max_history_items: 100
   max_turns: 10
+
+subagents:
+  max_depth: 1
+  max_parallel_per_run: 4
+  max_total_per_run: 20
+
+hooks:
+  default_timeout_seconds: 10
+  failure_policy: warn
+
+mcp:
+  max_concurrent_per_server: 2
+  max_concurrent_total: 16
+  circuit_breaker:
+    failure_threshold: 3
+    cooldown_seconds: 60

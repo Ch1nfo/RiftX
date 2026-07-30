@@ -116,6 +116,10 @@ def test_example_runtime_config_is_valid(tmp_path: Path) -> None:
     assert config.execution_output.preview_tail_bytes == 8192
     assert config.execution_output.max_context_tokens == 2000
     assert config.approval.default_mode.value == "balanced"
+    assert config.mcp.max_concurrent_per_server == 2
+    assert config.mcp.max_concurrent_total == 16
+    assert config.mcp.circuit_breaker.failure_threshold == 3
+    assert config.mcp.circuit_breaker.cooldown_seconds == 60
 
 
 def test_execution_output_config_rejects_unsafe_limits(tmp_path: Path) -> None:
