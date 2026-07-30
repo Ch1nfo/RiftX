@@ -20,6 +20,10 @@ RUNTIME_TABLES = {
     "user_input_requests",
     "web_documents",
     "web_document_chunks",
+    "web_search_queries",
+    "web_search_results",
+    "web_research_notes",
+    "web_research_packets",
     "source_references",
 }
 

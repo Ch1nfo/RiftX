@@ -35,6 +35,10 @@ EXPECTED_TABLES = {
     "user_input_requests",
     "web_document_chunks",
     "web_documents",
+    "web_research_notes",
+    "web_research_packets",
+    "web_search_queries",
+    "web_search_results",
     "working_memories",
 }
 
@@ -98,6 +102,31 @@ def test_web_source_registry_preserves_canonical_document_contract() -> None:
         "source_type",
         "content_hash",
     } <= set(Base.metadata.tables["source_references"].columns.keys())
+
+
+def test_web_research_schema_separates_candidates_from_sources() -> None:
+    assert {
+        "query",
+        "search_type",
+        "provider",
+        "options_json",
+        "status",
+    } <= set(Base.metadata.tables["web_search_queries"].columns.keys())
+    assert "query_id" in Base.metadata.tables["web_search_results"].columns
+    assert "document_id" not in Base.metadata.tables["web_search_results"].columns
+    assert {
+        "document_id",
+        "source_id",
+        "evidence_spans_json",
+        "content_trust",
+    } <= set(Base.metadata.tables["web_research_notes"].columns.keys())
+    assert {
+        "claims_json",
+        "source_ids_json",
+        "document_ids_json",
+        "artifact_ids_json",
+        "content_trust",
+    } <= set(Base.metadata.tables["web_research_packets"].columns.keys())
 
 
 def test_context_compilation_table_records_manifest_and_actual_usage() -> None:

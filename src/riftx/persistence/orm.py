@@ -685,6 +685,86 @@ class SourceReferenceRecord(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
 
+class WebSearchQueryRecord(Base):
+    __tablename__ = "web_search_queries"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    search_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    options_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class WebSearchResultRecord(Base):
+    __tablename__ = "web_search_results"
+    __table_args__ = (
+        UniqueConstraint("query_id", "normalized_url", name="uq_web_search_result_url"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    query_id: Mapped[str] = mapped_column(
+        ForeignKey("web_search_queries.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
+    snippet: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    provider: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class WebResearchNoteRecord(Base):
+    __tablename__ = "web_research_notes"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("web_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("source_references.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    key_points_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence_spans_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    missing_information_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    model_profile: Mapped[str | None] = mapped_column(String(255))
+    content_trust: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class WebResearchPacketRecord(Base):
+    __tablename__ = "web_research_packets"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    claims_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    source_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    disagreements_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    unresolved_questions_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    search_query_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    document_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    content_trust: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
 

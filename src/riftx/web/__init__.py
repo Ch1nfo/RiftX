@@ -22,6 +22,23 @@ from .models import (
     WebSourceClass,
 )
 from .repository import WebSourceRepository
+from .research import (
+    UNTRUSTED_EXTERNAL_CONTENT,
+    DeterministicFocusedExtractor,
+    DeterministicQueryPlanner,
+    PlannedSearchQuery,
+    ResearchClaim,
+    ResearchRequest,
+    SearchPlan,
+    SourceDisagreement,
+    WebContextPack,
+    WebExtractionRequest,
+    WebResearchNote,
+    WebResearchPacket,
+    WebResearchPipeline,
+    packet_to_context,
+    rank_search_results,
+)
 from .search import (
     OpenAIHostedSearchProvider,
     SearchFreshness,
@@ -62,4 +79,19 @@ __all__ = [
     "WebFetchError",
     "WebSourceClass",
     "WebSourceRepository",
+    "UNTRUSTED_EXTERNAL_CONTENT",
+    "DeterministicFocusedExtractor",
+    "DeterministicQueryPlanner",
+    "PlannedSearchQuery",
+    "ResearchClaim",
+    "ResearchRequest",
+    "SearchPlan",
+    "SourceDisagreement",
+    "WebContextPack",
+    "WebExtractionRequest",
+    "WebResearchNote",
+    "WebResearchPacket",
+    "WebResearchPipeline",
+    "packet_to_context",
+    "rank_search_results",
 ]
