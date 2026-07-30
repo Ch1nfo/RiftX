@@ -101,6 +101,16 @@ async def test_model_inference_cannot_directly_become_engagement_fact(
 
         assert rejected.action is FactPromotionAction.REJECTED
         assert await facts.list_for_engagement("engagement-1") == []
+
+        confirmed = await promotion.promote(
+            _candidate(
+                "user-confirmed",
+                value="nginx 1.24",
+                source=EvidenceSource.MODEL_INFERENCE,
+                user_confirmed=True,
+            )
+        )
+        assert confirmed.action is FactPromotionAction.CREATED
     finally:
         await database.dispose()
 
