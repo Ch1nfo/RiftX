@@ -104,6 +104,14 @@ class _ContextUsageRecorder(Protocol):
     ) -> object: ...
 
 
+class SubagentBatchExecutor(Protocol):
+    async def execute(
+        self,
+        parent_session_id: str,
+        requests: list[dict[str, object]],
+    ) -> object: ...
+
+
 class RuntimeCoordinator:
     def __init__(
         self,
@@ -126,6 +134,7 @@ class RuntimeCoordinator:
         user_input_repository: SQLAlchemyUserInputRequestRepository | None = None,
         terminal_service: TerminalApplicationService | None = None,
         hooks: HookBus | None = None,
+        subagent_executor: SubagentBatchExecutor | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -152,6 +161,7 @@ class RuntimeCoordinator:
         self._user_inputs = user_input_repository
         self._terminal_service = terminal_service
         self._hooks = hooks
+        self._subagent_executor = subagent_executor
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -337,6 +347,7 @@ class RuntimeCoordinator:
             waiting_execution_id: str | None = None
             waiting_approval_id: str | None = None
             pending_yield_reason: YieldReason | None = None
+            subagent_requests: list[dict[str, object]] = []
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
@@ -509,6 +520,8 @@ class RuntimeCoordinator:
                                 "one Runtime cycle cannot defer multiple Executions"
                             )
                         waiting_execution_id = execution_id
+                if event.event_type is AgentEngineEventType.SUBAGENT_REQUESTED:
+                    subagent_requests.append(dict(event.data))
                 if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
                     "requires_user_input"
                 ):
@@ -574,6 +587,21 @@ class RuntimeCoordinator:
                             "tool_call_count": cycle.tool_call_count,
                         },
                     )
+                    if subagent_requests:
+                        if self._subagent_executor is None:
+                            raise DomainError(
+                                "Subagent delegation requested but no executor is configured"
+                            )
+                        await self._subagent_executor.execute(
+                            session.id,
+                            subagent_requests,
+                        )
+                        return await self._yield_cycle(
+                            run.id,
+                            session,
+                            cycle,
+                            YieldReason.CYCLE_LIMIT_REACHED,
+                        )
                     if approval_required:
                         reason = YieldReason.APPROVAL_REQUIRED
                     elif pending_tool:

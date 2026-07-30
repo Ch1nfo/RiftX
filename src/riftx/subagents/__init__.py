@@ -10,10 +10,12 @@ from .models import (
     SubagentStatus,
 )
 from .orchestrator import SubagentOrchestrator, SubagentTaskRunner
+from .runtime import ModelDelegationExecutor
 
 __all__ = [
     "DelegationPacket",
     "FindingCandidate",
+    "ModelDelegationExecutor",
     "PrimaryMergePacket",
     "PrimaryMergeResult",
     "PrimaryResultMerger",

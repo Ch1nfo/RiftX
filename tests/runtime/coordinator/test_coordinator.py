@@ -88,6 +88,17 @@ class FakeEngine:
         return self.run
 
 
+class FakeSubagentBatchExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict[str, object]]]] = []
+
+    async def execute(
+        self,
+        parent_session_id: str,
+        requests: list[dict[str, object]],
+    ) -> None:
+        self.calls.append((parent_session_id, requests))
+
 def event(sequence: int, event_type: AgentEngineEventType, **data: object) -> AgentEngineEvent:
     return AgentEngineEvent(sequence=sequence, event_type=event_type, data=data)
 
@@ -102,6 +113,7 @@ async def build_runtime(
     observable_context: bool = False,
     workspace_path: Path | None = None,
     hooks: HookBus | None = None,
+    subagent_executor: object | None = None,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
@@ -147,10 +159,58 @@ async def build_runtime(
         context_compiler=context_compiler,
         agent_engine=engine,
         hooks=hooks,
+        **(
+            {"subagent_executor": subagent_executor}
+            if subagent_executor is not None
+            else {}
+        ),
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_three_delegations_execute_as_one_batch_then_primary_continues(
+    tmp_path: Path,
+) -> None:
+    executor = FakeSubagentBatchExecutor()
+    delegation_events = [
+        event(
+            index,
+            AgentEngineEventType.SUBAGENT_REQUESTED,
+            call_id=f"delegate-{index}",
+            arguments={"task": f"Inspect asset {index}"},
+        )
+        for index in range(1, 4)
+    ]
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [*delegation_events, event(4, AgentEngineEventType.RUN_COMPLETED)],
+        subagent_executor=executor,
+    )
+
+    delegated = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            cycle_id="delegate-cycle",
+        )
+    )
+    engine.run = FakeEngineRun([event(1, AgentEngineEventType.RUN_COMPLETED)])
+    continued = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            cycle_id="continue-cycle",
+        )
+    )
+
+    assert delegated.yield_reason is YieldReason.CYCLE_LIMIT_REACHED
+    assert executor.calls == [("session-1", [item.data for item in delegation_events])]
+    assert continued.yield_reason is YieldReason.RUN_COMPLETED
+    await database.dispose()
 
 
 async def test_runtime_hooks_wrap_context_and_model_lifecycle(tmp_path: Path) -> None:
