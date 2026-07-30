@@ -6,6 +6,7 @@ import asyncio
 import os
 import platform
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -92,6 +93,7 @@ class TerminalSupervisor:
         termination_grace_seconds: float = 2.0,
         native_backend: NativeTerminalBackend | None = None,
         platform_name: str | None = None,
+        on_completed: Callable[[Execution], Awaitable[None]] | None = None,
     ) -> None:
         self._terminals = terminal_repository
         self._executions = execution_repository
@@ -100,6 +102,7 @@ class TerminalSupervisor:
         self._termination_grace_seconds = termination_grace_seconds
         self._native_backend = native_backend
         self._platform_name = platform_name or os.name
+        self._on_completed = on_completed
         self._managed: dict[str, _ManagedTerminal] = {}
 
     async def start(self, request: TerminalLaunchRequest) -> TerminalSession:
@@ -115,6 +118,8 @@ class TerminalSupervisor:
             id=execution_id,
             execution_key=f"terminal:{session_id}",
             run_id=request.run_id,
+            session_id=request.agent_session_id,
+            tool_call_id=request.tool_call_id,
             node_id=request.node_id,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
@@ -130,10 +135,14 @@ class TerminalSupervisor:
         )
         execution, created = await self._executions.create_if_absent(execution)
         if not created:
-            raise ApplicationConflictError(
-                "terminal_execution_exists",
-                f"Terminal execution {execution.execution_key!r} already exists",
-            )
+            existing_terminal = await self._terminals.get_by_execution(execution.id)
+            if existing_terminal is not None:
+                return existing_terminal
+            if execution.status is not ExecutionStatus.CREATED:
+                raise ApplicationConflictError(
+                    "terminal_execution_exists",
+                    f"Terminal execution {execution.execution_key!r} already exists",
+                )
         terminal = TerminalSession(
             id=session_id,
             run_id=request.run_id,
@@ -382,6 +391,8 @@ class TerminalSupervisor:
                 "requested": managed.close_requested,
             },
         )
+        if execution is not None and self._on_completed is not None:
+            await self._on_completed(execution)
         self._managed.pop(session_id, None)
 
     def _backend(self) -> NativeTerminalBackend:

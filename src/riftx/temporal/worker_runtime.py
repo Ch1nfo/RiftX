@@ -421,6 +421,11 @@ async def build_temporal_worker(
             execution_repository=execution_repository,
             event_repository=event_repository,
             paths=paths,
+            on_completed=lambda execution: _signal_execution_completion(
+                workflow_client,
+                run_id=execution.run_id,
+                execution_id=execution.id,
+            ),
         )
         await terminal_supervisor.recover(node_id=config.runner.node_id)
         remote_terminal = RemoteTerminalSupervisor(
@@ -547,6 +552,7 @@ async def build_temporal_worker(
                 event_repository=event_repository,
             ),
             user_input_repository=user_input_repository,
+            terminal_service=terminal_service,
         )
         runtime_cycle_activities = RuntimeCycleActivities(
             runtime_coordinator,

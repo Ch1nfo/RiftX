@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from time import monotonic
@@ -9,10 +10,15 @@ from typing import Protocol, cast
 
 from riftx.application.errors import EntityNotFoundError
 from riftx.application.ports import ApprovalRepository
-from riftx.application.services import RuntimeApprovalRequestRecorder
+from riftx.application.services import (
+    CreateTerminal,
+    RuntimeApprovalRequestRecorder,
+    TerminalApplicationService,
+)
 from riftx.domain import (
     ApprovalLevel,
     DomainError,
+    ExecutorType,
     MessageRole,
     MessageType,
     MessageVisibility,
@@ -22,7 +28,7 @@ from riftx.domain import (
     requires_approval,
 )
 from riftx.domain.base import new_id
-from riftx.execution import DeferredExecutionDispatcher
+from riftx.execution import DeferredExecutionDispatcher, DeferredExecutionSpec
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentCycleRepository,
@@ -73,6 +79,7 @@ from riftx.runtime.types import (
     RuntimeStateMachine,
     SessionStatus,
     StepStatus,
+    ToolCallIntent,
     ToolCallStatus,
     UserInputRequest,
     YieldReason,
@@ -115,6 +122,7 @@ class RuntimeCoordinator:
         runtime_approval_repository: SQLAlchemyRuntimeApprovalRepository | None = None,
         approval_recorder: RuntimeApprovalRequestRecorder | None = None,
         user_input_repository: SQLAlchemyUserInputRequestRepository | None = None,
+        terminal_service: TerminalApplicationService | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -139,6 +147,7 @@ class RuntimeCoordinator:
         self._runtime_approvals = runtime_approval_repository
         self._approval_recorder = approval_recorder
         self._user_inputs = user_input_repository
+        self._terminal_service = terminal_service
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -258,6 +267,7 @@ class RuntimeCoordinator:
             step_sequence = 0
             waiting_execution_id: str | None = None
             waiting_approval_id: str | None = None
+            pending_yield_reason: YieldReason | None = None
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
@@ -374,15 +384,17 @@ class RuntimeCoordinator:
                                 )
                             waiting_approval_id = request_record.id
                             continue
-                        execution = await self._deferred_executions.execute_intent(intent)
+                        pending_yield_reason, execution_id = (
+                            await self._execute_prepared_intent(run, intent)
+                        )
                         if (
                             waiting_execution_id is not None
-                            and waiting_execution_id != execution.id
+                            and waiting_execution_id != execution_id
                         ):
                             raise DomainError(
                                 "one Runtime cycle cannot defer multiple Executions"
                             )
-                        waiting_execution_id = execution.id
+                        waiting_execution_id = execution_id
                 if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
                     "requires_user_input"
                 ):
@@ -433,7 +445,7 @@ class RuntimeCoordinator:
                     if approval_required:
                         reason = YieldReason.APPROVAL_REQUIRED
                     elif pending_tool:
-                        reason = YieldReason.TOOL_RUNNING
+                        reason = pending_yield_reason or YieldReason.TOOL_RUNNING
                     else:
                         reason = YieldReason.RUN_COMPLETED
                     return await self._yield_cycle(
@@ -444,7 +456,10 @@ class RuntimeCoordinator:
                         engine_run=engine_run if reason is not YieldReason.RUN_COMPLETED else None,
                         waiting_execution_id=(
                             waiting_execution_id
-                            if reason is YieldReason.TOOL_RUNNING
+                            if reason in {
+                                YieldReason.TOOL_RUNNING,
+                                YieldReason.TERMINAL_OPEN,
+                            }
                             else None
                         ),
                         waiting_object_id=(
@@ -523,6 +538,7 @@ class RuntimeCoordinator:
     async def _transition_run_for_yield(self, run_id: str, reason: YieldReason) -> None:
         targets = {
             YieldReason.TOOL_RUNNING: RunStatus.WAITING_TOOL,
+            YieldReason.TERMINAL_OPEN: RunStatus.WAITING_TOOL,
             YieldReason.APPROVAL_REQUIRED: RunStatus.WAITING_APPROVAL,
             YieldReason.USER_INPUT_REQUIRED: RunStatus.WAITING_USER,
             YieldReason.COMPACTION_REQUIRED: RunStatus.COMPACTING,
@@ -774,16 +790,17 @@ class RuntimeCoordinator:
             ApprovalDecision.APPROVE_ONCE,
             ApprovalDecision.APPROVE_TOOL_FOR_RUN,
         }:
-            execution = await self._deferred_executions.execute_approved_intent(
+            intent = await self._deferred_executions.approve_intent(
                 approval.tool_call_intent_id
             )
+            reason, execution_id = await self._execute_prepared_intent(run, intent)
             return await self._yield_cycle(
                 run.id,
                 session,
                 cycle,
-                YieldReason.TOOL_RUNNING,
-                waiting_execution_id=execution.id,
-                waiting_object_id=execution.id,
+                reason,
+                waiting_execution_id=execution_id,
+                waiting_object_id=execution_id,
             )
         if approval.decision in {
             ApprovalDecision.REJECT,
@@ -802,6 +819,37 @@ class RuntimeCoordinator:
             )
             return None
         raise DomainError(f"Runtime Approval {approval.id!r} has no durable decision")
+
+    async def _execute_prepared_intent(
+        self,
+        run: Run,
+        intent: ToolCallIntent,
+    ) -> tuple[YieldReason, str]:
+        if self._deferred_executions is None:
+            raise DomainError("Deferred execution dispatcher is unavailable")
+        spec = DeferredExecutionSpec.model_validate(intent.execution_spec or {})
+        if spec.executor_type is not ExecutorType.PTY:
+            execution = await self._deferred_executions.execute_intent(intent)
+            return YieldReason.TOOL_RUNNING, execution.id
+        if self._terminal_service is None:
+            raise DomainError("Terminal service is unavailable for an interactive Tool Call")
+        digest = hashlib.sha256(intent.id.encode()).hexdigest()[:40]
+        view = await self._terminal_service.create(
+            run.id,
+            CreateTerminal(
+                session_id=f"terminal:{digest}",
+                execution_id=f"terminal-exec:{digest}",
+                agent_session_id=intent.session_id,
+                tool_call_id=intent.id,
+                argv=spec.argv,
+                tool_id=intent.tool_id,
+                tool_version=spec.tool_version,
+                cwd=str(spec.cwd),
+                env=spec.env,
+            ),
+        )
+        await self._deferred_executions.mark_intent_executing(intent)
+        return YieldReason.TERMINAL_OPEN, view.execution.id
 
     async def _append_engine_event(
         self, run_id: str, cycle_id: str, event: AgentEngineEvent

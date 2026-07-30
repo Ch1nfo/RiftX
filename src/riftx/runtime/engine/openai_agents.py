@@ -350,6 +350,7 @@ def _is_deferred_execution_schema(
     return isinstance(metadata, dict) and metadata.get("execution_type") in {
         "process",
         "shell",
+        "pty",
     }
 
 

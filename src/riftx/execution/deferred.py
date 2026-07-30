@@ -102,11 +102,6 @@ class RegistryDeferredExecutionResolver:
             )
 
         definition = self._registry.get_available(tool_id)
-        if definition.executor is ExecutorType.PTY:
-            raise ApplicationConflictError(
-                "interactive_tool_requires_terminal",
-                f"Tool {tool_id!r} must run through the durable Terminal service",
-            )
         args = arguments.get("args")
         argv = [str(item) for item in args] if isinstance(args, list) else []
         timeout = _timeout(arguments) or definition.timeout_seconds
@@ -225,6 +220,11 @@ class DeferredExecutionDispatcher:
 
     async def execute_approved_intent(self, intent_id: str) -> Execution:
         """Approve and execute a persisted snapshot without consulting the model again."""
+        intent = await self.approve_intent(intent_id)
+        return await self.execute_intent(intent)
+
+    async def approve_intent(self, intent_id: str) -> ToolCallIntent:
+        """Move an approved persisted intent to READY without launching it."""
         intent = await self._require_intent(intent_id)
         if intent.status is ToolCallStatus.WAITING_APPROVAL:
             intent.status = ToolCallStatus.READY
@@ -234,7 +234,7 @@ class DeferredExecutionDispatcher:
                 "tool_call_rejected",
                 f"Tool Call {intent.id!r} was rejected and cannot execute",
             )
-        return await self.execute_intent(intent)
+        return intent
 
     async def reject_intent(self, intent_id: str) -> ToolCallIntent:
         intent = await self._require_intent(intent_id)
@@ -246,6 +246,17 @@ class DeferredExecutionDispatcher:
                 f"Tool Call {intent.id!r} cannot be rejected from {intent.status.value!r}",
             )
         intent.status = ToolCallStatus.REJECTED
+        return await self._tool_calls.save(intent)
+
+    async def mark_intent_executing(self, intent: ToolCallIntent) -> ToolCallIntent:
+        if intent.status is ToolCallStatus.EXECUTING:
+            return intent
+        if intent.status is not ToolCallStatus.READY:
+            raise ApplicationConflictError(
+                "tool_call_not_ready",
+                f"Tool Call {intent.id!r} cannot execute from {intent.status.value!r}",
+            )
+        intent.status = ToolCallStatus.EXECUTING
         return await self._tool_calls.save(intent)
 
     async def _require_intent(self, intent_id: str) -> ToolCallIntent:

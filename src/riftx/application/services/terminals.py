@@ -23,6 +23,10 @@ from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArt
 
 @dataclass(frozen=True, slots=True)
 class CreateTerminal:
+    session_id: str | None = None
+    execution_id: str | None = None
+    agent_session_id: str | None = None
+    tool_call_id: str | None = None
     argv: list[str] = field(default_factory=list)
     tool_id: str | None = None
     tool_version: str | None = None
@@ -65,6 +69,10 @@ class TerminalApplicationService:
         try:
             terminal = await self._supervisor.start(
                 TerminalLaunchRequest(
+                    session_id=command.session_id,
+                    execution_id=command.execution_id,
+                    agent_session_id=command.agent_session_id,
+                    tool_call_id=command.tool_call_id,
                     run_id=run.id,
                     node_id=run.node_id,
                     cwd=cwd,

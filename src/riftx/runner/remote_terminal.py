@@ -58,6 +58,8 @@ class RemoteTerminalSupervisor:
             id=execution_id,
             execution_key=f"terminal:{session_id}",
             run_id=request.run_id,
+            session_id=request.agent_session_id,
+            tool_call_id=request.tool_call_id,
             node_id=request.node_id,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
