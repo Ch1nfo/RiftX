@@ -165,6 +165,7 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
     assert await approvals.get_for_intent("intent-1") == approval
     assert await user_inputs.get("input-1") == user_input
     assert await user_inputs.get_for_cycle("cycle-1") == user_input
+    assert await user_inputs.pending_for_session("run-1", "session-1") == user_input
 
     await database.dispose()
 

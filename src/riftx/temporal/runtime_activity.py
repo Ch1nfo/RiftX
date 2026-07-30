@@ -113,7 +113,7 @@ class RuntimeCycleActivities:
             session_id=result.session_id,
             cycle_id=result.cycle_id,
             yield_reason=RuntimeYieldReason(result.yield_reason.value),
-            waiting_object_id=result.waiting_object_id,
+            waiting_object_id=result.waiting_object_id or result.waiting_execution_id,
             checkpoint_id=result.provider_state_id,
         )
 

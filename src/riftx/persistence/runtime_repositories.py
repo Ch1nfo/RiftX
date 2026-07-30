@@ -18,6 +18,7 @@ from riftx.runtime.types import (
     RuntimeApprovalRequest,
     ToolCallIntent,
     UserInputRequest,
+    UserInputStatus,
 )
 
 from .orm import (
@@ -301,6 +302,27 @@ class SQLAlchemyUserInputRequestRepository:
     async def get_for_cycle(self, cycle_id: str) -> UserInputRequest | None:
         statement = select(UserInputRequestRecord).where(
             UserInputRequestRecord.cycle_id == cycle_id
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return user_input_request_from_record(record) if record is not None else None
+
+    async def pending_for_session(
+        self,
+        run_id: str,
+        session_id: str,
+    ) -> UserInputRequest | None:
+        statement = (
+            select(UserInputRequestRecord)
+            .where(
+                UserInputRequestRecord.run_id == run_id,
+                UserInputRequestRecord.session_id == session_id,
+                UserInputRequestRecord.status == UserInputStatus.WAITING.value,
+            )
+            .order_by(
+                UserInputRequestRecord.created_at.desc(),
+                UserInputRequestRecord.id.desc(),
+            )
         )
         async with self._session_factory() as session:
             record = await session.scalar(statement)

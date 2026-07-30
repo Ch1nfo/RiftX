@@ -98,6 +98,7 @@ async def test_runtime_cycle_activity_maps_only_durable_identifiers() -> None:
             worker_id="worker-local",
             cycle_id="cycle-1",
             latest_user_message_id="transcript-message-1",
+            approval_id="approval-1",
             input_items=[
                 {
                     "id": "tool-result:execution-0",
@@ -110,11 +111,6 @@ async def test_runtime_cycle_activity_maps_only_durable_identifiers() -> None:
                         "artifact://runs/run-1/executions/execution-0/stdout"
                     ],
                     "required": True,
-                },
-                {
-                    "type": "approval_decision",
-                    "approval_id": "approval-1",
-                    "source_refs": ["approval://approval-1"],
                 },
             ],
         )

@@ -141,6 +141,7 @@ def test_runtime_approval_decisions_and_user_input_transitions() -> None:
         prompt="Continue?",
     )
     request.answer("message-1")
+    request.answer("message-1")
     assert request.status is UserInputStatus.ANSWERED
     assert request.response_message_id == "message-1"
 

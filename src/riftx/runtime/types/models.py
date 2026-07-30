@@ -168,6 +168,11 @@ class UserInputRequest(DomainModel):
 
     def answer(self, message_id: str) -> None:
         if self.status is not UserInputStatus.WAITING:
+            if (
+                self.status is UserInputStatus.ANSWERED
+                and self.response_message_id == message_id
+            ):
+                return
             raise ValueError("user input request is already resolved")
         if not message_id:
             raise ValueError("response message ID must not be empty")

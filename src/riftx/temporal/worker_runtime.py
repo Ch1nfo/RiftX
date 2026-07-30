@@ -71,6 +71,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
+    SQLAlchemyUserInputRequestRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
@@ -132,10 +133,12 @@ class _RunEventUserInputResolver:
         events: SQLAlchemyRunEventRepository,
         sessions: SQLAlchemyAgentSessionRepository,
         transcript: SQLAlchemyTranscriptRepository,
+        requests: SQLAlchemyUserInputRequestRepository | None = None,
     ) -> None:
         self._events = events
         self._sessions = sessions
         self._transcript = transcript
+        self._requests = requests
 
     async def resolve_user_input(
         self,
@@ -145,6 +148,7 @@ class _RunEventUserInputResolver:
     ) -> str:
         existing = await self._find_message(session_id, user_input_id)
         if existing is not None:
+            await self._answer_pending(run_id, session_id, existing)
             return existing
         event = await self._events.get(user_input_id)
         if event is None or event.run_id != run_id or event.event_type != "user.message_queued":
@@ -173,12 +177,28 @@ class _RunEventUserInputResolver:
         )
         try:
             persisted = await self._transcript.append(session_id, draft)
+            await self._answer_pending(run_id, session_id, persisted.id)
             return persisted.id
         except RepositoryConflictError:
             raced = await self._find_message(session_id, user_input_id)
             if raced is None:
                 raise
+            await self._answer_pending(run_id, session_id, raced)
             return raced
+
+    async def _answer_pending(
+        self,
+        run_id: str,
+        session_id: str,
+        message_id: str,
+    ) -> None:
+        if self._requests is None:
+            return
+        request = await self._requests.pending_for_session(run_id, session_id)
+        if request is None:
+            return
+        request.answer(message_id)
+        await self._requests.save(request)
 
     async def _find_message(self, session_id: str, user_input_id: str) -> str | None:
         for message in await self._transcript.list_by_session(session_id):
@@ -324,6 +344,7 @@ async def build_temporal_worker(
             database.session_factory
         )
         transcript_repository = SQLAlchemyTranscriptRepository(database.session_factory)
+        user_input_repository = SQLAlchemyUserInputRequestRepository(database.session_factory)
         context_compilation_repository = SQLAlchemyContextCompilationRepository(
             database.session_factory
         )
@@ -523,6 +544,7 @@ async def build_temporal_worker(
                 runtime_repository=runtime_approval_repository,
                 event_repository=event_repository,
             ),
+            user_input_repository=user_input_repository,
         )
         runtime_cycle_activities = RuntimeCycleActivities(
             runtime_coordinator,
@@ -536,6 +558,7 @@ async def build_temporal_worker(
                 events=event_repository,
                 sessions=agent_session_repository,
                 transcript=transcript_repository,
+                requests=user_input_repository,
             ),
             execution_input_resolver=_CompletedExecutionInputResolver(
                 executions=execution_service,

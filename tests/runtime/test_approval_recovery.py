@@ -33,6 +33,8 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyTranscriptRepository,
+    SQLAlchemyUserInputRequestRepository,
 )
 from riftx.runner import ProcessSupervisor, RunnerPaths
 from riftx.runtime.coordinator import RuntimeCoordinator
@@ -49,6 +51,7 @@ from riftx.runtime.types import (
     ToolCallStatus,
     YieldReason,
 )
+from riftx.temporal.worker_runtime import _RunEventUserInputResolver
 
 
 class EngineRun:
@@ -136,6 +139,8 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
     runtime_approvals = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     intents = SQLAlchemyToolCallIntentRepository(database.session_factory)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
+    transcript = SQLAlchemyTranscriptRepository(database.session_factory)
+    user_inputs = SQLAlchemyUserInputRequestRepository(database.session_factory)
     supervisor = ProcessSupervisor(executions, RunnerPaths(tmp_path / "runner"))
     execution_service = ExecutionService(
         execution_repository=executions,
@@ -158,6 +163,8 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
         "runtime_approvals": runtime_approvals,
         "intents": intents,
         "executions": executions,
+        "transcript": transcript,
+        "user_inputs": user_inputs,
         "supervisor": supervisor,
         "execution_service": execution_service,
         "workflow": workflow,
@@ -190,6 +197,8 @@ def build_coordinator(
             runtime_repository=fixture["runtime_approvals"],
             event_repository=fixture["events"],
         ),
+        transcript_repository=fixture["transcript"],
+        user_input_repository=fixture["user_inputs"],
     )
 
 
@@ -349,5 +358,73 @@ async def test_rejection_resumes_model_with_durable_decision(
     assert expected_decision.value in serialized_input
     if feedback is not None:
         assert feedback in serialized_input
+    await fixture["supervisor"].close()
+    await fixture["database"].dispose()
+
+
+async def test_user_input_request_recovers_after_worker_restart(tmp_path: Path) -> None:
+    fixture = await build_fixture(tmp_path)
+    first = await build_coordinator(
+        fixture,
+        RestartableEngine(
+            [
+                engine_event(
+                    1,
+                    AgentEngineEventType.ASSISTANT_MESSAGE,
+                    content="Which authorized target should be tested next?",
+                    requires_user_input=True,
+                )
+            ]
+        ),
+    ).run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-before-restart",
+            cycle_id="cycle-user-input",
+        )
+    )
+
+    assert first.yield_reason is YieldReason.USER_INPUT_REQUIRED
+    assert first.waiting_object_id is not None
+    pending = await fixture["user_inputs"].get(first.waiting_object_id)
+    assert pending is not None
+    assert pending.prompt == "Which authorized target should be tested next?"
+    assert pending.provider_state_id == first.provider_state_id
+
+    event = await fixture["events"].append(
+        "run-1",
+        "user.message_queued",
+        {"message": "Test staging.example only."},
+    )
+    resolver = _RunEventUserInputResolver(
+        events=fixture["events"],
+        sessions=fixture["sessions"],
+        transcript=fixture["transcript"],
+        requests=fixture["user_inputs"],
+    )
+    message_id = await resolver.resolve_user_input("run-1", "session-1", event.id)
+    retried_message_id = await resolver.resolve_user_input("run-1", "session-1", event.id)
+    assert retried_message_id == message_id
+
+    restarted_engine = RestartableEngine(
+        [],
+        [engine_event(1, AgentEngineEventType.RUN_COMPLETED)],
+    )
+    result = await build_coordinator(fixture, restarted_engine).run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-after-restart",
+            cycle_id="cycle-after-user-input",
+            latest_user_message_id=message_id,
+        )
+    )
+
+    answered = await fixture["user_inputs"].get(first.waiting_object_id)
+    assert answered is not None
+    assert answered.response_message_id == message_id
+    assert result.yield_reason is YieldReason.RUN_COMPLETED
+    assert len(restarted_engine.resume_requests) == 1
     await fixture["supervisor"].close()
     await fixture["database"].dispose()

@@ -30,6 +30,7 @@ from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyProviderStateRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemyUserInputRequestRepository,
 )
 from riftx.persistence.transcript_repositories import SQLAlchemyTranscriptRepository
 from riftx.runtime.engine import (
@@ -73,6 +74,7 @@ from riftx.runtime.types import (
     SessionStatus,
     StepStatus,
     ToolCallStatus,
+    UserInputRequest,
     YieldReason,
 )
 
@@ -112,6 +114,7 @@ class RuntimeCoordinator:
         approval_repository: ApprovalRepository | None = None,
         runtime_approval_repository: SQLAlchemyRuntimeApprovalRepository | None = None,
         approval_recorder: RuntimeApprovalRequestRecorder | None = None,
+        user_input_repository: SQLAlchemyUserInputRequestRepository | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -135,6 +138,7 @@ class RuntimeCoordinator:
         self._approvals = approval_repository
         self._runtime_approvals = runtime_approval_repository
         self._approval_recorder = approval_recorder
+        self._user_inputs = user_input_repository
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -382,12 +386,39 @@ class RuntimeCoordinator:
                 if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
                     "requires_user_input"
                 ):
+                    waiting_input_id = None
+                    if self._user_inputs is not None:
+                        input_request = await self._user_inputs.create(
+                            UserInputRequest(
+                                run_id=run.id,
+                                session_id=session.id,
+                                cycle_id=cycle.id,
+                                prompt=_event_content(event.data),
+                                context_compilation_id=compiled.compilation_id,
+                                working_memory_version=_working_memory_version(
+                                    compiled.context_manifest
+                                ),
+                            )
+                        )
+                        waiting_input_id = input_request.id
+                        await self._append(
+                            run.id,
+                            "user.input_required",
+                            {
+                                "user_input_request_id": input_request.id,
+                                "cycle_id": cycle.id,
+                                "prompt": input_request.prompt,
+                                "context_compilation_id": compiled.compilation_id,
+                                "working_memory_version": input_request.working_memory_version,
+                            },
+                        )
                     return await self._yield_cycle(
                         run.id,
                         session,
                         cycle,
                         YieldReason.USER_INPUT_REQUIRED,
                         engine_run=engine_run,
+                        waiting_object_id=waiting_input_id,
                     )
                 if event.event_type is AgentEngineEventType.ERROR:
                     reason = (
@@ -696,6 +727,18 @@ class RuntimeCoordinator:
             if approval is not None and approval.provider_state_id != provider_state_id:
                 approval.provider_state_id = provider_state_id
                 await self._runtime_approvals.save(approval)
+        if (
+            reason is YieldReason.USER_INPUT_REQUIRED
+            and cycle.waiting_object_id is not None
+            and self._user_inputs is not None
+        ):
+            input_request = await self._user_inputs.get(cycle.waiting_object_id)
+            if (
+                input_request is not None
+                and input_request.provider_state_id != provider_state_id
+            ):
+                input_request.provider_state_id = provider_state_id
+                await self._user_inputs.save(input_request)
         return RunCycleResult(
             run_id=run_id,
             session_id=session.id,
