@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave G are complete; Wave H is active and QA-01 is unblocked.
+Wave A through Wave G are complete; Wave H is active and QA-02 is unblocked.
 
 ## Completed
 
@@ -33,6 +33,7 @@ Wave A through Wave G are complete; Wave H is active and QA-01 is unblocked.
 - [x] WEB-03 Target HTTP
 - [x] WEB-04 Managed Browser 与用户接管
 - [x] WEB-05 Browser 与 Burp Connector
+- [x] QA-01 Long-Horizon 与 Recovery Eval
 
 ## Task Record
 
@@ -737,6 +738,36 @@ Wave A through Wave G are complete; Wave H is active and QA-01 is unblocked.
   - The Browser extension is covered by HAR/client unit tests and a production build, but was not exercised in an interactive Chrome DevTools smoke session.
   - The Burp UI was API-compiled and core-tested, but was not loaded into a live Burp installation.
 - Next dependency: QA-01 is unblocked.
+
+### QA-01
+
+- Branch: `codex/qa-01-long-horizon-recovery`
+- Commits:
+  - `3b8e63c test(qa): add long-horizon recovery gate`
+  - `37b8335 test(qa): verify real runner restart recovery`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q tests/evaluation`
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: QA-01 evaluation suite `6 passed`; full suite `610 passed, 2 skipped`; Ruff passed; Alembic has one head `e4b7c1d9a305`; diff check clean.
+- Migration: None.
+- Core delivery:
+  - Added a machine-readable `LongHorizonEvaluator` with the fixed QA-01 workload contract, exact count validation, unique Tool/Execution identity checks, no-skipped-result checks, Objective/Scope/Working Memory preservation, Artifact traceability, complete recovery-boundary coverage, and bounded Temporal payload enforcement.
+  - Added one durable SQLite-backed long-horizon Run covering exactly 100 Tool Calls, 10 expected Tool Failures, 5 user supplements, 3 approvals, 3 isolated Subagents, 2 canonical Compactions, 1 model switch, 1 control-plane Worker reconstruction, 1 Runner reconstruction, 20 Web Sources, and 1 Browser Takeover.
+  - Added one-shot fault injection at all nine mandatory boundaries: after Context Compile, after Model Call, after ToolCallIntent persistence, after Execution start, after Execution completion before result processing, while waiting for Approval, during Compaction, during Subagent work, and during Browser Action.
+  - Verified stable ToolCallIntent and Execution identities across retries, exactly one Runner launch per Tool Call, all success/failure results processed, exact Working Memory reload after database/service reconstruction, immutable Artifact integrity, and unchanged Objective and Scope.
+  - Added a real Temporal time-skipping workflow test with 100 sequential Tool execution waits, two Compaction signals, one model switch, first-Worker teardown, second-Worker recovery, History replay, identifier-only activity payloads, and decoded History payloads below 64 KiB.
+  - Added a real local `ProcessSupervisor` restart test that closes the Runner supervisor and database, reconstructs both from durable state, and verifies the completed Execution and exact output remain available.
+- Contract coverage:
+  - Long-horizon count gate, duplicate Execution rejection, skipped-result detection, all mandatory fault points, Approval resume, Compaction repair, Subagent recovery, Browser action idempotency, Worker restart, Runner restart, Temporal deterministic replay, bounded Temporal History, Web Source persistence, Browser Takeover, Working Memory consistency, Objective/Scope preservation, and Artifact traceability.
+- Known limitations:
+  - The 100-call workload uses a deterministic Runner adapter over the real durable repositories so the gate remains fast and provider/tool independent; a separate test exercises the real local `ProcessSupervisor` restart path.
+  - Fault points use controlled one-shot exceptions at the precise durable boundaries rather than sending an operating-system `SIGKILL`; recovery reconstructs the relevant service/adapter graph and verifies persisted identity and state.
+  - Browser recovery and takeover use the injectable browser engine rather than a live Chromium binary. The real Browser adapter remains covered by WEB-04's contract tests and requires Runner-side Chromium installation for an interactive smoke test.
+- Next dependency: QA-02 is unblocked.
 
 ## Architecture Deviations
 
