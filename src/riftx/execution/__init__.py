@@ -11,11 +11,13 @@ from .models import (
     SubmitExecutionRequest,
     build_execution_key,
 )
+from .reconciliation import ExecutionReconciler
 from .service import ExecutionService
 
 __all__ = [
     "DeferredExecutionDispatcher",
     "DeferredExecutionSpec",
+    "ExecutionReconciler",
     "ExecutionService",
     "ExecutionWaitResult",
     "ExecutionWaitStatus",
