@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave F are complete; Wave G is active and WEB-04 is unblocked.
+Wave A through Wave F are complete; Wave G is active and WEB-05 is unblocked.
 
 ## Completed
 
@@ -31,6 +31,7 @@ Wave A through Wave F are complete; Wave G is active and WEB-04 is unblocked.
 - [x] WEB-01 Source Registry 与 Public Fetch
 - [x] WEB-02 Search Provider 与 Research Pipeline
 - [x] WEB-03 Target HTTP
+- [x] WEB-04 Managed Browser 与用户接管
 
 ## Task Record
 
@@ -674,6 +675,35 @@ Wave A through Wave F are complete; Wave G is active and WEB-04 is unblocked.
 - Known limitation:
   - The monolithic sandbox run consistently denies `SIGTERM` to one pre-existing PTY process group after its assertions. That test passes in isolation, and all WEB-03 plus all other combined tests pass; this is an execution-environment cleanup limitation rather than a Target HTTP regression.
 - Next dependency: WEB-04 is unblocked.
+
+### WEB-04
+
+- Branch: `codex/web-04-managed-browser`
+- Commit: `b48c158 feat(web): add managed browser runtime`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: `597 passed, 2 skipped`; Ruff passed; Alembic has one head `d1a4c7e9b205`; diff check clean.
+- Migration: `d1a4c7e9b205_add_managed_browser_runtime.py`
+- Core delivery:
+  - Added durable Browser Session, Page, bounded Observation, stable Interactive Element, Form, Network Summary, Action, and Takeover Summary contracts with explicit `AGENT`, `USER`, and `SHARED_READ_ONLY` ownership.
+  - Added Runner-owned Playwright Chromium execution for ephemeral contexts, Runner-local persistent profiles, and Chromium CDP attachment. Local and remote nodes use the same Browser command boundary; remote screenshots and downloads use bounded exact-offset command output.
+  - Added structured observations containing URL, title, bounded visible text, headings, stable element references, form metadata without field values, console/alert summaries, recent network summaries, and Artifact references instead of the complete DOM.
+  - Browser actions enforce latest-observation versions, stable refs, deterministic idempotency keys, Scope checks before navigation/click, disabled-element checks, durable lifecycle state, and deterministic rejection while the User owns the browser. Out-of-Scope pages reached during takeover are redacted before persistence or Agent/API return.
+  - Screenshots, network summaries, Agent downloads, and downloads captured during user takeover are registered as immutable Run Artifacts. Multiple takeover downloads are bundled into one immutable ZIP Artifact.
+  - Added user takeover/release tracking for URL transitions, newly opened pages, deduplicated network activity, downloads, and hashed login/storage-state change detection without exposing typed field values. Release persists a `BrowserTakeoverSummary`.
+  - Added REST endpoints for open/get/close/observe/action/takeover/release and a WebSocket observation/control stream, plus bounded Agent tool contracts for `open_browser`, `observe_browser`, `act_browser`, `takeover_browser`, `release_browser`, and `close_browser`. Runner-local profile paths and CDP endpoints are excluded from API and Agent tool results.
+  - Added Playwright as the browser engine dependency and documented the per-Runner Chromium installation command. Design/task documents remain local-only under the repository's existing `.gitignore` rules.
+- Contract coverage:
+  - Domain mode validation, bounded observations, Scope enforcement and takeover redaction, stale-version rejection, stable-ref actions, action idempotency, ownership blocking, takeover summaries, user downloads, Artifact persistence, SQL round trips, migration upgrade/downgrade, API secret redaction, Agent tool secret redaction, and remote Runner attachment upload.
+- Known limitations:
+  - A real Chromium smoke test requires `playwright install chromium` on the target Runner and was not executed in the current dependency-only test environment; the Playwright adapter is covered through an injectable fake engine.
+  - A Runner process restart cannot reattach an in-memory managed context. Durable records and persistent profile data remain available, but an active session must currently be reopened (or reattached through CDP).
+  - CDP attachment is Chromium-only and inherits Playwright's lower capability guarantees compared with a native Playwright connection. CAPTCHA solving and automated credential entry remain intentionally out of scope.
+- Next dependency: WEB-05 is unblocked.
 
 ## Architecture Deviations
 
