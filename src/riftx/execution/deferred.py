@@ -22,7 +22,7 @@ from riftx.executors import EnvironmentMode, ShellKind
 from riftx.persistence.runtime_repositories import SQLAlchemyToolCallIntentRepository
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
-from riftx.tools import ExecutionPolicy, ToolRegistry
+from riftx.tools import ExecutionPolicy, ToolContextManager, ToolRegistry
 
 from .models import SubmitExecutionRequest
 from .service import ExecutionService
@@ -60,9 +60,16 @@ class DeferredExecutionResolver(Protocol):
 class RegistryDeferredExecutionResolver:
     """Resolve model-visible tool arguments to trusted Runner launch data."""
 
-    def __init__(self, *, runs: RunRepository, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        *,
+        runs: RunRepository,
+        registry: ToolRegistry,
+        tool_context: ToolContextManager | None = None,
+    ) -> None:
         self._runs = runs
         self._registry = registry
+        self._tool_context = tool_context
 
     async def resolve(
         self,
@@ -74,6 +81,13 @@ class RegistryDeferredExecutionResolver:
         run = await self._runs.get(session.run_id)
         if run is None:
             raise EntityNotFoundError("Run", session.run_id)
+        if self._tool_context is not None:
+            self._tool_context.assert_allowed(
+                tool_id,
+                run_id=session.run_id,
+                session_id=session.id,
+                agent_id=session.agent_type,
+            )
         arguments = _arguments(event.data)
         cwd = _bounded_cwd(run.workspace_path, arguments.get("cwd"))
         if tool_id == "run_shell":

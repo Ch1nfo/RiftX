@@ -541,6 +541,7 @@ async def build_temporal_worker(
             resolver=RegistryDeferredExecutionResolver(
                 runs=run_repository,
                 registry=registry,
+                tool_context=tool_context,
             ),
         )
         runtime_coordinator = RuntimeCoordinator(

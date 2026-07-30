@@ -14,6 +14,7 @@ from riftx.runtime.lifecycle import (
 from riftx.tools import (
     RESIDENT_TOOL_IDS,
     ToolContextManager,
+    ToolNotFoundError,
     ToolRegistry,
     ToolSearchRequest,
     ToolUnavailableError,
@@ -147,6 +148,52 @@ async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> N
     assert primary.dynamically_loaded_tools == ["netexec-smb"]
     assert subagent.dynamically_loaded_tools == []
     assert "netexec-smb" in subagent.hidden_available_tools
+
+
+async def test_subagent_tool_allowlist_hides_and_rejects_unassigned_tools(
+    tmp_path: Path,
+) -> None:
+    manager = ToolContextManager(await _registry(tmp_path, 10))
+    manager.restrict_tools(
+        ["search_tools", "get_tool", "run_registered_tool", "netexec-smb"],
+        run_id="run-1",
+        session_id="subagent-session",
+        agent_id="subagent:recon",
+    )
+    manager.load_tool(
+        "netexec-smb",
+        run_id="run-1",
+        session_id="subagent-session",
+        agent_id="subagent:recon",
+    )
+
+    visibility = manager.visibility(
+        run_id="run-1",
+        session_id="subagent-session",
+        agent_id="subagent:recon",
+    )
+    search = manager.search_tools(
+        run_id="run-1",
+        session_id="subagent-session",
+        agent_id="subagent:recon",
+        request=ToolSearchRequest(query="utility"),
+    )
+
+    assert visibility.dynamically_loaded_tools == ["netexec-smb"]
+    assert visibility.always_visible_tools == [
+        "search_tools",
+        "get_tool",
+        "run_registered_tool",
+    ]
+    assert visibility.hidden_available_tools == []
+    assert search == []
+    with pytest.raises(ToolNotFoundError):
+        manager.load_tool(
+            "tool-001",
+            run_id="run-1",
+            session_id="subagent-session",
+            agent_id="subagent:recon",
+        )
 
 
 async def test_registry_hot_reload_rebuilds_index_and_selected_schema(tmp_path: Path) -> None:

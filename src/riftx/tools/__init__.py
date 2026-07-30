@@ -11,6 +11,7 @@ from .adapters import (
 from .config import ToolConfigError, load_tool_config, parse_tool_config
 from .discovery import (
     RESIDENT_TOOL_IDS,
+    SUBAGENT_RESIDENT_TOOL_IDS,
     DynamicToolIndex,
     ToolContextManager,
     ToolDetail,
@@ -37,6 +38,7 @@ from .registry import ToolNotFoundError, ToolRegistry, ToolUnavailableError
 __all__ = [
     "ExecutionPolicy",
     "RESIDENT_TOOL_IDS",
+    "SUBAGENT_RESIDENT_TOOL_IDS",
     "DynamicToolIndex",
     "ToolContextManager",
     "ToolDetail",

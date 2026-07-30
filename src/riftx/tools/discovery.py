@@ -25,6 +25,16 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "read_artifact",
     "complete_run",
 )
+SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
+    "search_tools",
+    "list_tools",
+    "get_tool",
+    "run_registered_tool",
+    "get_execution",
+    "wait_execution",
+    "cancel_execution",
+    "read_artifact",
+)
 
 _WORDS = re.compile(r"[a-z0-9]+")
 _SYNONYM_GROUPS: Final[tuple[frozenset[str], ...]] = (
@@ -233,6 +243,7 @@ class DynamicToolIndex:
 @dataclass(slots=True)
 class _ScopedToolSet:
     selected: set[str] = field(default_factory=set)
+    allowed: set[str] | None = None
 
 
 class ToolContextManager:
@@ -257,8 +268,11 @@ class ToolContextManager:
         agent_id: str,
         request: ToolSearchRequest,
     ) -> list[ToolSearchResult]:
-        self._scope(run_id, session_id, agent_id)
-        return self.index.search(request)
+        scope = self._scope(run_id, session_id, agent_id)
+        results = self.index.search(request)
+        if scope.allowed is None:
+            return results
+        return [result for result in results if result.tool.id in scope.allowed]
 
     def list_tools(self, *, include_unavailable: bool = True) -> list[ToolIndexEntry]:
         return self.index.list(include_unavailable=include_unavailable)
@@ -294,6 +308,12 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> ToolSchema:
+        self._require_allowed(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
         schema = self.index.schema(tool_id, require_available=True)
         self._scope(run_id, session_id, agent_id).selected.add(tool_id)
         return schema
@@ -308,6 +328,39 @@ class ToolContextManager:
     ) -> None:
         self._scope(run_id, session_id, agent_id).selected.discard(tool_id)
 
+    def restrict_tools(
+        self,
+        tool_ids: list[str],
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+    ) -> None:
+        """Apply an explicit registered-Tool allowlist to one isolated agent scope."""
+
+        allowed = set(tool_ids)
+        residents = set(self.resident_tool_ids)
+        for tool_id in allowed - residents:
+            self.index.schema(tool_id, require_available=True)
+        scope = self._scope(run_id, session_id, agent_id)
+        scope.allowed = allowed
+        scope.selected.intersection_update(allowed)
+
+    def assert_allowed(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+    ) -> None:
+        self._require_allowed(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+
     def visibility(
         self,
         *,
@@ -317,7 +370,11 @@ class ToolContextManager:
     ) -> ToolVisibilitySnapshot:
         scope = self._scope(run_id, session_id, agent_id)
         snapshot = self.registry.snapshot
-        resident = list(dict.fromkeys(self.resident_tool_ids))
+        resident = [
+            tool_id
+            for tool_id in dict.fromkeys(self.resident_tool_ids)
+            if scope.allowed is None or tool_id in scope.allowed
+        ]
         selected: list[str] = []
         schemas = [_resident_schema(tool_id) for tool_id in resident]
         for tool_id in sorted(scope.selected):
@@ -332,10 +389,12 @@ class ToolContextManager:
                 schemas.append(self.index.schema(tool_id).full_schema)
         selected_set = set(selected)
         resident_set = set(resident)
+        visible_ids = set(snapshot.states) if scope.allowed is None else scope.allowed
         hidden_available = sorted(
             tool_id
             for tool_id, state in snapshot.states.items()
             if state.availability is ToolAvailability.AVAILABLE
+            and tool_id in visible_ids
             and tool_id not in selected_set
             and tool_id not in resident_set
         )
@@ -343,6 +402,7 @@ class ToolContextManager:
             tool_id
             for tool_id, state in snapshot.states.items()
             if state.availability is not ToolAvailability.AVAILABLE
+            and tool_id in visible_ids
             and tool_id not in resident_set
         )
         return ToolVisibilitySnapshot(
@@ -356,6 +416,18 @@ class ToolContextManager:
 
     def _scope(self, run_id: str, session_id: str, agent_id: str) -> _ScopedToolSet:
         return self._sets.setdefault((run_id, session_id, agent_id), _ScopedToolSet())
+
+    def _require_allowed(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+    ) -> None:
+        allowed = self._scope(run_id, session_id, agent_id).allowed
+        if allowed is not None and tool_id not in allowed:
+            raise ToolNotFoundError(tool_id)
 
 
 def _short_description(definition: ToolDefinition) -> str:
