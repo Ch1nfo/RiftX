@@ -553,6 +553,68 @@ class MemoryRecordRow(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
+class EngagementFactRecord(Base):
+    __tablename__ = "engagement_facts"
+    __table_args__ = (
+        Index("ix_engagement_facts_identity", "engagement_id", "subject", "predicate"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(
+        ForeignKey("engagements.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subject: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    predicate: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    natural_language: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_run_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_session_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_execution_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    valid_from: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    supersedes_fact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("engagement_facts.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class FactRelationRecord(Base):
+    __tablename__ = "fact_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_fact_id",
+            "target_fact_id",
+            "relation_type",
+            name="uq_fact_relation_edge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(
+        ForeignKey("engagements.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_fact_id: Mapped[str] = mapped_column(
+        ForeignKey("engagement_facts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_fact_id: Mapped[str] = mapped_column(
+        ForeignKey("engagement_facts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    source_session_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    source_execution_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
 
