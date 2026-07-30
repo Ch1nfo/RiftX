@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and the Wave B execution lifecycle through EX-03 are complete; EX-04 is unblocked.
+Wave A and Wave B are complete; CTX-01 is unblocked.
 
 ## Completed
 
@@ -13,6 +13,7 @@ Wave A and the Wave B execution lifecycle through EX-03 are complete; EX-04 is u
 - [x] EX-01 Execution Service 与幂等性
 - [x] EX-02 Wait、Cancel 与 Deferred Execution
 - [x] EX-03 Execution Reconciliation
+- [x] EX-04 动态 Tool Search 与 Progressive Skill
 
 ## Task Record
 
@@ -161,6 +162,34 @@ Wave A and the Wave B execution lifecycle through EX-03 are complete; EX-04 is u
   - An online remote Runner remains authoritative until it reports status or its heartbeat becomes unavailable; the Control Plane does not inspect remote host PIDs directly.
   - Reconciliation never restarts a command; explicit retry continues to require a new `attempt_group`.
 - Next dependency: EX-04 is unblocked.
+
+### EX-04
+
+- Branch: `codex/ex-04-dynamic-tools-skills`
+- Commit: `3e7bd62 feat(runtime): add dynamic tools and progressive skills`
+- Completed at: `2026-07-30 13:50 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py`
+  - `git diff --check`
+  - Result: `418 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migrations: None.
+- Core delivery:
+  - The generation-aware `DynamicToolIndex` derives Level-0 index entries, Level-1 details, and Level-2 function schemas from the existing node-local `ToolRegistry`; it does not create a second source of truth.
+  - Deterministic capability and synonym search keeps unavailable tools discoverable while preventing their schema from being selected for execution.
+  - `ToolContextManager` provides independent per-Run/Session/Agent dynamic Tool Sets, keeps the required ten resident control tools visible, and records resident, selected, hidden-available, and hidden-unavailable tools in the Context Manifest.
+  - Tool Registry hot reload immediately rebuilds the index and refreshes selected schemas by registry generation.
+  - File-backed Progressive Skills validate YAML front matter, required procedure sections, and optional input/output JSON schemas while reading only `name`, `description`, and `required_capabilities` during initial indexing.
+  - Full `SKILL.md` procedures and `REFERENCES.md` content are loaded independently and only after explicit selection; selected Skill state is isolated per Agent session and represented in compiled context.
+  - Tool configuration now supports short/full descriptions, synonyms, and optional input schemas while preserving all existing V2 configurations.
+- Wave B gate:
+  - `tests/runtime/test_wave_b_gate.py` creates 80 node tools, confirms the initial model context contains only resident schemas, discovers and selects the SMB enumeration schema, launches the long-running tool through `DeferredExecutionDispatcher` and Runner, yields `TOOL_RUNNING`, inspects and waits on the `execution_id`, then completes a subsequent Runtime Cycle.
+  - Required 10-tool, 100-tool, capability, synonym, unavailable-tool, independent Subagent Tool Set, Tool Registry hot reload, and Skill front matter scenarios are covered by executable tests.
+- Known limitations:
+  - Search ranking is intentionally deterministic and lexical; phase, role, and historical-success ranking can be added later without changing the Tool Index contract.
+  - `DynamicToolContextCompiler` remains a transitional extension of `MinimalContextCompiler`; Wave C will replace the broader compiler while preserving the visibility manifest and progressive payload contracts.
+  - Provider-specific Agent factories remain responsible for binding the resident control schemas to the existing Tool Proxy, Execution Service, and Skill context operations; execution still always crosses the Runner boundary.
+- Next dependency: CTX-01 is unblocked.
 
 ## Architecture Deviations
 
