@@ -116,6 +116,8 @@ class TerminalStatus(StrEnum):
 class TerminalOwner(StrEnum):
     AGENT = "agent"
     USER = "user"
+    SHARED_READ_ONLY = "shared_read_only"
+    # Legacy V2 value retained for persisted rows; both shared modes are read-only.
     SHARED = "shared"
 
 

@@ -290,7 +290,7 @@ class RemoteTerminalSupervisor:
                 "terminal_not_open",
                 f"Terminal {terminal.id!r} is {terminal.status.value}",
             )
-        if terminal.owner is not TerminalOwner.SHARED and terminal.owner is not actor:
+        if terminal.owner is not actor:
             raise ApplicationConflictError(
                 "terminal_not_owned",
                 f"Terminal input belongs to {terminal.owner.value!r}, not {actor.value!r}",

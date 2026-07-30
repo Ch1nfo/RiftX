@@ -161,6 +161,30 @@ async def test_terminal_enforces_owner_and_persists_unicode_transcript(tmp_path:
     await database.dispose()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY implementation")
+async def test_shared_read_only_terminal_rejects_all_writers(tmp_path: Path) -> None:
+    database, supervisor, _, _ = await _runtime(tmp_path)
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=[sys.executable, "-u", "-c", _SCRIPT],
+            owner=TerminalOwner.SHARED_READ_ONLY,
+        )
+    )
+    await _wait_for_output(supervisor, terminal.id, "READY")
+
+    for actor in (TerminalOwner.AGENT, TerminalOwner.USER):
+        with pytest.raises(ApplicationConflictError, match="belongs to 'shared_read_only'"):
+            await supervisor.write(terminal.id, b"blocked\n", actor=actor)
+        with pytest.raises(ApplicationConflictError, match="belongs to 'shared_read_only'"):
+            await supervisor.interrupt(terminal.id, actor=actor)
+
+    await supervisor.close(terminal.id)
+    await database.dispose()
+
+
 async def test_recovery_marks_unattached_native_pty_lost(tmp_path: Path) -> None:
     database, supervisor, terminals, executions = await _runtime(tmp_path)
     execution = Execution(
