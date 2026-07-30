@@ -8,7 +8,7 @@ Wave A
 
 - [x] RT-01 Runtime Domain 与状态机
 - [x] RT-02 Agent Engine 抽象
-- [ ] RT-03 Runtime Coordinator 与有限 Cycle
+- [x] RT-03 Runtime Coordinator 与有限 Cycle
 - [ ] RT-04 Transcript 与 Session Manager
 
 ## Task Record
@@ -42,6 +42,25 @@ Wave A
   - The first adapter targets OpenAI Agents SDK 0.19; additional provider adapters are deferred.
   - Context compilation and durable cycle orchestration remain RT-03 responsibilities.
 - Next dependency: RT-03 is unblocked.
+
+### RT-03
+
+- Branch: `codex/rt-03-runtime-coordinator`
+- Commit: `bbb771e feat(runtime): add finite cycle coordinator`
+- Completed at: `2026-07-30 12:06 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py`
+  - Result: `371 passed, 2 skipped`; Ruff passed.
+- Migrations: None.
+- Core delivery:
+  - Database Run Lease prevents concurrent Primary cycles.
+  - MinimalContextCompiler preserves the formal Context Compiler boundary.
+  - RuntimeCoordinator persists ordered Runtime events, finite Cycle/Step state, Provider State, and all required Yield reasons.
+- Known limitations:
+  - Execution dispatch/reconciliation remains in Wave B; RT-03 stops at durable Tool proposal yields.
+  - The minimal compiler is intentionally replaced by the full compiler in Wave C.
+- Next dependency: RT-04 is unblocked.
 
 ## Architecture Deviations
 
