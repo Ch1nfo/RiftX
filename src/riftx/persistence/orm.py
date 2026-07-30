@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -517,6 +519,38 @@ class ContextCheckpointRecord(Base):
     )
     snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class MemoryRecordRow(Base):
+    __tablename__ = "memories"
+    __table_args__ = (
+        Index("ix_memories_scope_status", "scope_type", "scope_id", "status"),
+        Index("ix_memories_type_status", "memory_type", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    memory_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scope_id: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    retrieval_keywords_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    importance: Mapped[float] = mapped_column(Float, nullable=False)
+    source_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    valid_from: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    supersedes: Mapped[str | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
 class ToolCallIntentRecord(Base):

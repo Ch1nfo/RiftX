@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "engagements",
     "executions",
     "findings",
+    "memories",
     "nodes",
     "provider_states",
     "reports",
@@ -91,6 +92,30 @@ def test_working_memory_table_is_versioned_structured_state() -> None:
         "run_id",
         "version",
         "state_json",
+        "created_at",
+        "updated_at",
+    }
+
+
+def test_long_term_memory_table_tracks_scope_sources_and_lifecycle() -> None:
+    assert set(Base.metadata.tables["memories"].columns.keys()) == {
+        "id",
+        "memory_type",
+        "scope_type",
+        "scope_id",
+        "title",
+        "content",
+        "summary",
+        "retrieval_keywords_json",
+        "confidence",
+        "importance",
+        "source_refs_json",
+        "valid_from",
+        "valid_until",
+        "supersedes",
+        "status",
+        "pinned",
+        "created_by",
         "created_at",
         "updated_at",
     }
