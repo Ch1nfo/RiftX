@@ -21,6 +21,7 @@ from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
 from riftx.memory import MemoryService
+from riftx.observability import RuntimeObservabilityService
 
 
 def get_control_plane(request: Request) -> object:
@@ -87,6 +88,10 @@ def get_memory_service(request: Request) -> MemoryService:
     return request.app.state.control_plane.memory_service
 
 
+def get_runtime_observability_service(request: Request) -> RuntimeObservabilityService:
+    return request.app.state.control_plane.runtime_observability_service
+
+
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
@@ -122,3 +127,7 @@ ContextServiceDependency = Annotated[
     Depends(get_context_service),
 ]
 MemoryServiceDependency = Annotated[MemoryService, Depends(get_memory_service)]
+
+RuntimeObservabilityServiceDependency = Annotated[
+    RuntimeObservabilityService, Depends(get_runtime_observability_service)
+]

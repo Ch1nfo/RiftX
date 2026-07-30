@@ -24,6 +24,7 @@ from .routes import (
     findings_router,
     memories_router,
     nodes_router,
+    observability_router,
     reports_router,
     runner_control_router,
     runs_router,
@@ -84,6 +85,7 @@ def create_app(
         )
     app.include_router(runs_router, prefix="/api/v1")
     app.include_router(nodes_router, prefix="/api/v1")
+    app.include_router(observability_router, prefix="/api/v1")
     app.include_router(runner_control_router, prefix="/api/v1")
     app.include_router(tools_router, prefix="/api/v1")
     app.include_router(events_router, prefix="/api/v1")

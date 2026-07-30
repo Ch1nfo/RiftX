@@ -77,6 +77,9 @@ class APIClient:
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}")
 
+    def get_run_metrics(self, run_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/runs/{run_id}/metrics")
+
     def create_memory(self, payload: dict[str, object]) -> dict[str, Any]:
         return self._json("POST", "/api/v1/memories", json=payload)
 

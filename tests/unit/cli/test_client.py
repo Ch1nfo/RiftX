@@ -324,3 +324,20 @@ def test_context_client_uses_inspector_endpoints() -> None:
         ("GET", "/api/v1/sessions/session-1/context"),
         ("GET", "/api/v1/context-compilations/compilation-1"),
     ]
+
+
+def test_metrics_client_uses_run_observability_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"run_id": "run-1", "metrics": {}})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        payload = client.get_run_metrics("run-1")
+
+    assert payload["run_id"] == "run-1"
+    assert requests[0].url.path == "/api/v1/runs/run-1/metrics"

@@ -10,6 +10,7 @@ from .executions import router as executions_router
 from .findings import router as findings_router
 from .memories import router as memories_router
 from .nodes import router as nodes_router
+from .observability import router as observability_router
 from .reports import router as reports_router
 from .runner_control import router as runner_control_router
 from .runs import router as runs_router
@@ -27,6 +28,7 @@ __all__ = [
     "findings_router",
     "memories_router",
     "nodes_router",
+    "observability_router",
     "reports_router",
     "runner_control_router",
     "runs_router",

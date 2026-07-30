@@ -42,6 +42,7 @@ from .render import (
     render_reports,
     render_run,
     render_runs,
+    render_runtime_metrics,
     render_terminal,
     render_tools,
 )
@@ -575,6 +576,19 @@ def show_run(
     """Show one persisted Run."""
 
     _run_with_client(context, lambda client: render_run(console, client.get_run(run_id)))
+
+
+@run_app.command("metrics")
+def show_run_metrics(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+) -> None:
+    """Show the eleven QA-02 runtime metrics for a persisted Run."""
+
+    _run_with_client(
+        context,
+        lambda client: render_runtime_metrics(console, client.get_run_metrics(run_id)),
+    )
 
 
 @run_app.command("pause")

@@ -63,6 +63,7 @@ from riftx.domain import (
     ToolCall,
 )
 from riftx.memory import MemoryService, MemoryWriter
+from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -80,6 +81,9 @@ from riftx.persistence import (
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
+from riftx.persistence.observability_repository import (
+    SQLAlchemyRuntimeObservabilityRepository,
+)
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.skills import create_default_skill_registry
@@ -393,6 +397,9 @@ tools:
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
             memory_service=MemoryService(memory_repository),
+            runtime_observability_service=RuntimeObservabilityService(
+                SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
+            ),
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_controller,
@@ -458,6 +465,22 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             shown = await client.get(f"/api/v1/runs/{run_id}")
             assert shown.status_code == 200
             assert shown.json()["objective"]["description"] == "Inspect the local service"
+
+            metrics = await client.get(f"/api/v1/runs/{run_id}/metrics")
+            assert metrics.status_code == 200
+            metric_payload = metrics.json()
+            assert set(metric_payload["metrics"]) == {
+                metric.value for metric in RuntimeMetricName
+            }
+            assert metric_payload["metrics"]["task_completion_rate"] == {
+                "name": "task_completion_rate",
+                "numerator": 0,
+                "denominator": 1,
+                "value": 0.0,
+                "available": True,
+                "direction": "higher_is_better",
+                "description": "Completed tasks divided by observed tasks.",
+            }
 
             assert (await client.post(f"/api/v1/runs/{run_id}/pause")).status_code == 202
             assert (await client.post(f"/api/v1/runs/{run_id}/resume")).status_code == 202

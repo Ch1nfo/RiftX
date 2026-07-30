@@ -114,3 +114,24 @@ apps/burp-extension/scripts/test-core.sh
 Load `apps/browser-extension/dist` as an unpacked extension after building. Build the
 Burp Montoya JAR from `apps/burp-extension` with JDK 21+ and Gradle, then load it from
 Burp's Extensions tab.
+
+## Runtime metrics and release qualification
+
+Every persisted Run exposes the eleven Post-V2 runtime metrics through the shared
+Control Plane. Metrics are computed on demand from durable SQL state with a fixed
+query budget; a metric with no observations is returned as explicitly unavailable
+instead of being reported as a misleading zero.
+
+```bash
+riftx run metrics RUN_ID
+curl http://127.0.0.1:8787/api/v1/runs/RUN_ID/metrics
+```
+
+The final release qualification maps all fifteen mandatory architecture and recovery
+gates to executable pytest evidence. Run it from the repository root in the Agent
+Conda environment; it exits non-zero if any gate fails and prints a machine-readable
+JSON report.
+
+```bash
+conda run --no-capture-output -n agent python scripts/qa/release-gate.py
+```

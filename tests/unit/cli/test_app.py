@@ -56,6 +56,10 @@ class FakeAPIClient:
         self.calls.append(("cancel_run", run_id))
         return {"run": {"id": run_id, "status": "running"}}
 
+    def get_run_metrics(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("get_run_metrics", run_id))
+        return {"run_id": run_id, "metrics": {}, "generated_at": "now"}
+
     def compact_run(self, run_id: str, *, max_history_items: int = 100) -> dict[str, Any]:
         self.calls.append(("compact_run", (run_id, max_history_items)))
         return {"run": {"id": run_id, "status": "running"}}
@@ -385,6 +389,14 @@ def test_run_cancel_delegates_to_shared_http_client() -> None:
 
     assert result.exit_code == 0, result.output
     assert FakeAPIClient.instances[0].calls == [("cancel_run", "run-1")]
+
+
+def test_run_metrics_uses_shared_observability_endpoint() -> None:
+    result = runner.invoke(cli_module.app, ["run", "metrics", "run-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "Runtime Metrics" in result.output
+    assert FakeAPIClient.instances[0].calls == [("get_run_metrics", "run-1")]
 
 
 def test_run_compact_delegates_to_shared_http_client() -> None:

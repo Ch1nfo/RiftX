@@ -3,6 +3,7 @@
 from .browser_repositories import SQLAlchemyBrowserRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
+from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .orm import Base
 from .repositories import (
     SQLAlchemyApprovalRepository,
@@ -51,6 +52,7 @@ __all__ = [
     "SQLAlchemyRunEventRepository",
     "SQLAlchemyRunLeaseRepository",
     "SQLAlchemyRuntimeApprovalRepository",
+    "SQLAlchemyRuntimeObservabilityRepository",
     "SQLAlchemyRunRepository",
     "SQLAlchemyTerminalRepository",
     "SQLAlchemyToolCallIntentRepository",

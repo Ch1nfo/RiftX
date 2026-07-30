@@ -452,3 +452,37 @@ def _availability_text(availability: str) -> Text:
         "disabled": "dim",
     }
     return Text(availability, style=colors.get(availability, "white"))
+
+_METRIC_LABELS = {
+    "task_completion_rate": "Task Completion Rate",
+    "repeated_tool_call_rate": "Repeated Tool Call Rate",
+    "invalid_tool_call_rate": "Invalid Tool Call Rate",
+    "recovery_success_rate": "Recovery Success Rate",
+    "execution_duplication_rate": "Execution Duplication Rate",
+    "compaction_fidelity": "Compaction Fidelity",
+    "context_token_efficiency": "Context Token Efficiency",
+    "subagent_utility": "Subagent Utility",
+    "approval_resume_success_rate": "Approval Resume Success Rate",
+    "browser_action_failure_rate": "Browser Action Failure Rate",
+    "citation_coverage": "Citation Coverage",
+}
+
+
+def render_runtime_metrics(console: Console, snapshot: dict[str, Any]) -> None:
+    metrics = snapshot.get("metrics") or {}
+    table = Table(title=f"Runtime Metrics · {snapshot.get('run_id', '')}", expand=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_column("Counts", justify="right")
+    table.add_column("Direction")
+    for name, label in _METRIC_LABELS.items():
+        metric = metrics.get(name) or {}
+        value = metric.get("value")
+        table.add_row(
+            label,
+            f"{float(value) * 100:.2f}%" if value is not None else "—",
+            f"{metric.get('numerator', 0)}/{metric.get('denominator', 0)}",
+            str(metric.get("direction", "")),
+        )
+    console.print(table)
+    console.print(f"Generated: [dim]{snapshot.get('generated_at', '—')}[/dim]")

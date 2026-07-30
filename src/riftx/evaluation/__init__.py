@@ -9,6 +9,13 @@ from .long_horizon import (
     OneShotFaultInjector,
     RecoveryBoundary,
 )
+from .release import (
+    ReleaseGate,
+    ReleaseGateEvaluator,
+    ReleaseGateEvidence,
+    ReleaseGateReport,
+    release_gate_manifest,
+)
 
 __all__ = [
     "InjectedRecoveryFault",
@@ -18,4 +25,9 @@ __all__ = [
     "LongHorizonRequirements",
     "OneShotFaultInjector",
     "RecoveryBoundary",
+    "ReleaseGate",
+    "ReleaseGateEvaluator",
+    "ReleaseGateEvidence",
+    "ReleaseGateReport",
+    "release_gate_manifest",
 ]

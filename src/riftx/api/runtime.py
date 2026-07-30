@@ -33,6 +33,7 @@ from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
 from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
+from riftx.observability import RuntimeObservabilityService
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentSessionRepository,
@@ -57,6 +58,9 @@ from riftx.persistence.connector_repositories import (
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
+from riftx.persistence.observability_repository import (
+    SQLAlchemyRuntimeObservabilityRepository,
+)
 from riftx.persistence.target_http_repositories import (
     SQLAlchemyTargetHttpRequestRepository,
 )
@@ -147,6 +151,7 @@ class ControlPlane:
     artifact_service: ArtifactApplicationService
     context_service: ContextApplicationService
     memory_service: MemoryService
+    runtime_observability_service: RuntimeObservabilityService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
     browser_service: BrowserApplicationService | None = None
@@ -403,6 +408,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         artifact_service=artifact_service,
         context_service=ContextApplicationService(context_repository),
         memory_service=MemoryService(memory_repository),
+        runtime_observability_service=RuntimeObservabilityService(
+            SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
+        ),
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_controller,

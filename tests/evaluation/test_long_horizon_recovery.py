@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from sqlalchemy import event as sqlalchemy_event
 
 from riftx.application.services import (
     ApprovalApplicationService,
@@ -68,6 +69,7 @@ from riftx.hooks import (
     HookResult,
     PythonHook,
 )
+from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -89,7 +91,11 @@ from riftx.persistence import (
 )
 from riftx.persistence.checkpoint_repositories import SQLAlchemyContextCheckpointRepository
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
+from riftx.persistence.observability_repository import (
+    SQLAlchemyRuntimeObservabilityRepository,
+)
 from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
+from riftx.persistence.web_research_repositories import SQLAlchemyWebResearchRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
 from riftx.runner import RunnerBrowserManager, RunnerPaths
 from riftx.runtime.coordinator import RuntimeCoordinator
@@ -107,12 +113,15 @@ from riftx.subagents import DelegationPacket, SubagentManager, SubagentResult, S
 from riftx.temporal import RunAgentCycleActivityInput
 from riftx.tools import ToolContextManager, ToolRegistry
 from riftx.web import (
+    EvidenceSpan,
     ExtractionStatus,
     SourceReference,
     SourceType,
     WebDocument,
     WebDocumentChunk,
+    WebResearchPacket,
 )
+from riftx.web.research import ResearchClaim
 
 from .support import (
     DurableEvaluationRunner,
@@ -485,6 +494,15 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
                 tool_call_repository=intents,
                 execution_service=execution_service,
             )
+            await events.append(
+                run.id,
+                "execution.reconciled",
+                {
+                    "execution_id": execution.id,
+                    "status": execution.status.value,
+                    "outcome": "runner_adapter_reconstructed",
+                },
+            )
 
     await transcript.append_many("qa-primary", tool_messages)
     user_messages = await transcript.append_many(
@@ -565,6 +583,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
 
     web_sources = SQLAlchemyWebSourceRepository(database.session_factory)
     source_ids: list[str] = []
+    source_references: list[SourceReference] = []
     for index in range(20):
         body = f"Official source {index} for example.com".encode()
         raw = await artifact_service.register_content(
@@ -616,6 +635,33 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             cache_expires_at=utc_now() + timedelta(days=1),
         )
         source_ids.append(source.id)
+        source_references.append(source)
+
+    await SQLAlchemyWebResearchRepository(database.session_factory).record_packet(
+        WebResearchPacket(
+            id="qa-research-packet",
+            run_id=run.id,
+            session_id="qa-primary",
+            question="What durable evidence was collected?",
+            summary="Twenty canonical public Sources were preserved.",
+            key_claims=[
+                ResearchClaim(
+                    id="qa-research-claim",
+                    statement="The first canonical Source was preserved.",
+                    evidence=[
+                        EvidenceSpan(
+                            source_id=source_references[0].id,
+                            quote="Official source 0 for example.com",
+                        )
+                    ],
+                    confidence=1.0,
+                )
+            ],
+            sources=source_references,
+            document_ids=[f"qa-document-{index:02d}" for index in range(20)],
+            artifact_ids=artifact_ids[10:],
+        )
+    )
 
     # Worker restart: close every DB-bound service and reconstruct repositories.
     await database.dispose()
@@ -831,6 +877,52 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
     large_sentinel = "x" * (1024 * 1024)
     assert all(large_sentinel.encode() not in payload for payload in temporal_payloads)
     assert set(injector.tripped) == set(RecoveryBoundary)
+
+    metric_queries: list[str] = []
+
+    def record_metric_query(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        metric_queries.append(statement)
+
+    sqlalchemy_event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        record_metric_query,
+    )
+    try:
+        runtime_metrics = await RuntimeObservabilityService(
+            SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
+        ).snapshot(run.id)
+    finally:
+        sqlalchemy_event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            record_metric_query,
+        )
+    assert len(metric_queries) <= 11
+    assert set(runtime_metrics.metrics) == set(RuntimeMetricName)
+    assert runtime_metrics.metrics[RuntimeMetricName.TASK_COMPLETION_RATE].value == 1.0
+    assert runtime_metrics.metrics[RuntimeMetricName.REPEATED_TOOL_CALL_RATE].value == 0.0
+    assert runtime_metrics.metrics[RuntimeMetricName.INVALID_TOOL_CALL_RATE].value == 0.0
+    assert runtime_metrics.metrics[RuntimeMetricName.RECOVERY_SUCCESS_RATE].value == 1.0
+    assert (
+        runtime_metrics.metrics[RuntimeMetricName.EXECUTION_DUPLICATION_RATE].value == 0.0
+    )
+    assert runtime_metrics.metrics[RuntimeMetricName.COMPACTION_FIDELITY].value == 1.0
+    assert runtime_metrics.metrics[RuntimeMetricName.CONTEXT_TOKEN_EFFICIENCY].available
+    assert runtime_metrics.metrics[RuntimeMetricName.SUBAGENT_UTILITY].value == 1.0
+    assert (
+        runtime_metrics.metrics[RuntimeMetricName.APPROVAL_RESUME_SUCCESS_RATE].value
+        == 1.0
+    )
+    assert runtime_metrics.metrics[RuntimeMetricName.BROWSER_ACTION_FAILURE_RATE].value == 0.0
+    assert runtime_metrics.metrics[RuntimeMetricName.CITATION_COVERAGE].value == 1.0
 
     report = LongHorizonEvaluator().evaluate(
         LongHorizonEvidence(
