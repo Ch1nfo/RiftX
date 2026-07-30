@@ -3,21 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
 import yaml
+from agents import Model, ModelResponse, Usage
 from fastapi.testclient import TestClient
+from openai.types.responses import (
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
 
+from riftx.agent import (
+    AgentCycle,
+    AgentCycleOutput,
+    AgentRuntimeServices,
+    SQLAlchemyCheckpointStore,
+)
 from riftx.api import APISettings, ControlPlane, create_app
 from riftx.application.services import (
     ApprovalApplicationService,
+    ApprovalRequestRecorder,
     ArtifactApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
@@ -60,7 +78,116 @@ from riftx.persistence import (
 )
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.skills import create_default_skill_registry
+from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
+from riftx.temporal.activities import RiftXActivities
+from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
+
+FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
+
+
+class FullRunModel(Model):
+    """Deterministic model that drives the complete host-native E2E lifecycle."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        outputs = [
+            _e2e_tool_call(
+                "run_registered_tool",
+                {
+                    "tool_id": "fake-success",
+                    "args": ["e2e"],
+                    "timeout_seconds": None,
+                    "reason": "Run the deterministic authorized verification fixture.",
+                },
+                call_id="tool-call-e2e",
+            ),
+            _e2e_tool_call(
+                "create_finding",
+                {
+                    "title": "Deterministic test service exposure",
+                    "severity": "high",
+                    "affected_assets": ["127.0.0.1"],
+                    "description": "The authorized fixture returned a successful service response.",
+                    "evidence": [
+                        {
+                            "artifact_id": None,
+                            "execution_id": None,
+                            "description": "Observed fake-success output in the host execution.",
+                            "location": "agent.tool_completed",
+                        }
+                    ],
+                    "reproduction_steps": ["Run fake-success with argument e2e"],
+                    "impact": "Confirms the end-to-end finding pipeline.",
+                    "recommendation": "Retain this fixture only for automated tests.",
+                },
+                call_id="finding-call-e2e",
+            ),
+            _e2e_tool_call(
+                "complete_run",
+                {"run_summary": "Verification executed and one supported finding was recorded."},
+                call_id="complete-call-e2e",
+            ),
+            _e2e_message(
+                AgentCycleOutput(
+                    assistant_message="The deterministic verification run completed.",
+                    plan_summary="Execute the fixture, record the finding, and generate reports.",
+                    run_summary="Verification executed and one supported finding was recorded.",
+                )
+            ),
+        ]
+        output = outputs[self.calls]
+        self.calls += 1
+        return ModelResponse(
+            output=output,
+            usage=Usage(),
+            response_id=f"e2e-response-{self.calls}",
+        )
+
+    def stream_response(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        async def generate() -> AsyncIterator[Any]:
+            if False:
+                yield None
+
+        return generate()
+
+
+def _e2e_tool_call(
+    name: str,
+    arguments: dict[str, object],
+    *,
+    call_id: str,
+) -> list[Any]:
+    return [
+        ResponseFunctionToolCall(
+            arguments=json.dumps(arguments),
+            call_id=call_id,
+            name=name,
+            type="function_call",
+            status="completed",
+        )
+    ]
+
+
+def _e2e_message(output: AgentCycleOutput) -> list[Any]:
+    return [
+        ResponseOutputMessage(
+            id="e2e-message",
+            role="assistant",
+            status="completed",
+            type="message",
+            content=[
+                ResponseOutputText(
+                    annotations=[],
+                    text=output.model_dump_json(),
+                    type="output_text",
+                )
+            ],
+        )
+    ]
 
 
 @dataclass
@@ -108,7 +235,7 @@ class FakeWorkflowClient:
 @dataclass
 class RuntimeFixture:
     control_plane: ControlPlane
-    workflow: FakeWorkflowClient
+    workflow: FakeWorkflowClient | TemporalRunClient
     finding_repository: SQLAlchemyFindingRepository
     approval_repository: SQLAlchemyApprovalRepository
     artifact_repository: SQLAlchemyArtifactRepository
@@ -122,7 +249,7 @@ async def _build_runtime(
     tmp_path: Path,
     *,
     database_path: Path | None = None,
-    workflow: FakeWorkflowClient | None = None,
+    workflow: FakeWorkflowClient | TemporalRunClient | None = None,
 ) -> RuntimeFixture:
     db_path = database_path or (tmp_path / "riftx.db")
     database = Database(f"sqlite+aiosqlite:///{db_path}")
@@ -1685,3 +1812,186 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             assert output.json()["stdout"]["eof"] is False
     finally:
         await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path) -> None:
+    """Exercise the exact V2 design §28.5 chain through public API boundaries."""
+
+    tools_path = tmp_path / "tools.yaml"
+    tools_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "execution_policy": "registered_only",
+                "tools": {
+                    "fake-success": {
+                        "command": [sys.executable, str(FAKE_TOOL_FIXTURE)],
+                        "executor": "process",
+                        "capabilities": ["deterministic_verification"],
+                        "approval": "never",
+                        "timeout": 30,
+                        "version_probe": {
+                            "command": [
+                                sys.executable,
+                                str(FAKE_TOOL_FIXTURE),
+                                "--version",
+                            ]
+                        },
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    environment = await WorkflowEnvironment.start_time_skipping()
+    runtime: RuntimeFixture | None = None
+    task_queue = f"riftx-e2e-{uuid4()}"
+    temporal_config = TemporalRuntimeConfig(
+        task_queue=task_queue,
+        workflow_id_prefix="e2e-workflow",
+    )
+    workflow_client = TemporalRunClient(environment.client, temporal_config)
+
+    try:
+        runtime = await _build_runtime(tmp_path, workflow=workflow_client)
+        registry = ToolRegistry(tools_path, node_id="local")
+        await registry.refresh()
+        event_repository = SQLAlchemyRunEventRepository(
+            runtime.control_plane.database.session_factory
+        )
+        supervisor = runtime.control_plane.process_supervisor
+        assert supervisor is not None
+        model = FullRunModel()
+        agent_cycle = AgentCycle(
+            services=AgentRuntimeServices(
+                tool_registry=registry,
+                skill_registry=create_default_skill_registry(),
+                supervisor=supervisor,
+                finding_repository=runtime.finding_repository,
+                event_repository=event_repository,
+                finding_service=runtime.control_plane.finding_service,
+                artifact_service=runtime.control_plane.artifact_service,
+                terminal_service=runtime.control_plane.terminal_service,
+                approval_repository=runtime.approval_repository,
+            ),
+            session_factory=runtime.control_plane.database.session_factory,
+            checkpoint_store=SQLAlchemyCheckpointStore(
+                runtime.control_plane.database.session_factory
+            ),
+            model=model,
+        )
+        activities = RiftXActivities(
+            run_repository=runtime.run_repository,
+            event_repository=event_repository,
+            execution_repository=runtime.execution_repository,
+            tool_registry=registry,
+            supervisor=supervisor,
+            agent_cycle=agent_cycle,
+            approval_recorder=ApprovalRequestRecorder(
+                approval_repository=runtime.approval_repository,
+                event_repository=event_repository,
+                tool_registry=registry,
+            ),
+            report_service=runtime.control_plane.report_service,
+            session_factory=runtime.control_plane.database.session_factory,
+        )
+
+        async with Worker(
+            environment.client,
+            task_queue=task_queue,
+            workflows=[RiftXRunWorkflow],
+            activities=activities.registered(),
+            max_cached_workflows=0,
+        ):
+            async for client in _client(runtime.control_plane):
+                created_response = await client.post(
+                    "/api/v1/runs",
+                    json={
+                        "objective": "Execute the deterministic full-run verifier",
+                        "engagement": {"name": "Authorized E2E fixture"},
+                        "success_criteria": [
+                            {
+                                "description": "Execute the fixture and record a finding",
+                                "required": True,
+                            }
+                        ],
+                        "entry_points": [{"kind": "ip", "value": "127.0.0.1"}],
+                        "scope": {"ips": ["127.0.0.1"]},
+                        "approval_mode": "balanced",
+                    },
+                )
+                assert created_response.status_code == 201, created_response.text
+                created = created_response.json()
+                run_id = str(created["id"])
+                handle = workflow_client.get_handle(run_id)
+                workflow_result = await handle.result()
+
+                assert workflow_result["phase"] == WorkflowPhase.COMPLETED.value
+                assert model.calls == 4
+
+                run_response = await client.get(f"/api/v1/runs/{run_id}")
+                executions_response = await client.get(f"/api/v1/runs/{run_id}/executions")
+                findings_response = await client.get(f"/api/v1/runs/{run_id}/findings")
+                artifacts_response = await client.get(f"/api/v1/runs/{run_id}/artifacts")
+                reports_response = await client.get(f"/api/v1/runs/{run_id}/reports")
+                events_response = await client.get(
+                    f"/api/v1/runs/{run_id}/events",
+                    params={"limit": 1000},
+                )
+                sse_response = await client.get(
+                    f"/api/v1/runs/{run_id}/events/stream",
+                    params={"follow": "false"},
+                )
+
+                assert run_response.json()["status"] == "completed"
+                executions = executions_response.json()["items"]
+                assert len(executions) == 1
+                assert executions[0]["tool_id"] == "fake-success"
+                assert executions[0]["status"] == "exited"
+                assert executions[0]["exit_code"] == 0
+                output_response = await client.get(
+                    f"/api/v1/executions/{executions[0]['id']}/output"
+                )
+                stdout = base64.b64decode(output_response.json()["stdout"]["data"])
+                assert stdout.decode().strip() == "args=e2e"
+
+                findings = findings_response.json()["items"]
+                assert len(findings) == 1
+                assert findings[0]["title"] == "Deterministic test service exposure"
+                assert findings[0]["severity"] == "high"
+
+                reports = reports_response.json()["items"]
+                assert {item["format"] for item in reports} == {"markdown", "html", "json"}
+                assert workflow_result["report_id"] in {item["id"] for item in reports}
+                assert all(item["finding_ids"] == [findings[0]["id"]] for item in reports)
+                assert len(artifacts_response.json()["items"]) == 3
+                markdown_report = next(item for item in reports if item["format"] == "markdown")
+                report_content = await client.get(markdown_report["content_url"])
+                assert "Deterministic test service exposure" in report_content.text
+
+                events = events_response.json()["items"]
+                event_types = [item["event_type"] for item in events]
+                ordered_types = [
+                    "run.created",
+                    "run.prepared",
+                    "agent.tool_completed",
+                    "finding.created",
+                    "agent.completion_requested",
+                    "agent.cycle_completed",
+                    "report.generated",
+                    "run.cleaned_up",
+                ]
+                positions = [event_types.index(event_type) for event_type in ordered_types]
+                assert positions == sorted(positions)
+                assert sse_response.status_code == 200
+                sse_event_types = [
+                    line.removeprefix("event: ")
+                    for line in sse_response.text.splitlines()
+                    if line.startswith("event: ")
+                ]
+                assert sse_event_types == event_types
+    finally:
+        if runtime is not None:
+            await runtime.control_plane.close()
+        await environment.shutdown()
