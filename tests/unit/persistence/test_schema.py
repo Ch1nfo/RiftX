@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "nodes",
     "provider_states",
     "reports",
+    "runtime_approval_requests",
     "runner_commands",
     "runner_credentials",
     "run_events",
@@ -26,6 +27,7 @@ EXPECTED_TABLES = {
     "tool_call_intents",
     "tool_calls",
     "tool_states",
+    "user_input_requests",
     "working_memories",
 }
 
