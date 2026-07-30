@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-02 is unblocked.
+Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-03 is unblocked.
 
 ## Completed
 
@@ -20,6 +20,7 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-02 is unblocke
 - [x] CTX-04 Context Compiler 与 Token Budgeter
 - [x] CTX-05 Stable Instructions
 - [x] DUR-01 Temporal Durable Cycle
+- [x] DUR-02 Approval 与 User Input 恢复
 
 ## Task Record
 
@@ -357,6 +358,35 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-02 is unblocke
   - PTY ownership/takeover is intentionally owned by DUR-03; provider-neutral checkpoint compaction and model switching remain DUR-04 scope.
   - The V2 prepare/report/cleanup Activities remain registered as compatibility boundaries while the primary Agent Cycle is now the post-V2 Runtime Activity.
 - Next dependency: DUR-02 is unblocked.
+
+### DUR-02
+
+- Branch: `codex/dur-02-approval-input`
+- Commits:
+  - `5e08173 feat(runtime): persist approval and input requests`
+  - `cf03453 refactor(execution): persist deferred launch snapshots`
+  - `9eaade0 feat(runtime): recover durable approval decisions`
+  - `df19317 feat(runtime): recover durable user input waits`
+  - `de71f51 test(schema): track DUR-02 persistence tables`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `480 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `f8a2c4d6e910_add_runtime_approval_user_input.py`
+- Core delivery:
+  - Approval mode is enforced from the authoritative Run policy for `AUTO`, `BALANCED`, and `MANUAL`, including durable per-Run tool grants.
+  - Each pending approval snapshots the original `ToolCallIntent`, trusted Runner execution specification, Context Compilation ID, Working Memory version, Provider State, and Approval ID before the Workflow waits.
+  - `APPROVE_ONCE` and `APPROVE_TOOL_FOR_RUN` execute the persisted launch snapshot without asking the model to regenerate a command. `REJECT` and `REJECT_WITH_FEEDBACK` durably reject the Intent and resume the provider with the exact decision and feedback.
+  - Approval decisions and execution submission are idempotent across duplicate API submissions, Activity retries, and reconstructed Worker service objects.
+  - `UserInputRequest` persists the prompt and context/provider snapshots before `WAITING_USER`; the queued user message is first appended to the authoritative Transcript, then marks the request answered and resumes the next Cycle from Provider State.
+- Required scenarios:
+  - Approve, Reject, Reject With Feedback, Approval pending across Worker reconstruction, User Input waiting across Worker reconstruction, and duplicate Approval submission are covered by executable tests.
+- Known limitations:
+  - Interactive PTY ownership and user takeover are intentionally owned by DUR-03.
+  - Provider-neutral checkpoint compaction and model switching remain DUR-04 scope.
+- Next dependency: DUR-03 is unblocked.
 
 ## Architecture Deviations
 
