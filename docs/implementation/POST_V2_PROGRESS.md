@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-02 is unblocked.
+Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-03 is unblocked.
 
 ## Completed
 
@@ -24,6 +24,7 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-02 is 
 - [x] DUR-03 PTY Runtime 与所有权
 - [x] DUR-04 Checkpoint、Compaction 与模型切换
 - [x] MEM-01 Long-Term Memory Store
+- [x] MEM-02 Memory Candidate 与自动 Promotion
 
 ## Task Record
 
@@ -477,6 +478,34 @@ Wave A, Wave B, Wave C, and Wave D are complete; Wave E is active and MEM-02 is 
   - Embedding retrieval, automatic candidates, promotion policy, deduplication, and conflict resolution are intentionally deferred to MEM-02.
   - Asset Scope IDs use the deterministic `engagement_id::asset` form when derived from a Run contract, preventing same-address assets from crossing Engagement boundaries.
 - Next dependency: MEM-02 is unblocked.
+
+### MEM-02
+
+- Branch: `codex/mem-02-memory-promotion`
+- Commits:
+  - `0f61685 feat(memory): gate candidate promotion`
+  - `e5540be feat(memory): derive candidates from trusted results`
+  - `c3bf219 feat(memory): promote confirmed findings`
+  - `4dbcf93 fix(memory): reject sensitive promotion inputs`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `513 passed, 2 skipped`; Ruff passed; diff check clean.
+- Core delivery:
+  - Added typed Memory Candidates with explicit origin, confidence, source references, suggested Scope and type, validity, retrieval hints, and conflict identity.
+  - Promotion Policy permits deterministic Parser facts, independent multi-source confirmation, explicit user requests, confirmed Findings, and stable Tool/Node information while keeping single model guesses, unverified vulnerabilities, and arbitrary web content candidate-only.
+  - Sensitive-content inspection rejects Cookie, authorization, API key, Token, Bearer credential, and common temporary signed-URL forms across candidate content and metadata before any durable write.
+  - Deduplication merges canonical duplicates and their evidence, while conflict resolution ignores lower-confidence observations or atomically supersedes the active same-Scope fact with an equal-or-higher-confidence replacement.
+  - Runtime adapters derive candidates from Working Memory facts, Findings, explicit user requests, and stable Node information without erasing source trust.
+  - Confirmed Findings are promoted in both API and Temporal Worker control planes; drafts never auto-promote, and promotion failures are recorded without rolling back the authoritative Finding.
+- Required scenarios:
+  - Allowed and denied origins, sensitive inputs, insufficient multi-source evidence, canonical duplicate merge, confidence-based supersede, draft-versus-confirmed Finding behavior, source retention, and production control-plane wiring are covered by executable tests.
+- Known limitations:
+  - Engagement Fact and Attack Graph persistence remain intentionally deferred to EXT-02.
+  - Candidate decisions are returned to the invoking Runtime component; a separate candidate-review inbox is not part of the MEM-02 contract.
+- Next dependency: MEM-03 is unblocked.
 
 ## Architecture Deviations
 
