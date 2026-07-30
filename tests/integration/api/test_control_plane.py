@@ -1793,6 +1793,10 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
 
             listed = await client.get(f"/api/v1/runs/{run_id}/executions")
             fetched = await client.get(f"/api/v1/executions/{execution.id}")
+            waited = await client.post(
+                f"/api/v1/executions/{execution.id}/wait",
+                params={"timeout_seconds": 0.1, "max_bytes": 5},
+            )
             output = await client.get(
                 f"/api/v1/executions/{execution.id}/output",
                 params={"max_bytes": 5},
@@ -1806,6 +1810,10 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             assert fetched.json()["executable_path"] == "/usr/bin/printf"
             assert fetched.json()["platform_system"] == "linux"
             assert fetched.json()["platform_architecture"] == "x86_64"
+            assert waited.status_code == 200
+            assert waited.json()["wait_status"] == "execution_completed"
+            assert waited.json()["execution_status"] == "exited"
+            assert waited.json()["partial_output"] == "hellodiagn"
             assert output.status_code == 200
             assert output.json()["stdout"]["data"] == "aGVsbG8="
             assert output.json()["stdout"]["next_cursor"] == 5

@@ -96,6 +96,7 @@ class RunCycleResult(DomainModel):
     model_call_count: int = Field(ge=0)
     tool_call_count: int = Field(ge=0)
     provider_state_id: str | None = None
+    waiting_execution_id: str | None = None
 
 
 class RuntimeStateLoader(Protocol):

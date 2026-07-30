@@ -31,6 +31,7 @@ from .render import (
     render_error,
     render_event,
     render_execution,
+    render_execution_wait,
     render_executions,
     render_node,
     render_nodes,
@@ -52,7 +53,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
-execution_app = typer.Typer(help="Inspect and cancel durable Executions.")
+execution_app = typer.Typer(help="Inspect, wait for, and cancel durable Executions.")
 nodes_app = typer.Typer(help="Register and inspect execution nodes.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
@@ -683,6 +684,37 @@ def list_executions(
         render_executions(console, payload.get("items", []))
 
     _run_with_client(context, operation)
+
+
+@execution_app.command("wait")
+def wait_execution(
+    context: typer.Context,
+    execution_id: Annotated[str, typer.Argument(help="Execution ID.")],
+    timeout_seconds: Annotated[
+        float,
+        typer.Option("--timeout", min=0.001, max=120, help="Maximum wait duration."),
+    ] = 30.0,
+    stdout_cursor: Annotated[int, typer.Option("--stdout-cursor", min=0)] = 0,
+    stderr_cursor: Annotated[int, typer.Option("--stderr-cursor", min=0)] = 0,
+    max_bytes: Annotated[int, typer.Option("--max-bytes", min=1, max=1024 * 1024)] = (
+        64 * 1024
+    ),
+) -> None:
+    """Wait for an Execution without treating a wait timeout as tool failure."""
+
+    _run_with_client(
+        context,
+        lambda client: render_execution_wait(
+            console,
+            client.wait_execution(
+                execution_id,
+                timeout_seconds=timeout_seconds,
+                stdout_cursor=stdout_cursor,
+                stderr_cursor=stderr_cursor,
+                max_bytes=max_bytes,
+            ),
+        ),
+    )
 
 
 @execution_app.command("cancel")

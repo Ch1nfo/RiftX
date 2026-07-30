@@ -70,6 +70,37 @@ class FakeAPIClient:
         self.calls.append(("list_executions", (run_id, limit, offset)))
         return {"items": [self._execution("execution-1")]}
 
+    def wait_execution(
+        self,
+        execution_id: str,
+        *,
+        timeout_seconds: float = 30.0,
+        stdout_cursor: int = 0,
+        stderr_cursor: int = 0,
+        max_bytes: int = 64 * 1024,
+        next_poll_after_seconds: int = 10,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "wait_execution",
+                (
+                    execution_id,
+                    timeout_seconds,
+                    stdout_cursor,
+                    stderr_cursor,
+                    max_bytes,
+                    next_poll_after_seconds,
+                ),
+            )
+        )
+        return {
+            "wait_status": "wait_timeout",
+            "execution_status": "running",
+            "execution_id": execution_id,
+            "partial_output": "started",
+            "next_poll_after_seconds": 10,
+        }
+
     def cancel_execution(self, execution_id: str) -> dict[str, Any]:
         self.calls.append(("cancel_execution", execution_id))
         return {**self._execution(execution_id), "status": "cancelled"}
@@ -486,16 +517,25 @@ def test_artifact_commands_delegate_to_shared_control_plane() -> None:
 def test_execution_commands_query_and_cancel_durable_execution() -> None:
     shown = runner.invoke(cli_module.app, ["execution", "show", "execution-1"])
     listed = runner.invoke(cli_module.app, ["execution", "list", "--run", "run-1"])
+    waited = runner.invoke(
+        cli_module.app,
+        ["execution", "wait", "execution-1", "--timeout", "0.5"],
+    )
     cancelled = runner.invoke(cli_module.app, ["execution", "cancel", "execution-1"])
 
     assert shown.exit_code == 0, shown.output
     assert listed.exit_code == 0, listed.output
+    assert waited.exit_code == 0, waited.output
+    assert "wait_timeout" in waited.output.lower()
     assert cancelled.exit_code == 0, cancelled.output
     assert FakeAPIClient.instances[0].calls == [("get_execution", "execution-1")]
     assert FakeAPIClient.instances[1].calls == [
         ("list_executions", ("run-1", 100, 0))
     ]
-    assert FakeAPIClient.instances[2].calls == [("cancel_execution", "execution-1")]
+    assert FakeAPIClient.instances[2].calls == [
+        ("wait_execution", ("execution-1", 0.5, 0, 0, 65536, 10))
+    ]
+    assert FakeAPIClient.instances[3].calls == [("cancel_execution", "execution-1")]
 
 
 def test_node_commands_delegate_to_shared_control_plane() -> None:

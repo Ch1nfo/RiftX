@@ -67,8 +67,20 @@ def raw_event(event_type: str, **values: object) -> object:
     )
 
 
-def run_item(name: str, *, tool_name: str | None = None) -> object:
-    item = SimpleNamespace(raw_item=SimpleNamespace(name=tool_name))
+def run_item(
+    name: str,
+    *,
+    tool_name: str | None = None,
+    call_id: str | None = None,
+    arguments: str | None = None,
+) -> object:
+    item = SimpleNamespace(
+        raw_item=SimpleNamespace(
+            name=tool_name,
+            call_id=call_id,
+            arguments=arguments,
+        )
+    )
     return SimpleNamespace(type="run_item_stream_event", name=name, item=item)
 
 
@@ -89,7 +101,12 @@ async def test_adapter_translates_text_tool_and_streaming_events_in_order() -> N
                 item_id="call-1",
                 delta='{"target":"192.0.2.1"}',
             ),
-            run_item("tool_called", tool_name="scan"),
+            run_item(
+                "tool_called",
+                tool_name="scan",
+                call_id="call-1",
+                arguments='{"target":"192.0.2.1"}',
+            ),
             run_item("message_output_created"),
         ],
         final_output="done",
@@ -115,6 +132,11 @@ async def test_adapter_translates_text_tool_and_streaming_events_in_order() -> N
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
     assert events[1].data == {"delta": "hello "}
     assert events[3].data == {"call_id": "call-1", "delta": '{"target":"192.0.2.1"}'}
+    assert events[4].data == {
+        "call_id": "call-1",
+        "tool_id": "scan",
+        "arguments": '{"target":"192.0.2.1"}',
+    }
 
 
 @pytest.mark.parametrize(

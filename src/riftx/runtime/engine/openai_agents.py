@@ -242,6 +242,7 @@ def _translate_sdk_event(event: Any) -> list[tuple[AgentEngineEventType, dict[st
             return [(AgentEngineEventType.ASSISTANT_MESSAGE, payload)]
         if name == "tool_called":
             tool_name = _tool_name(item)
+            payload = _tool_call_payload(item, payload, tool_name=tool_name)
             event_type = (
                 AgentEngineEventType.PLAN_UPDATE
                 if tool_name == "update_plan"
@@ -258,6 +259,27 @@ def _translate_sdk_event(event: Any) -> list[tuple[AgentEngineEventType, dict[st
 def _tool_name(item: Any) -> str | None:
     raw_item = getattr(item, "raw_item", None)
     return getattr(raw_item, "name", None) or getattr(item, "name", None)
+
+
+def _tool_call_payload(
+    item: Any, payload: dict[str, object], *, tool_name: str | None
+) -> dict[str, object]:
+    if set(payload) == {"value"}:
+        payload = {}
+    raw_item = getattr(item, "raw_item", None)
+    call_id = (
+        getattr(raw_item, "call_id", None)
+        or getattr(raw_item, "id", None)
+        or getattr(item, "call_id", None)
+    )
+    arguments = getattr(raw_item, "arguments", None) or getattr(item, "arguments", None)
+    if isinstance(call_id, str) and call_id:
+        payload.setdefault("call_id", call_id)
+    if isinstance(tool_name, str) and tool_name:
+        payload.setdefault("tool_id", tool_name)
+    if isinstance(arguments, dict | str):
+        payload.setdefault("arguments", arguments)
+    return payload
 
 
 def _collect_usage(responses: list[Any]) -> dict[str, object]:

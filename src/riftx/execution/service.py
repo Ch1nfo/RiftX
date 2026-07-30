@@ -16,7 +16,8 @@ from riftx.persistence.runtime_repositories import (
 from riftx.runner import ExecutionRunner
 from riftx.runtime.types import ToolCallIntent, ToolCallStatus
 
-from .models import SubmitExecutionRequest
+from .models import ExecutionWaitResult, SubmitExecutionRequest
+from .waiting import wait_for_execution
 
 _SUBMITTABLE_INTENT_STATUSES = {
     ToolCallStatus.READY,
@@ -77,11 +78,37 @@ class ExecutionService:
             raise EntityNotFoundError("Execution", execution_id)
         return execution
 
-    async def wait(self, execution_id: str) -> Execution:
-        await self.get(execution_id)
-        execution = await self._runner.wait(execution_id)
-        await self._sync_execution_intent(execution)
-        return execution
+    async def wait(
+        self,
+        execution_id: str,
+        *,
+        timeout_seconds: float = 30.0,
+        stdout_cursor: int = 0,
+        stderr_cursor: int = 0,
+        max_bytes: int = 64 * 1024,
+        next_poll_after_seconds: int = 10,
+    ) -> ExecutionWaitResult:
+        execution = await self.get(execution_id)
+        result = await wait_for_execution(
+            self._runner,
+            execution,
+            timeout_seconds=timeout_seconds,
+            stdout_cursor=stdout_cursor,
+            stderr_cursor=stderr_cursor,
+            max_bytes=max_bytes,
+            next_poll_after_seconds=next_poll_after_seconds,
+        )
+        await self._sync_execution_intent(result.execution)
+        await self._append_event(
+            result.execution.run_id,
+            "execution.wait_completed",
+            {
+                "execution_id": result.execution.id,
+                "wait_status": result.wait_status.value,
+                "execution_status": result.execution.status.value,
+            },
+        )
+        return result
 
     async def cancel(self, execution_id: str, reason: str | None = None) -> Execution:
         await self.get(execution_id)

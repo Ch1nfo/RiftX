@@ -279,10 +279,29 @@ def test_execution_client_uses_query_and_cancel_endpoints() -> None:
     ) as client:
         client.get_execution("execution-1")
         client.list_executions("run-1", limit=25, offset=5)
+        client.wait_execution(
+            "execution-1",
+            timeout_seconds=0.5,
+            stdout_cursor=2,
+            stderr_cursor=3,
+            max_bytes=128,
+            next_poll_after_seconds=7,
+        )
         client.cancel_execution("execution-1")
 
     assert requests == [
         ("GET", "/api/v1/executions/execution-1", {}),
         ("GET", "/api/v1/runs/run-1/executions", {"limit": "25", "offset": "5"}),
+        (
+            "POST",
+            "/api/v1/executions/execution-1/wait",
+            {
+                "timeout_seconds": "0.5",
+                "stdout_cursor": "2",
+                "stderr_cursor": "3",
+                "max_bytes": "128",
+                "next_poll_after_seconds": "7",
+            },
+        ),
         ("POST", "/api/v1/executions/execution-1/cancel", {}),
     ]

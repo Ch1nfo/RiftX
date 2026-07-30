@@ -12,6 +12,7 @@ from .executions import (
     ExecutionListResponse,
     ExecutionOutputResponse,
     ExecutionResponse,
+    ExecutionWaitResponse,
 )
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
 from .nodes import (
@@ -62,6 +63,7 @@ __all__ = [
     "ExecutionListResponse",
     "ExecutionOutputResponse",
     "ExecutionResponse",
+    "ExecutionWaitResponse",
     "FindingListResponse",
     "GenerateReportsRequest",
     "HeartbeatNodeRequest",

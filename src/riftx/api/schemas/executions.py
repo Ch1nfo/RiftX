@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from riftx.domain import Execution, ExecutionStatus, ExecutorType
+from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runner import ExecutionOutput, OutputSlice
 
 
@@ -70,4 +71,26 @@ class ExecutionOutputResponse(BaseModel):
         return cls(
             stdout=ExecutionOutputSliceResponse.from_domain(output.stdout),
             stderr=ExecutionOutputSliceResponse.from_domain(output.stderr),
+        )
+
+
+class ExecutionWaitResponse(BaseModel):
+    wait_status: ExecutionWaitStatus
+    execution_status: ExecutionStatus
+    execution_id: str
+    partial_output: str | None
+    next_poll_after_seconds: int | None
+    stdout_cursor: int
+    stderr_cursor: int
+
+    @classmethod
+    def from_domain(cls, result: ExecutionWaitResult) -> "ExecutionWaitResponse":
+        return cls(
+            wait_status=result.wait_status,
+            execution_status=result.execution.status,
+            execution_id=result.execution.id,
+            partial_output=result.partial_output,
+            next_poll_after_seconds=result.next_poll_after_seconds,
+            stdout_cursor=result.stdout_cursor,
+            stderr_cursor=result.stderr_cursor,
         )

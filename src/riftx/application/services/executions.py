@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from riftx.application.errors import EntityNotFoundError
 from riftx.application.ports import ExecutionRepository, RunEventRepository, RunRepository
 from riftx.domain import Execution
+from riftx.execution import ExecutionWaitResult
+from riftx.execution.waiting import wait_for_execution
 from riftx.runner import ExecutionOutput, ExecutionRunner
 
 
@@ -53,6 +55,37 @@ class ExecutionApplicationService:
             {"execution_id": cancelled.id},
         )
         return cancelled
+
+    async def wait(
+        self,
+        execution_id: str,
+        *,
+        timeout_seconds: float = 30.0,
+        stdout_cursor: int = 0,
+        stderr_cursor: int = 0,
+        max_bytes: int = 64 * 1024,
+        next_poll_after_seconds: int = 10,
+    ) -> ExecutionWaitResult:
+        execution = await self.get(execution_id)
+        result = await wait_for_execution(
+            self._runner,
+            execution,
+            timeout_seconds=timeout_seconds,
+            stdout_cursor=stdout_cursor,
+            stderr_cursor=stderr_cursor,
+            max_bytes=max_bytes,
+            next_poll_after_seconds=next_poll_after_seconds,
+        )
+        await self._event_repository.append(
+            result.execution.run_id,
+            "execution.wait_completed",
+            {
+                "execution_id": result.execution.id,
+                "wait_status": result.wait_status.value,
+                "execution_status": result.execution.status.value,
+            },
+        )
+        return result
 
     async def output(
         self,

@@ -10,6 +10,7 @@ from ..schemas import (
     ExecutionListResponse,
     ExecutionOutputResponse,
     ExecutionResponse,
+    ExecutionWaitResponse,
 )
 
 router = APIRouter(tags=["executions"])
@@ -30,6 +31,32 @@ async def get_execution(
     service: ExecutionServiceDependency,
 ) -> ExecutionResponse:
     return ExecutionResponse.from_domain(await service.get(execution_id))
+
+
+@router.post(
+    "/executions/{execution_id}/wait",
+    response_model=ExecutionWaitResponse,
+    responses=_ERROR_RESPONSES,
+)
+async def wait_execution(
+    execution_id: str,
+    service: ExecutionServiceDependency,
+    timeout_seconds: Annotated[float, Query(gt=0, le=120)] = 30.0,
+    stdout_cursor: Annotated[int, Query(ge=0)] = 0,
+    stderr_cursor: Annotated[int, Query(ge=0)] = 0,
+    max_bytes: Annotated[int, Query(ge=1, le=1024 * 1024)] = 64 * 1024,
+    next_poll_after_seconds: Annotated[int, Query(ge=1, le=3600)] = 10,
+) -> ExecutionWaitResponse:
+    return ExecutionWaitResponse.from_domain(
+        await service.wait(
+            execution_id,
+            timeout_seconds=timeout_seconds,
+            stdout_cursor=stdout_cursor,
+            stderr_cursor=stderr_cursor,
+            max_bytes=max_bytes,
+            next_poll_after_seconds=next_poll_after_seconds,
+        )
+    )
 
 
 @router.post(

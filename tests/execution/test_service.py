@@ -210,7 +210,8 @@ async def test_same_key_and_running_resubmission_launch_only_once(tmp_path: Path
 async def test_completed_resubmission_returns_durable_result(tmp_path: Path) -> None:
     database, service, runner, repos = await build_service(tmp_path)
     execution = await service.submit(request(tmp_path))
-    completed = await service.wait(execution.id)
+    wait_result = await service.wait(execution.id)
+    completed = wait_result.execution
     duplicate = await service.submit(request(tmp_path))
 
     assert completed.status is ExecutionStatus.COMPLETED
@@ -280,3 +281,15 @@ def test_execution_status_exposes_post_v2_lifecycle() -> None:
         ExecutionStatus.HARD_TIMEOUT,
         ExecutionStatus.LOST,
     } <= set(ExecutionStatus)
+
+async def test_wait_distinguishes_lost_execution(tmp_path: Path) -> None:
+    database, service, _, repos = await build_service(tmp_path)
+    execution = await service.submit(request(tmp_path))
+    execution.transition_to(ExecutionStatus.LOST)
+    await repos["executions"].save(execution)
+
+    result = await service.wait(execution.id, timeout_seconds=0.1)
+
+    assert result.wait_status.value == "execution_lost"
+    assert result.execution.status is ExecutionStatus.LOST
+    await database.dispose()

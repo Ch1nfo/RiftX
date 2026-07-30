@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from riftx.domain import ExecutorType
+from riftx.domain import Execution, ExecutorType
 from riftx.executors import EnvironmentMode, ShellKind
 from riftx.runner import ExecutionLaunchRequest
 
@@ -75,3 +76,23 @@ def build_execution_key(
     identity = "\x1f".join((run_id, session_id, tool_call_id, attempt_group))
     digest = hashlib.sha256(identity.encode()).hexdigest()
     return f"execution:v1:{digest}"
+
+
+class ExecutionWaitStatus(StrEnum):
+    """Stable outcome of waiting, distinct from the Execution lifecycle state."""
+
+    WAIT_TIMEOUT = "wait_timeout"
+    EXECUTION_COMPLETED = "execution_completed"
+    EXECUTION_CANCELLED = "execution_cancelled"
+    EXECUTION_LOST = "execution_lost"
+
+
+class ExecutionWaitResult(BaseModel):
+    """Bounded wait result returned to Runtime, API, CLI, and Agent tools."""
+
+    execution: Execution
+    wait_status: ExecutionWaitStatus
+    partial_output: str | None = None
+    next_poll_after_seconds: int | None = Field(default=None, gt=0)
+    stdout_cursor: int = Field(default=0, ge=0)
+    stderr_cursor: int = Field(default=0, ge=0)

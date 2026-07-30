@@ -148,6 +148,24 @@ def render_execution(console: Console, execution: dict[str, Any]) -> None:
     console.print(Panel(body, title="Execution", border_style="cyan"))
 
 
+def render_execution_wait(console: Console, result: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("Wait status", _status_text(str(result.get("wait_status", "unknown"))))
+    body.add_row(
+        "Execution status",
+        _status_text(str(result.get("execution_status", "unknown"))),
+    )
+    body.add_row("Execution", str(result.get("execution_id", "")))
+    next_poll = result.get("next_poll_after_seconds")
+    body.add_row("Next poll", f"{next_poll}s" if next_poll is not None else "—")
+    partial_output = result.get("partial_output")
+    if partial_output:
+        body.add_row("Output", str(partial_output))
+    console.print(Panel(body, title="Execution Wait", border_style="cyan"))
+
+
 def render_tools(console: Console, payload: dict[str, Any]) -> None:
     table = Table(
         title=(

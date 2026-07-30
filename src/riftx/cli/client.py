@@ -135,6 +135,28 @@ class APIClient:
             params={"limit": limit, "offset": offset},
         )
 
+    def wait_execution(
+        self,
+        execution_id: str,
+        *,
+        timeout_seconds: float = 30.0,
+        stdout_cursor: int = 0,
+        stderr_cursor: int = 0,
+        max_bytes: int = 64 * 1024,
+        next_poll_after_seconds: int = 10,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/executions/{execution_id}/wait",
+            params={
+                "timeout_seconds": timeout_seconds,
+                "stdout_cursor": stdout_cursor,
+                "stderr_cursor": stderr_cursor,
+                "max_bytes": max_bytes,
+                "next_poll_after_seconds": next_poll_after_seconds,
+            },
+        )
+
     def cancel_execution(self, execution_id: str) -> dict[str, Any]:
         return self._json("POST", f"/api/v1/executions/{execution_id}/cancel")
 

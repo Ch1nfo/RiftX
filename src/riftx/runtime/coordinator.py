@@ -16,6 +16,7 @@ from riftx.domain import (
     RunStatus,
     TranscriptMessageDraft,
 )
+from riftx.execution import DeferredExecutionDispatcher
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentCycleRepository,
@@ -87,6 +88,7 @@ class RuntimeCoordinator:
         context_compiler: ContextCompiler,
         agent_engine: AgentEngine,
         transcript_repository: SQLAlchemyTranscriptRepository | None = None,
+        deferred_execution_dispatcher: DeferredExecutionDispatcher | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -100,6 +102,7 @@ class RuntimeCoordinator:
         self._context_compiler = context_compiler
         self._agent_engine = agent_engine
         self._transcript = transcript_repository
+        self._deferred_executions = deferred_execution_dispatcher
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -174,6 +177,7 @@ class RuntimeCoordinator:
             approval_required = False
             assistant_message_seen = False
             step_sequence = 0
+            waiting_execution_id: str | None = None
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
@@ -215,9 +219,10 @@ class RuntimeCoordinator:
                             YieldReason.CYCLE_LIMIT_REACHED,
                             engine_run=engine_run,
                         )
+                persisted_step: AgentStep | None = None
                 if event.event_type in _STEP_TYPES:
                     step_sequence += 1
-                    await self._persist_step(cycle, step_sequence, event)
+                    persisted_step = await self._persist_step(cycle, step_sequence, event)
                 if event.event_type is AgentEngineEventType.TOOL_CALL_READY:
                     pending_tool = True
                     approval_required = approval_required or bool(
@@ -233,6 +238,25 @@ class RuntimeCoordinator:
                             YieldReason.CYCLE_LIMIT_REACHED,
                             engine_run=engine_run,
                         )
+                    if (
+                        not approval_required
+                        and self._deferred_executions is not None
+                        and persisted_step is not None
+                    ):
+                        execution = await self._deferred_executions.dispatch(
+                            session=session,
+                            cycle=cycle,
+                            step=persisted_step,
+                            event=event,
+                        )
+                        if (
+                            waiting_execution_id is not None
+                            and waiting_execution_id != execution.id
+                        ):
+                            raise DomainError(
+                                "one Runtime cycle cannot defer multiple Executions"
+                            )
+                        waiting_execution_id = execution.id
                 if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
                     "requires_user_input"
                 ):
@@ -265,6 +289,11 @@ class RuntimeCoordinator:
                         cycle,
                         reason,
                         engine_run=engine_run if reason is not YieldReason.RUN_COMPLETED else None,
+                        waiting_execution_id=(
+                            waiting_execution_id
+                            if reason is YieldReason.TOOL_RUNNING
+                            else None
+                        ),
                     )
 
             return await self._yield_cycle(
@@ -420,7 +449,7 @@ class RuntimeCoordinator:
 
     async def _persist_step(
         self, cycle: AgentCycle, sequence: int, event: AgentEngineEvent
-    ) -> None:
+    ) -> AgentStep:
         step = AgentStep(
             cycle_id=cycle.id,
             sequence=sequence,
@@ -443,6 +472,7 @@ class RuntimeCoordinator:
             STEP_COMPLETED,
             {"cycle_id": cycle.id, "step_id": step.id, "step_type": step.step_type.value},
         )
+        return step
 
     async def _yield_cycle(
         self,
@@ -452,6 +482,7 @@ class RuntimeCoordinator:
         reason: YieldReason,
         *,
         engine_run: AgentEngineRun | None = None,
+        waiting_execution_id: str | None = None,
     ) -> RunCycleResult:
         provider_state_id = None
         if engine_run is not None:
@@ -474,6 +505,7 @@ class RuntimeCoordinator:
                         "cycle_id": cycle.id,
                         "yield_reason": reason.value,
                         "provider_state_id": provider_state_id,
+                        "waiting_execution_id": waiting_execution_id,
                     },
                     visibility=MessageVisibility.INTERNAL_STATE,
                 ),
@@ -494,6 +526,7 @@ class RuntimeCoordinator:
                 "yield_reason": reason.value,
                 "model_call_count": cycle.model_call_count,
                 "tool_call_count": cycle.tool_call_count,
+                "waiting_execution_id": waiting_execution_id,
             },
         )
         return RunCycleResult(
@@ -504,6 +537,7 @@ class RuntimeCoordinator:
             model_call_count=cycle.model_call_count,
             tool_call_count=cycle.tool_call_count,
             provider_state_id=provider_state_id,
+            waiting_execution_id=waiting_execution_id,
         )
 
     async def _append_engine_event(
