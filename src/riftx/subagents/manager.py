@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Protocol
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
 from riftx.config import SubagentConfig
@@ -20,6 +21,10 @@ from riftx.runtime.types import AgentSession, SessionStatus
 from riftx.tools import RESIDENT_TOOL_IDS, SUBAGENT_RESIDENT_TOOL_IDS, ToolContextManager
 
 from .models import DelegationPacket, SubagentResult, SubagentStatus
+
+
+class ResultMerger(Protocol):
+    async def merge(self, run_id: str, result: SubagentResult) -> object: ...
 
 _CLOSED = {
     SessionStatus.COMPLETED,
@@ -47,12 +52,14 @@ class SubagentManager:
         tool_context: ToolContextManager,
         limits: SubagentConfig | None = None,
         events: SQLAlchemyRunEventRepository | None = None,
+        result_merger: ResultMerger | None = None,
     ) -> None:
         self._sessions = sessions
         self._session_repository = session_repository
         self._tool_context = tool_context
         self._limits = limits or SubagentConfig()
         self._events = events
+        self._result_merger = result_merger
         self._run_locks: dict[str, asyncio.Lock] = {}
 
     async def start(
@@ -151,8 +158,6 @@ class SubagentManager:
             raise RepositoryConflictError(
                 f"Subagent session {session.id!r} already has another Result Packet"
             )
-        target_status = _session_status(result.status)
-        closed = await self._sessions.close_session(session.id, status=target_status)
         primary_packet = result.primary_packet()
         primary_payload = primary_packet.model_dump(mode="json")
         loaded_parent = await self._sessions.load_session(parent.id)
@@ -166,6 +171,14 @@ class SubagentManager:
             ),
             None,
         )
+        if existing_primary is not None and existing_primary.structured_content != primary_payload:
+            raise RepositoryConflictError(
+                f"Primary session {parent.id!r} already received another Result Packet"
+            )
+        if existing_primary is None and self._result_merger is not None:
+            await self._result_merger.merge(session.run_id, result)
+        target_status = _session_status(result.status)
+        closed = await self._sessions.close_session(session.id, status=target_status)
         if existing_primary is None:
             await self._sessions.append_message(
                 parent.id,
@@ -177,10 +190,6 @@ class SubagentManager:
                     structured_content=primary_payload,
                     visibility=MessageVisibility.AGENT_ONLY,
                 ),
-            )
-        elif existing_primary.structured_content != primary_payload:
-            raise RepositoryConflictError(
-                f"Primary session {parent.id!r} already received another Result Packet"
             )
         await self._append_event(
             session.run_id,
