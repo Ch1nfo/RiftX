@@ -17,9 +17,11 @@ from .paths import RunnerPaths
 from .protocols import ExecutionRunner
 
 _TERMINAL_EXECUTION_STATUSES = {
+    ExecutionStatus.COMPLETED,
     ExecutionStatus.EXITED,
     ExecutionStatus.FAILED,
     ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
     ExecutionStatus.LOST,
 }
 
@@ -52,6 +54,9 @@ class RemoteExecutionSupervisor:
             id=execution_id,
             execution_key=request.execution_key,
             run_id=request.run_id,
+            session_id=request.session_id,
+            tool_call_id=request.tool_call_id,
+            attempt_group=request.attempt_group,
             node_id=request.node_id,
             executor_type=request.executor_type,
             argv=request.argv,
@@ -62,6 +67,11 @@ class RemoteExecutionSupervisor:
             env_diff=request.env,
             stdout_path=str(output_paths.stdout),
             stderr_path=str(output_paths.stderr),
+            status=(
+                ExecutionStatus.QUEUED
+                if request.session_id is not None
+                else ExecutionStatus.CREATED
+            ),
         )
         execution, created = await self._repository.create_if_absent(execution)
         if not created:

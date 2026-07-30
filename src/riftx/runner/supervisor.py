@@ -64,6 +64,9 @@ class ProcessSupervisor:
             id=execution_id,
             execution_key=request.execution_key,
             run_id=request.run_id,
+            session_id=request.session_id,
+            tool_call_id=request.tool_call_id,
+            attempt_group=request.attempt_group,
             node_id=request.node_id,
             executor_type=request.executor_type,
             argv=request.argv,
@@ -77,6 +80,11 @@ class ProcessSupervisor:
             platform_architecture=platform.machine() or "unknown",
             stdout_path=str(output_paths.stdout),
             stderr_path=str(output_paths.stderr),
+            status=(
+                ExecutionStatus.QUEUED
+                if request.session_id is not None
+                else ExecutionStatus.CREATED
+            ),
         )
 
         execution, created = await self._repository.create_if_absent(execution)
@@ -269,7 +277,14 @@ class ProcessSupervisor:
         execution = await self.get(execution_id)
         if execution.status not in {ExecutionStatus.STARTING, ExecutionStatus.RUNNING}:
             return
-        target = ExecutionStatus.CANCELLED if cancel_requested else result.status
+        if cancel_requested:
+            target = ExecutionStatus.CANCELLED
+        elif execution.session_id is not None and result.timed_out:
+            target = ExecutionStatus.HARD_TIMEOUT
+        elif execution.session_id is not None and result.status is ExecutionStatus.EXITED:
+            target = ExecutionStatus.COMPLETED
+        else:
+            target = result.status
         execution.transition_to(target, exit_code=result.exit_code)
         await self._repository.save(execution)
 

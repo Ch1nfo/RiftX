@@ -12,6 +12,9 @@ class ExecutionResponse(BaseModel):
     id: str
     execution_key: str
     run_id: str
+    session_id: str | None
+    tool_call_id: str | None
+    attempt_group: str | None
     node_id: str
     executor_type: ExecutorType
     argv: list[str]

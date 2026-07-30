@@ -257,9 +257,11 @@ class RunnerControlService:
             return execution
         if report.status not in {
             ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
             ExecutionStatus.EXITED,
             ExecutionStatus.FAILED,
             ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
             ExecutionStatus.LOST,
         }:
             raise ApplicationConflictError(
@@ -303,9 +305,11 @@ class RunnerControlService:
             target = TerminalStatus.LOST
             event_type = "terminal.lost"
         elif status in {
+            ExecutionStatus.COMPLETED,
             ExecutionStatus.EXITED,
             ExecutionStatus.FAILED,
             ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
         } and terminal.status in {TerminalStatus.CREATED, TerminalStatus.OPEN}:
             target = TerminalStatus.CLOSED
             event_type = "terminal.closed"

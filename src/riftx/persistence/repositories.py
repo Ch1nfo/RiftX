@@ -821,7 +821,11 @@ class SQLAlchemyExecutionRepository:
             select(ExecutionRecord)
             .where(
                 ExecutionRecord.status.in_(
-                    [ExecutionStatus.STARTING.value, ExecutionStatus.RUNNING.value]
+                    [
+                        ExecutionStatus.QUEUED.value,
+                        ExecutionStatus.STARTING.value,
+                        ExecutionStatus.RUNNING.value,
+                    ]
                 )
             )
             .order_by(ExecutionRecord.started_at, ExecutionRecord.id)

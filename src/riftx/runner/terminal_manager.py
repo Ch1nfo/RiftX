@@ -27,9 +27,11 @@ from .terminal import TerminalSupervisor
 logger = logging.getLogger(__name__)
 
 _FINAL_STATUSES = {
+    ExecutionStatus.COMPLETED,
     ExecutionStatus.EXITED,
     ExecutionStatus.FAILED,
     ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
     ExecutionStatus.LOST,
 }
 

@@ -18,26 +18,32 @@ from .enums import (
 from .errors import InvalidStateTransitionError
 
 _EXECUTION_TRANSITIONS: Mapping[ExecutionStatus, frozenset[ExecutionStatus]] = {
+    ExecutionStatus.QUEUED: frozenset({ExecutionStatus.STARTING, ExecutionStatus.CANCELLED}),
     ExecutionStatus.CREATED: frozenset({ExecutionStatus.STARTING, ExecutionStatus.CANCELLED}),
     ExecutionStatus.STARTING: frozenset(
         {
             ExecutionStatus.RUNNING,
             ExecutionStatus.FAILED,
             ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
             ExecutionStatus.LOST,
         }
     ),
     ExecutionStatus.RUNNING: frozenset(
         {
+            ExecutionStatus.COMPLETED,
             ExecutionStatus.EXITED,
             ExecutionStatus.FAILED,
             ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
             ExecutionStatus.LOST,
         }
     ),
+    ExecutionStatus.COMPLETED: frozenset(),
     ExecutionStatus.EXITED: frozenset(),
     ExecutionStatus.FAILED: frozenset(),
     ExecutionStatus.CANCELLED: frozenset(),
+    ExecutionStatus.HARD_TIMEOUT: frozenset(),
     ExecutionStatus.LOST: frozenset(),
 }
 
@@ -78,6 +84,9 @@ class Execution(DomainModel):
     id: str = Field(default_factory=new_id)
     execution_key: str = Field(min_length=1)
     run_id: str
+    session_id: str | None = None
+    tool_call_id: str | None = None
+    attempt_group: str | None = None
     node_id: str
     executor_type: ExecutorType
     argv: list[str] = Field(default_factory=list)
@@ -115,9 +124,11 @@ class Execution(DomainModel):
         if target is ExecutionStatus.RUNNING and self.started_at is None:
             self.started_at = changed_at
         if target in {
+            ExecutionStatus.COMPLETED,
             ExecutionStatus.EXITED,
             ExecutionStatus.FAILED,
             ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
             ExecutionStatus.LOST,
         }:
             self.finished_at = changed_at

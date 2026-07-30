@@ -307,6 +307,9 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
         id=execution.id,
         execution_key=execution.execution_key,
         run_id=execution.run_id,
+        session_id=execution.session_id,
+        tool_call_id=execution.tool_call_id,
+        attempt_group=execution.attempt_group,
         node_id=execution.node_id,
         executor_type=execution.executor_type.value,
         argv_json=execution.argv,
@@ -332,6 +335,9 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
 
 
 def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> None:
+    record.session_id = execution.session_id
+    record.tool_call_id = execution.tool_call_id
+    record.attempt_group = execution.attempt_group
     record.node_id = execution.node_id
     record.executor_type = execution.executor_type.value
     record.argv_json = execution.argv
@@ -360,6 +366,9 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         id=record.id,
         execution_key=record.execution_key,
         run_id=record.run_id,
+        session_id=record.session_id,
+        tool_call_id=record.tool_call_id,
+        attempt_group=record.attempt_group,
         node_id=record.node_id,
         executor_type=ExecutorType(record.executor_type),
         argv=record.argv_json,

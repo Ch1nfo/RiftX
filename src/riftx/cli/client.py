@@ -119,6 +119,25 @@ class APIClient:
             params={"after_sequence": after_sequence, "limit": limit},
         )
 
+    def get_execution(self, execution_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/executions/{execution_id}")
+
+    def list_executions(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/api/v1/runs/{run_id}/executions",
+            params={"limit": limit, "offset": offset},
+        )
+
+    def cancel_execution(self, execution_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/api/v1/executions/{execution_id}/cancel")
+
     def register_artifact(
         self,
         run_id: str,

@@ -48,9 +48,11 @@ def main() -> None:
 
 
 _TERMINAL_STATUSES = {
+    ExecutionStatus.COMPLETED,
     ExecutionStatus.EXITED,
     ExecutionStatus.FAILED,
     ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
     ExecutionStatus.LOST,
 }
 

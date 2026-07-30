@@ -135,6 +135,11 @@ class ExecutionRecord(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"), index=True
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    attempt_group: Mapped[str | None] = mapped_column(String(64), index=True)
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     executor_type: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     argv_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

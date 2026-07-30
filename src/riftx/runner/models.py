@@ -16,6 +16,9 @@ class ExecutionLaunchRequest(BaseModel):
     execution_key: str = Field(min_length=1)
     execution_id: str | None = Field(default=None, min_length=1)
     run_id: str = Field(min_length=1)
+    session_id: str | None = Field(default=None, min_length=1)
+    tool_call_id: str | None = Field(default=None, min_length=1)
+    attempt_group: str | None = Field(default=None, min_length=1)
     node_id: str = Field(min_length=1)
     executor_type: ExecutorType
     cwd: Path

@@ -11,6 +11,7 @@ from riftx.application.errors import EntityNotFoundError
 from riftx.domain import Execution, ExecutionStatus, TerminalSession, TerminalStatus
 
 _ACTIVE_STATUSES = {
+    ExecutionStatus.QUEUED,
     ExecutionStatus.CREATED,
     ExecutionStatus.STARTING,
     ExecutionStatus.RUNNING,

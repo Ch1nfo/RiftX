@@ -30,6 +30,8 @@ from .render import (
     render_artifacts,
     render_error,
     render_event,
+    render_execution,
+    render_executions,
     render_node,
     render_nodes,
     render_report,
@@ -50,12 +52,14 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
+execution_app = typer.Typer(help="Inspect and cancel durable Executions.")
 nodes_app = typer.Typer(help="Register and inspect execution nodes.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
 terminal_app = typer.Typer(help="Create and control interactive terminal sessions.")
 artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 app.add_typer(run_app, name="run")
+app.add_typer(execution_app, name="execution")
 app.add_typer(nodes_app, name="node")
 app.add_typer(tools_app, name="tools")
 app.add_typer(terminal_app, name="terminal")
@@ -650,6 +654,48 @@ def watch_run(
     except (RiftXAPIError, httpx.HTTPError) as exc:
         render_error(console, exc)
         raise typer.Exit(1) from exc
+
+
+@execution_app.command("show")
+def show_execution(
+    context: typer.Context,
+    execution_id: Annotated[str, typer.Argument(help="Execution ID.")],
+) -> None:
+    """Show one durable Execution."""
+
+    _run_with_client(
+        context,
+        lambda client: render_execution(console, client.get_execution(execution_id)),
+    )
+
+
+@execution_app.command("list")
+def list_executions(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Option("--run", help="Run ID.")],
+    limit: Annotated[int, typer.Option(min=1, max=1000)] = 100,
+    offset: Annotated[int, typer.Option(min=0)] = 0,
+) -> None:
+    """List durable Executions for a Run."""
+
+    def operation(client: APIClient) -> None:
+        payload = client.list_executions(run_id, limit=limit, offset=offset)
+        render_executions(console, payload.get("items", []))
+
+    _run_with_client(context, operation)
+
+
+@execution_app.command("cancel")
+def cancel_execution(
+    context: typer.Context,
+    execution_id: Annotated[str, typer.Argument(help="Execution ID.")],
+) -> None:
+    """Request cancellation of one durable Execution."""
+
+    _run_with_client(
+        context,
+        lambda client: render_execution(console, client.cancel_execution(execution_id)),
+    )
 
 
 @nodes_app.command("list")

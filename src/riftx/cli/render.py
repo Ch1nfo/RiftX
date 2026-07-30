@@ -105,6 +105,49 @@ def render_run(console: Console, run: dict[str, Any]) -> None:
     console.print(Panel(body, title="RiftX Run", border_style="cyan"))
 
 
+def render_executions(console: Console, executions: Iterable[dict[str, Any]]) -> None:
+    items = list(executions)
+    if not items:
+        console.print("[dim]No executions found.[/dim]")
+        return
+    table = Table(title="Executions", expand=True)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Status")
+    table.add_column("Session")
+    table.add_column("Tool Call")
+    table.add_column("Attempt")
+    table.add_column("Command")
+    for execution in items:
+        command = execution.get("command_text") or " ".join(execution.get("argv", []))
+        table.add_row(
+            str(execution.get("id", "")),
+            _status_text(str(execution.get("status", "unknown"))),
+            str(execution.get("session_id") or "—"),
+            str(execution.get("tool_call_id") or "—"),
+            str(execution.get("attempt_group") or "—"),
+            str(command),
+        )
+    console.print(table)
+
+
+def render_execution(console: Console, execution: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row("ID", str(execution.get("id", "")))
+    body.add_row("Status", _status_text(str(execution.get("status", "unknown"))))
+    body.add_row("Run", str(execution.get("run_id", "")))
+    body.add_row("Session", str(execution.get("session_id") or "—"))
+    body.add_row("Tool Call", str(execution.get("tool_call_id") or "—"))
+    body.add_row("Attempt", str(execution.get("attempt_group") or "—"))
+    body.add_row("Node", str(execution.get("node_id", "")))
+    body.add_row("PID", str(execution.get("pid") or "—"))
+    exit_code = execution.get("exit_code")
+    body.add_row("Exit code", str(exit_code if exit_code is not None else "—"))
+    body.add_row("Execution key", str(execution.get("execution_key", "")))
+    console.print(Panel(body, title="Execution", border_style="cyan"))
+
+
 def render_tools(console: Console, payload: dict[str, Any]) -> None:
     table = Table(
         title=(
@@ -284,7 +327,10 @@ def _status_text(status: str) -> Text:
         "paused": "yellow",
         "failed": "red",
         "cancelled": "red",
+        "queued": "blue",
+        "starting": "blue",
         "created": "blue",
+        "hard_timeout": "red",
         "preparing": "blue",
         "online": "green",
         "degraded": "yellow",

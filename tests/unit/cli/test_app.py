@@ -60,6 +60,20 @@ class FakeAPIClient:
         self.calls.append(("compact_run", (run_id, max_history_items)))
         return {"run": {"id": run_id, "status": "running"}}
 
+    def get_execution(self, execution_id: str) -> dict[str, Any]:
+        self.calls.append(("get_execution", execution_id))
+        return self._execution(execution_id)
+
+    def list_executions(
+        self, run_id: str, *, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
+        self.calls.append(("list_executions", (run_id, limit, offset)))
+        return {"items": [self._execution("execution-1")]}
+
+    def cancel_execution(self, execution_id: str) -> dict[str, Any]:
+        self.calls.append(("cancel_execution", execution_id))
+        return {**self._execution(execution_id), "status": "cancelled"}
+
     def list_nodes(self, *, status: str | None = None) -> dict[str, Any]:
         self.calls.append(("list_nodes", status))
         return {"items": [self._node("node-1")]}
@@ -195,6 +209,22 @@ class FakeAPIClient:
     def get_report(self, report_id: str) -> dict[str, Any]:
         self.calls.append(("get_report", report_id))
         return self._report(report_id, "run-1")
+
+    @staticmethod
+    def _execution(execution_id: str) -> dict[str, Any]:
+        return {
+            "id": execution_id,
+            "execution_key": "execution:v1:test",
+            "run_id": "run-1",
+            "session_id": "session-1",
+            "tool_call_id": "tool-call-1",
+            "attempt_group": "initial",
+            "node_id": "local",
+            "status": "running",
+            "argv": ["echo", "ok"],
+            "pid": 123,
+            "exit_code": None,
+        }
 
     @staticmethod
     def _node(node_id: str) -> dict[str, Any]:
@@ -451,6 +481,21 @@ def test_artifact_commands_delegate_to_shared_control_plane() -> None:
         )
     ]
     assert FakeAPIClient.instances[2].calls == [("get_artifact", "artifact-1")]
+
+
+def test_execution_commands_query_and_cancel_durable_execution() -> None:
+    shown = runner.invoke(cli_module.app, ["execution", "show", "execution-1"])
+    listed = runner.invoke(cli_module.app, ["execution", "list", "--run", "run-1"])
+    cancelled = runner.invoke(cli_module.app, ["execution", "cancel", "execution-1"])
+
+    assert shown.exit_code == 0, shown.output
+    assert listed.exit_code == 0, listed.output
+    assert cancelled.exit_code == 0, cancelled.output
+    assert FakeAPIClient.instances[0].calls == [("get_execution", "execution-1")]
+    assert FakeAPIClient.instances[1].calls == [
+        ("list_executions", ("run-1", 100, 0))
+    ]
+    assert FakeAPIClient.instances[2].calls == [("cancel_execution", "execution-1")]
 
 
 def test_node_commands_delegate_to_shared_control_plane() -> None:

@@ -26,13 +26,18 @@ class RunStatus(StrEnum):
 
 
 class ExecutionStatus(StrEnum):
-    CREATED = "created"
+    QUEUED = "queued"
     STARTING = "starting"
     RUNNING = "running"
-    EXITED = "exited"
+    COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    HARD_TIMEOUT = "hard_timeout"
     LOST = "lost"
+
+    # V2 compatibility states. New Agent Runtime executions use QUEUED/COMPLETED.
+    CREATED = "created"
+    EXITED = "exited"
 
 
 class ApprovalMode(StrEnum):

@@ -38,6 +38,12 @@ def sqlite_tables(database_path: Path) -> set[str]:
     return {row[0] for row in rows}
 
 
+def sqlite_columns(database_path: Path, table: str) -> set[str]:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1] for row in rows}
+
+
 def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
     tmp_path: Path,
 ) -> None:
@@ -93,6 +99,9 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
 
     run_alembic(database_path, "head")
     assert RUNTIME_TABLES <= sqlite_tables(database_path)
+    assert {"session_id", "tool_call_id", "attempt_group"} <= sqlite_columns(
+        database_path, "executions"
+    )
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
             "Existing V2 run",
@@ -117,6 +126,10 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
             os.environ["RIFTX_DATABASE_URL"] = old_url
 
     assert not (RUNTIME_TABLES & sqlite_tables(database_path))
+    assert not (
+        {"session_id", "tool_call_id", "attempt_group"}
+        & sqlite_columns(database_path, "executions")
+    )
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone() == (1,)
         assert connection.execute(

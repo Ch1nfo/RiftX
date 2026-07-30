@@ -263,3 +263,26 @@ def test_artifact_client_uses_control_plane_endpoints() -> None:
         ),
         ("GET", "/api/v1/artifacts/artifact-1", None, {}),
     ]
+
+
+def test_execution_client_uses_query_and_cancel_endpoints() -> None:
+    requests: list[tuple[str, str, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path.endswith("/executions"):
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"id": "execution-1", "status": "running"})
+
+    with APIClient(
+        "http://control-plane", transport=httpx.MockTransport(handler)
+    ) as client:
+        client.get_execution("execution-1")
+        client.list_executions("run-1", limit=25, offset=5)
+        client.cancel_execution("execution-1")
+
+    assert requests == [
+        ("GET", "/api/v1/executions/execution-1", {}),
+        ("GET", "/api/v1/runs/run-1/executions", {"limit": "25", "offset": "5"}),
+        ("POST", "/api/v1/executions/execution-1/cancel", {}),
+    ]
