@@ -75,6 +75,20 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
                 now,
             ),
         )
+        connection.execute(
+            "INSERT INTO agent_messages "
+            "(id, run_id, role, message_type, content, sequence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "message-1",
+                "run-1",
+                "user",
+                "message",
+                '{"role":"user","content":"legacy"}',
+                1,
+                now,
+            ),
+        )
         connection.commit()
 
     run_alembic(database_path, "head")
@@ -83,6 +97,13 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
         assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
             "Existing V2 run",
         )
+        assert connection.execute(
+            "SELECT id, run_id, status FROM agent_sessions WHERE id = 'run-1'"
+        ).fetchone() == ("run-1", "run-1", "active")
+        assert connection.execute(
+            "SELECT session_id, agent_id, message_type, visibility "
+            "FROM agent_messages WHERE id = 'message-1'"
+        ).fetchone() == ("run-1", "primary", "user_message", "user_visible")
 
     config = Config("alembic.ini")
     old_url = os.environ.get("RIFTX_DATABASE_URL")
@@ -98,3 +119,6 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
     assert not (RUNTIME_TABLES & sqlite_tables(database_path))
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT run_id, content FROM agent_messages WHERE id = 'message-1'"
+        ).fetchone() == ("run-1", '{"role":"user","content":"legacy"}')

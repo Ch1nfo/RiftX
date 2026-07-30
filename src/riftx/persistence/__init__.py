@@ -24,6 +24,7 @@ from .runtime_repositories import (
     SQLAlchemyRunLeaseRepository,
     SQLAlchemyToolCallIntentRepository,
 )
+from .transcript_repositories import SQLAlchemyTranscriptRepository
 
 __all__ = [
     "SQLAlchemyAgentCycleRepository",
@@ -46,4 +47,5 @@ __all__ = [
     "SQLAlchemyRunRepository",
     "SQLAlchemyTerminalRepository",
     "SQLAlchemyToolCallIntentRepository",
+    "SQLAlchemyTranscriptRepository",
 ]

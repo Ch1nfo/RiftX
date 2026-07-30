@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from time import monotonic
 
 from riftx.application.errors import EntityNotFoundError
-from riftx.domain import DomainError, Run, RunStatus
+from riftx.domain import (
+    DomainError,
+    MessageRole,
+    MessageType,
+    MessageVisibility,
+    Run,
+    RunStatus,
+    TranscriptMessageDraft,
+)
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentCycleRepository,
@@ -14,6 +23,7 @@ from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyProviderStateRepository,
 )
+from riftx.persistence.transcript_repositories import SQLAlchemyTranscriptRepository
 from riftx.runtime.engine import (
     AgentEngine,
     AgentEngineEvent,
@@ -76,6 +86,7 @@ class RuntimeCoordinator:
         lease_manager: DatabaseRunLeaseManager,
         context_compiler: ContextCompiler,
         agent_engine: AgentEngine,
+        transcript_repository: SQLAlchemyTranscriptRepository | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -88,6 +99,7 @@ class RuntimeCoordinator:
         self._leases = lease_manager
         self._context_compiler = context_compiler
         self._agent_engine = agent_engine
+        self._transcript = transcript_repository
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -105,6 +117,7 @@ class RuntimeCoordinator:
             if session is None or session.run_id != request.run_id:
                 raise EntityNotFoundError("AgentSession", request.session_id)
             await self._ensure_active_session(session)
+            latest_user_message_id = await self._persist_cycle_input(session, request)
 
             existing_cycles = await self._cycles.list_by_session(session.id)
             cycle = AgentCycle(
@@ -132,7 +145,7 @@ class RuntimeCoordinator:
                     session_id=session.id,
                     agent_id=session.agent_type,
                     model_profile=session.model_profile,
-                    latest_user_message_id=request.latest_user_message_id,
+                    latest_user_message_id=latest_user_message_id,
                     objective=run.objective.description,
                     input_text=request.input_text,
                     input_items=request.input_items,
@@ -159,10 +172,18 @@ class RuntimeCoordinator:
             started_at = self._clock()
             pending_tool = False
             approval_required = False
+            assistant_message_seen = False
             step_sequence = 0
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
+                await self._persist_engine_transcript(
+                    session,
+                    event,
+                    skip_final_output=assistant_message_seen,
+                )
+                if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE:
+                    assistant_message_seen = True
                 if self._clock() - started_at >= self._limits.max_duration_seconds:
                     return await self._yield_cycle(
                         run.id,
@@ -306,6 +327,97 @@ class RuntimeCoordinator:
             await self._sessions.save(session)
             await self._append(session.run_id, SESSION_ACTIVATED, {"session_id": session.id})
 
+    async def _persist_cycle_input(
+        self, session: AgentSession, request: RunCycleRequest
+    ) -> str | None:
+        latest_message_id = request.latest_user_message_id
+        if self._transcript is None or latest_message_id is not None:
+            return latest_message_id
+        drafts: list[TranscriptMessageDraft] = []
+        if request.input_text:
+            drafts.append(
+                TranscriptMessageDraft(
+                    agent_id=session.agent_type,
+                    role=MessageRole.USER,
+                    message_type=MessageType.USER_MESSAGE,
+                    content=request.input_text,
+                    visibility=MessageVisibility.USER_VISIBLE,
+                )
+            )
+        for item in request.input_items:
+            if item.get("role") != MessageRole.USER.value:
+                continue
+            drafts.append(
+                TranscriptMessageDraft(
+                    agent_id=session.agent_type,
+                    role=MessageRole.USER,
+                    message_type=MessageType.USER_MESSAGE,
+                    content=_event_content(item),
+                    structured_content=item,
+                    visibility=MessageVisibility.USER_VISIBLE,
+                )
+            )
+        if not drafts:
+            return None
+        messages = await self._transcript.append_many(session.id, drafts)
+        return messages[-1].id
+
+    async def _persist_engine_transcript(
+        self,
+        session: AgentSession,
+        event: AgentEngineEvent,
+        *,
+        skip_final_output: bool,
+    ) -> None:
+        if self._transcript is None:
+            return
+        if event.event_type is AgentEngineEventType.FINAL_OUTPUT and skip_final_output:
+            return
+        mapping = {
+            AgentEngineEventType.ASSISTANT_MESSAGE: (
+                MessageRole.ASSISTANT,
+                MessageType.ASSISTANT_MESSAGE,
+                MessageVisibility.USER_VISIBLE,
+            ),
+            AgentEngineEventType.FINAL_OUTPUT: (
+                MessageRole.ASSISTANT,
+                MessageType.ASSISTANT_MESSAGE,
+                MessageVisibility.USER_VISIBLE,
+            ),
+            AgentEngineEventType.TOOL_CALL_READY: (
+                MessageRole.ASSISTANT,
+                MessageType.TOOL_CALL,
+                MessageVisibility.AGENT_ONLY,
+            ),
+            AgentEngineEventType.SUBAGENT_REQUESTED: (
+                MessageRole.ASSISTANT,
+                MessageType.SUBAGENT_DELEGATION,
+                MessageVisibility.AGENT_ONLY,
+            ),
+            AgentEngineEventType.PLAN_UPDATE: (
+                MessageRole.ASSISTANT,
+                MessageType.ASSISTANT_MESSAGE,
+                MessageVisibility.AGENT_ONLY,
+            ),
+        }
+        metadata = mapping.get(event.event_type)
+        if metadata is None:
+            return
+        role, message_type, visibility = metadata
+        tool_call_id = event.data.get("call_id")
+        await self._transcript.append(
+            session.id,
+            TranscriptMessageDraft(
+                agent_id=session.agent_type,
+                role=role,
+                message_type=message_type,
+                content=_event_content(event.data),
+                structured_content=event.data,
+                tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+                visibility=visibility,
+            ),
+        )
+
     async def _persist_step(
         self, cycle: AgentCycle, sequence: int, event: AgentEngineEvent
     ) -> None:
@@ -348,8 +460,24 @@ class RuntimeCoordinator:
             await self._provider_states.create(provider_state)
             provider_state_id = provider_state.id
             session.provider_state_id = provider_state.id
+        session.turn_count += cycle.model_call_count
         session.model_call_count += cycle.model_call_count
         session.tool_call_count += cycle.tool_call_count
+        if self._transcript is not None:
+            await self._transcript.append(
+                session.id,
+                TranscriptMessageDraft(
+                    agent_id=session.agent_type,
+                    role=MessageRole.SYSTEM,
+                    message_type=MessageType.CHECKPOINT_BOUNDARY,
+                    structured_content={
+                        "cycle_id": cycle.id,
+                        "yield_reason": reason.value,
+                        "provider_state_id": provider_state_id,
+                    },
+                    visibility=MessageVisibility.INTERNAL_STATE,
+                ),
+            )
         await self._sessions.save(session)
         self._state_machine.transition_cycle(
             cycle,
@@ -394,3 +522,11 @@ class RuntimeCoordinator:
 
     async def _append(self, run_id: str, event_type: str, payload: dict[str, object]) -> None:
         await self._events.append(run_id, event_type, payload)
+
+
+def _event_content(data: dict[str, object]) -> str:
+    for key in ("text", "output", "content", "message", "delta"):
+        value = data.get(key)
+        if isinstance(value, str):
+            return value
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)

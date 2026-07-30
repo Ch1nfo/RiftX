@@ -14,6 +14,8 @@ from .enums import (
     FindingSeverity,
     FindingStatus,
     MessageRole,
+    MessageType,
+    MessageVisibility,
     NodeStatus,
     ReportFormat,
     RunnerCommandKind,
@@ -27,7 +29,7 @@ from .errors import DomainError, InvalidStateTransitionError
 from .event import RunEvent
 from .execution import AgentStep, Execution, TerminalSession, ToolCall
 from .finding import Finding, FindingEvidence
-from .message import AgentCheckpoint, AgentMessage
+from .message import AgentCheckpoint, AgentMessage, TranscriptMessageDraft
 from .node import Node
 from .report import Report
 from .run import EntryPoint, Objective, Run, Scope, SuccessCriterion
@@ -59,6 +61,8 @@ __all__ = [
     "FindingStatus",
     "InvalidStateTransitionError",
     "MessageRole",
+    "MessageType",
+    "MessageVisibility",
     "Node",
     "NodeStatus",
     "Objective",
@@ -75,6 +79,7 @@ __all__ = [
     "Skill",
     "SuccessCriterion",
     "TerminalOwner",
+    "TranscriptMessageDraft",
     "TerminalSession",
     "TerminalStatus",
     "Tool",

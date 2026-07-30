@@ -19,6 +19,7 @@ from riftx.domain import (
     FindingEvidence,
     FindingSeverity,
     MessageRole,
+    MessageType,
     Node,
     Objective,
     Report,
@@ -106,7 +107,10 @@ def representative_models() -> list[object]:
         ),
         AgentMessage(
             run_id=run.id,
+            session_id="session-1",
+            agent_id="primary",
             role=MessageRole.USER,
+            message_type=MessageType.USER_MESSAGE,
             content="Start",
             sequence=1,
         ),

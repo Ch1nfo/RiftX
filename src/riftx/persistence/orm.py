@@ -67,16 +67,31 @@ class RunRecord(Base):
 class AgentMessageRecord(Base):
     __tablename__ = "agent_messages"
     __table_args__ = (
-        UniqueConstraint("run_id", "sequence", name="uq_agent_messages_run_sequence"),
+        UniqueConstraint("session_id", "sequence", name="uq_agent_messages_session_sequence"),
+        Index("ix_agent_messages_session_created", "session_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    parent_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_messages.id", ondelete="SET NULL"), index=True
+    )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
-    message_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    content: Mapped[str | None] = mapped_column(Text)
+    structured_content_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    tool_call_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    compacted_by_checkpoint_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    token_count: Mapped[int | None] = mapped_column(Integer)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 

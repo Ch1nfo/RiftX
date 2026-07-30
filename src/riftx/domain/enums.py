@@ -149,3 +149,21 @@ class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+
+
+class MessageType(StrEnum):
+    USER_MESSAGE = "user_message"
+    ASSISTANT_MESSAGE = "assistant_message"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT_REFERENCE = "tool_result_reference"
+    SUBAGENT_DELEGATION = "subagent_delegation"
+    SUBAGENT_RESULT = "subagent_result"
+    APPROVAL = "approval"
+    CHECKPOINT_BOUNDARY = "checkpoint_boundary"
+
+
+class MessageVisibility(StrEnum):
+    USER_VISIBLE = "user_visible"
+    AGENT_ONLY = "agent_only"
+    INTERNAL_STATE = "internal_state"
+    SUBAGENT_PRIVATE = "subagent_private"
