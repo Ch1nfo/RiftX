@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave G are complete; Wave H is active and QA-02 is unblocked.
+Wave A through Wave H are complete; the Post-V2 task pack is complete.
 
 ## Completed
 
@@ -34,6 +34,7 @@ Wave A through Wave G are complete; Wave H is active and QA-02 is unblocked.
 - [x] WEB-04 Managed Browser 与用户接管
 - [x] WEB-05 Browser 与 Burp Connector
 - [x] QA-01 Long-Horizon 与 Recovery Eval
+- [x] QA-02 性能、观测与发布门禁
 
 ## Task Record
 
@@ -768,6 +769,31 @@ Wave A through Wave G are complete; Wave H is active and QA-02 is unblocked.
   - Fault points use controlled one-shot exceptions at the precise durable boundaries rather than sending an operating-system `SIGKILL`; recovery reconstructs the relevant service/adapter graph and verifies persisted identity and state.
   - Browser recovery and takeover use the injectable browser engine rather than a live Chromium binary. The real Browser adapter remains covered by WEB-04's contract tests and requires Runner-side Chromium installation for an interactive smoke test.
 - Next dependency: QA-02 is unblocked.
+
+### QA-02
+
+- Branch: `codex/qa-02-release-gates`
+- Commit: `6b67572 feat(observability): add runtime metrics and release gates`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+  - Result: full suite `618 passed, 2 skipped`; Ruff passed; Alembic has one head `e4b7c1d9a305`; release gate reported `ready=true` with all `15/15` gates passed; diff check clean.
+- Migration: None.
+- Core delivery:
+  - Added Run-scoped runtime observability for all 11 required metrics: Task Completion Rate, Repeated Tool Call Rate, Invalid Tool Call Rate, Recovery Success Rate, Execution Duplication Rate, Compaction Fidelity, Context Token Efficiency, Subagent Utility, Approval Resume Success Rate, Browser Action Failure Rate, and Citation Coverage.
+  - Metrics are computed on demand from durable SQL state through a dedicated repository and service. The long-horizon gate proves all 11 metrics are available and keeps aggregation within a fixed budget of at most 11 SQL queries.
+  - Added `GET /api/v1/runs/{run_id}/metrics` and `riftx run metrics RUN_ID`; API and CLI share the same production observability service and unavailable metrics retain explicit `available=false`, `value=null` semantics.
+  - Added a machine-readable 15-item `ReleaseGate`, executable pytest evidence selectors, and `scripts/qa/release-gate.py`; the final local qualification run passed every gate and returned `ready=true`.
+  - Extended the QA-01 durable long-horizon scenario with source evidence and reconciliation observations so the final release gate evaluates metrics against persisted recovery, execution, context, subagent, approval, browser, and citation state.
+- Known limitations:
+  - Metrics are Run-scoped, on-demand SQL snapshots rather than a Prometheus-compatible time-series store.
+  - Metrics with no observable denominator are explicitly unavailable rather than reported as zero percent.
+  - Release qualification is based on executable pytest evidence selectors and does not provide an externally signed CI attestation.
+- Next dependency: None; the Post-V2 task pack is complete.
 
 ## Architecture Deviations
 
