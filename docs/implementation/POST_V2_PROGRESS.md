@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and Wave B are complete; Wave C is active and CTX-02 is unblocked.
+Wave A and Wave B are complete; Wave C is active and CTX-03 is unblocked.
 
 ## Completed
 
@@ -15,6 +15,7 @@ Wave A and Wave B are complete; Wave C is active and CTX-02 is unblocked.
 - [x] EX-03 Execution Reconciliation
 - [x] EX-04 动态 Tool Search 与 Progressive Skill
 - [x] CTX-01 Artifact Spill 与 Tool Result Processor
+- [x] CTX-02 Context Manifest 与 Token Accounting
 
 ## Task Record
 
@@ -216,6 +217,32 @@ Wave A and Wave B are complete; Wave C is active and CTX-02 is unblocked.
   - Deterministic structured parsing is capped at 8 MiB per output; larger machine-readable output remains fully preserved as a Raw Artifact and falls back to bounded generic summarization.
   - CTX-01 provides the processing contract but does not yet persist Context Manifest or model token usage; those are CTX-02 responsibilities.
 - Next dependency: CTX-02 is unblocked.
+
+### CTX-02
+
+- Branch: `codex/ctx-02-context-manifest`
+- Commit: `5a01f08 feat(context): persist manifests and token usage`
+- Completed at: `2026-07-30 14:42 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py migrations/versions/c3b8a7d5e921_add_context_compilations.py`
+  - `git diff --check`
+  - Result: `442 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `c3b8a7d5e921_add_context_compilations.py`
+- Core delivery:
+  - Added typed `ContextManifest`, `ContextCompilation`, and `ContextCategoryUsage` contracts with all nine required categories present even when empty.
+  - `ManifestingContextCompiler` wraps the existing Context Compiler boundary, classifies the actual compiled payload, estimates category and total tokens, preserves dynamic Tool/Skill visibility metadata, and durably saves every compilation.
+  - Tool Schema payloads receive independent item, character, token, and source-reference accounting; Working Memory, Conversation, Tool Results, Retrieved Memory, and Subagent Result items can be classified explicitly or by deterministic input type.
+  - The new `context_compilations` table and SQLAlchemy repository persist manifests, estimates, loaded Memory IDs, checkpoints, and actual input/output usage with latest-by-Session and latest-by-Run lookup.
+  - Runtime Coordinator automatically detects an observable compiler and backfills provider `input_tokens`/`output_tokens` (including prompt/completion aliases) from durable Agent Engine Usage events.
+  - Added `GET /api/v1/sessions/{session_id}/context`, `GET /api/v1/context-compilations/{id}`, and a Run-scoped inspector convenience endpoint used by the interactive `/context` command.
+  - CLI Context Inspector renders every category plus estimated and actual token totals.
+- Required scenarios:
+  - Empty Context, multi-category Context, Tool Schema token accounting, model Usage backfill through Runtime Coordinator, persistence/reload, migration upgrade/downgrade, API inspection, API client routing, and `/context` rendering are covered by executable tests.
+- Known limitations:
+  - Token estimates intentionally use a deterministic provider-neutral character heuristic; actual provider usage remains authoritative after the Usage event is received.
+  - Provider SDKs that perform multiple internal turns currently attach their aggregate Usage to the compilation that launched the engine invocation; per-provider-call spans can be added without changing the persisted Manifest contract.
+- Next dependency: CTX-03 is unblocked.
 
 ## Architecture Deviations
 
