@@ -6,6 +6,21 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 
+class RuntimeYieldReason(StrEnum):
+    TOOL_RUNNING = "tool_running"
+    TERMINAL_OPEN = "terminal_open"
+    APPROVAL_REQUIRED = "approval_required"
+    USER_INPUT_REQUIRED = "user_input_required"
+    SUBAGENT_RUNNING = "subagent_running"
+    COMPACTION_REQUIRED = "compaction_required"
+    CYCLE_LIMIT_REACHED = "cycle_limit_reached"
+    RUN_COMPLETED = "run_completed"
+    RUN_PAUSED = "run_paused"
+    RUN_CANCELLED = "run_cancelled"
+    RETRYABLE_FAILURE = "retryable_failure"
+    FATAL_FAILURE = "fatal_failure"
+
+
 class WorkflowPhase(StrEnum):
     PREPARING = "preparing"
     AGENT_CYCLE = "agent_cycle"
@@ -67,6 +82,27 @@ class AgentCycleActivityResult:
     pending_approvals: list[PendingApproval] = field(default_factory=list)
     active_execution_id: str | None = None
     summary: str | None = None
+
+
+@dataclass
+class RunAgentCycleActivityInput:
+    run_id: str
+    session_id: str
+    cycle_id: str
+    worker_id: str
+    latest_user_message_id: str | None = None
+    completed_execution_id: str | None = None
+    approval_id: str | None = None
+
+
+@dataclass
+class RunAgentCycleActivityResult:
+    run_id: str
+    session_id: str
+    cycle_id: str
+    yield_reason: RuntimeYieldReason
+    waiting_object_id: str | None = None
+    checkpoint_id: str | None = None
 
 
 @dataclass

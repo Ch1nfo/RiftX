@@ -73,6 +73,8 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
     RuntimeStateMachine().transition_cycle(
         cycle, CycleStatus.YIELDED, yield_reason=YieldReason.TOOL_RUNNING
     )
+    cycle.waiting_object_id = "execution-1"
+    cycle.checkpoint_id = "checkpoint-1"
     await cycles.save(cycle)
 
     step = AgentStep(

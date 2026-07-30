@@ -17,6 +17,7 @@ from riftx.domain import (
     RunStatus,
     TranscriptMessageDraft,
 )
+from riftx.domain.base import new_id
 from riftx.execution import DeferredExecutionDispatcher
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
@@ -31,7 +32,9 @@ from riftx.runtime.engine import (
     AgentEngineEvent,
     AgentEngineEventType,
     AgentEngineRequest,
+    AgentEngineResumeRequest,
     AgentEngineRun,
+    AgentEngineState,
 )
 from riftx.runtime.events import (
     CONTEXT_COMPILED,
@@ -128,6 +131,10 @@ class RuntimeCoordinator:
         await self._append(request.run_id, LEASE_ACQUIRED, {"owner_id": request.worker_id})
         cycle: AgentCycle | None = None
         try:
+            if request.cycle_id is not None:
+                existing = await self._cycles.get(request.cycle_id)
+                if existing is not None:
+                    return self._completed_cycle_result(request, existing)
             run = await self._runs.get(request.run_id)
             if run is None:
                 raise EntityNotFoundError("Run", request.run_id)
@@ -140,6 +147,7 @@ class RuntimeCoordinator:
 
             existing_cycles = await self._cycles.list_by_session(session.id)
             cycle = AgentCycle(
+                id=request.cycle_id or new_id(),
                 run_id=run.id,
                 session_id=session.id,
                 sequence=len(existing_cycles) + 1,
@@ -197,15 +205,25 @@ class RuntimeCoordinator:
                     "context_manifest": compiled.context_manifest,
                 },
             )
-            engine_run = await self._agent_engine.start(
-                AgentEngineRequest(
-                    session_id=session.id,
-                    model=session.model_profile,
-                    input_items=compiled.input_items,
-                    context=compiled,
-                    max_turns=self._limits.max_model_calls,
-                )
+            engine_request = AgentEngineRequest(
+                session_id=session.id,
+                model=session.model_profile,
+                input_items=compiled.input_items,
+                context=compiled,
+                max_turns=self._limits.max_model_calls,
             )
+            if session.provider_state_id is not None:
+                provider_state = await self._provider_states.get(session.provider_state_id)
+                if provider_state is None:
+                    raise EntityNotFoundError("ProviderState", session.provider_state_id)
+                engine_run = await self._agent_engine.resume(
+                    AgentEngineResumeRequest(
+                        **engine_request.model_dump(),
+                        state=AgentEngineState.from_provider_state(provider_state),
+                    )
+                )
+            else:
+                engine_run = await self._agent_engine.start(engine_request)
             started_at = self._clock()
             pending_tool = False
             approval_required = False
@@ -358,6 +376,31 @@ class RuntimeCoordinator:
         finally:
             await lease.release()
             await self._append(request.run_id, LEASE_RELEASED, {"owner_id": request.worker_id})
+
+    def _completed_cycle_result(
+        self,
+        request: RunCycleRequest,
+        cycle: AgentCycle,
+    ) -> RunCycleResult:
+        if cycle.run_id != request.run_id or cycle.session_id != request.session_id:
+            raise DomainError(
+                f"Cycle {cycle.id!r} does not belong to Run/Session "
+                f"{request.run_id!r}/{request.session_id!r}"
+            )
+        if cycle.status is not CycleStatus.YIELDED or cycle.yield_reason is None:
+            raise DomainError(
+                f"Cycle {cycle.id!r} cannot be replayed from status {cycle.status.value!r}"
+            )
+        return RunCycleResult(
+            run_id=cycle.run_id,
+            session_id=cycle.session_id,
+            cycle_id=cycle.id,
+            yield_reason=cycle.yield_reason,
+            model_call_count=cycle.model_call_count,
+            tool_call_count=cycle.tool_call_count,
+            provider_state_id=cycle.checkpoint_id,
+            waiting_execution_id=cycle.waiting_object_id,
+        )
 
     async def _ensure_run_running(self, run: Run) -> Run:
         if run.status is RunStatus.CREATED:
@@ -558,6 +601,8 @@ class RuntimeCoordinator:
             CycleStatus.YIELDED,
             yield_reason=reason,
         )
+        cycle.waiting_object_id = waiting_execution_id
+        cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
         await self._cycles.save(cycle)
         await self._transition_run_for_yield(run_id, reason)
         await self._append(

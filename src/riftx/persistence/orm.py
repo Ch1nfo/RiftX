@@ -398,6 +398,8 @@ class AgentCycleRecord(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     yield_reason: Mapped[str | None] = mapped_column(String(64))
+    waiting_object_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    checkpoint_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())

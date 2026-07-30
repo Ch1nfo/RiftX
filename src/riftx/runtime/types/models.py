@@ -46,6 +46,8 @@ class AgentCycle(DomainModel):
     sequence: int = Field(ge=1)
     status: CycleStatus = CycleStatus.CREATED
     yield_reason: YieldReason | None = None
+    waiting_object_id: str | None = None
+    checkpoint_id: str | None = None
     model_call_count: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)
     started_at: AwareDatetime | None = None

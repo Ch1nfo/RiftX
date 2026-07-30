@@ -66,6 +66,7 @@ class FakeEngine:
         self.run = FakeEngineRun(events)
         self.start_error = start_error
         self.requests: list[object] = []
+        self.resume_requests: list[object] = []
 
     async def start(self, request: object) -> FakeEngineRun:
         self.requests.append(request)
@@ -74,6 +75,7 @@ class FakeEngine:
         return self.run
 
     async def resume(self, request: object) -> FakeEngineRun:
+        self.resume_requests.append(request)
         return self.run
 
 
@@ -199,6 +201,71 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert session.status is SessionStatus.ACTIVE
     run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
     assert run is not None and run.status is RunStatus.COMPLETED
+    await database.dispose()
+
+
+async def test_activity_retry_reuses_persisted_cycle_result(tmp_path: Path) -> None:
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [
+            event(1, AgentEngineEventType.RUN_STARTED),
+            event(2, AgentEngineEventType.RUN_COMPLETED),
+        ],
+    )
+    request = RunCycleRequest(
+        run_id="run-1",
+        session_id="session-1",
+        worker_id="temporal-workflow-1",
+        cycle_id="temporal-cycle-1",
+    )
+
+    first = await coordinator.run_cycle(request)
+    replayed = await coordinator.run_cycle(request)
+
+    assert replayed == first
+    assert replayed.cycle_id == "temporal-cycle-1"
+    assert len(engine.requests) == 1
+    await database.dispose()
+
+
+async def test_next_cycle_resumes_persisted_provider_state(tmp_path: Path) -> None:
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [
+            event(1, AgentEngineEventType.RUN_STARTED),
+            event(
+                2,
+                AgentEngineEventType.ASSISTANT_MESSAGE,
+                content="Need operator input",
+                requires_user_input=True,
+            ),
+        ],
+    )
+    first = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="temporal-worker",
+            cycle_id="cycle-1",
+        )
+    )
+    engine.run = FakeEngineRun([event(1, AgentEngineEventType.RUN_COMPLETED)])
+
+    second = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="temporal-worker",
+            cycle_id="cycle-2",
+        )
+    )
+
+    assert first.provider_state_id is not None
+    assert second.yield_reason is YieldReason.RUN_COMPLETED
+    assert len(engine.requests) == 1
+    assert len(engine.resume_requests) == 1
+    resumed = engine.resume_requests[0]
+    assert resumed.state.engine_type == "fake"
     await database.dispose()
 
 

@@ -113,6 +113,9 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
     assert {"version", "state_json", "updated_at"} <= sqlite_columns(
         database_path, "working_memories"
     )
+    assert {"waiting_object_id", "checkpoint_id"} <= sqlite_columns(
+        database_path, "agent_cycles"
+    )
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
             "Existing V2 run",

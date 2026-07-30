@@ -83,6 +83,8 @@ def agent_cycle_to_record(cycle: AgentCycle) -> AgentCycleRecord:
         sequence=cycle.sequence,
         status=cycle.status.value,
         yield_reason=cycle.yield_reason.value if cycle.yield_reason else None,
+        waiting_object_id=cycle.waiting_object_id,
+        checkpoint_id=cycle.checkpoint_id,
         model_call_count=cycle.model_call_count,
         tool_call_count=cycle.tool_call_count,
         started_at=cycle.started_at,
@@ -93,6 +95,8 @@ def agent_cycle_to_record(cycle: AgentCycle) -> AgentCycleRecord:
 def apply_agent_cycle_to_record(cycle: AgentCycle, record: AgentCycleRecord) -> None:
     record.status = cycle.status.value
     record.yield_reason = cycle.yield_reason.value if cycle.yield_reason else None
+    record.waiting_object_id = cycle.waiting_object_id
+    record.checkpoint_id = cycle.checkpoint_id
     record.model_call_count = cycle.model_call_count
     record.tool_call_count = cycle.tool_call_count
     record.started_at = cycle.started_at
@@ -107,6 +111,8 @@ def agent_cycle_from_record(record: AgentCycleRecord) -> AgentCycle:
         sequence=record.sequence,
         status=CycleStatus(record.status),
         yield_reason=YieldReason(record.yield_reason) if record.yield_reason else None,
+        waiting_object_id=record.waiting_object_id,
+        checkpoint_id=record.checkpoint_id,
         model_call_count=record.model_call_count,
         tool_call_count=record.tool_call_count,
         started_at=record.started_at,

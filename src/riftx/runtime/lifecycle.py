@@ -110,6 +110,7 @@ class RunCycleRequest(DomainModel):
     run_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     worker_id: str = Field(min_length=1)
+    cycle_id: str | None = None
     input_text: str | None = None
     input_items: list[dict[str, object]] = Field(default_factory=list)
     latest_user_message_id: str | None = None
