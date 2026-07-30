@@ -417,3 +417,39 @@ def test_node_commands_delegate_to_shared_control_plane() -> None:
     assert FakeAPIClient.instances[0].calls == [("list_nodes", "online")]
     assert FakeAPIClient.instances[1].calls == [("get_node", "node-1")]
     assert FakeAPIClient.instances[2].calls == [("disconnect_node", "node-1")]
+
+
+def test_cli_loads_explicit_config_and_derives_api_url(tmp_path: Any) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text("server:\n  host: config.test\n  port: 9443\n")
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "run", "list"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].base_url == "http://config.test:9443"
+
+
+def test_serve_applies_cli_overrides_after_config(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text("server:\n  host: 0.0.0.0\n  port: 9000\n")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cli_module.uvicorn,
+        "run",
+        lambda application, **kwargs: calls.append({"application": application, **kwargs}),
+    )
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "serve", "--port", "9001"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["host"] == "0.0.0.0"
+    assert calls[0]["port"] == 9001

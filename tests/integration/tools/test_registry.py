@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -150,3 +151,32 @@ async def test_version_probe_timeout_marks_tool_unavailable(tmp_path: Path) -> N
     state = snapshot.states["slow"]
     assert state.availability is ToolAvailability.UNAVAILABLE
     assert "timed out" in (state.reason or "")
+
+
+async def test_registry_atomically_updates_and_reloads_tool_definition(tmp_path: Path) -> None:
+    from riftx.tools import RawToolDefinition
+
+    config_path = tmp_path / "tools.yaml"
+    write_config(config_path, {"custom": custom_tool(capabilities=["first"])})
+    registry = ToolRegistry(config_path, node_id="node-1")
+    first = await registry.refresh()
+
+    updated = await registry.update_tool(
+        "custom",
+        RawToolDefinition(
+            enabled=False,
+            command=[sys.executable, str(FIXTURE)],
+            capabilities=["second", "structured"],
+            timeout=42,
+            environment={"RIFTX_EDITED": "1"},
+        ),
+    )
+    persisted = yaml.safe_load(config_path.read_text())
+
+    assert updated.generation == first.generation + 1
+    assert updated.definitions["custom"].capabilities == ["second", "structured"]
+    assert updated.states["custom"].availability is ToolAvailability.DISABLED
+    assert persisted["tools"]["custom"]["timeout"] == 42
+    assert persisted["tools"]["custom"]["environment"] == {"RIFTX_EDITED": "1"}
+    temporary_files = await asyncio.to_thread(lambda: list(tmp_path.glob(".tools.yaml.*.tmp")))
+    assert not temporary_files

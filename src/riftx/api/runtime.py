@@ -26,6 +26,7 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.config import RiftXConfig, load_riftx_config
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -74,68 +75,30 @@ class APISettings:
     )
 
     @classmethod
-    def from_environment(cls) -> APISettings:
-        defaults = cls()
+    def from_config(cls, config: RiftXConfig) -> APISettings:
         return cls(
-            database_url=os.getenv("RIFTX_DATABASE_URL", defaults.database_url),
-            tools_config_path=Path(
-                os.getenv("RIFTX_TOOLS_CONFIG", str(defaults.tools_config_path))
-            ),
-            node_id=os.getenv("RIFTX_NODE_ID", defaults.node_id),
-            workspace_root=Path(os.getenv("RIFTX_WORKSPACE_ROOT", str(defaults.workspace_root))),
-            runner_state_path=Path(
-                os.getenv("RIFTX_RUNNER_STATE", str(defaults.runner_state_path))
-            ),
-            web_dist_path=Path(os.getenv("RIFTX_WEB_DIST", str(defaults.web_dist_path))),
-            temporal_address=os.getenv("RIFTX_TEMPORAL_ADDRESS", defaults.temporal_address),
-            temporal_namespace=os.getenv("RIFTX_TEMPORAL_NAMESPACE", defaults.temporal_namespace),
-            temporal_task_queue=os.getenv(
-                "RIFTX_TEMPORAL_TASK_QUEUE", defaults.temporal_task_queue
-            ),
-            temporal_workflow_id_prefix=os.getenv(
-                "RIFTX_TEMPORAL_WORKFLOW_ID_PREFIX",
-                defaults.temporal_workflow_id_prefix,
-            ),
-            sse_poll_interval_seconds=float(
-                os.getenv(
-                    "RIFTX_SSE_POLL_INTERVAL_SECONDS",
-                    str(defaults.sse_poll_interval_seconds),
-                )
-            ),
-            sse_heartbeat_seconds=float(
-                os.getenv(
-                    "RIFTX_SSE_HEARTBEAT_SECONDS",
-                    str(defaults.sse_heartbeat_seconds),
-                )
-            ),
-            node_offline_after_seconds=float(
-                os.getenv(
-                    "RIFTX_NODE_OFFLINE_AFTER_SECONDS",
-                    str(defaults.node_offline_after_seconds),
-                )
-            ),
-            node_lost_after_seconds=float(
-                os.getenv(
-                    "RIFTX_NODE_LOST_AFTER_SECONDS",
-                    str(defaults.node_lost_after_seconds),
-                )
-            ),
-            runner_registration_token=os.getenv("RIFTX_RUNNER_REGISTRATION_TOKEN"),
-            runner_command_lease_seconds=float(
-                os.getenv(
-                    "RIFTX_RUNNER_COMMAND_LEASE_SECONDS",
-                    str(defaults.runner_command_lease_seconds),
-                )
-            ),
-            cors_origins=tuple(
-                item.strip()
-                for item in os.getenv(
-                    "RIFTX_CORS_ORIGINS",
-                    ",".join(defaults.cors_origins),
-                ).split(",")
-                if item.strip()
-            ),
+            database_url=config.database.url,
+            tools_config_path=config.tools.path.expanduser(),
+            node_id=config.runner.node_id,
+            workspace_root=config.workspace.root.expanduser(),
+            runner_state_path=config.runner.state_path.expanduser(),
+            web_dist_path=config.web.dist_path.expanduser(),
+            temporal_address=config.temporal.target,
+            temporal_namespace=config.temporal.namespace,
+            temporal_task_queue=config.temporal.task_queue,
+            temporal_workflow_id_prefix=config.temporal.workflow_id_prefix,
+            sse_poll_interval_seconds=config.server.sse_poll_interval_seconds,
+            sse_heartbeat_seconds=config.server.sse_heartbeat_seconds,
+            node_offline_after_seconds=config.runner.node_offline_after_seconds,
+            node_lost_after_seconds=config.runner.node_lost_after_seconds,
+            runner_registration_token=config.runner.registration_token,
+            runner_command_lease_seconds=config.runner.command_lease_seconds,
+            cors_origins=tuple(config.server.cors_origins),
         )
+
+    @classmethod
+    def from_environment(cls) -> APISettings:
+        return cls.from_config(load_riftx_config())
 
 
 @dataclass(slots=True)

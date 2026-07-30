@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from ..dependencies import ToolServiceDependency
-from ..schemas import ErrorResponse, ToolRegistryResponse
+from ..schemas import ErrorResponse, ToolRegistryResponse, ToolUpdateRequest
 
 router = APIRouter(prefix="/nodes/{node_id}", tags=["tools"])
 
@@ -30,3 +30,19 @@ async def refresh_tools(
     service: ToolServiceDependency,
 ) -> ToolRegistryResponse:
     return ToolRegistryResponse.from_view(await service.refresh_tools(node_id))
+
+
+@router.put(
+    "/tools/{tool_id}",
+    response_model=ToolRegistryResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+async def update_tool(
+    node_id: str,
+    tool_id: str,
+    request: ToolUpdateRequest,
+    service: ToolServiceDependency,
+) -> ToolRegistryResponse:
+    return ToolRegistryResponse.from_view(
+        await service.update_tool(node_id, tool_id, request.to_definition())
+    )

@@ -220,3 +220,28 @@ describe("RiftX API client", () => {
     );
   });
 });
+
+it("persists tool edits through the node registry API", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ node_id: "local", generation: 2, tools: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  globalThis.fetch = fetchMock;
+  const payload = {
+    enabled: true,
+    command: ["nmap"],
+    executor: "process" as const,
+    capabilities: ["port_scan"],
+    approval: "never" as const,
+    timeout: 30,
+  };
+
+  await api.updateTool("local", "nmap", payload);
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/nodes/local/tools/nmap",
+    expect.objectContaining({ method: "PUT", body: JSON.stringify(payload) }),
+  );
+});

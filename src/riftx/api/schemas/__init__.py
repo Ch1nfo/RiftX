@@ -38,7 +38,7 @@ from .runs import (
     SuccessCriterionRequest,
 )
 from .terminals import TerminalCreateRequest, TerminalResponse
-from .tools import RegisteredToolResponse, ToolRegistryResponse
+from .tools import RegisteredToolResponse, ToolRegistryResponse, ToolUpdateRequest
 
 __all__ = [
     "ApprovalDecisionRequest",
@@ -79,6 +79,7 @@ __all__ = [
     "ScopeRequest",
     "SuccessCriterionRequest",
     "ToolRegistryResponse",
+    "ToolUpdateRequest",
     "UpdateFindingRequest",
     "TerminalCreateRequest",
     "TerminalResponse",

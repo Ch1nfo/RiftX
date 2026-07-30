@@ -4,8 +4,15 @@ from pydantic import BaseModel
 
 from riftx.application.services import ToolRegistryView
 from riftx.domain import ToolState
-from riftx.tools import ToolDefinition
+from riftx.tools import RawToolDefinition, ToolDefinition
 from riftx.tools.models import ExecutionPolicy
+
+
+class ToolUpdateRequest(RawToolDefinition):
+    """Complete replacement definition persisted to tools.yaml."""
+
+    def to_definition(self) -> RawToolDefinition:
+        return RawToolDefinition.model_validate(self.model_dump())
 
 
 class RegisteredToolResponse(BaseModel):

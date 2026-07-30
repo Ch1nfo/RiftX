@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from riftx.api import APISettings, ControlPlane, create_app
@@ -384,6 +385,31 @@ async def test_tools_and_findings_share_persisted_control_plane(tmp_path: Path) 
             refreshed = await client.post("/api/v1/nodes/local/refresh-tools")
             assert refreshed.status_code == 200
             assert refreshed.json()["generation"] == tools.json()["generation"] + 1
+
+            updated = await client.put(
+                "/api/v1/nodes/local/tools/python",
+                json={
+                    "enabled": False,
+                    "command": ["python"],
+                    "executor": "process",
+                    "capabilities": ["scripting", "edited"],
+                    "approval": "sensitive",
+                    "timeout": 45,
+                    "environment": {"RIFTX_EDITED": "1"},
+                },
+            )
+            assert updated.status_code == 200
+            updated_payload = updated.json()
+            assert updated_payload["generation"] == refreshed.json()["generation"] + 1
+            definition = updated_payload["tools"][0]["definition"]
+            assert definition["enabled"] is False
+            assert definition["capabilities"] == ["scripting", "edited"]
+            assert updated_payload["tools"][0]["state"]["availability"] == "disabled"
+            persisted_text = await asyncio.to_thread(
+                runtime.control_plane.settings.tools_config_path.read_text
+            )
+            persisted_tools = yaml.safe_load(persisted_text)
+            assert persisted_tools["tools"]["python"]["approval"] == "sensitive"
 
             missing_node = await client.get("/api/v1/nodes/remote/tools")
             assert missing_node.status_code == 404

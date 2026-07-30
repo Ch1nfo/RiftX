@@ -143,15 +143,34 @@ export type ToolAvailability =
   | "disabled"
   | "unknown";
 
+export interface ToolVersionProbe {
+  command: string[];
+  timeout_seconds: number;
+}
+
 export interface ToolDefinition {
   id: string;
   enabled: boolean;
   command: string[];
   executor: "process" | "shell" | "pty";
   capabilities: string[];
+  version_probe: ToolVersionProbe | null;
   approval_level: "never" | "sensitive" | "always";
   timeout_seconds: number;
+  output: { preferred: string | null };
   environment: Record<string, string>;
+}
+
+export interface UpdateToolPayload {
+  enabled: boolean;
+  command: string[];
+  executor: ToolDefinition["executor"];
+  capabilities: string[];
+  version_probe?: { command: string[]; timeout_seconds: number } | null;
+  approval: ToolDefinition["approval_level"];
+  timeout: number;
+  output?: { preferred?: string | null };
+  environment?: Record<string, string>;
 }
 
 export interface ToolState {

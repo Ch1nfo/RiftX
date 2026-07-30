@@ -9,6 +9,7 @@ import type {
   GenerateReportsPayload,
   NodeStatus,
   UpdateFindingPayload,
+  UpdateToolPayload,
   RunStatus,
 } from "../api/types";
 
@@ -241,6 +242,23 @@ export function useRefreshTools(nodeId = "local") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => api.refreshTools(nodeId),
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(queryKeys.tools(nodeId), snapshot);
+    },
+  });
+}
+
+
+export function useUpdateTool(nodeId = "local") {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      toolId,
+      payload,
+    }: {
+      toolId: string;
+      payload: UpdateToolPayload;
+    }) => api.updateTool(nodeId, toolId, payload),
     onSuccess: (snapshot) => {
       queryClient.setQueryData(queryKeys.tools(nodeId), snapshot);
     },

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from riftx.application.errors import EntityNotFoundError
 from riftx.domain import ToolState
-from riftx.tools import ToolDefinition, ToolRegistry, ToolSnapshot
+from riftx.tools import RawToolDefinition, ToolDefinition, ToolRegistry, ToolSnapshot
 from riftx.tools.models import ExecutionPolicy
 
 
@@ -42,6 +42,15 @@ class ToolApplicationService:
     async def refresh_tools(self, node_id: str) -> ToolRegistryView:
         self._require_node(node_id)
         return self._view(await self._registry.refresh())
+
+    async def update_tool(
+        self,
+        node_id: str,
+        tool_id: str,
+        definition: RawToolDefinition,
+    ) -> ToolRegistryView:
+        self._require_node(node_id)
+        return self._view(await self._registry.update_tool(tool_id, definition))
 
     def _require_node(self, node_id: str) -> None:
         if node_id != self._registry.node_id:

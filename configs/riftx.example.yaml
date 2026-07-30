@@ -1,0 +1,46 @@
+server:
+  host: 127.0.0.1
+  port: 8787
+  cors_origins:
+    - http://127.0.0.1:5173
+    - http://localhost:5173
+  sse_poll_interval_seconds: 0.5
+  sse_heartbeat_seconds: 15
+
+database:
+  url: sqlite+aiosqlite:///./.riftx/riftx.db
+
+temporal:
+  target: 127.0.0.1:7233
+  namespace: default
+  task_queue: riftx-v2
+  workflow_id_prefix: riftx-run
+  max_concurrent_activities: 20
+  max_cached_workflows: 1000
+
+runner:
+  mode: local
+  endpoint: http://127.0.0.1:8790
+  node_id: local
+  state_path: .riftx/runner
+  # Set registration_token through RIFTX_RUNNER_REGISTRATION_TOKEN, not YAML.
+  command_lease_seconds: 30
+  node_offline_after_seconds: 30
+  node_lost_after_seconds: 300
+
+execution:
+  policy: open
+  default_timeout: 1800
+  environment_mode: inherit
+
+workspace:
+  root: .riftx/workspaces
+
+approval:
+  default_mode: balanced
+
+tools:
+  path: configs/tools.example.yaml
+
+web:
+  dist_path: apps/web/dist

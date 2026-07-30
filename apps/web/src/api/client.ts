@@ -22,6 +22,7 @@ import type {
   TerminalSession,
   CreateTerminalPayload,
   ToolRegistrySnapshot,
+  UpdateToolPayload,
 } from "./types";
 
 const API_BASE_URL = (import.meta.env.VITE_RIFTX_API_URL as string | undefined)?.replace(
@@ -268,5 +269,16 @@ export const api = {
     return request(`/api/v1/nodes/${encodeURIComponent(nodeId)}/refresh-tools`, {
       method: "POST",
     });
+  },
+
+  updateTool(
+    nodeId: string,
+    toolId: string,
+    payload: UpdateToolPayload,
+  ): Promise<ToolRegistrySnapshot> {
+    return request(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/tools/${encodeURIComponent(toolId)}`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    );
   },
 };

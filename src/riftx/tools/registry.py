@@ -6,13 +6,16 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 from pathlib import Path
+
+import yaml
 
 from riftx.domain import ToolAvailability, ToolState
 from riftx.executors import merge_environment
 
 from .config import parse_tool_config
-from .models import ToolDefinition, ToolRegistryConfig, ToolSnapshot
+from .models import RawToolDefinition, ToolDefinition, ToolRegistryConfig, ToolSnapshot
 
 
 class ToolNotFoundError(KeyError):
@@ -55,28 +58,52 @@ class ToolRegistry:
     async def refresh(self) -> ToolSnapshot:
         async with self._refresh_lock:
             content = await asyncio.to_thread(self.config_path.read_bytes)
-            digest = hashlib.sha256(content).hexdigest()
-            config = parse_tool_config(content, source=str(self.config_path))
-            definitions = {
-                tool_id: ToolDefinition.from_raw(tool_id, raw)
-                for tool_id, raw in config.tools.items()
-            }
-            states_list = await asyncio.gather(
-                *(self._probe(definition) for definition in definitions.values())
-            )
-            states = {state.tool_id: state for state in states_list}
-            self._generation += 1
-            snapshot = ToolSnapshot(
-                node_id=self.node_id,
-                generation=self._generation,
-                source_digest=digest,
-                definitions=definitions,
-                states=states,
-            )
-            self._config = config
-            self._snapshot = snapshot
-            self._source_digest = digest
-            return snapshot
+            return await self._refresh_content(content)
+
+    async def update_tool(
+        self,
+        tool_id: str,
+        definition: RawToolDefinition,
+    ) -> ToolSnapshot:
+        """Atomically replace one tool definition and immediately re-probe the registry."""
+
+        async with self._refresh_lock:
+            content = await asyncio.to_thread(self.config_path.read_bytes)
+            current = parse_tool_config(content, source=str(self.config_path))
+            raw = current.model_dump(mode="json")
+            tools = dict(raw.get("tools", {}))
+            tools[tool_id] = definition.model_dump(mode="json")
+            raw["tools"] = tools
+            updated = ToolRegistryConfig.model_validate(raw)
+            serialized = yaml.safe_dump(
+                updated.model_dump(mode="json", exclude_none=True),
+                sort_keys=False,
+            ).encode("utf-8")
+            await asyncio.to_thread(_atomic_write, self.config_path, serialized)
+            return await self._refresh_content(serialized)
+
+    async def _refresh_content(self, content: bytes) -> ToolSnapshot:
+        digest = hashlib.sha256(content).hexdigest()
+        config = parse_tool_config(content, source=str(self.config_path))
+        definitions = {
+            tool_id: ToolDefinition.from_raw(tool_id, raw) for tool_id, raw in config.tools.items()
+        }
+        states_list = await asyncio.gather(
+            *(self._probe(definition) for definition in definitions.values())
+        )
+        states = {state.tool_id: state for state in states_list}
+        self._generation += 1
+        snapshot = ToolSnapshot(
+            node_id=self.node_id,
+            generation=self._generation,
+            source_digest=digest,
+            definitions=definitions,
+            states=states,
+        )
+        self._config = config
+        self._snapshot = snapshot
+        self._source_digest = digest
+        return snapshot
 
     async def reload_if_changed(self) -> ToolSnapshot:
         content = await asyncio.to_thread(self.config_path.read_bytes)
@@ -249,3 +276,28 @@ async def _run_version_probe(
     output = (stdout or stderr)[:8192].decode("utf-8", errors="replace").strip()
     version = output.splitlines()[0] if output else None
     return version, None
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode if path.exists() else None
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_name = temporary.name
+        if mode is not None:
+            os.chmod(temporary_name, mode)
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)

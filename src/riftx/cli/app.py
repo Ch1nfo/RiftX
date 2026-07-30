@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
 import httpx
@@ -11,6 +12,8 @@ import typer
 import uvicorn
 from rich.console import Console
 
+from riftx.api import APISettings, create_app
+from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
 from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
 
 from .client import APIClient, RiftXAPIError
@@ -57,23 +60,42 @@ app.add_typer(report_app, name="report")
 @dataclass(frozen=True, slots=True)
 class CLIState:
     api_url: str
+    config: RiftXConfig
+    config_path: Path | None
 
 
 @app.callback()
 def main(
     context: typer.Context,
     api_url: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--api-url",
             envvar="RIFTX_API_URL",
             help="RiftX Control Plane base URL.",
         ),
-    ] = "http://127.0.0.1:8787",
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            envvar="RIFTX_CONFIG",
+            help="Explicit RiftX YAML configuration file.",
+        ),
+    ] = None,
 ) -> None:
     """Run a command, or enter interactive mode when no command is given."""
 
-    context.obj = CLIState(api_url=api_url)
+    try:
+        config = load_riftx_config(explicit_path=config_path)
+    except RiftXConfigError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+    resolved_api_url = api_url or f"http://{config.server.host}:{config.server.port}"
+    context.obj = CLIState(
+        api_url=resolved_api_url,
+        config=config,
+        config_path=config_path,
+    )
     if context.invoked_subcommand is None:
         with APIClient(api_url) as client:
             run_interactive(client, console)
@@ -90,16 +112,29 @@ def interactive(context: typer.Context) -> None:
 
 @app.command()
 def serve(
-    host: Annotated[str, typer.Option(help="Listen address.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option(min=1, max=65535, help="Listen port.")] = 8787,
+    context: typer.Context,
+    host: Annotated[str | None, typer.Option(help="Listen address override.")] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(min=1, max=65535, help="Listen port override."),
+    ] = None,
     reload: Annotated[bool, typer.Option(help="Enable development auto-reload.")] = False,
 ) -> None:
     """Start the shared FastAPI Control Plane."""
 
+    state = _state(context)
+    server = state.config.server.model_copy(
+        update={
+            **({"host": host} if host is not None else {}),
+            **({"port": port} if port is not None else {}),
+        }
+    )
+    config = state.config.model_copy(update={"server": server})
+    settings = APISettings.from_config(config)
     uvicorn.run(
-        "riftx.api.app:app",
-        host=host,
-        port=port,
+        create_app(settings=settings),
+        host=server.host,
+        port=server.port,
         reload=reload,
         log_level="info",
     )
