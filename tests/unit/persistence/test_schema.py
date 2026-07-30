@@ -2,6 +2,9 @@ from riftx.persistence.orm import Base
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
+    "agent_cycles",
+    "agent_sessions",
+    "agent_steps",
     "agent_messages",
     "alembic_version",
     "approvals",
@@ -11,12 +14,15 @@ EXPECTED_TABLES = {
     "executions",
     "findings",
     "nodes",
+    "provider_states",
     "reports",
     "runner_commands",
     "runner_credentials",
     "run_events",
+    "run_leases",
     "runs",
     "terminal_sessions",
+    "tool_call_intents",
     "tool_calls",
     "tool_states",
 }

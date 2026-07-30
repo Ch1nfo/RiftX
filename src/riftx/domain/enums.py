@@ -5,13 +5,24 @@ from enum import StrEnum
 
 class RunStatus(StrEnum):
     CREATED = "created"
-    PREPARING = "preparing"
+    INITIALIZING = "initializing"
+    READY = "ready"
     RUNNING = "running"
+    WAITING_TOOL = "waiting_tool"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_USER = "waiting_user"
+    PAUSING = "pausing"
     PAUSED = "paused"
+    COMPACTING = "compacting"
+    COMPLETING = "completing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLING = "cancelling"
     CANCELLED = "cancelled"
+
+    # Compatibility state used by the completed V2 control-plane workflow. New
+    # Agent Runtime code uses INITIALIZING -> READY instead.
+    PREPARING = "preparing"
 
 
 class ExecutionStatus(StrEnum):

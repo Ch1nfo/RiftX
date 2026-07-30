@@ -11,21 +11,59 @@ from .enums import ApprovalMode, EntryPointKind, RunStatus
 from .errors import InvalidStateTransitionError
 
 _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = {
-    RunStatus.CREATED: frozenset({RunStatus.PREPARING, RunStatus.CANCELLED}),
-    RunStatus.PREPARING: frozenset({RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED}),
-    RunStatus.RUNNING: frozenset(
+    RunStatus.CREATED: frozenset(
         {
-            RunStatus.WAITING_APPROVAL,
-            RunStatus.PAUSED,
-            RunStatus.COMPLETED,
-            RunStatus.FAILED,
+            RunStatus.INITIALIZING,
+            RunStatus.PREPARING,
+            RunStatus.CANCELLING,
             RunStatus.CANCELLED,
         }
     ),
-    RunStatus.WAITING_APPROVAL: frozenset(
-        {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.FAILED, RunStatus.CANCELLED}
+    RunStatus.INITIALIZING: frozenset({RunStatus.READY, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.READY: frozenset(
+        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
     ),
-    RunStatus.PAUSED: frozenset({RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED}),
+    RunStatus.PREPARING: frozenset(
+        {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING, RunStatus.CANCELLED}
+    ),
+    RunStatus.RUNNING: frozenset(
+        {
+            RunStatus.WAITING_TOOL,
+            RunStatus.WAITING_APPROVAL,
+            RunStatus.WAITING_USER,
+            RunStatus.PAUSING,
+            RunStatus.PAUSED,
+            RunStatus.COMPACTING,
+            RunStatus.COMPLETING,
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+        }
+    ),
+    RunStatus.WAITING_TOOL: frozenset(
+        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
+    ),
+    RunStatus.WAITING_APPROVAL: frozenset(
+        {
+            RunStatus.RUNNING,
+            RunStatus.PAUSING,
+            RunStatus.PAUSED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+        }
+    ),
+    RunStatus.WAITING_USER: frozenset(
+        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
+    ),
+    RunStatus.PAUSING: frozenset({RunStatus.PAUSED, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.PAUSED: frozenset(
+        {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING, RunStatus.CANCELLED}
+    ),
+    RunStatus.COMPACTING: frozenset({RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.COMPLETING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.CANCELLING: frozenset({RunStatus.CANCELLED, RunStatus.FAILED}),
     RunStatus.COMPLETED: frozenset(),
     RunStatus.FAILED: frozenset(),
     RunStatus.CANCELLED: frozenset(),

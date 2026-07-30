@@ -1,0 +1,100 @@
+import os
+import sqlite3
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+
+RUNTIME_TABLES = {
+    "agent_sessions",
+    "agent_cycles",
+    "agent_steps",
+    "provider_states",
+    "tool_call_intents",
+    "run_leases",
+}
+
+
+def run_alembic(database_path: Path, revision: str) -> None:
+    config = Config("alembic.ini")
+    old_url = os.environ.get("RIFTX_DATABASE_URL")
+    os.environ["RIFTX_DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
+    try:
+        command.upgrade(config, revision) if revision != "base" else command.downgrade(
+            config, revision
+        )
+    finally:
+        if old_url is None:
+            os.environ.pop("RIFTX_DATABASE_URL", None)
+        else:
+            os.environ["RIFTX_DATABASE_URL"] = old_url
+
+
+def sqlite_tables(database_path: Path) -> set[str]:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "existing-v2.db"
+    run_alembic(database_path, "d4f26a8b7c10")
+    now = "2026-07-30 00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO engagements "
+            "(id, name, description, authorization_reference, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("engagement-1", "Existing", "", None, now, now),
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id, engagement_id, node_id, objective, success_criteria_json, "
+            "entry_points_json, scope_json, status, approval_mode, model_profile, "
+            "workspace_path, temporal_workflow_id, created_at, started_at, finished_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "run-1",
+                "engagement-1",
+                "local",
+                "Existing V2 run",
+                "[]",
+                "[]",
+                "{}",
+                "completed",
+                "balanced",
+                "default",
+                "/tmp/run-1",
+                "workflow-1",
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+
+    run_alembic(database_path, "head")
+    assert RUNTIME_TABLES <= sqlite_tables(database_path)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
+            "Existing V2 run",
+        )
+
+    config = Config("alembic.ini")
+    old_url = os.environ.get("RIFTX_DATABASE_URL")
+    os.environ["RIFTX_DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
+    try:
+        command.downgrade(config, "d4f26a8b7c10")
+    finally:
+        if old_url is None:
+            os.environ.pop("RIFTX_DATABASE_URL", None)
+        else:
+            os.environ["RIFTX_DATABASE_URL"] = old_url
+
+    assert not (RUNTIME_TABLES & sqlite_tables(database_path))
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone() == (1,)

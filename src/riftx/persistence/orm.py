@@ -338,3 +338,121 @@ class ToolStateRecord(Base):
     version: Mapped[str | None] = mapped_column(String(255))
     reason: Mapped[str | None] = mapped_column(Text)
     checked_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AgentSessionRecord(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    parent_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    agent_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_profile: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    latest_checkpoint_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    provider_state_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AgentCycleRecord(Base):
+    __tablename__ = "agent_cycles"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_agent_cycles_session_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    yield_reason: Mapped[str | None] = mapped_column(String(64))
+    model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AgentRuntimeStepRecord(Base):
+    __tablename__ = "agent_steps"
+    __table_args__ = (
+        UniqueConstraint("cycle_id", "sequence", name="uq_agent_steps_cycle_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_cycles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    step_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    input_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    output_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ProviderStateRecord(Base):
+    __tablename__ = "provider_states"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    engine_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    previous_response_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class ToolCallIntentRecord(Base):
+    __tablename__ = "tool_call_intents"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_cycles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    step_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    skill_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    arguments_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    command_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    target_summary: Mapped[str | None] = mapped_column(Text)
+    approval_level: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    engine_call_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunLeaseRecord(Base):
+    __tablename__ = "run_leases"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    acquired_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
