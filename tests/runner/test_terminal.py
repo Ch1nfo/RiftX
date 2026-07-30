@@ -129,6 +129,8 @@ async def test_terminal_enforces_owner_and_persists_unicode_transcript(tmp_path:
 
     taken = await supervisor.take_over(terminal.id)
     assert taken.owner is TerminalOwner.USER
+    with pytest.raises(ApplicationConflictError, match="belongs to 'user'"):
+        await supervisor.write(terminal.id, b"agent-blocked\n", actor=TerminalOwner.AGENT)
     await supervisor.write(terminal.id, "你好 RiftX\n".encode(), actor=TerminalOwner.USER)
     output, cursor = await _wait_for_output(
         supervisor,
