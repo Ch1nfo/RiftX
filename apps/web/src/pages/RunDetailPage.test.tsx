@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,7 +32,55 @@ vi.mock("../hooks/queries", () => ({
       temporal_workflow_id: "workflow-run-1",
     },
   }),
-  useRunEvents: () => ({ isSuccess: true, isLoading: false, data: { items: [] } }),
+  useRunEvents: () => ({
+    isSuccess: true,
+    isLoading: false,
+    data: {
+      items: [
+        {
+          id: "event-agent-1",
+          run_id: "run-1",
+          sequence: 1,
+          event_type: "agent.plan_updated",
+          payload: { plan_summary: "Inspect the service and verify evidence." },
+          created_at: "2026-07-29T00:00:02Z",
+        },
+      ],
+    },
+  }),
+  useExecutions: () => ({
+    isLoading: false,
+    data: {
+      items: [
+        {
+          id: "execution-1",
+          execution_key: "run-1:step-1:call-1",
+          run_id: "run-1",
+          node_id: "local",
+          executor_type: "process",
+          argv: ["nmap", "-sV", "127.0.0.1"],
+          command_text: null,
+          tool_id: "nmap",
+          tool_version: "7.95",
+          executable_path: "/usr/bin/nmap",
+          cwd: "/tmp/run-1",
+          env_diff: {},
+          platform_system: "linux",
+          platform_release: "6.8",
+          platform_architecture: "x86_64",
+          status: "exited",
+          pid: 123,
+          process_group_id: 123,
+          exit_code: 0,
+          stdout_path: "/tmp/stdout.log",
+          stderr_path: "/tmp/stderr.log",
+          process_created_at: "2026-07-29T00:00:02Z",
+          started_at: "2026-07-29T00:00:02Z",
+          finished_at: "2026-07-29T00:00:03Z",
+        },
+      ],
+    },
+  }),
   useFindings: () => ({
     isLoading: false,
     data: {
@@ -150,6 +198,7 @@ vi.mock("../hooks/queries", () => ({
 
 describe("RunDetailPage approvals", () => {
   beforeEach(() => {
+    cleanup();
     mocks.runStatus = "waiting_approval";
     vi.clearAllMocks();
   });
@@ -193,6 +242,26 @@ describe("RunDetailPage approvals", () => {
       "href",
       "/api/v1/artifacts/artifact-1/content",
     );
+  });
+
+  it("separates Agent activity from host tool-call provenance", async () => {
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+    expect(await screen.findByText("Inspect the service and verify evidence.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /tool calls 1/i }));
+    expect(await screen.findByText("nmap -sV 127.0.0.1")).toBeInTheDocument();
+    expect(screen.getByText("7.95")).toBeInTheDocument();
+    expect(screen.getByText("/usr/bin/nmap")).toBeInTheDocument();
   });
 
   it("links evidence to artifacts and saves user edits", async () => {

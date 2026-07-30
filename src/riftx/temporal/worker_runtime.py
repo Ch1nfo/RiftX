@@ -127,7 +127,12 @@ async def build_temporal_worker(
                         }
                     )
                 ),
-                labels={"mode": "worker-local"},
+                labels={
+                    "mode": "worker-local",
+                    "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
+                    "working_directory": str(Path.cwd()),
+                    "tool_count": str(len(tool_snapshot.definitions)),
+                },
             )
         )
 

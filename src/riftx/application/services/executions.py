@@ -41,6 +41,9 @@ class ExecutionApplicationService:
             raise EntityNotFoundError("Run", run_id)
         return await self._execution_repository.list(run_id, limit=limit, offset=offset)
 
+    async def list_active(self) -> Sequence[Execution]:
+        return await self._execution_repository.list_active()
+
     async def cancel(self, execution_id: str) -> Execution:
         execution = await self.get(execution_id)
         cancelled = await self._runner.cancel(execution.id)

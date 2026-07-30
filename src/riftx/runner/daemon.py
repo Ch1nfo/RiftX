@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import platform as platform_module
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +91,13 @@ class RunnerDaemonConfig:
 
     @property
     def registration(self) -> NodeRegistration:
+        labels = {
+            "mode": "remote",
+            "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
+            "working_directory": str(Path.cwd()),
+            "tool_count": "0",
+            **(self.labels or {}),
+        }
         return NodeRegistration(
             node_id=self.node_id,
             name=self.name,
@@ -97,7 +105,7 @@ class RunnerDaemonConfig:
             architecture=self.architecture,
             runner_version=self.runner_version,
             capabilities=self.capabilities,
-            labels=self.labels,
+            labels=labels,
         )
 
 

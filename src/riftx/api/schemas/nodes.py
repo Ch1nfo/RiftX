@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from riftx.domain import Node, NodeStatus
+from riftx.domain import Execution, Node, NodeStatus
 
 
 class RegisterNodeRequest(BaseModel):
@@ -44,12 +44,30 @@ class NodeResponse(BaseModel):
     status: NodeStatus
     capabilities: list[str]
     labels: dict[str, str]
+    shell: str | None = None
+    working_directory: str | None = None
+    tool_count: int | None = None
+    active_execution_ids: list[str] = Field(default_factory=list)
+    current_run_ids: list[str] = Field(default_factory=list)
     last_seen_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_domain(cls, node: Node) -> "NodeResponse":
+    def from_domain(
+        cls,
+        node: Node,
+        *,
+        active_executions: list[Execution] | None = None,
+        tool_count: int | None = None,
+    ) -> "NodeResponse":
+        active = active_executions or []
+        configured_tool_count = tool_count
+        if configured_tool_count is None:
+            try:
+                configured_tool_count = int(node.labels["tool_count"])
+            except (KeyError, TypeError, ValueError):
+                configured_tool_count = None
         return cls(
             id=node.id,
             name=node.name,
@@ -59,6 +77,11 @@ class NodeResponse(BaseModel):
             status=node.status,
             capabilities=node.capabilities,
             labels=node.labels,
+            shell=node.labels.get("shell"),
+            working_directory=node.labels.get("working_directory"),
+            tool_count=configured_tool_count,
+            active_execution_ids=[execution.id for execution in active],
+            current_run_ids=list(dict.fromkeys(execution.run_id for execution in active)),
             last_seen_at=node.last_seen_at,
             created_at=node.created_at,
             updated_at=node.updated_at,

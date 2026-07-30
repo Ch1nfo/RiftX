@@ -129,6 +129,11 @@ export interface Node {
   status: NodeStatus;
   capabilities: string[];
   labels: Record<string, string>;
+  shell: string | null;
+  working_directory: string | null;
+  tool_count: number | null;
+  active_execution_ids: string[];
+  current_run_ids: string[];
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -136,6 +141,39 @@ export interface Node {
 
 export interface NodeList {
   items: Node[];
+}
+
+export interface Execution {
+  id: string;
+  execution_key: string;
+  run_id: string;
+  node_id: string;
+  executor_type: "process" | "shell" | "pty";
+  argv: string[];
+  command_text: string | null;
+  tool_id: string | null;
+  tool_version: string | null;
+  executable_path: string | null;
+  cwd: string;
+  env_diff: Record<string, string | null>;
+  platform_system: string;
+  platform_release: string;
+  platform_architecture: string;
+  status: "pending" | "starting" | "running" | "exited" | "failed" | "cancelled" | "lost";
+  pid: number | null;
+  process_group_id: number | null;
+  exit_code: number | null;
+  stdout_path: string;
+  stderr_path: string;
+  process_created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ExecutionList {
+  items: Execution[];
+  limit: number;
+  offset: number;
 }
 
 export type ToolAvailability =

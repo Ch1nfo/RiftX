@@ -23,6 +23,7 @@ from riftx.application.services import (
     ExecutionApplicationService,
     FindingApplicationService,
     NodeApplicationService,
+    NodeRegistration,
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
@@ -1236,6 +1237,59 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "node_not_found"
     await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_node_api_exposes_runtime_and_active_execution_state(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        await runtime.control_plane.node_service.register(
+            NodeRegistration(
+                node_id="local",
+                name="Local Runner",
+                platform="linux",
+                architecture="x86_64",
+                runner_version="2.0.0",
+                capabilities=("scripting",),
+                labels={
+                    "shell": "/bin/zsh",
+                    "working_directory": str(tmp_path),
+                    "tool_count": "99",
+                },
+            )
+        )
+        async for client in _client(runtime.control_plane):
+            run = await _create_run(client)
+            execution = Execution(
+                id="execution-active",
+                execution_key="active-key",
+                run_id=str(run["id"]),
+                node_id="local",
+                executor_type=ExecutorType.PROCESS,
+                argv=["python", "-V"],
+                cwd=str(run["workspace_path"]),
+                stdout_path=str(tmp_path / "stdout.log"),
+                stderr_path=str(tmp_path / "stderr.log"),
+            )
+            execution.transition_to(ExecutionStatus.STARTING)
+            execution.transition_to(ExecutionStatus.RUNNING)
+            await runtime.execution_repository.create_if_absent(execution)
+
+            fetched = await client.get("/api/v1/nodes/local")
+            listed = await client.get("/api/v1/nodes")
+
+            assert fetched.status_code == 200
+            node = fetched.json()
+            assert node["platform"] == "linux"
+            assert node["architecture"] == "x86_64"
+            assert node["shell"] == "/bin/zsh"
+            assert node["working_directory"] == str(tmp_path)
+            assert node["tool_count"] == 1
+            assert node["active_execution_ids"] == [execution.id]
+            assert node["current_run_ids"] == [execution.run_id]
+            assert listed.json()["items"] == [node]
+    finally:
+        await runtime.control_plane.close()
 
 
 @pytest.mark.asyncio

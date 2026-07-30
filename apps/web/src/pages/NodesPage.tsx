@@ -90,7 +90,10 @@ export function NodesPage() {
                 <tr>
                   <th>Node</th>
                   <th>Status</th>
-                  <th>Platform</th>
+                  <th>OS / architecture</th>
+                  <th>Shell / working directory</th>
+                  <th>Tools</th>
+                  <th>Active tasks</th>
                   <th>Runner</th>
                   <th>Capabilities</th>
                   <th>Last heartbeat</th>
@@ -112,6 +115,21 @@ export function NodesPage() {
                     <td>
                       <strong>{node.platform}</strong>
                       <small className="tool-reason">{node.architecture}</small>
+                    </td>
+                    <td>
+                      <strong>{node.shell ?? "unknown"}</strong>
+                      <small className="tool-reason" title={node.working_directory ?? ""}>
+                        {node.working_directory ?? "not reported"}
+                      </small>
+                    </td>
+                    <td>{node.tool_count ?? "unknown"}</td>
+                    <td>
+                      <strong>{node.active_execution_ids.length}</strong>
+                      <small className="tool-reason">
+                        {node.current_run_ids.length
+                          ? node.current_run_ids.join(", ")
+                          : "idle"}
+                      </small>
                     </td>
                     <td>{node.runner_version}</td>
                     <td>

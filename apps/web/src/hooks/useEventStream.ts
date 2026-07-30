@@ -79,6 +79,12 @@ export function useEventStream(runId: string, enabled = true) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
       if (
+        event.event_type.startsWith("agent.tool_") ||
+        event.event_type.startsWith("execution.")
+      ) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executions(runId) });
+      }
+      if (
         event.event_type === "finding.created" ||
         event.event_type === "finding.updated"
       ) {

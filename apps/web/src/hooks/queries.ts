@@ -17,6 +17,7 @@ export const queryKeys = {
   runs: (status?: RunStatus) => ["runs", status ?? "all"] as const,
   run: (runId: string) => ["run", runId] as const,
   events: (runId: string) => ["run-events", runId] as const,
+  executions: (runId: string) => ["run-executions", runId] as const,
   findings: (runId: string) => ["run-findings", runId] as const,
   artifacts: (runId: string) => ["run-artifacts", runId] as const,
   reports: (runId: string) => ["run-reports", runId] as const,
@@ -55,6 +56,14 @@ export function useRunEvents(runId: string) {
   return useQuery({
     queryKey: queryKeys.events(runId),
     queryFn: () => api.listEvents(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useExecutions(runId: string) {
+  return useQuery({
+    queryKey: queryKeys.executions(runId),
+    queryFn: () => api.listExecutions(runId),
     enabled: Boolean(runId),
   });
 }

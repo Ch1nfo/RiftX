@@ -24,6 +24,11 @@ describe("NodesPage", () => {
             status: "online",
             capabilities: ["powershell", "conpty"],
             labels: { zone: "internal" },
+            shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+            working_directory: "C:\\RiftX",
+            tool_count: 8,
+            active_execution_ids: ["execution-1"],
+            current_run_ids: ["run-1"],
             last_seen_at: new Date().toISOString(),
             created_at: "2026-07-29T00:00:00Z",
             updated_at: "2026-07-29T00:00:00Z",
@@ -37,6 +42,11 @@ describe("NodesPage", () => {
             status: "degraded",
             capabilities: ["port_scan"],
             labels: {},
+            shell: "/bin/zsh",
+            working_directory: "/opt/riftx",
+            tool_count: 5,
+            active_execution_ids: [],
+            current_run_ids: [],
             last_seen_at: new Date().toISOString(),
             created_at: "2026-07-29T00:00:00Z",
             updated_at: "2026-07-29T00:00:00Z",
@@ -60,5 +70,8 @@ describe("NodesPage", () => {
     expect(screen.getByText("port scan")).toBeInTheDocument();
     expect(screen.getByText("online")).toBeInTheDocument();
     expect(screen.getByText("degraded")).toBeInTheDocument();
+    expect(screen.getByText("C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBeInTheDocument();
+    expect(screen.getByText("run-1")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
   });
 });

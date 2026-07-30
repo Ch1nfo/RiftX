@@ -103,7 +103,10 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert (tmp_path / "runner").is_dir()
     node = await SQLAlchemyNodeRepository(runtime.database.session_factory).get("worker-local")
     assert node is not None
-    assert node.labels == {"mode": "worker-local"}
+    assert node.labels["mode"] == "worker-local"
+    assert node.labels["tool_count"] == "0"
+    assert node.labels["working_directory"]
+    assert node.labels["shell"]
 
     await runtime.run()
     await runtime.close()

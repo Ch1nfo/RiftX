@@ -8,7 +8,12 @@ from riftx.application.services import NodeHeartbeat, NodeRegistration
 from riftx.domain import NodeStatus
 
 from ..auth import bearer_token
-from ..dependencies import NodeServiceDependency, RunnerControlServiceDependency
+from ..dependencies import (
+    ExecutionServiceDependency,
+    NodeServiceDependency,
+    RunnerControlServiceDependency,
+    ToolServiceDependency,
+)
 from ..schemas import (
     ErrorResponse,
     HeartbeatNodeRequest,
@@ -95,10 +100,23 @@ async def disconnect_node(
 @router.get("", response_model=NodeListResponse)
 async def list_nodes(
     service: NodeServiceDependency,
+    execution_service: ExecutionServiceDependency,
+    tool_service: ToolServiceDependency,
     status: Annotated[NodeStatus | None, Query()] = None,
 ) -> NodeListResponse:
     nodes = await service.list(status=status)
-    return NodeListResponse(items=[NodeResponse.from_domain(node) for node in nodes])
+    active = await execution_service.list_active()
+    local_tools = await tool_service.list_tools(tool_service.node_id)
+    return NodeListResponse(
+        items=[
+            NodeResponse.from_domain(
+                node,
+                active_executions=[item for item in active if item.node_id == node.id],
+                tool_count=(len(local_tools.tools) if node.id == tool_service.node_id else None),
+            )
+            for node in nodes
+        ]
+    )
 
 
 @router.get(
@@ -106,5 +124,19 @@ async def list_nodes(
     response_model=NodeResponse,
     responses={404: {"model": ErrorResponse}},
 )
-async def get_node(node_id: str, service: NodeServiceDependency) -> NodeResponse:
-    return NodeResponse.from_domain(await service.get(node_id))
+async def get_node(
+    node_id: str,
+    service: NodeServiceDependency,
+    execution_service: ExecutionServiceDependency,
+    tool_service: ToolServiceDependency,
+) -> NodeResponse:
+    node = await service.get(node_id)
+    active = [item for item in await execution_service.list_active() if item.node_id == node.id]
+    tool_count = None
+    if node.id == tool_service.node_id:
+        tool_count = len((await tool_service.list_tools(node.id)).tools)
+    return NodeResponse.from_domain(
+        node,
+        active_executions=active,
+        tool_count=tool_count,
+    )

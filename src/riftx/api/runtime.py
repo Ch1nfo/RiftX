@@ -156,6 +156,9 @@ class UnavailableRunWorkflowClient:
     async def cancel(self, run_id: str) -> None:
         self._raise(run_id)
 
+    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+        self._raise(run_id)
+
     async def append_user_message(self, run_id: str, message: str) -> None:
         self._raise(run_id)
 
@@ -223,7 +226,12 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
                     }
                 )
             ),
-            labels={"mode": "local"},
+            labels={
+                "mode": "local",
+                "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
+                "working_directory": str(Path.cwd()),
+                "tool_count": str(len(tool_snapshot.definitions)),
+            },
         )
     )
     runner_paths = RunnerPaths(settings.runner_state_path)

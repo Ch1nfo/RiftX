@@ -6,6 +6,7 @@ import type {
   Artifact,
   ArtifactList,
   CreateRunPayload,
+  ExecutionList,
   Finding,
   FindingList,
   CreateFindingPayload,
@@ -137,6 +138,10 @@ export const api = {
     return request(
       `/api/v1/runs/${encodeURIComponent(runId)}/events?after_sequence=${afterSequence}&limit=1000`,
     );
+  },
+
+  listExecutions(runId: string): Promise<ExecutionList> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/executions?limit=1000`);
   },
 
   eventStreamUrl(runId: string, afterSequence = 0): string {

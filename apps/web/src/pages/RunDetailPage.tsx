@@ -34,6 +34,7 @@ import { api } from "../api/client";
 import type {
   Approval,
   Artifact,
+  Execution,
   Finding,
   FindingEvidence,
   Report,
@@ -49,6 +50,7 @@ import {
   useApprovals,
   useArtifactControl,
   useArtifacts,
+  useExecutions,
   useFindingControl,
   useFindings,
   useReportControl,
@@ -61,6 +63,8 @@ import { useEventStream } from "../hooks/useEventStream";
 
 type DetailTab =
   | "overview"
+  | "agent"
+  | "tool-calls"
   | "timeline"
   | "approvals"
   | "terminal"
@@ -72,6 +76,7 @@ export function RunDetailPage() {
   const { runId = "" } = useParams();
   const run = useRun(runId);
   const events = useRunEvents(runId);
+  const executions = useExecutions(runId);
   const findings = useFindings(runId);
   const artifacts = useArtifacts(runId);
   const approvals = useApprovals(runId);
@@ -184,6 +189,8 @@ export function RunDetailPage() {
             {(
               [
                 ["overview", "Overview"],
+                ["agent", "Agent"],
+                ["tool-calls", `Tool Calls ${executions.data?.items.length ?? 0}`],
                 ["timeline", `Timeline ${eventItems.length}`],
                 ["approvals", `Approvals ${pendingApprovals.length}`],
                 ["terminal", "Terminal"],
@@ -211,6 +218,12 @@ export function RunDetailPage() {
                 planEvent={planEvent}
                 eventCount={eventItems.length}
               />
+            ) : null}
+            {tab === "agent" ? (
+              <AgentActivity events={eventItems} loading={events.isLoading} />
+            ) : null}
+            {tab === "tool-calls" ? (
+              <ToolCalls executions={executions.data?.items ?? []} loading={executions.isLoading} />
             ) : null}
             {tab === "timeline" ? <Timeline events={eventItems} loading={events.isLoading} /> : null}
             {tab === "approvals" ? (
@@ -338,6 +351,80 @@ export function RunDetailPage() {
           </article>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function AgentActivity({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+  const agentEvents = events.filter(
+    (event) => event.event_type.startsWith("agent.") || event.event_type === "user.message_queued",
+  );
+  if (!loading && !agentEvents.length) {
+    return (
+      <EmptyState icon={Bot} title="No Agent activity yet">
+        Plans, messages, tool decisions, and cycle transitions will appear here.
+      </EmptyState>
+    );
+  }
+  return <Timeline events={agentEvents} loading={loading} />;
+}
+
+function ToolCalls({ executions, loading }: { executions: Execution[]; loading: boolean }) {
+  if (loading) return <LoadingState label="Loading tool calls" />;
+  if (!executions.length) {
+    return (
+      <EmptyState icon={Wrench} title="No tool calls yet">
+        Host execution records will appear after the Agent invokes a registered tool.
+      </EmptyState>
+    );
+  }
+  return (
+    <div className="tool-table-wrap">
+      <table className="tool-table execution-table">
+        <thead>
+          <tr>
+            <th>Tool / command</th>
+            <th>Status</th>
+            <th>Node</th>
+            <th>Runtime</th>
+            <th>Provenance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {executions.map((execution) => (
+            <tr key={execution.id}>
+              <td>
+                <div className="tool-name-cell">
+                  <span><Wrench size={17} /></span>
+                  <div>
+                    <strong>{execution.tool_id ?? execution.executor_type}</strong>
+                    <small title={execution.command_text ?? execution.argv.join(" ")}>
+                      {execution.command_text ?? execution.argv.join(" ")}
+                    </small>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <StatusBadge status={execution.status} />
+                {execution.exit_code !== null ? (
+                  <small className="tool-reason">exit {execution.exit_code}</small>
+                ) : null}
+              </td>
+              <td>
+                <strong>{execution.node_id}</strong>
+                <small className="tool-reason">{execution.cwd}</small>
+              </td>
+              <td>{executionDuration(execution)}</td>
+              <td>
+                <strong>{execution.tool_version ?? "unversioned"}</strong>
+                <small className="tool-reason">
+                  {execution.executable_path ?? execution.platform_system}
+                </small>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1145,6 +1232,18 @@ function formatTimestamp(value: string) {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
+}
+
+function executionDuration(execution: Execution) {
+  if (!execution.started_at) return "not started";
+  const started = new Date(execution.started_at).getTime();
+  const finished = execution.finished_at
+    ? new Date(execution.finished_at).getTime()
+    : Date.now();
+  const milliseconds = Math.max(0, finished - started);
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)}s`;
+  return `${(milliseconds / 60_000).toFixed(1)}m`;
 }
 
 function formatBytes(value: number) {
