@@ -141,6 +141,11 @@ class SubagentConfig(_ConfigModel):
     max_total_per_run: int = Field(default=20, ge=1, le=1000)
 
 
+class HooksConfig(_ConfigModel):
+    default_timeout_seconds: float = Field(default=10, gt=0)
+    failure_policy: str = Field(default="warn", pattern="^(warn|block)$")
+
+
 class RiftXConfig(_ConfigModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -155,6 +160,7 @@ class RiftXConfig(_ConfigModel):
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     subagents: SubagentConfig = Field(default_factory=SubagentConfig)
+    hooks: HooksConfig = Field(default_factory=HooksConfig)
 
 
 _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
@@ -187,6 +193,8 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AGENT_MAX_TURNS": ("agent", "max_turns"),
     "RIFTX_SUBAGENT_MAX_PARALLEL_PER_RUN": ("subagents", "max_parallel_per_run"),
     "RIFTX_SUBAGENT_MAX_TOTAL_PER_RUN": ("subagents", "max_total_per_run"),
+    "RIFTX_HOOK_DEFAULT_TIMEOUT_SECONDS": ("hooks", "default_timeout_seconds"),
+    "RIFTX_HOOK_FAILURE_POLICY": ("hooks", "failure_policy"),
 }
 
 

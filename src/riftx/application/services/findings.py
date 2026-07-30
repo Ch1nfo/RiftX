@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import (
@@ -19,7 +20,9 @@ from riftx.domain import (
     FindingStatus,
 )
 from riftx.domain.base import utc_now
-from riftx.memory import MemoryCandidateFactory, MemoryWriter
+
+if TYPE_CHECKING:
+    from riftx.memory import MemoryCandidateFactory, MemoryWriter
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +69,12 @@ class FindingApplicationService:
         self._execution_repository = execution_repository
         self._event_repository = event_repository
         self._memory_writer = memory_writer
-        self._memory_candidates = MemoryCandidateFactory()
+        if memory_writer is not None:
+            from riftx.memory import MemoryCandidateFactory
+
+            self._memory_candidates: MemoryCandidateFactory | None = MemoryCandidateFactory()
+        else:
+            self._memory_candidates = None
 
     async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
         await self._require_run(run_id)
@@ -160,7 +168,11 @@ class FindingApplicationService:
         return finding
 
     async def _promote_confirmed(self, finding: Finding) -> None:
-        if self._memory_writer is None or finding.status is not FindingStatus.CONFIRMED:
+        if (
+            self._memory_writer is None
+            or self._memory_candidates is None
+            or finding.status is not FindingStatus.CONFIRMED
+        ):
             return
         run = await self._run_repository.get(finding.run_id)
         if run is None:
