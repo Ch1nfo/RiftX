@@ -18,6 +18,7 @@ from riftx.application.ports import ExecutionRepository
 from riftx.application.services import NodeRegistration
 from riftx.domain import Execution, ExecutionStatus, ExecutorType, RunnerCommandKind
 from riftx.executors import PowerShellNotFoundError, PowerShellResolver
+from riftx.target_http.models import TargetHttpRequest, TargetHttpRunnerRequest
 
 from .control_client import (
     LeasedRunnerCommand,
@@ -31,6 +32,7 @@ from .paths import RunnerPaths
 from .protocols import ExecutionRunner
 from .state import FileExecutionRepository, FileTerminalRepository
 from .supervisor import ProcessSupervisor
+from .target_http import RunnerTargetHttpClient, TargetHttpRunner
 from .terminal import TerminalSupervisor
 from .terminal_manager import (
     NullRunEventRepository,
@@ -62,7 +64,7 @@ class TerminalCommandHandler(Protocol):
 
 
 def _default_capabilities() -> tuple[str, ...]:
-    capabilities = ["process", "shell"]
+    capabilities = ["process", "shell", "target_http"]
     try:
         PowerShellResolver().resolve()
     except PowerShellNotFoundError:
@@ -122,12 +124,14 @@ class RunnerDaemon:
         supervisor: ExecutionRunner,
         executions: ExecutionRepository,
         terminal_handler: TerminalCommandHandler | None = None,
+        target_http_handler: TargetHttpRunner | None = None,
     ) -> None:
         self.config = config
         self._client = client
         self._supervisor = supervisor
         self._executions = executions
         self._terminal_handler = terminal_handler
+        self._target_http_handler = target_http_handler
         self._monitors: dict[str, asyncio.Task[None]] = {}
         self._closed = False
 
@@ -160,6 +164,8 @@ class RunnerDaemon:
                 result = await self._handle_execute(command.payload)
             elif command.kind is RunnerCommandKind.CANCEL:
                 result = await self._handle_cancel(command.payload)
+            elif command.kind is RunnerCommandKind.TARGET_HTTP:
+                result = await self._handle_target_http(command)
             elif command.kind in {
                 RunnerCommandKind.TERMINAL_START,
                 RunnerCommandKind.TERMINAL_WRITE,
@@ -191,6 +197,41 @@ class RunnerDaemon:
             await self._client.finish(command, succeeded=False, error=str(exc))
             return
         await self._client.finish(command, succeeded=True, result=result)
+
+    async def _handle_target_http(self, command: LeasedRunnerCommand) -> dict[str, object]:
+        if self._target_http_handler is None:
+            raise RuntimeError("Runner does not support Target HTTP")
+        raw_launch = command.payload.get("launch")
+        if not isinstance(raw_launch, dict):
+            raise ValueError("Target HTTP command is missing launch data")
+        raw_request = raw_launch.get("request")
+        if not isinstance(raw_request, dict):
+            raise ValueError("Target HTTP command is missing request data")
+        launch = TargetHttpRunnerRequest.model_validate(
+            {
+                **raw_launch,
+                "request": TargetHttpRequest.from_runner_payload(raw_request),
+            }
+        )
+        if launch.node_id != self.config.node_id:
+            raise ValueError("Target HTTP command targets a different Runner node")
+        exchange = await self._target_http_handler.execute(launch)
+        offset = 0
+        while offset < len(exchange.response_body):
+            chunk = exchange.response_body[offset : offset + 256 * 1024]
+            try:
+                offset = await self._client.report_command_output(
+                    command,
+                    offset=offset,
+                    data=chunk,
+                )
+            except OutputOffsetMismatch as exc:
+                offset = exc.expected_offset
+                if offset > len(exchange.response_body):
+                    raise RuntimeError(
+                        "Control Plane response output exceeds the Runner response"
+                    ) from exc
+        return {"result": exchange.result.model_dump(mode="json")}
 
     async def close(self) -> None:
         self._closed = True
@@ -403,6 +444,7 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         supervisor=supervisor,
         executions=executions,
         terminal_handler=terminal_manager,
+        target_http_handler=RunnerTargetHttpClient(node_id=config.node_id),
     )
     try:
         await supervisor.recover()

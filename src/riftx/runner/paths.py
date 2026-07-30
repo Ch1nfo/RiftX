@@ -61,6 +61,9 @@ class RunnerPaths:
         directory = self.run_directory(run_id) / "artifacts" / _safe_component(artifact_id)
         return ArtifactPaths(directory=directory, content=directory / _safe_component(name))
 
+    def command_output(self, command_id: str) -> Path:
+        return self.root / "command-output" / _safe_component(command_id) / "response.bin"
+
 
 def _safe_component(value: str) -> str:
     if not value or value in {".", ".."} or Path(value).name != value or "\x00" in value:

@@ -1819,6 +1819,92 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
 
 
 @pytest.mark.asyncio
+async def test_remote_target_http_command_uploads_bounded_response_body(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            registration = await client.post(
+                "/api/v1/nodes/register",
+                headers={"Authorization": "Bearer test-bootstrap"},
+                json={
+                    "node_id": "runner-http",
+                    "name": "Runner HTTP",
+                    "platform": "linux",
+                    "architecture": "x86_64",
+                    "capabilities": ["target_http"],
+                },
+            )
+            headers = {
+                "Authorization": f"Bearer {registration.json()['runner_token']}",
+                "X-RiftX-Node-ID": "runner-http",
+            }
+            command, created = await runtime.control_plane.runner_control_service.enqueue(
+                "runner-http",
+                kind=RunnerCommandKind.TARGET_HTTP,
+                idempotency_key="target-http:integration-key",
+                payload={"max_response_bytes": 32},
+            )
+            assert created is True
+            leased = await client.get("/api/v1/runner/commands/next", headers=headers)
+            lease_id = leased.json()["command"]["lease_id"]
+
+            uploaded = await client.post(
+                f"/api/v1/runner/commands/{command.id}/output",
+                headers=headers,
+                json={
+                    "lease_id": lease_id,
+                    "offset": 0,
+                    "data": base64.b64encode(b"remote body").decode(),
+                },
+            )
+            assert uploaded.status_code == 200
+            assert uploaded.json()["next_offset"] == 11
+
+            replay = await client.post(
+                f"/api/v1/runner/commands/{command.id}/output",
+                headers=headers,
+                json={
+                    "lease_id": lease_id,
+                    "offset": 0,
+                    "data": base64.b64encode(b"remote body").decode(),
+                },
+            )
+            assert replay.status_code == 409
+            assert replay.json()["error"]["code"] == "runner_output_offset_mismatch"
+
+            oversized = await client.post(
+                f"/api/v1/runner/commands/{command.id}/output",
+                headers=headers,
+                json={
+                    "lease_id": lease_id,
+                    "offset": 11,
+                    "data": base64.b64encode(b"x" * 22).decode(),
+                },
+            )
+            assert oversized.status_code == 409
+            assert oversized.json()["error"]["code"] == "runner_command_output_too_large"
+
+            finished = await client.post(
+                f"/api/v1/runner/commands/{command.id}/finish",
+                headers=headers,
+                json={
+                    "lease_id": lease_id,
+                    "succeeded": True,
+                    "result": {"result": {"status_code": 200}},
+                },
+            )
+            assert finished.status_code == 200
+            assert (
+                await runtime.control_plane.runner_control_service.read_command_output(command.id)
+                == b"remote body"
+            )
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
 async def test_remote_terminal_api_routes_commands_and_streams_transcript(
     tmp_path: Path,
 ) -> None:

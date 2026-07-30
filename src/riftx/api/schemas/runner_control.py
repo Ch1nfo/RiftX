@@ -82,3 +82,15 @@ class ExecutionOutputReportRequest(BaseModel):
 
 class ExecutionOutputReportResponse(BaseModel):
     next_offset: int
+
+
+class RunnerCommandOutputReportRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+
+    lease_id: str = Field(min_length=1, max_length=64)
+    offset: int = Field(ge=0)
+    data: bytes = Field(max_length=256 * 1024)

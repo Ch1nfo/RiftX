@@ -226,6 +226,77 @@ class RunnerControlService:
             completed_at=self._clock(),
         )
 
+    async def wait_command(
+        self,
+        command_id: str,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float = 0.1,
+    ) -> RunnerCommand:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while True:
+            command = await self._require_command(command_id)
+            if command.status in {RunnerCommandStatus.COMPLETED, RunnerCommandStatus.FAILED}:
+                return command
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(f"Runner command {command_id!r} did not complete in time")
+            await asyncio.sleep(poll_interval_seconds)
+
+    async def append_command_output(
+        self,
+        node_id: str,
+        token: str,
+        command_id: str,
+        *,
+        lease_id: str,
+        offset: int,
+        data: bytes,
+    ) -> int:
+        await self.authenticate(node_id, token)
+        command = await self._require_command(command_id)
+        if (
+            command.node_id != node_id
+            or command.kind is not RunnerCommandKind.TARGET_HTTP
+            or command.status is not RunnerCommandStatus.LEASED
+            or command.lease_id != lease_id
+        ):
+            raise AuthenticationError(
+                "runner_command_output_scope_mismatch",
+                "Runner cannot upload output for this command lease",
+            )
+        if len(data) > _MAX_OUTPUT_CHUNK_BYTES:
+            raise ApplicationConflictError(
+                "runner_output_chunk_too_large",
+                f"Runner output chunks must not exceed {_MAX_OUTPUT_CHUNK_BYTES} bytes",
+            )
+        raw_limit = command.payload.get("max_response_bytes", 10_000_000)
+        try:
+            limit = int(raw_limit) if not isinstance(raw_limit, bool) else 10_000_000
+        except (TypeError, ValueError):
+            limit = 10_000_000
+        if offset + len(data) > min(max(limit, 1), 100_000_000):
+            raise ApplicationConflictError(
+                "runner_command_output_too_large",
+                "Runner command output exceeds its declared response limit",
+            )
+        path = self._paths.command_output(command_id)
+        lock = self._output_locks.setdefault((command_id, "command"), asyncio.Lock())
+        async with lock:
+            return await asyncio.to_thread(_append_exact, path, offset, data)
+
+    async def read_command_output(self, command_id: str) -> bytes:
+        command = await self._require_command(command_id)
+        if command.kind is not RunnerCommandKind.TARGET_HTTP:
+            raise ApplicationConflictError(
+                "runner_command_output_unavailable",
+                "Runner command does not carry Target HTTP output",
+            )
+        path = self._paths.command_output(command_id)
+        try:
+            return await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
+            return b""
+
     async def report_execution(
         self,
         node_id: str,

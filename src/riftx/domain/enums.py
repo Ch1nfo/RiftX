@@ -84,6 +84,7 @@ class NodeStatus(StrEnum):
 class RunnerCommandKind(StrEnum):
     EXECUTE = "execute"
     CANCEL = "cancel"
+    TARGET_HTTP = "target_http"
     TERMINAL_START = "terminal_start"
     TERMINAL_WRITE = "terminal_write"
     TERMINAL_RESIZE = "terminal_resize"

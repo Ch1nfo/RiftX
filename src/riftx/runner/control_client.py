@@ -194,6 +194,34 @@ class RunnerControlClient:
             },
         )
 
+    async def report_command_output(
+        self,
+        command: LeasedRunnerCommand,
+        *,
+        offset: int,
+        data: bytes,
+    ) -> int:
+        try:
+            payload = await self._request(
+                "POST",
+                f"/api/v1/runner/commands/{command.id}/output",
+                json={
+                    "lease_id": command.lease_id,
+                    "offset": offset,
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+            )
+        except RunnerControlClientError as exc:
+            if exc.code == "runner_output_offset_mismatch":
+                raise OutputOffsetMismatch(
+                    exc.status_code,
+                    exc.code,
+                    str(exc),
+                    details=exc.details,
+                ) from exc
+            raise
+        return int(payload["next_offset"])
+
     async def report_status(
         self,
         execution_id: str,

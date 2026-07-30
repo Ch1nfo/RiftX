@@ -36,6 +36,7 @@ from .runner_control import (
     ExecutionStatusReportRequest,
     FinishRunnerCommandRequest,
     FinishRunnerCommandResponse,
+    RunnerCommandOutputReportRequest,
     RunnerCommandResponse,
     RunnerPollResponse,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "FinishRunnerCommandRequest",
     "FinishRunnerCommandResponse",
     "RunnerCommandResponse",
+    "RunnerCommandOutputReportRequest",
     "RunnerPollResponse",
     "RunActionResponse",
     "RunEventListResponse",

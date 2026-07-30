@@ -20,6 +20,12 @@ from riftx.runner.paths import RunnerPaths
 from riftx.runner.remote import RemoteExecutionSupervisor
 from riftx.runner.state import FileExecutionRepository
 from riftx.runner.supervisor import ProcessSupervisor
+from riftx.target_http.models import (
+    TargetHttpExchange,
+    TargetHttpRequest,
+    TargetHttpResult,
+    TargetHttpRunnerRequest,
+)
 
 
 class AlwaysMatchesInspector:
@@ -91,6 +97,18 @@ class FakeRunnerClient:
         target.extend(data)
         return len(target)
 
+    async def report_command_output(
+        self,
+        command: LeasedRunnerCommand,
+        *,
+        offset: int,
+        data: bytes,
+    ) -> int:
+        target = self.output.setdefault((command.id, "command"), bytearray())
+        assert len(target) == offset
+        target.extend(data)
+        return len(target)
+
     async def close(self) -> None:
         return None
 
@@ -102,6 +120,26 @@ class FakeTerminalHandler:
     async def handle(self, kind: RunnerCommandKind, payload: dict[str, object]) -> object:
         self.calls.append((kind, payload))
         return {"resized": True}
+
+
+class FakeTargetHttpHandler:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.launches: list[TargetHttpRunnerRequest] = []
+
+    async def execute(self, launch: TargetHttpRunnerRequest) -> TargetHttpExchange:
+        self.launches.append(launch)
+        return TargetHttpExchange(
+            result=TargetHttpResult(
+                execution_key=launch.request.execution_key,
+                request_hash=launch.request.fingerprint,
+                status_code=200,
+                final_url=launch.request.url,
+                elapsed_ms=1,
+                content_length=len(self.body),
+            ),
+            response_body=self.body,
+        )
 
 
 @pytest.mark.asyncio
@@ -358,6 +396,57 @@ async def test_runner_daemon_forwards_terminal_resize_commands(tmp_path: Path) -
     await daemon.handle_command(command)
     assert terminal.calls == [(RunnerCommandKind.TERMINAL_RESIZE, command.payload)]
     assert client.finished[-1][1] is True
+    await daemon.close()
+
+
+@pytest.mark.asyncio
+async def test_runner_daemon_executes_target_http_and_chunks_response(tmp_path: Path) -> None:
+    repository = FileExecutionRepository(tmp_path / "executions.json")
+    supervisor = ProcessSupervisor(repository, RunnerPaths(tmp_path / "runner"))
+    client = FakeRunnerClient()
+    response_body = b"x" * (256 * 1024 + 17)
+    target_http = FakeTargetHttpHandler(response_body)
+    daemon = RunnerDaemon(
+        config=RunnerDaemonConfig(
+            server_url="http://control.invalid",
+            node_id="runner-a",
+            name="Runner A",
+            state_path=tmp_path / "runner",
+        ),
+        client=client,  # type: ignore[arg-type]
+        supervisor=supervisor,
+        executions=repository,
+        target_http_handler=target_http,
+    )
+    request = TargetHttpRequest(
+        execution_key="target-http-key",
+        method="GET",
+        url="https://target.internal/status",
+    )
+    command = _command(
+        "target-http-1",
+        RunnerCommandKind.TARGET_HTTP,
+        {
+            "launch": {
+                "run_id": "run-1",
+                "session_id": "session-1",
+                "tool_call_id": "tool-call-1",
+                "node_id": "runner-a",
+                "scope": {"domains": ["target.internal"]},
+                "request": request.runner_payload(),
+            },
+            "max_response_bytes": request.max_response_bytes,
+        },
+    )
+
+    await daemon.handle_command(command)
+
+    assert target_http.launches[0].request == request
+    assert bytes(client.output[(command.id, "command")]) == response_body
+    _, succeeded, result, error = client.finished[-1]
+    assert succeeded is True
+    assert error == ""
+    assert result["result"]["request_hash"] == request.fingerprint  # type: ignore[index]
     await daemon.close()
 
 

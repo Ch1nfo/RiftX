@@ -15,6 +15,7 @@ from ..schemas import (
     ExecutionStatusReportRequest,
     FinishRunnerCommandRequest,
     FinishRunnerCommandResponse,
+    RunnerCommandOutputReportRequest,
     RunnerCommandResponse,
     RunnerPollResponse,
 )
@@ -69,6 +70,29 @@ async def finish_runner_command(
         status=command.status,
         completed_at=command.completed_at,
     )
+
+
+@router.post(
+    "/commands/{command_id}/output",
+    response_model=ExecutionOutputReportResponse,
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def report_runner_command_output(
+    command_id: str,
+    payload: RunnerCommandOutputReportRequest,
+    service: RunnerControlServiceDependency,
+    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
+    authorization: Annotated[str | None, Header()] = None,
+) -> ExecutionOutputReportResponse:
+    next_offset = await service.append_command_output(
+        node_id,
+        bearer_token(authorization),
+        command_id,
+        lease_id=payload.lease_id,
+        offset=payload.offset,
+        data=payload.data,
+    )
+    return ExecutionOutputReportResponse(next_offset=next_offset)
 
 
 @router.post(

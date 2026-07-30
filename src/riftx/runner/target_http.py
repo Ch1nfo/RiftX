@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from riftx.domain import RunnerCommand, RunnerCommandKind, RunnerCommandStatus
 from riftx.scope import ScopeGuard, ScopeTargetKind
 from riftx.target_http.models import (
     TargetHttpExchange,
@@ -24,6 +25,27 @@ _MAX_REDIRECTS = 10
 
 class TargetHttpRunner(Protocol):
     async def execute(self, launch: TargetHttpRunnerRequest) -> TargetHttpExchange: ...
+
+
+class TargetHttpCommandControl(Protocol):
+    async def enqueue(
+        self,
+        node_id: str,
+        *,
+        kind: RunnerCommandKind,
+        idempotency_key: str,
+        payload: dict[str, object],
+    ) -> tuple[RunnerCommand, bool]: ...
+
+    async def wait_command(
+        self,
+        command_id: str,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float = 0.1,
+    ) -> RunnerCommand: ...
+
+    async def read_command_output(self, command_id: str) -> bytes: ...
 
 
 class ClientCertificateResolver(Protocol):
@@ -93,6 +115,70 @@ class RunnerTargetHttpClient:
             truncated=truncated,
         )
         return TargetHttpExchange(result=result, response_body=body)
+
+
+class RemoteTargetHttpClient:
+    """Dispatch Target HTTP to an authenticated independently deployed Runner."""
+
+    def __init__(self, control: TargetHttpCommandControl) -> None:
+        self._control = control
+
+    async def execute(self, launch: TargetHttpRunnerRequest) -> TargetHttpExchange:
+        request = launch.request
+        command, _ = await self._control.enqueue(
+            launch.node_id,
+            kind=RunnerCommandKind.TARGET_HTTP,
+            idempotency_key=f"target-http:{request.execution_key}",
+            payload={
+                "launch": {
+                    "run_id": launch.run_id,
+                    "session_id": launch.session_id,
+                    "tool_call_id": launch.tool_call_id,
+                    "node_id": launch.node_id,
+                    "scope": launch.scope.model_dump(mode="json"),
+                    "request": request.runner_payload(),
+                },
+                "max_response_bytes": request.max_response_bytes,
+            },
+        )
+        completed = await self._control.wait_command(
+            command.id,
+            timeout_seconds=request.timeout_seconds + 30,
+        )
+        if completed.status is not RunnerCommandStatus.COMPLETED:
+            raise RuntimeError(
+                f"Remote Target HTTP command failed: {completed.error or 'unknown error'}"
+            )
+        raw_result = completed.result.get("result")
+        if not isinstance(raw_result, dict):
+            raise RuntimeError("Remote Target HTTP command omitted its structured result")
+        result = TargetHttpResult.model_validate(raw_result)
+        if (
+            result.execution_key != request.execution_key
+            or result.request_hash != request.fingerprint
+        ):
+            raise RuntimeError("Remote Target HTTP result identity does not match its request")
+        body = await self._control.read_command_output(completed.id)
+        if len(body) > request.max_response_bytes:
+            raise RuntimeError("Remote Target HTTP response exceeds its declared limit")
+        return TargetHttpExchange(result=result, response_body=body)
+
+
+class NodeTargetHttpRouter:
+    def __init__(
+        self,
+        *,
+        local_node_id: str,
+        local: TargetHttpRunner,
+        remote: TargetHttpRunner,
+    ) -> None:
+        self._local_node_id = local_node_id
+        self._local = local
+        self._remote = remote
+
+    async def execute(self, launch: TargetHttpRunnerRequest) -> TargetHttpExchange:
+        runner = self._local if launch.node_id == self._local_node_id else self._remote
+        return await runner.execute(launch)
 
 
 async def _send(

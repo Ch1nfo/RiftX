@@ -55,7 +55,9 @@ from riftx.persistence.target_http_repositories import (
 )
 from riftx.runner import (
     ExecutionRunner,
+    NodeTargetHttpRouter,
     ProcessSupervisor,
+    RemoteTargetHttpClient,
     RunnerPaths,
     RunnerTargetHttpClient,
     TerminalSupervisor,
@@ -386,7 +388,11 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             runs=run_repository,
             tool_calls=tool_call_intent_repository,
             requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
-            runner=RunnerTargetHttpClient(node_id=settings.node_id),
+            runner=NodeTargetHttpRouter(
+                local_node_id=settings.node_id,
+                local=RunnerTargetHttpClient(node_id=settings.node_id),
+                remote=RemoteTargetHttpClient(runner_control_service),
+            ),
             artifacts=artifact_service,
             events=event_repository,
         ),
