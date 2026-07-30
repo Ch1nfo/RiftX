@@ -126,6 +126,18 @@ class RetryOnceActivities(FakeActivities):
         )
 
 
+@dataclass
+class BlockingCompactionActivities(FakeActivities):
+    compaction_started: asyncio.Event = field(default_factory=asyncio.Event)
+
+    @activity.defn(name="compact_context_activity")
+    async def compact(self, input: CompactContextInput) -> CompactContextResult:
+        self.compact_inputs.append(input)
+        self.compaction_started.set()
+        await asyncio.Future()
+        raise AssertionError("unreachable")
+
+
 def cycle_result(
     reason: RuntimeYieldReason,
     *,
@@ -420,4 +432,57 @@ async def test_model_switch_checkpoints_then_waits_for_original_user_input() -> 
     assert result.phase is WorkflowPhase.COMPLETED
     assert len(activities.cycle_inputs) == 2
     assert activities.cycle_inputs[1].latest_user_message_id == "message-after-switch"
+    await environment.shutdown()
+
+
+async def test_new_worker_retries_inflight_compaction_with_same_checkpoint_id() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    crashing = BlockingCompactionActivities(
+        cycle_results=deque([cycle_result(RuntimeYieldReason.USER_INPUT_REQUIRED)])
+    )
+    handle: WorkflowHandle[RunWorkflowResult, RunWorkflowStatus]
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=crashing.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-worker-crash", session_id="session-worker-crash"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await _wait_for_phase(handle, WorkflowPhase.WAITING_INPUT)
+        await handle.signal(RiftXRunWorkflow.compact, 8)
+        await asyncio.wait_for(crashing.compaction_started.wait(), timeout=5)
+
+    assert len(crashing.compact_inputs) == 1
+    checkpoint_id = crashing.compact_inputs[0].checkpoint_id
+    assert checkpoint_id is not None
+    recovered = FakeActivities(
+        cycle_results=deque([cycle_result(RuntimeYieldReason.RUN_COMPLETED)])
+    )
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=recovered.registered(),
+        max_cached_workflows=0,
+    ):
+        for _ in range(300):
+            if recovered.compact_inputs:
+                break
+            await asyncio.sleep(0.01)
+        assert len(recovered.compact_inputs) == 1
+        assert recovered.compact_inputs[0].checkpoint_id == checkpoint_id
+        await handle.signal(RiftXRunWorkflow.user_input, "message-after-recovery")
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.COMPLETED
+    assert recovered.cycle_inputs[0].run_id == "run-worker-crash"
+    assert recovered.cycle_inputs[0].session_id == "session-worker-crash"
     await environment.shutdown()
