@@ -166,6 +166,19 @@ class RuntimeCoordinator:
                     model_profile=session.model_profile,
                     latest_user_message_id=latest_user_message_id,
                     objective=run.objective.description,
+                    run_contract={
+                        "objective": run.objective.description,
+                        "success_criteria": [
+                            item.model_dump(mode="json") for item in run.success_criteria
+                        ],
+                        "entry_points": [
+                            item.model_dump(mode="json") for item in run.entry_points
+                        ],
+                        "scope": run.scope.model_dump(mode="json"),
+                        "approval_mode": run.approval_mode.value,
+                        "node_id": run.node_id,
+                        "workspace": run.workspace_path,
+                    },
                     input_text=request.input_text,
                     input_items=request.input_items,
                 )

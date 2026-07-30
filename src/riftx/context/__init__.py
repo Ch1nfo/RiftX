@@ -6,8 +6,21 @@ from .artifacts import (
     execution_artifact_uri,
     parse_execution_artifact_uri,
 )
-from .compiler import ContextManifestBuilder, ManifestingContextCompiler
+from .budget import (
+    ContextBudgetResult,
+    RequiredContextOverflowError,
+    TokenBudgeter,
+)
+from .compiler import ContextCompiler, ContextManifestBuilder, ManifestingContextCompiler
 from .inspector import ContextApplicationService
+from .items import (
+    CONTEXT_LAYER_ORDER,
+    ContextItem,
+    ContextItemKind,
+    ContextLayer,
+    ContextSource,
+    StaticContextSource,
+)
 from .manifest import (
     ContextCategory,
     ContextCategoryUsage,
@@ -32,6 +45,7 @@ from .reducer import (
     WorkingMemoryReductionError,
     WorkingMemoryVersionConflict,
 )
+from .sources import TranscriptContextSource, WorkingMemoryContextSource
 from .token_counter import estimate_context_tokens
 from .tool_results import ToolResultProcessor
 from .working_memory import (
@@ -61,6 +75,18 @@ from .working_memory import (
 )
 
 __all__ = [
+    "CONTEXT_LAYER_ORDER",
+    "ContextBudgetResult",
+    "ContextCompiler",
+    "ContextItem",
+    "ContextItemKind",
+    "ContextLayer",
+    "ContextSource",
+    "RequiredContextOverflowError",
+    "StaticContextSource",
+    "TokenBudgeter",
+    "TranscriptContextSource",
+    "WorkingMemoryContextSource",
     "ActiveExecutionRef",
     "ActiveTerminalRef",
     "AttemptRecord",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from typing import Any, cast
 
 from agents import RunConfig, Runner, RunState
 
@@ -43,6 +43,7 @@ class OpenAIAgentsEngine:
 
     async def start(self, request: AgentEngineRequest) -> AgentEngineRun:
         agent = self._agent_factory(request)
+        _apply_compiled_instructions(agent, request.context)
         result = self._stream_runner(
             agent,
             request.engine_input(),
@@ -70,6 +71,7 @@ class OpenAIAgentsEngine:
         if request.state.sdk_run_state is None:
             raise InvalidProviderStateError("provider state does not contain sdk_run_state")
         agent = self._agent_factory(request)
+        _apply_compiled_instructions(agent, request.context)
         try:
             state = await RunState.from_json(
                 agent,
@@ -104,6 +106,12 @@ class OpenAIAgentsEngine:
             tracing_disabled=True,
             workflow_name="RiftX Agent Engine",
         )
+
+
+def _apply_compiled_instructions(agent: object, context: object | None) -> None:
+    instructions = getattr(context, "system_instructions", None)
+    if isinstance(instructions, str) and instructions and hasattr(agent, "instructions"):
+        cast(Any, agent).instructions = instructions
 
 
 class OpenAIAgentsEngineRun:

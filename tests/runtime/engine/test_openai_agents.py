@@ -301,3 +301,24 @@ def test_engine_state_round_trips_through_durable_provider_state() -> None:
     durable = state.to_provider_state("session-1")
     restored = AgentEngineState.from_provider_state(durable)
     assert restored == state
+
+
+async def test_compiled_system_instructions_replace_factory_prompt() -> None:
+    result = FakeStreamingResult([])
+    agent = SimpleNamespace(instructions="legacy prompt")
+    captured: dict[str, object] = {}
+
+    def stream_runner(selected_agent: object, *_: object, **__: object) -> FakeStreamingResult:
+        captured["instructions"] = selected_agent.instructions  # type: ignore[attr-defined]
+        return result
+
+    engine = OpenAIAgentsEngine(lambda request: agent, stream_runner=stream_runner)
+    await engine.start(
+        AgentEngineRequest(
+            session_id="session-1",
+            model="gpt-5.6",
+            context=SimpleNamespace(system_instructions="compiled authoritative prompt"),
+        )
+    )
+
+    assert captured["instructions"] == "compiled authoritative prompt"
