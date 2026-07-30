@@ -75,6 +75,9 @@ class RemoteTerminalSupervisor:
             id=session_id,
             run_id=request.run_id,
             execution_id=execution.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
             owner=request.owner,
             cols=request.cols,
             rows=request.rows,
@@ -207,7 +210,9 @@ class RemoteTerminalSupervisor:
 
     async def take_over(self, session_id: str) -> TerminalSession:
         terminal = await self.get(session_id)
-        terminal.take_over()
+        execution = await self.get_execution(session_id)
+        cursor = await asyncio.to_thread(_output_size, Path(execution.stdout_path))
+        terminal.take_over(cursor=cursor)
         await self._terminals.save(terminal)
         await self._events.append(
             terminal.run_id,
@@ -218,7 +223,9 @@ class RemoteTerminalSupervisor:
 
     async def release(self, session_id: str) -> TerminalSession:
         terminal = await self.get(session_id)
-        terminal.release()
+        execution = await self.get_execution(session_id)
+        cursor = await asyncio.to_thread(_output_size, Path(execution.stdout_path))
+        terminal.release(cursor=cursor)
         await self._terminals.save(terminal)
         await self._events.append(
             terminal.run_id,
@@ -392,3 +399,7 @@ def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
         data = stream.read(max_bytes)
     next_cursor = cursor + len(data)
     return OutputSlice(data=data, cursor=cursor, next_cursor=next_cursor, eof=next_cursor >= size)
+
+
+def _output_size(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0

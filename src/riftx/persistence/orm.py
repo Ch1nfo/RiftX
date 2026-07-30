@@ -173,10 +173,19 @@ class TerminalSessionRecord(Base):
     execution_id: Mapped[str] = mapped_column(
         ForeignKey("executions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    runner_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, default="")
+    shell: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cwd: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     owner: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     cols: Mapped[int] = mapped_column(Integer, nullable=False)
     rows: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    takeover_cursor: Mapped[int | None] = mapped_column(Integer)
+    takeover_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    transcript_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

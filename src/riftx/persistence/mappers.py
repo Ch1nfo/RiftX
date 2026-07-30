@@ -540,10 +540,17 @@ def terminal_to_record(terminal: TerminalSession) -> TerminalSessionRecord:
         id=terminal.id,
         run_id=terminal.run_id,
         execution_id=terminal.execution_id,
+        runner_id=terminal.runner_id,
+        shell=terminal.shell,
+        cwd=terminal.cwd,
         status=terminal.status.value,
         owner=terminal.owner.value,
         cols=terminal.cols,
         rows=terminal.rows,
+        output_cursor=terminal.output_cursor,
+        takeover_cursor=terminal.takeover_cursor,
+        takeover_started_at=terminal.takeover_started_at,
+        transcript_artifact_id=terminal.transcript_artifact_id,
         created_at=terminal.created_at,
         closed_at=terminal.closed_at,
     )
@@ -557,6 +564,10 @@ def apply_terminal_to_record(
     record.owner = terminal.owner.value
     record.cols = terminal.cols
     record.rows = terminal.rows
+    record.output_cursor = terminal.output_cursor
+    record.takeover_cursor = terminal.takeover_cursor
+    record.takeover_started_at = terminal.takeover_started_at
+    record.transcript_artifact_id = terminal.transcript_artifact_id
     record.closed_at = terminal.closed_at
 
 
@@ -565,10 +576,17 @@ def terminal_from_record(record: TerminalSessionRecord) -> TerminalSession:
         id=record.id,
         run_id=record.run_id,
         execution_id=record.execution_id,
+        runner_id=record.runner_id,
+        shell=record.shell,
+        cwd=record.cwd,
         status=TerminalStatus(record.status),
         owner=TerminalOwner(record.owner),
         cols=record.cols,
         rows=record.rows,
+        output_cursor=record.output_cursor,
+        takeover_cursor=record.takeover_cursor,
+        takeover_started_at=record.takeover_started_at,
+        transcript_artifact_id=record.transcript_artifact_id,
         created_at=record.created_at,
         closed_at=record.closed_at,
     )

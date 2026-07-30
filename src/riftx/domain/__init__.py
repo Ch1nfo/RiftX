@@ -27,7 +27,7 @@ from .enums import (
 )
 from .errors import DomainError, InvalidStateTransitionError
 from .event import RunEvent
-from .execution import AgentStep, Execution, TerminalSession, ToolCall
+from .execution import AgentStep, Execution, TerminalSession, TerminalTakeoverSummary, ToolCall
 from .finding import Finding, FindingEvidence
 from .message import AgentCheckpoint, AgentMessage, TranscriptMessageDraft
 from .node import Node
@@ -81,6 +81,7 @@ __all__ = [
     "TerminalOwner",
     "TranscriptMessageDraft",
     "TerminalSession",
+    "TerminalTakeoverSummary",
     "TerminalStatus",
     "Tool",
     "ToolAvailability",

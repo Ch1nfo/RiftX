@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, model_validator
 
 from .base import DomainModel, new_id, utc_now
 from .enums import (
@@ -142,10 +142,17 @@ class TerminalSession(DomainModel):
     id: str = Field(default_factory=new_id)
     run_id: str
     execution_id: str
+    runner_id: str = ""
+    shell: str = ""
+    cwd: str = ""
     status: TerminalStatus = TerminalStatus.CREATED
     owner: TerminalOwner = TerminalOwner.AGENT
     cols: int = Field(default=120, gt=0)
     rows: int = Field(default=40, gt=0)
+    output_cursor: int = Field(default=0, ge=0)
+    takeover_cursor: int | None = Field(default=None, ge=0)
+    takeover_started_at: AwareDatetime | None = None
+    transcript_artifact_id: str | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
     closed_at: AwareDatetime | None = None
 
@@ -156,15 +163,21 @@ class TerminalSession(DomainModel):
         if target in {TerminalStatus.CLOSED, TerminalStatus.LOST}:
             self.closed_at = at or utc_now()
 
-    def take_over(self) -> None:
+    def take_over(self, *, cursor: int | None = None) -> None:
         if self.status is not TerminalStatus.OPEN:
             raise InvalidStateTransitionError("TerminalSession", self.status, TerminalOwner.USER)
         self.owner = TerminalOwner.USER
+        self.takeover_cursor = self.output_cursor if cursor is None else cursor
+        self.takeover_started_at = utc_now()
 
-    def release(self) -> None:
+    def release(self, *, cursor: int | None = None) -> None:
         if self.status is not TerminalStatus.OPEN:
             raise InvalidStateTransitionError("TerminalSession", self.status, TerminalOwner.AGENT)
         self.owner = TerminalOwner.AGENT
+        if cursor is not None:
+            self.output_cursor = cursor
+        self.takeover_cursor = None
+        self.takeover_started_at = None
 
     def resize(self, cols: int, rows: int) -> None:
         if self.status is not TerminalStatus.OPEN:
@@ -173,3 +186,25 @@ class TerminalSession(DomainModel):
             raise ValueError("terminal dimensions must be positive")
         self.cols = cols
         self.rows = rows
+
+
+class TerminalTakeoverSummary(DomainModel):
+    id: str = Field(default_factory=new_id)
+    run_id: str = Field(min_length=1)
+    terminal_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    started_cursor: int = Field(ge=0)
+    ended_cursor: int = Field(ge=0)
+    byte_count: int = Field(ge=0)
+    artifact_id: str = Field(min_length=1)
+    summary: str
+    takeover_started_at: AwareDatetime | None = None
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_cursors(self) -> TerminalTakeoverSummary:
+        if self.ended_cursor < self.started_cursor:
+            raise ValueError("takeover summary ended cursor precedes its start")
+        if self.byte_count != self.ended_cursor - self.started_cursor:
+            raise ValueError("takeover summary byte count does not match its cursor range")
+        return self

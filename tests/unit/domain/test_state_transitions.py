@@ -14,6 +14,7 @@ from riftx.domain import (
     RunStatus,
     TerminalSession,
     TerminalStatus,
+    TerminalTakeoverSummary,
 )
 
 
@@ -126,3 +127,32 @@ def test_terminal_session_has_explicit_lifecycle() -> None:
     never_attached = TerminalSession(run_id="run-1", execution_id="execution-2")
     never_attached.transition_to(TerminalStatus.LOST)
     assert never_attached.closed_at is not None
+
+
+def test_terminal_takeover_tracks_durable_cursor_range() -> None:
+    session = TerminalSession(
+        run_id="run-1",
+        execution_id="execution-1",
+        output_cursor=10,
+    )
+    session.transition_to(TerminalStatus.OPEN)
+    session.take_over(cursor=12)
+    assert session.takeover_cursor == 12
+    assert session.takeover_started_at is not None
+    started_at = session.takeover_started_at
+    session.release(cursor=24)
+    assert session.output_cursor == 24
+    assert session.takeover_cursor is None
+
+    summary = TerminalTakeoverSummary(
+        run_id="run-1",
+        terminal_id=session.id,
+        execution_id=session.execution_id,
+        started_cursor=12,
+        ended_cursor=24,
+        byte_count=12,
+        artifact_id="artifact-1",
+        summary="User interaction produced 12 bytes.",
+        takeover_started_at=started_at,
+    )
+    assert summary.byte_count == 12
