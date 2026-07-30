@@ -22,7 +22,9 @@ from .runtime_repositories import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyProviderStateRepository,
     SQLAlchemyRunLeaseRepository,
+    SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyUserInputRequestRepository,
 )
 from .transcript_repositories import SQLAlchemyTranscriptRepository
 
@@ -44,8 +46,10 @@ __all__ = [
     "SQLAlchemyRunnerCredentialRepository",
     "SQLAlchemyRunEventRepository",
     "SQLAlchemyRunLeaseRepository",
+    "SQLAlchemyRuntimeApprovalRepository",
     "SQLAlchemyRunRepository",
     "SQLAlchemyTerminalRepository",
     "SQLAlchemyToolCallIntentRepository",
+    "SQLAlchemyUserInputRequestRepository",
     "SQLAlchemyTranscriptRepository",
 ]

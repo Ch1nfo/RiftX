@@ -507,7 +507,74 @@ class ToolCallIntentRecord(Base):
     approval_level: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     engine_call_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    execution_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RuntimeApprovalRequestRecord(Base):
+    __tablename__ = "runtime_approval_requests"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_cycles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool_call_intent_id: Mapped[str] = mapped_column(
+        ForeignKey("tool_call_intents.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    context_compilation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("context_compilations.id", ondelete="SET NULL"), index=True
+    )
+    working_memory_version: Mapped[int | None] = mapped_column(Integer)
+    provider_state_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_states.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    decision: Mapped[str | None] = mapped_column(String(STATUS_LENGTH))
+    feedback: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class UserInputRequestRecord(Base):
+    __tablename__ = "user_input_requests"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_cycles.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    context_compilation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("context_compilations.id", ondelete="SET NULL"), index=True
+    )
+    working_memory_version: Mapped[int | None] = mapped_column(Integer)
+    provider_state_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_states.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    response_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_messages.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class RunLeaseRecord(Base):

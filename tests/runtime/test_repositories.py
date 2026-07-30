@@ -14,21 +14,26 @@ from riftx.persistence import (
     SQLAlchemyProviderStateRepository,
     SQLAlchemyRunLeaseRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyUserInputRequestRepository,
 )
 from riftx.runtime.types import (
     AgentCycle,
     AgentSession,
     AgentStep,
     AgentStepType,
+    ApprovalDecision,
     CycleStatus,
     ProviderState,
     RunLease,
+    RuntimeApprovalRequest,
     RuntimeStateMachine,
     SessionStatus,
     StepStatus,
     ToolCallIntent,
     ToolCallStatus,
+    UserInputRequest,
     YieldReason,
 )
 
@@ -58,6 +63,8 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
     steps = SQLAlchemyAgentStepRepository(database.session_factory)
     providers = SQLAlchemyProviderStateRepository(database.session_factory)
     intents = SQLAlchemyToolCallIntentRepository(database.session_factory)
+    approvals = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
+    user_inputs = SQLAlchemyUserInputRequestRepository(database.session_factory)
 
     agent_session = AgentSession(id="session-1", run_id="run-1", model_profile="default")
     await sessions.create(agent_session)
@@ -113,10 +120,37 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
         command_preview="nmap 192.0.2.1",
         reason="Authorized discovery",
         approval_level=ApprovalLevel.SENSITIVE,
+        execution_spec={"argv": ["nmap", "192.0.2.1"]},
     )
     await intents.create(intent)
     intent.status = ToolCallStatus.WAITING_APPROVAL
     await intents.save(intent)
+
+    approval = RuntimeApprovalRequest(
+        id="approval-1",
+        run_id="run-1",
+        session_id="session-1",
+        cycle_id="cycle-1",
+        tool_call_intent_id="intent-1",
+        working_memory_version=3,
+        provider_state_id="provider-1",
+    )
+    await approvals.create(approval)
+    assert await approvals.create(approval.model_copy(update={"id": "approval-race"})) == approval
+    approval.decide(ApprovalDecision.APPROVE_ONCE, decided_by="operator")
+    await approvals.save(approval)
+
+    user_input = UserInputRequest(
+        id="input-1",
+        run_id="run-1",
+        session_id="session-1",
+        cycle_id="cycle-1",
+        prompt="Continue with the authorized target?",
+        provider_state_id="provider-1",
+    )
+    await user_inputs.create(user_input)
+    duplicate_input = user_input.model_copy(update={"id": "input-race"})
+    assert await user_inputs.create(duplicate_input) == user_input
 
     assert await sessions.get("session-1") == agent_session
     assert list(await sessions.list_by_run("run-1")) == [agent_session]
@@ -127,6 +161,10 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
     assert await providers.get("provider-1") == provider_state
     assert await providers.latest_for_session("session-1") == provider_state
     assert await intents.get("intent-1") == intent
+    assert await approvals.get("approval-1") == approval
+    assert await approvals.get_for_intent("intent-1") == approval
+    assert await user_inputs.get("input-1") == user_input
+    assert await user_inputs.get_for_cycle("cycle-1") == user_input
 
     await database.dispose()
 

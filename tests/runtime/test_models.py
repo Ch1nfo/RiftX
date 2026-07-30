@@ -3,16 +3,20 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from riftx.domain import ApprovalLevel
+from riftx.domain import ApprovalLevel, ApprovalStatus
 from riftx.runtime.types import (
     AgentCycle,
     AgentDirectiveType,
     AgentSession,
     AgentStep,
     AgentStepType,
+    ApprovalDecision,
     ProviderState,
     RunLease,
+    RuntimeApprovalRequest,
     ToolCallIntent,
+    UserInputRequest,
+    UserInputStatus,
     YieldReason,
 )
 
@@ -53,6 +57,24 @@ def test_runtime_models_round_trip_through_json() -> None:
             command_preview="nmap 192.0.2.1",
             reason="Authorized discovery",
             approval_level=ApprovalLevel.SENSITIVE,
+            execution_spec={"argv": ["nmap", "192.0.2.1"]},
+            created_at=now,
+        ),
+        RuntimeApprovalRequest(
+            id="approval-1",
+            run_id="run-1",
+            session_id="session-1",
+            cycle_id="cycle-1",
+            tool_call_intent_id="intent-1",
+            working_memory_version=2,
+            created_at=now,
+        ),
+        UserInputRequest(
+            id="input-1",
+            run_id="run-1",
+            session_id="session-1",
+            cycle_id="cycle-1",
+            prompt="Which target should be tested next?",
             created_at=now,
         ),
         ProviderState(
@@ -87,6 +109,46 @@ def test_tool_call_intent_requires_tool_or_skill() -> None:
             session_id="session-1",
             cycle_id="cycle-1",
             step_id="step-1",
+        )
+
+
+def test_runtime_approval_decisions_and_user_input_transitions() -> None:
+    approval = RuntimeApprovalRequest(
+        run_id="run-1",
+        session_id="session-1",
+        cycle_id="cycle-1",
+        tool_call_intent_id="intent-1",
+    )
+    approval.decide(
+        ApprovalDecision.REJECT_WITH_FEEDBACK,
+        decided_by="operator",
+        feedback="Use the authorized staging host instead.",
+    )
+    assert approval.status is ApprovalStatus.REJECTED
+    assert approval.decision is ApprovalDecision.REJECT_WITH_FEEDBACK
+
+    request = UserInputRequest(
+        run_id="run-1",
+        session_id="session-1",
+        cycle_id="cycle-1",
+        prompt="Continue?",
+    )
+    request.answer("message-1")
+    assert request.status is UserInputStatus.ANSWERED
+    assert request.response_message_id == "message-1"
+
+
+def test_reject_with_feedback_requires_feedback() -> None:
+    approval = RuntimeApprovalRequest(
+        run_id="run-1",
+        session_id="session-1",
+        cycle_id="cycle-1",
+        tool_call_intent_id="intent-1",
+    )
+    with pytest.raises(ValueError, match="requires feedback"):
+        approval.decide(
+            ApprovalDecision.REJECT_WITH_FEEDBACK,
+            decided_by="operator",
         )
 
 

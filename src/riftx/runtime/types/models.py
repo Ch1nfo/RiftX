@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from riftx.domain import ApprovalLevel
+from riftx.domain import ApprovalLevel, ApprovalStatus
 from riftx.domain.base import DomainModel, new_id, utc_now
 
 from .enums import (
     AgentStepType,
+    ApprovalDecision,
     CycleStatus,
     SessionStatus,
     StepStatus,
     ToolCallStatus,
+    UserInputStatus,
     YieldReason,
 )
 
@@ -89,6 +91,7 @@ class ToolCallIntent(DomainModel):
     approval_level: ApprovalLevel = ApprovalLevel.SENSITIVE
     status: ToolCallStatus = ToolCallStatus.PROPOSED
     engine_call_id: str | None = None
+    execution_spec: dict[str, object] | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -100,6 +103,71 @@ class ToolCallIntent(DomainModel):
     @property
     def agent_step_id(self) -> str:
         return self.step_id
+
+
+class RuntimeApprovalRequest(DomainModel):
+    id: str = Field(default_factory=new_id)
+    run_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    cycle_id: str = Field(min_length=1)
+    tool_call_intent_id: str = Field(min_length=1)
+    context_compilation_id: str | None = None
+    working_memory_version: int | None = Field(default=None, ge=1)
+    provider_state_id: str | None = None
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    decision: ApprovalDecision | None = None
+    feedback: str | None = None
+    decided_by: str | None = None
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+    decided_at: AwareDatetime | None = None
+
+    def decide(
+        self,
+        decision: ApprovalDecision,
+        *,
+        decided_by: str,
+        feedback: str | None = None,
+    ) -> None:
+        if self.status is not ApprovalStatus.PENDING:
+            raise ValueError("runtime approval request is already decided")
+        if decision is ApprovalDecision.REJECT_WITH_FEEDBACK and not feedback:
+            raise ValueError("reject_with_feedback requires feedback")
+        self.decision = decision
+        self.status = (
+            ApprovalStatus.APPROVED
+            if decision in {
+                ApprovalDecision.APPROVE_ONCE,
+                ApprovalDecision.APPROVE_TOOL_FOR_RUN,
+            }
+            else ApprovalStatus.REJECTED
+        )
+        self.feedback = feedback
+        self.decided_by = decided_by
+        self.decided_at = utc_now()
+
+
+class UserInputRequest(DomainModel):
+    id: str = Field(default_factory=new_id)
+    run_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    cycle_id: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    context_compilation_id: str | None = None
+    working_memory_version: int | None = Field(default=None, ge=1)
+    provider_state_id: str | None = None
+    status: UserInputStatus = UserInputStatus.WAITING
+    response_message_id: str | None = None
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+    answered_at: AwareDatetime | None = None
+
+    def answer(self, message_id: str) -> None:
+        if self.status is not UserInputStatus.WAITING:
+            raise ValueError("user input request is already resolved")
+        if not message_id:
+            raise ValueError("response message ID must not be empty")
+        self.status = UserInputStatus.ANSWERED
+        self.response_message_id = message_id
+        self.answered_at = utc_now()
 
 
 class ProviderState(DomainModel):

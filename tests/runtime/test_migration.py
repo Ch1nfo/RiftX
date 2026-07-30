@@ -14,6 +14,8 @@ RUNTIME_TABLES = {
     "run_leases",
     "context_compilations",
     "working_memories",
+    "runtime_approval_requests",
+    "user_input_requests",
 }
 
 
@@ -116,6 +118,21 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
     assert {"waiting_object_id", "checkpoint_id"} <= sqlite_columns(
         database_path, "agent_cycles"
     )
+    assert "execution_spec_json" in sqlite_columns(database_path, "tool_call_intents")
+    assert {
+        "tool_call_intent_id",
+        "context_compilation_id",
+        "working_memory_version",
+        "provider_state_id",
+        "decision",
+    } <= sqlite_columns(database_path, "runtime_approval_requests")
+    assert {
+        "prompt",
+        "context_compilation_id",
+        "working_memory_version",
+        "provider_state_id",
+        "response_message_id",
+    } <= sqlite_columns(database_path, "user_input_requests")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT objective FROM runs WHERE id = 'run-1'").fetchone() == (
             "Existing V2 run",

@@ -15,7 +15,9 @@ from riftx.runtime.types import (
     AgentStep,
     ProviderState,
     RunLease,
+    RuntimeApprovalRequest,
     ToolCallIntent,
+    UserInputRequest,
 )
 
 from .orm import (
@@ -24,7 +26,9 @@ from .orm import (
     AgentSessionRecord,
     ProviderStateRecord,
     RunLeaseRecord,
+    RuntimeApprovalRequestRecord,
     ToolCallIntentRecord,
+    UserInputRequestRecord,
 )
 from .runtime_mappers import (
     agent_cycle_from_record,
@@ -36,13 +40,19 @@ from .runtime_mappers import (
     apply_agent_cycle_to_record,
     apply_agent_session_to_record,
     apply_agent_step_to_record,
+    apply_runtime_approval_to_record,
     apply_tool_call_intent_to_record,
+    apply_user_input_request_to_record,
     provider_state_from_record,
     provider_state_to_record,
     run_lease_from_record,
     run_lease_to_record,
+    runtime_approval_from_record,
+    runtime_approval_to_record,
     tool_call_intent_from_record,
     tool_call_intent_to_record,
+    user_input_request_from_record,
+    user_input_request_to_record,
 )
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -223,6 +233,87 @@ class SQLAlchemyToolCallIntentRepository:
             await session.flush()
         return intent
 
+
+class SQLAlchemyRuntimeApprovalRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(runtime_approval_to_record(request))
+                await session.flush()
+            return request
+        except IntegrityError as exc:
+            existing = await self.get_for_intent(request.tool_call_intent_id)
+            if existing is not None:
+                return existing
+            raise RepositoryConflictError(
+                f"could not create runtime approval {request.id!r}"
+            ) from exc
+
+    async def get(self, approval_id: str) -> RuntimeApprovalRequest | None:
+        async with self._session_factory() as session:
+            record = await session.get(RuntimeApprovalRequestRecord, approval_id)
+        return runtime_approval_from_record(record) if record is not None else None
+
+    async def get_for_intent(self, intent_id: str) -> RuntimeApprovalRequest | None:
+        statement = select(RuntimeApprovalRequestRecord).where(
+            RuntimeApprovalRequestRecord.tool_call_intent_id == intent_id
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return runtime_approval_from_record(record) if record is not None else None
+
+    async def save(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest:
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(RuntimeApprovalRequestRecord, request.id)
+            if record is None:
+                raise EntityNotFoundError("RuntimeApprovalRequest", request.id)
+            apply_runtime_approval_to_record(request, record)
+            await session.flush()
+        return request
+
+
+class SQLAlchemyUserInputRequestRepository:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, request: UserInputRequest) -> UserInputRequest:
+        try:
+            async with self._session_factory() as session, session.begin():
+                session.add(user_input_request_to_record(request))
+                await session.flush()
+            return request
+        except IntegrityError as exc:
+            existing = await self.get_for_cycle(request.cycle_id)
+            if existing is not None:
+                return existing
+            raise RepositoryConflictError(
+                f"could not create user input request {request.id!r}"
+            ) from exc
+
+    async def get(self, request_id: str) -> UserInputRequest | None:
+        async with self._session_factory() as session:
+            record = await session.get(UserInputRequestRecord, request_id)
+        return user_input_request_from_record(record) if record is not None else None
+
+    async def get_for_cycle(self, cycle_id: str) -> UserInputRequest | None:
+        statement = select(UserInputRequestRecord).where(
+            UserInputRequestRecord.cycle_id == cycle_id
+        )
+        async with self._session_factory() as session:
+            record = await session.scalar(statement)
+        return user_input_request_from_record(record) if record is not None else None
+
+    async def save(self, request: UserInputRequest) -> UserInputRequest:
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(UserInputRequestRecord, request.id)
+            if record is None:
+                raise EntityNotFoundError("UserInputRequest", request.id)
+            apply_user_input_request_to_record(request, record)
+            await session.flush()
+        return request
 
 class SQLAlchemyRunLeaseRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
