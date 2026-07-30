@@ -388,6 +388,8 @@ tools:
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_controller,
+                artifact_service=artifact_service,
+                event_repository=event_repository,
             ),
             terminal_supervisor=terminal_supervisor,
             process_supervisor=process_supervisor,
@@ -929,11 +931,16 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
                 websocket.send_json({"type": "ping"})
                 _receive_ws_message(websocket, "pong")
                 websocket.send_json({"type": "release"})
+                summary = _receive_ws_message(websocket, "terminal_takeover_summary")
+                assert summary["summary"]["byte_count"] > 0
+                assert summary["summary"]["artifact_id"]
+                assert "ECHO:你好 RiftX" in summary["summary"]["summary"]
                 _receive_ws_state(websocket, owner="agent")
 
             closed = client.delete(f"/api/v1/terminals/{session_id}")
             assert closed.status_code == 200
             assert closed.json()["status"] == "closed"
+            assert closed.json()["transcript_artifact_id"]
 
             with client.websocket_connect("/api/v1/terminals/missing/ws") as websocket:
                 error = websocket.receive_json()

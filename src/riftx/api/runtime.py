@@ -345,6 +345,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_controller,
+            artifact_service=artifact_service,
+            event_repository=event_repository,
         ),
         terminal_supervisor=terminal_supervisor,
         process_supervisor=process_supervisor,

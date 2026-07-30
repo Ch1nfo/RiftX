@@ -467,6 +467,8 @@ async def build_temporal_worker(
         terminal_service = TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_router,
+            artifact_service=artifact_service,
+            event_repository=event_repository,
         )
 
         skill_registry = create_default_skill_registry()

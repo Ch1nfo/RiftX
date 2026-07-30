@@ -153,7 +153,14 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                     await service.take_over(session_id)
                     await send_state()
                 elif message_type == "release":
-                    await service.release(session_id)
+                    released = await service.release(session_id)
+                    if released.takeover_summary is not None:
+                        await send(
+                            {
+                                "type": "terminal_takeover_summary",
+                                "summary": released.takeover_summary.model_dump(mode="json"),
+                            }
+                        )
                     await send_state()
                 elif message_type == "ping":
                     await send({"type": "pong"})

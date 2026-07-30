@@ -35,6 +35,8 @@ class TerminalResponse(BaseModel):
     owner: TerminalOwner
     cols: int
     rows: int
+    output_cursor: int
+    transcript_artifact_id: str | None
     argv: list[str]
     cwd: str
     pid: int | None
@@ -53,6 +55,8 @@ class TerminalResponse(BaseModel):
             owner=view.terminal.owner,
             cols=view.terminal.cols,
             rows=view.terminal.rows,
+            output_cursor=view.terminal.output_cursor,
+            transcript_artifact_id=view.terminal.transcript_artifact_id,
             argv=view.execution.argv,
             cwd=view.execution.cwd,
             pid=view.execution.pid,

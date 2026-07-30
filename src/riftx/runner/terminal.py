@@ -63,6 +63,12 @@ class TerminalController(Protocol):
 
     async def release(self, session_id: str) -> TerminalSession: ...
 
+    async def attach_transcript_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+    ) -> TerminalSession: ...
+
     async def close(self, session_id: str) -> TerminalSession: ...
 
 
@@ -275,6 +281,23 @@ class TerminalSupervisor:
             terminal.run_id,
             "terminal.released",
             {"session_id": terminal.id, "owner": terminal.owner.value},
+        )
+        return terminal
+
+    async def attach_transcript_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+    ) -> TerminalSession:
+        terminal = await self.get(session_id)
+        if terminal.transcript_artifact_id is not None:
+            return terminal
+        terminal.transcript_artifact_id = artifact_id
+        await self._terminals.save(terminal)
+        await self._events.append(
+            terminal.run_id,
+            "terminal.transcript_archived",
+            {"session_id": terminal.id, "artifact_id": artifact_id},
         )
         return terminal
 

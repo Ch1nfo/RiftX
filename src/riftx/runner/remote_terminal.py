@@ -234,6 +234,23 @@ class RemoteTerminalSupervisor:
         )
         return terminal
 
+    async def attach_transcript_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+    ) -> TerminalSession:
+        terminal = await self.get(session_id)
+        if terminal.transcript_artifact_id is not None:
+            return terminal
+        terminal.transcript_artifact_id = artifact_id
+        await self._terminals.save(terminal)
+        await self._events.append(
+            terminal.run_id,
+            "terminal.transcript_archived",
+            {"session_id": terminal.id, "artifact_id": artifact_id},
+        )
+        return terminal
+
     async def close(self, session_id: str) -> TerminalSession:
         terminal = await self.get(session_id)
         if terminal.status is not TerminalStatus.OPEN:
@@ -368,6 +385,14 @@ class NodeTerminalRouter:
     async def release(self, session_id: str) -> TerminalSession:
         controller = await self._for_session(session_id)
         return await controller.release(session_id)
+
+    async def attach_transcript_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+    ) -> TerminalSession:
+        controller = await self._for_session(session_id)
+        return await controller.attach_transcript_artifact(session_id, artifact_id)
 
     async def close(self, session_id: str) -> TerminalSession:
         controller = await self._for_session(session_id)
