@@ -1,0 +1,292 @@
+"""OpenAI Agents SDK adapter behind the provider-neutral Engine contract."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import asdict, is_dataclass
+from typing import Any
+
+from agents import RunConfig, Runner, RunState
+
+from .errors import InvalidProviderStateError, ProviderStateSerializationError
+from .types import (
+    AgentEngineEvent,
+    AgentEngineEventType,
+    AgentEngineRequest,
+    AgentEngineResumeRequest,
+    AgentEngineRun,
+    AgentEngineState,
+)
+
+ENGINE_TYPE = "openai-agents"
+ENGINE_VERSION = "0.19"
+
+AgentFactory = Callable[[AgentEngineRequest], Any]
+StreamRunner = Callable[..., Awaitable[Any] | Any]
+
+
+class OpenAIAgentsEngine:
+    """Translate Agents SDK runs and stream events into RiftX-owned types."""
+
+    def __init__(
+        self,
+        agent_factory: AgentFactory,
+        *,
+        provider: str = "openai",
+        model_provider: Any | None = None,
+        stream_runner: StreamRunner | None = None,
+    ) -> None:
+        self._agent_factory = agent_factory
+        self._provider = provider
+        self._model_provider = model_provider
+        self._stream_runner = stream_runner or Runner.run_streamed
+
+    async def start(self, request: AgentEngineRequest) -> AgentEngineRun:
+        agent = self._agent_factory(request)
+        result = self._stream_runner(
+            agent,
+            request.engine_input(),
+            context=request.context,
+            max_turns=request.max_turns,
+            run_config=self._run_config(),
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+        return OpenAIAgentsEngineRun(
+            result,
+            provider=self._provider,
+            model=request.model,
+        )
+
+    async def resume(self, request: AgentEngineResumeRequest) -> AgentEngineRun:
+        if request.state.engine_type != ENGINE_TYPE:
+            raise InvalidProviderStateError(
+                f"cannot resume {request.state.engine_type!r} state with {ENGINE_TYPE!r}"
+            )
+        if request.state.engine_version != ENGINE_VERSION:
+            raise InvalidProviderStateError(
+                f"unsupported {ENGINE_TYPE!r} state version {request.state.engine_version!r}"
+            )
+        if request.state.sdk_run_state is None:
+            raise InvalidProviderStateError("provider state does not contain sdk_run_state")
+        agent = self._agent_factory(request)
+        try:
+            state = await RunState.from_json(
+                agent,
+                request.state.sdk_run_state,
+                context_override=request.context,
+                strict_context=request.context is not None,
+            )
+        except Exception as exc:
+            raise InvalidProviderStateError(
+                f"could not deserialize OpenAI Agents state: {type(exc).__name__}: {exc}"
+            ) from exc
+        result = self._stream_runner(
+            agent,
+            state,
+            max_turns=request.max_turns,
+            run_config=self._run_config(),
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+        return OpenAIAgentsEngineRun(
+            result,
+            provider=self._provider,
+            model=request.model,
+            previous_response_id=request.state.previous_response_id,
+        )
+
+    def _run_config(self) -> RunConfig:
+        if self._model_provider is None:
+            return RunConfig(tracing_disabled=True, workflow_name="RiftX Agent Engine")
+        return RunConfig(
+            model_provider=self._model_provider,
+            tracing_disabled=True,
+            workflow_name="RiftX Agent Engine",
+        )
+
+
+class OpenAIAgentsEngineRun:
+    def __init__(
+        self,
+        result: Any,
+        *,
+        provider: str,
+        model: str,
+        previous_response_id: str | None = None,
+    ) -> None:
+        self._result = result
+        self._provider = provider
+        self._model = model
+        self._previous_response_id = previous_response_id
+        self._events_started = False
+        self._cancelled = False
+
+    async def events(self) -> AsyncIterator[AgentEngineEvent]:
+        if self._events_started:
+            raise RuntimeError("engine events can only be consumed once")
+        self._events_started = True
+        sequence = 1
+        yield AgentEngineEvent(
+            sequence=sequence,
+            event_type=AgentEngineEventType.RUN_STARTED,
+            data={"provider": self._provider, "model": self._model},
+        )
+        sequence += 1
+        failed = False
+        try:
+            async for sdk_event in self._result.stream_events():
+                for event_type, data in _translate_sdk_event(sdk_event):
+                    yield AgentEngineEvent(
+                        sequence=sequence,
+                        event_type=event_type,
+                        data=data,
+                    )
+                    sequence += 1
+        except Exception as exc:
+            failed = True
+            yield AgentEngineEvent(
+                sequence=sequence,
+                event_type=AgentEngineEventType.ERROR,
+                data={"error_type": type(exc).__name__, "message": str(exc)},
+            )
+            sequence += 1
+
+        if not failed and getattr(self._result, "final_output", None) is not None:
+            yield AgentEngineEvent(
+                sequence=sequence,
+                event_type=AgentEngineEventType.FINAL_OUTPUT,
+                data={"output": _json_value(self._result.final_output)},
+            )
+            sequence += 1
+        usage = _collect_usage(getattr(self._result, "raw_responses", []))
+        if usage:
+            yield AgentEngineEvent(
+                sequence=sequence,
+                event_type=AgentEngineEventType.USAGE,
+                data=usage,
+            )
+            sequence += 1
+        yield AgentEngineEvent(
+            sequence=sequence,
+            event_type=AgentEngineEventType.RUN_COMPLETED,
+            data={
+                "status": "failed" if failed else "cancelled" if self._cancelled else "completed"
+            },
+        )
+
+    async def suspend(self) -> AgentEngineState:
+        self._result.cancel(mode="after_turn")
+        return self._serialize_state()
+
+    async def cancel(self) -> None:
+        self._cancelled = True
+        self._result.cancel(mode="immediate")
+
+    def _serialize_state(self) -> AgentEngineState:
+        try:
+            sdk_state = self._result.to_state().to_json(strict_context=False)
+        except Exception as exc:
+            raise ProviderStateSerializationError(
+                f"could not serialize OpenAI Agents state: {type(exc).__name__}: {exc}"
+            ) from exc
+        previous_response_id = getattr(self._result, "_previous_response_id", None)
+        return AgentEngineState(
+            engine_type=ENGINE_TYPE,
+            engine_version=ENGINE_VERSION,
+            provider=self._provider,
+            model=self._model,
+            serialized_state=sdk_state,
+            sdk_run_state=sdk_state,
+            previous_response_id=previous_response_id or self._previous_response_id,
+        )
+
+
+def _translate_sdk_event(event: Any) -> list[tuple[AgentEngineEventType, dict[str, object]]]:
+    event_kind = getattr(event, "type", None)
+    if event_kind == "raw_response_event":
+        data = getattr(event, "data", None)
+        raw_type = getattr(data, "type", None)
+        if raw_type == "response.output_text.delta":
+            return [(AgentEngineEventType.ASSISTANT_DELTA, {"delta": getattr(data, "delta", "")})]
+        if raw_type == "response.function_call_arguments.delta":
+            return [
+                (
+                    AgentEngineEventType.TOOL_CALL_ARGUMENT_DELTA,
+                    {
+                        "call_id": getattr(data, "call_id", None) or getattr(data, "item_id", None),
+                        "delta": getattr(data, "delta", ""),
+                    },
+                )
+            ]
+        if raw_type == "response.output_item.added":
+            item = getattr(data, "item", None)
+            if getattr(item, "type", None) == "function_call":
+                return [
+                    (
+                        AgentEngineEventType.TOOL_CALL_STARTED,
+                        {
+                            "call_id": getattr(item, "call_id", None),
+                            "name": getattr(item, "name", None),
+                        },
+                    )
+                ]
+        if raw_type == "response.completed":
+            return []
+        return []
+    if event_kind == "run_item_stream_event":
+        name = getattr(event, "name", None)
+        item = getattr(event, "item", None)
+        payload = _json_dict(item)
+        if name == "message_output_created":
+            return [(AgentEngineEventType.ASSISTANT_MESSAGE, payload)]
+        if name == "tool_called":
+            tool_name = _tool_name(item)
+            event_type = (
+                AgentEngineEventType.PLAN_UPDATE
+                if tool_name == "update_plan"
+                else AgentEngineEventType.SUBAGENT_REQUESTED
+                if tool_name in {"delegate", "spawn_subagent"}
+                else AgentEngineEventType.TOOL_CALL_READY
+            )
+            return [(event_type, payload)]
+        if name == "handoff_requested":
+            return [(AgentEngineEventType.SUBAGENT_REQUESTED, payload)]
+    return []
+
+
+def _tool_name(item: Any) -> str | None:
+    raw_item = getattr(item, "raw_item", None)
+    return getattr(raw_item, "name", None) or getattr(item, "name", None)
+
+
+def _collect_usage(responses: list[Any]) -> dict[str, object]:
+    totals: dict[str, int] = {}
+    for response in responses:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            continue
+        payload = _json_dict(usage)
+        for key, value in payload.items():
+            if isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+    return totals
+
+
+def _json_dict(value: Any) -> dict[str, object]:
+    converted = _json_value(value)
+    return converted if isinstance(converted, dict) else {"value": converted}
+
+
+def _json_value(value: Any) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if is_dataclass(value):
+        return _json_value(asdict(value))
+    return str(value)
