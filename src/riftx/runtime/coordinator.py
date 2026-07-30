@@ -1,0 +1,396 @@
+"""Finite durable Agent Runtime cycle coordinator."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from time import monotonic
+
+from riftx.application.errors import EntityNotFoundError
+from riftx.domain import DomainError, Run, RunStatus
+from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
+from riftx.persistence.runtime_repositories import (
+    SQLAlchemyAgentCycleRepository,
+    SQLAlchemyAgentSessionRepository,
+    SQLAlchemyAgentStepRepository,
+    SQLAlchemyProviderStateRepository,
+)
+from riftx.runtime.engine import (
+    AgentEngine,
+    AgentEngineEvent,
+    AgentEngineEventType,
+    AgentEngineRequest,
+    AgentEngineRun,
+)
+from riftx.runtime.events import (
+    CONTEXT_COMPILED,
+    CYCLE_CREATED,
+    CYCLE_FAILED,
+    CYCLE_STARTED,
+    CYCLE_YIELDED,
+    ENGINE_EVENT,
+    LEASE_ACQUIRED,
+    LEASE_RELEASED,
+    SESSION_ACTIVATED,
+    STEP_COMPLETED,
+    STEP_STARTED,
+)
+from riftx.runtime.leases import DatabaseRunLeaseManager
+from riftx.runtime.lifecycle import (
+    ContextCompiler,
+    ContextCompileRequest,
+    CycleLimits,
+    RunCycleRequest,
+    RunCycleResult,
+)
+from riftx.runtime.types import (
+    AgentCycle,
+    AgentSession,
+    AgentStep,
+    AgentStepType,
+    CycleStatus,
+    RuntimeStateMachine,
+    SessionStatus,
+    StepStatus,
+    YieldReason,
+)
+
+_STEP_TYPES = {
+    AgentEngineEventType.ASSISTANT_MESSAGE: AgentStepType.ASSISTANT_MESSAGE,
+    AgentEngineEventType.TOOL_CALL_READY: AgentStepType.TOOL_PROPOSAL,
+    AgentEngineEventType.PLAN_UPDATE: AgentStepType.PLAN_UPDATE,
+    AgentEngineEventType.SUBAGENT_REQUESTED: AgentStepType.SUBAGENT_DELEGATION,
+    AgentEngineEventType.FINAL_OUTPUT: AgentStepType.RUN_COMPLETION,
+}
+
+
+class RuntimeCoordinator:
+    def __init__(
+        self,
+        *,
+        run_repository: SQLAlchemyRunRepository,
+        session_repository: SQLAlchemyAgentSessionRepository,
+        cycle_repository: SQLAlchemyAgentCycleRepository,
+        step_repository: SQLAlchemyAgentStepRepository,
+        provider_state_repository: SQLAlchemyProviderStateRepository,
+        event_repository: SQLAlchemyRunEventRepository,
+        lease_manager: DatabaseRunLeaseManager,
+        context_compiler: ContextCompiler,
+        agent_engine: AgentEngine,
+        limits: CycleLimits | None = None,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._runs = run_repository
+        self._sessions = session_repository
+        self._cycles = cycle_repository
+        self._steps = step_repository
+        self._provider_states = provider_state_repository
+        self._events = event_repository
+        self._leases = lease_manager
+        self._context_compiler = context_compiler
+        self._agent_engine = agent_engine
+        self._limits = limits or CycleLimits()
+        self._clock = clock
+        self._state_machine = RuntimeStateMachine()
+
+    async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult:
+        lease = await self._leases.acquire(request.run_id, request.worker_id)
+        await self._append(request.run_id, LEASE_ACQUIRED, {"owner_id": request.worker_id})
+        cycle: AgentCycle | None = None
+        try:
+            run = await self._runs.get(request.run_id)
+            if run is None:
+                raise EntityNotFoundError("Run", request.run_id)
+            run = await self._ensure_run_running(run)
+            session = await self._sessions.get(request.session_id)
+            if session is None or session.run_id != request.run_id:
+                raise EntityNotFoundError("AgentSession", request.session_id)
+            await self._ensure_active_session(session)
+
+            existing_cycles = await self._cycles.list_by_session(session.id)
+            cycle = AgentCycle(
+                run_id=run.id,
+                session_id=session.id,
+                sequence=len(existing_cycles) + 1,
+            )
+            await self._cycles.create(cycle)
+            await self._append(run.id, CYCLE_CREATED, {"cycle_id": cycle.id})
+            self._state_machine.transition_cycle(cycle, CycleStatus.RUNNING)
+            await self._cycles.save(cycle)
+            await self._append(run.id, CYCLE_STARTED, {"cycle_id": cycle.id})
+
+            if request.compaction_required:
+                return await self._yield_cycle(
+                    run.id,
+                    session,
+                    cycle,
+                    YieldReason.COMPACTION_REQUIRED,
+                )
+
+            compiled = await self._context_compiler.compile(
+                ContextCompileRequest(
+                    run_id=run.id,
+                    session_id=session.id,
+                    agent_id=session.agent_type,
+                    model_profile=session.model_profile,
+                    latest_user_message_id=request.latest_user_message_id,
+                    objective=run.objective.description,
+                    input_text=request.input_text,
+                    input_items=request.input_items,
+                )
+            )
+            await self._append(
+                run.id,
+                CONTEXT_COMPILED,
+                {
+                    "cycle_id": cycle.id,
+                    "token_estimate": compiled.token_estimate,
+                    "context_manifest": compiled.context_manifest,
+                },
+            )
+            engine_run = await self._agent_engine.start(
+                AgentEngineRequest(
+                    session_id=session.id,
+                    model=session.model_profile,
+                    input_items=compiled.input_items,
+                    context=compiled,
+                    max_turns=self._limits.max_model_calls,
+                )
+            )
+            started_at = self._clock()
+            pending_tool = False
+            approval_required = False
+            step_sequence = 0
+
+            async for event in engine_run.events():
+                await self._append_engine_event(run.id, cycle.id, event)
+                if self._clock() - started_at >= self._limits.max_duration_seconds:
+                    return await self._yield_cycle(
+                        run.id,
+                        session,
+                        cycle,
+                        YieldReason.CYCLE_LIMIT_REACHED,
+                        engine_run=engine_run,
+                    )
+                if event.event_type is AgentEngineEventType.RUN_STARTED:
+                    cycle.model_call_count += 1
+                    await self._cycles.save(cycle)
+                    if cycle.model_call_count >= self._limits.max_model_calls:
+                        return await self._yield_cycle(
+                            run.id,
+                            session,
+                            cycle,
+                            YieldReason.CYCLE_LIMIT_REACHED,
+                            engine_run=engine_run,
+                        )
+                elif event.event_type is AgentEngineEventType.USAGE:
+                    extra_calls = int(event.data.get("model_calls", 0) or 0)
+                    cycle.model_call_count += extra_calls
+                    await self._cycles.save(cycle)
+                    if cycle.model_call_count >= self._limits.max_model_calls:
+                        return await self._yield_cycle(
+                            run.id,
+                            session,
+                            cycle,
+                            YieldReason.CYCLE_LIMIT_REACHED,
+                            engine_run=engine_run,
+                        )
+                if event.event_type in _STEP_TYPES:
+                    step_sequence += 1
+                    await self._persist_step(cycle, step_sequence, event)
+                if event.event_type is AgentEngineEventType.TOOL_CALL_READY:
+                    pending_tool = True
+                    approval_required = approval_required or bool(
+                        event.data.get("approval_required", False)
+                    )
+                    cycle.tool_call_count += 1
+                    await self._cycles.save(cycle)
+                    if cycle.tool_call_count >= self._limits.max_tool_calls:
+                        return await self._yield_cycle(
+                            run.id,
+                            session,
+                            cycle,
+                            YieldReason.CYCLE_LIMIT_REACHED,
+                            engine_run=engine_run,
+                        )
+                if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
+                    "requires_user_input"
+                ):
+                    return await self._yield_cycle(
+                        run.id,
+                        session,
+                        cycle,
+                        YieldReason.USER_INPUT_REQUIRED,
+                        engine_run=engine_run,
+                    )
+                if event.event_type is AgentEngineEventType.ERROR:
+                    reason = (
+                        YieldReason.RETRYABLE_FAILURE
+                        if event.data.get("retryable", False)
+                        else YieldReason.FATAL_FAILURE
+                    )
+                    return await self._yield_cycle(
+                        run.id, session, cycle, reason, engine_run=engine_run
+                    )
+                if event.event_type is AgentEngineEventType.RUN_COMPLETED:
+                    if approval_required:
+                        reason = YieldReason.APPROVAL_REQUIRED
+                    elif pending_tool:
+                        reason = YieldReason.TOOL_RUNNING
+                    else:
+                        reason = YieldReason.RUN_COMPLETED
+                    return await self._yield_cycle(
+                        run.id,
+                        session,
+                        cycle,
+                        reason,
+                        engine_run=engine_run if reason is not YieldReason.RUN_COMPLETED else None,
+                    )
+
+            return await self._yield_cycle(
+                run.id,
+                session,
+                cycle,
+                YieldReason.CYCLE_LIMIT_REACHED,
+                engine_run=engine_run,
+            )
+        except Exception as exc:
+            if cycle is not None and cycle.status is CycleStatus.RUNNING:
+                self._state_machine.transition_cycle(cycle, CycleStatus.FAILED)
+                await self._cycles.save(cycle)
+                await self._append(
+                    request.run_id,
+                    CYCLE_FAILED,
+                    {"cycle_id": cycle.id, "error_type": type(exc).__name__},
+                )
+            raise
+        finally:
+            await lease.release()
+            await self._append(request.run_id, LEASE_RELEASED, {"owner_id": request.worker_id})
+
+    async def _ensure_run_running(self, run: Run) -> Run:
+        if run.status is RunStatus.CREATED:
+            run = await self._runs.update_status(run.id, RunStatus.INITIALIZING)
+        if run.status is RunStatus.INITIALIZING:
+            run = await self._runs.update_status(run.id, RunStatus.READY)
+        if run.status in {
+            RunStatus.READY,
+            RunStatus.PREPARING,
+            RunStatus.WAITING_TOOL,
+            RunStatus.WAITING_APPROVAL,
+            RunStatus.WAITING_USER,
+            RunStatus.PAUSED,
+            RunStatus.COMPACTING,
+        }:
+            run = await self._runs.update_status(run.id, RunStatus.RUNNING)
+        if run.status is not RunStatus.RUNNING:
+            raise DomainError(f"Run {run.id!r} cannot start a Runtime cycle from {run.status}")
+        return run
+
+    async def _transition_run_for_yield(self, run_id: str, reason: YieldReason) -> None:
+        targets = {
+            YieldReason.TOOL_RUNNING: RunStatus.WAITING_TOOL,
+            YieldReason.APPROVAL_REQUIRED: RunStatus.WAITING_APPROVAL,
+            YieldReason.USER_INPUT_REQUIRED: RunStatus.WAITING_USER,
+            YieldReason.COMPACTION_REQUIRED: RunStatus.COMPACTING,
+            YieldReason.FATAL_FAILURE: RunStatus.FAILED,
+        }
+        if reason is YieldReason.RUN_COMPLETED:
+            await self._runs.update_status(run_id, RunStatus.COMPLETING)
+            await self._runs.update_status(run_id, RunStatus.COMPLETED)
+        elif target := targets.get(reason):
+            await self._runs.update_status(run_id, target)
+
+    async def _ensure_active_session(self, session: AgentSession) -> None:
+        if session.status is SessionStatus.CREATED:
+            self._state_machine.transition_session(session, SessionStatus.ACTIVE)
+            await self._sessions.save(session)
+            await self._append(session.run_id, SESSION_ACTIVATED, {"session_id": session.id})
+
+    async def _persist_step(
+        self, cycle: AgentCycle, sequence: int, event: AgentEngineEvent
+    ) -> None:
+        step = AgentStep(
+            cycle_id=cycle.id,
+            sequence=sequence,
+            step_type=_STEP_TYPES[event.event_type],
+            input_refs=[str(value) for value in event.data.get("input_refs", [])],
+            output_refs=[str(value) for value in event.data.get("output_refs", [])],
+        )
+        await self._steps.create(step)
+        self._state_machine.transition_step(step, StepStatus.RUNNING)
+        await self._steps.save(step)
+        await self._append(
+            cycle.run_id,
+            STEP_STARTED,
+            {"cycle_id": cycle.id, "step_id": step.id, "step_type": step.step_type.value},
+        )
+        self._state_machine.transition_step(step, StepStatus.COMPLETED)
+        await self._steps.save(step)
+        await self._append(
+            cycle.run_id,
+            STEP_COMPLETED,
+            {"cycle_id": cycle.id, "step_id": step.id, "step_type": step.step_type.value},
+        )
+
+    async def _yield_cycle(
+        self,
+        run_id: str,
+        session: AgentSession,
+        cycle: AgentCycle,
+        reason: YieldReason,
+        *,
+        engine_run: AgentEngineRun | None = None,
+    ) -> RunCycleResult:
+        provider_state_id = None
+        if engine_run is not None:
+            state = await engine_run.suspend()
+            provider_state = state.to_provider_state(session.id)
+            await self._provider_states.create(provider_state)
+            provider_state_id = provider_state.id
+            session.provider_state_id = provider_state.id
+        session.model_call_count += cycle.model_call_count
+        session.tool_call_count += cycle.tool_call_count
+        await self._sessions.save(session)
+        self._state_machine.transition_cycle(
+            cycle,
+            CycleStatus.YIELDED,
+            yield_reason=reason,
+        )
+        await self._cycles.save(cycle)
+        await self._transition_run_for_yield(run_id, reason)
+        await self._append(
+            run_id,
+            CYCLE_YIELDED,
+            {
+                "cycle_id": cycle.id,
+                "yield_reason": reason.value,
+                "model_call_count": cycle.model_call_count,
+                "tool_call_count": cycle.tool_call_count,
+            },
+        )
+        return RunCycleResult(
+            run_id=run_id,
+            session_id=session.id,
+            cycle_id=cycle.id,
+            yield_reason=reason,
+            model_call_count=cycle.model_call_count,
+            tool_call_count=cycle.tool_call_count,
+            provider_state_id=provider_state_id,
+        )
+
+    async def _append_engine_event(
+        self, run_id: str, cycle_id: str, event: AgentEngineEvent
+    ) -> None:
+        await self._append(
+            run_id,
+            ENGINE_EVENT,
+            {
+                "cycle_id": cycle_id,
+                "engine_sequence": event.sequence,
+                "event_type": event.event_type.value,
+                "data": event.data,
+            },
+        )
+
+    async def _append(self, run_id: str, event_type: str, payload: dict[str, object]) -> None:
+        await self._events.append(run_id, event_type, payload)
