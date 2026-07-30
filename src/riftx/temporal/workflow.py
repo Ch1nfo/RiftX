@@ -1,4 +1,4 @@
-"""Deterministic outer lifecycle for a durable RiftX run."""
+"""Deterministic outer lifecycle for one durable RiftX Runtime session."""
 
 from __future__ import annotations
 
@@ -8,18 +8,17 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from .models import (
-    AgentCycleActivityInput,
-    AgentCycleActivityResult,
-    AgentCycleActivityStatus,
     CleanupRunInput,
     CleanupRunResult,
     CompactContextInput,
     CompactContextResult,
     GenerateReportInput,
     GenerateReportResult,
-    PendingApproval,
     PrepareRunInput,
     PrepareRunResult,
+    RunAgentCycleActivityInput,
+    RunAgentCycleActivityResult,
+    RuntimeYieldReason,
     RunWorkflowInput,
     RunWorkflowResult,
     RunWorkflowStatus,
@@ -33,29 +32,43 @@ _ACTIVITY_RETRY_POLICY = RetryPolicy(
     maximum_attempts=3,
 )
 
+_WAITING_PHASES = {
+    RuntimeYieldReason.TOOL_RUNNING: WorkflowPhase.AGENT_CYCLE,
+    RuntimeYieldReason.TERMINAL_OPEN: WorkflowPhase.AGENT_CYCLE,
+    RuntimeYieldReason.SUBAGENT_RUNNING: WorkflowPhase.AGENT_CYCLE,
+    RuntimeYieldReason.APPROVAL_REQUIRED: WorkflowPhase.WAITING_APPROVAL,
+    RuntimeYieldReason.USER_INPUT_REQUIRED: WorkflowPhase.WAITING_INPUT,
+}
+
 
 @workflow.defn(name="RiftXRunWorkflow")
 class RiftXRunWorkflow:
+    """Keep only durable identifiers while Runtime state remains in the database."""
+
     def __init__(self) -> None:
         self._run_id = ""
+        self._session_id = ""
+        self._cycle_id: str | None = None
+        self._yield_reason: RuntimeYieldReason | None = None
+        self._waiting_object_id: str | None = None
+        self._checkpoint_id: str | None = None
         self._phase = WorkflowPhase.PREPARING
         self._paused = False
         self._finished = False
-        self._checkpoint_id: str | None = None
-        self._pending_approvals: list[PendingApproval] = []
-        self._approval_decisions: dict[str, bool] = {}
-        self._user_messages: list[str] = []
-        self._active_execution_id: str | None = None
-        self._cancel_current_execution_requested = False
         self._cancel_requested = False
+        self._latest_user_message_id: str | None = None
+        self._completed_execution_id: str | None = None
+        self._approval_id: str | None = None
         self._compact_history_items: int | None = None
+        self._report_id: str | None = None
 
     @workflow.run
     async def run(self, input: RunWorkflowInput) -> RunWorkflowResult:
         self._run_id = input.run_id
+        self._session_id = input.session_id or f"{input.run_id}:primary"
         await workflow.execute_activity(
             "prepare_run_activity",
-            PrepareRunInput(run_id=input.run_id),
+            PrepareRunInput(run_id=self._run_id),
             result_type=PrepareRunResult,
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=_ACTIVITY_RETRY_POLICY,
@@ -68,107 +81,73 @@ class RiftXRunWorkflow:
             if self._compact_history_items is not None:
                 await self._compact_context()
                 continue
-            if self._checkpoint_id is not None:
-                await self._wait_for_approval_decisions()
-                if self._cancel_requested:
-                    break
-                if self._compact_history_items is not None:
-                    continue
-                if self._paused:
-                    continue
-            elif self._phase is WorkflowPhase.WAITING_INPUT and not self._user_messages:
-                await workflow.wait_condition(
-                    lambda: (
-                        bool(self._user_messages)
-                        or self._paused
-                        or self._cancel_requested
-                        or self._compact_history_items is not None
-                    )
-                )
-                if self._cancel_requested:
-                    break
-                if self._compact_history_items is not None:
-                    continue
-                if self._paused:
-                    continue
 
             self._phase = WorkflowPhase.AGENT_CYCLE
-            agent_step_id = str(workflow.uuid4())
-            checkpoint_id = self._checkpoint_id
-            decisions = dict(self._approval_decisions)
-            messages = list(self._user_messages)
-            cancel_current_execution = self._cancel_current_execution_requested
-            self._approval_decisions.clear()
-            self._user_messages.clear()
-            self._cancel_current_execution_requested = False
-
+            self._cycle_id = str(workflow.uuid4())
             result = await workflow.execute_activity(
-                "agent_cycle_activity",
-                AgentCycleActivityInput(
+                "run_agent_cycle_activity",
+                RunAgentCycleActivityInput(
                     run_id=self._run_id,
-                    agent_step_id=agent_step_id,
-                    checkpoint_id=checkpoint_id,
-                    approval_decisions=decisions,
-                    user_messages=messages,
-                    cancel_current_execution=cancel_current_execution,
+                    session_id=self._session_id,
+                    cycle_id=self._cycle_id,
+                    latest_user_message_id=self._take_latest_user_message_id(),
+                    completed_execution_id=self._take_completed_execution_id(),
+                    approval_id=self._take_approval_id(),
                 ),
-                result_type=AgentCycleActivityResult,
+                result_type=RunAgentCycleActivityResult,
                 start_to_close_timeout=timedelta(minutes=30),
                 heartbeat_timeout=timedelta(minutes=1),
                 retry_policy=_ACTIVITY_RETRY_POLICY,
             )
-            self._active_execution_id = result.active_execution_id
+            self._accept_result(result)
 
-            if result.status is AgentCycleActivityStatus.WAITING_APPROVAL:
-                self._checkpoint_id = result.checkpoint_id
-                self._pending_approvals = result.pending_approvals
-                self._phase = WorkflowPhase.WAITING_APPROVAL
-            elif result.status is AgentCycleActivityStatus.NEEDS_INPUT:
-                self._checkpoint_id = None
-                self._pending_approvals.clear()
-                self._phase = WorkflowPhase.WAITING_INPUT
-            elif result.status is AgentCycleActivityStatus.COMPLETED:
-                self._checkpoint_id = None
-                self._pending_approvals.clear()
+            if result.yield_reason is RuntimeYieldReason.RUN_COMPLETED:
+                self._phase = WorkflowPhase.COMPLETED
                 self._finished = True
-            else:
-                self._checkpoint_id = None
-                self._pending_approvals.clear()
+                break
+            if result.yield_reason is RuntimeYieldReason.RUN_CANCELLED:
+                self._cancel_requested = True
+                break
+            if result.yield_reason is RuntimeYieldReason.FATAL_FAILURE:
+                self._phase = WorkflowPhase.FAILED
+                self._finished = True
+                break
+            if result.yield_reason is RuntimeYieldReason.RUN_PAUSED:
+                self._paused = True
+
+            waiting_phase = _WAITING_PHASES.get(result.yield_reason)
+            if waiting_phase is not None:
+                self._phase = waiting_phase
+                await workflow.wait_condition(self._can_resume_from_yield)
 
         if self._cancel_requested:
-            self._phase = WorkflowPhase.CLEANUP
-            await workflow.execute_activity(
-                "cleanup_run_activity",
-                CleanupRunInput(run_id=self._run_id, final_status="cancelled"),
-                result_type=CleanupRunResult,
-                start_to_close_timeout=timedelta(minutes=2),
+            self._phase = WorkflowPhase.CANCELLED
+            self._finished = True
+            await self._cleanup("cancelled")
+        elif self._phase is WorkflowPhase.COMPLETED:
+            self._phase = WorkflowPhase.REPORTING
+            report = await workflow.execute_activity(
+                "generate_report_activity",
+                GenerateReportInput(run_id=self._run_id),
+                result_type=GenerateReportResult,
+                start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=_ACTIVITY_RETRY_POLICY,
             )
-            self._phase = WorkflowPhase.CANCELLED
-            return RunWorkflowResult(run_id=self._run_id, phase=self._phase)
+            self._report_id = report.report_id
+            await self._cleanup("completed")
+            self._phase = WorkflowPhase.COMPLETED
+        elif self._phase is WorkflowPhase.FAILED:
+            await self._cleanup("failed")
+        return self._result()
 
-        self._phase = WorkflowPhase.REPORTING
-        report = await workflow.execute_activity(
-            "generate_report_activity",
-            GenerateReportInput(run_id=self._run_id),
-            result_type=GenerateReportResult,
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=_ACTIVITY_RETRY_POLICY,
-        )
-        self._phase = WorkflowPhase.CLEANUP
-        await workflow.execute_activity(
-            "cleanup_run_activity",
-            CleanupRunInput(run_id=self._run_id, final_status="completed"),
-            result_type=CleanupRunResult,
-            start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=_ACTIVITY_RETRY_POLICY,
-        )
-        self._phase = WorkflowPhase.COMPLETED
-        return RunWorkflowResult(
-            run_id=self._run_id,
-            phase=self._phase,
-            report_id=report.report_id,
-        )
+    def _accept_result(self, result: RunAgentCycleActivityResult) -> None:
+        if result.run_id != self._run_id or result.session_id != self._session_id:
+            raise ValueError("Runtime Cycle result does not belong to this Workflow")
+        if result.cycle_id != self._cycle_id:
+            raise ValueError("Runtime Cycle result has an unexpected cycle ID")
+        self._yield_reason = result.yield_reason
+        self._waiting_object_id = result.waiting_object_id
+        self._checkpoint_id = result.checkpoint_id
 
     async def _wait_until_runnable(self) -> None:
         if not self._paused:
@@ -182,11 +161,45 @@ class RiftXRunWorkflow:
             )
         )
 
+    def _can_resume_from_yield(self) -> bool:
+        if self._cancel_requested or self._compact_history_items is not None:
+            return True
+        if self._yield_reason in {
+            RuntimeYieldReason.TOOL_RUNNING,
+            RuntimeYieldReason.TERMINAL_OPEN,
+            RuntimeYieldReason.SUBAGENT_RUNNING,
+        }:
+            return (
+                self._completed_execution_id is not None
+                and self._completed_execution_id == self._waiting_object_id
+            )
+        if self._yield_reason is RuntimeYieldReason.APPROVAL_REQUIRED:
+            return self._approval_id is not None and (
+                self._waiting_object_id is None or self._approval_id == self._waiting_object_id
+            )
+        if self._yield_reason is RuntimeYieldReason.USER_INPUT_REQUIRED:
+            return self._latest_user_message_id is not None
+        return True
+
+    def _take_latest_user_message_id(self) -> str | None:
+        value = self._latest_user_message_id
+        self._latest_user_message_id = None
+        return value
+
+    def _take_completed_execution_id(self) -> str | None:
+        value = self._completed_execution_id
+        self._completed_execution_id = None
+        return value
+
+    def _take_approval_id(self) -> str | None:
+        value = self._approval_id
+        self._approval_id = None
+        return value
+
     async def _compact_context(self) -> None:
         max_history_items = self._compact_history_items
         if max_history_items is None:
             return
-        resume_phase = self._phase
         self._compact_history_items = None
         self._phase = WorkflowPhase.COMPACTING
         await workflow.execute_activity(
@@ -199,18 +212,18 @@ class RiftXRunWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=_ACTIVITY_RETRY_POLICY,
         )
-        self._phase = resume_phase
 
-    async def _wait_for_approval_decisions(self) -> None:
-        self._phase = WorkflowPhase.WAITING_APPROVAL
-        await workflow.wait_condition(
-            lambda: (
-                self._paused
-                or self._cancel_requested
-                or self._compact_history_items is not None
-                or all(item.call_id in self._approval_decisions for item in self._pending_approvals)
-            )
+    async def _cleanup(self, final_status: str) -> None:
+        resume_phase = self._phase
+        self._phase = WorkflowPhase.CLEANUP
+        await workflow.execute_activity(
+            "cleanup_run_activity",
+            CleanupRunInput(run_id=self._run_id, final_status=final_status),
+            result_type=CleanupRunResult,
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=_ACTIVITY_RETRY_POLICY,
         )
+        self._phase = resume_phase
 
     @workflow.signal
     def pause(self) -> None:
@@ -221,59 +234,83 @@ class RiftXRunWorkflow:
         self._paused = False
 
     @workflow.signal
-    def approve(self, call_id: str) -> None:
-        if any(item.call_id == call_id for item in self._pending_approvals):
-            self._approval_decisions[call_id] = True
+    def execution_completed(self, execution_id: str) -> None:
+        if execution_id:
+            self._completed_execution_id = execution_id
 
     @workflow.signal
-    def reject(self, call_id: str) -> None:
-        if any(item.call_id == call_id for item in self._pending_approvals):
-            self._approval_decisions[call_id] = False
+    def approve(self, approval_id: str) -> None:
+        if approval_id:
+            self._approval_id = approval_id
+
+    @workflow.signal
+    def reject(self, approval_id: str) -> None:
+        if approval_id:
+            self._approval_id = approval_id
+
+    @workflow.signal
+    def user_input(self, message_id: str) -> None:
+        if message_id:
+            self._latest_user_message_id = message_id
+
+    @workflow.signal
+    def append_user_message(self, message_id: str) -> None:
+        """Compatibility signal name; payload is a persisted Message ID only."""
+
+        self.user_input(message_id)
 
     @workflow.signal
     def cancel_current_execution(self) -> None:
-        self._cancel_current_execution_requested = True
+        # Execution cancellation is persisted by ExecutionService. The completion
+        # signal resumes this Workflow with the same stable execution identity.
+        return
 
     @workflow.signal
     def cancel(self) -> None:
         self._cancel_requested = True
-        self._cancel_current_execution_requested = True
         self._paused = False
 
     @workflow.signal
     def compact(self, max_history_items: int = 100) -> None:
         self._compact_history_items = max(1, min(max_history_items, 10_000))
 
-    @workflow.signal
-    def append_user_message(self, message: str) -> None:
-        normalized = message.strip()
-        if normalized:
-            self._user_messages.append(normalized)
-
     @workflow.query
     def get_status(self) -> RunWorkflowStatus:
+        phase = WorkflowPhase.PAUSED if self._paused and not self._finished else self._phase
         return RunWorkflowStatus(
             run_id=self._run_id,
-            phase=self._phase,
+            session_id=self._session_id,
+            phase=phase,
             paused=self._paused,
             finished=self._finished,
+            cycle_id=self._cycle_id,
+            yield_reason=self._yield_reason,
+            waiting_object_id=self._waiting_object_id,
             checkpoint_id=self._checkpoint_id,
-            pending_approvals=list(self._pending_approvals),
-            active_execution_id=self._active_execution_id,
-            queued_user_messages=len(self._user_messages),
-            cancel_current_execution_requested=self._cancel_current_execution_requested,
+            active_execution_id=(
+                self._waiting_object_id
+                if self._yield_reason is RuntimeYieldReason.TOOL_RUNNING
+                else None
+            ),
             cancel_requested=self._cancel_requested,
-            compact_requested=self._compact_history_items is not None,
         )
 
     @workflow.query
     def get_current_phase(self) -> WorkflowPhase:
-        return self._phase
-
-    @workflow.query
-    def get_pending_approval(self) -> list[PendingApproval]:
-        return list(self._pending_approvals)
+        return self.get_status().phase
 
     @workflow.query
     def get_active_execution(self) -> str | None:
-        return self._active_execution_id
+        return self.get_status().active_execution_id
+
+    def _result(self) -> RunWorkflowResult:
+        return RunWorkflowResult(
+            run_id=self._run_id,
+            session_id=self._session_id,
+            phase=self._phase,
+            cycle_id=self._cycle_id,
+            yield_reason=self._yield_reason,
+            waiting_object_id=self._waiting_object_id,
+            checkpoint_id=self._checkpoint_id,
+            report_id=self._report_id,
+        )

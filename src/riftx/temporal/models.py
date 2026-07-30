@@ -52,6 +52,7 @@ class PendingApproval:
 @dataclass
 class RunWorkflowInput:
     run_id: str
+    session_id: str | None = None
 
 
 @dataclass
@@ -89,7 +90,6 @@ class RunAgentCycleActivityInput:
     run_id: str
     session_id: str
     cycle_id: str
-    worker_id: str
     latest_user_message_id: str | None = None
     completed_execution_id: str | None = None
     approval_id: str | None = None
@@ -141,20 +141,25 @@ class CleanupRunResult:
 @dataclass
 class RunWorkflowStatus:
     run_id: str
+    session_id: str
     phase: WorkflowPhase
     paused: bool
     finished: bool
+    cycle_id: str | None = None
+    yield_reason: RuntimeYieldReason | None = None
+    waiting_object_id: str | None = None
     checkpoint_id: str | None = None
-    pending_approvals: list[PendingApproval] = field(default_factory=list)
     active_execution_id: str | None = None
-    queued_user_messages: int = 0
-    cancel_current_execution_requested: bool = False
     cancel_requested: bool = False
-    compact_requested: bool = False
 
 
 @dataclass
 class RunWorkflowResult:
     run_id: str
+    session_id: str
     phase: WorkflowPhase
+    cycle_id: str | None = None
+    yield_reason: RuntimeYieldReason | None = None
+    waiting_object_id: str | None = None
+    checkpoint_id: str | None = None
     report_id: str | None = None

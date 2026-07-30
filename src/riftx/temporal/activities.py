@@ -45,6 +45,9 @@ from .models import (
     PendingApproval,
     PrepareRunInput,
     PrepareRunResult,
+    RunAgentCycleActivityInput,
+    RunAgentCycleActivityResult,
+    RuntimeYieldReason,
 )
 
 
@@ -183,6 +186,48 @@ class RiftXActivities:
             summary=output.run_summary or output.assistant_message,
         )
 
+    @activity.defn(name="run_agent_cycle_activity")
+    async def run_agent_cycle_activity(
+        self,
+        input: RunAgentCycleActivityInput,
+    ) -> RunAgentCycleActivityResult:
+        """Compatibility bridge while the production Worker moves to RuntimeCoordinator."""
+
+        legacy = await self.agent_cycle_activity(
+            AgentCycleActivityInput(
+                run_id=input.run_id,
+                agent_step_id=input.cycle_id,
+                checkpoint_id=None,
+                approval_decisions=(
+                    {input.approval_id: True} if input.approval_id is not None else {}
+                ),
+                user_messages=(
+                    [input.latest_user_message_id]
+                    if input.latest_user_message_id is not None
+                    else []
+                ),
+            )
+        )
+        reason = {
+            AgentCycleActivityStatus.CONTINUE: RuntimeYieldReason.CYCLE_LIMIT_REACHED,
+            AgentCycleActivityStatus.WAITING_APPROVAL: RuntimeYieldReason.APPROVAL_REQUIRED,
+            AgentCycleActivityStatus.NEEDS_INPUT: RuntimeYieldReason.USER_INPUT_REQUIRED,
+            AgentCycleActivityStatus.COMPLETED: RuntimeYieldReason.RUN_COMPLETED,
+        }[legacy.status]
+        waiting_object_id = (
+            legacy.pending_approvals[0].call_id
+            if legacy.pending_approvals
+            else legacy.active_execution_id
+        )
+        return RunAgentCycleActivityResult(
+            run_id=input.run_id,
+            session_id=input.session_id,
+            cycle_id=input.cycle_id,
+            yield_reason=reason,
+            waiting_object_id=waiting_object_id,
+            checkpoint_id=legacy.checkpoint_id,
+        )
+
     @activity.defn(name="compact_context_activity")
     async def compact_context_activity(
         self,
@@ -242,6 +287,7 @@ class RiftXActivities:
         return [
             self.prepare_run_activity,
             self.agent_cycle_activity,
+            self.run_agent_cycle_activity,
             self.compact_context_activity,
             self.generate_report_activity,
             self.cleanup_run_activity,

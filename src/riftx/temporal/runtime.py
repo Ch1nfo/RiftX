@@ -48,6 +48,12 @@ class TemporalRunClient:
     async def reject(self, run_id: str, call_id: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.reject, call_id)
 
+    async def execution_completed(self, run_id: str, execution_id: str) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.execution_completed, execution_id)
+
+    async def user_input(self, run_id: str, message_id: str) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.user_input, message_id)
+
     async def cancel_current_execution(self, run_id: str) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.cancel_current_execution)
 
@@ -57,8 +63,8 @@ class TemporalRunClient:
     async def compact(self, run_id: str, max_history_items: int = 100) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.compact, max_history_items)
 
-    async def append_user_message(self, run_id: str, message: str) -> None:
-        await self.get_handle(run_id).signal(RiftXRunWorkflow.append_user_message, message)
+    async def append_user_message(self, run_id: str, message_id: str) -> None:
+        await self.user_input(run_id, message_id)
 
     async def status(self, run_id: str) -> RunWorkflowStatus:
         return await self.get_handle(run_id).query(RiftXRunWorkflow.get_status)

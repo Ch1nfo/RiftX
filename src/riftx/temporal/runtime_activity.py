@@ -24,8 +24,9 @@ class RuntimeCycleRunner(Protocol):
 class RuntimeCycleActivities:
     """Execute one idempotent Runtime Cycle outside Temporal Workflow History."""
 
-    def __init__(self, coordinator: RuntimeCycleRunner) -> None:
+    def __init__(self, coordinator: RuntimeCycleRunner, *, worker_id: str) -> None:
         self._coordinator = coordinator
+        self._worker_id = worker_id
 
     @activity.defn(name="run_agent_cycle_activity")
     async def run_agent_cycle_activity(
@@ -54,7 +55,7 @@ class RuntimeCycleActivities:
                 RunCycleRequest(
                     run_id=input.run_id,
                     session_id=input.session_id,
-                    worker_id=input.worker_id,
+                    worker_id=self._worker_id,
                     cycle_id=input.cycle_id,
                     latest_user_message_id=input.latest_user_message_id,
                     input_items=input_items,
