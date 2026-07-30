@@ -22,6 +22,8 @@ from .models import (
     RunWorkflowInput,
     RunWorkflowResult,
     RunWorkflowStatus,
+    SwitchModelInput,
+    SwitchModelResult,
     WorkflowPhase,
 )
 
@@ -60,6 +62,7 @@ class RiftXRunWorkflow:
         self._completed_execution_id: str | None = None
         self._approval_id: str | None = None
         self._compact_history_items: int | None = None
+        self._pending_model_profile: str | None = None
         self._report_id: str | None = None
 
     @workflow.run
@@ -80,6 +83,18 @@ class RiftXRunWorkflow:
                 break
             if self._compact_history_items is not None:
                 await self._compact_context()
+                continue
+            if self._pending_model_profile is not None:
+                await self._switch_model()
+                continue
+            waiting_phase = (
+                _WAITING_PHASES.get(self._yield_reason)
+                if self._yield_reason is not None
+                else None
+            )
+            if waiting_phase is not None and not self._can_resume_from_yield():
+                self._phase = waiting_phase
+                await workflow.wait_condition(self._can_resume_from_yield)
                 continue
 
             self._phase = WorkflowPhase.AGENT_CYCLE
@@ -158,11 +173,16 @@ class RiftXRunWorkflow:
                 not self._paused
                 or self._cancel_requested
                 or self._compact_history_items is not None
+                or self._pending_model_profile is not None
             )
         )
 
     def _can_resume_from_yield(self) -> bool:
-        if self._cancel_requested or self._compact_history_items is not None:
+        if (
+            self._cancel_requested
+            or self._compact_history_items is not None
+            or self._pending_model_profile is not None
+        ):
             return True
         if self._yield_reason in {
             RuntimeYieldReason.TOOL_RUNNING,
@@ -215,6 +235,26 @@ class RiftXRunWorkflow:
             retry_policy=_ACTIVITY_RETRY_POLICY,
         )
         self._checkpoint_id = result.checkpoint_id or self._checkpoint_id
+
+    async def _switch_model(self) -> None:
+        model_profile = self._pending_model_profile
+        if model_profile is None:
+            return
+        self._pending_model_profile = None
+        self._phase = WorkflowPhase.COMPACTING
+        result = await workflow.execute_activity(
+            "switch_model_activity",
+            SwitchModelInput(
+                run_id=self._run_id,
+                session_id=self._session_id,
+                checkpoint_id=str(workflow.uuid4()),
+                model_profile=model_profile,
+            ),
+            result_type=SwitchModelResult,
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=_ACTIVITY_RETRY_POLICY,
+        )
+        self._checkpoint_id = result.checkpoint_id
 
     async def _cleanup(self, final_status: str) -> None:
         resume_phase = self._phase
@@ -276,6 +316,12 @@ class RiftXRunWorkflow:
     @workflow.signal
     def compact(self, max_history_items: int = 100) -> None:
         self._compact_history_items = max(1, min(max_history_items, 10_000))
+
+    @workflow.signal
+    def switch_model(self, model_profile: str) -> None:
+        normalized = model_profile.strip()
+        if normalized:
+            self._pending_model_profile = normalized
 
     @workflow.query
     def get_status(self) -> RunWorkflowStatus:

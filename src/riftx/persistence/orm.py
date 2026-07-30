@@ -509,9 +509,9 @@ class ContextCheckpointRecord(Base):
     compaction_stage: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     model_profile: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     working_memory_version: Mapped[int | None] = mapped_column(Integer)
-    provider_state_id: Mapped[str | None] = mapped_column(
-        ForeignKey("provider_states.id", ondelete="SET NULL"), index=True
-    )
+    # A checkpoint must remain readable even if a provider-native state expires
+    # or is deleted. The canonical snapshot therefore keeps this as a soft ID.
+    provider_state_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     context_compilation_id: Mapped[str | None] = mapped_column(
         ForeignKey("context_compilations.id", ondelete="SET NULL"), index=True
     )

@@ -64,6 +64,9 @@ class TemporalRunClient:
     async def compact(self, run_id: str, max_history_items: int = 100) -> None:
         await self.get_handle(run_id).signal(RiftXRunWorkflow.compact, max_history_items)
 
+    async def switch_model(self, run_id: str, model_profile: str) -> None:
+        await self.get_handle(run_id).signal(RiftXRunWorkflow.switch_model, model_profile)
+
     async def append_user_message(self, run_id: str, message_id: str) -> None:
         await self.user_input(run_id, message_id)
 

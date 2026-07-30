@@ -605,6 +605,7 @@ async def build_temporal_worker(
                 approvals=runtime_approval_repository,
                 executions=execution_repository,
                 terminals=terminal_repository,
+                context_compiler=context_compiler,
             ),
         )
         return TemporalWorkerRuntime(

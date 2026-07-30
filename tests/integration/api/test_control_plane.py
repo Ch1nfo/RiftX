@@ -222,6 +222,9 @@ class FakeWorkflowClient:
     async def compact(self, run_id: str, max_history_items: int = 100) -> None:
         self._record("compact", run_id, str(max_history_items))
 
+    async def switch_model(self, run_id: str, model_profile: str) -> None:
+        self._record("switch_model", run_id, model_profile)
+
     async def append_user_message(self, run_id: str, message: str) -> None:
         self._record("message", run_id, message)
 
@@ -467,6 +470,12 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             )
             assert compact.status_code == 202
             assert ("compact", run_id, "25") in runtime.workflow.calls
+            switched = await client.post(
+                f"/api/v1/runs/{run_id}/model",
+                json={"model_profile": "deep"},
+            )
+            assert switched.status_code == 202
+            assert ("switch_model", run_id, "deep") in runtime.workflow.calls
             assert (await client.post(f"/api/v1/runs/{run_id}/cancel")).status_code == 202
 
             assert [call[0] for call in runtime.workflow.calls] == [
@@ -476,6 +485,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "cancel_current_execution",
                 "message",
                 "compact",
+                "switch_model",
                 "cancel",
             ]
             events = await client.get(f"/api/v1/runs/{run_id}/events", params={"limit": 20})
@@ -489,16 +499,15 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "execution.cancel_requested",
                 "user.message_queued",
                 "agent.context_compaction_requested",
+                "agent.model_switch_requested",
                 "run.cancel_requested",
             ]
-            assert events.json()["items"][-3]["payload"]["message"] == (
-                "Focus on the HTTP endpoint"
-            )
             message_event = next(
                 item
                 for item in events.json()["items"]
                 if item["event_type"] == "user.message_queued"
             )
+            assert message_event["payload"]["message"] == "Focus on the HTTP endpoint"
             assert ("message", run_id, message_event["id"]) in runtime.workflow.calls
     finally:
         await runtime.control_plane.close()

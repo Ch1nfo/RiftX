@@ -148,3 +148,9 @@ class CompactRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_history_items: int = Field(default=100, ge=1, le=10_000)
+
+
+class SwitchRunModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_profile: str = Field(min_length=1)

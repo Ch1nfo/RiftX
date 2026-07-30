@@ -24,6 +24,8 @@ from .models import (
     RunWorkflowInput,
     RunWorkflowResult,
     RunWorkflowStatus,
+    SwitchModelInput,
+    SwitchModelResult,
     WorkflowPhase,
 )
 from .workflow import RiftXRunWorkflow
@@ -48,5 +50,7 @@ __all__ = [
     "RunWorkflowResult",
     "RunWorkflowStatus",
     "RuntimeYieldReason",
+    "SwitchModelInput",
+    "SwitchModelResult",
     "WorkflowPhase",
 ]

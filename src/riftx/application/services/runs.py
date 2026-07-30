@@ -45,6 +45,8 @@ class RunWorkflowClient(Protocol):
 
     async def compact(self, run_id: str, max_history_items: int = 100) -> None: ...
 
+    async def switch_model(self, run_id: str, model_profile: str) -> None: ...
+
     async def append_user_message(self, run_id: str, user_input_id: str) -> None: ...
 
     def workflow_id(self, run_id: str) -> str: ...
@@ -193,6 +195,26 @@ class RunApplicationService:
             run.id,
             "agent.context_compaction_requested",
             {"max_history_items": max_history_items},
+        )
+        return run
+
+    async def switch_model(self, run_id: str, model_profile: str) -> Run:
+        run = await self._require_controllable_run(run_id, action="switch the model for")
+        normalized = model_profile.strip()
+        if not normalized:
+            raise ApplicationConflictError(
+                "empty_model_profile",
+                "A model profile must not be empty",
+            )
+        await self._invoke_workflow(
+            run,
+            "switch model",
+            lambda target: self._workflow_client.switch_model(target, normalized),
+        )
+        await self._event_repository.append(
+            run.id,
+            "agent.model_switch_requested",
+            {"model_profile": normalized},
         )
         return run
 

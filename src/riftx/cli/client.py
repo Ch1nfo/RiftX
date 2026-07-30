@@ -102,6 +102,13 @@ class APIClient:
             json={"max_history_items": max_history_items},
         )
 
+    def switch_run_model(self, run_id: str, model_profile: str) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/api/v1/runs/{run_id}/model",
+            json={"model_profile": model_profile},
+        )
+
     def cancel_current_execution(self, run_id: str) -> dict[str, Any]:
         return self._json(
             "POST",

@@ -60,6 +60,10 @@ class FakeAPIClient:
         self.calls.append(("compact_run", (run_id, max_history_items)))
         return {"run": {"id": run_id, "status": "running"}}
 
+    def switch_run_model(self, run_id: str, model_profile: str) -> dict[str, Any]:
+        self.calls.append(("switch_run_model", (run_id, model_profile)))
+        return {"run": {"id": run_id, "status": "running"}}
+
     def get_execution(self, execution_id: str) -> dict[str, Any]:
         self.calls.append(("get_execution", execution_id))
         return self._execution(execution_id)
@@ -367,6 +371,15 @@ def test_run_compact_delegates_to_shared_http_client() -> None:
 
     assert result.exit_code == 0, result.output
     assert FakeAPIClient.instances[0].calls == [("compact_run", ("run-1", 25))]
+
+
+def test_run_model_switch_delegates_to_shared_http_client() -> None:
+    result = runner.invoke(cli_module.app, ["run", "model", "run-1", "deep"])
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("switch_run_model", ("run-1", "deep"))
+    ]
 
 
 def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:

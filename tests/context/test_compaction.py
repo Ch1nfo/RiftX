@@ -3,8 +3,18 @@ from types import SimpleNamespace
 
 from sqlalchemy import update
 
-from riftx.context import CheckpointType, CompactionStage
-from riftx.context.compaction import CompactContextCommand, ContextCompactionManager
+from riftx.context import (
+    CheckpointType,
+    CompactionStage,
+    ContextApplicationService,
+    ContextCompiler,
+    TranscriptContextSource,
+)
+from riftx.context.compaction import (
+    CompactContextCommand,
+    ContextCompactionManager,
+    SwitchModelCommand,
+)
 from riftx.domain import (
     Engagement,
     MessageRole,
@@ -55,6 +65,7 @@ async def test_compaction_preserves_resume_state_and_repairs_crash_retry(
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
     transcript = SQLAlchemyTranscriptRepository(database.session_factory)
     checkpoints = SQLAlchemyContextCheckpointRepository(database.session_factory)
+    compilations = SQLAlchemyContextCompilationRepository(database.session_factory)
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Compaction")
     )
@@ -111,11 +122,15 @@ async def test_compaction_preserves_resume_state_and_repairs_crash_retry(
         sessions=sessions,
         transcript=transcript,
         working_memory=SQLAlchemyWorkingMemoryRepository(database.session_factory),
-        compilations=SQLAlchemyContextCompilationRepository(database.session_factory),
+        compilations=compilations,
         checkpoints=checkpoints,
         approvals=_PendingApprovals(),  # type: ignore[arg-type]
         executions=_ActiveExecutions(),  # type: ignore[arg-type]
         terminals=_OpenTerminals(),  # type: ignore[arg-type]
+        context_compiler=ContextCompiler(
+            sources=[TranscriptContextSource(transcript)],
+            context_service=ContextApplicationService(compilations),
+        ),
     )
     command = CompactContextCommand(
         run_id="run-1",
@@ -174,4 +189,59 @@ async def test_compaction_preserves_resume_state_and_repairs_crash_retry(
     recovered_session = await sessions.get("session-1")
     assert recovered_session is not None
     assert recovered_session.latest_checkpoint_id == "checkpoint-1"
+
+    switched = await manager.switch_model(
+        SwitchModelCommand(
+            run_id="run-1",
+            session_id="session-1",
+            checkpoint_id="checkpoint-model-switch",
+            model_profile="model-b",
+            max_history_items=2,
+        )
+    )
+    assert switched.previous_model_profile == "model-a"
+    assert switched.model_profile == "model-b"
+    assert switched.checkpoint.checkpoint_type is CheckpointType.MODEL_SWITCH
+    assert switched.checkpoint.provider_state_id == "provider-state-1"
+    assert switched.compiled_context.compilation_id is not None
+    compiled_refs = {
+        str(ref)
+        for item in switched.compiled_context.input_items
+        for ref in item.get("source_refs", [])
+    }
+    assert f"message://{messages[0].id}" not in compiled_refs
+    assert f"message://{messages[1].id}" not in compiled_refs
+    assert f"message://{messages[2].id}" in compiled_refs
+    assert f"message://{messages[3].id}" in compiled_refs
+    switched_session = await sessions.get("session-1")
+    assert switched_session is not None
+    assert switched_session.model_profile == "model-b"
+    assert switched_session.provider_state_id is None
+    switched_run = await runs.get("run-1")
+    assert switched_run is not None and switched_run.model_profile == "model-b"
+    compilation = await compilations.latest_for_session("session-1")
+    assert compilation is not None and compilation.model_profile == "model-b"
+
+    # Provider-native resume state may expire independently. A model switch must
+    # still preserve the stale ID in the neutral snapshot and recover by clearing it.
+    async with database.session_factory() as sql_session, sql_session.begin():
+        await sql_session.execute(
+            update(AgentSessionRecord)
+            .where(AgentSessionRecord.id == "session-1")
+            .values(provider_state_id="expired-provider-state")
+        )
+    recovered = await manager.switch_model(
+        SwitchModelCommand(
+            run_id="run-1",
+            session_id="session-1",
+            checkpoint_id="checkpoint-invalid-provider",
+            model_profile="model-c",
+            max_history_items=2,
+        )
+    )
+    assert recovered.checkpoint.provider_state_id == "expired-provider-state"
+    final_session = await sessions.get("session-1")
+    assert final_session is not None
+    assert final_session.model_profile == "model-c"
+    assert final_session.provider_state_id is None
     await database.dispose()

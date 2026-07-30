@@ -622,6 +622,21 @@ def compact_run(
     console.print("[green]Context compaction requested.[/green]")
 
 
+@run_app.command("model")
+def switch_run_model(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID.")],
+    model_profile: Annotated[str, typer.Argument(help="Target model profile.")],
+) -> None:
+    """Checkpoint a Run and continue it with another model profile."""
+
+    _run_with_client(
+        context,
+        lambda client: client.switch_run_model(run_id, model_profile),
+    )
+    console.print(f"[green]Model switch to {model_profile!r} requested.[/green]")
+
+
 @run_app.command("message")
 def send_message(
     context: typer.Context,

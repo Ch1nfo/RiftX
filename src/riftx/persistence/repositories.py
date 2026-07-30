@@ -423,6 +423,18 @@ class SQLAlchemyRunRepository:
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not update status for run {run_id!r}") from exc
 
+    async def update_model_profile(self, run_id: str, model_profile: str) -> Run:
+        normalized = model_profile.strip()
+        if not normalized:
+            raise ValueError("model_profile must not be empty")
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(RunRecord, run_id)
+            if record is None:
+                raise EntityNotFoundError("Run", run_id)
+            record.model_profile = normalized
+            await session.flush()
+            return run_from_record(record)
+
 
 class SQLAlchemyRunEventRepository:
     def __init__(self, session_factory: SessionFactory) -> None:

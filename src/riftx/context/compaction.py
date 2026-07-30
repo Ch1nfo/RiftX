@@ -21,6 +21,12 @@ from riftx.persistence.runtime_repositories import (
 )
 from riftx.persistence.transcript_repositories import SQLAlchemyTranscriptRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
+from riftx.runtime.lifecycle import (
+    CompiledContext,
+    ContextCompiler,
+    ContextCompileRequest,
+    ContextPurpose,
+)
 
 from .checkpoints import CheckpointType, CompactionStage, ContextCheckpoint
 from .working_memory import AttemptStatus, PlanItemStatus
@@ -44,6 +50,23 @@ class CompactionResult:
     retained_messages: int
 
 
+@dataclass(frozen=True, slots=True)
+class SwitchModelCommand:
+    run_id: str
+    session_id: str
+    checkpoint_id: str
+    model_profile: str
+    max_history_items: int = 100
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSwitchResult:
+    checkpoint: ContextCheckpoint
+    previous_model_profile: str
+    model_profile: str
+    compiled_context: CompiledContext
+
+
 class ContextCompactionManager:
     def __init__(
         self,
@@ -57,6 +80,7 @@ class ContextCompactionManager:
         approvals: SQLAlchemyRuntimeApprovalRepository,
         executions: SQLAlchemyExecutionRepository,
         terminals: SQLAlchemyTerminalRepository,
+        context_compiler: ContextCompiler | None = None,
     ) -> None:
         self._runs = runs
         self._sessions = sessions
@@ -67,6 +91,7 @@ class ContextCompactionManager:
         self._approvals = approvals
         self._executions = executions
         self._terminals = terminals
+        self._context_compiler = context_compiler
 
     async def compact(self, command: CompactContextCommand) -> CompactionResult:
         if command.max_history_items < 1:
@@ -220,3 +245,71 @@ class ContextCompactionManager:
         session.latest_checkpoint_id = checkpoint.id
         await self._sessions.save(session)
         return CompactionResult(checkpoint, marked, len(retained_messages))
+
+    async def switch_model(self, command: SwitchModelCommand) -> ModelSwitchResult:
+        target_profile = command.model_profile.strip()
+        if not target_profile:
+            raise ValueError("model_profile must not be empty")
+        if self._context_compiler is None:
+            raise RuntimeError("model switching requires a Context Compiler")
+        run = await self._runs.get(command.run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", command.run_id)
+        session = await self._sessions.get(command.session_id)
+        if session is None or session.run_id != run.id:
+            raise EntityNotFoundError("AgentSession", command.session_id)
+
+        compaction = await self.compact(
+            CompactContextCommand(
+                run_id=run.id,
+                session_id=session.id,
+                checkpoint_id=command.checkpoint_id,
+                max_history_items=command.max_history_items,
+                checkpoint_type=CheckpointType.MODEL_SWITCH,
+                compaction_stage=CompactionStage.CANONICAL_CHECKPOINT,
+                model_profile=session.model_profile,
+            )
+        )
+        previous_profile = compaction.checkpoint.model_profile
+        session = await self._sessions.get(session.id)
+        if session is None:
+            raise EntityNotFoundError("AgentSession", command.session_id)
+        session.model_profile = target_profile
+        session.provider_state_id = None
+        session.latest_checkpoint_id = compaction.checkpoint.id
+        await self._sessions.save(session)
+        await self._runs.update_model_profile(run.id, target_profile)
+
+        compiled = await self._context_compiler.compile(
+            ContextCompileRequest(
+                run_id=run.id,
+                session_id=session.id,
+                agent_id=session.agent_type,
+                purpose=ContextPurpose.PRIMARY_REASONING,
+                model_profile=target_profile,
+                objective=run.objective.description,
+                run_contract={
+                    "objective": run.objective.description,
+                    "success_criteria": [
+                        item.model_dump(mode="json") for item in run.success_criteria
+                    ],
+                    "entry_points": [
+                        item.model_dump(mode="json") for item in run.entry_points
+                    ],
+                    "scope": run.scope.model_dump(mode="json"),
+                    "approval_mode": run.approval_mode.value,
+                    "node_id": run.node_id,
+                    "engagement_id": run.engagement_id,
+                    "workspace": run.workspace_path,
+                    "current_path": run.workspace_path,
+                },
+                workspace_path=run.workspace_path,
+                current_path=run.workspace_path,
+            )
+        )
+        return ModelSwitchResult(
+            checkpoint=compaction.checkpoint,
+            previous_model_profile=previous_profile,
+            model_profile=target_profile,
+            compiled_context=compiled,
+        )

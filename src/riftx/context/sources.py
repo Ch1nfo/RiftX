@@ -182,7 +182,11 @@ class TranscriptContextSource:
             request.session_id,
             limit=self._max_items,
         )
-        return [self._message_item(request, message) for message in messages]
+        return [
+            self._message_item(request, message)
+            for message in messages
+            if message.compacted_by_checkpoint_id is None
+        ]
 
     def _message_item(
         self,

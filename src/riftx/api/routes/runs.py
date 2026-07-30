@@ -15,6 +15,7 @@ from ..schemas import (
     RunListResponse,
     RunMessageRequest,
     RunResponse,
+    SwitchRunModelRequest,
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -106,6 +107,24 @@ async def compact_run(
     return RunActionResponse(
         run=RunResponse.from_domain(
             await run_service.compact(run_id, max_history_items=request.max_history_items)
+        )
+    )
+
+
+@router.post(
+    "/{run_id}/model",
+    response_model=RunActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERROR_RESPONSES,
+)
+async def switch_run_model(
+    run_id: str,
+    request: SwitchRunModelRequest,
+    run_service: RunServiceDependency,
+) -> RunActionResponse:
+    return RunActionResponse(
+        run=RunResponse.from_domain(
+            await run_service.switch_model(run_id, request.model_profile)
         )
     )
 

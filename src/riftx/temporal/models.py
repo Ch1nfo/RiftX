@@ -121,6 +121,23 @@ class CompactContextResult:
 
 
 @dataclass
+class SwitchModelInput:
+    run_id: str
+    session_id: str
+    checkpoint_id: str
+    model_profile: str
+    max_history_items: int = 100
+
+
+@dataclass
+class SwitchModelResult:
+    checkpoint_id: str
+    previous_model_profile: str
+    model_profile: str
+    context_compilation_id: str | None = None
+
+
+@dataclass
 class GenerateReportInput:
     run_id: str
 

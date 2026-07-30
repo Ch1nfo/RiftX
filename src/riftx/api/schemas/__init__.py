@@ -43,6 +43,7 @@ from .runs import (
     RunResponse,
     ScopeRequest,
     SuccessCriterionRequest,
+    SwitchRunModelRequest,
 )
 from .terminals import TerminalCreateRequest, TerminalResponse
 from .tools import RegisteredToolResponse, ToolRegistryResponse, ToolUpdateRequest
@@ -90,6 +91,7 @@ __all__ = [
     "ReportResponse",
     "ScopeRequest",
     "SuccessCriterionRequest",
+    "SwitchRunModelRequest",
     "ToolRegistryResponse",
     "ToolUpdateRequest",
     "UpdateFindingRequest",

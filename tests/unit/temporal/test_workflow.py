@@ -27,6 +27,8 @@ from riftx.temporal import (
     RunWorkflowInput,
     RunWorkflowResult,
     RunWorkflowStatus,
+    SwitchModelInput,
+    SwitchModelResult,
     WorkflowPhase,
 )
 
@@ -36,6 +38,7 @@ class FakeActivities:
     cycle_results: deque[RunAgentCycleActivityResult]
     cycle_inputs: list[RunAgentCycleActivityInput] = field(default_factory=list)
     compact_inputs: list[CompactContextInput] = field(default_factory=list)
+    switch_inputs: list[SwitchModelInput] = field(default_factory=list)
     cleanup_inputs: list[CleanupRunInput] = field(default_factory=list)
     prepared_runs: list[str] = field(default_factory=list)
 
@@ -69,6 +72,16 @@ class FakeActivities:
             checkpoint_id=input.checkpoint_id,
         )
 
+    @activity.defn(name="switch_model_activity")
+    async def switch_model(self, input: SwitchModelInput) -> SwitchModelResult:
+        self.switch_inputs.append(input)
+        return SwitchModelResult(
+            checkpoint_id=input.checkpoint_id,
+            previous_model_profile="model-a",
+            model_profile=input.model_profile,
+            context_compilation_id="compilation-model-switch",
+        )
+
     @activity.defn(name="generate_report_activity")
     async def generate_report(self, input: GenerateReportInput) -> GenerateReportResult:
         return GenerateReportResult(report_id=f"report-{input.run_id}")
@@ -83,6 +96,7 @@ class FakeActivities:
             self.prepare,
             self.run_agent_cycle,
             self.compact,
+            self.switch_model,
             self.generate_report,
             self.cleanup,
         ]
@@ -358,4 +372,52 @@ async def test_compaction_remains_available_without_putting_context_in_workflow(
         result = await handle.result()
 
     assert result.phase is WorkflowPhase.COMPLETED
+    await environment.shutdown()
+
+
+async def test_model_switch_checkpoints_then_waits_for_original_user_input() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = FakeActivities(
+        cycle_results=deque(
+            [
+                cycle_result(RuntimeYieldReason.USER_INPUT_REQUIRED),
+                cycle_result(RuntimeYieldReason.RUN_COMPLETED),
+            ]
+        )
+    )
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-switch", session_id="session-switch"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await _wait_for_phase(handle, WorkflowPhase.WAITING_INPUT)
+        await handle.signal(RiftXRunWorkflow.switch_model, "model-b")
+        for _ in range(100):
+            if activities.switch_inputs:
+                break
+            await asyncio.sleep(0.01)
+        assert len(activities.switch_inputs) == 1
+        switch_input = activities.switch_inputs[0]
+        assert switch_input.run_id == "run-switch"
+        assert switch_input.session_id == "session-switch"
+        assert switch_input.model_profile == "model-b"
+        assert switch_input.checkpoint_id
+        await asyncio.sleep(0.05)
+        assert len(activities.cycle_inputs) == 1
+        await handle.signal(RiftXRunWorkflow.user_input, "message-after-switch")
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.COMPLETED
+    assert len(activities.cycle_inputs) == 2
+    assert activities.cycle_inputs[1].latest_user_message_id == "message-after-switch"
     await environment.shutdown()

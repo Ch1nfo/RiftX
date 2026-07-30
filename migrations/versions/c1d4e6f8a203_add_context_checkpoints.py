@@ -35,9 +35,6 @@ def upgrade() -> None:
             ["session_id"], ["agent_sessions.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
-            ["provider_state_id"], ["provider_states.id"], ondelete="SET NULL"
-        ),
-        sa.ForeignKeyConstraint(
             ["context_compilation_id"],
             ["context_compilations.id"],
             ondelete="SET NULL",

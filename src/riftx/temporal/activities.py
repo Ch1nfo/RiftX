@@ -28,7 +28,11 @@ from riftx.application.services import (
     GenerateReports,
     ReportApplicationService,
 )
-from riftx.context.compaction import CompactContextCommand, ContextCompactionManager
+from riftx.context.compaction import (
+    CompactContextCommand,
+    ContextCompactionManager,
+    SwitchModelCommand,
+)
 from riftx.domain import ReportFormat, Run, RunStatus
 from riftx.runner import ExecutionRunner
 from riftx.tools import ToolRegistry
@@ -49,6 +53,8 @@ from .models import (
     RunAgentCycleActivityInput,
     RunAgentCycleActivityResult,
     RuntimeYieldReason,
+    SwitchModelInput,
+    SwitchModelResult,
 )
 
 
@@ -278,6 +284,40 @@ class RiftXActivities:
         )
         return CompactContextResult(compacted=removed > 0, retained_items=retained)
 
+    @activity.defn(name="switch_model_activity")
+    async def switch_model_activity(self, input: SwitchModelInput) -> SwitchModelResult:
+        await self._require_run(input.run_id)
+        if self._compaction_manager is None:
+            raise ApplicationError(
+                "model switching is unavailable on this Worker",
+                non_retryable=True,
+            )
+        result = await self._compaction_manager.switch_model(
+            SwitchModelCommand(
+                run_id=input.run_id,
+                session_id=input.session_id,
+                checkpoint_id=input.checkpoint_id,
+                model_profile=input.model_profile,
+                max_history_items=input.max_history_items,
+            )
+        )
+        await self._event_repository.append(
+            input.run_id,
+            "agent.model_switched",
+            {
+                "checkpoint_id": result.checkpoint.id,
+                "previous_model_profile": result.previous_model_profile,
+                "model_profile": result.model_profile,
+                "context_compilation_id": result.compiled_context.compilation_id,
+            },
+        )
+        return SwitchModelResult(
+            checkpoint_id=result.checkpoint.id,
+            previous_model_profile=result.previous_model_profile,
+            model_profile=result.model_profile,
+            context_compilation_id=result.compiled_context.compilation_id,
+        )
+
     @activity.defn(name="generate_report_activity")
     async def generate_report_activity(
         self,
@@ -319,6 +359,7 @@ class RiftXActivities:
             self.prepare_run_activity,
             self.agent_cycle_activity,
             self.compact_context_activity,
+            self.switch_model_activity,
             self.generate_report_activity,
             self.cleanup_run_activity,
         ]

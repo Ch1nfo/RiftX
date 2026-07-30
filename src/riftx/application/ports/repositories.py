@@ -100,6 +100,8 @@ class RunRepository(Protocol):
 
     async def update_status(self, run_id: str, target: RunStatus) -> Run: ...
 
+    async def update_model_profile(self, run_id: str, model_profile: str) -> Run: ...
+
 
 class RunEventRepository(Protocol):
     async def append(
