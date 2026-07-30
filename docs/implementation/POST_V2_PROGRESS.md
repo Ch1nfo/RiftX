@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-01 is unblocked.
+Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-02 is unblocked.
 
 ## Completed
 
@@ -19,6 +19,7 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-01 is unblocke
 - [x] CTX-03 Working Memory 与 Reducer
 - [x] CTX-04 Context Compiler 与 Token Budgeter
 - [x] CTX-05 Stable Instructions
+- [x] DUR-01 Temporal Durable Cycle
 
 ## Task Record
 
@@ -326,6 +327,36 @@ Wave A, Wave B, and Wave C are complete; Wave D is active and DUR-01 is unblocke
   - The Engagement filesystem root is an explicit Runtime Cycle input because the current persisted Engagement domain does not own a filesystem path; Workspace and current path are wired automatically by Runtime Coordinator.
   - The 30-call Wave C gate is provider-neutral and deterministic; live provider behavior and cross-platform Runner execution remain separate integration/CI evidence.
 - Next dependency: DUR-01 is unblocked.
+
+### DUR-01
+
+- Branch: `codex/dur-01-temporal-cycle`
+- Commits:
+  - `2598ae2 feat(runtime): persist durable cycle outcomes`
+  - `a4c28e4 feat(temporal): drive workflow with runtime cycles`
+  - `7729a4b feat(temporal): wire durable runtime worker`
+- Completed at: `2026-07-30 17:34 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/temporal tests/runtime tests/execution tests/runner tests/integration/api/test_control_plane.py`
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `git diff --check`
+  - Result: `474 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `b7e1d2c3f4a5_persist_durable_cycle_outcomes.py`
+- Core delivery:
+  - `RiftXRunWorkflow` now drives the finite `RuntimeCoordinator` through `run_agent_cycle_activity` with stable per-cycle IDs. Temporal Activity retries reuse the persisted yielded Cycle result instead of invoking the model or launching an Execution again.
+  - Workflow state and signals carry durable identifiers: Run, Session, Cycle, Yield reason, waiting object, checkpoint, Execution, Approval, and User Input IDs. User message content is persisted before signaling and is resolved into the authoritative Transcript inside the Activity.
+  - Execution completion, Approval, User Input, pause, resume, and cancel signals deterministically resume or stop the outer Workflow. Local Runner completion persists the terminal Execution before signaling its ID, with bounded retry on transient signal failure.
+  - Production Worker assembly now registers the new Runtime Activity, idempotently creates the primary Agent Session, uses the layered Context Compiler, OpenAI Agents Engine adapter, Database Run Lease, durable Transcript, and deferred Execution dispatcher.
+  - Model function tools return a deferred marker and stop the SDK turn; trusted Registry resolution builds Runner launch data outside the model process, enforces Workspace containment, and preserves Execution Service idempotency.
+  - Completed Executions are reloaded from persistence, synchronized through `ExecutionService`, processed into immutable Artifacts plus a bounded Context Summary, and supplied to the next Cycle without placing raw output or local paths in Temporal history.
+- Required scenarios:
+  - Worker restart, Workflow Replay, Tool running, Run pause/resume, Run cancel, Activity retry, stable Cycle ID, and no duplicate Execution launch are covered by executable tests.
+- Known limitations:
+  - Approval policy variants, rejection feedback, exact original `ToolCallIntent` recovery, and durable `UserInputRequest` records are intentionally owned by DUR-02.
+  - PTY ownership/takeover is intentionally owned by DUR-03; provider-neutral checkpoint compaction and model switching remain DUR-04 scope.
+  - The V2 prepare/report/cleanup Activities remain registered as compatibility boundaries while the primary Agent Cycle is now the post-V2 Runtime Activity.
+- Next dependency: DUR-02 is unblocked.
 
 ## Architecture Deviations
 
