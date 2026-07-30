@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and Wave B are complete; Wave C is active and CTX-04 is unblocked.
+Wave A and Wave B are complete; Wave C is active and CTX-05 is unblocked.
 
 ## Completed
 
@@ -17,6 +17,7 @@ Wave A and Wave B are complete; Wave C is active and CTX-04 is unblocked.
 - [x] CTX-01 Artifact Spill 与 Tool Result Processor
 - [x] CTX-02 Context Manifest 与 Token Accounting
 - [x] CTX-03 Working Memory 与 Reducer
+- [x] CTX-04 Context Compiler 与 Token Budgeter
 
 ## Task Record
 
@@ -269,6 +270,33 @@ Wave A and Wave B are complete; Wave C is active and CTX-04 is unblocked.
   - CTX-03 intentionally defines and persists authoritative Working Memory but does not inject it into model prompts; CTX-04 owns the single Context Compiler and token-budget integration.
   - Current Fact confidence aggregation is provider-neutral and evidence-count based; future domain-specific calibration can evolve behind the same reducer contract.
 - Next dependency: CTX-04 is unblocked.
+
+### CTX-04
+
+- Branch: `codex/ctx-04-context-compiler-budgeter`
+- Commit: `d71b55f feat(context): add layered compiler and token budgeter`
+- Completed at: `2026-07-30 15:40 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py migrations/versions/c3b8a7d5e921_add_context_compilations.py migrations/versions/d9f4a6c2b731_add_working_memories.py`
+  - `git diff --check`
+  - Result: `457 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: None.
+- Core delivery:
+  - Added the concrete, provider-neutral `ContextCompiler.compile(...)` as the single layered input-construction implementation; the former `MinimalContextCompiler` and `DynamicToolContextCompiler` names now delegate to it rather than assembling independent prompts.
+  - Added typed `ContextItem`, `ContextLayer`, `ContextItemKind`, and `ContextSource` contracts carrying priority, estimated tokens, required/compressible/removable controls, relevance, sequence, and source references.
+  - The compiler deterministically loads Runtime Contract, Stable Instructions, Run Contract, Working Memory, latest Checkpoint, recent Conversation, Tool Results, retrieved Memory, Subagent Results, dynamic Tool Schemas, and current input in the required order.
+  - `WorkingMemoryContextSource` separately protects Current Plan, failed Attempts, pending Approvals, active Executions, and active Terminals; `TranscriptContextSource` classifies recent messages into budgetable Conversation, Tool Result, and Subagent layers.
+  - `TokenBudgeter` applies per-category and global limits, compresses eligible large items, and evicts old Tool previews, duplicate results, low-value Memory, old Assistant detail, and chatter before high-value state. Required or non-removable items are never silently discarded; an explicit `RequiredContextOverflowError` reports the protected IDs and token deficit.
+  - Resident Tool schemas remain required while selected dynamic schemas compete within the Tool Schema budget; Progressive Skill summaries, documents, and references pass through the same Stable Instruction budget.
+  - Runtime Coordinator now reconstructs the full Run Contract, including Scope, success criteria, entry points, approval mode, node, and workspace, for every compilation. The OpenAI Agents adapter replaces factory prompt instructions with the compiler output before start and resume.
+  - Every selected model-visible item maps to exactly one Manifest category; selected/dropped/compressed IDs and per-item tokens are recorded, and the exact final Manifest can be persisted directly without reclassification drift.
+- Required scenarios:
+  - Normal layered compilation, oversized Tool Result compression, excessive Tool Schema eviction, explicit required-item overflow, dynamic Tool Schema selection, final input/Manifest consistency, canonical Manifest persistence, legacy compiler delegation, full Run Contract wiring, and engine instruction application are covered by executable tests.
+- Known limitations:
+  - Token estimates remain deterministic and provider-neutral; actual provider Usage continues to be authoritative after the model call.
+  - The filesystem-backed Stable Instruction source is intentionally deferred to CTX-05 and will plug into the Stable Instructions layer without creating another compiler.
+- Next dependency: CTX-05 is unblocked.
 
 ## Architecture Deviations
 
