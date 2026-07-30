@@ -19,6 +19,7 @@ from riftx.domain import (
     FindingStatus,
 )
 from riftx.domain.base import utc_now
+from riftx.memory import MemoryCandidateFactory, MemoryWriter
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,12 +58,15 @@ class FindingApplicationService:
         artifact_repository: ArtifactRepository | None = None,
         execution_repository: ExecutionRepository | None = None,
         event_repository: RunEventRepository | None = None,
+        memory_writer: MemoryWriter | None = None,
     ) -> None:
         self._run_repository = run_repository
         self._finding_repository = finding_repository
         self._artifact_repository = artifact_repository
         self._execution_repository = execution_repository
         self._event_repository = event_repository
+        self._memory_writer = memory_writer
+        self._memory_candidates = MemoryCandidateFactory()
 
     async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
         await self._require_run(run_id)
@@ -93,6 +97,7 @@ class FindingApplicationService:
             "finding.created",
             event_payload,
         )
+        await self._promote_confirmed(finding)
         return finding
 
     async def get_finding(self, finding_id: str) -> Finding:
@@ -147,7 +152,42 @@ class FindingApplicationService:
                 "updated_fields": sorted(key for key in updates if key != "updated_at"),
             },
         )
+        if (
+            finding.status is FindingStatus.CONFIRMED
+            and current.status is not FindingStatus.CONFIRMED
+        ):
+            await self._promote_confirmed(finding)
         return finding
+
+    async def _promote_confirmed(self, finding: Finding) -> None:
+        if self._memory_writer is None or finding.status is not FindingStatus.CONFIRMED:
+            return
+        run = await self._run_repository.get(finding.run_id)
+        if run is None:
+            return
+        try:
+            result = await self._memory_writer.write(
+                self._memory_candidates.from_finding(
+                    finding,
+                    engagement_id=run.engagement_id,
+                )
+            )
+            await self._append_event(
+                finding.run_id,
+                "memory.promotion_evaluated",
+                {
+                    "finding_id": finding.id,
+                    "candidate_id": result.candidate_id,
+                    "decision": result.assessment.decision.value,
+                    "memory_id": result.memory.id if result.memory is not None else None,
+                },
+            )
+        except Exception as exc:
+            await self._append_event(
+                finding.run_id,
+                "memory.promotion_failed",
+                {"finding_id": finding.id, "reason": str(exc)},
+            )
 
     async def list_findings(
         self,

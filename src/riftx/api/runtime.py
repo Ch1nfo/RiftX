@@ -29,7 +29,7 @@ from riftx.application.services import (
 )
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.context import ContextApplicationService
-from riftx.memory import MemoryService
+from riftx.memory import MemoryService, MemoryWriter
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -330,6 +330,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             artifact_repository=artifact_repository,
             execution_repository=execution_repository,
             event_repository=event_repository,
+            memory_writer=MemoryWriter(memory_repository),
         ),
         report_service=ReportApplicationService(
             run_repository=run_repository,

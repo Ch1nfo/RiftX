@@ -62,7 +62,7 @@ from riftx.domain import (
     TerminalStatus,
     ToolCall,
 )
-from riftx.memory import MemoryService
+from riftx.memory import MemoryService, MemoryWriter
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -290,6 +290,7 @@ tools:
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
+    memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
     node_service = NodeApplicationService(node_repository)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
@@ -372,6 +373,7 @@ tools:
                 artifact_repository=artifact_repository,
                 execution_repository=execution_repository,
                 event_repository=event_repository,
+                memory_writer=MemoryWriter(memory_repository),
             ),
             report_service=ReportApplicationService(
                 run_repository=run_repository,
@@ -390,9 +392,7 @@ tools:
             ),
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
-            memory_service=MemoryService(
-                SQLAlchemyMemoryRepository(database.session_factory)
-            ),
+            memory_service=MemoryService(memory_repository),
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_controller,
@@ -1253,6 +1253,14 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
             assert finding["affected_assets"] == ["127.0.0.1"]
             assert finding["reproduction_steps"] == ["curl localhost"]
             assert finding["evidence"][0]["artifact_id"] == artifact_id
+            before_confirmation = await client.get(
+                "/api/v1/memories",
+                params={
+                    "scope_type": "asset",
+                    "scope_id": f"{first['engagement_id']}::127.0.0.1",
+                },
+            )
+            assert before_confirmation.json()["items"] == []
 
             updated = await client.patch(
                 f"/api/v1/findings/{finding_id}",
@@ -1267,6 +1275,23 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
             assert updated.json()["severity"] == "critical"
             assert updated.json()["title"] == "Exposed service"
             assert updated.json()["updated_at"] > finding["updated_at"]
+
+            promoted = await client.get(
+                "/api/v1/memories",
+                params={
+                    "scope_type": "asset",
+                    "scope_id": f"{first['engagement_id']}::127.0.0.1",
+                },
+            )
+            assert promoted.status_code == 200
+            assert len(promoted.json()["items"]) == 1
+            promoted_memory = promoted.json()["items"][0]
+            assert promoted_memory["memory_type"] == "episodic"
+            assert promoted_memory["title"] == "Exposed service"
+            assert promoted_memory["source_refs"] == [
+                f"finding://{finding_id}",
+                f"artifact://{artifact_id}",
+            ]
 
             fetched = await client.get(f"/api/v1/findings/{finding_id}")
             assert fetched.json() == updated.json()
@@ -1315,10 +1340,11 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
             assert empty.json()["error"]["code"] == "empty_finding_evidence"
 
             events = await client.get(f"/api/v1/runs/{first_run_id}/events")
-            assert [item["event_type"] for item in events.json()["items"]][-3:] == [
+            assert [item["event_type"] for item in events.json()["items"]][-4:] == [
                 "artifact.registered",
                 "finding.created",
                 "finding.updated",
+                "memory.promotion_evaluated",
             ]
     finally:
         await runtime.control_plane.close()
