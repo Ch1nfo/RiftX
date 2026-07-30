@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A complete; Wave B is in progress. EX-01 is complete and EX-02 is unblocked.
+Wave A and the EX-01/EX-02 long-execution loop are complete; Wave B continues with EX-03.
 
 ## Completed
 
@@ -11,6 +11,7 @@ Wave A complete; Wave B is in progress. EX-01 is complete and EX-02 is unblocked
 - [x] RT-03 Runtime Coordinator 与有限 Cycle
 - [x] RT-04 Transcript 与 Session Manager
 - [x] EX-01 Execution Service 与幂等性
+- [x] EX-02 Wait、Cancel 与 Deferred Execution
 
 ## Task Record
 
@@ -107,6 +108,33 @@ Wave A complete; Wave B is in progress. EX-01 is complete and EX-02 is unblocked
   - Bounded wait/deferred execution, Runtime `TOOL_RUNNING` yield integration, process-group cancellation guarantees, and reconciliation are intentionally deferred to EX-02.
   - Retry remains explicit: callers must choose a new `attempt_group`; EX-01 does not automatically retry failed or cancelled executions.
 - Next dependency: EX-02 is unblocked.
+
+### EX-02
+
+- Branch: `codex/ex-02-deferred-execution`
+- Commit: `308b9b7 feat(execution): add deferred wait and cancellation flow`
+- Completed at: `2026-07-30 13:04 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py`
+  - `git diff --check`
+  - Result: `394 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migrations: None.
+- Core delivery:
+  - Bounded waits return stable `WAIT_TIMEOUT`, `EXECUTION_COMPLETED`, `EXECUTION_CANCELLED`, or `EXECUTION_LOST` outcomes while preserving the underlying Execution state.
+  - Wait responses expose partial output cursors and a next-poll hint through Runtime services, API, and CLI; a wait timeout is never reported as tool failure.
+  - Local cancellation terminates the complete process group, while Runner hard timeouts remain distinct `HARD_TIMEOUT` execution results.
+  - `DeferredExecutionDispatcher` persists a stable Tool Call intent before launch and routes all process creation through `ExecutionService` and Runner.
+  - Runtime `TOOL_RUNNING` yields now carry `waiting_execution_id`; repeated Runtime activity with the same engine call returns the same Execution without relaunching.
+  - OpenAI Agents events retain stable tool call IDs, tool IDs, and serialized arguments for deferred dispatch.
+- Stage gate:
+  - Wait timeout followed by a successful second wait, user cancellation, hard timeout, Runtime retry, and full child-process-group cancellation are covered by executable tests.
+  - Wave A plus EX-01/EX-02 now form the first bounded long-task Runtime loop; EX-03 may begin.
+- Known limitations:
+  - Runner/Worker restart recovery and PID reuse checks remain EX-03 responsibilities.
+  - The dispatcher consumes launch data already resolved by the Tool Proxy; dynamic Tool Registry resolution is intentionally deferred to EX-04.
+  - Temporal workflow signal wiring will consume `waiting_execution_id`; EX-02 establishes the durable Runtime contract without broadening into orchestration refactors.
+- Next dependency: EX-03 is unblocked.
 
 ## Architecture Deviations
 
