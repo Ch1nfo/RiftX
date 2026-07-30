@@ -16,10 +16,12 @@ import typer
 from riftx import __version__
 from riftx.application.ports import ExecutionRepository
 from riftx.application.services import NodeRegistration
+from riftx.browser import BrowserOperation
 from riftx.domain import Execution, ExecutionStatus, ExecutorType, RunnerCommandKind
 from riftx.executors import PowerShellNotFoundError, PowerShellResolver
 from riftx.target_http.models import TargetHttpRequest, TargetHttpRunnerRequest
 
+from .browser import BrowserRunner, RunnerBrowserManager, execute_browser_command
 from .control_client import (
     LeasedRunnerCommand,
     OutputOffsetMismatch,
@@ -65,6 +67,8 @@ class TerminalCommandHandler(Protocol):
 
 def _default_capabilities() -> tuple[str, ...]:
     capabilities = ["process", "shell", "target_http"]
+    if importlib.util.find_spec("playwright"):
+        capabilities.append("browser_playwright")
     try:
         PowerShellResolver().resolve()
     except PowerShellNotFoundError:
@@ -125,6 +129,7 @@ class RunnerDaemon:
         executions: ExecutionRepository,
         terminal_handler: TerminalCommandHandler | None = None,
         target_http_handler: TargetHttpRunner | None = None,
+        browser_handler: BrowserRunner | None = None,
     ) -> None:
         self.config = config
         self._client = client
@@ -132,6 +137,7 @@ class RunnerDaemon:
         self._executions = executions
         self._terminal_handler = terminal_handler
         self._target_http_handler = target_http_handler
+        self._browser_handler = browser_handler
         self._monitors: dict[str, asyncio.Task[None]] = {}
         self._closed = False
 
@@ -166,6 +172,8 @@ class RunnerDaemon:
                 result = await self._handle_cancel(command.payload)
             elif command.kind is RunnerCommandKind.TARGET_HTTP:
                 result = await self._handle_target_http(command)
+            elif command.kind is RunnerCommandKind.BROWSER:
+                result = await self._handle_browser(command)
             elif command.kind in {
                 RunnerCommandKind.TERMINAL_START,
                 RunnerCommandKind.TERMINAL_WRITE,
@@ -233,6 +241,31 @@ class RunnerDaemon:
                     ) from exc
         return {"result": exchange.result.model_dump(mode="json")}
 
+    async def _handle_browser(self, command: LeasedRunnerCommand) -> dict[str, object]:
+        if self._browser_handler is None:
+            raise RuntimeError("Runner does not support managed browser commands")
+        operation = BrowserOperation(str(command.payload.get("operation", "")))
+        raw_command = command.payload.get("command")
+        if not isinstance(raw_command, dict):
+            raise ValueError("Browser command is missing operation data")
+        exchange = await execute_browser_command(
+            self._browser_handler, operation=operation, payload=raw_command
+        )
+        offset = 0
+        while offset < len(exchange.attachment_content):
+            chunk = exchange.attachment_content[offset : offset + 256 * 1024]
+            try:
+                offset = await self._client.report_command_output(
+                    command, offset=offset, data=chunk
+                )
+            except OutputOffsetMismatch as exc:
+                offset = exc.expected_offset
+                if offset > len(exchange.attachment_content):
+                    raise RuntimeError(
+                        "Control Plane browser output exceeds the Runner attachment"
+                    ) from exc
+        return {"result": exchange.result.model_dump(mode="json")}
+
     async def close(self) -> None:
         self._closed = True
         tasks = list(self._monitors.values())
@@ -245,6 +278,9 @@ class RunnerDaemon:
         terminal_close = getattr(self._terminal_handler, "close", None)
         if terminal_close is not None:
             await terminal_close()
+        browser_close = getattr(self._browser_handler, "close_all", None)
+        if browser_close is not None:
+            await browser_close()
         await self._client.close()
 
     async def _handle_execute(self, payload: dict[str, object]) -> dict[str, object]:
@@ -438,6 +474,10 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         operation_journal=OperationJournal(config.state_path / "terminal-operations.json"),
         output_poll_seconds=config.output_poll_seconds,
     )
+    browser_manager = RunnerBrowserManager(
+        node_id=config.node_id,
+        paths=runner_paths,
+    )
     daemon = RunnerDaemon(
         config=config,
         client=client,
@@ -445,6 +485,7 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         executions=executions,
         terminal_handler=terminal_manager,
         target_http_handler=RunnerTargetHttpClient(node_id=config.node_id),
+        browser_handler=browser_manager,
     )
     try:
         await supervisor.recover()

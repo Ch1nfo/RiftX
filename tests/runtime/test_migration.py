@@ -26,6 +26,11 @@ RUNTIME_TABLES = {
     "web_research_packets",
     "source_references",
     "target_http_requests",
+    "browser_sessions",
+    "browser_pages",
+    "browser_observations",
+    "browser_actions",
+    "browser_takeover_summaries",
 }
 
 

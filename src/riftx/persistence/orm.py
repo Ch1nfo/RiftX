@@ -784,6 +784,138 @@ class TargetHttpRequestRecord(Base):
     response_artifact_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
+class BrowserSessionRecord(Base):
+    __tablename__ = "browser_sessions"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    owner: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    browser_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    profile_path: Mapped[str | None] = mapped_column(Text)
+    cdp_endpoint: Mapped[str | None] = mapped_column(Text)
+    current_page_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    page_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    takeover_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    takeover_observation_version: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class BrowserPageRecord(Base):
+    __tablename__ = "browser_pages"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    browser_session_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    last_observation_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class BrowserObservationRecord(Base):
+    __tablename__ = "browser_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "browser_session_id",
+            "observation_version",
+            name="uq_browser_observations_session_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    browser_session_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_pages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    visible_text_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    headings_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    interactive_elements_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    forms_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    alerts_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    console_errors_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    network_summary_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    screenshot_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    network_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    dom_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    observation_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    content_trust: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class BrowserActionRecord(Base):
+    __tablename__ = "browser_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "browser_session_id", "action_key", name="uq_browser_actions_session_key"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    action_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    browser_session_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_pages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    observation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    element_ref: Mapped[str | None] = mapped_column(String(64))
+    value: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    options_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    result_observation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("browser_observations.id", ondelete="SET NULL"), index=True
+    )
+    download_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class BrowserTakeoverSummaryRecord(Base):
+    __tablename__ = "browser_takeover_summaries"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    browser_session_id: Mapped[str] = mapped_column(
+        ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    released_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
 
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"

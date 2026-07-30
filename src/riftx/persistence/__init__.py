@@ -1,5 +1,6 @@
 """RiftX persistence infrastructure."""
 
+from .browser_repositories import SQLAlchemyBrowserRepository
 from .database import Database
 from .orm import Base
 from .repositories import (
@@ -32,6 +33,7 @@ __all__ = [
     "SQLAlchemyAgentCycleRepository",
     "SQLAlchemyAgentSessionRepository",
     "SQLAlchemyAgentStepRepository",
+    "SQLAlchemyBrowserRepository",
     "Base",
     "Database",
     "SQLAlchemyApprovalRepository",

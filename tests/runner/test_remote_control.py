@@ -522,3 +522,101 @@ async def test_runner_daemon_reconnects_to_durable_active_execution(tmp_path: Pa
     )
     await _wait_for_status(second_client, "server-reconnect", ExecutionStatus.CANCELLED)
     await second_daemon.close()
+
+@pytest.mark.asyncio
+async def test_runner_daemon_executes_browser_command_and_uploads_attachment(
+    tmp_path: Path,
+) -> None:
+    from riftx.browser import BrowserAttachment, BrowserRuntimeExchange, BrowserRuntimeResult
+    from riftx.domain import (
+        BrowserMode,
+        BrowserObservation,
+        BrowserPage,
+        BrowserSession,
+        BrowserSessionStatus,
+    )
+
+    class FakeBrowserHandler:
+        async def open(self, request):
+            session = BrowserSession(
+                id=request.session_id,
+                run_id=request.run_id,
+                agent_session_id=request.agent_session_id,
+                node_id=request.node_id,
+                mode=BrowserMode.MANAGED_EPHEMERAL,
+                status=BrowserSessionStatus.ACTIVE,
+                current_page_id="page-1",
+                page_ids=["page-1"],
+            )
+            page = BrowserPage(
+                id="page-1",
+                browser_session_id=session.id,
+                url=request.url,
+                title="Example",
+                last_observation_version=1,
+            )
+            observation = BrowserObservation(
+                browser_session_id=session.id,
+                page_id=page.id,
+                url=request.url,
+                title="Example",
+                visible_text_excerpt="bounded",
+                observation_version=1,
+            )
+            return BrowserRuntimeExchange(
+                result=BrowserRuntimeResult(
+                    session=session,
+                    pages=[page],
+                    observation=observation,
+                    attachment=BrowserAttachment(
+                        kind="screenshot",
+                        name="screen.png",
+                        mime_type="image/png",
+                    ),
+                ),
+                attachment_content=b"png-bytes",
+            )
+
+    repository = FileExecutionRepository(tmp_path / "executions.json")
+    supervisor = ProcessSupervisor(repository, RunnerPaths(tmp_path / "runner"))
+    client = FakeRunnerClient()
+    daemon = RunnerDaemon(
+        config=RunnerDaemonConfig(
+            server_url="http://control.invalid",
+            node_id="runner-a",
+            name="Runner A",
+            state_path=tmp_path / "runner",
+        ),
+        client=client,  # type: ignore[arg-type]
+        supervisor=supervisor,
+        executions=repository,
+        browser_handler=FakeBrowserHandler(),  # type: ignore[arg-type]
+    )
+    command = _command(
+        "browser-open-1",
+        RunnerCommandKind.BROWSER,
+        {
+            "operation": "open",
+            "command": {
+                "session_id": "browser-1",
+                "run_id": "run-1",
+                "agent_session_id": "agent-session-1",
+                "node_id": "runner-a",
+                "mode": "managed_ephemeral",
+                "url": "https://example.com/",
+                "scope": {"domains": ["example.com"]},
+                "headless": True,
+                "include_screenshot": True,
+            },
+            "max_attachment_bytes": 100_000_000,
+        },
+    )
+
+    await daemon.handle_command(command)
+
+    assert bytes(client.output[(command.id, "command")]) == b"png-bytes"
+    _, succeeded, result, error = client.finished[-1]
+    assert succeeded is True
+    assert error == ""
+    assert result["result"]["observation"]["observation_version"] == 1  # type: ignore[index]
+    await daemon.close()

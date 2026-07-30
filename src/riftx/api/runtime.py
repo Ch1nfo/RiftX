@@ -27,12 +27,14 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.context import ContextApplicationService
 from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.persistence import (
     Database,
+    SQLAlchemyAgentSessionRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
@@ -48,6 +50,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
 )
+from riftx.persistence.browser_repositories import SQLAlchemyBrowserRepository
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.target_http_repositories import (
@@ -55,9 +58,12 @@ from riftx.persistence.target_http_repositories import (
 )
 from riftx.runner import (
     ExecutionRunner,
+    NodeBrowserRouter,
     NodeTargetHttpRouter,
     ProcessSupervisor,
+    RemoteBrowserClient,
     RemoteTargetHttpClient,
+    RunnerBrowserManager,
     RunnerPaths,
     RunnerTargetHttpClient,
     TerminalSupervisor,
@@ -139,11 +145,15 @@ class ControlPlane:
     memory_service: MemoryService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
+    browser_service: BrowserApplicationService | None = None
+    browser_manager: RunnerBrowserManager | None = None
     process_supervisor: ProcessSupervisor | None = None
     execution_runner: ExecutionRunner | None = None
     target_http_service: TargetHttpApplicationService | None = None
 
     async def close(self) -> None:
+        if self.browser_manager is not None:
+            await self.browser_manager.close_all()
         await self.terminal_supervisor.close_all()
         if self.process_supervisor is not None:
             await self.process_supervisor.close()
@@ -229,6 +239,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+    agent_session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
+    browser_repository = SQLAlchemyBrowserRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
@@ -310,6 +322,17 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         local=terminal_supervisor,
         remote=remote_terminal_supervisor,
     )
+    browser_manager = RunnerBrowserManager(
+        node_id=settings.node_id,
+        paths=runner_paths,
+    )
+    browser_router = NodeBrowserRouter(
+        local_node_id=settings.node_id,
+        local=browser_manager,
+        remote_factory=lambda node_id: RemoteBrowserClient(
+            node_id=node_id, control=runner_control_service
+        ),
+    )
     artifact_service = ArtifactApplicationService(
         run_repository=run_repository,
         execution_repository=execution_repository,
@@ -381,7 +404,16 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             event_repository=event_repository,
             hooks=hooks,
         ),
+        browser_service=BrowserApplicationService(
+            runs=run_repository,
+            agent_sessions=agent_session_repository,
+            repository=browser_repository,
+            runner=browser_router,
+            artifacts=artifact_service,
+            events=event_repository,
+        ),
         terminal_supervisor=terminal_supervisor,
+        browser_manager=browser_manager,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,
         target_http_service=TargetHttpApplicationService(

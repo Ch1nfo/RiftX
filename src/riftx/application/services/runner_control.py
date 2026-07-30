@@ -42,6 +42,7 @@ from riftx.runner.paths import RunnerPaths
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
 
 _MAX_RESULT_BYTES = 64 * 1024
+_MAX_BROWSER_RESULT_BYTES = 512 * 1024
 _MAX_OUTPUT_CHUNK_BYTES = 256 * 1024
 
 
@@ -212,10 +213,15 @@ class RunnerControlService:
                 "Runner cannot complete a command assigned to another node",
             )
         bounded_result = result or {}
-        if len(json.dumps(bounded_result, ensure_ascii=False).encode()) > _MAX_RESULT_BYTES:
+        result_limit = (
+            _MAX_BROWSER_RESULT_BYTES
+            if command.kind is RunnerCommandKind.BROWSER
+            else _MAX_RESULT_BYTES
+        )
+        if len(json.dumps(bounded_result, ensure_ascii=False).encode()) > result_limit:
             raise ApplicationConflictError(
                 "runner_result_too_large",
-                f"Runner command results must not exceed {_MAX_RESULT_BYTES} bytes",
+                f"Runner command results must not exceed {result_limit} bytes",
             )
         return await self._commands.finish(
             command_id,
@@ -256,7 +262,7 @@ class RunnerControlService:
         command = await self._require_command(command_id)
         if (
             command.node_id != node_id
-            or command.kind is not RunnerCommandKind.TARGET_HTTP
+            or command.kind not in {RunnerCommandKind.TARGET_HTTP, RunnerCommandKind.BROWSER}
             or command.status is not RunnerCommandStatus.LEASED
             or command.lease_id != lease_id
         ):
@@ -269,7 +275,10 @@ class RunnerControlService:
                 "runner_output_chunk_too_large",
                 f"Runner output chunks must not exceed {_MAX_OUTPUT_CHUNK_BYTES} bytes",
             )
-        raw_limit = command.payload.get("max_response_bytes", 10_000_000)
+        raw_limit = command.payload.get(
+            "max_response_bytes",
+            command.payload.get("max_attachment_bytes", 10_000_000),
+        )
         try:
             limit = int(raw_limit) if not isinstance(raw_limit, bool) else 10_000_000
         except (TypeError, ValueError):
@@ -286,10 +295,10 @@ class RunnerControlService:
 
     async def read_command_output(self, command_id: str) -> bytes:
         command = await self._require_command(command_id)
-        if command.kind is not RunnerCommandKind.TARGET_HTTP:
+        if command.kind not in {RunnerCommandKind.TARGET_HTTP, RunnerCommandKind.BROWSER}:
             raise ApplicationConflictError(
                 "runner_command_output_unavailable",
-                "Runner command does not carry Target HTTP output",
+                "Runner command does not carry binary output",
             )
         path = self._paths.command_output(command_id)
         try:

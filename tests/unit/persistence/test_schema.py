@@ -10,6 +10,11 @@ EXPECTED_TABLES = {
     "approvals",
     "approval_grants",
     "artifacts",
+    "browser_actions",
+    "browser_observations",
+    "browser_pages",
+    "browser_sessions",
+    "browser_takeover_summaries",
     "context_compilations",
     "context_checkpoints",
     "engagements",
@@ -142,6 +147,37 @@ def test_target_http_schema_preserves_execution_identity_and_artifacts() -> None
         "request_artifact_id",
         "response_artifact_id",
     } <= set(Base.metadata.tables["target_http_requests"].columns.keys())
+
+
+def test_browser_schema_preserves_bounded_observations_and_ownership() -> None:
+    assert {
+        "run_id",
+        "agent_session_id",
+        "node_id",
+        "mode",
+        "status",
+        "owner",
+        "profile_path",
+        "cdp_endpoint",
+        "takeover_observation_version",
+    } <= set(Base.metadata.tables["browser_sessions"].columns.keys())
+    assert {
+        "browser_session_id",
+        "page_id",
+        "visible_text_excerpt",
+        "interactive_elements_json",
+        "forms_json",
+        "network_summary_json",
+        "screenshot_artifact_id",
+        "network_artifact_id",
+        "observation_version",
+    } <= set(Base.metadata.tables["browser_observations"].columns.keys())
+    assert {
+        "action_key",
+        "observation_version",
+        "result_observation_id",
+        "download_artifact_id",
+    } <= set(Base.metadata.tables["browser_actions"].columns.keys())
 
 
 def test_context_compilation_table_records_manifest_and_actual_usage() -> None:

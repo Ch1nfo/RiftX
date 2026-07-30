@@ -46,6 +46,7 @@ class RunnerPaths:
             "workspace",
             "executions",
             "terminals",
+            "browsers",
             "artifacts",
             "findings",
             "reports",
@@ -56,6 +57,12 @@ class RunnerPaths:
     def terminal(self, run_id: str, session_id: str) -> TerminalPaths:
         directory = self.run_directory(run_id) / "terminals" / _safe_component(session_id)
         return TerminalPaths(directory=directory, transcript=directory / "transcript.log")
+
+    def browser_profile(self, profile_id: str) -> Path:
+        return self.root / "browser-profiles" / _safe_component(profile_id)
+
+    def browser_downloads(self, run_id: str, session_id: str) -> Path:
+        return self.run_directory(run_id) / "browsers" / _safe_component(session_id) / "downloads"
 
     def artifact(self, run_id: str, artifact_id: str, name: str) -> ArtifactPaths:
         directory = self.run_directory(run_id) / "artifacts" / _safe_component(artifact_id)

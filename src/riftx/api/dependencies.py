@@ -17,6 +17,7 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.browser.service import BrowserApplicationService
 from riftx.context import ContextApplicationService
 from riftx.memory import MemoryService
 
@@ -69,6 +70,10 @@ def get_terminal_service(request: Request) -> TerminalApplicationService:
     return request.app.state.control_plane.terminal_service
 
 
+def get_browser_service(request: Request) -> BrowserApplicationService:
+    return request.app.state.control_plane.browser_service
+
+
 def get_context_service(request: Request) -> ContextApplicationService:
     return request.app.state.control_plane.context_service
 
@@ -98,6 +103,10 @@ ArtifactServiceDependency = Annotated[
 TerminalServiceDependency = Annotated[
     TerminalApplicationService,
     Depends(get_terminal_service),
+]
+BrowserServiceDependency = Annotated[
+    BrowserApplicationService,
+    Depends(get_browser_service),
 ]
 ContextServiceDependency = Annotated[
     ContextApplicationService,

@@ -6,6 +6,12 @@ from .artifacts import (
     ArtifactResponse,
     RegisterArtifactRequest,
 )
+from .browser import (
+    BrowserActionRequest,
+    BrowserObserveRequest,
+    BrowserSessionCreateRequest,
+    BrowserViewResponse,
+)
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
 from .executions import (
@@ -62,6 +68,10 @@ __all__ = [
     "ApprovalResponse",
     "ArtifactListResponse",
     "ArtifactResponse",
+    "BrowserActionRequest",
+    "BrowserObserveRequest",
+    "BrowserSessionCreateRequest",
+    "BrowserViewResponse",
     "CreateRunRequest",
     "CreateMemoryRequest",
     "CompactRunRequest",

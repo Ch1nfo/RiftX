@@ -75,3 +75,22 @@ any previously open session is reported as `LOST`; its durable transcript remain
 available from the Control Plane. Windows ConPTY behavior is covered with a fake native
 backend on every platform, while the real PowerShell/ConPTY smoke path requires a
 Windows host.
+
+## Managed browser runtime
+
+Browser sessions are owned by the selected Run node and execute through its Runner.
+RiftX supports ephemeral Chromium contexts, Runner-local persistent profiles, and
+Chromium CDP attachment. Install the Chromium runtime once on every Runner that should
+advertise browser capability:
+
+```bash
+conda run --no-capture-output -n agent playwright install chromium
+```
+
+The Control Plane exposes `/api/v1/browser/sessions` for open, observe, action,
+takeover, release, close, and WebSocket observation streaming. Agent-facing results
+contain bounded visible text, stable interactive-element references, form metadata,
+network summaries, and Artifact IDs instead of the complete DOM. Runner-local profile
+paths and CDP endpoints are not included in API or agent tool results. During user
+takeover, Agent write actions are rejected while sanitized observations continue;
+release produces a durable takeover summary.

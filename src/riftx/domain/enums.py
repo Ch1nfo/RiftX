@@ -85,6 +85,7 @@ class RunnerCommandKind(StrEnum):
     EXECUTE = "execute"
     CANCEL = "cancel"
     TARGET_HTTP = "target_http"
+    BROWSER = "browser"
     TERMINAL_START = "terminal_start"
     TERMINAL_WRITE = "terminal_write"
     TERMINAL_RESIZE = "terminal_resize"
@@ -95,6 +96,54 @@ class RunnerCommandKind(StrEnum):
 class RunnerCommandStatus(StrEnum):
     PENDING = "pending"
     LEASED = "leased"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class BrowserMode(StrEnum):
+    MANAGED_EPHEMERAL = "managed_ephemeral"
+    MANAGED_PERSISTENT = "managed_persistent"
+    ATTACHED_CDP = "attached_cdp"
+
+
+class BrowserSessionStatus(StrEnum):
+    CREATED = "created"
+    STARTING = "starting"
+    ACTIVE = "active"
+    CLOSED = "closed"
+    LOST = "lost"
+
+
+class BrowserOwner(StrEnum):
+    AGENT = "agent"
+    USER = "user"
+    SHARED_READ_ONLY = "shared_read_only"
+
+
+class BrowserPageStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class BrowserActionType(StrEnum):
+    NAVIGATE = "navigate"
+    CLICK = "click"
+    FILL = "fill"
+    TYPE = "type"
+    SELECT = "select"
+    PRESS = "press"
+    SCROLL = "scroll"
+    UPLOAD = "upload"
+    DOWNLOAD = "download"
+    WAIT = "wait"
+    EVALUATE = "evaluate"
+    GO_BACK = "go_back"
+    RELOAD = "reload"
+
+
+class BrowserActionStatus(StrEnum):
+    PROPOSED = "proposed"
+    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
 
