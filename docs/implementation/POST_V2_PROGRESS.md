@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A through Wave E are complete; Wave F is active and EXT-02 is unblocked.
+Wave A through Wave F are complete; Wave G is active and WEB-01 is unblocked.
 
 ## Completed
 
@@ -27,6 +27,7 @@ Wave A through Wave E are complete; Wave F is active and EXT-02 is unblocked.
 - [x] MEM-02 Memory Candidate 与自动 Promotion
 - [x] MEM-03 Subagent 与 Hook
 - [x] EXT-01 MCP Governance
+- [x] EXT-02 Fact Promotion 与 Attack Graph
 
 ## Task Record
 
@@ -565,6 +566,31 @@ Wave A through Wave E are complete; Wave F is active and EXT-02 is unblocked.
 - Verification note:
   - The sandboxed full run passed all non-PTY tests but could not signal one PTY process group during cleanup. The targeted PTY/MCP tests and complete suite passed outside that sandbox under the approved `conda` test command.
 - Next dependency: EXT-02 is unblocked.
+
+### EXT-02
+
+- Branch: `codex/ext-02-attack-graph`
+- Commits:
+  - `f9795cf feat(facts): persist promoted engagement graph`
+  - `ba8dd54 test(facts): require confirmation for inference`
+- Completed at: `2026-07-30`
+- Tests:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m pytest tests/runtime/test_terminal_runtime.py -q`
+  - `conda run --no-capture-output -n agent python -m ruff check .`
+  - `conda run --no-capture-output -n agent alembic heads`
+  - `git diff --check`
+  - Result: all `537` portable tests pass when the existing PTY cleanup test is run separately; `2` host-dependent tests skipped; Ruff passed; Alembic has one head `f3a6b8c1d204`; diff check clean.
+- Migration: `f3a6b8c1d204_add_engagement_facts.py`
+- Core delivery:
+  - Added typed Fact Promotion Candidates, Engagement Facts, Fact Relations, and Engagement-isolated Attack Graphs.
+  - Promotion Candidates retain evidence references, source Run and Session, source Executions, Artifacts, confidence, validity, and the originating Working Memory Fact identity.
+  - Rule promotion accepts deterministic Parser or user-decision evidence; pure model inference is rejected unless explicitly user-confirmed, so a model cannot directly create a durable Engagement Fact.
+  - Matching facts merge independent evidence and provenance; conflicting lower-confidence rule candidates are rejected, while stronger or user-confirmed candidates atomically supersede the prior active Fact without deleting its history.
+  - Attack Graph edges support `discovered_on`, `exploits`, `enables`, `depends_on`, and `leads_to`, validate both endpoints are in the same Engagement, retain their evidence/provenance, and expose deterministic successor traversal.
+- Verification note:
+  - During the monolithic suite the host intermittently denied `SIGTERM` to the existing PTY test process group after all assertions. The same PTY test passes in isolation, and every other test passes in the combined run; this is an execution-environment cleanup limitation, not an EXT-02 code failure.
+- Next dependency: WEB-01 is unblocked.
 
 ## Architecture Deviations
 
