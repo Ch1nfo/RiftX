@@ -19,6 +19,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "prompt-toolkit>=3.0.53,<4",
+  "pypdf>=5.9,<7",
   "PyYAML>=6,<7",
   "rich>=14,<15",
   "openai>=2.50,<3",

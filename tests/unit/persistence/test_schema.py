@@ -27,11 +27,14 @@ EXPECTED_TABLES = {
     "run_events",
     "run_leases",
     "runs",
+    "source_references",
     "terminal_sessions",
     "tool_call_intents",
     "tool_calls",
     "tool_states",
     "user_input_requests",
+    "web_document_chunks",
+    "web_documents",
     "working_memories",
 }
 
@@ -68,6 +71,33 @@ def test_event_sequence_is_unique_per_run() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("run_id", "sequence") in unique_columns
+
+
+def test_web_source_registry_preserves_canonical_document_contract() -> None:
+    assert {
+        "requested_url",
+        "final_url",
+        "canonical_url",
+        "raw_artifact_id",
+        "normalized_artifact_id",
+        "content_hash",
+        "extraction_status",
+        "cache_expires_at",
+    } <= set(Base.metadata.tables["web_documents"].columns.keys())
+    assert {
+        "document_id",
+        "heading_path_json",
+        "content",
+        "start_offset",
+        "end_offset",
+    } <= set(Base.metadata.tables["web_document_chunks"].columns.keys())
+    assert {
+        "document_id",
+        "url",
+        "domain",
+        "source_type",
+        "content_hash",
+    } <= set(Base.metadata.tables["source_references"].columns.keys())
 
 
 def test_context_compilation_table_records_manifest_and_actual_usage() -> None:

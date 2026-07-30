@@ -18,6 +18,9 @@ RUNTIME_TABLES = {
     "working_memories",
     "runtime_approval_requests",
     "user_input_requests",
+    "web_documents",
+    "web_document_chunks",
+    "source_references",
 }
 
 
@@ -117,9 +120,7 @@ def test_runtime_migration_upgrades_and_downgrades_existing_v2_database(
     assert {"version", "state_json", "updated_at"} <= sqlite_columns(
         database_path, "working_memories"
     )
-    assert {"waiting_object_id", "checkpoint_id"} <= sqlite_columns(
-        database_path, "agent_cycles"
-    )
+    assert {"waiting_object_id", "checkpoint_id"} <= sqlite_columns(database_path, "agent_cycles")
     assert "execution_spec_json" in sqlite_columns(database_path, "tool_call_intents")
     assert {
         "tool_call_intent_id",

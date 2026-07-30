@@ -486,9 +486,7 @@ class ContextCompilationRecord(Base):
     estimated_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     actual_input_tokens: Mapped[int | None] = mapped_column(Integer)
     actual_output_tokens: Mapped[int | None] = mapped_column(Integer)
-    loaded_memory_ids_json: Mapped[list[str]] = mapped_column(
-        JSON, nullable=False, default=list
-    )
+    loaded_memory_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     checkpoint_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
@@ -535,9 +533,7 @@ class MemoryRecordRow(Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
-    retrieval_keywords_json: Mapped[list[str]] = mapped_column(
-        JSON, nullable=False, default=list
-    )
+    retrieval_keywords_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     importance: Mapped[float] = mapped_column(Float, nullable=False)
     source_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -613,6 +609,80 @@ class FactRelationRecord(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class WebDocumentRecord(Base):
+    __tablename__ = "web_documents"
+    __table_args__ = (
+        Index("ix_web_documents_run_requested", "run_id", "requested_url", "fetched_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    requested_url: Mapped[str] = mapped_column(Text, nullable=False)
+    final_url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(Text)
+    site_name: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    language: Mapped[str | None] = mapped_column(String(64))
+    raw_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    normalized_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    text_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    extraction_status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    destination_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    cache_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class WebDocumentChunkRecord(Base):
+    __tablename__ = "web_document_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sequence", name="uq_web_document_chunk_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("web_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    heading_path_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON)
+
+
+class SourceReferenceRecord(Base):
+    __tablename__ = "source_references"
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("web_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    author: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
 
 class ToolCallIntentRecord(Base):
