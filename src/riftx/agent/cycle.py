@@ -55,7 +55,10 @@ class AgentCycle:
         checkpoint_id: str | None = None,
         approval_decisions: dict[str, bool] | None = None,
     ) -> AgentCycleResult:
-        agent = create_primary_agent(self._services, model=self._model)
+        agent = create_primary_agent(
+            self._services,
+            model=context.model_profile or self._model,
+        )
         session = RiftXDatabaseSession(
             context.run_id,
             self._session_factory,

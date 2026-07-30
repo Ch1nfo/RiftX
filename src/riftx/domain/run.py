@@ -86,6 +86,7 @@ class Run(DomainModel):
     scope: Scope = Field(default_factory=Scope)
     status: RunStatus = RunStatus.CREATED
     approval_mode: ApprovalMode = ApprovalMode.BALANCED
+    model_profile: str | None = Field(default=None, min_length=1)
     workspace_path: str
     temporal_workflow_id: str | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)

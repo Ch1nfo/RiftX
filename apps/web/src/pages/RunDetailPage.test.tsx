@@ -22,6 +22,7 @@ vi.mock("../hooks/queries", () => ({
       objective: { description: "Inspect local service" },
       node_id: "local",
       approval_mode: "balanced",
+      model_profile: null,
       status: mocks.runStatus,
       success_criteria: [],
       scope: { cidrs: [], ips: ["127.0.0.1"], domains: [], url_prefixes: [], exclusions: [] },

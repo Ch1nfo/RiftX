@@ -131,6 +131,7 @@ export function RunDetailPage() {
             <span>{run.data.id}</span>
             <span>node / {run.data.node_id}</span>
             <span>mode / {run.data.approval_mode}</span>
+            <span>model / {run.data.model_profile ?? "default"}</span>
           </p>
         </div>
         <div className="control-cluster">

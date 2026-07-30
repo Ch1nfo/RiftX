@@ -68,6 +68,7 @@ class CreateRunRequest(BaseModel):
     objective: str = Field(min_length=1)
     node_id: str | None = Field(default=None, min_length=1)
     approval_mode: ApprovalMode = ApprovalMode.BALANCED
+    model_profile: str | None = Field(default=None, min_length=1)
     success_criteria: list[SuccessCriterionRequest] = Field(default_factory=list)
     entry_points: list[EntryPointRequest] = Field(default_factory=list)
     scope: ScopeRequest = Field(default_factory=ScopeRequest)
@@ -86,6 +87,7 @@ class CreateRunRequest(BaseModel):
             objective=self.objective,
             node_id=self.node_id or default_node_id,
             approval_mode=self.approval_mode,
+            model_profile=self.model_profile,
             success_criteria=[
                 SuccessCriterion(description=item.description, required=item.required)
                 for item in self.success_criteria
@@ -113,6 +115,7 @@ class RunResponse(BaseModel):
     scope: Scope
     status: RunStatus
     approval_mode: ApprovalMode
+    model_profile: str | None
     workspace_path: str
     temporal_workflow_id: str | None
     created_at: datetime

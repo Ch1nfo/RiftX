@@ -232,6 +232,7 @@ def run_to_record(run: Run) -> RunRecord:
         scope_json=run.scope.model_dump(mode="json"),
         status=run.status.value,
         approval_mode=run.approval_mode.value,
+        model_profile=run.model_profile,
         workspace_path=run.workspace_path,
         temporal_workflow_id=run.temporal_workflow_id,
         created_at=run.created_at,
@@ -250,6 +251,7 @@ def apply_run_to_record(run: Run, record: RunRecord) -> None:
     record.scope_json = run.scope.model_dump(mode="json")
     record.status = run.status.value
     record.approval_mode = run.approval_mode.value
+    record.model_profile = run.model_profile
     record.workspace_path = run.workspace_path
     record.temporal_workflow_id = run.temporal_workflow_id
     record.started_at = run.started_at
@@ -269,6 +271,7 @@ def run_from_record(record: RunRecord) -> Run:
         scope=Scope.model_validate(record.scope_json),
         status=RunStatus(record.status),
         approval_mode=ApprovalMode(record.approval_mode),
+        model_profile=record.model_profile,
         workspace_path=record.workspace_path,
         temporal_workflow_id=record.temporal_workflow_id,
         created_at=record.created_at,

@@ -46,6 +46,7 @@ export interface Run {
   scope: RunScope;
   status: RunStatus;
   approval_mode: ApprovalMode;
+  model_profile: string | null;
   workspace_path: string;
   temporal_workflow_id: string | null;
   created_at: string;
@@ -63,6 +64,7 @@ export interface CreateRunPayload {
   objective: string;
   node_id?: string;
   approval_mode?: ApprovalMode;
+  model_profile?: string;
   success_criteria?: SuccessCriterion[];
   entry_points?: Array<Omit<EntryPoint, "metadata"> & { metadata?: Record<string, unknown> }>;
   scope?: Partial<RunScope>;

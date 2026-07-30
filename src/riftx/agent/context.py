@@ -32,6 +32,7 @@ class RiftXAgentContext(BaseModel):
     entry_points: list[str] = Field(default_factory=list)
     scope: list[str] = Field(default_factory=list)
     approval_mode: ApprovalMode
+    model_profile: str | None = None
     workspace: str
     available_tools: list[AgentToolSnapshot] = Field(default_factory=list)
     plan_summary: str = ""
@@ -67,6 +68,7 @@ class RiftXAgentContext(BaseModel):
             entry_points=[f"{item.kind.value}:{item.value}" for item in run.entry_points],
             scope=_scope_items(run),
             approval_mode=run.approval_mode,
+            model_profile=run.model_profile,
             workspace=run.workspace_path,
             available_tools=tools,
         )

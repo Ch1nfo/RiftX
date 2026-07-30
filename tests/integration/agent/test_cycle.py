@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from agents import Model, ModelResponse, Usage, function_tool
+from agents import Model, ModelProvider, ModelResponse, Usage, function_tool
 from agents.tool_context import ToolContext
 from openai.types.responses import (
     ResponseFunctionToolCall,
@@ -77,6 +77,16 @@ class SequenceModel(Model):
                 yield None
 
         return generate()
+
+
+class RecordingModelProvider(ModelProvider):
+    def __init__(self, model: Model) -> None:
+        self.model = model
+        self.requested_profiles: list[str | None] = []
+
+    def get_model(self, model_name: str | None) -> Model:
+        self.requested_profiles.append(model_name)
+        return self.model
 
 
 async def _runtime(
@@ -262,6 +272,36 @@ async def test_agent_cycle_runs_configured_tool_and_persists_timeline(tmp_path: 
     assert event_types[-3:] == ["agent.message", "agent.plan_updated", "agent.cycle_completed"]
     history = await RiftXDatabaseSession("run-1", database.session_factory).get_items()
     assert history
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_agent_cycle_uses_run_model_profile(tmp_path: Path) -> None:
+    database, _, context, services, supervisor = await _runtime(tmp_path)
+    context.model_profile = "fast"
+    model = SequenceModel(
+        [
+            _message(
+                AgentCycleOutput(
+                    assistant_message="Selected profile completed the cycle.",
+                    plan_summary="Use the per-run model profile.",
+                )
+            )
+        ]
+    )
+    provider = RecordingModelProvider(model)
+    cycle = AgentCycle(
+        services=services,
+        session_factory=database.session_factory,
+        checkpoint_store=SQLAlchemyCheckpointStore(database.session_factory),
+        model="primary",
+        model_provider=provider,
+    )
+
+    result = await cycle.run(context)
+
+    assert result.status is AgentCycleStatus.COMPLETED
+    assert provider.requested_profiles == ["fast"]
     await supervisor.close()
     await database.dispose()
 

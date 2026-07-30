@@ -283,6 +283,7 @@ async def _create_run(client: httpx.AsyncClient) -> dict[str, object]:
         "/api/v1/runs",
         json={
             "objective": "Inspect the local service",
+            "model_profile": "fast",
             "engagement": {"name": "Local authorized test"},
             "success_criteria": [{"description": "Identify the exposed service", "required": True}],
             "entry_points": [{"kind": "url", "value": "http://127.0.0.1"}],
@@ -302,6 +303,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             run_id = str(created["id"])
             assert created["node_id"] == "local"
             assert created["status"] == "created"
+            assert created["model_profile"] == "fast"
             assert created["temporal_workflow_id"] == f"test-workflow-{run_id}"
 
             listed = await client.get("/api/v1/runs")

@@ -60,6 +60,7 @@ class CreateRun:
     objective: str
     node_id: str
     approval_mode: ApprovalMode = ApprovalMode.BALANCED
+    model_profile: str | None = None
     success_criteria: list[SuccessCriterion] = field(default_factory=list)
     entry_points: list[EntryPoint] = field(default_factory=list)
     scope: Scope = field(default_factory=Scope)
@@ -94,6 +95,7 @@ class RunApplicationService:
             entry_points=command.entry_points,
             scope=command.scope,
             approval_mode=command.approval_mode,
+            model_profile=command.model_profile,
             workspace_path=command.workspace_path or "",
         )
         if not run.workspace_path:

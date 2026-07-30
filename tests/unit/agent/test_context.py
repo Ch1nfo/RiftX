@@ -39,6 +39,7 @@ async def test_agent_context_contains_only_available_node_tools(tmp_path: Path) 
         entry_points=[EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")],
         scope=Scope(domains=["example.test"], exclusions=["admin.example.test"]),
         approval_mode=ApprovalMode.MANUAL,
+        model_profile="fast",
         workspace_path=str(tmp_path),
     )
 
@@ -49,3 +50,4 @@ async def test_agent_context_contains_only_available_node_tools(tmp_path: Path) 
     assert context.entry_points == ["domain:example.test"]
     assert context.scope == ["domain:example.test", "exclude:admin.example.test"]
     assert context.model_dump(mode="json")["approval_mode"] == "manual"
+    assert context.model_profile == "fast"

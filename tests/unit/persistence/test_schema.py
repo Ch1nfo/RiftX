@@ -37,6 +37,7 @@ def test_run_table_matches_design_contract() -> None:
         "scope_json",
         "status",
         "approval_mode",
+        "model_profile",
         "workspace_path",
         "temporal_workflow_id",
         "created_at",

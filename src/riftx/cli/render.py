@@ -99,6 +99,7 @@ def render_run(console: Console, run: dict[str, Any]) -> None:
     body.add_row("Objective", str(description))
     body.add_row("Node", str(run.get("node_id", "")))
     body.add_row("Approval", str(run.get("approval_mode", "")))
+    body.add_row("Model", str(run.get("model_profile") or "default"))
     body.add_row("Workspace", str(run.get("workspace_path", "")))
     body.add_row("Workflow", str(run.get("temporal_workflow_id", "")))
     console.print(Panel(body, title="RiftX Run", border_style="cyan"))
