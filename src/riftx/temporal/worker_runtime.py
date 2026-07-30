@@ -37,6 +37,7 @@ from riftx.context import (
     WorkingMemoryContextSource,
     processed_tool_result_context_item,
 )
+from riftx.context.compaction import ContextCompactionManager
 from riftx.domain import (
     ExecutorType,
     MessageRole,
@@ -72,6 +73,9 @@ from riftx.persistence import (
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
     SQLAlchemyUserInputRequestRepository,
+)
+from riftx.persistence.checkpoint_repositories import (
+    SQLAlchemyContextCheckpointRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
@@ -349,6 +353,9 @@ async def build_temporal_worker(
             database.session_factory
         )
         working_memory_repository = SQLAlchemyWorkingMemoryRepository(database.session_factory)
+        context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
+            database.session_factory
+        )
 
         node_service = NodeApplicationService(
             node_repository,
@@ -588,6 +595,17 @@ async def build_temporal_worker(
             ),
             report_service=report_service,
             session_factory=database.session_factory,
+            compaction_manager=ContextCompactionManager(
+                runs=run_repository,
+                sessions=agent_session_repository,
+                transcript=transcript_repository,
+                working_memory=working_memory_repository,
+                compilations=context_compilation_repository,
+                checkpoints=context_checkpoint_repository,
+                approvals=runtime_approval_repository,
+                executions=execution_repository,
+                terminals=terminal_repository,
+            ),
         )
         return TemporalWorkerRuntime(
             worker=create_worker(

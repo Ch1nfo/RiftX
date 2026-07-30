@@ -28,6 +28,7 @@ from riftx.application.services import (
     GenerateReports,
     ReportApplicationService,
 )
+from riftx.context.compaction import CompactContextCommand, ContextCompactionManager
 from riftx.domain import ReportFormat, Run, RunStatus
 from riftx.runner import ExecutionRunner
 from riftx.tools import ToolRegistry
@@ -75,6 +76,7 @@ class RiftXActivities:
         approval_recorder: ApprovalRequestRecorder,
         report_service: ReportApplicationService,
         session_factory: async_sessionmaker[AsyncSession],
+        compaction_manager: ContextCompactionManager | None = None,
     ) -> None:
         self._run_repository = run_repository
         self._event_repository = event_repository
@@ -85,6 +87,7 @@ class RiftXActivities:
         self._approval_recorder = approval_recorder
         self._report_service = report_service
         self._session_factory = session_factory
+        self._compaction_manager = compaction_manager
 
     @activity.defn(name="prepare_run_activity")
     async def prepare_run_activity(self, input: PrepareRunInput) -> PrepareRunResult:
@@ -234,6 +237,34 @@ class RiftXActivities:
         input: CompactContextInput,
     ) -> CompactContextResult:
         await self._require_run(input.run_id)
+        if (
+            self._compaction_manager is not None
+            and input.session_id is not None
+            and input.checkpoint_id is not None
+        ):
+            result = await self._compaction_manager.compact(
+                CompactContextCommand(
+                    run_id=input.run_id,
+                    session_id=input.session_id,
+                    checkpoint_id=input.checkpoint_id,
+                    max_history_items=input.max_history_items,
+                )
+            )
+            await self._event_repository.append(
+                input.run_id,
+                "agent.context_compacted",
+                {
+                    "checkpoint_id": result.checkpoint.id,
+                    "compacted_messages": result.compacted_messages,
+                    "retained_items": result.retained_messages,
+                    "max_history_items": input.max_history_items,
+                },
+            )
+            return CompactContextResult(
+                compacted=result.compacted_messages > 0,
+                retained_items=result.retained_messages,
+                checkpoint_id=result.checkpoint.id,
+            )
         session = RiftXDatabaseSession(input.run_id, self._session_factory)
         removed, retained = await session.trim_history(input.max_history_items)
         await self._event_repository.append(

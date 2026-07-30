@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -120,6 +120,28 @@ class SQLAlchemyTranscriptRepository:
         if limit is not None:
             records.reverse()
         return [agent_message_from_record(record) for record in records]
+
+    async def mark_compacted(
+        self,
+        session_id: str,
+        *,
+        through_sequence: int,
+        checkpoint_id: str,
+    ) -> int:
+        if through_sequence < 1:
+            return 0
+        statement = (
+            update(AgentMessageRecord)
+            .where(
+                AgentMessageRecord.session_id == session_id,
+                AgentMessageRecord.sequence <= through_sequence,
+                AgentMessageRecord.compacted_by_checkpoint_id.is_(None),
+            )
+            .values(compacted_by_checkpoint_id=checkpoint_id)
+        )
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(statement)
+        return int(result.rowcount or 0)
 
     async def last_sequence(self, session_id: str) -> int:
         async with self._session_factory() as session:

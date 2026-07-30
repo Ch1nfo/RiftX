@@ -109,12 +109,15 @@ class RunAgentCycleActivityResult:
 class CompactContextInput:
     run_id: str
     max_history_items: int = 100
+    session_id: str | None = None
+    checkpoint_id: str | None = None
 
 
 @dataclass
 class CompactContextResult:
     compacted: bool
     retained_items: int
+    checkpoint_id: str | None = None
 
 
 @dataclass

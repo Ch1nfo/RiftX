@@ -202,16 +202,19 @@ class RiftXRunWorkflow:
             return
         self._compact_history_items = None
         self._phase = WorkflowPhase.COMPACTING
-        await workflow.execute_activity(
+        result = await workflow.execute_activity(
             "compact_context_activity",
             CompactContextInput(
                 run_id=self._run_id,
                 max_history_items=max_history_items,
+                session_id=self._session_id,
+                checkpoint_id=str(workflow.uuid4()),
             ),
             result_type=CompactContextResult,
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=_ACTIVITY_RETRY_POLICY,
         )
+        self._checkpoint_id = result.checkpoint_id or self._checkpoint_id
 
     async def _cleanup(self, final_status: str) -> None:
         resume_phase = self._phase

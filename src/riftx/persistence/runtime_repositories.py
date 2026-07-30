@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.domain import ApprovalStatus
 from riftx.runtime.types import (
     AgentCycle,
     AgentSession,
@@ -274,6 +275,22 @@ class SQLAlchemyRuntimeApprovalRepository:
             apply_runtime_approval_to_record(request, record)
             await session.flush()
         return request
+
+    async def pending_for_run(self, run_id: str) -> list[RuntimeApprovalRequest]:
+        statement = (
+            select(RuntimeApprovalRequestRecord)
+            .where(
+                RuntimeApprovalRequestRecord.run_id == run_id,
+                RuntimeApprovalRequestRecord.status == ApprovalStatus.PENDING.value,
+            )
+            .order_by(
+                RuntimeApprovalRequestRecord.created_at,
+                RuntimeApprovalRequestRecord.id,
+            )
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [runtime_approval_from_record(record) for record in records]
 
 
 class SQLAlchemyUserInputRequestRepository:

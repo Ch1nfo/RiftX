@@ -63,7 +63,11 @@ class FakeActivities:
     @activity.defn(name="compact_context_activity")
     async def compact(self, input: CompactContextInput) -> CompactContextResult:
         self.compact_inputs.append(input)
-        return CompactContextResult(compacted=True, retained_items=input.max_history_items)
+        return CompactContextResult(
+            compacted=True,
+            retained_items=input.max_history_items,
+            checkpoint_id=input.checkpoint_id,
+        )
 
     @activity.defn(name="generate_report_activity")
     async def generate_report(self, input: GenerateReportInput) -> GenerateReportResult:
@@ -344,9 +348,12 @@ async def test_compaction_remains_available_without_putting_context_in_workflow(
             if activities.compact_inputs:
                 break
             await asyncio.sleep(0.01)
-        assert activities.compact_inputs == [
-            CompactContextInput(run_id="run-compact", max_history_items=12)
-        ]
+        assert len(activities.compact_inputs) == 1
+        compact_input = activities.compact_inputs[0]
+        assert compact_input.run_id == "run-compact"
+        assert compact_input.session_id == "session-compact"
+        assert compact_input.max_history_items == 12
+        assert compact_input.checkpoint_id is not None
         await handle.signal(RiftXRunWorkflow.user_input, "message-compact")
         result = await handle.result()
 
