@@ -297,9 +297,37 @@ a {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-left: auto;
   color: var(--muted);
   font-size: 12px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.language-switch {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+  background: rgba(14, 29, 25, 0.78);
+  padding: 0 10px;
+  color: var(--mint-bright);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.language-switch:hover {
+  border-color: rgba(69, 214, 164, 0.55);
+  background: var(--mint-soft);
 }
 
 .page-content {
@@ -1738,6 +1766,10 @@ button:disabled {
 
   .topbar-meta {
     display: none;
+  }
+
+  .topbar-actions {
+    gap: 8px;
   }
 
   .page-content {

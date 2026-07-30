@@ -20,6 +20,7 @@ import { LoadingState } from "../components/LoadingState";
 import { MetricCard } from "../components/MetricCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRefreshTools, useTools, useUpdateTool } from "../hooks/queries";
+import { useI18n } from "../i18n";
 
 interface ToolEditorState {
   id: string;
@@ -36,6 +37,7 @@ interface ToolEditorState {
 }
 
 export function ToolsPage() {
+  const { t } = useI18n();
   const nodeId = "local";
   const tools = useTools(nodeId);
   const refresh = useRefreshTools(nodeId);
@@ -67,7 +69,7 @@ export function ToolsPage() {
         { onSuccess: () => setEditor(null) },
       );
     } catch (error) {
-      setEditorError(error instanceof Error ? error.message : "Invalid tool definition");
+      setEditorError(error instanceof Error ? error.message : t("Invalid tool definition"));
     }
   };
 
@@ -75,11 +77,10 @@ export function ToolsPage() {
     <div className="page-stack">
       <section className="hero-strip compact-hero">
         <div>
-          <span className="kicker">Node-local capability map</span>
-          <h2>Know what the Agent can actually execute.</h2>
+          <span className="kicker">{t("Node-local capability map")}</span>
+          <h2>{t("Know what the Agent can actually execute.")}</h2>
           <p>
-            The registry reflects resolved host paths and version probes. Unavailable tools
-            are excluded from the Agent-visible snapshot.
+            {t("The registry reflects resolved host paths and version probes. Unavailable tools are excluded from the Agent-visible snapshot.")}
           </p>
         </div>
         <button
@@ -92,7 +93,7 @@ export function ToolsPage() {
           ) : (
             <RefreshCw size={17} />
           )}
-          Refresh registry
+          {t("Refresh registry")}
         </button>
       </section>
 
@@ -147,7 +148,7 @@ export function ToolsPage() {
         <div className="panel-header">
           <div>
             <span className="panel-kicker">tools.yaml snapshot</span>
-            <h3>Configured tools</h3>
+            <h3>{t("Configured tools")}</h3>
           </div>
           <span className="mono-chip">digest / {tools.data.source_digest.slice(0, 10)}</span>
         </div>
@@ -157,13 +158,13 @@ export function ToolsPage() {
             <table className="tool-table">
               <thead>
                 <tr>
-                  <th>Tool</th>
-                  <th>Status</th>
-                  <th>Resolved command</th>
-                  <th>Version</th>
-                  <th>Capabilities</th>
-                  <th>Approval</th>
-                  <th>Configure</th>
+                  <th>{t("Tool")}</th>
+                  <th>{t("Status")}</th>
+                  <th>{t("Resolved command")}</th>
+                  <th>{t("Version")}</th>
+                  <th>{t("Capabilities")}</th>
+                  <th>{t("Approval")}</th>
+                  <th>{t("Configure")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -211,7 +212,7 @@ export function ToolsPage() {
                         }}
                       >
                         <Pencil size={14} />
-                        Edit
+                        {t("Edit")}
                       </button>
                     </td>
                   </tr>
@@ -221,7 +222,7 @@ export function ToolsPage() {
           </div>
         ) : (
           <EmptyState icon={Wrench} title="No tools configured">
-            Add definitions to tools.yaml and refresh the registry.
+            {t("Add definitions to tools.yaml and refresh the registry.")}
           </EmptyState>
         )}
       </section>
@@ -244,24 +245,25 @@ function ToolEditor({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const field = <Key extends keyof ToolEditorState>(key: Key, next: ToolEditorState[Key]) =>
     onChange({ ...value, [key]: next });
 
   return (
-    <section className="panel tool-editor" aria-label={`Edit ${value.id}`}>
+    <section className="panel tool-editor" aria-label={t("Edit {id}", { id: value.id })}>
       <div className="panel-header">
         <div>
-          <span className="panel-kicker">Persist and hot reload</span>
-          <h3>Edit {value.id}</h3>
+          <span className="panel-kicker">{t("Persist and hot reload")}</span>
+          <h3>{t("Edit {id}", { id: value.id })}</h3>
         </div>
         <button className="secondary-button compact-button" onClick={onCancel}>
           <X size={14} />
-          Close
+          {t("Close")}
         </button>
       </div>
       <div className="tool-editor-grid">
         <label className="field tool-enabled-field">
-          <span>Enabled</span>
+          <span>{t("Enabled")}</span>
           <input
             type="checkbox"
             checked={value.enabled}
@@ -269,7 +271,7 @@ function ToolEditor({
           />
         </label>
         <label className="field">
-          <span>Executor</span>
+          <span>{t("Executor")}</span>
           <select
             value={value.executor}
             onChange={(event) =>
@@ -282,7 +284,7 @@ function ToolEditor({
           </select>
         </label>
         <label className="field">
-          <span>Approval</span>
+          <span>{t("Approval")}</span>
           <select
             value={value.approval}
             onChange={(event) =>
@@ -295,7 +297,7 @@ function ToolEditor({
           </select>
         </label>
         <label className="field">
-          <span>Timeout seconds</span>
+          <span>{t("Timeout seconds")}</span>
           <input
             type="number"
             min="0.1"
@@ -305,7 +307,7 @@ function ToolEditor({
           />
         </label>
         <label className="field field-wide">
-          <span>Command argv · one item per line</span>
+          <span>{t("Command argv · one item per line")}</span>
           <textarea
             rows={4}
             value={value.command}
@@ -313,14 +315,14 @@ function ToolEditor({
           />
         </label>
         <label className="field field-wide">
-          <span>Capabilities · comma separated</span>
+          <span>{t("Capabilities · comma separated")}</span>
           <input
             value={value.capabilities}
             onChange={(event) => field("capabilities", event.target.value)}
           />
         </label>
         <label className="field">
-          <span>Preferred output</span>
+          <span>{t("Preferred output")}</span>
           <input
             placeholder="xml, json, jsonl"
             value={value.outputPreferred}
@@ -328,7 +330,7 @@ function ToolEditor({
           />
         </label>
         <label className="field">
-          <span>Version probe timeout</span>
+          <span>{t("Version probe timeout")}</span>
           <input
             type="number"
             min="0.1"
@@ -338,7 +340,7 @@ function ToolEditor({
           />
         </label>
         <label className="field field-wide">
-          <span>Version probe argv · one item per line</span>
+          <span>{t("Version probe argv · one item per line")}</span>
           <textarea
             rows={3}
             value={value.versionCommand}
@@ -346,7 +348,7 @@ function ToolEditor({
           />
         </label>
         <label className="field field-wide">
-          <span>Environment diff · JSON object</span>
+          <span>{t("Environment diff · JSON object")}</span>
           <textarea
             rows={4}
             value={value.environment}
@@ -358,10 +360,10 @@ function ToolEditor({
       <div className="tool-editor-actions">
         <button className="primary-button" onClick={onSave} disabled={pending}>
           {pending ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
-          Save and reload
+          {t("Save and reload")}
         </button>
         <button className="secondary-button" onClick={onCancel} disabled={pending}>
-          Cancel
+          {t("Cancel")}
         </button>
       </div>
     </section>

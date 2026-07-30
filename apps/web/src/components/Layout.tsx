@@ -3,6 +3,7 @@ import {
   Boxes,
   ChevronRight,
   CirclePlus,
+  Languages,
   Menu,
   Network,
   Radar,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
+import { useI18n } from "../i18n";
 import { useUIStore } from "../store/ui";
 
 const navigation = [
@@ -30,6 +32,7 @@ const titles: Record<string, { eyebrow: string; title: string }> = {
 };
 
 export function Layout() {
+  const { language, t, toggleLanguage } = useI18n();
   const location = useLocation();
   const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUIStore((state) => state.setSidebarOpen);
@@ -42,7 +45,7 @@ export function Layout() {
       <div className="ambient-grid" aria-hidden="true" />
       <button
         className={`sidebar-scrim ${sidebarOpen ? "is-visible" : ""}`}
-        aria-label="Close navigation"
+        aria-label={t("Close navigation")}
         onClick={() => setSidebarOpen(false)}
       />
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`}>
@@ -52,19 +55,19 @@ export function Layout() {
           </div>
           <div>
             <strong>RiftX</strong>
-            <span>V2 / local control</span>
+            <span>{t("V2 / local control")}</span>
           </div>
           <button
             className="icon-button sidebar-close"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Close navigation"
+            aria-label={t("Close navigation")}
           >
             <X size={18} />
           </button>
         </div>
 
-        <nav className="primary-nav" aria-label="Primary navigation">
-          <span className="nav-label">Workspace</span>
+        <nav className="primary-nav" aria-label={t("Primary navigation")}>
+          <span className="nav-label">{t("Workspace")}</span>
           {navigation.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
@@ -74,7 +77,7 @@ export function Layout() {
               className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
             >
               <Icon size={18} strokeWidth={1.8} />
-              <span>{label}</span>
+              <span>{t(label)}</span>
               <ChevronRight className="nav-chevron" size={15} />
             </NavLink>
           ))}
@@ -84,19 +87,19 @@ export function Layout() {
         <div className="system-card">
           <div className="system-card-head">
             <span className="live-indicator" />
-            <span>Control plane online</span>
+            <span>{t("Control plane online")}</span>
           </div>
           <div className="system-card-row">
             <Activity size={15} />
-            <span>SSE timeline ready</span>
+            <span>{t("SSE timeline ready")}</span>
           </div>
           <div className="system-card-row">
             <Boxes size={15} />
-            <span>Temporal durable runtime</span>
+            <span>{t("Temporal durable runtime")}</span>
           </div>
           <div className="system-card-row">
             <ShieldCheck size={15} />
-            <span>Local node boundary</span>
+            <span>{t("Local node boundary")}</span>
           </div>
         </div>
         <div className="sidebar-footer">RIFTX // HOST-NATIVE</div>
@@ -107,17 +110,29 @@ export function Layout() {
           <button
             className="icon-button mobile-menu"
             onClick={() => setSidebarOpen(true)}
-            aria-label="Open navigation"
+            aria-label={t("Open navigation")}
           >
             <Menu size={20} />
           </button>
           <div>
-            <span className="page-eyebrow">{current.eyebrow}</span>
-            <h1>{current.title}</h1>
+            <span className="page-eyebrow">{t(current.eyebrow)}</span>
+            <h1>{t(current.title)}</h1>
           </div>
-          <div className="topbar-meta">
-            <span className="live-indicator" />
-            <span>Local node</span>
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="language-switch"
+              aria-label={t("Switch language")}
+              title={t("Switch language")}
+              onClick={toggleLanguage}
+            >
+              <Languages size={16} />
+              <span>{language === "en" ? "中文" : "EN"}</span>
+            </button>
+            <div className="topbar-meta">
+              <span className="live-indicator" />
+              <span>{t("Local node")}</span>
+            </div>
           </div>
         </header>
         <div className="page-content">

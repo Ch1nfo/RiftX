@@ -60,6 +60,7 @@ import {
   useRunEvents,
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
+import { useI18n, type Language } from "../i18n";
 
 type DetailTab =
   | "overview"
@@ -73,6 +74,7 @@ type DetailTab =
   | "report";
 
 export function RunDetailPage() {
+  const { language, t } = useI18n();
   const { runId = "" } = useParams();
   const run = useRun(runId);
   const events = useRunEvents(runId);
@@ -126,7 +128,7 @@ export function RunDetailPage() {
       <div className="detail-heading">
         <div>
           <Link className="back-link" to="/">
-            <ArrowLeft size={15} /> Dashboard
+            <ArrowLeft size={15} /> {t("Dashboard")}
           </Link>
           <div className="detail-title-row">
             <h2>{run.data.objective.description}</h2>
@@ -134,9 +136,9 @@ export function RunDetailPage() {
           </div>
           <p className="run-identity">
             <span>{run.data.id}</span>
-            <span>node / {run.data.node_id}</span>
-            <span>mode / {run.data.approval_mode}</span>
-            <span>model / {run.data.model_profile ?? "default"}</span>
+            <span>{t("node")} / {run.data.node_id}</span>
+            <span>{t("mode")} / {t(run.data.approval_mode)}</span>
+            <span>{t("model")} / {run.data.model_profile ?? t("default")}</span>
           </p>
         </div>
         <div className="control-cluster">
@@ -145,21 +147,21 @@ export function RunDetailPage() {
             disabled={isFinal || anyControlPending}
             onClick={() => controls.pause.mutate()}
           >
-            <CirclePause size={16} /> Pause
+            <CirclePause size={16} /> {t("Pause")}
           </button>
           <button
             className="secondary-button"
             disabled={isFinal || anyControlPending}
             onClick={() => controls.resume.mutate()}
           >
-            <Play size={16} /> Resume
+            <Play size={16} /> {t("Resume")}
           </button>
           <button
             className="danger-button"
             disabled={isFinal || anyControlPending}
             onClick={() => controls.cancel.mutate()}
           >
-            <Ban size={16} /> Cancel execution
+            <Ban size={16} /> {t("Cancel execution")}
           </button>
         </div>
       </div>
@@ -176,8 +178,13 @@ export function RunDetailPage() {
         <button className="approval-alert" onClick={() => setTab("approvals")}>
           <ShieldAlert size={19} />
           <span>
-            <strong>{pendingApprovals.length} tool call{pendingApprovals.length === 1 ? "" : "s"} awaiting approval</strong>
-            Review the exact command, target, and environment before resuming the Agent.
+            <strong>{t(
+              pendingApprovals.length === 1
+                ? "{count} tool call awaiting approval"
+                : "{count} tool calls awaiting approval",
+              { count: pendingApprovals.length },
+            )}</strong>
+            {t("Review the exact command, target, and environment before resuming the Agent.")}
           </span>
           <ChevronRight size={18} />
         </button>
@@ -188,15 +195,15 @@ export function RunDetailPage() {
           <div className="detail-tabs" role="tablist">
             {(
               [
-                ["overview", "Overview"],
+                ["overview", t("Overview")],
                 ["agent", "Agent"],
-                ["tool-calls", `Tool Calls ${executions.data?.items.length ?? 0}`],
-                ["timeline", `Timeline ${eventItems.length}`],
-                ["approvals", `Approvals ${pendingApprovals.length}`],
-                ["terminal", "Terminal"],
-                ["artifacts", `Artifacts ${artifacts.data?.items.length ?? 0}`],
-                ["findings", `Findings ${findings.data?.items.length ?? 0}`],
-                ["report", `Reports ${reports.data?.items.length ?? 0}`],
+                ["tool-calls", `${t("Tool Calls")} ${executions.data?.items.length ?? 0}`],
+                ["timeline", `${t("Timeline")} ${eventItems.length}`],
+                ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
+                ["terminal", t("Terminal")],
+                ["artifacts", `${t("Artifacts")} ${artifacts.data?.items.length ?? 0}`],
+                ["findings", `${t("Findings")} ${findings.data?.items.length ?? 0}`],
+                ["report", `${t("Reports")} ${reports.data?.items.length ?? 0}`],
               ] as Array<[DetailTab, string]>
             ).map(([value, label]) => (
               <button
@@ -266,14 +273,14 @@ export function RunDetailPage() {
               <input
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
-                placeholder="Send guidance to the durable Agent session…"
-                aria-label="Message to Agent"
+                placeholder={t("Send guidance to the durable Agent session…")}
+                aria-label={t("Message to Agent")}
               />
               <button
                 className="composer-send"
                 type="submit"
                 disabled={!message.trim() || controls.message.isPending}
-                aria-label="Send message"
+                aria-label={t("Send message")}
               >
                 {controls.message.isPending ? (
                   <Loader2 className="spin" size={17} />
@@ -289,27 +296,27 @@ export function RunDetailPage() {
           <article className="panel compact-panel">
             <div className="panel-header">
               <div>
-                <span className="panel-kicker">Lifecycle</span>
-                <h3>Run facts</h3>
+                <span className="panel-kicker">{t("Lifecycle")}</span>
+                <h3>{t("Run facts")}</h3>
               </div>
             </div>
             <dl className="fact-list">
               <div>
-                <dt>Created</dt>
-                <dd>{formatTimestamp(run.data.created_at)}</dd>
+                <dt>{t("Created")}</dt>
+                <dd>{formatTimestamp(run.data.created_at, language)}</dd>
               </div>
               <div>
-                <dt>Started</dt>
-                <dd>{run.data.started_at ? formatTimestamp(run.data.started_at) : "Pending"}</dd>
+                <dt>{t("Started")}</dt>
+                <dd>{run.data.started_at ? formatTimestamp(run.data.started_at, language) : t("Pending")}</dd>
               </div>
               <div>
-                <dt>Workspace</dt>
+                <dt>{t("Workspace")}</dt>
                 <dd title={run.data.workspace_path}>{run.data.workspace_path}</dd>
               </div>
               <div>
-                <dt>Workflow</dt>
+                <dt>{t("Workflow")}</dt>
                 <dd title={run.data.temporal_workflow_id ?? ""}>
-                  {run.data.temporal_workflow_id ?? "Not started"}
+                  {run.data.temporal_workflow_id ?? t("Not started")}
                 </dd>
               </div>
             </dl>
@@ -318,8 +325,8 @@ export function RunDetailPage() {
           <article className="panel compact-panel">
             <div className="panel-header">
               <div>
-                <span className="panel-kicker">Boundary</span>
-                <h3>Scope</h3>
+                <span className="panel-kicker">{t("Boundary")}</span>
+                <h3>{t("Scope")}</h3>
               </div>
             </div>
             <div className="scope-list">
@@ -337,12 +344,12 @@ export function RunDetailPage() {
               !run.data.scope.ips.length &&
               !run.data.scope.domains.length &&
               !run.data.scope.url_prefixes.length ? (
-                <span className="muted-caption">No explicit scope values</span>
+                <span className="muted-caption">{t("No explicit scope values")}</span>
               ) : null}
             </div>
             {run.data.scope.exclusions.length ? (
               <div className="exclusion-list">
-                <strong>Exclusions</strong>
+                <strong>{t("Exclusions")}</strong>
                 {run.data.scope.exclusions.map((item) => (
                   <span key={item}>{item}</span>
                 ))}
@@ -356,13 +363,14 @@ export function RunDetailPage() {
 }
 
 function AgentActivity({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+  const { t } = useI18n();
   const agentEvents = events.filter(
     (event) => event.event_type.startsWith("agent.") || event.event_type === "user.message_queued",
   );
   if (!loading && !agentEvents.length) {
     return (
       <EmptyState icon={Bot} title="No Agent activity yet">
-        Plans, messages, tool decisions, and cycle transitions will appear here.
+        {t("Plans, messages, tool decisions, and cycle transitions will appear here.")}
       </EmptyState>
     );
   }
@@ -370,11 +378,12 @@ function AgentActivity({ events, loading }: { events: RunEvent[]; loading: boole
 }
 
 function ToolCalls({ executions, loading }: { executions: Execution[]; loading: boolean }) {
+  const { t } = useI18n();
   if (loading) return <LoadingState label="Loading tool calls" />;
   if (!executions.length) {
     return (
       <EmptyState icon={Wrench} title="No tool calls yet">
-        Host execution records will appear after the Agent invokes a registered tool.
+        {t("Host execution records will appear after the Agent invokes a registered tool.")}
       </EmptyState>
     );
   }
@@ -383,11 +392,11 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
       <table className="tool-table execution-table">
         <thead>
           <tr>
-            <th>Tool / command</th>
-            <th>Status</th>
-            <th>Node</th>
-            <th>Runtime</th>
-            <th>Provenance</th>
+            <th>{t("Tool / command")}</th>
+            <th>{t("Status")}</th>
+            <th>{t("Node")}</th>
+            <th>{t("Runtime")}</th>
+            <th>{t("Provenance")}</th>
           </tr>
         </thead>
         <tbody>
@@ -407,16 +416,16 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
               <td>
                 <StatusBadge status={execution.status} />
                 {execution.exit_code !== null ? (
-                  <small className="tool-reason">exit {execution.exit_code}</small>
+                  <small className="tool-reason">{t("exit")} {execution.exit_code}</small>
                 ) : null}
               </td>
               <td>
                 <strong>{execution.node_id}</strong>
                 <small className="tool-reason">{execution.cwd}</small>
               </td>
-              <td>{executionDuration(execution)}</td>
+              <td>{t(executionDuration(execution))}</td>
               <td>
-                <strong>{execution.tool_version ?? "unversioned"}</strong>
+                <strong>{execution.tool_version ?? t("unversioned")}</strong>
                 <small className="tool-reason">
                   {execution.executable_path ?? execution.platform_system}
                 </small>
@@ -430,11 +439,12 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
 }
 
 function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+  const { language, t } = useI18n();
   if (loading) return <LoadingState label="Loading event timeline" />;
   if (!events.length) {
     return (
       <EmptyState icon={Clock3} title="Timeline is empty">
-        Durable events appear here as the workflow progresses.
+        {t("Durable events appear here as the workflow progresses.")}
       </EmptyState>
     );
   }
@@ -451,9 +461,9 @@ function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean })
             <div className="event-header">
               <div>
                 <span className="event-sequence">#{event.sequence}</span>
-                <strong>{eventTitle(event.event_type)}</strong>
+                <strong>{t(eventTitle(event.event_type))}</strong>
               </div>
-              <time>{formatTimestamp(event.created_at)}</time>
+              <time>{formatTimestamp(event.created_at, language)}</time>
             </div>
             <EventPayload event={event} />
           </div>
@@ -464,6 +474,7 @@ function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean })
 }
 
 function EventPayload({ event }: { event: RunEvent }) {
+  const { t } = useI18n();
   const narrative = [
     event.payload.assistant_message,
     event.payload.message,
@@ -478,7 +489,7 @@ function EventPayload({ event }: { event: RunEvent }) {
     );
   }
   if (!Object.keys(event.payload).length) {
-    return <p className="muted-caption">No additional payload.</p>;
+    return <p className="muted-caption">{t("No additional payload.")}</p>;
   }
   return <pre className="event-json">{JSON.stringify(event.payload, null, 2)}</pre>;
 }
@@ -492,6 +503,7 @@ function RunOverview({
   planEvent?: RunEvent;
   eventCount: number;
 }) {
+  const { t } = useI18n();
   return (
     <div className="overview-grid">
       <article className="overview-card">
@@ -499,8 +511,8 @@ function RunOverview({
           <CheckCircle2 size={18} />
         </span>
         <div>
-          <span className="panel-kicker">Success criteria</span>
-          <h3>{successCriteria.length || "None defined"}</h3>
+          <span className="panel-kicker">{t("Success criteria")}</span>
+          <h3>{successCriteria.length || t("None defined")}</h3>
           {successCriteria.length ? (
             <ul className="criteria-list">
               {successCriteria.map((criterion) => (
@@ -510,7 +522,7 @@ function RunOverview({
               ))}
             </ul>
           ) : (
-            <p>The Agent will infer completion from the objective.</p>
+            <p>{t("The Agent will infer completion from the objective.")}</p>
           )}
         </div>
       </article>
@@ -519,9 +531,9 @@ function RunOverview({
           <Activity size={18} />
         </span>
         <div>
-          <span className="panel-kicker">Durable activity</span>
-          <h3>{eventCount} events</h3>
-          <p>Every state transition is replayable from the database timeline.</p>
+          <span className="panel-kicker">{t("Durable activity")}</span>
+          <h3>{t("{count} events", { count: eventCount })}</h3>
+          <p>{t("Every state transition is replayable from the database timeline.")}</p>
         </div>
       </article>
       <article className="overview-card overview-wide">
@@ -529,11 +541,11 @@ function RunOverview({
           <Bot size={18} />
         </span>
         <div>
-          <span className="panel-kicker">Latest plan</span>
+          <span className="panel-kicker">{t("Latest plan")}</span>
           {planEvent ? (
             <EventPayload event={planEvent} />
           ) : (
-            <p>The Agent has not published a plan summary yet.</p>
+            <p>{t("The Agent has not published a plan summary yet.")}</p>
           )}
         </div>
       </article>
@@ -550,12 +562,13 @@ function Findings({
   loading: boolean;
   controls: ReturnType<typeof useFindingControl>;
 }) {
+  const { t } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   if (loading) return <LoadingState label="Loading findings" />;
   if (!findings.length) {
     return (
       <EmptyState icon={FileWarning} title="No findings yet">
-        Evidence-backed findings created by the Agent will appear here.
+        {t("Evidence-backed findings created by the Agent will appear here.")}
       </EmptyState>
     );
   }
@@ -579,19 +592,19 @@ function Findings({
             <div>
               <div className="finding-head">
                 <span className={`severity-label severity-${finding.severity}`}>
-                  {finding.severity}
+                  {t(finding.severity)}
                 </span>
-                <span>{finding.status.replaceAll("_", " ")}</span>
+                <span>{t(finding.status.replaceAll("_", " "))}</span>
                 <button
                   className="finding-edit-button"
                   onClick={() => setEditingId(finding.id)}
-                  aria-label={`Edit ${finding.title}`}
+                  aria-label={t("Edit {title}", { title: finding.title })}
                 >
-                  <Pencil size={13} /> Edit
+                  <Pencil size={13} /> {t("Edit")}
                 </button>
               </div>
               <h3>{finding.title}</h3>
-              <p>{finding.description || "No description supplied."}</p>
+              <p>{finding.description || t("No description supplied.")}</p>
               {finding.affected_assets.length ? (
                 <div className="scope-list">
                   {finding.affected_assets.map((asset) => (
@@ -606,13 +619,13 @@ function Findings({
                 <div className="finding-guidance">
                   {finding.impact ? (
                     <div>
-                      <strong>Impact</strong>
+                      <strong>{t("Impact")}</strong>
                       <p>{finding.impact}</p>
                     </div>
                   ) : null}
                   {finding.recommendation ? (
                     <div>
-                      <strong>Recommendation</strong>
+                      <strong>{t("Recommendation")}</strong>
                       <p>{finding.recommendation}</p>
                     </div>
                   ) : null}
@@ -628,6 +641,7 @@ function Findings({
 }
 
 function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
+  const { t } = useI18n();
   if (!evidence.length) return null;
   return (
     <div className="finding-evidence-list">
@@ -637,10 +651,10 @@ function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
           key={`${item.artifact_id ?? "artifact"}-${item.execution_id ?? "execution"}-${index}`}
         >
           <div>
-            <strong>Evidence {index + 1}</strong>
-            <span>{item.location || "No location marker"}</span>
+            <strong>{t("Evidence {count}", { count: index + 1 })}</strong>
+            <span>{item.location || t("No location marker")}</span>
           </div>
-          <p>{item.description || "No evidence description."}</p>
+          <p>{item.description || t("No evidence description.")}</p>
           <div className="finding-evidence-links">
             {item.artifact_id ? (
               <a
@@ -648,10 +662,10 @@ function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
                 target="_blank"
                 rel="noreferrer"
               >
-                <ExternalLink size={12} /> Artifact {item.artifact_id}
+                <ExternalLink size={12} /> {t("Artifact")} {item.artifact_id}
               </a>
             ) : null}
-            {item.execution_id ? <code>Execution {item.execution_id}</code> : null}
+            {item.execution_id ? <code>{t("Execution")} {item.execution_id}</code> : null}
           </div>
         </article>
       ))}
@@ -680,6 +694,7 @@ function FindingEditor({
     recommendation: string;
   }) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [title, setTitle] = useState(finding.title);
   const [severity, setSeverity] = useState(finding.severity);
   const [status, setStatus] = useState(finding.status);
@@ -721,24 +736,24 @@ function FindingEditor({
     >
       <div className="finding-editor-grid">
         <label className="finding-editor-title">
-          <span>Title</span>
+          <span>{t("Title")}</span>
           <input value={title} onChange={(event) => setTitle(event.target.value)} required />
         </label>
         <label>
-          <span>Severity</span>
+          <span>{t("Severity")}</span>
           <select
             value={severity}
             onChange={(event) => setSeverity(event.target.value as Finding["severity"])}
           >
             {(["info", "low", "medium", "high", "critical"] as const).map((value) => (
               <option key={value} value={value}>
-                {value}
+                {t(value)}
               </option>
             ))}
           </select>
         </label>
         <label>
-          <span>Status</span>
+          <span>{t("Status")}</span>
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as Finding["status"])}
@@ -746,14 +761,14 @@ function FindingEditor({
             {(["draft", "confirmed", "resolved", "false_positive"] as const).map(
               (value) => (
                 <option key={value} value={value}>
-                  {value.replaceAll("_", " ")}
+                  {t(value.replaceAll("_", " "))}
                 </option>
               ),
             )}
           </select>
         </label>
         <label className="finding-editor-wide">
-          <span>Description</span>
+          <span>{t("Description")}</span>
           <textarea
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -761,7 +776,7 @@ function FindingEditor({
           />
         </label>
         <label>
-          <span>Affected assets · one per line</span>
+          <span>{t("Affected assets · one per line")}</span>
           <textarea
             value={affectedAssets}
             onChange={(event) => setAffectedAssets(event.target.value)}
@@ -769,7 +784,7 @@ function FindingEditor({
           />
         </label>
         <label>
-          <span>Reproduction steps · one per line</span>
+          <span>{t("Reproduction steps · one per line")}</span>
           <textarea
             value={reproductionSteps}
             onChange={(event) => setReproductionSteps(event.target.value)}
@@ -777,11 +792,11 @@ function FindingEditor({
           />
         </label>
         <label>
-          <span>Impact</span>
+          <span>{t("Impact")}</span>
           <textarea value={impact} onChange={(event) => setImpact(event.target.value)} rows={4} />
         </label>
         <label>
-          <span>Recommendation</span>
+          <span>{t("Recommendation")}</span>
           <textarea
             value={recommendation}
             onChange={(event) => setRecommendation(event.target.value)}
@@ -793,8 +808,8 @@ function FindingEditor({
       <div className="finding-evidence-editor">
         <div className="finding-editor-section-head">
           <div>
-            <span className="panel-kicker">Evidence links</span>
-            <h4>Artifacts and executions</h4>
+            <span className="panel-kicker">{t("Evidence links")}</span>
+            <h4>{t("Artifacts and executions")}</h4>
           </div>
           <button
             className="secondary-button"
@@ -811,13 +826,13 @@ function FindingEditor({
               ])
             }
           >
-            <Plus size={14} /> Add evidence
+            <Plus size={14} /> {t("Add evidence")}
           </button>
         </div>
         {evidence.map((item, index) => (
           <div className="finding-evidence-row" key={index}>
             <label>
-              <span>Artifact ID</span>
+              <span>{t("Artifact ID")}</span>
               <input
                 value={item.artifact_id ?? ""}
                 onChange={(event) =>
@@ -826,7 +841,7 @@ function FindingEditor({
               />
             </label>
             <label>
-              <span>Execution ID</span>
+              <span>{t("Execution ID")}</span>
               <input
                 value={item.execution_id ?? ""}
                 onChange={(event) =>
@@ -835,7 +850,7 @@ function FindingEditor({
               />
             </label>
             <label>
-              <span>Location</span>
+              <span>{t("Location")}</span>
               <input
                 value={item.location ?? ""}
                 onChange={(event) =>
@@ -844,7 +859,7 @@ function FindingEditor({
               />
             </label>
             <label className="finding-evidence-description">
-              <span>Description</span>
+              <span>{t("Description")}</span>
               <input
                 value={item.description}
                 onChange={(event) =>
@@ -858,7 +873,7 @@ function FindingEditor({
               onClick={() =>
                 setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))
               }
-              aria-label={`Remove evidence ${index + 1}`}
+              aria-label={t("Remove evidence {count}", { count: index + 1 })}
             >
               <Trash2 size={14} />
             </button>
@@ -868,11 +883,11 @@ function FindingEditor({
 
       <div className="finding-editor-actions">
         <button className="secondary-button" type="button" onClick={onCancel} disabled={saving}>
-          <X size={14} /> Cancel
+          <X size={14} /> {t("Cancel")}
         </button>
         <button className="primary-button" type="submit" disabled={saving || !title.trim()}>
           {saving ? <Loader2 className="spin" size={14} /> : <Save size={14} />}
-          Save finding
+          {t("Save finding")}
         </button>
       </div>
     </form>
@@ -888,6 +903,7 @@ function Artifacts({
   loading: boolean;
   controls: ReturnType<typeof useArtifactControl>;
 }) {
+  const { t } = useI18n();
   const [sourcePath, setSourcePath] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -910,13 +926,13 @@ function Artifacts({
     <div className="artifact-stack">
       <form className="artifact-register" onSubmit={(event) => void submit(event)}>
         <div>
-          <span className="panel-kicker">Immutable evidence</span>
-          <h3>Register a Run-owned file</h3>
-          <p>The path must be inside this Run workspace or its Runner state directory.</p>
+          <span className="panel-kicker">{t("Immutable evidence")}</span>
+          <h3>{t("Register a Run-owned file")}</h3>
+          <p>{t("The path must be inside this Run workspace or its Runner state directory.")}</p>
         </div>
         <div className="artifact-register-grid">
           <label className="artifact-source-field">
-            <span>Source path</span>
+            <span>{t("Source path")}</span>
             <input
               value={sourcePath}
               onChange={(event) => setSourcePath(event.target.value)}
@@ -925,7 +941,7 @@ function Artifacts({
             />
           </label>
           <label>
-            <span>Name (optional)</span>
+            <span>{t("Name (optional)")}</span>
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -933,11 +949,11 @@ function Artifacts({
             />
           </label>
           <label className="artifact-description-field">
-            <span>Description (optional)</span>
+            <span>{t("Description (optional)")}</span>
             <input
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="What this evidence proves"
+              placeholder={t("What this evidence proves")}
             />
           </label>
           <button
@@ -950,7 +966,7 @@ function Artifacts({
             ) : (
               <Plus size={15} />
             )}
-            Register
+            {t("Register")}
           </button>
         </div>
         {controls.register.error ? <ErrorState error={controls.register.error} /> : null}
@@ -959,7 +975,7 @@ function Artifacts({
       {loading ? <LoadingState label="Loading artifacts" /> : null}
       {!loading && !artifacts.length ? (
         <EmptyState icon={Archive} title="No artifacts registered">
-          Tool outputs, screenshots, logs, and report attachments will appear here.
+          {t("Tool outputs, screenshots, logs, and report attachments will appear here.")}
         </EmptyState>
       ) : null}
       {!loading && artifacts.length ? (
@@ -974,7 +990,7 @@ function Artifacts({
                   <h3>{artifact.name}</h3>
                   <span>{formatBytes(artifact.size)}</span>
                 </div>
-                <p>{artifact.description || "No description supplied."}</p>
+                <p>{artifact.description || t("No description supplied.")}</p>
                 <div className="artifact-meta">
                   <span>{artifact.mime_type}</span>
                   <code title={artifact.sha256}>sha256:{artifact.sha256}</code>
@@ -986,7 +1002,7 @@ function Artifacts({
                 href={api.artifactContentUrl(artifact)}
                 download={artifact.name}
               >
-                <Download size={15} /> Download
+                <Download size={15} /> {t("Download")}
               </a>
             </article>
           ))}
@@ -1005,13 +1021,13 @@ function Approvals({
   loading: boolean;
   controls: ReturnType<typeof useApprovalControl>;
 }) {
+  const { language, t } = useI18n();
   const [reasons, setReasons] = useState<Record<string, string>>({});
   if (loading) return <LoadingState label="Loading approvals" />;
   if (!approvals.length) {
     return (
       <EmptyState icon={ShieldAlert} title="No approval requests">
-        Sensitive or manually controlled Tool calls will appear here with their exact execution
-        snapshot.
+        {t("Sensitive or manually controlled Tool calls will appear here with their exact execution snapshot.")}
       </EmptyState>
     );
   }
@@ -1024,35 +1040,35 @@ function Approvals({
           <article className={`approval-card approval-${approval.status}`} key={approval.id}>
             <div className="approval-card-head">
               <div>
-                <span className="panel-kicker">{approval.status.replaceAll("_", " ")}</span>
+                <span className="panel-kicker">{t(approval.status.replaceAll("_", " "))}</span>
                 <h3>{approval.tool_name}</h3>
               </div>
               <span className="mono-chip">{approval.id}</span>
             </div>
             <dl className="approval-facts">
               <div>
-                <dt>Command</dt>
-                <dd><code>{approval.command.join(" ") || "No command snapshot"}</code></dd>
+                <dt>{t("Command")}</dt>
+                <dd><code>{approval.command.join(" ") || t("No command snapshot")}</code></dd>
               </div>
               <div>
-                <dt>Working directory</dt>
+                <dt>{t("Working directory")}</dt>
                 <dd><code>{approval.cwd || "—"}</code></dd>
               </div>
               <div>
-                <dt>Target</dt>
+                <dt>{t("Target")}</dt>
                 <dd>{approval.target_summary || "—"}</dd>
               </div>
               <div>
-                <dt>Environment changes</dt>
+                <dt>{t("Environment changes")}</dt>
                 <dd>
                   {Object.keys(approval.env_diff).length ? (
                     <pre>{JSON.stringify(approval.env_diff, null, 2)}</pre>
-                  ) : "None"}
+                  ) : t("None")}
                 </dd>
               </div>
               <div>
-                <dt>Agent reason</dt>
-                <dd>{approval.reason || "No reason supplied."}</dd>
+                <dt>{t("Agent reason")}</dt>
+                <dd>{approval.reason || t("No reason supplied.")}</dd>
               </div>
             </dl>
             {pending ? (
@@ -1062,8 +1078,8 @@ function Approvals({
                   onChange={(event) =>
                     setReasons((current) => ({ ...current, [approval.id]: event.target.value }))
                   }
-                  placeholder="Optional rejection reason…"
-                  aria-label={`Rejection reason for ${approval.tool_name}`}
+                  placeholder={t("Optional rejection reason…")}
+                  aria-label={t("Rejection reason for {tool}", { tool: approval.tool_name })}
                   rows={2}
                 />
                 <div>
@@ -1077,7 +1093,7 @@ function Approvals({
                       })
                     }
                   >
-                    <Ban size={15} /> Reject
+                    <Ban size={15} /> {t("Reject")}
                   </button>
                   <button
                     className="secondary-button"
@@ -1086,7 +1102,7 @@ function Approvals({
                       controls.approve.mutate({ approvalId: approval.id })
                     }
                   >
-                    <CheckCircle2 size={15} /> Approve once
+                    <CheckCircle2 size={15} /> {t("Approve once")}
                   </button>
                   <button
                     className="primary-button"
@@ -1098,14 +1114,14 @@ function Approvals({
                       })
                     }
                   >
-                    <ShieldAlert size={15} /> Approve for Run
+                    <ShieldAlert size={15} /> {t("Approve for Run")}
                   </button>
                 </div>
               </div>
             ) : (
               <p className="approval-decision">
-                Decided by {approval.decided_by ?? "unknown"}
-                {approval.decided_at ? ` · ${formatTimestamp(approval.decided_at)}` : ""}
+                {t("Decided by {name}", { name: approval.decided_by ?? t("unknown") })}
+                {approval.decided_at ? ` · ${formatTimestamp(approval.decided_at, language)}` : ""}
               </p>
             )}
           </article>
@@ -1129,6 +1145,7 @@ function Reports({
   reportable: boolean;
   controls: ReturnType<typeof useReportControl>;
 }) {
+  const { language, t } = useI18n();
   if (loading) return <LoadingState label="Loading generated reports" />;
   const grouped = [...reports].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
@@ -1137,12 +1154,12 @@ function Reports({
     <div className="report-stack">
       <div className="section-toolbar">
         <div>
-          <span className="panel-kicker">Restricted source · immutable output</span>
-          <h3>Run reports</h3>
+          <span className="panel-kicker">{t("Restricted source · immutable output")}</span>
+          <h3>{t("Run reports")}</h3>
           <p>
             {reportable
-              ? "Generate Markdown, HTML, and JSON from findings, artifact summaries, and key activity only."
-              : "Report generation unlocks after the Run reaches a final status."}
+              ? t("Generate Markdown, HTML, and JSON from findings, artifact summaries, and key activity only.")
+              : t("Report generation unlocks after the Run reaches a final status.")}
           </p>
         </div>
         <button
@@ -1155,13 +1172,13 @@ function Reports({
           ) : (
             <FileText size={16} />
           )}
-          Generate reports
+          {t("Generate reports")}
         </button>
       </div>
       {controls.generate.error ? <ErrorState error={controls.generate.error} /> : null}
       {!grouped.length ? (
         <EmptyState icon={FileText} title="No reports generated yet">
-          Generate a report set now, or let the durable workflow create one after Agent completion.
+          {t("Generate a report set now, or let the durable workflow create one after Agent completion.")}
         </EmptyState>
       ) : (
         <div className="report-grid">
@@ -1171,16 +1188,16 @@ function Reports({
                 <FileText size={19} />
                 <strong>{report.format.toUpperCase()}</strong>
               </div>
-              <p>{report.finding_ids.length} linked finding{report.finding_ids.length === 1 ? "" : "s"}</p>
+              <p>{t(report.finding_ids.length === 1 ? "{count} linked finding" : "{count} linked findings", { count: report.finding_ids.length })}</p>
               <code>{report.id}</code>
-              <span>{formatTimestamp(report.created_at)}</span>
+              <span>{formatTimestamp(report.created_at, language)}</span>
               <a
                 className="secondary-button report-open-button"
                 href={api.artifactContentUrl({ content_url: report.content_url })}
                 target="_blank"
                 rel="noreferrer"
               >
-                <ExternalLink size={14} /> Open report
+                <ExternalLink size={14} /> {t("Open report")}
               </a>
             </article>
           ))}
@@ -1224,8 +1241,8 @@ function eventTitle(eventType: string) {
     .join(" · ");
 }
 
-function formatTimestamp(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
+function formatTimestamp(value: string, language: Language = "en") {
+  return new Intl.DateTimeFormat(language, {
     month: "short",
     day: "2-digit",
     hour: "2-digit",
@@ -1235,7 +1252,7 @@ function formatTimestamp(value: string) {
 }
 
 function executionDuration(execution: Execution) {
-  if (!execution.started_at) return "not started";
+  if (!execution.started_at) return "Not started";
   const started = new Date(execution.started_at).getTime();
   const finished = execution.finished_at
     ? new Date(execution.finished_at).getTime()

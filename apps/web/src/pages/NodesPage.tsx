@@ -13,8 +13,10 @@ import { LoadingState } from "../components/LoadingState";
 import { MetricCard } from "../components/MetricCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useNodes } from "../hooks/queries";
+import { useI18n } from "../i18n";
 
 export function NodesPage() {
+  const { language, t } = useI18n();
   const nodes = useNodes();
 
   if (nodes.isLoading) return <LoadingState label="Loading runner fleet" />;
@@ -32,15 +34,14 @@ export function NodesPage() {
     <div className="page-stack">
       <section className="section-heading split-heading">
         <div>
-          <span className="section-kicker">Outbound runner registry</span>
-          <h2>Host-native execution fleet</h2>
+          <span className="section-kicker">{t("Outbound runner registry")}</span>
+          <h2>{t("Host-native execution fleet")}</h2>
           <p>
-            Durable runner identities, health signals, platforms, and advertised
-            capabilities.
+            {t("Durable runner identities, health signals, platforms, and advertised capabilities.")}
           </p>
         </div>
         <div className="mono-chip">
-          <Radio size={14} /> heartbeat / 10s refresh
+          <Radio size={14} /> {t("heartbeat / 10s refresh")}
         </div>
       </section>
 
@@ -77,10 +78,10 @@ export function NodesPage() {
       <section className="panel registry-panel">
         <div className="panel-header">
           <div>
-            <span className="panel-kicker">node inventory</span>
-            <h3>Registered runners</h3>
+            <span className="panel-kicker">{t("node inventory")}</span>
+            <h3>{t("Registered runners")}</h3>
           </div>
-          <span className="mono-chip">{nodes.data.items.length} durable identities</span>
+          <span className="mono-chip">{t("{count} durable identities", { count: nodes.data.items.length })}</span>
         </div>
 
         {nodes.data.items.length ? (
@@ -88,15 +89,15 @@ export function NodesPage() {
             <table className="tool-table">
               <thead>
                 <tr>
-                  <th>Node</th>
-                  <th>Status</th>
-                  <th>OS / architecture</th>
-                  <th>Shell / working directory</th>
-                  <th>Tools</th>
-                  <th>Active tasks</th>
+                  <th>{t("Node")}</th>
+                  <th>{t("Status")}</th>
+                  <th>{t("OS / architecture")}</th>
+                  <th>{t("Shell / working directory")}</th>
+                  <th>{t("Tools")}</th>
+                  <th>{t("Active tasks")}</th>
                   <th>Runner</th>
-                  <th>Capabilities</th>
-                  <th>Last heartbeat</th>
+                  <th>{t("Capabilities")}</th>
+                  <th>{t("Last heartbeat")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,18 +118,18 @@ export function NodesPage() {
                       <small className="tool-reason">{node.architecture}</small>
                     </td>
                     <td>
-                      <strong>{node.shell ?? "unknown"}</strong>
+                      <strong>{node.shell ?? t("unknown")}</strong>
                       <small className="tool-reason" title={node.working_directory ?? ""}>
-                        {node.working_directory ?? "not reported"}
+                        {node.working_directory ?? t("not reported")}
                       </small>
                     </td>
-                    <td>{node.tool_count ?? "unknown"}</td>
+                    <td>{node.tool_count ?? t("unknown")}</td>
                     <td>
                       <strong>{node.active_execution_ids.length}</strong>
                       <small className="tool-reason">
                         {node.current_run_ids.length
                           ? node.current_run_ids.join(", ")
-                          : "idle"}
+                          : t("idle")}
                       </small>
                     </td>
                     <td>{node.runner_version}</td>
@@ -139,7 +140,7 @@ export function NodesPage() {
                         )) : <span>runner</span>}
                       </div>
                     </td>
-                    <td>{relativeTime(node.last_seen_at)}</td>
+                    <td>{relativeTime(node.last_seen_at, language)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -147,7 +148,7 @@ export function NodesPage() {
           </div>
         ) : (
           <EmptyState icon={Server} title="No runners registered">
-            Start a local or remote RiftX Runner to register its execution capabilities.
+            {t("Start a local or remote RiftX Runner to register its execution capabilities.")}
           </EmptyState>
         )}
       </section>
@@ -155,12 +156,13 @@ export function NodesPage() {
   );
 }
 
-function relativeTime(value: string | null): string {
-  if (!value) return "never";
+function relativeTime(value: string | null, language: "en" | "zh-CN"): string {
+  if (!value) return language === "zh-CN" ? "从未" : "never";
   const elapsed = Date.now() - new Date(value).getTime();
   const seconds = Math.max(0, Math.round(elapsed / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
+  const formatter = new Intl.RelativeTimeFormat(language, { numeric: "auto" });
+  if (seconds < 60) return formatter.format(-seconds, "second");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.round(minutes / 60)}h ago`;
+  if (minutes < 60) return formatter.format(-minutes, "minute");
+  return formatter.format(-Math.round(minutes / 60), "hour");
 }

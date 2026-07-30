@@ -1,6 +1,8 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { useI18n } from "../i18n";
+
 export function EmptyState({
   icon: Icon,
   title,
@@ -10,11 +12,12 @@ export function EmptyState({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className="empty-state">
       <Icon size={24} strokeWidth={1.5} />
-      <h3>{title}</h3>
-      <p>{children}</p>
+      <h3>{t(title)}</h3>
+      <p>{typeof children === "string" ? t(children) : children}</p>
     </div>
   );
 }

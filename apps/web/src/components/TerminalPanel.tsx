@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { TerminalSession, TerminalWebSocketMessage } from "../api/types";
 import { queryKeys, useTerminal, useTerminalControl } from "../hooks/queries";
+import { useI18n } from "../i18n";
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { LoadingState } from "./LoadingState";
@@ -18,6 +19,7 @@ interface TerminalPanelProps {
 }
 
 export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [sessionId, setSessionId] = useState(initialSessionId ?? "");
   const [connection, setConnection] = useState<"idle" | "connecting" | "open" | "closed">(
@@ -25,6 +27,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
   );
   const [socketError, setSocketError] = useState<string | null>(null);
   const terminalElement = useRef<HTMLDivElement>(null);
+  const translateRef = useRef(t);
   const sessionRef = useRef<TerminalSession | undefined>(undefined);
   const socketRef = useRef<WebSocket | null>(null);
   const terminalQuery = useTerminal(sessionId);
@@ -35,6 +38,10 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
       setSessionId(initialSessionId);
     }
   }, [initialSessionId, sessionId]);
+
+  useEffect(() => {
+    translateRef.current = t;
+  }, [t]);
 
   useEffect(() => {
     sessionRef.current = terminalQuery.data;
@@ -104,7 +111,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
       }
     };
     socket.onerror = () => {
-      if (!disposed) setSocketError("Terminal WebSocket connection failed.");
+      if (!disposed) setSocketError(translateRef.current("Terminal WebSocket connection failed."));
     };
     socket.onclose = () => {
       if (!disposed) setConnection("closed");
@@ -149,14 +156,14 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
   if (!sessionId) {
     return (
       <EmptyState icon={TerminalSquare} title="No terminal session">
-        <p>Start a host-native shell in this Run workspace. Agent-owned sessions remain read-only until you take over.</p>
+        <p>{t("Start a host-native shell in this Run workspace. Agent-owned sessions remain read-only until you take over.")}</p>
         <button
           className="primary-button"
           disabled={controls.create.isPending}
           onClick={() => void startTerminal()}
         >
           {controls.create.isPending ? <Loader2 className="spin" size={16} /> : <PlugZap size={16} />}
-          Start local shell
+          {t("Start local shell")}
         </button>
         {controls.create.error ? <ErrorState error={controls.create.error} /> : null}
       </EmptyState>
@@ -177,9 +184,9 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
         <div className="terminal-identity">
           <TerminalSquare size={17} />
           <span>{sessionId}</span>
-          <span className={`terminal-connection terminal-connection-${connection}`}>{connection}</span>
-          {session ? <span className="mono-chip">{session.status}</span> : null}
-          {session ? <span className="mono-chip">owner / {session.owner}</span> : null}
+          <span className={`terminal-connection terminal-connection-${connection}`}>{t(connection)}</span>
+          {session ? <span className="mono-chip">{t(session.status)}</span> : null}
+          {session ? <span className="mono-chip">{t("owner")} / {t(session.owner)}</span> : null}
         </div>
         <div className="terminal-actions">
           {session?.status === "open" && session.owner !== "user" ? (
@@ -188,7 +195,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
               disabled={connection !== "open"}
               onClick={() => sendControl("takeover")}
             >
-              <UserRound size={15} /> Take over
+              <UserRound size={15} /> {t("Take over")}
             </button>
           ) : null}
           {session?.status === "open" && session.owner === "user" ? (
@@ -205,7 +212,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
                 disabled={connection !== "open"}
                 onClick={() => sendControl("release")}
               >
-                <RotateCcw size={15} /> Release
+                <RotateCcw size={15} /> {t("Release")}
               </button>
             </>
           ) : null}
@@ -215,7 +222,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
               disabled={controls.close.isPending}
               onClick={() => void closeTerminal()}
             >
-              <Square size={14} /> Close
+              <Square size={14} /> {t("Close")}
             </button>
           ) : null}
           {session && session.status !== "open" ? (
@@ -224,20 +231,20 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
               disabled={controls.create.isPending}
               onClick={() => void startTerminal()}
             >
-              <PlugZap size={15} /> Start new shell
+              <PlugZap size={15} /> {t("Start new shell")}
             </button>
           ) : null}
         </div>
       </div>
       <div className="terminal-notice">
         {session?.status === "lost"
-          ? "The Runner restarted and this native PTY cannot be reattached. The transcript remains available below."
+          ? t("The Runner restarted and this native PTY cannot be reattached. The transcript remains available below.")
           : writable
-            ? "You own terminal input. Press Ctrl+C to interrupt; Release returns input to the Agent."
-            : "Read-only while the Agent owns terminal input."}
+            ? t("You own terminal input. Press Ctrl+C to interrupt; Release returns input to the Agent.")
+            : t("Read-only while the Agent owns terminal input.")}
       </div>
       {socketError ? <p className="terminal-error">{socketError}</p> : null}
-      <div className="xterm-host" ref={terminalElement} aria-label="Run terminal" />
+      <div className="xterm-host" ref={terminalElement} aria-label={t("Run terminal")} />
       {controls.close.error ? <ErrorState error={controls.close.error} /> : null}
     </div>
   );

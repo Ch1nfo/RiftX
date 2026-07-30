@@ -18,6 +18,7 @@ import { LoadingState } from "../components/LoadingState";
 import { MetricCard } from "../components/MetricCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRuns, useTools } from "../hooks/queries";
+import { useI18n } from "../i18n";
 
 const statusColors: Record<RunStatus, string> = {
   created: "#6796ff",
@@ -31,6 +32,7 @@ const statusColors: Record<RunStatus, string> = {
 };
 
 export function DashboardPage() {
+  const { t } = useI18n();
   const runs = useRuns();
   const tools = useTools("local");
 
@@ -62,20 +64,19 @@ export function DashboardPage() {
     <div className="page-stack">
       <section className="hero-strip">
         <div>
-          <span className="kicker">Durable execution fabric</span>
-          <h2>Keep every agent run observable, recoverable, and under control.</h2>
+          <span className="kicker">{t("Durable execution fabric")}</span>
+          <h2>{t("Keep every agent run observable, recoverable, and under control.")}</h2>
           <p>
-            The browser is a view into persisted state. Closing this page never stops a
-            workflow or its host-native execution.
+            {t("The browser is a view into persisted state. Closing this page never stops a workflow or its host-native execution.")}
           </p>
         </div>
         <Link className="primary-button" to="/runs/new">
           <Plus size={17} />
-          New run
+          {t("New run")}
         </Link>
       </section>
 
-      <section className="metrics-grid" aria-label="Run overview">
+      <section className="metrics-grid" aria-label={t("Run overview")}>
         <MetricCard
           label="Active runs"
           value={active.length}
@@ -100,7 +101,7 @@ export function DashboardPage() {
         <MetricCard
           label="Available tools"
           value={availableTools}
-          note={`Local registry generation ${tools.data?.generation ?? "—"}`}
+          note={t("Local registry generation {generation}", { generation: tools.data?.generation ?? "—" })}
           icon={Wrench}
         />
       </section>
@@ -109,11 +110,11 @@ export function DashboardPage() {
         <article className="panel run-list-panel">
           <div className="panel-header">
             <div>
-              <span className="panel-kicker">Live operations</span>
-              <h3>Active run queue</h3>
+              <span className="panel-kicker">{t("Live operations")}</span>
+              <h3>{t("Active run queue")}</h3>
             </div>
             <Link className="text-link" to="/runs/new">
-              Configure run <ArrowRight size={15} />
+              {t("Configure run")} <ArrowRight size={15} />
             </Link>
           </div>
           {active.length ? (
@@ -124,7 +125,7 @@ export function DashboardPage() {
             </div>
           ) : (
             <EmptyState icon={TerminalSquare} title="No active runs">
-              Launch a run to populate the durable operation queue.
+              {t("Launch a run to populate the durable operation queue.")}
             </EmptyState>
           )}
         </article>
@@ -132,14 +133,14 @@ export function DashboardPage() {
         <article className="panel status-panel">
           <div className="panel-header">
             <div>
-              <span className="panel-kicker">Portfolio signal</span>
-              <h3>Run status mix</h3>
+              <span className="panel-kicker">{t("Portfolio signal")}</span>
+              <h3>{t("Run status mix")}</h3>
             </div>
-            <span className="muted-caption">{items.length} total</span>
+            <span className="muted-caption">{t("{count} total", { count: items.length })}</span>
           </div>
           {chartData.length ? (
             <>
-              <div className="status-chart" aria-label="Run status chart">
+              <div className="status-chart" aria-label={t("Run status chart")}>
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
@@ -166,14 +167,14 @@ export function DashboardPage() {
                 </ResponsiveContainer>
                 <div className="chart-center">
                   <strong>{items.length}</strong>
-                  <span>runs</span>
+                  <span>{t("runs")}</span>
                 </div>
               </div>
               <div className="chart-legend">
                 {chartData.map((entry) => (
                   <div key={entry.name}>
                     <span style={{ backgroundColor: statusColors[entry.name] }} />
-                    <p>{entry.name.replaceAll("_", " ")}</p>
+                    <p>{t(entry.name.replaceAll("_", " "))}</p>
                     <strong>{entry.value}</strong>
                   </div>
                 ))}
@@ -181,7 +182,7 @@ export function DashboardPage() {
             </>
           ) : (
             <EmptyState icon={Clock3} title="No status history">
-              Status distribution appears after the first run is created.
+              {t("Status distribution appears after the first run is created.")}
             </EmptyState>
           )}
         </article>
@@ -189,18 +190,21 @@ export function DashboardPage() {
 
       <section className="panel tool-health-strip">
         <div>
-          <span className="panel-kicker">Execution node</span>
-          <h3>Local tool health</h3>
+          <span className="panel-kicker">{t("Execution node")}</span>
+          <h3>{t("Local tool health")}</h3>
           <p>
             {tools.isError
-              ? "Registry health could not be loaded."
-              : `${availableTools} of ${tools.data?.tools.length ?? 0} configured tools are available.`}
+              ? t("Registry health could not be loaded.")
+              : t("{available} of {total} configured tools are available.", {
+                  available: availableTools,
+                  total: tools.data?.tools.length ?? 0,
+                })}
           </p>
         </div>
         <div className="tool-health-actions">
           <span className="mono-chip">node / local</span>
           <Link className="secondary-button" to="/tools">
-            Inspect registry <ArrowRight size={15} />
+            {t("Inspect registry")} <ArrowRight size={15} />
           </Link>
         </div>
       </section>
@@ -209,6 +213,7 @@ export function DashboardPage() {
 }
 
 function RunRow({ run }: { run: Run }) {
+  const { language } = useI18n();
   return (
     <Link className="run-row" to={`/runs/${run.id}`}>
       <div className="run-row-icon">
@@ -217,7 +222,7 @@ function RunRow({ run }: { run: Run }) {
       <div className="run-row-main">
         <strong>{run.objective.description}</strong>
         <span>
-          {shortId(run.id)} · {formatRelative(run.created_at)} · {run.node_id}
+          {shortId(run.id)} · {formatRelative(run.created_at, language)} · {run.node_id}
         </span>
       </div>
       <StatusBadge status={run.status} />
@@ -230,12 +235,13 @@ function shortId(id: string) {
   return id.slice(0, 8);
 }
 
-function formatRelative(value: string) {
+function formatRelative(value: string, language: "en" | "zh-CN") {
   const elapsed = Date.now() - new Date(value).getTime();
   const minutes = Math.max(0, Math.round(elapsed / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  const formatter = new Intl.RelativeTimeFormat(language, { numeric: "auto" });
+  if (minutes < 1) return formatter.format(0, "minute");
+  if (minutes < 60) return formatter.format(-minutes, "minute");
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  if (hours < 24) return formatter.format(-hours, "hour");
+  return formatter.format(-Math.round(hours / 24), "day");
 }
