@@ -84,7 +84,7 @@ async def _deferred_marker(name: str, arguments: dict[str, object]) -> object:
 
 def _is_deferred_execution_schema(schema: dict[str, object]) -> bool:
     name = schema.get("name")
-    if name in {"run_registered_tool", "run_shell"}:
+    if name in {"run_registered_tool", "run_shell", "delegate", "spawn_subagent"}:
         return True
     if not isinstance(name, str) or not name or name in _CONTROL_TOOL_NAMES:
         return False

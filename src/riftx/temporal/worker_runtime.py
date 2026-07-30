@@ -39,6 +39,7 @@ from riftx.context import (
 )
 from riftx.context.compaction import ContextCompactionManager
 from riftx.domain import (
+    Execution,
     ExecutorType,
     MessageRole,
     MessageType,
@@ -48,6 +49,7 @@ from riftx.domain import (
 from riftx.execution import (
     DeferredExecutionDispatcher,
     ExecutionService,
+    ExecutionWaitStatus,
     RegistryDeferredExecutionResolver,
 )
 from riftx.hooks import HookBus, RunEventHookAuditSink
@@ -89,8 +91,16 @@ from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSuper
 from riftx.runtime.coordinator import RuntimeCoordinator
 from riftx.runtime.engine import DeferredRuntimeAgentFactory, OpenAIAgentsEngine
 from riftx.runtime.leases import DatabaseRunLeaseManager
+from riftx.runtime.session import SessionManager
 from riftx.runtime.types import AgentSession
 from riftx.skills import create_default_skill_registry
+from riftx.subagents import (
+    DurableSubagentTaskRunner,
+    ModelDelegationExecutor,
+    PrimaryResultMerger,
+    SubagentManager,
+    SubagentOrchestrator,
+)
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
 
 from .activities import RiftXActivities
@@ -239,9 +249,31 @@ class _CompletedExecutionInputResolver:
                 timeout_seconds=0.1,
             )
         ).execution
+        return await self._to_context_input(run_id, execution)
+
+    async def wait_for_execution_input(
+        self,
+        run_id: str,
+        execution_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        result = await self._executions.wait(
+            execution_id,
+            timeout_seconds=timeout_seconds,
+        )
+        if result.wait_status is ExecutionWaitStatus.WAIT_TIMEOUT:
+            raise TimeoutError(f"execution {execution_id!r} did not finish before timeout")
+        return await self._to_context_input(run_id, result.execution)
+
+    async def _to_context_input(
+        self,
+        run_id: str,
+        execution: Execution,
+    ) -> dict[str, object]:
         if execution.run_id != run_id:
             raise RepositoryConflictError(
-                f"execution {execution_id!r} does not belong to Run {run_id!r}"
+                f"execution {execution.id!r} does not belong to Run {run_id!r}"
             )
         tool = self._tool_definition(execution.tool_id, execution.executor_type)
         item = processed_tool_result_context_item(
@@ -362,6 +394,8 @@ async def build_temporal_worker(
         )
         memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
         memory_service = MemoryService(memory_repository)
+        memory_writer = MemoryWriter(memory_repository)
+        hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
 
         node_service = NodeApplicationService(
             node_repository,
@@ -473,7 +507,7 @@ async def build_temporal_worker(
             artifact_repository=artifact_repository,
             execution_repository=execution_repository,
             event_repository=event_repository,
-            memory_writer=MemoryWriter(memory_repository),
+            memory_writer=memory_writer,
         )
         report_service = ReportApplicationService(
             run_repository=run_repository,
@@ -569,7 +603,43 @@ async def build_temporal_worker(
             ),
             user_input_repository=user_input_repository,
             terminal_service=terminal_service,
-            hooks=HookBus(audit_sink=RunEventHookAuditSink(event_repository)),
+            hooks=hooks,
+        )
+        session_manager = SessionManager(
+            run_repository=run_repository,
+            session_repository=agent_session_repository,
+            transcript_repository=transcript_repository,
+            provider_state_repository=provider_state_repository,
+        )
+        execution_inputs = _CompletedExecutionInputResolver(
+            executions=execution_service,
+            registry=registry,
+            processor=tool_result_processor,
+        )
+        subagent_manager = SubagentManager(
+            sessions=session_manager,
+            session_repository=agent_session_repository,
+            tool_context=tool_context,
+            limits=config.subagents,
+            events=event_repository,
+            result_merger=PrimaryResultMerger(
+                working_memory_repository,
+                memory_writer=memory_writer,
+            ),
+            hooks=hooks,
+        )
+        runtime_coordinator.bind_subagent_executor(
+            ModelDelegationExecutor(
+                SubagentOrchestrator(
+                    subagent_manager,
+                    DurableSubagentTaskRunner(
+                        coordinator=runtime_coordinator,
+                        sessions=session_manager,
+                        execution_inputs=execution_inputs,
+                        worker_id=config.runner.node_id,
+                    ),
+                )
+            )
         )
         runtime_cycle_activities = RuntimeCycleActivities(
             runtime_coordinator,
@@ -585,11 +655,7 @@ async def build_temporal_worker(
                 transcript=transcript_repository,
                 requests=user_input_repository,
             ),
-            execution_input_resolver=_CompletedExecutionInputResolver(
-                executions=execution_service,
-                registry=registry,
-                processor=tool_result_processor,
-            ),
+            execution_input_resolver=execution_inputs,
         )
         activities = RiftXActivities(
             run_repository=run_repository,

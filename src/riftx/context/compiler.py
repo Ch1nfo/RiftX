@@ -38,7 +38,8 @@ from .token_counter import estimate_context_tokens
 _RUNTIME_CONTRACT = "You are the RiftX primary agent. Follow the authorized run contract."
 _SUBAGENT_RUNTIME_CONTRACT = (
     "You are an isolated RiftX Subagent. Follow only the Delegation Packet and authorized "
-    "scope, do not delegate another Subagent, and return one structured Result Packet."
+    "scope, do not delegate another Subagent, and return one JSON Result Packet matching "
+    "the requested output schema. Do not wrap the final JSON in explanatory prose."
 )
 _SYSTEM_LAYERS = {
     ContextLayer.RUNTIME_CONTRACT,

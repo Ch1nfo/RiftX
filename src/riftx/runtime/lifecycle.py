@@ -120,6 +120,7 @@ class RunCycleRequest(DomainModel):
     engagement_path: str | None = None
     current_path: str | None = None
     compaction_required: bool = False
+    subagent_mode: bool = False
 
 
 class RunCycleResult(DomainModel):

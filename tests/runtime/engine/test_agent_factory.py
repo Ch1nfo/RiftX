@@ -25,6 +25,13 @@ async def test_factory_exposes_only_deferred_execution_tools() -> None:
             },
             {
                 "type": "function",
+                "name": "delegate",
+                "description": "Delegate",
+                "parameters": {"type": "object"},
+                "x-riftx": {"resident": True},
+            },
+            {
+                "type": "function",
                 "name": "run_shell",
                 "description": "Shell",
                 "parameters": {"type": "object"},
@@ -55,10 +62,15 @@ async def test_factory_exposes_only_deferred_execution_tools() -> None:
         )
     )
 
-    assert [tool.name for tool in agent.tools] == ["run_shell", "scanner", "interactive"]
+    assert [tool.name for tool in agent.tools] == [
+        "delegate",
+        "run_shell",
+        "scanner",
+        "interactive",
+    ]
     assert agent.tool_use_behavior == {
-        "stop_at_tool_names": ["run_shell", "scanner", "interactive"]
+        "stop_at_tool_names": ["delegate", "run_shell", "scanner", "interactive"]
     }
-    result = await agent.tools[1].on_invoke_tool(None, json.dumps({"args": ["-sV"]}))  # type: ignore[arg-type]
+    result = await agent.tools[2].on_invoke_tool(None, json.dumps({"args": ["-sV"]}))  # type: ignore[arg-type]
     assert result == {"deferred": True}
     assert calls == [("scanner", {"args": ["-sV"]})]

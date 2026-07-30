@@ -23,6 +23,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "wait_execution",
     "cancel_execution",
     "read_artifact",
+    "delegate",
     "complete_run",
 )
 SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
@@ -487,6 +488,7 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
         "wait_execution": "Wait for an Execution without changing its timeout policy.",
         "cancel_execution": "Cancel a durable Execution and its process group.",
         "read_artifact": "Read bounded content from a persisted Artifact.",
+        "delegate": "Delegate one bounded independent task to an isolated Subagent.",
         "complete_run": "Request completion of the current authorized Run.",
     }
     properties: dict[str, object] = {}
@@ -507,6 +509,36 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
     elif tool_id == "read_artifact":
         properties = {"artifact_id": {"type": "string"}}
         required = ["artifact_id"]
+    elif tool_id == "delegate":
+        properties = {
+            "task_id": {"type": "string"},
+            "subagent_type": {"type": "string"},
+            "task": {"type": "string"},
+            "expected_output_schema": {"type": "object"},
+            "run_contract_summary": {"type": "string"},
+            "relevant_scope": {"type": "array", "items": {"type": "string"}},
+            "selected_fact_ids": {"type": "array", "items": {"type": "string"}},
+            "selected_artifact_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "selected_memory_ids": {"type": "array", "items": {"type": "string"}},
+            "available_tool_ids": {"type": "array", "items": {"type": "string"}},
+            "workspace": {"type": "string"},
+            "constraints": {"type": "array", "items": {"type": "string"}},
+            "stop_conditions": {"type": "array", "items": {"type": "string"}},
+            "max_turns": {"type": "integer", "minimum": 1, "maximum": 100},
+            "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 1000},
+            "token_budget": {"type": "integer", "minimum": 256},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+        }
+        required = [
+            "subagent_type",
+            "task",
+            "run_contract_summary",
+            "relevant_scope",
+            "workspace",
+        ]
     return {
         "type": "function",
         "name": tool_id,

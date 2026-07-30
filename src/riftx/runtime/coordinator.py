@@ -166,9 +166,25 @@ class RuntimeCoordinator:
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
 
+    def bind_subagent_executor(self, executor: SubagentBatchExecutor) -> None:
+        """Finish the intentional coordinator/orchestrator composition cycle once."""
+
+        if self._subagent_executor is not None:
+            raise DomainError("Subagent executor is already configured")
+        self._subagent_executor = executor
+
     async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult:
-        lease = await self._leases.acquire(request.run_id, request.worker_id)
-        await self._append(request.run_id, LEASE_ACQUIRED, {"owner_id": request.worker_id})
+        session = await self._sessions.get(request.session_id)
+        if session is None or session.run_id != request.run_id:
+            raise EntityNotFoundError("AgentSession", request.session_id)
+        if request.subagent_mode and session.parent_session_id is None:
+            raise DomainError("Subagent cycle mode requires a child AgentSession")
+        if not request.subagent_mode and session.parent_session_id is not None:
+            raise DomainError("Child AgentSession requires Subagent cycle mode")
+        lease = None
+        if not request.subagent_mode:
+            lease = await self._leases.acquire(request.run_id, request.worker_id)
+            await self._append(request.run_id, LEASE_ACQUIRED, {"owner_id": request.worker_id})
         cycle: AgentCycle | None = None
         try:
             if request.cycle_id is not None:
@@ -179,9 +195,6 @@ class RuntimeCoordinator:
             if run is None:
                 raise EntityNotFoundError("Run", request.run_id)
             run = await self._ensure_run_running(run)
-            session = await self._sessions.get(request.session_id)
-            if session is None or session.run_id != request.run_id:
-                raise EntityNotFoundError("AgentSession", request.session_id)
             await self._ensure_active_session(session)
             latest_user_message_id = await self._persist_cycle_input(session, request)
 
@@ -217,7 +230,7 @@ class RuntimeCoordinator:
                 )
 
             delegation = await self._subagent_delegation(session)
-            run_contract = {
+            run_contract: dict[str, object] = {
                 "objective": run.objective.description,
                 "success_criteria": [
                     item.model_dump(mode="json") for item in run.success_criteria
@@ -234,8 +247,12 @@ class RuntimeCoordinator:
             }
             if delegation is not None:
                 run_contract = {
+                    "task_id": delegation.get("task_id", ""),
                     "run_contract_summary": delegation.get("run_contract_summary", ""),
                     "relevant_scope": delegation.get("relevant_scope", []),
+                    "expected_output_schema": delegation.get(
+                        "expected_output_schema", {}
+                    ),
                     "constraints": delegation.get("constraints", []),
                     "stop_conditions": delegation.get("stop_conditions", []),
                     "workspace": delegation.get("workspace", run.workspace_path),
@@ -647,8 +664,13 @@ class RuntimeCoordinator:
                 )
             raise
         finally:
-            await lease.release()
-            await self._append(request.run_id, LEASE_RELEASED, {"owner_id": request.worker_id})
+            if lease is not None:
+                await lease.release()
+                await self._append(
+                    request.run_id,
+                    LEASE_RELEASED,
+                    {"owner_id": request.worker_id},
+                )
 
     async def _dispatch_hook(
         self,
@@ -953,7 +975,8 @@ class RuntimeCoordinator:
         cycle.waiting_object_id = waiting_object_id or waiting_execution_id
         cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
         await self._cycles.save(cycle)
-        await self._transition_run_for_yield(run_id, reason)
+        if session.parent_session_id is None:
+            await self._transition_run_for_yield(run_id, reason)
         await self._append(
             run_id,
             CYCLE_YIELDED,
