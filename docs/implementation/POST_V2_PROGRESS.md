@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A complete; Wave B is unblocked by the recovery gate.
+Wave A complete; Wave B is in progress. EX-01 is complete and EX-02 is unblocked.
 
 ## Completed
 
@@ -10,6 +10,7 @@ Wave A complete; Wave B is unblocked by the recovery gate.
 - [x] RT-02 Agent Engine 抽象
 - [x] RT-03 Runtime Coordinator 与有限 Cycle
 - [x] RT-04 Transcript 与 Session Manager
+- [x] EX-01 Execution Service 与幂等性
 
 ## Task Record
 
@@ -84,6 +85,28 @@ Wave A complete; Wave B is unblocked by the recovery gate.
   - Tool Result, Approval, and Subagent Result records are defined now and will be emitted by their Wave B/F services when those durable flows are implemented.
   - The SDK compatibility methods `pop_item` and `clear_session` remain available for SDK behavior; Runtime code uses append-only Transcript operations.
 - Next dependency: EX-01 is unblocked.
+
+### EX-01
+
+- Branch: `codex/ex-01-execution-service`
+- Commit: `f1d7ec6 feat(execution): add idempotent execution service`
+- Completed at: `2026-07-30 12:44 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py`
+  - `git diff --check`
+  - Result: `388 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `a4d7e2c19b63_add_runtime_execution_identity.py`
+- Core delivery:
+  - Durable execution identity stores `run_id + session_id + tool_call_id + attempt_group` and derives a deterministic bounded idempotency key.
+  - `ExecutionService` validates persisted Sessions and Tool Call intents before Runner launch, synchronizes Tool Call status, and returns the existing Execution for duplicate submissions.
+  - Local and remote Runner launch paths persist the runtime Execution before dispatch and rely on repository-level create-if-absent semantics for launch-once behavior.
+  - Runtime executions expose `QUEUED`, `STARTING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`, `HARD_TIMEOUT`, and `LOST`, while preserving legacy V2 status compatibility.
+  - API and CLI surfaces expose execution identity, list/show, and cancellation operations.
+- Known limitations:
+  - Bounded wait/deferred execution, Runtime `TOOL_RUNNING` yield integration, process-group cancellation guarantees, and reconciliation are intentionally deferred to EX-02.
+  - Retry remains explicit: callers must choose a new `attempt_group`; EX-01 does not automatically retry failed or cancelled executions.
+- Next dependency: EX-02 is unblocked.
 
 ## Architecture Deviations
 
