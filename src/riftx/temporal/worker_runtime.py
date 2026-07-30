@@ -50,6 +50,8 @@ from riftx.execution import (
     ExecutionService,
     RegistryDeferredExecutionResolver,
 )
+from riftx.memory import MemoryService
+from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import RiftXModelProvider, load_models_config
 from riftx.persistence import (
     Database,
@@ -78,6 +80,7 @@ from riftx.persistence.checkpoint_repositories import (
     SQLAlchemyContextCheckpointRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
+from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
@@ -356,6 +359,7 @@ async def build_temporal_worker(
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
+        memory_service = MemoryService(SQLAlchemyMemoryRepository(database.session_factory))
 
         node_service = NodeApplicationService(
             node_repository,
@@ -516,6 +520,7 @@ async def build_temporal_worker(
                     max_items=config.agent.max_history_items or 100,
                 ),
                 WorkingMemoryContextSource(working_memory_repository),
+                RetrievedMemoryContextSource(memory_service),
             ],
             stable_instruction_source=StableInstructionSource(),
             tool_context=tool_context,

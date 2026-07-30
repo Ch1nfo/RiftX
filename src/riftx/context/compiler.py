@@ -156,6 +156,13 @@ class ContextCompiler:
         budget = self._budgeter.fit(items)
         selected = budget.selected_items
         compiled = self._render(selected, budget)
+        compiled.loaded_memory_ids = list(
+            dict.fromkeys(
+                str(memory_id)
+                for item in selected
+                if (memory_id := item.metadata.get("memory_id")) is not None
+            )
+        )
         metadata = self._manifest_metadata(budget, visibility_metadata)
         manifest = self._manifest(request, selected, metadata, compiled)
         compiled.token_estimate = manifest.estimated_tokens

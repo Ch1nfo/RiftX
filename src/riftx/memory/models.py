@@ -52,6 +52,30 @@ class MemoryScope(DomainModel):
         return normalized
 
 
+class MemoryRetrievalScope(DomainModel):
+    user_id: str | None = None
+    node_id: str | None = None
+    workspace_id: str | None = None
+    run_id: str | None = None
+    engagement_id: str | None = None
+    asset_ids: list[str] = Field(default_factory=list)
+    tool_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+
+    def allows(self, memory: MemoryRecord) -> bool:
+        expected: dict[MemoryScopeType, set[str]] = {
+            MemoryScopeType.USER: _optional_set(self.user_id),
+            MemoryScopeType.NODE: _optional_set(self.node_id),
+            MemoryScopeType.WORKSPACE: _optional_set(self.workspace_id),
+            MemoryScopeType.RUN: _optional_set(self.run_id),
+            MemoryScopeType.ENGAGEMENT: _optional_set(self.engagement_id),
+            MemoryScopeType.ASSET: set(self.asset_ids),
+            MemoryScopeType.TOOL: set(self.tool_ids),
+            MemoryScopeType.SKILL: set(self.skill_ids),
+        }
+        return memory.scope_id in expected[memory.scope_type]
+
+
 class MemoryRecord(DomainModel):
     id: str = Field(default_factory=new_id)
     memory_type: MemoryType
@@ -117,3 +141,7 @@ class MemoryRecord(DomainModel):
     @property
     def scope(self) -> MemoryScope:
         return MemoryScope(scope_type=self.scope_type, scope_id=self.scope_id)
+
+
+def _optional_set(value: str | None) -> set[str]:
+    return {value} if value else set()
