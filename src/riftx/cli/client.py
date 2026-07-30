@@ -77,6 +77,15 @@ class APIClient:
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}")
 
+    def get_run_context(self, run_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/runs/{run_id}/context")
+
+    def get_session_context(self, session_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/sessions/{session_id}/context")
+
+    def get_context_compilation(self, compilation_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/context-compilations/{compilation_id}")
+
     def pause_run(self, run_id: str) -> dict[str, Any]:
         return self._json("POST", f"/api/v1/runs/{run_id}/pause")
 

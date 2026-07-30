@@ -16,6 +16,7 @@ from .errors import APIError, install_error_handlers
 from .routes import (
     approvals_router,
     artifacts_router,
+    context_router,
     events_router,
     executions_router,
     findings_router,
@@ -87,6 +88,7 @@ def create_app(
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(approvals_router, prefix="/api/v1")
     app.include_router(artifacts_router, prefix="/api/v1")
+    app.include_router(context_router, prefix="/api/v1")
     app.include_router(terminals_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])

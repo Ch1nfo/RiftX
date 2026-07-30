@@ -439,6 +439,34 @@ class ProviderStateRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
+class ContextCompilationRecord(Base):
+    __tablename__ = "context_compilations"
+    __table_args__ = (
+        Index("ix_context_compilations_session_created", "session_id", "created_at"),
+        Index("ix_context_compilations_run_created", "run_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    model_profile: Mapped[str] = mapped_column(String(255), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    actual_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    actual_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    loaded_memory_ids_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    checkpoint_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
 

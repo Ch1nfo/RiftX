@@ -17,6 +17,7 @@ from rich.panel import Panel
 from .client import APIClient, RiftXAPIError
 from .render import (
     render_approvals,
+    render_context,
     render_error,
     render_node,
     render_nodes,
@@ -41,6 +42,7 @@ _COMMANDS = [
     "/continue",
     "/cancel",
     "/compact",
+    "/context",
     "/web",
     "/watch",
     "/approvals",
@@ -123,6 +125,7 @@ def _handle_command(
             "[bold]/model [PROFILE][/bold] show or select the model for new runs\n"
             "[bold]/mode [auto|balanced|manual][/bold] show or select approval mode\n"
             "[bold]/plan[/bold] show the latest Agent plan\n"
+            "[bold]/context[/bold] inspect the latest model Context Manifest\n"
             "[bold]/pause[/bold], [bold]/continue[/bold], "
             "[bold]/cancel[/bold] control the active run\n"
             "[bold]/watch[/bold] stream active run events\n"
@@ -207,6 +210,12 @@ def _handle_command(
                 border_style="cyan",
             )
         )
+        return False
+    if command == "/context":
+        if args:
+            render_context(console, client.get_session_context(args[0]))
+        else:
+            render_context(console, client.get_run_context(_require_active(state)))
         return False
     if command == "/pause":
         client.pause_run(_require_active(state))

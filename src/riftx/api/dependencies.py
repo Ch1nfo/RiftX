@@ -17,6 +17,7 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.context import ContextApplicationService
 
 
 def get_control_plane(request: Request) -> object:
@@ -67,6 +68,10 @@ def get_terminal_service(request: Request) -> TerminalApplicationService:
     return request.app.state.control_plane.terminal_service
 
 
+def get_context_service(request: Request) -> ContextApplicationService:
+    return request.app.state.control_plane.context_service
+
+
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
@@ -88,4 +93,8 @@ ArtifactServiceDependency = Annotated[
 TerminalServiceDependency = Annotated[
     TerminalApplicationService,
     Depends(get_terminal_service),
+]
+ContextServiceDependency = Annotated[
+    ContextApplicationService,
+    Depends(get_context_service),
 ]

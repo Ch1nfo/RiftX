@@ -2,6 +2,7 @@
 
 from .approvals import router as approvals_router
 from .artifacts import router as artifacts_router
+from .context import router as context_router
 from .events import router as events_router
 from .executions import router as executions_router
 from .findings import router as findings_router
@@ -15,6 +16,7 @@ from .tools import router as tools_router
 __all__ = [
     "approvals_router",
     "artifacts_router",
+    "context_router",
     "events_router",
     "executions_router",
     "findings_router",

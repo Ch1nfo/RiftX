@@ -48,6 +48,7 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.context import ContextApplicationService
 from riftx.domain import (
     Approval,
     Execution,
@@ -76,6 +77,7 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
+from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.skills import create_default_skill_registry
@@ -282,6 +284,7 @@ tools:
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
+    context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     node_service = NodeApplicationService(node_repository)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
@@ -381,6 +384,7 @@ tools:
                 workflow_client=workflow_client,
             ),
             artifact_service=artifact_service,
+            context_service=ContextApplicationService(context_repository),
             terminal_service=TerminalApplicationService(
                 run_repository=run_repository,
                 supervisor=terminal_controller,

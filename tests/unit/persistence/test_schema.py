@@ -10,6 +10,7 @@ EXPECTED_TABLES = {
     "approvals",
     "approval_grants",
     "artifacts",
+    "context_compilations",
     "engagements",
     "executions",
     "findings",
@@ -60,6 +61,24 @@ def test_event_sequence_is_unique_per_run() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("run_id", "sequence") in unique_columns
+
+
+def test_context_compilation_table_records_manifest_and_actual_usage() -> None:
+    assert set(Base.metadata.tables["context_compilations"].columns.keys()) == {
+        "id",
+        "run_id",
+        "session_id",
+        "agent_id",
+        "model_profile",
+        "purpose",
+        "manifest_json",
+        "estimated_tokens",
+        "actual_input_tokens",
+        "actual_output_tokens",
+        "loaded_memory_ids_json",
+        "checkpoint_id",
+        "created_at",
+    }
 
 
 def test_node_table_matches_runner_lifecycle_contract() -> None:

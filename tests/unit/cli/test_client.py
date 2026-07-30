@@ -305,3 +305,22 @@ def test_execution_client_uses_query_and_cancel_endpoints() -> None:
         ),
         ("POST", "/api/v1/executions/execution-1/cancel", {}),
     ]
+
+
+def test_context_client_uses_inspector_endpoints() -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json={"id": "compilation-1"})
+
+    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+        client.get_run_context("run-1")
+        client.get_session_context("session-1")
+        client.get_context_compilation("compilation-1")
+
+    assert requests == [
+        ("GET", "/api/v1/runs/run-1/context"),
+        ("GET", "/api/v1/sessions/session-1/context"),
+        ("GET", "/api/v1/context-compilations/compilation-1"),
+    ]

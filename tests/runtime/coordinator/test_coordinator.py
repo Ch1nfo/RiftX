@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from riftx.application.errors import RepositoryConflictError
+from riftx.context import ContextApplicationService, ManifestingContextCompiler
 from riftx.domain import Engagement, Objective, Run, RunStatus
 from riftx.persistence import (
     Database,
@@ -18,6 +19,7 @@ from riftx.persistence import (
     SQLAlchemyRunLeaseRepository,
     SQLAlchemyRunRepository,
 )
+from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runtime.coordinator import RuntimeCoordinator
 from riftx.runtime.engine import (
     AgentEngineEvent,
@@ -86,6 +88,7 @@ async def build_runtime(
     limits: CycleLimits | None = None,
     clock: object | None = None,
     start_error: Exception | None = None,
+    observable_context: bool = False,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
@@ -112,6 +115,14 @@ async def build_runtime(
         "events": SQLAlchemyRunEventRepository(database.session_factory),
         "leases": SQLAlchemyRunLeaseRepository(database.session_factory),
     }
+    context_compiler = MinimalContextCompiler()
+    if observable_context:
+        context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
+        repos["context"] = context_repository
+        context_compiler = ManifestingContextCompiler(
+            context_compiler,
+            ContextApplicationService(context_repository),
+        )
     coordinator = RuntimeCoordinator(
         run_repository=SQLAlchemyRunRepository(database.session_factory),
         session_repository=sessions,
@@ -120,12 +131,46 @@ async def build_runtime(
         provider_state_repository=repos["providers"],
         event_repository=repos["events"],
         lease_manager=DatabaseRunLeaseManager(repos["leases"]),
-        context_compiler=MinimalContextCompiler(),
+        context_compiler=context_compiler,
         agent_engine=engine,
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_usage_event_backfills_the_persisted_context_compilation(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, _, repos = await build_runtime(
+        tmp_path,
+        [
+            event(1, AgentEngineEventType.RUN_STARTED),
+            event(
+                2,
+                AgentEngineEventType.USAGE,
+                input_tokens=456,
+                output_tokens=78,
+            ),
+            event(3, AgentEngineEventType.RUN_COMPLETED),
+        ],
+        observable_context=True,
+    )
+
+    await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            input_text="go",
+        )
+    )
+
+    compilation = await repos["context"].latest_for_session("session-1")
+    assert compilation is not None
+    assert compilation.actual_input_tokens == 456
+    assert compilation.actual_output_tokens == 78
+    await database.dispose()
 
 
 async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:

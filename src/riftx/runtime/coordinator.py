@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from time import monotonic
+from typing import Protocol, cast
 
 from riftx.application.errors import EntityNotFoundError
 from riftx.domain import (
@@ -74,6 +75,14 @@ _STEP_TYPES = {
 }
 
 
+class _ContextUsageRecorder(Protocol):
+    async def record_usage(
+        self,
+        compilation_id: str,
+        usage: Mapping[str, object],
+    ) -> object: ...
+
+
 class RuntimeCoordinator:
     def __init__(
         self,
@@ -87,6 +96,7 @@ class RuntimeCoordinator:
         lease_manager: DatabaseRunLeaseManager,
         context_compiler: ContextCompiler,
         agent_engine: AgentEngine,
+        context_usage_recorder: _ContextUsageRecorder | None = None,
         transcript_repository: SQLAlchemyTranscriptRepository | None = None,
         deferred_execution_dispatcher: DeferredExecutionDispatcher | None = None,
         limits: CycleLimits | None = None,
@@ -100,6 +110,12 @@ class RuntimeCoordinator:
         self._events = event_repository
         self._leases = lease_manager
         self._context_compiler = context_compiler
+        if context_usage_recorder is not None:
+            self._context_usage_recorder = context_usage_recorder
+        elif hasattr(context_compiler, "record_usage"):
+            self._context_usage_recorder = cast(_ContextUsageRecorder, context_compiler)
+        else:
+            self._context_usage_recorder = None
         self._agent_engine = agent_engine
         self._transcript = transcript_repository
         self._deferred_executions = deferred_execution_dispatcher
@@ -208,6 +224,14 @@ class RuntimeCoordinator:
                             engine_run=engine_run,
                         )
                 elif event.event_type is AgentEngineEventType.USAGE:
+                    if (
+                        compiled.compilation_id is not None
+                        and self._context_usage_recorder is not None
+                    ):
+                        await self._context_usage_recorder.record_usage(
+                            compiled.compilation_id,
+                            event.data,
+                        )
                     extra_calls = int(event.data.get("model_calls", 0) or 0)
                     cycle.model_call_count += extra_calls
                     await self._cycles.save(cycle)

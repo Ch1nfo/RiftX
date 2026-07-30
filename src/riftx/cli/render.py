@@ -11,6 +11,18 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+_CONTEXT_CATEGORY_LABELS = {
+    "runtime_contract": "Runtime Contract",
+    "stable_instructions": "Stable Instructions",
+    "run_contract": "Run Contract",
+    "working_memory": "Working Memory",
+    "conversation": "Conversation",
+    "tool_results": "Tool Results",
+    "retrieved_memory": "Retrieved Memory",
+    "subagent_results": "Subagent Results",
+    "tool_schemas": "Tool Schemas",
+}
+
 
 def render_nodes(console: Console, nodes: Iterable[dict[str, Any]]) -> None:
     items = list(nodes)
@@ -57,6 +69,37 @@ def render_node(console: Console, node: dict[str, Any]) -> None:
     body.add_row("Labels", str(node.get("labels", {})))
     body.add_row("Last seen", str(node.get("last_seen_at") or "—"))
     console.print(Panel(body, title="Execution Node", border_style="cyan"))
+
+
+def render_context(console: Console, compilation: dict[str, Any]) -> None:
+    manifest = compilation.get("manifest") or {}
+    categories = manifest.get("categories") or {}
+    table = Table(title="Context Inspector", expand=True)
+    table.add_column("Category", style="cyan")
+    table.add_column("Items", justify="right")
+    table.add_column("Characters", justify="right")
+    table.add_column("Estimated tokens", justify="right")
+    for key, label in _CONTEXT_CATEGORY_LABELS.items():
+        usage = categories.get(key) or {}
+        table.add_row(
+            label,
+            str(usage.get("item_count", 0)),
+            str(usage.get("character_count", 0)),
+            str(usage.get("estimated_tokens", 0)),
+        )
+    console.print(table)
+    actual_input = compilation.get("actual_input_tokens")
+    actual_output = compilation.get("actual_output_tokens")
+    console.print(
+        "Model: [cyan]{}[/cyan]  Estimated input: [bold]{}[/bold]  "
+        "Actual input/output: [bold]{}/{}[/bold]  Compilation: [dim]{}[/dim]".format(
+            compilation.get("model_profile", "unknown"),
+            compilation.get("estimated_tokens", 0),
+            actual_input if actual_input is not None else "—",
+            actual_output if actual_output is not None else "—",
+            compilation.get("id", ""),
+        )
+    )
 
 
 def render_runs(console: Console, runs: Iterable[dict[str, Any]]) -> None:

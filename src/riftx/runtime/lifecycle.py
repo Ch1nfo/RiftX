@@ -37,6 +37,7 @@ class ContextCompileRequest(DomainModel):
 
 
 class CompiledContext(DomainModel):
+    compilation_id: str | None = None
     system_instructions: str
     input_items: list[dict[str, object]] = Field(default_factory=list)
     available_tools: list[dict[str, object]] = Field(default_factory=list)

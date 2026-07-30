@@ -71,6 +71,17 @@ class FakeClient:
             ]
         }
 
+    def get_run_context(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("get_run_context", run_id))
+        return {
+            "id": "compilation-1",
+            "model_profile": "gpt-test",
+            "estimated_tokens": 42,
+            "actual_input_tokens": 40,
+            "actual_output_tokens": 8,
+            "manifest": {"categories": {}},
+        }
+
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("cancel_run", run_id))
         return {"accepted": True}
@@ -138,6 +149,18 @@ def test_interactive_plan_cancel_compact_and_web(
     assert ("cancel_run", "run-1") in client.calls
     assert "Inspect, verify, and report." in output.getvalue()
     assert opened == ["http://control.test:8787/runs/run-1"]
+
+
+def test_interactive_context_inspector_uses_active_run() -> None:
+    client = FakeClient()
+    state = InteractiveState(active_run_id="run-1")
+    console, output = make_console()
+
+    interactive._handle_command("/context", state, client, console)
+
+    assert ("get_run_context", "run-1") in client.calls
+    assert "Context Inspector" in output.getvalue()
+    assert "Tool Schemas" in output.getvalue()
 
 
 def test_interactive_rejects_invalid_mode_and_compaction_limit() -> None:

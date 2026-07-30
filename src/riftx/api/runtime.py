@@ -28,6 +28,7 @@ from riftx.application.services import (
     ToolApplicationService,
 )
 from riftx.config import RiftXConfig, load_riftx_config
+from riftx.context import ContextApplicationService
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
@@ -43,6 +44,7 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
 )
+from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runner import ExecutionRunner, ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
@@ -116,6 +118,7 @@ class ControlPlane:
     tool_service: ToolApplicationService
     approval_service: ApprovalApplicationService
     artifact_service: ArtifactApplicationService
+    context_service: ContextApplicationService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
     process_supervisor: ProcessSupervisor | None = None
@@ -204,6 +207,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
+    context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     node_service = NodeApplicationService(
         node_repository,
         offline_after=timedelta(seconds=settings.node_offline_after_seconds),
@@ -334,6 +338,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             workflow_client=workflow_client,
         ),
         artifact_service=artifact_service,
+        context_service=ContextApplicationService(context_repository),
         terminal_service=TerminalApplicationService(
             run_repository=run_repository,
             supervisor=terminal_controller,
