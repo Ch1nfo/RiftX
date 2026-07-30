@@ -2,7 +2,7 @@
 
 ## Current Wave
 
-Wave A and Wave B are complete; Wave C is active and CTX-03 is unblocked.
+Wave A and Wave B are complete; Wave C is active and CTX-04 is unblocked.
 
 ## Completed
 
@@ -16,6 +16,7 @@ Wave A and Wave B are complete; Wave C is active and CTX-03 is unblocked.
 - [x] EX-04 动态 Tool Search 与 Progressive Skill
 - [x] CTX-01 Artifact Spill 与 Tool Result Processor
 - [x] CTX-02 Context Manifest 与 Token Accounting
+- [x] CTX-03 Working Memory 与 Reducer
 
 ## Task Record
 
@@ -243,6 +244,31 @@ Wave A and Wave B are complete; Wave C is active and CTX-03 is unblocked.
   - Token estimates intentionally use a deterministic provider-neutral character heuristic; actual provider usage remains authoritative after the Usage event is received.
   - Provider SDKs that perform multiple internal turns currently attach their aggregate Usage to the compilation that launched the engine invocation; per-provider-call spans can be added without changing the persisted Manifest contract.
 - Next dependency: CTX-03 is unblocked.
+
+### CTX-03
+
+- Branch: `codex/ctx-03-working-memory`
+- Commit: `b2c6e2b feat(context): add structured working memory reducer`
+- Completed at: `2026-07-30 15:02 CST`
+- Tests:
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/e7c3a91f4b20_add_agent_runtime_domain.py migrations/versions/f2a6c8d91e04_add_complete_agent_transcript.py migrations/versions/a4d7e2c19b63_add_runtime_execution_identity.py migrations/versions/c3b8a7d5e921_add_context_compilations.py migrations/versions/d9f4a6c2b731_add_working_memories.py`
+  - `git diff --check`
+  - Result: `449 passed, 2 skipped`; Ruff passed; diff check clean.
+- Migration: `d9f4a6c2b731_add_working_memories.py`
+- Core delivery:
+  - Added structured `CurrentFocus`, `RunPlan`, `ConfirmedFact`, `Hypothesis`, `AttemptRecord`, `UserDecision`, `PendingQuestion`, `ActiveExecutionRef`, `ActiveTerminalRef`, `NextAction`, and authoritative per-Run `WorkingMemory` contracts.
+  - Model-originated changes are constrained to typed `PlanUpdateProposal`, `FactCandidate`, `HypothesisUpdate`, and `AttemptRecord` inputs; `WorkingMemoryReducer` deterministically merges them instead of accepting whole-state replacement.
+  - Fact merging retains historical values, deduplicates source references, raises confidence only for independent evidence, marks conflicts `DISPUTED`, and resolves a unique highest-priority deterministic Parser value over model inference.
+  - Hypothesis evidence links to known Fact IDs and deterministically drives `SUPPORTED`, `CONFIRMED`, `INVESTIGATING`, or `REJECTED` state without allowing statement overwrite.
+  - Completed Plan items cannot regress without an explicit reopen reason, and identical failed Attempts block repeat execution unless a prior retryable Attempt is explicitly referenced with a retry reason.
+  - The `working_memories` table stores structured JSON state plus a durable version; the SQLAlchemy repository uses compare-and-swap updates so concurrent stale writers fail rather than silently overwriting state.
+- Required scenarios:
+  - Fact addition, confidence increase from multiple sources, deterministic-vs-model Fact conflict, Hypothesis support and rejection, duplicate failed Attempt blocking, completed Plan regression, persistence/reload, migration upgrade/downgrade, reducer version mismatch, and repository optimistic-lock conflict are covered by executable tests.
+- Known limitations:
+  - CTX-03 intentionally defines and persists authoritative Working Memory but does not inject it into model prompts; CTX-04 owns the single Context Compiler and token-budget integration.
+  - Current Fact confidence aggregation is provider-neutral and evidence-count based; future domain-specific calibration can evolve behind the same reducer contract.
+- Next dependency: CTX-04 is unblocked.
 
 ## Architecture Deviations
 
