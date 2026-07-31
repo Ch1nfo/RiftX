@@ -44,6 +44,10 @@ from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
 _MAX_RESULT_BYTES = 64 * 1024
 _MAX_BROWSER_RESULT_BYTES = 512 * 1024
 _MAX_OUTPUT_CHUNK_BYTES = 256 * 1024
+_OFFLINE_SAFE_COMMANDS = {
+    RunnerCommandKind.CANCEL,
+    RunnerCommandKind.TERMINAL_CLOSE,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +155,10 @@ class RunnerControlService:
         payload: dict[str, object],
     ) -> tuple[RunnerCommand, bool]:
         node = await self._nodes.get(node_id)
-        if node.status not in {NodeStatus.ONLINE, NodeStatus.DEGRADED}:
+        if (
+            node.status not in {NodeStatus.ONLINE, NodeStatus.DEGRADED}
+            and kind not in _OFFLINE_SAFE_COMMANDS
+        ):
             raise ServiceUnavailableError(
                 "runner_unavailable",
                 f"Runner node {node_id!r} is not connected",

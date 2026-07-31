@@ -130,6 +130,7 @@ class RunnerDaemon:
         terminal_handler: TerminalCommandHandler | None = None,
         target_http_handler: TargetHttpRunner | None = None,
         browser_handler: BrowserRunner | None = None,
+        execution_cancellation_journal: OperationJournal | None = None,
     ) -> None:
         self.config = config
         self._client = client
@@ -138,6 +139,9 @@ class RunnerDaemon:
         self._terminal_handler = terminal_handler
         self._target_http_handler = target_http_handler
         self._browser_handler = browser_handler
+        self._execution_cancellations = execution_cancellation_journal or OperationJournal(
+            config.state_path / "execution-cancellations.json"
+        )
         self._monitors: dict[str, asyncio.Task[None]] = {}
         self._closed = False
 
@@ -274,7 +278,7 @@ class RunnerDaemon:
         await asyncio.gather(*tasks, return_exceptions=True)
         close = getattr(self._supervisor, "close", None)
         if close is not None:
-            await close()
+            await close(cancel_running=True)
         terminal_close = getattr(self._terminal_handler, "close", None)
         if terminal_close is not None:
             await terminal_close()
@@ -294,6 +298,13 @@ class RunnerDaemon:
         request = request.model_copy(update={"execution_id": server_execution_id})
         if request.node_id != self.config.node_id:
             raise ValueError("execute command targets a different Runner node")
+        if await self._execution_cancellations.contains(request.execution_key):
+            await self._client.report_status(server_execution_id, ExecutionStatus.CANCELLED)
+            return {
+                "execution_id": server_execution_id,
+                "status": ExecutionStatus.CANCELLED.value,
+                "suppressed_by_cancellation": True,
+            }
         execution = await self._supervisor.start(request)
         if execution.status in _TERMINAL_STATUSES:
             await self._client.report_status(
@@ -313,12 +324,46 @@ class RunnerDaemon:
     async def _handle_cancel(self, payload: dict[str, object]) -> dict[str, object]:
         server_execution_id = _required_string(payload, "execution_id")
         execution_key = _required_string(payload, "execution_key")
+        cancellation_journal_error: Exception | None = None
+        try:
+            await self._execution_cancellations.add(execution_key)
+        except Exception as exc:
+            cancellation_journal_error = exc
+            logger.exception(
+                "Unable to persist cancellation tombstone for execution key %s; "
+                "continuing with local process termination",
+                execution_key,
+            )
         local = await self._executions.get_by_key(execution_key)
         if local is None:
-            await self._client.report_status(server_execution_id, ExecutionStatus.LOST)
-            return {"execution_id": server_execution_id, "status": "lost"}
-        execution = await self._supervisor.cancel(local.id)
+            if cancellation_journal_error is not None:
+                raise RuntimeError(
+                    f"Cancellation for execution {server_execution_id!r} cannot be "
+                    "guaranteed: no local execution was found and its cancellation "
+                    "tombstone could not be persisted"
+                ) from cancellation_journal_error
+            await self._client.report_status(server_execution_id, ExecutionStatus.CANCELLED)
+            return {
+                "execution_id": server_execution_id,
+                "status": ExecutionStatus.CANCELLED.value,
+            }
+        try:
+            execution = await self._supervisor.cancel(local.id)
+        except Exception as exc:
+            if cancellation_journal_error is not None:
+                raise RuntimeError(
+                    f"Cancellation for execution {server_execution_id!r} failed: its "
+                    "cancellation tombstone could not be persisted and local process "
+                    "termination also failed"
+                ) from exc
+            raise
         await self._report_execution(server_execution_id, execution)
+        if cancellation_journal_error is not None:
+            raise RuntimeError(
+                f"Execution {server_execution_id!r} was stopped locally, but its "
+                "cancellation tombstone could not be persisted; a delayed execute "
+                "command could start it again"
+            ) from cancellation_journal_error
         return {"execution_id": server_execution_id, "status": execution.status.value}
 
     def _start_monitor(self, server_execution_id: str, local_execution_id: str) -> None:

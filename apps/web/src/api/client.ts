@@ -117,11 +117,10 @@ export const api = {
     });
   },
 
-  cancelCurrentExecution(runId: string): Promise<{ accepted: boolean; run: Run }> {
-    return request(
-      `/api/v1/runs/${encodeURIComponent(runId)}/cancel-current-execution`,
-      { method: "POST" },
-    );
+  cancelRun(runId: string): Promise<{ accepted: boolean; run: Run }> {
+    return request(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+    });
   },
 
   appendMessage(

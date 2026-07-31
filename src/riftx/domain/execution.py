@@ -44,7 +44,9 @@ _EXECUTION_TRANSITIONS: Mapping[ExecutionStatus, frozenset[ExecutionStatus]] = {
     ExecutionStatus.FAILED: frozenset(),
     ExecutionStatus.CANCELLED: frozenset(),
     ExecutionStatus.HARD_TIMEOUT: frozenset(),
-    ExecutionStatus.LOST: frozenset(),
+    # LOST records are intentionally allowed to converge to CANCELLED after a
+    # Runner reconnects and acknowledges the durable cancellation tombstone.
+    ExecutionStatus.LOST: frozenset({ExecutionStatus.CANCELLED}),
 }
 
 _TERMINAL_TRANSITIONS: Mapping[TerminalStatus, frozenset[TerminalStatus]] = {

@@ -9,6 +9,7 @@ import { api } from "../api/client";
 import type { TerminalSession, TerminalWebSocketMessage } from "../api/types";
 import { queryKeys, useTerminal, useTerminalControl } from "../hooks/queries";
 import { useI18n } from "../i18n";
+import { type Theme, useTheme } from "../theme";
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { LoadingState } from "./LoadingState";
@@ -18,8 +19,38 @@ interface TerminalPanelProps {
   initialSessionId?: string;
 }
 
+const terminalThemes: Record<Theme, NonNullable<ConstructorParameters<typeof XTerm>[0]>["theme"]> = {
+  dark: {
+    background: "#07100d",
+    foreground: "#d5eee4",
+    cursor: "#8af7c7",
+    selectionBackground: "#174d3a",
+    black: "#07100d",
+    brightBlack: "#557067",
+    green: "#64e5ad",
+    brightGreen: "#8af7c7",
+    yellow: "#e7c56b",
+    red: "#ff7c78",
+    cyan: "#70d9e8",
+  },
+  light: {
+    background: "#fbfdfc",
+    foreground: "#18372d",
+    cursor: "#168b65",
+    selectionBackground: "#ccebdd",
+    black: "#18372d",
+    brightBlack: "#6f837b",
+    green: "#168b65",
+    brightGreen: "#0c7655",
+    yellow: "#a66308",
+    red: "#c83c45",
+    cyan: "#237f91",
+  },
+};
+
 export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
   const { t } = useI18n();
+  const { theme } = useTheme();
   const queryClient = useQueryClient();
   const [sessionId, setSessionId] = useState(initialSessionId ?? "");
   const [connection, setConnection] = useState<"idle" | "connecting" | "open" | "closed">(
@@ -30,6 +61,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
   const translateRef = useRef(t);
   const sessionRef = useRef<TerminalSession | undefined>(undefined);
   const socketRef = useRef<WebSocket | null>(null);
+  const xtermRef = useRef<XTerm | null>(null);
   const terminalQuery = useTerminal(sessionId);
   const controls = useTerminalControl(runId);
 
@@ -48,6 +80,10 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
   }, [terminalQuery.data]);
 
   useEffect(() => {
+    if (xtermRef.current) xtermRef.current.options.theme = terminalThemes[theme];
+  }, [theme]);
+
+  useEffect(() => {
     const element = terminalElement.current;
     if (!sessionId || !element) return undefined;
 
@@ -58,20 +94,9 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
       fontSize: 13,
       scrollback: 10_000,
-      theme: {
-        background: "#07100d",
-        foreground: "#d5eee4",
-        cursor: "#8af7c7",
-        selectionBackground: "#174d3a",
-        black: "#07100d",
-        brightBlack: "#557067",
-        green: "#64e5ad",
-        brightGreen: "#8af7c7",
-        yellow: "#e7c56b",
-        red: "#ff7c78",
-        cyan: "#70d9e8",
-      },
+      theme: terminalThemes[theme],
     });
+    xtermRef.current = terminal;
     terminal.open(element);
     terminal.focus();
     let cursor = 0;
@@ -133,6 +158,7 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
       input.dispose();
       socket?.close();
       if (socketRef.current === socket) socketRef.current = null;
+      if (xtermRef.current === terminal) xtermRef.current = null;
       terminal.dispose();
     };
   }, [queryClient, sessionId, terminalQuery.isLoading]);

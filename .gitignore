@@ -105,6 +105,15 @@ __pycache__/
 # Local-only config overrides (keep riftx.toml as the safe repo example)
 /riftx.local.toml
 
+# Local RiftX YAML configuration (keep sanitized examples in version control)
+/configs/*.yaml
+!/configs/*.example.yaml
+/configs/*.yml
+!/configs/*.example.yml
+/riftx.yaml
+/models.yaml
+/tools.yaml
+
 # Local progress note (do not commit)
 /当前项目进度.md
 

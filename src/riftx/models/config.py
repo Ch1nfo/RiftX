@@ -28,7 +28,7 @@ class ModelProfile(BaseModel):
 
     provider: ModelProviderKind = ModelProviderKind.OPENAI_COMPATIBLE
     model: str = Field(min_length=1)
-    api: ModelAPI = ModelAPI.RESPONSES
+    api: ModelAPI = ModelAPI.CHAT_COMPLETIONS
     base_url: str | None = None
     api_key_env: str | None = "RIFTX_MODEL_API_KEY"
     requires_api_key: bool = True

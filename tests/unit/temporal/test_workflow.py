@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import timedelta
 from uuid import uuid4
 
+import pytest
 from temporalio import activity
-from temporalio.client import WorkflowHandle
+from temporalio.client import WorkflowFailureError, WorkflowHandle
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, Worker
@@ -136,6 +138,40 @@ class BlockingCompactionActivities(FakeActivities):
         self.compaction_started.set()
         await asyncio.Future()
         raise AssertionError("unreachable")
+
+
+@dataclass
+class BlockingCycleActivities(FakeActivities):
+    cycle_started: asyncio.Event = field(default_factory=asyncio.Event)
+    cycle_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+
+    @activity.defn(name="run_agent_cycle_activity")
+    async def run_agent_cycle(
+        self,
+        input: RunAgentCycleActivityInput,
+    ) -> RunAgentCycleActivityResult:
+        self.cycle_inputs.append(input)
+        self.cycle_started.set()
+        try:
+            while True:
+                activity.heartbeat("blocking-cycle")
+                await asyncio.sleep(0.01)
+        finally:
+            self.cycle_cancelled.set()
+
+
+@dataclass
+class AlwaysFailCycleActivities(FakeActivities):
+    attempts: int = 0
+
+    @activity.defn(name="run_agent_cycle_activity")
+    async def run_agent_cycle(
+        self,
+        input: RunAgentCycleActivityInput,
+    ) -> RunAgentCycleActivityResult:
+        self.cycle_inputs.append(input)
+        self.attempts += 1
+        raise ApplicationError("cycle failed")
 
 
 def cycle_result(
@@ -300,6 +336,195 @@ async def test_activity_retry_reuses_cycle_id_and_does_not_duplicate_execution()
     assert len(activities.cycle_inputs) == 2
     assert activities.cycle_inputs[0].cycle_id == activities.cycle_inputs[1].cycle_id
     assert len(activities.launched_cycle_ids) == 1
+    await environment.shutdown()
+
+
+async def test_pause_cancels_in_flight_agent_cycle_activity() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = BlockingCycleActivities(cycle_results=deque())
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+        max_heartbeat_throttle_interval=timedelta(milliseconds=50),
+        default_heartbeat_throttle_interval=timedelta(milliseconds=50),
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-pause-active", session_id="session-pause-active"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await asyncio.wait_for(activities.cycle_started.wait(), timeout=5)
+        await handle.signal(RiftXRunWorkflow.pause)
+        await asyncio.wait_for(activities.cycle_cancelled.wait(), timeout=5)
+        paused = await _wait_for_phase(handle, WorkflowPhase.PAUSED)
+        assert paused.paused is True
+        assert len(activities.cycle_inputs) == 1
+
+        await handle.signal(RiftXRunWorkflow.cancel)
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.CANCELLED
+    assert activities.cleanup_inputs[-1].final_status == "cancelled"
+    history = await handle.fetch_history()
+    await Replayer(workflows=[RiftXRunWorkflow]).replay_workflow(history)
+    await environment.shutdown()
+
+
+async def test_cancel_cancels_in_flight_agent_cycle_activity() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = BlockingCycleActivities(cycle_results=deque())
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+        max_heartbeat_throttle_interval=timedelta(milliseconds=50),
+        default_heartbeat_throttle_interval=timedelta(milliseconds=50),
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-cancel-active", session_id="session-cancel-active"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        await asyncio.wait_for(activities.cycle_started.wait(), timeout=5)
+        await handle.signal(RiftXRunWorkflow.cancel)
+        await asyncio.wait_for(activities.cycle_cancelled.wait(), timeout=5)
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.CANCELLED
+    assert len(activities.cycle_inputs) == 1
+    assert activities.cleanup_inputs[-1].final_status == "cancelled"
+    await environment.shutdown()
+
+
+async def test_cancel_current_execution_releases_tool_wait() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = FakeActivities(
+        cycle_results=deque(
+            [
+                cycle_result(
+                    RuntimeYieldReason.TOOL_RUNNING,
+                    waiting_object_id="execution-cancelled",
+                ),
+                cycle_result(RuntimeYieldReason.RUN_COMPLETED),
+            ]
+        )
+    )
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-cancel-current", session_id="session-cancel-current"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        for _ in range(100):
+            status = await handle.query(RiftXRunWorkflow.get_status)
+            if status.waiting_object_id == "execution-cancelled":
+                break
+            await asyncio.sleep(0.01)
+        assert status.waiting_object_id == "execution-cancelled"
+
+        await handle.signal(RiftXRunWorkflow.cancel_current_execution)
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.COMPLETED
+    assert len(activities.cycle_inputs) == 2
+    assert activities.cycle_inputs[1].completed_execution_id == "execution-cancelled"
+    await environment.shutdown()
+
+
+async def test_pause_releases_tool_wait_before_resume() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = FakeActivities(
+        cycle_results=deque(
+            [
+                cycle_result(
+                    RuntimeYieldReason.TOOL_RUNNING,
+                    waiting_object_id="execution-paused",
+                ),
+                cycle_result(RuntimeYieldReason.RUN_COMPLETED),
+            ]
+        )
+    )
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-pause-tool", session_id="session-pause-tool"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        for _ in range(100):
+            status = await handle.query(RiftXRunWorkflow.get_status)
+            if status.waiting_object_id == "execution-paused":
+                break
+            await asyncio.sleep(0.01)
+        assert status.waiting_object_id == "execution-paused"
+
+        await handle.signal(RiftXRunWorkflow.pause)
+        paused = await _wait_for_phase(handle, WorkflowPhase.PAUSED)
+        assert paused.paused is True
+        await handle.signal(RiftXRunWorkflow.resume)
+        result = await handle.result()
+
+    assert result.phase is WorkflowPhase.COMPLETED
+    assert len(activities.cycle_inputs) == 2
+    assert activities.cycle_inputs[1].completed_execution_id == "execution-paused"
+    history = await handle.fetch_history()
+    await Replayer(workflows=[RiftXRunWorkflow]).replay_workflow(history)
+    await environment.shutdown()
+
+
+async def test_final_agent_cycle_failure_runs_failed_cleanup() -> None:
+    environment = await _environment()
+    task_queue = f"riftx-test-{uuid4()}"
+    activities = AlwaysFailCycleActivities(cycle_results=deque())
+
+    async with Worker(
+        environment.client,
+        task_queue=task_queue,
+        workflows=[RiftXRunWorkflow],
+        activities=activities.registered(),
+        max_cached_workflows=0,
+    ):
+        handle = await environment.client.start_workflow(
+            RiftXRunWorkflow.run,
+            RunWorkflowInput(run_id="run-cycle-failure", session_id="session-cycle-failure"),
+            id=f"workflow-{uuid4()}",
+            task_queue=task_queue,
+        )
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()
+
+    assert activities.attempts == 3
+    assert activities.cleanup_inputs[-1].final_status == "failed"
+    history = await handle.fetch_history()
+    await Replayer(workflows=[RiftXRunWorkflow]).replay_workflow(history)
     await environment.shutdown()
 
 

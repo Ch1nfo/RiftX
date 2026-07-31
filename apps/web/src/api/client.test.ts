@@ -35,6 +35,26 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("emergency-stops the entire Run through the Run cancellation route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          accepted: true,
+          run: { id: "run-1", status: "running" },
+        }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.cancelRun("run 1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs/run%201/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("preserves the unified API error envelope", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(

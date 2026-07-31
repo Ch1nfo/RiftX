@@ -5,10 +5,12 @@ import {
   CirclePlus,
   Languages,
   Menu,
+  Moon,
   Network,
   Radar,
   Server,
   ShieldCheck,
+  Sun,
   Wrench,
   X,
 } from "lucide-react";
@@ -16,6 +18,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useI18n } from "../i18n";
 import { useUIStore } from "../store/ui";
+import { useTheme } from "../theme";
 
 const navigation = [
   { to: "/", label: "Dashboard", icon: Radar, end: true },
@@ -33,6 +36,7 @@ const titles: Record<string, { eyebrow: string; title: string }> = {
 
 export function Layout() {
   const { language, t, toggleLanguage } = useI18n();
+  const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUIStore((state) => state.setSidebarOpen);
@@ -119,6 +123,15 @@ export function Layout() {
             <h1>{t(current.title)}</h1>
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="language-switch theme-switch"
+              aria-label={t(theme === "dark" ? "Switch to light mode" : "Switch to dark mode")}
+              title={t(theme === "dark" ? "Switch to light mode" : "Switch to dark mode")}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
             <button
               type="button"
               className="language-switch"

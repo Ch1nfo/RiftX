@@ -236,8 +236,8 @@ export function useRunControl(runId: string) {
   return {
     pause: useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: refresh }),
     resume: useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: refresh }),
-    cancel: useMutation({
-      mutationFn: () => api.cancelCurrentExecution(runId),
+    emergencyStop: useMutation({
+      mutationFn: () => api.cancelRun(runId),
       onSuccess: refresh,
     }),
     message: useMutation({

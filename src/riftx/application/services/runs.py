@@ -10,20 +10,43 @@ from typing import Protocol
 
 from riftx.application.errors import (
     ApplicationConflictError,
+    ApplicationServiceError,
     EntityNotFoundError,
     ServiceUnavailableError,
 )
-from riftx.application.ports import EngagementRepository, RunEventRepository, RunRepository
+from riftx.application.ports import (
+    EngagementRepository,
+    ExecutionRepository,
+    RunEventRepository,
+    RunRepository,
+)
 from riftx.domain import (
     ApprovalMode,
     Engagement,
     EntryPoint,
+    Execution,
+    ExecutionStatus,
     Objective,
     Run,
     RunStatus,
     Scope,
     SuccessCriterion,
 )
+from riftx.runner import ExecutionRunner
+
+_ACTIVE_EXECUTION_STATUSES = {
+    ExecutionStatus.CREATED,
+    ExecutionStatus.QUEUED,
+    ExecutionStatus.STARTING,
+    ExecutionStatus.RUNNING,
+}
+_STOP_CANDIDATE_EXECUTION_STATUSES = _ACTIVE_EXECUTION_STATUSES | {
+    # LOST means the Control Plane no longer has proof that the process
+    # stopped. A durable cancel tombstone must still be delivered and
+    # acknowledged before pause/cancel can claim success.
+    ExecutionStatus.LOST,
+}
+_EXECUTION_LIST_PAGE_SIZE = 1000
 
 
 class RunWorkflowClient(Protocol):
@@ -73,6 +96,21 @@ class CreateRun:
     engagement: CreateEngagement | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ExecutionStopResult:
+    attempted_ids: tuple[str, ...]
+    confirmed_statuses: dict[str, str]
+    failures: dict[str, str]
+
+    @property
+    def confirmed_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self.confirmed_statuses))
+
+    @property
+    def succeeded(self) -> bool:
+        return not self.failures
+
+
 class RunApplicationService:
     def __init__(
         self,
@@ -81,13 +119,29 @@ class RunApplicationService:
         run_repository: RunRepository,
         event_repository: RunEventRepository,
         workflow_client: RunWorkflowClient,
+        execution_repository: ExecutionRepository,
+        execution_runner: ExecutionRunner,
         workspace_root: Path,
+        execution_cancel_timeout_seconds: float = 5.0,
+        execution_cancel_poll_seconds: float = 0.05,
+        execution_cancel_max_passes: int = 5,
     ) -> None:
+        if execution_cancel_timeout_seconds < 0:
+            raise ValueError("execution_cancel_timeout_seconds must not be negative")
+        if execution_cancel_poll_seconds <= 0:
+            raise ValueError("execution_cancel_poll_seconds must be positive")
+        if execution_cancel_max_passes < 1:
+            raise ValueError("execution_cancel_max_passes must be positive")
         self._engagement_repository = engagement_repository
         self._run_repository = run_repository
         self._event_repository = event_repository
         self._workflow_client = workflow_client
+        self._execution_repository = execution_repository
+        self._execution_runner = execution_runner
         self._workspace_root = workspace_root
+        self._execution_cancel_timeout_seconds = execution_cancel_timeout_seconds
+        self._execution_cancel_poll_seconds = execution_cancel_poll_seconds
+        self._execution_cancel_max_passes = execution_cancel_max_passes
 
     async def create_run(self, command: CreateRun) -> Run:
         engagement = await self._resolve_engagement(command)
@@ -155,34 +209,90 @@ class RunApplicationService:
 
     async def pause(self, run_id: str) -> Run:
         run = await self._require_controllable_run(run_id, action="pause")
-        await self._invoke_workflow(run, "pause", self._workflow_client.pause)
-        await self._event_repository.append(run.id, "run.pause_requested")
-        return run
+        run = await self._transition_if_possible(run, RunStatus.PAUSING)
+        stop_result, workflow_synced = await asyncio.gather(
+            self._cancel_active_executions(run.id, drain=True),
+            self._invoke_workflow_best_effort(run, "pause", self._workflow_client.pause),
+        )
+        await self._event_repository.append(
+            run.id,
+            "run.pause_requested",
+            self._stop_event_payload(stop_result, workflow_synced=workflow_synced),
+        )
+        self._raise_if_stop_failed(run, stop_result)
+        current = await self.get_run(run.id)
+        return await self._transition_if_possible(current, RunStatus.PAUSED)
 
     async def resume(self, run_id: str) -> Run:
         run = await self._require_controllable_run(run_id, action="resume")
-        await self._invoke_workflow(run, "resume", self._workflow_client.resume)
+        if run.status is RunStatus.PAUSING:
+            run = await self._transition_if_possible(run, RunStatus.PAUSED)
+        if run.status is not RunStatus.PAUSED:
+            raise ApplicationConflictError(
+                "run_not_paused",
+                f"Cannot resume run {run.id!r} while it is {run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        run = await self._run_repository.update_status(run.id, RunStatus.RUNNING)
+        try:
+            await self._invoke_workflow(run, "resume", self._workflow_client.resume)
+        except Exception:
+            current = await self.get_run(run.id)
+            if current.status is RunStatus.RUNNING:
+                await self._run_repository.update_status(current.id, RunStatus.PAUSED)
+            raise
         await self._event_repository.append(run.id, "run.resume_requested")
-        return run
+        return await self.get_run(run.id)
 
     async def cancel_current_execution(self, run_id: str) -> Run:
-        run = await self._require_controllable_run(
-            run_id,
-            action="cancel the current execution for",
+        # Safety controls must remain available for a terminal Run because a
+        # crashed Workflow can leave an orphaned host process behind.
+        run = await self.get_run(run_id)
+        stop_result, workflow_synced = await asyncio.gather(
+            self._cancel_active_executions(run.id, drain=False),
+            self._invoke_workflow_best_effort(
+                run,
+                "cancel the current execution",
+                self._workflow_client.cancel_current_execution,
+            ),
         )
-        await self._invoke_workflow(
-            run,
-            "cancel the current execution",
-            self._workflow_client.cancel_current_execution,
+        await self._event_repository.append(
+            run.id,
+            "execution.cancel_requested",
+            self._stop_event_payload(stop_result, workflow_synced=workflow_synced),
         )
-        await self._event_repository.append(run.id, "execution.cancel_requested")
-        return run
+        self._raise_if_stop_failed(run, stop_result)
+        return await self.get_run(run.id)
 
     async def cancel(self, run_id: str) -> Run:
-        run = await self._require_controllable_run(run_id, action="cancel")
-        await self._invoke_workflow(run, "cancel", self._workflow_client.cancel)
-        await self._event_repository.append(run.id, "run.cancel_requested")
-        return run
+        # Full cancellation is also an orphan-process recovery operation, so it
+        # intentionally remains callable after the Workflow/Run became terminal.
+        run = await self.get_run(run_id)
+        if run.status not in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            run = await self._transition_if_possible(run, RunStatus.CANCELLING)
+        stop_result, workflow_synced = await asyncio.gather(
+            self._cancel_active_executions(run.id, drain=True),
+            self._invoke_workflow_best_effort(run, "cancel", self._workflow_client.cancel),
+        )
+        await self._event_repository.append(
+            run.id,
+            "run.cancel_requested",
+            self._stop_event_payload(stop_result, workflow_synced=workflow_synced),
+        )
+        self._raise_if_stop_failed(run, stop_result)
+        current = await self.get_run(run.id)
+        if current.status not in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            current = await self._transition_if_possible(current, RunStatus.CANCELLING)
+            current = await self._transition_if_possible(current, RunStatus.CANCELLED)
+        return current
 
     async def compact(self, run_id: str, *, max_history_items: int = 100) -> Run:
         run = await self._require_controllable_run(run_id, action="compact context for")
@@ -280,9 +390,166 @@ class RunApplicationService:
     ) -> None:
         try:
             await operation(run.id)
+        except ApplicationServiceError:
+            raise
         except Exception as exc:
-            raise ServiceUnavailableError(
-                "temporal_unavailable",
-                f"Could not {action} because Temporal is unavailable",
-                details={"run_id": run.id},
+            raise ApplicationConflictError(
+                "workflow_control_failed",
+                f"Could not {action} because the Workflow rejected the control request",
+                details={
+                    "run_id": run.id,
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
             ) from exc
+
+    async def _invoke_workflow_best_effort(
+        self,
+        run: Run,
+        action: str,
+        operation: Callable[[str], Awaitable[object]],
+    ) -> bool:
+        try:
+            await self._invoke_workflow(run, action, operation)
+        except Exception as exc:
+            payload: dict[str, object] = {
+                "action": action,
+                "workflow_id": run.temporal_workflow_id,
+                "error_type": type(exc).__name__,
+                "reason": str(exc),
+            }
+            if isinstance(exc, ApplicationServiceError):
+                payload["error_code"] = exc.code
+                payload["details"] = exc.details
+            await self._event_repository.append(run.id, "workflow.signal_failed", payload)
+            return False
+        return True
+
+    async def _cancel_active_executions(
+        self,
+        run_id: str,
+        *,
+        drain: bool,
+    ) -> _ExecutionStopResult:
+        attempted: set[str] = set()
+        confirmed: dict[str, str] = {}
+        failures: dict[str, str] = {}
+        passes = self._execution_cancel_max_passes if drain else 1
+
+        for _ in range(passes):
+            candidates = [
+                execution
+                for execution in await self._list_run_executions(run_id)
+                if execution.status in _STOP_CANDIDATE_EXECUTION_STATUSES
+                and execution.id not in attempted
+            ]
+            if not candidates:
+                break
+            attempted.update(execution.id for execution in candidates)
+            results = await asyncio.gather(
+                *(self._cancel_and_confirm(execution) for execution in candidates),
+                return_exceptions=True,
+            )
+            for execution, result in zip(candidates, results, strict=True):
+                if isinstance(result, BaseException):
+                    failures[execution.id] = f"{type(result).__name__}: {result}"
+                    continue
+                confirmed[execution.id] = result.status.value
+                failures.pop(execution.id, None)
+            if not drain:
+                break
+            await asyncio.sleep(0)
+
+        refreshed = await self._list_run_executions(run_id)
+        remaining = []
+        for execution in refreshed:
+            if execution.status in _STOP_CANDIDATE_EXECUTION_STATUSES:
+                remaining.append(execution)
+            elif execution.id in attempted:
+                confirmed[execution.id] = execution.status.value
+                failures.pop(execution.id, None)
+        for execution in remaining:
+            attempted.add(execution.id)
+            failures.setdefault(
+                execution.id,
+                f"stop was not confirmed; execution remains {execution.status.value}",
+            )
+        return _ExecutionStopResult(
+            attempted_ids=tuple(sorted(attempted)),
+            confirmed_statuses=dict(sorted(confirmed.items())),
+            failures=dict(sorted(failures.items())),
+        )
+
+    async def _list_run_executions(self, run_id: str) -> list[Execution]:
+        executions: list[Execution] = []
+        offset = 0
+        while True:
+            page = list(
+                await self._execution_repository.list(
+                    run_id,
+                    limit=_EXECUTION_LIST_PAGE_SIZE,
+                    offset=offset,
+                )
+            )
+            executions.extend(page)
+            if len(page) < _EXECUTION_LIST_PAGE_SIZE:
+                return executions
+            offset += len(page)
+
+    async def _cancel_and_confirm(self, execution: Execution) -> Execution:
+        await self._execution_runner.cancel(execution.id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._execution_cancel_timeout_seconds
+        while True:
+            current = await self._execution_repository.get(execution.id)
+            if current is None:
+                raise RuntimeError("execution disappeared before stop could be confirmed")
+            if current.status not in _STOP_CANDIDATE_EXECUTION_STATUSES:
+                return current
+            if loop.time() >= deadline:
+                if current.status is ExecutionStatus.LOST:
+                    raise TimeoutError(
+                        "execution remains lost; cancellation was queued but the Runner "
+                        "did not acknowledge that the process stopped"
+                    )
+                raise TimeoutError(
+                    f"execution remains {current.status.value} after cancellation"
+                )
+            await asyncio.sleep(self._execution_cancel_poll_seconds)
+
+    async def _transition_if_possible(self, run: Run, target: RunStatus) -> Run:
+        current = await self.get_run(run.id)
+        if current.status is target:
+            return current
+        if not current.can_transition_to(target):
+            return current
+        return await self._run_repository.update_status(current.id, target)
+
+    @staticmethod
+    def _stop_event_payload(
+        result: _ExecutionStopResult,
+        *,
+        workflow_synced: bool,
+    ) -> dict[str, object]:
+        return {
+            "execution_ids": list(result.attempted_ids),
+            "confirmed_execution_ids": list(result.confirmed_ids),
+            "confirmed_statuses": result.confirmed_statuses,
+            "failed_executions": result.failures,
+            "workflow_synced": workflow_synced,
+        }
+
+    @staticmethod
+    def _raise_if_stop_failed(run: Run, result: _ExecutionStopResult) -> None:
+        if result.succeeded:
+            return
+        raise ServiceUnavailableError(
+            "execution_cancel_failed",
+            "Could not confirm that every execution requiring a safety stop was stopped",
+            details={
+                "run_id": run.id,
+                "execution_ids": list(result.attempted_ids),
+                "confirmed_execution_ids": list(result.confirmed_ids),
+                "failed_executions": result.failures,
+            },
+        )

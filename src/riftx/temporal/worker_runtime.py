@@ -326,7 +326,7 @@ class TemporalWorkerRuntime:
             return
         self._closed = True
         await self.terminal_supervisor.close_all()
-        await self.process_supervisor.close()
+        await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
         await self.database.dispose()
 
@@ -574,6 +574,7 @@ async def build_temporal_worker(
             tool_call_repository=tool_call_intent_repository,
             runner=execution_runner,
             event_repository=event_repository,
+            run_repository=run_repository,
         )
         deferred_dispatcher = DeferredExecutionDispatcher(
             tool_call_repository=tool_call_intent_repository,
@@ -705,7 +706,7 @@ async def build_temporal_worker(
         if terminal_supervisor is not None:
             await terminal_supervisor.close_all()
         if process_supervisor is not None:
-            await process_supervisor.close()
+            await process_supervisor.close(cancel_running=True)
         if model_provider is not None:
             await model_provider.aclose()
         await database.dispose()

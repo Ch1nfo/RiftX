@@ -357,7 +357,11 @@ tools:
                 run_repository=run_repository,
                 event_repository=event_repository,
                 workflow_client=workflow_client,
+                execution_repository=execution_repository,
+                execution_runner=process_supervisor,
                 workspace_root=settings.workspace_root,
+                execution_cancel_timeout_seconds=0.2,
+                execution_cancel_poll_seconds=0.01,
             ),
             event_service=EventApplicationService(
                 run_repository=run_repository,
@@ -522,13 +526,18 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             assert event_types == [
                 "run.created",
                 "workflow.started",
+                "run.status_changed",
                 "run.pause_requested",
+                "run.status_changed",
+                "run.status_changed",
                 "run.resume_requested",
                 "execution.cancel_requested",
                 "user.message_queued",
                 "agent.context_compaction_requested",
                 "agent.model_switch_requested",
+                "run.status_changed",
                 "run.cancel_requested",
+                "run.status_changed",
             ]
             message_event = next(
                 item

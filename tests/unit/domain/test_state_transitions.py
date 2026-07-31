@@ -100,6 +100,17 @@ def test_execution_cannot_skip_starting_state() -> None:
         execution.transition_to(ExecutionStatus.RUNNING)
 
 
+def test_lost_execution_can_converge_to_cancelled_after_stop_acknowledgement() -> None:
+    execution = make_execution()
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.transition_to(ExecutionStatus.LOST)
+
+    execution.transition_to(ExecutionStatus.CANCELLED)
+
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.finished_at is not None
+
+
 def test_approval_can_only_be_decided_once() -> None:
     approval = Approval(run_id="run-1", tool_call_id="call-1")
     approval.decide(

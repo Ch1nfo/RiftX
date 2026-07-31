@@ -85,6 +85,31 @@ async def test_hundred_tools_do_not_pollute_initial_context(tmp_path: Path) -> N
     assert len(compiled.context_manifest["hidden_available_tools"]) == 100
 
 
+async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None:
+    manager = ToolContextManager(await _registry(tmp_path, 10))
+
+    schema = next(
+        item
+        for item in manager.visibility(
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+        ).available_tools
+        if item["name"] == "run_shell"
+    )
+
+    parameters = schema["parameters"]
+    assert isinstance(parameters, dict)
+    assert parameters["required"] == ["script"]
+    assert set(parameters["properties"]) == {
+        "script",
+        "cwd",
+        "environment",
+        "timeout_seconds",
+    }
+    assert parameters["additionalProperties"] is False
+
+
 async def test_capability_and_synonym_search_discover_smb_tool(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
 

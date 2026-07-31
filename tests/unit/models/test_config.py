@@ -12,7 +12,20 @@ def test_example_models_config_is_valid() -> None:
 
     assert config.default_profile == "primary"
     assert set(config.models) == {"primary", "fast", "report"}
-    assert config.models["fast"].api is ModelAPI.CHAT_COMPLETIONS
+    assert all(
+        profile.api is ModelAPI.CHAT_COMPLETIONS for profile in config.models.values()
+    )
+
+
+def test_model_profile_defaults_to_chat_completions() -> None:
+    config = ModelsConfig.model_validate(
+        {
+            "default_profile": "primary",
+            "models": {"primary": {"model": "test-model"}},
+        }
+    )
+
+    assert config.models["primary"].api is ModelAPI.CHAT_COMPLETIONS
 
 
 def test_models_config_requires_default_profile() -> None:

@@ -61,6 +61,7 @@ import {
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
 import { useI18n, type Language } from "../i18n";
+import { coalesceTimelineEvents } from "./runTimeline";
 
 type DetailTab =
   | "overview"
@@ -121,7 +122,9 @@ export function RunDetailPage() {
 
   const isFinal = ["completed", "failed", "cancelled"].includes(run.data.status);
   const anyControlPending =
-    controls.pause.isPending || controls.resume.isPending || controls.cancel.isPending;
+    controls.pause.isPending ||
+    controls.resume.isPending ||
+    controls.emergencyStop.isPending;
 
   return (
     <div className="page-stack">
@@ -159,17 +162,22 @@ export function RunDetailPage() {
           <button
             className="danger-button"
             disabled={isFinal || anyControlPending}
-            onClick={() => controls.cancel.mutate()}
+            onClick={() => controls.emergencyStop.mutate()}
+            title={t("Emergency stop — cancel the entire Run")}
+            aria-label={t("Emergency stop — cancel the entire Run")}
           >
-            <Ban size={16} /> {t("Cancel execution")}
+            <Ban size={16} /> {t("Emergency stop")}
           </button>
         </div>
       </div>
 
-      {controls.pause.error || controls.resume.error || controls.cancel.error ? (
+      {controls.pause.error || controls.resume.error || controls.emergencyStop.error ? (
         <ErrorState
           error={
-            controls.pause.error ?? controls.resume.error ?? controls.cancel.error ?? new Error()
+            controls.pause.error ??
+            controls.resume.error ??
+            controls.emergencyStop.error ??
+            new Error()
           }
         />
       ) : null}
@@ -441,7 +449,8 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
 function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean }) {
   const { language, t } = useI18n();
   if (loading) return <LoadingState label="Loading event timeline" />;
-  if (!events.length) {
+  const items = coalesceTimelineEvents(events);
+  if (!items.length) {
     return (
       <EmptyState icon={Clock3} title="Timeline is empty">
         {t("Durable events appear here as the workflow progresses.")}
@@ -450,25 +459,51 @@ function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean })
   }
   return (
     <div className="timeline">
-      {events.map((event) => (
-        <article className="timeline-event" key={event.id}>
-          <div className="timeline-rail">
-            <div className={`event-icon event-${eventFamily(event.event_type)}`}>
-              <EventIcon eventType={event.event_type} />
-            </div>
-          </div>
-          <div className="event-card">
-            <div className="event-header">
-              <div>
-                <span className="event-sequence">#{event.sequence}</span>
-                <strong>{t(eventTitle(event.event_type))}</strong>
+      {items.map((item) => {
+        const eventType =
+          item.kind === "event"
+            ? item.event.event_type
+            : item.streamType === "assistant"
+              ? "agent.assistant_stream"
+              : "tool.argument_stream";
+        return (
+          <article className="timeline-event" key={item.key}>
+            <div className="timeline-rail">
+              <div className={`event-icon event-${eventFamily(eventType)}`}>
+                <EventIcon eventType={eventType} />
               </div>
-              <time>{formatTimestamp(event.created_at, language)}</time>
             </div>
-            <EventPayload event={event} />
-          </div>
-        </article>
-      ))}
+            <div className="event-card">
+              <div className="event-header">
+                <div>
+                  <span className="event-sequence">
+                    {formatSequenceRange(item.startSequence, item.endSequence)}
+                  </span>
+                  <strong>
+                    {item.kind === "event"
+                      ? t(eventTitle(item.event.event_type))
+                      : t(
+                          item.streamType === "assistant"
+                            ? "Agent response"
+                            : "Tool call arguments",
+                        )}
+                  </strong>
+                </div>
+                <time>{formatTimestamp(item.createdAt, language)}</time>
+              </div>
+              {item.kind === "event" ? (
+                <EventPayload event={item.event} />
+              ) : item.streamType === "assistant" ? (
+                <div className="event-markdown">
+                  <ReactMarkdown>{item.content}</ReactMarkdown>
+                </div>
+              ) : (
+                <pre className="event-json">{formatJsonLike(item.content)}</pre>
+              )}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1239,6 +1274,18 @@ function eventTitle(eventType: string) {
     .map((part) => part.replaceAll("_", " "))
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" · ");
+}
+
+function formatSequenceRange(start: number, end: number) {
+  return start === end ? `#${start}` : `#${start}–#${end}`;
+}
+
+function formatJsonLike(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
 
 function formatTimestamp(value: string, language: Language = "en") {

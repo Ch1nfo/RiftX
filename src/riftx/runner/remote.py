@@ -118,12 +118,20 @@ class RemoteExecutionSupervisor:
 
     async def cancel(self, execution_id: str) -> Execution:
         execution = await self.get(execution_id)
-        if execution.status in _TERMINAL_EXECUTION_STATUSES:
+        # A terminal status reported by the Control Plane is not proof that a
+        # remote process has stopped. In particular, LOST/FAILED can be written
+        # after a disconnect while the Runner process is still alive. Persist a
+        # CANCEL tombstone for every status except an already acknowledged
+        # cancellation so a reconnecting Runner cannot start or keep it alive.
+        if execution.status is ExecutionStatus.CANCELLED:
             return execution
         await self._control.enqueue(
             execution.node_id,
             kind=RunnerCommandKind.CANCEL,
-            idempotency_key=f"cancel:{execution.id}",
+            # A failed safety command must be re-enqueueable. Each request is
+            # independently idempotent at the Runner through its cancellation
+            # journal, so do not permanently reuse a failed command row.
+            idempotency_key=f"cancel:{execution.id}:{new_id()}",
             payload={
                 "execution_id": execution.id,
                 "execution_key": execution.execution_key,

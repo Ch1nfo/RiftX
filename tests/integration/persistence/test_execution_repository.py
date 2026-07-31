@@ -48,6 +48,7 @@ async def test_execution_repository_claim_is_idempotent(tmp_path: Path) -> None:
     first, first_created = await repository.create_if_absent(execution)
     duplicate = execution.model_copy(update={"id": "execution-2"})
     second, second_created = await repository.create_if_absent(duplicate)
+    created_active = await repository.list_active()
     first.transition_to(ExecutionStatus.STARTING)
     await repository.save(first)
     active = await repository.list_active()
@@ -56,6 +57,8 @@ async def test_execution_repository_claim_is_idempotent(tmp_path: Path) -> None:
     assert first_created is True
     assert second_created is False
     assert second.id == first.id
+    assert [item.id for item in created_active] == [first.id]
+    assert created_active[0].status is ExecutionStatus.CREATED
     assert [item.id for item in active] == [first.id]
     assert [item.id for item in listed] == [first.id]
     assert listed[0].tool_id == "printf"

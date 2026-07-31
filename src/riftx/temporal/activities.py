@@ -126,7 +126,7 @@ class RiftXActivities:
         run = await self._require_run(input.run_id)
         if run.status is RunStatus.COMPLETED:
             return AgentCycleActivityResult(status=AgentCycleActivityStatus.COMPLETED)
-        if run.status in {RunStatus.WAITING_APPROVAL, RunStatus.PAUSED}:
+        if run.status is RunStatus.WAITING_APPROVAL:
             run = await self._run_repository.update_status(run.id, RunStatus.RUNNING)
         elif run.status is not RunStatus.RUNNING:
             run = await self._move_to_running(run)
@@ -345,6 +345,12 @@ class RiftXActivities:
                 f"invalid cleanup final status {input.final_status!r}",
                 non_retryable=True,
             ) from exc
+        if (
+            target is RunStatus.CANCELLED
+            and run.status is not RunStatus.CANCELLING
+            and run.can_transition_to(RunStatus.CANCELLING)
+        ):
+            run = await self._run_repository.update_status(run.id, RunStatus.CANCELLING)
         if run.status is not target and run.can_transition_to(target):
             run = await self._run_repository.update_status(run.id, target)
         await self._event_repository.append(

@@ -12,6 +12,7 @@ from pathlib import Path
 from temporalio.client import Client
 
 from riftx import __version__
+from riftx.application.errors import ServiceUnavailableError
 from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
@@ -166,7 +167,7 @@ class ControlPlane:
             await self.browser_manager.close_all()
         await self.terminal_supervisor.close_all()
         if self.process_supervisor is not None:
-            await self.process_supervisor.close()
+            await self.process_supervisor.close(cancel_running=True)
         await self.database.dispose()
 
 
@@ -211,7 +212,11 @@ class UnavailableRunWorkflowClient:
         return f"{self._config.workflow_id_prefix}-{run_id}"
 
     def _raise(self, run_id: str) -> None:
-        raise RuntimeError(f"Temporal is unavailable for run {run_id!r}: {self._reason}")
+        raise ServiceUnavailableError(
+            "temporal_unavailable",
+            "Temporal is unavailable",
+            details={"run_id": run_id, "reason": self._reason},
+        )
 
 
 async def build_control_plane(settings: APISettings) -> ControlPlane:
@@ -362,6 +367,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         run_repository=run_repository,
         event_repository=event_repository,
         workflow_client=workflow_client,
+        execution_repository=execution_repository,
+        execution_runner=execution_runner,
         workspace_root=settings.workspace_root,
     )
 

@@ -4,7 +4,7 @@ models:
   primary:
     provider: openai_compatible
     model: gpt-5.6
-    api: responses
+    api: chat_completions
     base_url: "${RIFTX_MODEL_BASE_URL}"
     api_key_env: RIFTX_MODEL_API_KEY
     requires_api_key: true
@@ -24,7 +24,7 @@ models:
   report:
     provider: openai_compatible
     model: report-model
-    api: responses
+    api: chat_completions
     base_url: "${RIFTX_MODEL_BASE_URL}"
     api_key_env: RIFTX_MODEL_API_KEY
     requires_api_key: true

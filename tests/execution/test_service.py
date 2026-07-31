@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from riftx.application.errors import EntityNotFoundError
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.domain import (
     Engagement,
     Execution,
@@ -13,6 +13,7 @@ from riftx.domain import (
     ExecutorType,
     Objective,
     Run,
+    RunStatus,
 )
 from riftx.execution import ExecutionService, SubmitExecutionRequest, build_execution_key
 from riftx.persistence import (
@@ -113,7 +114,8 @@ async def build_service(
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Authorized")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             id="run-1",
             engagement_id="engagement-1",
@@ -158,9 +160,11 @@ async def build_service(
         session_repository=sessions,
         tool_call_repository=tool_calls,
         runner=runner,
+        run_repository=runs,
     )
     return database, service, runner, {
         "executions": executions,
+        "runs": runs,
         "tool_calls": tool_calls,
     }
 
@@ -186,6 +190,22 @@ async def test_submit_requires_persisted_tool_call_before_runner_launch(tmp_path
     with pytest.raises(EntityNotFoundError, match="ToolCallIntent"):
         await service.submit(missing)
 
+    assert runner.launches == 0
+    await database.dispose()
+
+
+async def test_submit_is_blocked_after_run_enters_pause_fence(tmp_path: Path) -> None:
+    database, service, runner, repos = await build_service(tmp_path)
+    runs = repos["runs"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    await runs.update_status("run-1", RunStatus.PREPARING)
+    await runs.update_status("run-1", RunStatus.RUNNING)
+    await runs.update_status("run-1", RunStatus.PAUSING)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.submit(request(tmp_path))
+
+    assert captured.value.code == "run_execution_blocked"
     assert runner.launches == 0
     await database.dispose()
 

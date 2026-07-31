@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
+from temporalio.exceptions import CancelledError as TemporalCancelledError
 
 from .models import (
     CleanupRunInput,
@@ -42,6 +45,9 @@ _WAITING_PHASES = {
     RuntimeYieldReason.USER_INPUT_REQUIRED: WorkflowPhase.WAITING_INPUT,
 }
 
+_CONTROL_SIGNALS_PATCH = "riftx-workflow-control-v3"
+_FAILED_CYCLE_CLEANUP_PATCH = "riftx-failed-cycle-cleanup-v1"
+
 
 @workflow.defn(name="RiftXRunWorkflow")
 class RiftXRunWorkflow:
@@ -64,6 +70,10 @@ class RiftXRunWorkflow:
         self._compact_history_items: int | None = None
         self._pending_model_profile: str | None = None
         self._report_id: str | None = None
+        self._active_cycle_activity: workflow.ActivityHandle[RunAgentCycleActivityResult] | None = (
+            None
+        )
+        self._active_cycle_interruption: str | None = None
 
     @workflow.run
     async def run(self, input: RunWorkflowInput) -> RunWorkflowResult:
@@ -88,9 +98,7 @@ class RiftXRunWorkflow:
                 await self._switch_model()
                 continue
             waiting_phase = (
-                _WAITING_PHASES.get(self._yield_reason)
-                if self._yield_reason is not None
-                else None
+                _WAITING_PHASES.get(self._yield_reason) if self._yield_reason is not None else None
             )
             if waiting_phase is not None and not self._can_resume_from_yield():
                 self._phase = waiting_phase
@@ -99,8 +107,7 @@ class RiftXRunWorkflow:
 
             self._phase = WorkflowPhase.AGENT_CYCLE
             self._cycle_id = str(workflow.uuid4())
-            result = await workflow.execute_activity(
-                "run_agent_cycle_activity",
+            result = await self._run_agent_cycle_activity(
                 RunAgentCycleActivityInput(
                     run_id=self._run_id,
                     session_id=self._session_id,
@@ -108,12 +115,10 @@ class RiftXRunWorkflow:
                     latest_user_message_id=self._take_latest_user_message_id(),
                     completed_execution_id=self._take_completed_execution_id(),
                     approval_id=self._take_approval_id(),
-                ),
-                result_type=RunAgentCycleActivityResult,
-                start_to_close_timeout=timedelta(minutes=30),
-                heartbeat_timeout=timedelta(minutes=1),
-                retry_policy=_ACTIVITY_RETRY_POLICY,
+                )
             )
+            if result is None:
+                continue
             self._accept_result(result)
 
             if result.yield_reason is RuntimeYieldReason.RUN_COMPLETED:
@@ -154,6 +159,48 @@ class RiftXRunWorkflow:
         elif self._phase is WorkflowPhase.FAILED:
             await self._cleanup("failed")
         return self._result()
+
+    async def _run_agent_cycle_activity(
+        self,
+        input: RunAgentCycleActivityInput,
+    ) -> RunAgentCycleActivityResult | None:
+        handle = workflow.start_activity(
+            "run_agent_cycle_activity",
+            input,
+            result_type=RunAgentCycleActivityResult,
+            start_to_close_timeout=timedelta(minutes=30),
+            heartbeat_timeout=timedelta(minutes=1),
+            retry_policy=_ACTIVITY_RETRY_POLICY,
+            cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+        )
+        self._active_cycle_activity = handle
+        try:
+            return await handle
+        except asyncio.CancelledError:
+            if self._active_cycle_interruption is not None:
+                return None
+            raise
+        except ActivityError as exc:
+            if self._active_cycle_interruption is not None and isinstance(
+                exc.cause,
+                TemporalCancelledError,
+            ):
+                return None
+            await self._cleanup_failed_cycle()
+            raise
+        except Exception:
+            await self._cleanup_failed_cycle()
+            raise
+        finally:
+            self._active_cycle_activity = None
+            self._active_cycle_interruption = None
+
+    async def _cleanup_failed_cycle(self) -> None:
+        if not workflow.patched(_FAILED_CYCLE_CLEANUP_PATCH):
+            return
+        self._phase = WorkflowPhase.FAILED
+        self._finished = True
+        await self._cleanup("failed")
 
     def _accept_result(self, result: RunAgentCycleActivityResult) -> None:
         if result.run_id != self._run_id or result.session_id != self._session_id:
@@ -271,6 +318,10 @@ class RiftXRunWorkflow:
     @workflow.signal
     def pause(self) -> None:
         self._paused = True
+        if not workflow.patched(_CONTROL_SIGNALS_PATCH):
+            return
+        self._release_waiting_execution()
+        self._interrupt_active_cycle("pause")
 
     @workflow.signal
     def resume(self) -> None:
@@ -304,14 +355,38 @@ class RiftXRunWorkflow:
 
     @workflow.signal
     def cancel_current_execution(self) -> None:
-        # Execution cancellation is persisted by ExecutionService. The completion
-        # signal resumes this Workflow with the same stable execution identity.
-        return
+        if not workflow.patched(_CONTROL_SIGNALS_PATCH):
+            return
+        self._release_waiting_execution()
+
+    def _release_waiting_execution(self) -> None:
+        if (
+            self._yield_reason
+            in {
+                RuntimeYieldReason.TOOL_RUNNING,
+                RuntimeYieldReason.TERMINAL_OPEN,
+            }
+            and self._waiting_object_id is not None
+        ):
+            # ExecutionService performs the actual process cancellation. Treat the
+            # same durable Execution ID as completed so the Workflow can consume
+            # its persisted terminal state instead of remaining blocked forever.
+            self._completed_execution_id = self._waiting_object_id
 
     @workflow.signal
     def cancel(self) -> None:
         self._cancel_requested = True
         self._paused = False
+        if not workflow.patched(_CONTROL_SIGNALS_PATCH):
+            return
+        self._interrupt_active_cycle("cancel")
+
+    def _interrupt_active_cycle(self, reason: str) -> None:
+        handle = self._active_cycle_activity
+        if handle is None or handle.done():
+            return
+        self._active_cycle_interruption = reason
+        handle.cancel()
 
     @workflow.signal
     def compact(self, max_history_items: int = 100) -> None:

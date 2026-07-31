@@ -12,6 +12,8 @@ from riftx.application.ports import RunEventRepository, RunRepository
 from riftx.domain import (
     DomainError,
     Execution,
+    Run,
+    RunStatus,
     TerminalOwner,
     TerminalSession,
     TerminalTakeoverSummary,
@@ -66,6 +68,7 @@ class TerminalApplicationService:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
+        self._require_execution_allowed(run)
         cwd = await asyncio.to_thread(
             lambda: Path(command.cwd or run.workspace_path).expanduser().resolve()
         )
@@ -107,9 +110,35 @@ class TerminalApplicationService:
                 f"Unable to start terminal command: {exc}",
                 details={"argv": argv, "cwd": str(cwd)},
             ) from exc
+        current = await self._runs.get(run.id)
+        if current is None:
+            await self._supervisor.close(terminal.id)
+            raise EntityNotFoundError("Run", run.id)
+        try:
+            self._require_execution_allowed(current)
+        except ApplicationConflictError:
+            await self._supervisor.close(terminal.id)
+            raise
         return TerminalView(
             terminal=terminal,
             execution=await self._supervisor.get_execution(terminal.id),
+        )
+
+    @staticmethod
+    def _require_execution_allowed(run: Run) -> None:
+        if run.status not in {
+            RunStatus.PAUSING,
+            RunStatus.PAUSED,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+        }:
+            return
+        raise ApplicationConflictError(
+            "run_execution_blocked",
+            f"Run {run.id!r} cannot start a terminal while it is {run.status.value}",
+            details={"run_id": run.id, "status": run.status.value},
         )
 
     async def get(self, session_id: str) -> TerminalView:

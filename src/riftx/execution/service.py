@@ -7,8 +7,8 @@ from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
 )
-from riftx.application.ports import ExecutionRepository, RunEventRepository
-from riftx.domain import Execution, ExecutionStatus
+from riftx.application.ports import ExecutionRepository, RunEventRepository, RunRepository
+from riftx.domain import Execution, ExecutionStatus, Run, RunStatus
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyToolCallIntentRepository,
@@ -27,6 +27,15 @@ _SUBMITTABLE_INTENT_STATUSES = {
     ToolCallStatus.CANCELLED,
 }
 
+_EXECUTION_BLOCKED_RUN_STATUSES = {
+    RunStatus.PAUSING,
+    RunStatus.PAUSED,
+    RunStatus.CANCELLING,
+    RunStatus.CANCELLED,
+    RunStatus.COMPLETED,
+    RunStatus.FAILED,
+}
+
 
 class ExecutionService:
     """Turn persisted Tool Call intents into idempotent Runner executions."""
@@ -39,12 +48,14 @@ class ExecutionService:
         tool_call_repository: SQLAlchemyToolCallIntentRepository,
         runner: ExecutionRunner,
         event_repository: RunEventRepository | None = None,
+        run_repository: RunRepository | None = None,
     ) -> None:
         self._executions = execution_repository
         self._sessions = session_repository
         self._tool_calls = tool_call_repository
         self._runner = runner
         self._events = event_repository
+        self._runs = run_repository
 
     async def submit(self, request: SubmitExecutionRequest) -> Execution:
         intent = await self._require_intent(request)
@@ -53,7 +64,26 @@ class ExecutionService:
             await self._sync_intent(intent, existing)
             return existing
 
+        await self._require_execution_allowed(request.run_id)
         execution = await self._runner.start(request.to_launch_request())
+        blocked_run = await self._blocked_run(request.run_id)
+        if blocked_run is not None and execution.status in {
+            ExecutionStatus.CREATED,
+            ExecutionStatus.QUEUED,
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+        }:
+            execution = await self._runner.cancel(execution.id)
+            await self._sync_intent(intent, execution)
+            await self._append_event(
+                request.run_id,
+                "execution.blocked_by_run_stop",
+                {
+                    "execution_id": execution.id,
+                    "run_status": blocked_run.status.value,
+                },
+            )
+            raise self._execution_blocked_error(blocked_run)
         if execution.execution_key != request.execution_key:
             raise RepositoryConflictError(
                 f"Runner returned mismatched execution key for {request.tool_call_id!r}"
@@ -139,6 +169,27 @@ class ExecutionService:
                 f"Tool Call intent cannot execute from status {intent.status.value!r}",
             )
         return intent
+
+    async def _require_execution_allowed(self, run_id: str) -> None:
+        blocked = await self._blocked_run(run_id)
+        if blocked is not None:
+            raise self._execution_blocked_error(blocked)
+
+    async def _blocked_run(self, run_id: str) -> Run | None:
+        if self._runs is None:
+            return None
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        return run if run.status in _EXECUTION_BLOCKED_RUN_STATUSES else None
+
+    @staticmethod
+    def _execution_blocked_error(run: Run) -> ApplicationConflictError:
+        return ApplicationConflictError(
+            "run_execution_blocked",
+            f"Run {run.id!r} cannot start a new execution while it is {run.status.value}",
+            details={"run_id": run.id, "status": run.status.value},
+        )
 
     async def _sync_execution_intent(self, execution: Execution) -> None:
         if execution.tool_call_id is None:

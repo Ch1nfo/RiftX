@@ -28,11 +28,6 @@ from riftx.target_http.models import (
 )
 
 
-class AlwaysMatchesInspector:
-    async def matches(self, _: object) -> bool:
-        return True
-
-
 class FakeControlService:
     def __init__(self) -> None:
         self.enqueued: list[tuple[str, RunnerCommandKind, str, dict[str, object]]] = []
@@ -271,6 +266,43 @@ async def test_runner_daemon_executes_once_streams_output_and_handles_cancel(
     cancelled = await repository.get_by_key("cancel-key")
     assert cancelled is not None
     assert cancelled.status is ExecutionStatus.CANCELLED
+
+    suppressed_marker = tmp_path / "cancelled-before-start"
+    await daemon.handle_command(
+        _command(
+            "cancel-before-start",
+            RunnerCommandKind.CANCEL,
+            {
+                "execution_id": "server-execution-suppressed",
+                "execution_key": "suppressed-key",
+            },
+        )
+    )
+    await daemon.handle_command(
+        _command(
+            "execute-after-cancel",
+            RunnerCommandKind.EXECUTE,
+            {
+                "execution_id": "server-execution-suppressed",
+                "request": _request(
+                    tmp_path,
+                    key="suppressed-key",
+                    node_id="runner-a",
+                    script=(
+                        "from pathlib import Path; "
+                        f"Path({str(suppressed_marker)!r}).write_text('unsafe')"
+                    ),
+                ).model_dump(mode="json"),
+            },
+        )
+    )
+
+    assert client.statuses["server-execution-suppressed"] == [
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.CANCELLED,
+    ]
+    assert await repository.get_by_key("suppressed-key") is None
+    assert not suppressed_marker.exists()
     await daemon.close()
 
 
@@ -451,15 +483,15 @@ async def test_runner_daemon_executes_target_http_and_chunks_response(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_runner_daemon_reconnects_to_durable_active_execution(tmp_path: Path) -> None:
+async def test_runner_daemon_close_cancels_durable_active_execution(tmp_path: Path) -> None:
     state_file = tmp_path / "executions.json"
     repository = FileExecutionRepository(state_file)
-    first_supervisor = ProcessSupervisor(
+    supervisor = ProcessSupervisor(
         repository,
         RunnerPaths(tmp_path / "runner"),
         termination_grace_seconds=0.01,
     )
-    first_client = FakeRunnerClient()
+    client = FakeRunnerClient()
     config = RunnerDaemonConfig(
         server_url="http://control.invalid",
         node_id="runner-a",
@@ -467,10 +499,10 @@ async def test_runner_daemon_reconnects_to_durable_active_execution(tmp_path: Pa
         state_path=tmp_path / "runner",
         output_poll_seconds=0.001,
     )
-    first_daemon = RunnerDaemon(
+    daemon = RunnerDaemon(
         config=config,
-        client=first_client,  # type: ignore[arg-type]
-        supervisor=first_supervisor,
+        client=client,  # type: ignore[arg-type]
+        supervisor=supervisor,
         executions=repository,
     )
     command = _command(
@@ -486,23 +518,66 @@ async def test_runner_daemon_reconnects_to_durable_active_execution(tmp_path: Pa
             ).model_dump(mode="json"),
         },
     )
-    await first_daemon.handle_command(command)
-    await _wait_for_status(first_client, "server-reconnect", ExecutionStatus.RUNNING)
+    await daemon.handle_command(command)
+    await _wait_for_status(client, "server-reconnect", ExecutionStatus.RUNNING)
     local = await repository.get_by_key("reconnect-key")
     assert local is not None
     assert local.id == "server-reconnect"
-    await first_daemon.close()
+    await daemon.close()
+
+    reopened_repository = FileExecutionRepository(state_file)
+    stopped = await reopened_repository.get_by_key("reconnect-key")
+    assert stopped is not None
+    assert stopped.status is ExecutionStatus.CANCELLED
+    reopened_supervisor = ProcessSupervisor(
+        reopened_repository,
+        RunnerPaths(tmp_path / "runner"),
+        termination_grace_seconds=0.01,
+    )
+    recovered = await reopened_supervisor.recover()
+    assert recovered == []
+    await reopened_supervisor.close(cancel_running=True)
+
+
+@pytest.mark.asyncio
+async def test_runner_daemon_recovers_execution_after_abrupt_restart(tmp_path: Path) -> None:
+    state_file = tmp_path / "executions.json"
+    repository = FileExecutionRepository(state_file)
+    first_supervisor = ProcessSupervisor(
+        repository,
+        RunnerPaths(tmp_path / "runner"),
+        termination_grace_seconds=0.01,
+    )
+    request = _request(
+        tmp_path,
+        key="reconnect-key",
+        node_id="runner-a",
+        script="import time; print('alive', flush=True); time.sleep(30)",
+    ).model_copy(update={"execution_id": "server-reconnect"})
+    execution = await first_supervisor.start(request)
+    assert execution.status is ExecutionStatus.RUNNING
+
+    # Simulate an abrupt daemon restart: abandon local monitoring without running the
+    # graceful RunnerDaemon.close() path, which intentionally cancels active work.
+    await first_supervisor.close(cancel_running=False)
 
     reopened_repository = FileExecutionRepository(state_file)
     reopened_supervisor = ProcessSupervisor(
         reopened_repository,
         RunnerPaths(tmp_path / "runner"),
-        inspector=AlwaysMatchesInspector(),  # type: ignore[arg-type]
         termination_grace_seconds=0.01,
     )
     recovered = await reopened_supervisor.recover()
+    assert len(recovered) == 1
     assert recovered[0].status is ExecutionStatus.RUNNING
     second_client = FakeRunnerClient()
+    config = RunnerDaemonConfig(
+        server_url="http://control.invalid",
+        node_id="runner-a",
+        name="Runner A",
+        state_path=tmp_path / "runner",
+        output_poll_seconds=0.001,
+    )
     second_daemon = RunnerDaemon(
         config=config,
         client=second_client,  # type: ignore[arg-type]
@@ -522,6 +597,7 @@ async def test_runner_daemon_reconnects_to_durable_active_execution(tmp_path: Pa
     )
     await _wait_for_status(second_client, "server-reconnect", ExecutionStatus.CANCELLED)
     await second_daemon.close()
+
 
 @pytest.mark.asyncio
 async def test_runner_daemon_executes_browser_command_and_uploads_attachment(

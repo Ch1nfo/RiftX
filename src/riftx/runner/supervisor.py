@@ -38,6 +38,10 @@ class _ManagedExecution:
     cancel_requested: bool = False
 
 
+class ProcessTerminationError(RuntimeError):
+    """Raised when a detached process cannot be confirmed terminated."""
+
+
 class ProcessSupervisor:
     def __init__(
         self,
@@ -143,26 +147,63 @@ class ProcessSupervisor:
     async def cancel(self, execution_id: str) -> Execution:
         managed = self._managed.get(execution_id)
         if managed is not None:
-            if _managed_task(managed).done():
+            if not _managed_task(managed).done():
+                managed.cancel_requested = True
+                await managed.handle.cancel(
+                    termination_grace_seconds=self._termination_grace_seconds
+                )
+                await asyncio.shield(_managed_task(managed))
                 return await self.get(execution_id)
-            managed.cancel_requested = True
-            await managed.handle.cancel(termination_grace_seconds=self._termination_grace_seconds)
-            await asyncio.shield(_managed_task(managed))
-            return await self.get(execution_id)
 
         execution = await self.get(execution_id)
-        if execution.status not in {ExecutionStatus.STARTING, ExecutionStatus.RUNNING}:
-            return execution
-        if not await self._inspector.matches(execution):
-            execution.transition_to(ExecutionStatus.LOST)
-        else:
-            await _terminate_detached_process(
-                execution.process_group_id or execution.pid,
-                grace_seconds=self._termination_grace_seconds,
-            )
+        if execution.status in {ExecutionStatus.CREATED, ExecutionStatus.QUEUED}:
             execution.transition_to(ExecutionStatus.CANCELLED)
+            return await self._repository.save(execution)
+        if execution.status not in {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.LOST,
+        }:
+            return execution
+        if await self._matches_detached_process(execution, phase="before termination"):
+            process_group_id = execution.process_group_id or execution.pid
+            try:
+                await _terminate_detached_process(
+                    process_group_id,
+                    grace_seconds=self._termination_grace_seconds,
+                )
+            except Exception as exc:
+                raise ProcessTerminationError(
+                    f"Failed to terminate detached execution {execution.id!r} "
+                    f"using process group {process_group_id!r}"
+                ) from exc
+            await self._confirm_detached_process_stopped(execution)
+        # Either the matching process group was terminated and verified above,
+        # or the inspector proved that no matching process exists. Both are
+        # affirmative stop confirmations, including reconciliation from LOST.
+        execution.transition_to(ExecutionStatus.CANCELLED)
         await self._repository.save(execution)
         return execution
+
+    async def _matches_detached_process(self, execution: Execution, *, phase: str) -> bool:
+        try:
+            return await self._inspector.matches(execution)
+        except Exception as exc:
+            raise ProcessTerminationError(
+                f"Could not verify detached execution {execution.id!r} {phase}"
+            ) from exc
+
+    async def _confirm_detached_process_stopped(self, execution: Execution) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(self._termination_grace_seconds, 0.5)
+        while await self._matches_detached_process(execution, phase="after termination"):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ProcessTerminationError(
+                    f"Detached execution {execution.id!r} still matches process "
+                    f"{execution.pid!r} after termination"
+                )
+            await asyncio.sleep(min(0.05, remaining))
 
     async def read_output(
         self,

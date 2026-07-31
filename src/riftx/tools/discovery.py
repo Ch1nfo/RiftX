@@ -503,6 +503,21 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
     elif tool_id in {"get_tool", "run_registered_tool"}:
         properties = {"tool_id": {"type": "string"}}
         required = ["tool_id"]
+    elif tool_id == "run_shell":
+        properties = {
+            "script": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Authorized shell script to execute.",
+            },
+            "cwd": {"type": ["string", "null"]},
+            "environment": {
+                "type": "object",
+                "additionalProperties": {"type": ["string", "null"]},
+            },
+            "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        }
+        required = ["script"]
     elif tool_id in {"get_execution", "wait_execution", "cancel_execution"}:
         properties = {"execution_id": {"type": "string"}}
         required = ["execution_id"]
@@ -547,7 +562,7 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
             "type": "object",
             "properties": properties,
             "required": required,
-            "additionalProperties": True,
+            "additionalProperties": tool_id != "run_shell",
         },
         "x-riftx": {"resident": True},
     }

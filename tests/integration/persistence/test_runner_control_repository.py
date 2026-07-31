@@ -106,4 +106,32 @@ async def test_runner_command_leases_are_idempotent_scoped_and_reclaimable(
     )
     assert completed.status is RunnerCommandStatus.COMPLETED
     assert repeated.result == {"accepted": True}
+
+    pending_execute = RunnerCommand(
+        node_id="runner-a",
+        kind=RunnerCommandKind.EXECUTE,
+        idempotency_key="execute:pending",
+        created_at=now + timedelta(seconds=5),
+        updated_at=now + timedelta(seconds=5),
+    )
+    pending_cancel = RunnerCommand(
+        node_id="runner-a",
+        kind=RunnerCommandKind.CANCEL,
+        idempotency_key="cancel:pending",
+        created_at=now + timedelta(seconds=6),
+        updated_at=now + timedelta(seconds=6),
+    )
+    await repository.enqueue(pending_execute)
+    await repository.enqueue(pending_cancel)
+
+    safety_first = await repository.lease_next(
+        "runner-a",
+        lease_id="lease-safety",
+        leased_until=now + timedelta(seconds=20),
+        now=now + timedelta(seconds=10),
+    )
+
+    assert safety_first is not None
+    assert safety_first.id == pending_cancel.id
+    assert safety_first.kind is RunnerCommandKind.CANCEL
     await database.dispose()

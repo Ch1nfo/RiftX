@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,6 +29,7 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunnerCommand,
+    RunnerCommandKind,
     RunnerCommandStatus,
     RunnerCredential,
     RunStatus,
@@ -281,7 +282,22 @@ class SQLAlchemyRunnerCommandRepository:
                     RunnerCommandRecord.node_id == node_id,
                     RunnerCommandRecord.status == RunnerCommandStatus.PENDING.value,
                 )
-                .order_by(RunnerCommandRecord.created_at, RunnerCommandRecord.id)
+                .order_by(
+                    case(
+                        (
+                            RunnerCommandRecord.kind.in_(
+                                [
+                                    RunnerCommandKind.CANCEL.value,
+                                    RunnerCommandKind.TERMINAL_CLOSE.value,
+                                ]
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    RunnerCommandRecord.created_at,
+                    RunnerCommandRecord.id,
+                )
                 .limit(1)
             )
             if candidate_id is None:
@@ -847,6 +863,7 @@ class SQLAlchemyExecutionRepository:
                 ExecutionRecord.status.in_(
                     [
                         ExecutionStatus.QUEUED.value,
+                        ExecutionStatus.CREATED.value,
                         ExecutionStatus.STARTING.value,
                         ExecutionStatus.RUNNING.value,
                     ]

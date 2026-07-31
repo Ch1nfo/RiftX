@@ -759,7 +759,6 @@ class RuntimeCoordinator:
             RunStatus.WAITING_TOOL,
             RunStatus.WAITING_APPROVAL,
             RunStatus.WAITING_USER,
-            RunStatus.PAUSED,
             RunStatus.COMPACTING,
         }:
             run = await self._runs.update_status(run.id, RunStatus.RUNNING)

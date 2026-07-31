@@ -8,7 +8,9 @@ import { RunDetailPage } from "./RunDetailPage";
 const mocks = vi.hoisted(() => ({
   updateFinding: vi.fn(),
   generateReports: vi.fn(),
+  emergencyStop: vi.fn(),
   runStatus: "waiting_approval",
+  runEvents: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
@@ -36,16 +38,18 @@ vi.mock("../hooks/queries", () => ({
     isSuccess: true,
     isLoading: false,
     data: {
-      items: [
-        {
-          id: "event-agent-1",
-          run_id: "run-1",
-          sequence: 1,
-          event_type: "agent.plan_updated",
-          payload: { plan_summary: "Inspect the service and verify evidence." },
-          created_at: "2026-07-29T00:00:02Z",
-        },
-      ],
+      items: mocks.runEvents.length
+        ? mocks.runEvents
+        : [
+            {
+              id: "event-agent-1",
+              run_id: "run-1",
+              sequence: 1,
+              event_type: "agent.plan_updated",
+              payload: { plan_summary: "Inspect the service and verify evidence." },
+              created_at: "2026-07-29T00:00:02Z",
+            },
+          ],
     },
   }),
   useExecutions: () => ({
@@ -170,7 +174,7 @@ vi.mock("../hooks/queries", () => ({
   useRunControl: () => ({
     pause: { isPending: false, error: null, mutate: vi.fn() },
     resume: { isPending: false, error: null, mutate: vi.fn() },
-    cancel: { isPending: false, error: null, mutate: vi.fn() },
+    emergencyStop: { isPending: false, error: null, mutate: mocks.emergencyStop },
     message: { isPending: false, error: null, mutateAsync: vi.fn() },
   }),
   useApprovalControl: () => ({
@@ -200,6 +204,7 @@ describe("RunDetailPage approvals", () => {
   beforeEach(() => {
     cleanup();
     mocks.runStatus = "waiting_approval";
+    mocks.runEvents = [];
     vi.clearAllMocks();
   });
 
@@ -221,6 +226,29 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByRole("button", { name: /approve once/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /approve for run/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
+  });
+
+  it("uses the full-Run emergency stop control", () => {
+    mocks.runStatus = "running";
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Emergency stop — cancel the entire Run",
+      }),
+    );
+
+    expect(mocks.emergencyStop).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Cancel execution")).not.toBeInTheDocument();
   });
 
   it("shows immutable artifacts and their download link", async () => {
@@ -321,6 +349,66 @@ describe("RunDetailPage approvals", () => {
     );
     screen.getByRole("button", { name: /generate reports/i }).click();
     expect(mocks.generateReports).toHaveBeenCalled();
+  });
+
+  it("renders adjacent assistant deltas as one timeline response", async () => {
+    mocks.runStatus = "running";
+    mocks.runEvents = [
+      {
+        id: "event-19",
+        run_id: "run-1",
+        sequence: 19,
+        event_type: "runtime.engine_event",
+        payload: {
+          cycle_id: "cycle-1",
+          engine_sequence: 9,
+          event_type: "assistant_delta",
+          data: { delta: "主" },
+        },
+        created_at: "2026-07-31T02:35:26Z",
+      },
+      {
+        id: "event-20",
+        run_id: "run-1",
+        sequence: 20,
+        event_type: "runtime.engine_event",
+        payload: {
+          cycle_id: "cycle-1",
+          engine_sequence: 10,
+          event_type: "assistant_delta",
+          data: { delta: "代理。" },
+        },
+        created_at: "2026-07-31T02:35:26Z",
+      },
+      {
+        id: "event-21",
+        run_id: "run-1",
+        sequence: 21,
+        event_type: "runtime.engine_event",
+        payload: {
+          cycle_id: "cycle-1",
+          engine_sequence: 11,
+          event_type: "assistant_delta",
+          data: { delta: "我现在开始按照" },
+        },
+        created_at: "2026-07-31T02:35:26Z",
+      },
+    ];
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("主代理。我现在开始按照")).toBeInTheDocument();
+    expect(screen.getByText("#19–#21")).toBeInTheDocument();
+    expect(screen.getByText("Agent response")).toBeInTheDocument();
+    expect(screen.queryByText(/assistant_delta/)).not.toBeInTheDocument();
   });
 
 });

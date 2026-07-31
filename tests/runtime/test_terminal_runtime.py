@@ -125,6 +125,7 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
             session_repository=sessions,
             tool_call_repository=intents,
             runner=supervisor,  # PTY intents are routed before ExecutionService uses this.
+            run_repository=runs,
         ),
     )
     engine = TerminalEngine(

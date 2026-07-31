@@ -158,9 +158,10 @@ export function DashboardPage() {
                     </Pie>
                     <Tooltip
                       contentStyle={{
-                        background: "#0c1916",
-                        border: "1px solid #213c35",
+                        background: "var(--surface-raised)",
+                        border: "1px solid var(--line)",
                         borderRadius: "10px",
+                        color: "var(--text)",
                       }}
                     />
                   </PieChart>

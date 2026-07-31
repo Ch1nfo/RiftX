@@ -14,10 +14,7 @@ export function useEventStream(runId: string, enabled = true) {
       return undefined;
     }
     const cached = queryClient.getQueryData<RunEventList>(queryKeys.events(runId));
-    lastSequence.current = Math.max(
-      lastSequence.current,
-      ...(cached?.items.map((item) => item.sequence) ?? [0]),
-    );
+    lastSequence.current = Math.max(...(cached?.items.map((item) => item.sequence) ?? [0]));
     const source = new EventSource(api.eventStreamUrl(runId, lastSequence.current));
     source.onmessage = (message) => ingest(message.data);
     const knownEventTypes = [
@@ -40,6 +37,18 @@ export function useEventStream(runId: string, enabled = true) {
       "agent.tool_started",
       "agent.tool_completed",
       "agent.tool_failed",
+      "runtime.context_compiled",
+      "runtime.cycle_created",
+      "runtime.cycle_failed",
+      "runtime.cycle_started",
+      "runtime.cycle_yielded",
+      "runtime.engine_event",
+      "runtime.hook_evaluated",
+      "runtime.lease_acquired",
+      "runtime.lease_released",
+      "runtime.session_activated",
+      "runtime.step_completed",
+      "runtime.step_started",
       "tool.approval_required",
       "tool.approved",
       "tool.rejected",

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+
+import pytest
 
 from riftx.domain import Engagement, Execution, ExecutionStatus, ExecutorType, Objective, Run
 from riftx.persistence import (
@@ -14,6 +17,7 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
 )
 from riftx.runner import ExecutionLaunchRequest, ProcessSupervisor, RunnerPaths
+from riftx.runner.supervisor import ProcessTerminationError
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fake_process.py"
 PYTHON_EXECUTABLE = str(Path(sys.executable).resolve())
@@ -26,6 +30,36 @@ def wait_for_nonempty_file(path: Path, deadline_seconds: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise TimeoutError(f"timed out waiting for {path}")
+
+
+def wait_for_process_exit(pid: int, deadline_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.01)
+    raise TimeoutError(f"timed out waiting for process {pid} to exit")
+
+
+class AlwaysMatchingInspector:
+    async def matches(self, execution: Execution) -> bool:
+        return True
+
+
+class NeverMatchingInspector:
+    async def matches(self, execution: Execution) -> bool:
+        return False
+
+
+class MatchThenMissingInspector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def matches(self, execution: Execution) -> bool:
+        self.calls += 1
+        return self.calls == 1
 
 
 async def make_supervisor(
@@ -194,6 +228,211 @@ async def test_supervisor_cancels_running_process(tmp_path: Path) -> None:
 
     assert cancelled.status is ExecutionStatus.CANCELLED
     assert cancelled.finished_at is not None
+    await supervisor.close()
+    await database.dispose()
+
+
+@pytest.mark.parametrize("status", [ExecutionStatus.CREATED, ExecutionStatus.QUEUED])
+async def test_supervisor_cancels_not_yet_started_execution(
+    tmp_path: Path,
+    status: ExecutionStatus,
+) -> None:
+    database, executions, supervisor = await make_supervisor(tmp_path)
+    execution = Execution(
+        id=f"not-started-{status.value}",
+        execution_key=f"not-started-{status.value}-key",
+        run_id="run-1",
+        node_id="local-node",
+        executor_type=ExecutorType.PROCESS,
+        argv=[sys.executable, "-c", "raise AssertionError('must not start')"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / f"{status.value}.stdout"),
+        stderr_path=str(tmp_path / f"{status.value}.stderr"),
+        status=status,
+    )
+    await executions.create_if_absent(execution)
+
+    cancelled = await supervisor.cancel(execution.id)
+
+    assert cancelled.status is ExecutionStatus.CANCELLED
+    persisted = await executions.get(execution.id)
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    assert persisted.finished_at is not None
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_supervisor_reconciles_lost_execution_when_process_is_absent(
+    tmp_path: Path,
+) -> None:
+    database, executions, _ = await make_supervisor(tmp_path)
+    execution = Execution(
+        id="lost-without-process",
+        execution_key="lost-without-process-key",
+        run_id="run-1",
+        node_id="local-node",
+        executor_type=ExecutorType.PROCESS,
+        argv=[sys.executable, "missing.py"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "lost-without-process.stdout"),
+        stderr_path=str(tmp_path / "lost-without-process.stderr"),
+        status=ExecutionStatus.LOST,
+        pid=424242,
+        process_group_id=424242,
+    )
+    await executions.create_if_absent(execution)
+    supervisor = ProcessSupervisor(
+        executions,
+        RunnerPaths(tmp_path / "state"),
+        inspector=NeverMatchingInspector(),  # type: ignore[arg-type]
+    )
+
+    cancelled = await supervisor.cancel(execution.id)
+
+    assert cancelled.status is ExecutionStatus.CANCELLED
+    persisted = await executions.get(execution.id)
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_supervisor_terminates_matching_process_when_reconciling_lost_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, executions, _ = await make_supervisor(tmp_path)
+    execution = Execution(
+        id="lost-with-matching-process",
+        execution_key="lost-with-matching-process-key",
+        run_id="run-1",
+        node_id="local-node",
+        executor_type=ExecutorType.PROCESS,
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "lost-with-matching-process.stdout"),
+        stderr_path=str(tmp_path / "lost-with-matching-process.stderr"),
+        status=ExecutionStatus.LOST,
+        pid=424243,
+        process_group_id=424244,
+    )
+    await executions.create_if_absent(execution)
+    terminated: list[int | None] = []
+
+    async def record_termination(
+        process_group_id: int | None,
+        *,
+        grace_seconds: float,
+    ) -> None:
+        terminated.append(process_group_id)
+
+    monkeypatch.setattr(
+        "riftx.runner.supervisor._terminate_detached_process",
+        record_termination,
+    )
+    inspector = MatchThenMissingInspector()
+    supervisor = ProcessSupervisor(
+        executions,
+        RunnerPaths(tmp_path / "state"),
+        inspector=inspector,  # type: ignore[arg-type]
+        termination_grace_seconds=0.01,
+    )
+
+    cancelled = await supervisor.cancel(execution.id)
+
+    assert cancelled.status is ExecutionStatus.CANCELLED
+    assert terminated == [execution.process_group_id]
+    assert inspector.calls == 2
+    await supervisor.close()
+    await database.dispose()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+async def test_detached_cancel_terminates_and_verifies_real_process_group(
+    tmp_path: Path,
+) -> None:
+    database, executions, first_supervisor = await make_supervisor(tmp_path)
+    heartbeat = tmp_path / "child-heartbeat"
+    started = await first_supervisor.start(
+        launch_request(
+            tmp_path,
+            "detached-group-key",
+            "child",
+            "--seconds",
+            "30",
+            "--heartbeat",
+            str(heartbeat),
+        )
+    )
+    await asyncio.to_thread(wait_for_nonempty_file, Path(started.stdout_path))
+    await asyncio.to_thread(wait_for_nonempty_file, heartbeat)
+    output = await first_supervisor.read_output(started.id)
+    child_pid = int(output.stdout.data.decode().strip().splitlines()[0])
+    assert started.pid is not None
+
+    await first_supervisor.close()
+    detached_supervisor = ProcessSupervisor(
+        executions,
+        RunnerPaths(tmp_path / "state"),
+        termination_grace_seconds=0.1,
+    )
+
+    cancelled = await detached_supervisor.cancel(started.id)
+
+    assert cancelled.status is ExecutionStatus.CANCELLED
+    await asyncio.to_thread(wait_for_process_exit, started.pid)
+    await asyncio.to_thread(wait_for_process_exit, child_pid)
+    await detached_supervisor.close()
+    await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [ExecutionStatus.STARTING, ExecutionStatus.RUNNING, ExecutionStatus.LOST],
+)
+async def test_detached_cancel_does_not_claim_cancelled_when_process_still_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: ExecutionStatus,
+) -> None:
+    database, executions, _ = await make_supervisor(tmp_path)
+    execution = Execution(
+        id=f"unconfirmed-{status.value}",
+        execution_key=f"unconfirmed-{status.value}-key",
+        run_id="run-1",
+        node_id="local-node",
+        executor_type=ExecutorType.PROCESS,
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / f"unconfirmed-{status.value}.stdout"),
+        stderr_path=str(tmp_path / f"unconfirmed-{status.value}.stderr"),
+        status=status,
+        pid=424242,
+        process_group_id=424242,
+    )
+    await executions.create_if_absent(execution)
+
+    async def leave_process_running(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "riftx.runner.supervisor._terminate_detached_process",
+        leave_process_running,
+    )
+    supervisor = ProcessSupervisor(
+        executions,
+        RunnerPaths(tmp_path / "state"),
+        inspector=AlwaysMatchingInspector(),  # type: ignore[arg-type]
+        termination_grace_seconds=0.01,
+    )
+
+    with pytest.raises(ProcessTerminationError, match=execution.id):
+        await supervisor.cancel(execution.id)
+
+    persisted = await executions.get(execution.id)
+    assert persisted is not None
+    assert persisted.status is status
     await supervisor.close()
     await database.dispose()
 

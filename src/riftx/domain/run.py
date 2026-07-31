@@ -15,16 +15,25 @@ _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = {
         {
             RunStatus.INITIALIZING,
             RunStatus.PREPARING,
+            RunStatus.PAUSING,
             RunStatus.CANCELLING,
             RunStatus.CANCELLED,
         }
     ),
-    RunStatus.INITIALIZING: frozenset({RunStatus.READY, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.INITIALIZING: frozenset(
+        {RunStatus.READY, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
+    ),
     RunStatus.READY: frozenset(
         {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
     ),
     RunStatus.PREPARING: frozenset(
-        {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING, RunStatus.CANCELLED}
+        {
+            RunStatus.RUNNING,
+            RunStatus.PAUSING,
+            RunStatus.FAILED,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+        }
     ),
     RunStatus.RUNNING: frozenset(
         {
@@ -61,8 +70,12 @@ _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = {
     RunStatus.PAUSED: frozenset(
         {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING, RunStatus.CANCELLED}
     ),
-    RunStatus.COMPACTING: frozenset({RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLING}),
-    RunStatus.COMPLETING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLING}),
+    RunStatus.COMPACTING: frozenset(
+        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
+    ),
+    RunStatus.COMPLETING: frozenset(
+        {RunStatus.COMPLETED, RunStatus.PAUSING, RunStatus.FAILED, RunStatus.CANCELLING}
+    ),
     RunStatus.CANCELLING: frozenset({RunStatus.CANCELLED, RunStatus.FAILED}),
     RunStatus.COMPLETED: frozenset(),
     RunStatus.FAILED: frozenset(),
