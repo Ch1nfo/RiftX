@@ -53,6 +53,19 @@ class PendingApproval:
 class RunWorkflowInput:
     run_id: str
     session_id: str | None = None
+    await_initial_instruction: bool = False
+
+
+@dataclass
+class PrepareConversationInput:
+    run_id: str
+    session_id: str
+
+
+@dataclass
+class PrepareConversationResult:
+    run_id: str
+    cancelled: bool = False
 
 
 @dataclass
@@ -74,6 +87,7 @@ class AgentCycleActivityInput:
     approval_decisions: dict[str, bool] = field(default_factory=dict)
     user_messages: list[str] = field(default_factory=list)
     cancel_current_execution: bool = False
+    defer_run_completion: bool = False
 
 
 @dataclass
@@ -93,6 +107,7 @@ class RunAgentCycleActivityInput:
     latest_user_message_id: str | None = None
     completed_execution_id: str | None = None
     approval_id: str | None = None
+    defer_run_completion: bool = False
 
 
 @dataclass
@@ -148,14 +163,23 @@ class GenerateReportResult:
 
 
 @dataclass
+class CleanupReportFailureInput:
+    run_id: str
+
+
+@dataclass
 class CleanupRunInput:
     run_id: str
     final_status: str
+    completion_fence: bool = False
+    consumed_user_message_ids: list[str] = field(default_factory=list)
+    defer_cleanup_event: bool = False
 
 
 @dataclass
 class CleanupRunResult:
     cleaned: bool = True
+    pending_user_message_ids: list[str] = field(default_factory=list)
 
 
 @dataclass

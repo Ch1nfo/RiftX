@@ -31,12 +31,14 @@ class ExecutionResponse(BaseModel):
     status: ExecutionStatus
     pid: int | None
     process_group_id: int | None
+    containment_id: str | None
     exit_code: int | None
     stdout_path: str
     stderr_path: str
     process_created_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
+    physical_stop_confirmed_at: datetime | None
 
     @classmethod
     def from_domain(cls, execution: Execution) -> "ExecutionResponse":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, is_dataclass
 from typing import Any, cast
@@ -46,7 +47,7 @@ class OpenAIAgentsEngine:
         _apply_compiled_instructions(agent, request.context)
         result = self._stream_runner(
             agent,
-            request.engine_input(),
+            _agents_input(request.engine_input()),
             context=request.context,
             max_turns=request.max_turns,
             run_config=self._run_config(),
@@ -114,6 +115,117 @@ def _apply_compiled_instructions(agent: object, context: object | None) -> None:
     instructions = getattr(context, "system_instructions", None)
     if isinstance(instructions, str) and instructions and hasattr(agent, "instructions"):
         cast(Any, agent).instructions = instructions
+
+
+_MESSAGE_ROLES = frozenset({"user", "assistant", "system", "developer"})
+_CONTEXT_METADATA_KEYS = frozenset(
+    {
+        "compressible",
+        "context_item_id",
+        "id",
+        "priority",
+        "relevance",
+        "removable",
+        "required",
+        "source_event_id",
+        "source_refs",
+    }
+)
+_RIFTX_CONTEXT_TYPES = frozenset(
+    {
+        "approval_decision",
+        "context_checkpoint",
+        "current_input",
+        "execution_completion",
+        "hook_context",
+        "latest_checkpoint",
+        "memory",
+        "recent_conversation",
+        "relevant_tool_results",
+        "retrieved_memory",
+        "subagent_result",
+        "subagent_results",
+        "tool_result",
+        "working_memory",
+        "working_memory_snapshot",
+    }
+)
+
+
+def _agents_input(
+    value: str | list[dict[str, object]],
+) -> str | list[dict[str, object]]:
+    """Remove RiftX-only metadata before crossing the Agents SDK boundary.
+
+    Compiled Context Items retain provenance and budgeting metadata for durable
+    audit. The Agents SDK accepts only provider input-item shapes, however, and
+    the Chat Completions converter deliberately rejects message dictionaries
+    with extra keys. Non-message Context Items are therefore rendered as an
+    explicit user-visible context block instead of being passed as an invented
+    provider item type.
+    """
+
+    if isinstance(value, str):
+        return value
+    return [_agents_input_item(item) for item in value]
+
+
+def _agents_input_item(item: dict[str, object]) -> dict[str, object]:
+    role = item.get("role")
+    if isinstance(role, str) and role in _MESSAGE_ROLES and "content" in item:
+        return {
+            "role": role,
+            "content": _agents_text(item.get("content")),
+        }
+
+    item_type = item.get("type")
+    if item_type == "function_call_output":
+        call_id = item.get("call_id") or item.get("tool_call_id")
+        if isinstance(call_id, str) and call_id:
+            return {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": _agents_text(item.get("output", item.get("content"))),
+            }
+        raise ValueError("function_call_output input requires a non-empty call_id")
+
+    if item_type == "function_call":
+        call_id = item.get("call_id")
+        name = item.get("name")
+        arguments = item.get("arguments")
+        if (
+            isinstance(call_id, str)
+            and call_id
+            and isinstance(name, str)
+            and name
+            and isinstance(arguments, str)
+        ):
+            return {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            }
+        raise ValueError("function_call input requires call_id, name, and string arguments")
+
+    if item_type not in _RIFTX_CONTEXT_TYPES and role != "tool":
+        raise ValueError(f"unsupported model input item type: {item_type!r}")
+
+    context_payload = {
+        key: value for key, value in item.items() if key not in _CONTEXT_METADATA_KEYS
+    }
+    return {
+        "role": "user",
+        "content": "[RiftX context]\n" + _agents_text(context_payload),
+    }
+
+
+def _agents_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
 class OpenAIAgentsEngineRun:

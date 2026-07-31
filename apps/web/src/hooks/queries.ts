@@ -8,6 +8,7 @@ import type {
   RegisterArtifactPayload,
   GenerateReportsPayload,
   NodeStatus,
+  RunEventList,
   UpdateFindingPayload,
   UpdateToolPayload,
   RunStatus,
@@ -25,6 +26,7 @@ export const queryKeys = {
   terminal: (sessionId: string) => ["terminal", sessionId] as const,
   nodes: (status?: NodeStatus) => ["nodes", status ?? "all"] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
+  modelProfiles: ["model-profiles"] as const,
 };
 
 export function useNodes(status?: NodeStatus) {
@@ -44,6 +46,31 @@ export function useRuns(status?: RunStatus) {
   });
 }
 
+export function useModelProfiles() {
+  return useQuery({
+    queryKey: queryKeys.modelProfiles,
+    queryFn: () => api.listModelProfiles(),
+  });
+}
+
+export function useModelProfileControl(adminToken = "") {
+  const queryClient = useQueryClient();
+  const refresh = () =>
+    void queryClient.invalidateQueries({ queryKey: queryKeys.modelProfiles });
+  return {
+    setDefault: useMutation({
+      mutationFn: (profileName: string) =>
+        api.setDefaultModelProfile(profileName, adminToken.trim()),
+      onSuccess: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: (profileName: string) =>
+        api.deleteModelProfile(profileName, adminToken.trim()),
+      onSuccess: refresh,
+    }),
+  };
+}
+
 export function useRun(runId: string) {
   return useQuery({
     queryKey: queryKeys.run(runId),
@@ -53,11 +80,69 @@ export function useRun(runId: string) {
 }
 
 export function useRunEvents(runId: string) {
-  return useQuery({
+  return useQuery<RunEventList>({
     queryKey: queryKeys.events(runId),
     queryFn: () => api.listEvents(runId),
     enabled: Boolean(runId),
+    // Run events are immutable and append-only. A refetch that started before
+    // an SSE batch can otherwise complete later with an older snapshot and
+    // erase stop acknowledgements that already advanced the stream cursor.
+    structuralSharing: (previous, incoming) =>
+      mergeRunEventLists(
+        previous as RunEventList | undefined,
+        incoming as RunEventList,
+      ),
   });
+}
+
+export function mergeRunEventLists(
+  previous: RunEventList | undefined,
+  incoming: RunEventList,
+): RunEventList {
+  if (!previous?.items.length) return incoming;
+  if (
+    incoming.items.length >= previous.items.length &&
+    previous.items.every(
+      (event, index) => runEventKey(event) === runEventKey(incoming.items[index]),
+    )
+  ) {
+    // This is the hot SSE path: setQueryData passes current + batch.
+    return incoming;
+  }
+  const items = [] as RunEventList["items"];
+  let previousIndex = 0;
+  let incomingIndex = 0;
+  while (previousIndex < previous.items.length || incomingIndex < incoming.items.length) {
+    const previousEvent = previous.items[previousIndex];
+    const incomingEvent = incoming.items[incomingIndex];
+    if (!previousEvent) {
+      items.push(incomingEvent);
+      incomingIndex += 1;
+    } else if (!incomingEvent) {
+      items.push(previousEvent);
+      previousIndex += 1;
+    } else if (previousEvent.sequence < incomingEvent.sequence) {
+      items.push(previousEvent);
+      previousIndex += 1;
+    } else if (incomingEvent.sequence < previousEvent.sequence) {
+      items.push(incomingEvent);
+      incomingIndex += 1;
+    } else {
+      // Durable event sequences are immutable within a Run. Preserve the old
+      // object for React structural sharing when both snapshots contain it.
+      items.push(previousEvent);
+      previousIndex += 1;
+      incomingIndex += 1;
+    }
+  }
+  return {
+    after_sequence: Math.min(previous.after_sequence, incoming.after_sequence),
+    items,
+  };
+}
+
+function runEventKey(event: RunEventList["items"][number] | undefined): string {
+  return event ? `${event.run_id}:${event.sequence}` : "";
 }
 
 export function useExecutions(runId: string) {
@@ -215,6 +300,17 @@ export function useTools(nodeId = "local") {
   });
 }
 
+export function useToolAdminDetails(nodeId = "local", adminToken = "") {
+  return useMutation({
+    mutationFn: async (toolId: string) => {
+      const snapshot = await api.listToolsForAdmin(nodeId, adminToken.trim());
+      const tool = snapshot.tools.find((item) => item.definition.id === toolId);
+      if (!tool) throw new Error(`Tool ${toolId} was not found in the administrator registry`);
+      return tool.definition;
+    },
+  });
+}
+
 export function useCreateRun() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -241,16 +337,22 @@ export function useRunControl(runId: string) {
       onSuccess: refresh,
     }),
     message: useMutation({
-      mutationFn: (message: string) => api.appendMessage(runId, message),
+      mutationFn: ({
+        message,
+        messageEventId,
+      }: {
+        message: string;
+        messageEventId?: string;
+      }) => api.appendMessage(runId, message, messageEventId),
       onSuccess: refresh,
     }),
   };
 }
 
-export function useRefreshTools(nodeId = "local") {
+export function useRefreshTools(nodeId = "local", adminToken = "") {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.refreshTools(nodeId),
+    mutationFn: () => api.refreshTools(nodeId, adminToken.trim()),
     onSuccess: (snapshot) => {
       queryClient.setQueryData(queryKeys.tools(nodeId), snapshot);
     },
@@ -258,7 +360,7 @@ export function useRefreshTools(nodeId = "local") {
 }
 
 
-export function useUpdateTool(nodeId = "local") {
+export function useUpdateTool(nodeId = "local", adminToken = "") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
@@ -267,7 +369,7 @@ export function useUpdateTool(nodeId = "local") {
     }: {
       toolId: string;
       payload: UpdateToolPayload;
-    }) => api.updateTool(nodeId, toolId, payload),
+    }) => api.updateTool(nodeId, toolId, payload, adminToken.trim()),
     onSuccess: (snapshot) => {
       queryClient.setQueryData(queryKeys.tools(nodeId), snapshot);
     },

@@ -121,6 +121,7 @@ class RunCycleRequest(DomainModel):
     current_path: str | None = None
     compaction_required: bool = False
     subagent_mode: bool = False
+    defer_run_completion: bool = False
 
 
 class RunCycleResult(DomainModel):

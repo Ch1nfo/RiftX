@@ -33,6 +33,14 @@ from .memories import (
     PinMemoryRequest,
     UpdateMemoryRequest,
 )
+from .models import (
+    ModelProfileListResponse,
+    ModelProfileResponse,
+    ModelProfileSummaryListResponse,
+    ModelProfileSummaryResponse,
+    ModelProfileUpdateRequest,
+    SetDefaultModelProfileRequest,
+)
 from .nodes import (
     HeartbeatNodeRequest,
     NodeListResponse,
@@ -47,6 +55,8 @@ from .runner_control import (
     ExecutionStatusReportRequest,
     FinishRunnerCommandRequest,
     FinishRunnerCommandResponse,
+    RenewRunnerCommandLeaseRequest,
+    RenewRunnerCommandLeaseResponse,
     RunnerCommandOutputReportRequest,
     RunnerCommandResponse,
     RunnerPollResponse,
@@ -65,7 +75,14 @@ from .runs import (
     SwitchRunModelRequest,
 )
 from .terminals import TerminalCreateRequest, TerminalResponse
-from .tools import RegisteredToolResponse, ToolRegistryResponse, ToolUpdateRequest
+from .tools import (
+    RegisteredToolResponse,
+    RegisteredToolSummaryResponse,
+    ToolDefinitionSummaryResponse,
+    ToolRegistryResponse,
+    ToolRegistrySummaryResponse,
+    ToolUpdateRequest,
+)
 
 __all__ = [
     "ApprovalDecisionRequest",
@@ -95,6 +112,11 @@ __all__ = [
     "FindingListResponse",
     "MemoryListResponse",
     "MemoryResponse",
+    "ModelProfileListResponse",
+    "ModelProfileResponse",
+    "ModelProfileSummaryListResponse",
+    "ModelProfileSummaryResponse",
+    "ModelProfileUpdateRequest",
     "GenerateReportsRequest",
     "HeartbeatNodeRequest",
     "NodeListResponse",
@@ -102,11 +124,14 @@ __all__ = [
     "NodeResponse",
     "RegisterNodeRequest",
     "RegisteredToolResponse",
+    "RegisteredToolSummaryResponse",
     "ExecutionOutputReportRequest",
     "ExecutionOutputReportResponse",
     "ExecutionStatusReportRequest",
     "FinishRunnerCommandRequest",
     "FinishRunnerCommandResponse",
+    "RenewRunnerCommandLeaseRequest",
+    "RenewRunnerCommandLeaseResponse",
     "RunnerCommandResponse",
     "RunnerCommandOutputReportRequest",
     "RunnerPollResponse",
@@ -122,8 +147,11 @@ __all__ = [
     "PinMemoryRequest",
     "ScopeRequest",
     "SuccessCriterionRequest",
+    "SetDefaultModelProfileRequest",
     "SwitchRunModelRequest",
     "ToolRegistryResponse",
+    "ToolDefinitionSummaryResponse",
+    "ToolRegistrySummaryResponse",
     "ToolUpdateRequest",
     "UpdateFindingRequest",
     "UpdateMemoryRequest",

@@ -5,16 +5,23 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from riftx.application.errors import EntityNotFoundError
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import ExecutionRepository
 from riftx.application.services.nodes import NodeApplicationService
 from riftx.application.services.runner_control import RunnerControlService
-from riftx.domain import Execution, ExecutionStatus, NodeStatus, RunnerCommandKind
-from riftx.domain.base import new_id
+from riftx.domain import (
+    Execution,
+    ExecutionStatus,
+    NodeStatus,
+    RunnerCommandKind,
+    RunnerCommandStatus,
+    RunnerPrincipal,
+)
+from riftx.domain.base import new_id, utc_now
 
 from .models import ExecutionLaunchRequest, ExecutionOutput, OutputSlice
 from .paths import RunnerPaths
-from .protocols import ExecutionRunner
+from .protocols import EffectGuard, ExecutionRunner
 
 _TERMINAL_EXECUTION_STATUSES = {
     ExecutionStatus.COMPLETED,
@@ -23,6 +30,12 @@ _TERMINAL_EXECUTION_STATUSES = {
     ExecutionStatus.CANCELLED,
     ExecutionStatus.HARD_TIMEOUT,
     ExecutionStatus.LOST,
+}
+_PHYSICAL_STOP_PROOF_STATUSES = {
+    ExecutionStatus.COMPLETED,
+    ExecutionStatus.EXITED,
+    ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
 }
 
 
@@ -37,16 +50,26 @@ class RemoteExecutionSupervisor:
         nodes: NodeApplicationService,
         *,
         poll_interval_seconds: float = 0.25,
+        cancel_ack_timeout_seconds: float = 5.0,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
+        if cancel_ack_timeout_seconds <= 0:
+            raise ValueError("cancel_ack_timeout_seconds must be positive")
         self._repository = repository
         self._paths = paths
         self._control = control
         self._nodes = nodes
         self._poll_interval_seconds = poll_interval_seconds
+        self._cancel_ack_timeout_seconds = cancel_ack_timeout_seconds
 
-    async def start(self, request: ExecutionLaunchRequest) -> Execution:
+    async def start(
+        self,
+        request: ExecutionLaunchRequest,
+        *,
+        effect_guard: EffectGuard | None = None,
+    ) -> Execution:
+        owner = await self._control.current_principal(request.node_id)
         execution_id = new_id()
         self._paths.ensure_run_layout(request.run_id)
         output_paths = self._paths.execution(request.run_id, execution_id)
@@ -58,6 +81,7 @@ class RemoteExecutionSupervisor:
             tool_call_id=request.tool_call_id,
             attempt_group=request.attempt_group,
             node_id=request.node_id,
+            owner=owner,
             executor_type=request.executor_type,
             argv=request.argv,
             command_text=request.command_text,
@@ -73,31 +97,74 @@ class RemoteExecutionSupervisor:
                 else ExecutionStatus.CREATED
             ),
         )
+        # Persist STARTING before the final Run fence and before enqueue.  A
+        # concurrent stop can therefore never miss an admitted remote effect.
+        execution.transition_to(ExecutionStatus.STARTING)
         execution, created = await self._repository.create_if_absent(execution)
         if not created:
+            _require_remote_owner(execution)
             return execution
 
-        execution.transition_to(ExecutionStatus.STARTING)
-        await self._repository.save(execution)
+        try:
+            if effect_guard is not None:
+                await effect_guard()
+        except BaseException:
+            await self._cancel_unstarted(execution)
+            raise
         try:
             await self._control.enqueue(
                 request.node_id,
                 kind=RunnerCommandKind.EXECUTE,
                 idempotency_key=f"execute:{request.execution_key}",
+                target=owner,
                 payload={
                     "execution_id": execution.id,
-                    "request": request.model_copy(update={"execution_id": execution.id}).model_dump(
-                        mode="json"
-                    ),
+                    "request": request.model_copy(
+                        update={
+                            "execution_id": execution.id,
+                            "runner_principal": owner,
+                        }
+                    ).model_dump(mode="json"),
                 },
             )
         except Exception:
-            current = await self.get(execution.id)
-            if current.status is ExecutionStatus.STARTING:
-                current.transition_to(ExecutionStatus.LOST)
-                await self._repository.save(current)
+            await self._mark_start_lost(execution.id)
+            raise
+        try:
+            if effect_guard is not None:
+                await effect_guard()
+        except BaseException:
+            # Dispatch is delivery-ambiguous.  Persist a CANCEL tombstone and
+            # leave the execution non-terminal until the Runner acknowledges
+            # physical termination.
+            try:
+                await self.cancel(execution.id)
+            except Exception:
+                await self._mark_start_lost(execution.id)
             raise
         return execution
+
+    async def _cancel_unstarted(self, execution: Execution) -> Execution:
+        current = await self.get(execution.id)
+        if current.status is not ExecutionStatus.STARTING:
+            return current
+        current.transition_to(ExecutionStatus.CANCELLED)
+        current, _ = await self._repository.save_if_status(
+            current,
+            expected={ExecutionStatus.STARTING},
+        )
+        return current
+
+    async def _mark_start_lost(self, execution_id: str) -> Execution:
+        current = await self.get(execution_id)
+        if current.status is not ExecutionStatus.STARTING:
+            return current
+        current.transition_to(ExecutionStatus.LOST)
+        current, _ = await self._repository.save_if_status(
+            current,
+            expected={ExecutionStatus.STARTING},
+        )
+        return current
 
     async def get(self, execution_id: str) -> Execution:
         execution = await self._repository.get(execution_id)
@@ -112,32 +179,95 @@ class RemoteExecutionSupervisor:
                 return execution
             node = await self._nodes.get(execution.node_id)
             if node.status is NodeStatus.LOST:
-                execution.transition_to(ExecutionStatus.LOST)
-                return await self._repository.save(execution)
+                return await self._mark_lost_if_active(execution)
             await asyncio.sleep(self._poll_interval_seconds)
 
     async def cancel(self, execution_id: str) -> Execution:
         execution = await self.get(execution_id)
+        owner = _require_remote_owner(execution)
         # A terminal status reported by the Control Plane is not proof that a
         # remote process has stopped. In particular, LOST/FAILED can be written
         # after a disconnect while the Runner process is still alive. Persist a
         # CANCEL tombstone for every status except an already acknowledged
         # cancellation so a reconnecting Runner cannot start or keep it alive.
-        if execution.status is ExecutionStatus.CANCELLED:
+        cancel_ack_required = _remote_cancel_ack_required(execution)
+        if not cancel_ack_required:
             return execution
-        await self._control.enqueue(
+        command, _ = await self._control.enqueue(
             execution.node_id,
             kind=RunnerCommandKind.CANCEL,
             # A failed safety command must be re-enqueueable. Each request is
             # independently idempotent at the Runner through its cancellation
             # journal, so do not permanently reuse a failed command row.
             idempotency_key=f"cancel:{execution.id}:{new_id()}",
+            target=owner,
             payload={
                 "execution_id": execution.id,
                 "execution_key": execution.execution_key,
             },
         )
-        return execution
+        completed = await self._control.wait_command(
+            command.id,
+            timeout_seconds=self._cancel_ack_timeout_seconds,
+            poll_interval_seconds=min(self._poll_interval_seconds, 0.1),
+        )
+        if completed.status is not RunnerCommandStatus.COMPLETED:
+            raise RuntimeError(
+                f"Remote execution cancellation failed: {completed.error or 'unknown Runner error'}"
+            )
+        if completed.result.get("execution_id") != execution.id:
+            raise RuntimeError("Remote cancellation acknowledgement execution ID mismatch")
+        if completed.result.get("local_execution_id") != execution.id:
+            raise RuntimeError("Remote cancellation acknowledgement local execution ID mismatch")
+        if completed.result.get("execution_key") != execution.execution_key:
+            raise RuntimeError("Remote cancellation acknowledgement execution key mismatch")
+        if completed.result.get("owner") != owner.model_dump(mode="json"):
+            raise RuntimeError("Remote cancellation acknowledgement owner mismatch")
+        if completed.result.get("status") != ExecutionStatus.CANCELLED.value:
+            raise RuntimeError("Remote cancellation acknowledgement status mismatch")
+        if completed.result.get("physical_stop_confirmed") is not True:
+            raise RuntimeError("Remote cancellation did not confirm physical process stop")
+        return await self._persist_acknowledged_stop(execution_id, owner)
+
+    async def _persist_acknowledged_stop(
+        self,
+        execution_id: str,
+        owner: RunnerPrincipal,
+    ) -> Execution:
+        execution = await self.get(execution_id)
+        for _ in range(8):
+            if _require_remote_owner(execution) != owner:
+                raise RuntimeError("Remote execution owner changed after cancellation ACK")
+            if (
+                execution.status in _PHYSICAL_STOP_PROOF_STATUSES
+                and execution.physical_stop_confirmed_at is not None
+            ):
+                return execution
+            expected_status = execution.status
+            candidate = execution.model_copy(deep=True)
+            if candidate.status not in _PHYSICAL_STOP_PROOF_STATUSES:
+                if not candidate.can_transition_to(ExecutionStatus.CANCELLED):
+                    raise RuntimeError(
+                        "Remote cancellation ACK cannot be reconciled with execution "
+                        f"status {candidate.status.value!r}"
+                    )
+                candidate.transition_to(
+                    ExecutionStatus.CANCELLED,
+                    exit_code=candidate.exit_code,
+                )
+            # A late cancellation can race a natural terminal outcome. The ACK
+            # proves physical absence, but COMPLETED/EXITED/HARD_TIMEOUT are
+            # already truthful outcomes and cannot be rewritten to CANCELLED.
+            candidate.physical_stop_confirmed_at = utc_now()
+            execution, saved = await self._repository.save_if_status(
+                candidate,
+                expected={expected_status},
+            )
+            if saved:
+                return execution
+        raise RuntimeError(
+            f"Remote cancellation proof for execution {execution_id!r} could not be persisted"
+        )
 
     async def read_output(
         self,
@@ -169,12 +299,30 @@ class RemoteExecutionSupervisor:
     async def recover(self) -> list[Execution]:
         recovered: list[Execution] = []
         for execution in await self._repository.list_active():
+            if execution.status not in {
+                ExecutionStatus.STARTING,
+                ExecutionStatus.RUNNING,
+            }:
+                continue
             node = await self._nodes.get(execution.node_id)
             if node.status is NodeStatus.LOST:
-                execution.transition_to(ExecutionStatus.LOST)
-                await self._repository.save(execution)
+                execution = await self._mark_lost_if_active(execution)
             recovered.append(execution)
         return recovered
+
+    async def _mark_lost_if_active(self, execution: Execution) -> Execution:
+        if execution.status not in {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+        }:
+            return execution
+        expected = execution.status
+        execution.transition_to(ExecutionStatus.LOST)
+        execution, _ = await self._repository.save_if_status(
+            execution,
+            expected={expected},
+        )
+        return execution
 
     async def close(self, *, cancel_running: bool = False) -> None:
         if cancel_running:
@@ -198,8 +346,16 @@ class NodeExecutionRouter:
         self._local = local
         self._remote = remote
 
-    async def start(self, request: ExecutionLaunchRequest) -> Execution:
-        return await self._runner_for_node(request.node_id).start(request)
+    async def start(
+        self,
+        request: ExecutionLaunchRequest,
+        *,
+        effect_guard: EffectGuard | None = None,
+    ) -> Execution:
+        return await self._runner_for_node(request.node_id).start(
+            request,
+            effect_guard=effect_guard,
+        )
 
     async def get(self, execution_id: str) -> Execution:
         execution = await self._require(execution_id)
@@ -257,3 +413,40 @@ def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
         next_cursor=next_cursor,
         eof=next_cursor >= size,
     )
+
+
+def _remote_cancel_ack_required(execution: Execution) -> bool:
+    if (
+        execution.status in _PHYSICAL_STOP_PROOF_STATUSES
+        and execution.physical_stop_confirmed_at is not None
+    ):
+        return False
+    if execution.status is not ExecutionStatus.CANCELLED:
+        return True
+    # A pre-dispatch guard can safely persist CANCELLED without a Runner ACK.
+    # Once any process/start identity exists, even an old CANCELLED row must be
+    # re-audited by the owning Runner.
+    return any(
+        value is not None
+        for value in (
+            execution.pid,
+            execution.process_group_id,
+            execution.containment_id,
+            execution.process_created_at,
+            execution.started_at,
+        )
+    )
+
+
+def _require_remote_owner(execution: Execution) -> RunnerPrincipal:
+    if execution.owner is None:
+        raise ApplicationConflictError(
+            "remote_execution_owner_missing",
+            f"Remote execution {execution.id!r} has no bound Runner owner",
+            details={
+                "execution_id": execution.id,
+                "execution_key": execution.execution_key,
+                "node_id": execution.node_id,
+            },
+        )
+    return execution.owner

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
-from riftx.application.services import TerminalApplicationService
-from riftx.domain import Engagement, Objective, Run, TerminalStatus
+import pytest
+
+from riftx.application.errors import ApplicationConflictError
+from riftx.application.services import (
+    CreateTerminal,
+    RunApplicationService,
+    TerminalApplicationService,
+)
+from riftx.domain import Engagement, Objective, Run, RunStatus, TerminalOwner, TerminalStatus
 from riftx.execution import DeferredExecutionDispatcher, ExecutionService
 from riftx.hooks import (
     HookBus,
@@ -29,7 +38,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
 )
-from riftx.runner import RunnerPaths, TerminalSupervisor
+from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
 from riftx.runtime.coordinator import RuntimeCoordinator
 from riftx.runtime.engine import AgentEngineEvent, AgentEngineEventType, AgentEngineState
 from riftx.runtime.leases import DatabaseRunLeaseManager
@@ -71,6 +80,155 @@ class TerminalEngine:
         return TerminalEngineRun(self._events)
 
 
+class DelayedTerminalController:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.physical_starts = 0
+
+    async def start(self, request, *, effect_guard=None):
+        self.entered.set()
+        await self.release.wait()
+        if effect_guard is not None:
+            await effect_guard()
+        self.physical_starts += 1
+        raise AssertionError("test controller must be fenced before physical start")
+
+
+class RecordingTerminalController:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.starts = 0
+        self.writes = 0
+
+    async def start(self, request: object, *, effect_guard: object = None) -> object:
+        self.starts += 1
+        raise AssertionError("COMPLETING must block terminal start")
+
+    async def get(self, session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=session_id, run_id=self.run_id)
+
+    async def write(self, session_id: str, data: bytes, *, actor: TerminalOwner) -> None:
+        self.writes += 1
+
+
+class RunControlWorkflow:
+    async def pause(self, run_id: str) -> None:
+        return None
+
+    async def cancel(self, run_id: str) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_status"),
+    [
+        ("pause", RunStatus.PAUSED),
+        ("cancel", RunStatus.CANCELLED),
+    ],
+)
+async def test_run_stop_wins_pre_registration_race_and_delayed_terminal_never_starts(
+    tmp_path: Path,
+    operation: str,
+    expected_status: RunStatus,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'terminal-admission.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Authorized terminal")
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="local",
+            objective=Objective(description="Fence delayed terminal"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    await runs.update_status("run-1", RunStatus.PREPARING)
+    await runs.update_status("run-1", RunStatus.RUNNING)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    process_supervisor = ProcessSupervisor(executions, RunnerPaths(tmp_path / "process-state"))
+    terminal_controller = DelayedTerminalController()
+    terminal_service = TerminalApplicationService(
+        run_repository=runs,
+        supervisor=terminal_controller,  # type: ignore[arg-type]
+    )
+    run_control = RunApplicationService(
+        engagement_repository=object(),  # type: ignore[arg-type]
+        run_repository=runs,
+        event_repository=events,
+        workflow_client=RunControlWorkflow(),  # type: ignore[arg-type]
+        execution_repository=executions,
+        execution_runner=process_supervisor,
+        workspace_root=tmp_path,
+        execution_cancel_timeout_seconds=0.01,
+        execution_cancel_poll_seconds=0.001,
+    )
+
+    create_task = asyncio.create_task(
+        terminal_service.create(
+            "run-1",
+            CreateTerminal(argv=[sys.executable], cwd=str(tmp_path)),
+        )
+    )
+    await terminal_controller.entered.wait()
+    stopped = await getattr(run_control, operation)("run-1")
+    assert stopped.status is expected_status
+
+    terminal_controller.release.set()
+    with pytest.raises(ApplicationConflictError) as captured:
+        await create_task
+
+    assert captured.value.code == "run_execution_blocked"
+    assert terminal_controller.physical_starts == 0
+    assert list(await executions.list("run-1")) == []
+    await process_supervisor.close()
+    await database.dispose()
+
+
+async def test_completing_fence_blocks_new_terminal_and_existing_terminal_input(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'terminal-completing.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Terminal completion fence")
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="local",
+            objective=Objective(description="Block terminal effects while finalizing"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    await runs.update_status("run-1", RunStatus.PREPARING)
+    await runs.update_status("run-1", RunStatus.RUNNING)
+    await runs.update_status("run-1", RunStatus.COMPLETING)
+    controller = RecordingTerminalController("run-1")
+    service = TerminalApplicationService(
+        run_repository=runs,
+        supervisor=controller,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ApplicationConflictError) as create_error:
+        await service.create("run-1", CreateTerminal(argv=[sys.executable]))
+    with pytest.raises(ApplicationConflictError) as write_error:
+        await service.write("terminal-1", b"dangerous command\n", actor=TerminalOwner.USER)
+
+    assert create_error.value.code == "run_execution_blocked"
+    assert write_error.value.code == "run_execution_blocked"
+    assert controller.starts == 0
+    assert controller.writes == 0
+    await database.dispose()
+
+
 async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
     tmp_path: Path,
 ) -> None:
@@ -90,9 +248,7 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
         )
     )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
-    await sessions.create(
-        AgentSession(id="session-1", run_id="run-1", model_profile="fake-model")
-    )
+    await sessions.create(AgentSession(id="session-1", run_id="run-1", model_profile="fake-model"))
     events = SQLAlchemyRunEventRepository(database.session_factory)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
     terminals = SQLAlchemyTerminalRepository(database.session_factory)
@@ -144,10 +300,13 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
                         "executor_type": "pty",
                         "cwd": str(tmp_path),
                         "argv": [
-                            sys.executable,
-                            "-u",
-                            "-c",
-                            "print('PTY READY', flush=True); input()",
+                                sys.executable,
+                                "-u",
+                                "-c",
+                                (
+                                    "import time; print('PTY READY', flush=True); "
+                                    "input(); time.sleep(30)"
+                                ),
                         ],
                     },
                 },

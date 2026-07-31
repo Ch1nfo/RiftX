@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Protocol
 
+from riftx.application.finalization import RunFinalizationIntent
 from riftx.domain import (
     Approval,
     ApprovalGrant,
@@ -13,6 +14,7 @@ from riftx.domain import (
     Artifact,
     Engagement,
     Execution,
+    ExecutionStatus,
     Finding,
     FindingSeverity,
     FindingStatus,
@@ -25,8 +27,10 @@ from riftx.domain import (
     RunnerCommand,
     RunnerCommandStatus,
     RunnerCredential,
+    RunnerPrincipal,
     RunStatus,
     TerminalSession,
+    TerminalStatus,
     ToolCall,
 )
 
@@ -54,7 +58,31 @@ class NodeRepository(Protocol):
 
 
 class RunnerCredentialRepository(Protocol):
+    async def issue(
+        self,
+        node_id: str,
+        *,
+        token_hash: str,
+        token_prefix: str,
+        issued_at: datetime,
+        instance_id: str | None = None,
+    ) -> RunnerCredential: ...
+
     async def get(self, node_id: str) -> RunnerCredential | None: ...
+
+    async def get_current(self, node_id: str) -> RunnerCredential | None: ...
+
+    async def get_by_principal(
+        self,
+        node_id: str,
+        principal: RunnerPrincipal,
+    ) -> RunnerCredential | None: ...
+
+    async def get_by_token_hash(
+        self,
+        node_id: str,
+        token_hash: str,
+    ) -> RunnerCredential | None: ...
 
     async def save(self, credential: RunnerCredential) -> RunnerCredential: ...
 
@@ -68,15 +96,28 @@ class RunnerCommandRepository(Protocol):
         self,
         node_id: str,
         *,
+        principal: RunnerPrincipal,
         lease_id: str,
         leased_until: datetime,
         now: datetime,
+        safety_only: bool = False,
     ) -> RunnerCommand | None: ...
+
+    async def renew_lease(
+        self,
+        command_id: str,
+        *,
+        principal: RunnerPrincipal,
+        lease_id: str,
+        leased_until: datetime,
+        now: datetime,
+    ) -> RunnerCommand: ...
 
     async def finish(
         self,
         command_id: str,
         *,
+        principal: RunnerPrincipal,
         lease_id: str,
         status: RunnerCommandStatus,
         result: dict[str, object],
@@ -98,7 +139,58 @@ class RunRepository(Protocol):
         offset: int = 0,
     ) -> Sequence[Run]: ...
 
+    async def list_for_reconciliation(
+        self,
+        *,
+        status: RunStatus,
+        created_through: datetime,
+        after_created_at: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> Sequence[Run]: ...
+
     async def update_status(self, run_id: str, target: RunStatus) -> Run: ...
+
+    async def complete_if_no_pending_user_messages(
+        self,
+        run_id: str,
+        *,
+        consumed_user_message_ids: Sequence[str],
+    ) -> tuple[Run, Sequence[str]]: ...
+
+    async def fence_completion_if_no_pending_user_messages(
+        self,
+        run_id: str,
+        *,
+        consumed_user_message_ids: Sequence[str],
+        defer_cleanup_event: bool = False,
+    ) -> tuple[Run, Sequence[str]]: ...
+
+    async def fence_finalization(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        defer_cleanup_event: bool = False,
+    ) -> Run: ...
+
+    async def commit_finalization(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        defer_cleanup_event: bool = False,
+    ) -> Run: ...
+
+    async def record_finalization_intent(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        defer_cleanup_event: bool = False,
+    ) -> Run: ...
+
+    async def get_finalization_intent(self, run_id: str) -> RunFinalizationIntent | None: ...
 
     async def update_model_profile(self, run_id: str, model_profile: str) -> Run: ...
 
@@ -109,9 +201,38 @@ class RunEventRepository(Protocol):
         run_id: str,
         event_type: str,
         payload: dict[str, object] | None = None,
+        *,
+        event_id: str | None = None,
     ) -> RunEvent: ...
 
     async def get(self, event_id: str) -> RunEvent | None: ...
+
+    async def append_terminal_projection_if_current(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+        *,
+        event_id: str,
+        session_id: str,
+        expected_terminal_status: TerminalStatus,
+        expected_execution_status: ExecutionStatus,
+    ) -> RunEvent | None:
+        """Append only while the durable Terminal and Execution still match.
+
+        Returning ``None`` means a newer projection won the database race.
+        Implementations must make the state check and append one serialized
+        transaction so a late lower-state event cannot follow a higher one.
+        """
+        ...
+
+    async def append_user_message(
+        self,
+        run_id: str,
+        message: str,
+        *,
+        event_id: str | None = None,
+    ) -> RunEvent: ...
 
     async def list_after(
         self,
@@ -147,6 +268,7 @@ class ApprovalRepository(Protocol):
         *,
         decided_by: str,
         reason: str | None = None,
+        blocked_run_statuses: Collection[RunStatus] = (),
     ) -> tuple[Approval, bool]: ...
 
     async def grant_for_run(
@@ -169,6 +291,13 @@ class ExecutionRepository(Protocol):
 
     async def save(self, execution: Execution) -> Execution: ...
 
+    async def save_if_status(
+        self,
+        execution: Execution,
+        *,
+        expected: Collection[ExecutionStatus],
+    ) -> tuple[Execution, bool]: ...
+
     async def list(
         self,
         run_id: str,
@@ -189,7 +318,16 @@ class TerminalRepository(Protocol):
 
     async def save(self, terminal: TerminalSession) -> TerminalSession: ...
 
+    async def save_if_status(
+        self,
+        terminal: TerminalSession,
+        *,
+        expected: Collection[TerminalStatus],
+    ) -> tuple[TerminalSession, bool]: ...
+
     async def list_open(self) -> Sequence[TerminalSession]: ...
+
+    async def list_active(self) -> Sequence[TerminalSession]: ...
 
 
 class ArtifactRepository(Protocol):

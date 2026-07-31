@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -41,8 +42,11 @@ class APIClient:
         *,
         timeout_seconds: float = 30.0,
         transport: httpx.BaseTransport | None = None,
+        admin_token: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        resolved_admin_token = admin_token or os.environ.get("RIFTX_ADMIN_TOKEN")
+        self._admin_token = resolved_admin_token
         self._client = httpx.Client(
             base_url=self.base_url,
             timeout=timeout_seconds,
@@ -145,17 +149,70 @@ class APIClient:
             json={"model_profile": model_profile},
         )
 
+    def list_model_profiles(self) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            "/api/v1/model-profiles/admin",
+            headers=self._admin_headers(),
+        )
+
+    def get_model_profile(self, profile_name: str) -> dict[str, Any]:
+        encoded = quote(profile_name, safe="")
+        return self._json(
+            "GET",
+            f"/api/v1/model-profiles/{encoded}",
+            headers=self._admin_headers(),
+        )
+
+    def configure_model_profile(
+        self,
+        profile_name: str,
+        payload: dict[str, object],
+    ) -> dict[str, Any]:
+        encoded = quote(profile_name, safe="")
+        return self._json(
+            "PUT",
+            f"/api/v1/model-profiles/{encoded}",
+            json=payload,
+            headers=self._admin_headers(),
+        )
+
+    def set_default_model_profile(self, profile_name: str) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            "/api/v1/model-profiles/default",
+            json={"profile": profile_name},
+            headers=self._admin_headers(),
+        )
+
+    def delete_model_profile(self, profile_name: str) -> dict[str, Any]:
+        encoded = quote(profile_name, safe="")
+        return self._json(
+            "DELETE",
+            f"/api/v1/model-profiles/{encoded}",
+            headers=self._admin_headers(),
+        )
+
     def cancel_current_execution(self, run_id: str) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/api/v1/runs/{run_id}/cancel-current-execution",
         )
 
-    def append_message(self, run_id: str, message: str) -> dict[str, Any]:
+    def append_message(
+        self,
+        run_id: str,
+        message: str,
+        *,
+        message_event_id: str | None = None,
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/api/v1/runs/{run_id}/message",
-            json={"message": message},
+            json={
+                "message": message,
+                **({"message_event_id": message_event_id} if message_event_id is not None else {}),
+            },
         )
 
     def list_events(
@@ -335,13 +392,21 @@ class APIClient:
         )
 
     def disconnect_node(self, node_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/api/v1/nodes/{node_id}/disconnect")
+        return self._json(
+            "POST",
+            f"/api/v1/nodes/{node_id}/disconnect",
+            headers=self._admin_headers(),
+        )
 
     def list_tools(self, node_id: str = "local") -> dict[str, Any]:
         return self._json("GET", f"/api/v1/nodes/{node_id}/tools")
 
     def refresh_tools(self, node_id: str = "local") -> dict[str, Any]:
-        return self._json("POST", f"/api/v1/nodes/{node_id}/refresh-tools")
+        return self._json(
+            "POST",
+            f"/api/v1/nodes/{node_id}/refresh-tools",
+            headers=self._admin_headers(),
+        )
 
     def list_approvals(
         self,
@@ -435,6 +500,11 @@ class APIClient:
                 details={"path": path},
             )
         return payload
+
+    def _admin_headers(self) -> dict[str, str]:
+        if not self._admin_token:
+            return {}
+        return {"Authorization": f"Bearer {self._admin_token}"}
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.is_success:

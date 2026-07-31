@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from unittest.mock import AsyncMock
 
 import httpx
@@ -76,6 +77,39 @@ def test_provider_requires_configured_api_key() -> None:
 
     with pytest.raises(ModelConfigurationError, match="PRIMARY_KEY"):
         provider.get_model("primary")
+
+
+class _UnreadableCredentialEnvironment(Mapping[str, str]):
+    def __getitem__(self, key: str) -> str:
+        raise AssertionError(f"credential environment was read: {key}")
+
+    def __iter__(self) -> Iterator[str]:
+        raise AssertionError("credential environment was iterated")
+
+    def __len__(self) -> int:
+        raise AssertionError("credential environment length was read")
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        raise AssertionError(f"credential environment was read: {key}")
+
+
+def test_provider_never_reads_credentials_for_no_key_profile() -> None:
+    config = ModelsConfig(
+        default_profile="local",
+        models={
+            "local": ModelProfile(
+                model="local-model",
+                base_url="http://localhost:11434/v1",
+                api_key_env="RIFTX_MODEL_REAL_KEY",
+                requires_api_key=False,
+            )
+        },
+    )
+    provider = RiftXModelProvider(config, environment=_UnreadableCredentialEnvironment())
+
+    provider.get_model("local")
+
+    assert provider._clients["local"].api_key == "not-required"
 
 
 def test_provider_rejects_missing_environment_reference() -> None:

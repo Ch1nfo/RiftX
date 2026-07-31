@@ -699,3 +699,62 @@ async def test_agent_base_tools_manage_artifacts_and_terminal_sessions(tmp_path:
     assert closed["status"] == "closed"
     await supervisor.close()
     await database.dispose()
+
+
+async def test_agent_terminal_tools_reject_sessions_owned_by_another_run(
+    tmp_path: Path,
+) -> None:
+    database, _, context, services, supervisor = await _runtime(
+        tmp_path,
+        execution_policy="open",
+        approval_mode=ApprovalMode.AUTO,
+    )
+    other_workspace = tmp_path / "other-run"
+    other_workspace.mkdir()
+    other_run = Run(
+        id="run-2",
+        engagement_id="engagement-1",
+        node_id="node-1",
+        objective=Objective(description="Other authorized task"),
+        approval_mode=ApprovalMode.AUTO,
+        workspace_path=str(other_workspace),
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(other_run)
+    other_context = RiftXAgentContext.from_run(
+        other_run,
+        services.tool_registry,
+        agent_step_id="step-other",
+    )
+    opened = json.loads(
+        await _invoke_agent_tool(
+            services,
+            other_context,
+            "open_terminal",
+            {"argv": [sys.executable, "-u", "-c", "import time; time.sleep(60)"]},
+            call_id="other-open",
+        )
+    )
+    session_id = str(opened["id"])
+
+    try:
+        for name, arguments in (
+            ("read_terminal", {"session_id": session_id, "cursor": 0}),
+            ("send_terminal_input", {"session_id": session_id, "data": "blocked\n"}),
+            ("close_terminal", {"session_id": session_id}),
+        ):
+            result = await _invoke_agent_tool(
+                services,
+                context,
+                name,
+                arguments,
+                call_id=f"cross-run-{name}",
+            )
+            assert "terminal session is not available to this Run" in result
+
+        view = await services.terminal_service.get(session_id)
+        assert view.terminal.run_id == other_run.id
+        assert view.terminal.status.value == "open"
+    finally:
+        await services.terminal_service.close(session_id)
+        await supervisor.close()
+        await database.dispose()

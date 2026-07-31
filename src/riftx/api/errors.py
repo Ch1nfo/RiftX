@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -93,11 +95,15 @@ async def _handle_invalid_transition(_: Request, exc: Exception) -> JSONResponse
 
 async def _handle_validation(_: Request, exc: Exception) -> JSONResponse:
     error = _expect(exc, RequestValidationError)
+    sensitive_values = _sensitive_values(error.body)
     return _response(
         422,
         "validation_error",
         "Request validation failed",
-        jsonable_encoder(error.errors()),
+        _redact_validation_errors(
+            jsonable_encoder(error.errors()),
+            sensitive_values=sensitive_values,
+        ),
     )
 
 
@@ -134,3 +140,85 @@ def _expect[ErrorT: Exception](exc: Exception, expected: type[ErrorT]) -> ErrorT
     if not isinstance(exc, expected):
         raise TypeError(f"expected {expected.__name__}, got {type(exc).__name__}")
     return exc
+
+
+def _redact_validation_errors(
+    errors: list[object],
+    *,
+    sensitive_values: tuple[str, ...] = (),
+) -> list[object]:
+    redacted: list[object] = []
+    for item in errors:
+        if not isinstance(item, Mapping):
+            redacted.append(item)
+            continue
+        copied = dict(item)
+        copied.pop("ctx", None)
+        location = copied.get("loc")
+        if isinstance(location, (list, tuple)) and any(
+            _is_sensitive_field(part) for part in location if isinstance(part, str)
+        ):
+            copied["input"] = "[redacted]"
+        else:
+            copied["input"] = _redact_sensitive_mapping(copied.get("input"))
+        redacted.append(_redact_sensitive_literals(copied, sensitive_values))
+    return redacted
+
+
+def _redact_sensitive_mapping(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): "[redacted]"
+            if _is_sensitive_field(str(key))
+            else _redact_sensitive_mapping(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_mapping(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_mapping(item) for item in value)
+    return value
+
+
+def _sensitive_values(value: object) -> tuple[str, ...]:
+    collected: set[str] = set()
+
+    def visit(item: object, *, sensitive: bool = False) -> None:
+        if isinstance(item, Mapping):
+            for key, child in item.items():
+                visit(child, sensitive=sensitive or _is_sensitive_field(str(key)))
+            return
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child, sensitive=sensitive)
+            return
+        if sensitive and isinstance(item, str) and item:
+            collected.add(item)
+
+    visit(value)
+    return tuple(sorted(collected, key=len, reverse=True))
+
+
+def _redact_sensitive_literals(value: object, sensitive_values: tuple[str, ...]) -> object:
+    if isinstance(value, str):
+        redacted = value
+        for sensitive in sensitive_values:
+            redacted = redacted.replace(sensitive, "[redacted]")
+        return redacted
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_sensitive_literals(item, sensitive_values)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_literals(item, sensitive_values) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_literals(item, sensitive_values) for item in value)
+    return value
+
+
+def _is_sensitive_field(name: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]", "", name.lower())
+    return compact in {"env", "environment"} or compact.endswith(
+        ("apikey", "password", "secret", "token")
+    )

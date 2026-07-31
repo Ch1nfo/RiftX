@@ -2,12 +2,12 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Query
 
 from riftx.application.services import ExecutionStatusReport
+from riftx.domain.base import utc_now
 
-from ..auth import bearer_token
-from ..dependencies import RunnerControlServiceDependency
+from ..dependencies import RunnerControlServiceDependency, RunnerDependency
 from ..schemas import (
     ErrorResponse,
     ExecutionOutputReportRequest,
@@ -15,6 +15,8 @@ from ..schemas import (
     ExecutionStatusReportRequest,
     FinishRunnerCommandRequest,
     FinishRunnerCommandResponse,
+    RenewRunnerCommandLeaseRequest,
+    RenewRunnerCommandLeaseResponse,
     RunnerCommandOutputReportRequest,
     RunnerCommandResponse,
     RunnerPollResponse,
@@ -30,14 +32,15 @@ router = APIRouter(prefix="/runner", tags=["runner-control"])
 )
 async def poll_runner_command(
     service: RunnerControlServiceDependency,
-    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerDependency,
     wait_seconds: Annotated[float, Query(ge=0, le=30)] = 0,
+    safety_only: bool = False,
 ) -> RunnerPollResponse:
     command = await service.poll(
-        node_id,
-        bearer_token(authorization),
+        authorized.node_id,
+        authorized.token,
         wait_seconds=wait_seconds,
+        safety_only=safety_only,
     )
     return RunnerPollResponse(
         command=RunnerCommandResponse.from_domain(command) if command else None
@@ -53,12 +56,11 @@ async def finish_runner_command(
     command_id: str,
     payload: FinishRunnerCommandRequest,
     service: RunnerControlServiceDependency,
-    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerDependency,
 ) -> FinishRunnerCommandResponse:
     command = await service.finish_command(
-        node_id,
-        bearer_token(authorization),
+        authorized.node_id,
+        authorized.token,
         command_id,
         lease_id=payload.lease_id,
         succeeded=payload.succeeded,
@@ -73,6 +75,35 @@ async def finish_runner_command(
 
 
 @router.post(
+    "/commands/{command_id}/lease",
+    response_model=RenewRunnerCommandLeaseResponse,
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def renew_runner_command_lease(
+    command_id: str,
+    payload: RenewRunnerCommandLeaseRequest,
+    service: RunnerControlServiceDependency,
+    authorized: RunnerDependency,
+) -> RenewRunnerCommandLeaseResponse:
+    command = await service.renew_command_lease(
+        authorized.node_id,
+        authorized.token,
+        command_id,
+        lease_id=payload.lease_id,
+    )
+    if command.lease_expires_at is None:
+        raise RuntimeError("renewed Runner command omitted its lease expiry")
+    return RenewRunnerCommandLeaseResponse(
+        id=command.id,
+        lease_expires_at=command.lease_expires_at,
+        lease_duration_seconds=max(
+            0.001,
+            (command.lease_expires_at - utc_now()).total_seconds(),
+        ),
+    )
+
+
+@router.post(
     "/commands/{command_id}/output",
     response_model=ExecutionOutputReportResponse,
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
@@ -81,12 +112,11 @@ async def report_runner_command_output(
     command_id: str,
     payload: RunnerCommandOutputReportRequest,
     service: RunnerControlServiceDependency,
-    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerDependency,
 ) -> ExecutionOutputReportResponse:
     next_offset = await service.append_command_output(
-        node_id,
-        bearer_token(authorization),
+        authorized.node_id,
+        authorized.token,
         command_id,
         lease_id=payload.lease_id,
         offset=payload.offset,
@@ -103,12 +133,11 @@ async def report_execution_status(
     execution_id: str,
     payload: ExecutionStatusReportRequest,
     service: RunnerControlServiceDependency,
-    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerDependency,
 ) -> dict[str, object]:
     execution = await service.report_execution(
-        node_id,
-        bearer_token(authorization),
+        authorized.node_id,
+        authorized.token,
         execution_id,
         ExecutionStatusReport(
             status=payload.status,
@@ -122,6 +151,7 @@ async def report_execution_status(
             platform_release=payload.platform_release,
             platform_architecture=payload.platform_architecture,
             process_created_at=payload.process_created_at,
+            physical_stop_confirmed=payload.physical_stop_confirmed,
         ),
     )
     return execution.model_dump(mode="json")
@@ -136,12 +166,11 @@ async def report_execution_output(
     execution_id: str,
     payload: ExecutionOutputReportRequest,
     service: RunnerControlServiceDependency,
-    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerDependency,
 ) -> ExecutionOutputReportResponse:
     next_offset = await service.append_output(
-        node_id,
-        bearer_token(authorization),
+        authorized.node_id,
+        authorized.token,
         execution_id,
         stream=payload.stream,
         offset=payload.offset,

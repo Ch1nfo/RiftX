@@ -28,7 +28,11 @@ def test_api_client_uses_shared_run_endpoints() -> None:
         transport=httpx.MockTransport(handler),
     ) as client:
         created = client.create_run({"objective": "test"})
-        queued = client.append_message("run-1", "continue")
+        queued = client.append_message(
+            "run-1",
+            "continue",
+            message_event_id="742ffacf-68f2-47bc-9a73-8705db475385",
+        )
         compacted = client.compact_run("run-1", max_history_items=25)
 
     assert created["id"] == "run-1"
@@ -37,9 +41,105 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     assert requests[0].url == httpx.URL("http://control-plane/api/v1/runs")
     assert json.loads(requests[0].content) == {"objective": "test"}
     assert requests[1].url.path == "/api/v1/runs/run-1/message"
-    assert json.loads(requests[1].content) == {"message": "continue"}
+    assert json.loads(requests[1].content) == {
+        "message": "continue",
+        "message_event_id": "742ffacf-68f2-47bc-9a73-8705db475385",
+    }
     assert requests[2].url.path == "/api/v1/runs/run-1/compact"
     assert json.loads(requests[2].content) == {"max_history_items": 25}
+
+
+def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
+    requests: list[tuple[str, str, object, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (
+                request.method,
+                request.url.raw_path.decode(),
+                json.loads(request.content) if request.content else None,
+                request.headers.get("authorization"),
+            )
+        )
+        return httpx.Response(200, json={"profiles": []})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+        admin_token="admin-secret",
+    ) as client:
+        client.list_model_profiles()
+        client.get_model_profile("lab profile")
+        client.configure_model_profile(
+            "lab profile",
+            {
+                "model": "lab-model",
+                "request_mode": "responses",
+                "api_key": "request-secret",
+            },
+        )
+        client.set_default_model_profile("lab profile")
+        client.delete_model_profile("lab profile")
+        client.create_run({"objective": "ordinary request"})
+
+    assert requests == [
+        ("GET", "/api/v1/model-profiles/admin", None, "Bearer admin-secret"),
+        (
+            "GET",
+            "/api/v1/model-profiles/lab%20profile",
+            None,
+            "Bearer admin-secret",
+        ),
+        (
+            "PUT",
+            "/api/v1/model-profiles/lab%20profile",
+            {
+                "model": "lab-model",
+                "request_mode": "responses",
+                "api_key": "request-secret",
+            },
+            "Bearer admin-secret",
+        ),
+        (
+            "PUT",
+            "/api/v1/model-profiles/default",
+            {"profile": "lab profile"},
+            "Bearer admin-secret",
+        ),
+        (
+            "DELETE",
+            "/api/v1/model-profiles/lab%20profile",
+            None,
+            "Bearer admin-secret",
+        ),
+        (
+            "POST",
+            "/api/v1/runs",
+            {"objective": "ordinary request"},
+            None,
+        ),
+    ]
+
+
+def test_tool_client_keeps_public_reads_unauthenticated_and_authorizes_refresh() -> None:
+    requests: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path, request.headers.get("authorization")))
+        return httpx.Response(200, json={"tools": []})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+        admin_token="admin-secret",
+    ) as client:
+        client.list_tools("local")
+        client.refresh_tools("local")
+
+    assert requests == [
+        ("GET", "/api/v1/nodes/local/tools", None),
+        ("POST", "/api/v1/nodes/local/refresh-tools", "Bearer admin-secret"),
+    ]
 
 
 def test_api_client_preserves_unified_error_details() -> None:
@@ -274,9 +374,7 @@ def test_execution_client_uses_query_and_cancel_endpoints() -> None:
             return httpx.Response(200, json={"items": []})
         return httpx.Response(200, json={"id": "execution-1", "status": "running"})
 
-    with APIClient(
-        "http://control-plane", transport=httpx.MockTransport(handler)
-    ) as client:
+    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
         client.get_execution("execution-1")
         client.list_executions("run-1", limit=25, offset=5)
         client.wait_execution(

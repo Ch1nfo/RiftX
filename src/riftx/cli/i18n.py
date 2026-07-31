@@ -36,6 +36,9 @@ _ZH: dict[str, str] = {
     "Subagent Results": "子 Agent 结果",
     "Tool Schemas": "工具 Schema",
     "Model": "模型",
+    "Requires API key": "需要 API 密钥",
+    "Timeout (seconds)": "超时（秒）",
+    "Max retries": "最大重试次数",
     "Estimated input": "估算输入",
     "Actual input/output": "实际输入/输出",
     "Compilation": "编译记录",
@@ -99,6 +102,16 @@ _ZH: dict[str, str] = {
     "Findings": "发现项",
     "RiftX API error": "RiftX API 错误",
     "Error": "错误",
+    "Safety stop disposition": "安全停止处置明细",
+    "Resource type": "资源类型",
+    "Resource ID": "资源 ID",
+    "Browser session": "浏览器会话",
+    "Target HTTP request": "目标 HTTP 请求",
+    "Stop result": "停止结果",
+    "Stop confirmed": "已确认停止",
+    "Stopped ({status})": "已停止（{status}）",
+    "Stop unconfirmed": "未确认停止",
+    "Unknown node": "未知节点",
     "Runtime Metrics": "运行时指标",
     "Metric": "指标",
     "Value": "值",
@@ -153,13 +166,33 @@ _ZH: dict[str, str] = {
     "New runs will use {mode} approval mode.": "新任务将使用 {mode} 审批模式。",
     "The Agent has not published a plan yet.": "Agent 尚未发布计划。",
     "Latest plan": "最新计划",
-    "Pause requested.": "已请求暂停。",
+    "Pause confirmed; active effects stopped.": "已确认暂停；活动效果均已停止。",
     "Resume requested.": "已请求恢复。",
-    "Run cancellation requested.": "已请求取消任务。",
+    "Run cancellation confirmed; active effects stopped.": (
+        "已确认取消任务；活动效果均已停止。"
+    ),
     "Context compaction requested.": "已请求压缩上下文。",
     "Approval saved and workflow signaled.": "审批已保存，并已通知工作流。",
     "Approval rejected and workflow signaled.": "审批已拒绝，并已通知工作流。",
     "Message queued.": "消息已加入队列。",
+    (
+        "Message delivery was not confirmed. Resend the exact same text to retry safely; "
+        "RiftX will reuse message_event_id={message_event_id}."
+    ): (
+        "消息投递尚未确认。请重新发送完全相同的文本以安全重试；"
+        "RiftX 将复用 message_event_id={message_event_id}。"
+    ),
+    (
+        "Run created. The objective and boundaries are saved; the Agent is "
+        "waiting for your first concrete instruction."
+    ): "任务已创建，目标与边界已保存；Agent 正在等待你的第一条具体指令。",
+    "No model or Tool will run before that instruction is sent.": (
+        "在收到该指令前，不会调用模型或工具。"
+    ),
+    'Send it with: riftx run message {run_id} "YOUR INSTRUCTION"': (
+        '发送方式：riftx run message {run_id} "你的具体指令"'
+    ),
+    "Open the conversation: {url}": "打开对话：{url}",
     "Streaming events for {run_id}; press Ctrl+C to stop.": (
         "正在流式显示任务 {run_id} 的事件；按 Ctrl+C 停止。"
     ),
@@ -180,7 +213,7 @@ _ZH: dict[str, str] = {
     "interactive terminal attach currently requires a Unix TTY": (
         "交互式终端连接当前需要 Unix TTY"
     ),
-    "Current execution cancellation requested.": "已请求取消当前执行。",
+    "Current execution stop confirmed.": "已确认当前执行停止。",
     "Model switch to {model} requested.": "已请求切换模型为 {model}。",
     "Memory deleted.": "记忆已删除。",
     "Memory pin updated.": "记忆置顶状态已更新。",

@@ -123,9 +123,7 @@ async def switch_run_model(
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
     return RunActionResponse(
-        run=RunResponse.from_domain(
-            await run_service.switch_model(run_id, request.model_profile)
-        )
+        run=RunResponse.from_domain(await run_service.switch_model(run_id, request.model_profile))
     )
 
 
@@ -156,5 +154,13 @@ async def append_message(
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
     return RunActionResponse(
-        run=RunResponse.from_domain(await run_service.append_user_message(run_id, request.message))
+        run=RunResponse.from_domain(
+            await run_service.append_user_message(
+                run_id,
+                request.message,
+                message_event_id=(
+                    str(request.message_event_id) if request.message_event_id is not None else None
+                ),
+            )
+        )
     )

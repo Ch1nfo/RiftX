@@ -119,6 +119,25 @@ describe("LanguageProvider", () => {
 });
 
 describe("translate", () => {
+  it("translates safety-stop resource labels", () => {
+    expect(translate("zh-CN", "Resource type")).toBe("资源类型");
+    expect(translate("zh-CN", "Browser session")).toBe("浏览器会话");
+    expect(translate("zh-CN", "Target HTTP request")).toBe("目标 HTTP 请求");
+  });
+
+  it("translates approval signal recovery without changing its meaning", () => {
+    expect(translate("zh-CN", "Resync saved decision")).toBe(
+      "重新同步已保存决定",
+    );
+    expect(
+      translate(
+        "zh-CN",
+        "A saved {decision} decision still needs workflow synchronization",
+        { decision: "已批准" },
+      ),
+    ).toBe("已保存的已批准决定仍需同步到工作流");
+  });
+
   it("falls back to the English source string when no translation exists", () => {
     expect(translate("zh-CN", "Untranslated source")).toBe("Untranslated source");
   });

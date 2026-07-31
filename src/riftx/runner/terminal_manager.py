@@ -6,7 +6,7 @@ import asyncio
 import base64
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -17,11 +17,17 @@ from riftx.domain import (
     ExecutionStatus,
     RunEvent,
     RunnerCommandKind,
+    RunnerPrincipal,
     TerminalSession,
+    TerminalStatus,
 )
+from riftx.domain.base import new_id
 
+from ._durable_file import atomic_write_json, locked_file
 from .control_client import OutputOffsetMismatch, RunnerControlClientError
 from .models import TerminalLaunchRequest
+from .protocols import EffectGuard
+from .supervisor import ProcessTerminationError
 from .terminal import TerminalSupervisor
 
 logger = logging.getLogger(__name__)
@@ -34,9 +40,18 @@ _FINAL_STATUSES = {
     ExecutionStatus.HARD_TIMEOUT,
     ExecutionStatus.LOST,
 }
+_PHYSICAL_STOP_PROOF_STATUSES = {
+    ExecutionStatus.COMPLETED,
+    ExecutionStatus.EXITED,
+    ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
+}
 
 
 class TerminalControlClient(Protocol):
+    @property
+    def principal(self) -> RunnerPrincipal | None: ...
+
     async def report_status(
         self,
         execution_id: str,
@@ -45,6 +60,7 @@ class TerminalControlClient(Protocol):
         pid: int | None = None,
         process_group_id: int | None = None,
         exit_code: int | None = None,
+        physical_stop_confirmed: bool = False,
     ) -> None: ...
 
     async def report_output(
@@ -68,13 +84,38 @@ class NullRunEventRepository:
         run_id: str,
         event_type: str,
         payload: dict[str, object] | None = None,
+        *,
+        event_id: str | None = None,
     ) -> RunEvent:
         self._sequence += 1
         return RunEvent(
+            id=event_id or new_id(),
             run_id=run_id,
             sequence=self._sequence,
             event_type=event_type,
             payload=payload or {},
+        )
+
+    async def append_terminal_projection_if_current(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+        *,
+        event_id: str,
+        session_id: str,
+        expected_terminal_status: TerminalStatus,
+        expected_execution_status: ExecutionStatus,
+    ) -> RunEvent | None:
+        # Runner-local instances do not own the Control Plane projection.  The
+        # method exists only to preserve the repository protocol for call sites
+        # that intentionally discard these events.
+        del session_id, expected_terminal_status, expected_execution_status
+        return await self.append(
+            run_id,
+            event_type,
+            payload,
+            event_id=event_id,
         )
 
     async def list_after(
@@ -88,7 +129,7 @@ class NullRunEventRepository:
 
 
 class OperationJournal:
-    """Persist completed terminal input operations across command re-leases."""
+    """Persist one-way Runner operation facts across command re-leases."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -96,19 +137,36 @@ class OperationJournal:
 
     async def contains(self, operation_id: str) -> bool:
         async with self._lock:
-            return operation_id in await asyncio.to_thread(self._read)
+            return await asyncio.to_thread(self._contains_locked, operation_id)
 
     async def add(self, operation_id: str) -> None:
+        await self.claim(operation_id)
+
+    async def claim(self, operation_id: str) -> bool:
+        """Atomically persist an operation id and report whether this caller won."""
+
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
+            return await asyncio.to_thread(self._claim_locked, operation_id)
+
+    def _contains_locked(self, operation_id: str) -> bool:
+        with locked_file(self.path):
+            return operation_id in self._read()
+
+    def _claim_locked(self, operation_id: str) -> bool:
+        # The read/merge/replace transaction must happen under the OS lock.
+        # Per-instance asyncio locks cannot protect two Runner processes (or
+        # two independently constructed journal objects) sharing state_path.
+        with locked_file(self.path):
+            items = self._read()
             if operation_id in items:
-                return
+                return False
             items.add(operation_id)
-            await asyncio.to_thread(self._write, items)
+            self._write(items)
+            return True
 
     def _read(self) -> set[str]:
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return set()
         except json.JSONDecodeError as exc:
@@ -118,10 +176,7 @@ class OperationJournal:
         return set(raw)
 
     def _write(self, items: set[str]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(json.dumps(sorted(items), ensure_ascii=False))
-        temporary.replace(self.path)
+        atomic_write_json(self.path, sorted(items))
 
 
 class RemoteTerminalManager:
@@ -150,9 +205,20 @@ class RemoteTerminalManager:
         self._recovered = False
         self._closed = False
 
-    async def handle(self, kind: RunnerCommandKind, payload: dict[str, object]) -> object:
+    async def handle(
+        self,
+        kind: RunnerCommandKind,
+        payload: dict[str, object],
+        *,
+        effect_guard: EffectGuard | None = None,
+        on_admitted: Callable[[], None] | None = None,
+    ) -> object:
         if kind is RunnerCommandKind.TERMINAL_START:
-            return await self._start(payload)
+            return await self._start(
+                payload,
+                effect_guard=effect_guard,
+                on_admitted=on_admitted,
+            )
         if kind not in {
             RunnerCommandKind.TERMINAL_WRITE,
             RunnerCommandKind.TERMINAL_RESIZE,
@@ -173,9 +239,32 @@ class RemoteTerminalManager:
         if self._recovered:
             return
         self._recovered = True
-        for terminal in await self._supervisor.recover():
+        owner = self._client_principal()
+        for terminal in await self._supervisor.recover(owner=owner):
             execution = await self._require_execution(terminal.execution_id)
+            self._require_execution_owner(execution, owner)
             await self._report_with_retry(execution)
+
+    async def cancel_execution(self, execution_id: str) -> Execution:
+        """Stop a PTY/ConPTY through its native supervisor and return observed state."""
+        owner = self._client_principal()
+        before = await self._require_execution(execution_id)
+        self._require_execution_owner(before, owner)
+        execution = await self._supervisor.close_execution(execution_id)
+        self._require_execution_owner(execution, owner)
+        terminal = await self._terminals.get_by_execution(execution_id)
+        if (
+            execution.status not in _PHYSICAL_STOP_PROOF_STATUSES
+            or execution.physical_stop_confirmed_at is None
+        ):
+            raise ProcessTerminationError(
+                f"Terminal execution {execution_id!r} did not provide affirmative "
+                "physical-stop confirmation"
+            )
+        if terminal is not None and terminal.status is not TerminalStatus.CLOSED:
+            terminal.transition_to(TerminalStatus.CLOSED)
+            await self._terminals.save(terminal)
+        return execution
 
     async def close(self) -> None:
         if self._closed:
@@ -185,25 +274,61 @@ class RemoteTerminalManager:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        for terminal in await self._terminals.list_open():
-            await self._supervisor.close(terminal.id)
-            execution = await self._require_execution(terminal.execution_id)
-            try:
-                await self._forward_once(execution.id, 0)
-                await self._report_execution(execution)
-            except RunnerControlClientError:
-                logger.warning(
-                    "Unable to report terminal %s during Runner shutdown",
-                    terminal.id,
-                )
+        owner = self._client_principal()
+        terminal_stops = [
+            asyncio.create_task(
+                self._close_terminal_on_shutdown(terminal, owner),
+                name=f"riftx-runner-close-terminal-{terminal.id}",
+            )
+            for terminal in await self._terminals.list_active()
+        ]
+        results = await asyncio.gather(*terminal_stops, return_exceptions=True)
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            for error in errors[1:]:
+                logger.error("Additional terminal shutdown failure: %r", error)
+            raise errors[0]
 
-    async def _start(self, payload: dict[str, object]) -> dict[str, object]:
+    async def _close_terminal_on_shutdown(
+        self,
+        terminal: TerminalSession,
+        owner: RunnerPrincipal,
+    ) -> None:
+        execution = await self._require_execution(terminal.execution_id)
+        if execution.owner != owner:
+            logger.error(
+                "Refusing to close terminal %s owned by another Runner principal",
+                terminal.id,
+            )
+            return
+        await self._supervisor.close(terminal.id)
+        execution = await self._require_execution(terminal.execution_id)
+        self._require_execution_owner(execution, owner)
+        try:
+            await self._forward_once(execution.id, 0)
+            await self._report_execution(execution)
+        except RunnerControlClientError:
+            logger.warning(
+                "Unable to report terminal %s during Runner shutdown",
+                terminal.id,
+            )
+
+    async def _start(
+        self,
+        payload: dict[str, object],
+        *,
+        effect_guard: EffectGuard | None,
+        on_admitted: Callable[[], None] | None,
+    ) -> dict[str, object]:
         session_id = _required_string(payload, "session_id")
         execution_id = _required_string(payload, "execution_id")
         raw_request = payload.get("request")
         if not isinstance(raw_request, dict):
             raise ValueError("terminal_start command is missing request")
         request = TerminalLaunchRequest.model_validate(raw_request)
+        owner = self._client_principal()
+        if request.runner_principal != owner:
+            raise ValueError("terminal_start request owner does not match this Runner")
         if request.session_id not in {None, session_id}:
             raise ValueError("terminal_start session IDs do not match")
         if request.execution_id not in {None, execution_id}:
@@ -218,7 +343,12 @@ class RemoteTerminalManager:
         if existing is not None:
             if existing.execution_id != execution_id:
                 raise ValueError("terminal_start conflicts with an existing session")
+            if effect_guard is not None:
+                await effect_guard()
             execution = await self._require_execution(execution_id)
+            self._require_execution_owner(execution, owner)
+            if on_admitted is not None:
+                on_admitted()
             await self._report_execution(execution)
             if execution.status not in _FINAL_STATUSES:
                 self._start_monitor(execution_id)
@@ -230,13 +360,24 @@ class RemoteTerminalManager:
             }
 
         try:
-            terminal = await self._supervisor.start(request)
+            terminal = await self._supervisor.start(
+                request,
+                effect_guard=effect_guard,
+            )
         except Exception:
+            # Local admission has resolved (including guarded pre/post-spawn
+            # cleanup). Release the daemon's execution lock before any status
+            # upload so Control Plane I/O cannot delay a safety stop.
+            if on_admitted is not None:
+                on_admitted()
             execution = await self._executions.get(execution_id)
             if execution is not None and execution.status in _FINAL_STATUSES:
                 await self._report_execution(execution)
             raise
+        if on_admitted is not None:
+            on_admitted()
         execution = await self._require_execution(terminal.execution_id)
+        self._require_execution_owner(execution, owner)
         await self._report_execution(execution)
         self._start_monitor(execution.id)
         return {
@@ -252,6 +393,8 @@ class RemoteTerminalManager:
         payload: dict[str, object],
     ) -> dict[str, object]:
         terminal = await self._require_terminal(payload)
+        execution = await self._require_execution(terminal.execution_id)
+        self._require_execution_owner(execution, self._client_principal())
         if kind is RunnerCommandKind.TERMINAL_WRITE:
             encoded = _required_string(payload, "data")
             try:
@@ -318,6 +461,8 @@ class RemoteTerminalManager:
             await asyncio.sleep(self._output_poll_seconds)
 
     async def _forward_once(self, execution_id: str, cursor: int) -> int:
+        execution = await self._require_execution(execution_id)
+        self._require_execution_owner(execution, self._client_principal())
         terminal = await self._terminals.get_by_execution(execution_id)
         if terminal is None:
             return cursor
@@ -343,6 +488,7 @@ class RemoteTerminalManager:
                 await asyncio.sleep(self._output_poll_seconds)
 
     async def _report_execution(self, execution: Execution) -> None:
+        self._require_execution_owner(execution, self._client_principal())
         await self._client.report_status(
             execution.id,
             execution.status,
@@ -351,7 +497,24 @@ class RemoteTerminalManager:
                 execution.process_group_id if execution.status is ExecutionStatus.RUNNING else None
             ),
             exit_code=execution.exit_code if execution.status in _FINAL_STATUSES else None,
+            physical_stop_confirmed=(execution.physical_stop_confirmed_at is not None),
         )
+
+    def _client_principal(self) -> RunnerPrincipal:
+        principal = self._client.principal
+        if principal is None:
+            raise RuntimeError("Runner terminal client has no authenticated principal")
+        return principal
+
+    @staticmethod
+    def _require_execution_owner(
+        execution: Execution,
+        owner: RunnerPrincipal,
+    ) -> None:
+        if execution.owner != owner:
+            raise RuntimeError(
+                f"Terminal execution {execution.id!r} belongs to another Runner principal"
+            )
 
 
 def _required_string(payload: dict[str, object], key: str) -> str:

@@ -13,6 +13,7 @@ from riftx.runtime.lifecycle import (
 )
 from riftx.tools import (
     RESIDENT_TOOL_IDS,
+    ExecutionPolicy,
     ToolContextManager,
     ToolNotFoundError,
     ToolRegistry,
@@ -21,7 +22,13 @@ from riftx.tools import (
 )
 
 
-def _write_tools(path: Path, count: int, *, include_unavailable: bool = False) -> None:
+def _write_tools(
+    path: Path,
+    count: int,
+    *,
+    include_unavailable: bool = False,
+    execution_policy: str = "registered_only",
+) -> None:
     tools: dict[str, object] = {}
     for index in range(count):
         tool_id = "netexec-smb" if index == count - 1 else f"tool-{index:03d}"
@@ -41,12 +48,32 @@ def _write_tools(path: Path, count: int, *, include_unavailable: bool = False) -
             ),
             "synonyms": ["CIFS recon"] if tool_id == "netexec-smb" else [],
         }
-    path.write_text(yaml.safe_dump({"version": 1, "tools": tools}, sort_keys=False))
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "execution_policy": execution_policy,
+                "tools": tools,
+            },
+            sort_keys=False,
+        )
+    )
 
 
-async def _registry(tmp_path: Path, count: int, **kwargs: object) -> ToolRegistry:
+async def _registry(
+    tmp_path: Path,
+    count: int,
+    *,
+    include_unavailable: bool = False,
+    execution_policy: str = "registered_only",
+) -> ToolRegistry:
     path = tmp_path / f"tools-{count}.yaml"
-    _write_tools(path, count, **kwargs)
+    _write_tools(
+        path,
+        count,
+        include_unavailable=include_unavailable,
+        execution_policy=execution_policy,
+    )
     registry = ToolRegistry(path, node_id="node-1")
     await registry.refresh()
     return registry
@@ -80,13 +107,16 @@ async def test_hundred_tools_do_not_pollute_initial_context(tmp_path: Path) -> N
         )
     )
 
-    assert [schema["name"] for schema in compiled.available_tools] == list(RESIDENT_TOOL_IDS)
+    assert [schema["name"] for schema in compiled.available_tools] == [
+        tool_id for tool_id in RESIDENT_TOOL_IDS if tool_id != "run_shell"
+    ]
+    assert compiled.context_manifest["execution_policy"] == "registered_only"
     assert compiled.context_manifest["dynamically_loaded_tools"] == []
     assert len(compiled.context_manifest["hidden_available_tools"]) == 100
 
 
 async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None:
-    manager = ToolContextManager(await _registry(tmp_path, 10))
+    manager = ToolContextManager(await _registry(tmp_path, 10, execution_policy="open"))
 
     schema = next(
         item
@@ -108,6 +138,45 @@ async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None
         "timeout_seconds",
     }
     assert parameters["additionalProperties"] is False
+    assert schema["x-riftx"] == {
+        "resident": True,
+        "execution_policy": "open",
+    }
+
+
+async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> None:
+    manager = ToolContextManager(await _registry(tmp_path, 10))
+
+    visibility = manager.visibility(
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="primary",
+    )
+
+    assert visibility.execution_policy is ExecutionPolicy.REGISTERED_ONLY
+    assert "run_shell" not in visibility.always_visible_tools
+    assert "run_shell" not in {str(schema.get("name")) for schema in visibility.available_tools}
+    with pytest.raises(ToolNotFoundError):
+        manager.load_tool(
+            "run_shell",
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+        )
+    with pytest.raises(ToolNotFoundError):
+        manager.assert_allowed(
+            "run_shell",
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+        )
+    with pytest.raises(ToolNotFoundError):
+        manager.restrict_tools(
+            ["search_tools", "run_shell"],
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+        )
 
 
 async def test_capability_and_synonym_search_discover_smb_tool(tmp_path: Path) -> None:
@@ -132,9 +201,7 @@ async def test_capability_and_synonym_search_discover_smb_tool(tmp_path: Path) -
 
 
 async def test_unavailable_tool_is_discoverable_but_cannot_be_loaded(tmp_path: Path) -> None:
-    manager = ToolContextManager(
-        await _registry(tmp_path, 10, include_unavailable=True)
-    )
+    manager = ToolContextManager(await _registry(tmp_path, 10, include_unavailable=True))
 
     results = manager.search_tools(
         run_id="run-1",
@@ -163,12 +230,8 @@ async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> N
         agent_id="primary",
     )
 
-    primary = manager.visibility(
-        run_id="run-1", session_id="session-1", agent_id="primary"
-    )
-    subagent = manager.visibility(
-        run_id="run-1", session_id="session-1", agent_id="subagent-1"
-    )
+    primary = manager.visibility(run_id="run-1", session_id="session-1", agent_id="primary")
+    subagent = manager.visibility(run_id="run-1", session_id="session-1", agent_id="subagent-1")
 
     assert primary.dynamically_loaded_tools == ["netexec-smb"]
     assert subagent.dynamically_loaded_tools == []
@@ -240,9 +303,7 @@ async def test_registry_hot_reload_rebuilds_index_and_selected_schema(tmp_path: 
 
     await registry.reload_if_changed()
     second = manager.index.schema("netexec-smb")
-    visibility = manager.visibility(
-        run_id="run-1", session_id="session-1", agent_id="primary"
-    )
+    visibility = manager.visibility(run_id="run-1", session_id="session-1", agent_id="primary")
 
     assert second.generation == first.generation + 1
     assert second.full_schema["description"] == "Reloaded full schema."

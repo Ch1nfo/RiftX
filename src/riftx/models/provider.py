@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -17,6 +18,7 @@ from agents import (
 from openai import APITimeoutError, AsyncOpenAI
 
 from .config import ModelAPI, ModelProfile, ModelsConfig
+from .registry import ModelProfileRegistry
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -49,16 +51,30 @@ class RiftXModelProvider(ModelProvider):
 
     def __init__(
         self,
-        config: ModelsConfig,
+        config: ModelsConfig | ModelProfileRegistry,
         *,
-        environment: dict[str, str] | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
-        self.config = config
-        self._environment = dict(os.environ if environment is None else environment)
+        self._registry: ModelProfileRegistry | None
+        self.config: ModelsConfig
+        if isinstance(config, ModelProfileRegistry):
+            self._registry = config
+            self.config = config.snapshot.config
+        else:
+            self._registry = None
+            self.config = config
+        # Keep the environment lazy. In particular, a profile that explicitly
+        # disables credentials must never cause an eager copy/read of real keys.
+        self._environment = os.environ if environment is None else environment
         self._models: dict[str, Model] = {}
         self._clients: dict[str, AsyncOpenAI] = {}
+        self._stale_clients: list[AsyncOpenAI] = []
+        self._registry_generation = (
+            self._registry.snapshot.generation if self._registry is not None else None
+        )
 
     def get_model(self, model_name: str | None) -> Model:
+        self._reload_if_changed()
         profile_name = model_name or self.config.default_profile
         if profile_name in self._models:
             return self._models[profile_name]
@@ -85,27 +101,42 @@ class RiftXModelProvider(ModelProvider):
         return model
 
     async def aclose(self) -> None:
-        clients = list(self._clients.values())
+        clients = [*self._clients.values(), *self._stale_clients]
         self._clients.clear()
+        self._stale_clients.clear()
         self._models.clear()
         for client in clients:
             await client.close()
 
     def _build_client(self, profile_name: str, profile: ModelProfile) -> AsyncOpenAI:
         api_key: str
-        if profile.api_key_env:
+        if not profile.requires_api_key:
+            # AsyncOpenAI requires a non-empty client value even for local endpoints,
+            # but this sentinel is never sourced from the environment or Secret Store.
+            api_key = "not-required"
+        elif profile.api_key_env:
             configured = self._environment.get(profile.api_key_env)
         else:
             configured = None
-        if configured:
-            api_key = configured
-        elif profile.requires_api_key:
-            raise ModelConfigurationError(
-                f"model profile {profile_name!r} requires environment variable "
-                f"{profile.api_key_env or '<unspecified>'}"
-            )
-        else:
-            api_key = "not-required"
+        if profile.requires_api_key:
+            # Bind the credential lookup to the exact metadata snapshot already
+            # selected above. A concurrent update therefore fails closed instead of
+            # combining an old endpoint with a newly written credential.
+            if configured:
+                api_key = configured
+            else:
+                stored = (
+                    self._registry.api_key(profile_name, profile)
+                    if self._registry is not None
+                    else None
+                )
+                if stored:
+                    api_key = stored
+                else:
+                    raise ModelConfigurationError(
+                        f"model profile {profile_name!r} requires environment variable "
+                        f"{profile.api_key_env or '<unspecified>'} or a stored local API key"
+                    )
 
         base_url = _expand_environment(profile.base_url, self._environment)
         return AsyncOpenAI(
@@ -114,6 +145,18 @@ class RiftXModelProvider(ModelProvider):
             timeout=profile.timeout_seconds,
             max_retries=profile.max_retries,
         )
+
+    def _reload_if_changed(self) -> None:
+        if self._registry is None:
+            return
+        snapshot = self._registry.reload_if_changed()
+        if snapshot.generation == self._registry_generation:
+            return
+        self._stale_clients.extend(self._clients.values())
+        self._clients.clear()
+        self._models.clear()
+        self.config = snapshot.config
+        self._registry_generation = snapshot.generation
 
 
 def classify_model_failure(error: BaseException) -> ModelFailure:
@@ -172,7 +215,7 @@ def classify_model_failure(error: BaseException) -> ModelFailure:
     )
 
 
-def _expand_environment(value: str | None, environment: dict[str, str]) -> str | None:
+def _expand_environment(value: str | None, environment: Mapping[str, str]) -> str | None:
     if value is None:
         return None
 

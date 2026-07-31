@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   FileCode2,
+  KeyRound,
   Loader2,
   Pencil,
   RefreshCw,
@@ -19,7 +20,12 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { MetricCard } from "../components/MetricCard";
 import { StatusBadge } from "../components/StatusBadge";
-import { useRefreshTools, useTools, useUpdateTool } from "../hooks/queries";
+import {
+  useRefreshTools,
+  useToolAdminDetails,
+  useTools,
+  useUpdateTool,
+} from "../hooks/queries";
 import { useI18n } from "../i18n";
 
 interface ToolEditorState {
@@ -39,9 +45,11 @@ interface ToolEditorState {
 export function ToolsPage() {
   const { t } = useI18n();
   const nodeId = "local";
+  const [adminToken, setAdminToken] = useState("");
   const tools = useTools(nodeId);
-  const refresh = useRefreshTools(nodeId);
-  const update = useUpdateTool(nodeId);
+  const adminDetails = useToolAdminDetails(nodeId, adminToken);
+  const refresh = useRefreshTools(nodeId, adminToken);
+  const update = useUpdateTool(nodeId, adminToken);
   const [editor, setEditor] = useState<ToolEditorState | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
 
@@ -86,7 +94,7 @@ export function ToolsPage() {
         <button
           className="primary-button"
           onClick={() => refresh.mutate()}
-          disabled={refresh.isPending}
+          disabled={refresh.isPending || !adminToken.trim()}
         >
           {refresh.isPending ? (
             <Loader2 className="spin" size={17} />
@@ -97,8 +105,33 @@ export function ToolsPage() {
         </button>
       </section>
 
+      <section className="panel model-admin-auth">
+        <div>
+          <KeyRound size={18} />
+          <span>
+            <strong>{t("Tool administration authorization")}</strong>
+            <small>
+              {t("Refreshing probes or changing executable definitions requires RIFTX_ADMIN_TOKEN. The token is held in memory for this page only.")}
+            </small>
+          </span>
+        </div>
+        <label className="field">
+          <span>{t("Admin token (session only)")}</span>
+          <input
+            aria-label={t("Admin token (session only)")}
+            type="password"
+            value={adminToken}
+            autoComplete="new-password"
+            spellCheck={false}
+            placeholder={t("RIFTX_ADMIN_TOKEN is required")}
+            onChange={(event) => setAdminToken(event.target.value)}
+          />
+        </label>
+      </section>
+
       {refresh.error ? <ErrorState error={refresh.error} /> : null}
       {update.error ? <ErrorState error={update.error} /> : null}
+      {adminDetails.error ? <ErrorState error={adminDetails.error} /> : null}
 
       <section className="metrics-grid tool-metrics">
         <MetricCard
@@ -206,9 +239,14 @@ export function ToolsPage() {
                     <td>
                       <button
                         className="secondary-button compact-button"
+                        disabled={!adminToken.trim() || adminDetails.isPending}
                         onClick={() => {
-                          setEditor(toolEditorState(tool.definition));
                           setEditorError(null);
+                          adminDetails.mutate(tool.definition.id, {
+                            onSuccess: (definition) => {
+                              setEditor(toolEditorState(definition));
+                            },
+                          });
                         }}
                       >
                         <Pencil size={14} />

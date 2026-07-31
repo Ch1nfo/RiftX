@@ -16,6 +16,7 @@ from .enums import (
     TerminalStatus,
 )
 from .errors import InvalidStateTransitionError
+from .runner import RunnerPrincipal
 
 _EXECUTION_TRANSITIONS: Mapping[ExecutionStatus, frozenset[ExecutionStatus]] = {
     ExecutionStatus.QUEUED: frozenset({ExecutionStatus.STARTING, ExecutionStatus.CANCELLED}),
@@ -41,7 +42,10 @@ _EXECUTION_TRANSITIONS: Mapping[ExecutionStatus, frozenset[ExecutionStatus]] = {
     ),
     ExecutionStatus.COMPLETED: frozenset(),
     ExecutionStatus.EXITED: frozenset(),
-    ExecutionStatus.FAILED: frozenset(),
+    # FAILED describes the execution result, not physical-stop evidence.  A
+    # later safety cancellation may inspect the owning Runner's local process
+    # and converge to CANCELLED only after absence/termination is confirmed.
+    ExecutionStatus.FAILED: frozenset({ExecutionStatus.CANCELLED}),
     ExecutionStatus.CANCELLED: frozenset(),
     ExecutionStatus.HARD_TIMEOUT: frozenset(),
     # LOST records are intentionally allowed to converge to CANCELLED after a
@@ -55,7 +59,16 @@ _TERMINAL_TRANSITIONS: Mapping[TerminalStatus, frozenset[TerminalStatus]] = {
     ),
     TerminalStatus.OPEN: frozenset({TerminalStatus.CLOSED, TerminalStatus.LOST}),
     TerminalStatus.CLOSED: frozenset(),
-    TerminalStatus.LOST: frozenset(),
+    # A restarted Runner may later use durable kernel-containment identity to
+    # prove a previously LOST native terminal stopped and converge it CLOSED.
+    TerminalStatus.LOST: frozenset({TerminalStatus.CLOSED}),
+}
+
+_PHYSICAL_STOP_PROOF_STATUSES = {
+    ExecutionStatus.COMPLETED,
+    ExecutionStatus.EXITED,
+    ExecutionStatus.CANCELLED,
+    ExecutionStatus.HARD_TIMEOUT,
 }
 
 
@@ -90,6 +103,9 @@ class Execution(DomainModel):
     tool_call_id: str | None = None
     attempt_group: str | None = None
     node_id: str
+    # Local and pre-fencing legacy executions have no remote owner. Remote
+    # admission will bind this before dispatch in the Phase 2 wiring.
+    owner: RunnerPrincipal | None = None
     executor_type: ExecutorType
     argv: list[str] = Field(default_factory=list)
     command_text: str | None = None
@@ -104,12 +120,26 @@ class Execution(DomainModel):
     status: ExecutionStatus = ExecutionStatus.CREATED
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)
+    containment_id: str | None = Field(default=None, min_length=1, max_length=255)
     exit_code: int | None = None
     stdout_path: str
     stderr_path: str
     process_created_at: AwareDatetime | None = None
     started_at: AwareDatetime | None = None
     finished_at: AwareDatetime | None = None
+    physical_stop_confirmed_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def validate_physical_stop_proof(self) -> Execution:
+        if (
+            self.physical_stop_confirmed_at is not None
+            and self.status not in _PHYSICAL_STOP_PROOF_STATUSES
+        ):
+            raise ValueError(
+                "physical stop proof requires completed, exited, cancelled, "
+                "or hard-timeout execution status"
+            )
+        return self
 
     def transition_to(
         self,

@@ -78,6 +78,20 @@ def test_terminal_run_state_rejects_further_transitions() -> None:
         run.transition_to(RunStatus.RUNNING)
 
 
+@pytest.mark.parametrize("fence_status", [RunStatus.PAUSING, RunStatus.CANCELLING])
+def test_run_safety_fence_rejects_failed_transition(fence_status: RunStatus) -> None:
+    run = make_run()
+    run.transition_to(RunStatus.PREPARING)
+    run.transition_to(RunStatus.RUNNING)
+    run.transition_to(fence_status)
+
+    assert not run.can_transition_to(RunStatus.FAILED)
+    with pytest.raises(InvalidStateTransitionError, match="Run cannot transition"):
+        run.transition_to(RunStatus.FAILED)
+
+    assert run.status is fence_status
+
+
 def test_execution_tracks_exit_code_and_timestamps() -> None:
     execution = make_execution()
     started_at = datetime(2026, 2, 1, tzinfo=UTC)
@@ -109,6 +123,62 @@ def test_lost_execution_can_converge_to_cancelled_after_stop_acknowledgement() -
 
     assert execution.status is ExecutionStatus.CANCELLED
     assert execution.finished_at is not None
+
+
+def test_failed_execution_can_converge_to_cancelled_after_stop_acknowledgement() -> None:
+    execution = make_execution()
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.transition_to(ExecutionStatus.FAILED)
+
+    execution.transition_to(ExecutionStatus.CANCELLED)
+
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.finished_at is not None
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ExecutionStatus.CREATED,
+        ExecutionStatus.STARTING,
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.LOST,
+    ],
+)
+def test_execution_rejects_physical_stop_proof_on_unconfirmed_status(
+    status: ExecutionStatus,
+) -> None:
+    payload = make_execution().model_dump()
+    payload.update(
+        status=status,
+        physical_stop_confirmed_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(ValueError, match="physical stop proof requires"):
+        Execution.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.EXITED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.HARD_TIMEOUT,
+    ],
+)
+def test_execution_accepts_physical_stop_proof_on_confirmed_status(
+    status: ExecutionStatus,
+) -> None:
+    confirmed_at = datetime(2026, 8, 1, tzinfo=UTC)
+    payload = make_execution().model_dump()
+    payload.update(status=status, physical_stop_confirmed_at=confirmed_at)
+
+    execution = Execution.model_validate(payload)
+
+    assert execution.status is status
+    assert execution.physical_stop_confirmed_at == confirmed_at
 
 
 def test_approval_can_only_be_decided_once() -> None:

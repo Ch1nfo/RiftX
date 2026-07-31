@@ -1,10 +1,10 @@
 import { ArrowLeft, ArrowRight, Crosshair, Loader2, Plus, ShieldCheck } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import type { ApprovalMode, CreateRunPayload, EntryPoint } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
-import { useCreateRun, useNodes } from "../hooks/queries";
+import { useCreateRun, useModelProfiles, useNodes } from "../hooks/queries";
 import { useI18n } from "../i18n";
 
 export function NewRunPage() {
@@ -12,6 +12,7 @@ export function NewRunPage() {
   const navigate = useNavigate();
   const createRun = useCreateRun();
   const nodes = useNodes();
+  const modelProfiles = useModelProfiles();
   const [objective, setObjective] = useState("");
   const [engagementName, setEngagementName] = useState("");
   const [authorization, setAuthorization] = useState("");
@@ -22,35 +23,64 @@ export function NewRunPage() {
   const [workspace, setWorkspace] = useState("");
   const [nodeId, setNodeId] = useState("local");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("balanced");
+  const [modelProfile, setModelProfile] = useState("");
+  const [submissionError, setSubmissionError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (modelProfile || !modelProfiles.data) return;
+    const effective = modelProfiles.data.profiles.find(
+      (profile) =>
+        profile.name === modelProfiles.data?.effective_default_profile &&
+        profile.api_key_configured,
+    );
+    const firstAvailable = modelProfiles.data.profiles.find(
+      (profile) => profile.api_key_configured,
+    );
+    setModelProfile(effective?.name ?? firstAvailable?.name ?? "");
+  }, [modelProfile, modelProfiles.data]);
+
+  const selectedModelProfile = modelProfiles.data?.profiles.find(
+    (profile) => profile.name === modelProfile,
+  );
+  const modelProfileReady =
+    !modelProfiles.error && selectedModelProfile?.api_key_configured === true;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsedEntries = parseEntryPoints(entryPoints);
-    const scopeValues = splitLines(scope);
-    const payload: CreateRunPayload = {
-      objective: objective.trim(),
-      node_id: nodeId.trim() || "local",
-      approval_mode: approvalMode,
-      success_criteria: splitLines(successCriteria).map((description) => ({
-        description,
-        required: true,
-      })),
-      entry_points: parsedEntries,
-      scope: classifyScope(scopeValues, splitLines(exclusions)),
-      ...(workspace.trim() ? { workspace_path: workspace.trim() } : {}),
-      ...(engagementName.trim()
-        ? {
-            engagement: {
-              name: engagementName.trim(),
-              ...(authorization.trim()
-                ? { authorization_reference: authorization.trim() }
-                : {}),
-            },
-          }
-        : {}),
-    };
-    const run = await createRun.mutateAsync(payload);
-    navigate(`/runs/${run.id}`);
+    setSubmissionError(null);
+    try {
+      const parsedEntries = parseEntryPoints(entryPoints);
+      const scopeValues = splitLines(scope);
+      const payload: CreateRunPayload = {
+        objective: objective.trim(),
+        node_id: nodeId.trim() || "local",
+        approval_mode: approvalMode,
+        ...(modelProfile.trim() ? { model_profile: modelProfile.trim() } : {}),
+        success_criteria: splitLines(successCriteria).map((description) => ({
+          description,
+          required: true,
+        })),
+        entry_points: parsedEntries,
+        scope: classifyScope(scopeValues, splitLines(exclusions)),
+        ...(workspace.trim() ? { workspace_path: workspace.trim() } : {}),
+        ...(engagementName.trim()
+          ? {
+              engagement: {
+                name: engagementName.trim(),
+                ...(authorization.trim()
+                  ? { authorization_reference: authorization.trim() }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+      const run = await createRun.mutateAsync(payload);
+      navigate(`/runs/${run.id}`);
+    } catch (error) {
+      setSubmissionError(
+        error instanceof Error ? error : new Error(t("Could not create the Run")),
+      );
+    }
   }
 
   return (
@@ -59,10 +89,10 @@ export function NewRunPage() {
         <Link className="back-link" to="/">
           <ArrowLeft size={15} /> {t("Dashboard")}
         </Link>
-        <span className="kicker">{t("New durable operation")}</span>
-        <h2>{t("Define the objective and execution boundary.")}</h2>
+        <span className="kicker">{t("New guided operation")}</span>
+        <h2>{t("Define the objective and boundary, then continue in conversation.")}</h2>
         <p>
-          {t("RiftX stores this configuration before Temporal starts the workflow. The run remains observable even if a client disconnects.")}
+          {t("RiftX stores this context and opens a durable conversation. No model or tool action starts until you send the first specific instruction.")}
         </p>
         <div className="form-principles">
           <div>
@@ -193,6 +223,36 @@ export function NewRunPage() {
               placeholder={t("Auto-generated when blank")}
             />
           </label>
+          <label className="field field-wide">
+            <span>{t("Model profile")}</span>
+            <select
+              aria-label={t("Model profile")}
+              value={modelProfile}
+              onChange={(event) => setModelProfile(event.target.value)}
+              disabled={modelProfiles.isLoading}
+            >
+              {!modelProfile ? (
+                <option value="">{t("Use server default")}</option>
+              ) : null}
+              {modelProfiles.data?.profiles.map((profile) => (
+                <option
+                  key={profile.name}
+                  value={profile.name}
+                  disabled={!profile.api_key_configured}
+                >
+                  {profile.name} · {profile.model} · {profile.request_mode}
+                  {profile.is_effective_default ? ` · ${t("effective default")}` : ""}
+                </option>
+              ))}
+            </select>
+            <small>
+              {modelProfiles.data
+                ? modelProfileReady
+                  ? t("The selected profile is validated before the Run is created.")
+                  : t("Configure a credential for this profile before creating the Run.")
+                : t("Loading model profiles")}
+            </small>
+          </label>
           <fieldset className="mode-field field-wide">
             <legend>{t("Approval mode")}</legend>
             <div className="mode-options">
@@ -213,14 +273,21 @@ export function NewRunPage() {
           </fieldset>
         </div>
 
-        {createRun.error ? <ErrorState error={createRun.error} /> : null}
+        {modelProfiles.error ? <ErrorState error={modelProfiles.error} /> : null}
+        {submissionError ?? createRun.error ? (
+          <ErrorState error={submissionError ?? createRun.error ?? new Error()} />
+        ) : null}
         <div className="form-actions">
           <Link className="secondary-button" to="/">
             {t("Cancel")}
           </Link>
-          <button className="primary-button" type="submit" disabled={createRun.isPending}>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={createRun.isPending || modelProfiles.isLoading || !modelProfileReady}
+          >
             {createRun.isPending ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
-            {t("Create durable run")}
+            {t("Create and continue to chat")}
             {!createRun.isPending ? <ArrowRight size={16} /> : null}
           </button>
         </div>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -17,7 +17,9 @@ from riftx.runtime.types import (
     ProviderState,
     RunLease,
     RuntimeApprovalRequest,
+    SessionStatus,
     ToolCallIntent,
+    ToolCallStatus,
     UserInputRequest,
     UserInputStatus,
 )
@@ -98,6 +100,23 @@ class SQLAlchemyAgentSessionRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [agent_session_from_record(record) for record in records]
+
+    async def has_nonterminal_model_profile(self, profile_name: str) -> bool:
+        terminal_statuses = {
+            SessionStatus.COMPLETED.value,
+            SessionStatus.FAILED.value,
+            SessionStatus.CANCELLED.value,
+        }
+        statement = (
+            select(AgentSessionRecord.id)
+            .where(
+                AgentSessionRecord.model_profile == profile_name,
+                ~AgentSessionRecord.status.in_(terminal_statuses),
+            )
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            return await session.scalar(statement) is not None
 
 
 class SQLAlchemyAgentCycleRepository:
@@ -226,6 +245,85 @@ class SQLAlchemyToolCallIntentRepository:
             record = await session.get(ToolCallIntentRecord, intent_id)
         return tool_call_intent_from_record(record) if record is not None else None
 
+    async def pending_for_session(self, session_id: str) -> list[ToolCallIntent]:
+        statement = (
+            select(ToolCallIntentRecord)
+            .where(
+                ToolCallIntentRecord.session_id == session_id,
+                ToolCallIntentRecord.status.in_(
+                    {
+                        ToolCallStatus.WAITING_APPROVAL.value,
+                        ToolCallStatus.READY.value,
+                        ToolCallStatus.EXECUTING.value,
+                    }
+                ),
+            )
+            .order_by(
+                ToolCallIntentRecord.created_at,
+                ToolCallIntentRecord.id,
+            )
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [tool_call_intent_from_record(record) for record in records]
+
+    async def active_for_run(
+        self,
+        run_id: str,
+        *,
+        tool_ids: Collection[str] | None = None,
+    ) -> list[ToolCallIntent]:
+        """List effect-capable intents so a Run stop can drain them explicitly."""
+
+        if tool_ids is not None and not tool_ids:
+            return []
+        statement = select(ToolCallIntentRecord).where(
+            ToolCallIntentRecord.run_id == run_id,
+            ToolCallIntentRecord.status.in_(
+                {
+                    ToolCallStatus.READY.value,
+                    ToolCallStatus.EXECUTING.value,
+                }
+            ),
+        )
+        if tool_ids is not None:
+            statement = statement.where(ToolCallIntentRecord.tool_id.in_(set(tool_ids)))
+        statement = statement.order_by(
+            ToolCallIntentRecord.created_at,
+            ToolCallIntentRecord.id,
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [tool_call_intent_from_record(record) for record in records]
+
+    async def compare_and_set_status(
+        self,
+        intent_id: str,
+        *,
+        expected: Collection[ToolCallStatus],
+        target: ToolCallStatus,
+    ) -> tuple[ToolCallIntent, bool]:
+        """Atomically transition status without overwriting a concurrent terminal state."""
+
+        expected_values = {status.value for status in expected}
+        if not expected_values:
+            raise ValueError("expected Tool Call intent statuses cannot be empty")
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ToolCallIntentRecord)
+                .where(
+                    ToolCallIntentRecord.id == intent_id,
+                    ToolCallIntentRecord.status.in_(expected_values),
+                )
+                .values(status=target.value)
+            )
+            record = await session.get(ToolCallIntentRecord, intent_id)
+            if record is None:
+                raise EntityNotFoundError("ToolCallIntent", intent_id)
+            await session.flush()
+            intent = tool_call_intent_from_record(record)
+        return intent, result.rowcount == 1
+
     async def save(self, intent: ToolCallIntent) -> ToolCallIntent:
         async with self._session_factory() as session, session.begin():
             record = await session.get(ToolCallIntentRecord, intent.id)
@@ -353,6 +451,7 @@ class SQLAlchemyUserInputRequestRepository:
             apply_user_input_request_to_record(request, record)
             await session.flush()
         return request
+
 
 class SQLAlchemyRunLeaseRepository:
     def __init__(self, session_factory: SessionFactory) -> None:

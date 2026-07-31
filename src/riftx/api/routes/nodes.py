@@ -2,16 +2,18 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Query
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
 from riftx.domain import NodeStatus
 
-from ..auth import bearer_token
 from ..dependencies import (
+    AdminDependency,
     ExecutionServiceDependency,
     NodeServiceDependency,
+    RunnerBootstrapDependency,
     RunnerControlServiceDependency,
+    RunnerNodeDependency,
     ToolServiceDependency,
 )
 from ..schemas import (
@@ -34,7 +36,7 @@ router = APIRouter(prefix="/nodes", tags=["nodes"])
 async def register_node(
     payload: RegisterNodeRequest,
     service: RunnerControlServiceDependency,
-    authorization: Annotated[str | None, Header()] = None,
+    bootstrap_token: RunnerBootstrapDependency,
 ) -> NodeRegistrationResponse:
     result = await service.register(
         NodeRegistration(
@@ -46,12 +48,13 @@ async def register_node(
             capabilities=tuple(payload.capabilities),
             labels=payload.labels,
         ),
-        bootstrap_token=bearer_token(authorization),
+        bootstrap_token=bootstrap_token,
     )
     return NodeRegistrationResponse(
         node=NodeResponse.from_domain(result.node),
         created=result.created,
         runner_token=result.token,
+        principal=result.principal,
     )
 
 
@@ -68,11 +71,11 @@ async def heartbeat_node(
     node_id: str,
     payload: HeartbeatNodeRequest,
     service: RunnerControlServiceDependency,
-    authorization: Annotated[str | None, Header()] = None,
+    authorized: RunnerNodeDependency,
 ) -> NodeResponse:
     node = await service.heartbeat(
         node_id,
-        bearer_token(authorization),
+        authorized.token,
         NodeHeartbeat(
             status=payload.status,
             capabilities=(
@@ -93,6 +96,7 @@ async def heartbeat_node(
 async def disconnect_node(
     node_id: str,
     service: NodeServiceDependency,
+    _authorized: AdminDependency,
 ) -> NodeResponse:
     return NodeResponse.from_domain(await service.disconnect(node_id))
 

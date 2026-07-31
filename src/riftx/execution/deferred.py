@@ -82,7 +82,12 @@ class RegistryDeferredExecutionResolver:
         if run is None:
             raise EntityNotFoundError("Run", session.run_id)
         if self._tool_context is not None:
-            self._tool_context.assert_allowed(
+            authorization_check = (
+                self._tool_context.assert_allowed
+                if tool_id == "run_shell"
+                else self._tool_context.assert_selected
+            )
+            authorization_check(
                 tool_id,
                 run_id=session.run_id,
                 session_id=session.id,
@@ -161,6 +166,11 @@ class DeferredExecutionDispatcher:
         )
         return await self.execute_intent(intent)
 
+    async def pending_intents(self, session_id: str) -> list[ToolCallIntent]:
+        """Return unresolved intents in their durable model-emission order."""
+
+        return await self._tool_calls.pending_for_session(session_id)
+
     async def prepare(
         self,
         *,
@@ -174,14 +184,14 @@ class DeferredExecutionDispatcher:
         call_id = _required_string(event.data, "call_id")
         tool_id = _tool_id(event.data)
         raw_spec = event.data.get("execution")
-        if isinstance(raw_spec, dict):
-            spec = DeferredExecutionSpec.model_validate(raw_spec)
-        elif self._resolver is not None:
+        if self._resolver is not None:
             spec = await self._resolver.resolve(
                 session=session,
                 event=event,
                 tool_id=tool_id,
             )
+        elif isinstance(raw_spec, dict):
+            spec = DeferredExecutionSpec.model_validate(raw_spec)
         else:
             raise ApplicationConflictError(
                 "deferred_execution_missing",
@@ -396,10 +406,7 @@ def _environment(arguments: dict[str, object]) -> dict[str, str | None]:
     value = arguments.get("environment") or arguments.get("env")
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): None if item is None else str(item)
-        for key, item in value.items()
-    }
+    return {str(key): None if item is None else str(item) for key, item in value.items()}
 
 
 def _timeout(arguments: dict[str, object]) -> float | None:

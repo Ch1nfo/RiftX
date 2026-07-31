@@ -34,6 +34,7 @@ from riftx.tools import ExecutionPolicy, ToolUnavailableError
 
 from .context import RiftXAgentContext
 from .services import AgentRuntimeServices
+from .tool_policy import validate_agent_tool_inventory
 
 
 def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
@@ -221,6 +222,7 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
     ) -> str:
         """Read bounded terminal output from an exact transcript cursor."""
 
+        await _require_run_terminal(ctx.context, services, session_id)
         output = await services.terminal_service.read(
             session_id,
             cursor=cursor,
@@ -245,6 +247,7 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
     ) -> str:
         """Send UTF-8 input as the Agent to an Agent-owned terminal."""
 
+        await _require_run_terminal(ctx.context, services, session_id)
         await services.terminal_service.write(
             session_id,
             data.encode("utf-8"),
@@ -259,6 +262,7 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
     ) -> str:
         """Close an interactive terminal session and return its final state."""
 
+        await _require_run_terminal(ctx.context, services, session_id)
         return json.dumps(
             _terminal_view(await services.terminal_service.close(session_id)),
             ensure_ascii=False,
@@ -431,7 +435,20 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
 
         tools.insert(2, run_shell)
 
+    validate_agent_tool_inventory(tools)
     return tools
+
+
+async def _require_run_terminal(
+    context: RiftXAgentContext,
+    services: AgentRuntimeServices,
+    session_id: str,
+) -> None:
+    view = await services.terminal_service.get(session_id)
+    if view.terminal.run_id != context.run_id:
+        # Do not reveal whether a terminal from another Run exists. Agent tools
+        # are always scoped to their immutable Run context.
+        raise ToolUnavailableError("terminal session is not available to this Run")
 
 
 async def _tool_started(

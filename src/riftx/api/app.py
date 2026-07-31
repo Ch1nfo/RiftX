@@ -13,6 +13,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from .errors import APIError, install_error_handlers
+from .policy import apply_route_policy_inventory
 from .routes import (
     approvals_router,
     artifacts_router,
@@ -23,6 +24,7 @@ from .routes import (
     executions_router,
     findings_router,
     memories_router,
+    models_router,
     nodes_router,
     observability_router,
     reports_router,
@@ -79,7 +81,6 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(configured_settings.cors_origins),
-            allow_origin_regex=r"chrome-extension://.*",
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -92,6 +93,7 @@ def create_app(
     app.include_router(executions_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
     app.include_router(memories_router, prefix="/api/v1")
+    app.include_router(models_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(approvals_router, prefix="/api/v1")
     app.include_router(artifacts_router, prefix="/api/v1")
@@ -115,6 +117,8 @@ def create_app(
             "route_not_found",
             f"API route '/api/{unmatched_path}' was not found",
         )
+
+    apply_route_policy_inventory(app)
 
     web_dist = configured_settings.web_dist_path
     if (web_dist / "index.html").is_file():

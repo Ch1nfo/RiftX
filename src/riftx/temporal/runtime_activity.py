@@ -104,6 +104,11 @@ class RuntimeCycleActivities:
                     latest_user_message_id=latest_user_message_id,
                     approval_id=input.approval_id,
                     input_items=input_items,
+                    # The Workflow owns final completion because another user
+                    # message may already be queued while this Cycle is in
+                    # flight. Completing the Run here would make that queued
+                    # message impossible to execute in the next Cycle.
+                    defer_run_completion=input.defer_run_completion,
                 )
             ),
             heartbeat_detail=f"runtime-cycle:{input.run_id}:{input.cycle_id}",

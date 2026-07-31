@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
 
 from riftx.domain import ApprovalMode
 from riftx.executors import EnvironmentMode
@@ -56,7 +56,7 @@ class RiftXConfigError(ValueError):
 
 
 class _ConfigModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
 class ServerConfig(_ConfigModel):
@@ -83,6 +83,34 @@ class TemporalConfig(_ConfigModel):
     workflow_id_prefix: str = "riftx-run"
     max_concurrent_activities: int = Field(default=20, ge=1)
     max_cached_workflows: int = Field(default=1000, ge=0)
+    tls_enabled: bool = False
+    tls_server_root_ca_path: Path | None = Field(default=None, exclude=True, repr=False)
+    tls_server_name: str | None = Field(default=None, exclude=True, repr=False)
+    tls_client_cert_path: Path | None = Field(default=None, exclude=True, repr=False)
+    tls_client_private_key_path: Path | None = Field(default=None, exclude=True, repr=False)
+    api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
+
+    @model_validator(mode="after")
+    def validate_secure_connection(self) -> TemporalConfig:
+        if self.api_key is not None and not self.api_key.get_secret_value().strip():
+            raise ValueError("Temporal API key must not be empty")
+        if (self.tls_client_cert_path is None) != (self.tls_client_private_key_path is None):
+            raise ValueError(
+                "tls_client_cert_path and tls_client_private_key_path must be configured together"
+            )
+        if not self.tls_enabled and any(
+            value is not None
+            for value in (
+                self.tls_server_root_ca_path,
+                self.tls_server_name,
+                self.tls_client_cert_path,
+                self.tls_client_private_key_path,
+            )
+        ):
+            raise ValueError("Temporal TLS certificate and server-name settings require TLS")
+        if not self.tls_enabled and self.api_key is not None:
+            raise ValueError("Temporal API key authentication requires TLS")
+        return self
 
 
 class RunnerConfig(_ConfigModel):
@@ -90,6 +118,7 @@ class RunnerConfig(_ConfigModel):
     endpoint: str = "http://127.0.0.1:8790"
     node_id: str = "local"
     state_path: Path = Path(".riftx/runner")
+    credential_path: Path = Path(".riftx/secrets/runner-credentials.json")
     registration_token: str | None = None
     command_lease_seconds: float = Field(default=30.0, gt=0)
     node_offline_after_seconds: float = Field(default=30.0, gt=0)
@@ -97,9 +126,27 @@ class RunnerConfig(_ConfigModel):
 
 
 class ExecutionConfig(_ConfigModel):
-    policy: ExecutionPolicy = ExecutionPolicy.OPEN
+    policy: ExecutionPolicy = ExecutionPolicy.REGISTERED_ONLY
     default_timeout: float = Field(default=1800, gt=0)
     environment_mode: EnvironmentMode = EnvironmentMode.INHERIT
+    # Security-testing payloads may daemonize, create a new session, or fork
+    # after their original leader exits.  Requiring a kernel ownership
+    # boundary is therefore the safe production default; development hosts
+    # without one must opt out explicitly and will never receive affirmative
+    # complete-tree stop confirmation.
+    require_containment: bool = True
+    # A cgroup is an ownership boundary only when the executed payload cannot
+    # administer the Runner's delegated subtree.  Linux launchers therefore
+    # drop to this distinct numeric identity after joining the leaf and before
+    # any target code is activated.
+    payload_uid: int | None = Field(default=None, gt=0)
+    payload_gid: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_payload_identity(self) -> ExecutionConfig:
+        if (self.payload_uid is None) != (self.payload_gid is None):
+            raise ValueError("payload_uid and payload_gid must be configured together")
+        return self
 
 
 class ExecutionOutputConfig(_ConfigModel):
@@ -118,7 +165,7 @@ class ApprovalConfig(_ConfigModel):
 
 
 class ToolsConfig(_ConfigModel):
-    path: Path = Path("configs/tools.example.yaml")
+    path: Path = Path("configs/tools.yaml")
 
 
 class WebConfig(_ConfigModel):
@@ -126,8 +173,14 @@ class WebConfig(_ConfigModel):
 
 
 class ModelsRuntimeConfig(_ConfigModel):
-    path: Path = Path("configs/models.example.yaml")
+    path: Path = Path("configs/models.yaml")
+    secrets_path: Path = Path(".riftx/secrets/models.json")
     profile: str | None = None
+
+
+class SecurityConfig(_ConfigModel):
+    admin_token: str | None = None
+    trust_proxy_auth: bool = False
 
 
 class AgentConfig(_ConfigModel):
@@ -154,9 +207,7 @@ class MCPCircuitBreakerConfig(_ConfigModel):
 class MCPConfig(_ConfigModel):
     max_concurrent_per_server: int = Field(default=2, ge=1, le=1000)
     max_concurrent_total: int = Field(default=16, ge=1, le=10_000)
-    circuit_breaker: MCPCircuitBreakerConfig = Field(
-        default_factory=MCPCircuitBreakerConfig
-    )
+    circuit_breaker: MCPCircuitBreakerConfig = Field(default_factory=MCPCircuitBreakerConfig)
 
 
 class RiftXConfig(_ConfigModel):
@@ -171,6 +222,7 @@ class RiftXConfig(_ConfigModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     subagents: SubagentConfig = Field(default_factory=SubagentConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
@@ -188,8 +240,21 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_TEMPORAL_NAMESPACE": ("temporal", "namespace"),
     "RIFTX_TEMPORAL_TASK_QUEUE": ("temporal", "task_queue"),
     "RIFTX_TEMPORAL_WORKFLOW_ID_PREFIX": ("temporal", "workflow_id_prefix"),
+    "RIFTX_TEMPORAL_TLS_ENABLED": ("temporal", "tls_enabled"),
+    "RIFTX_TEMPORAL_TLS_SERVER_ROOT_CA_PATH": (
+        "temporal",
+        "tls_server_root_ca_path",
+    ),
+    "RIFTX_TEMPORAL_TLS_SERVER_NAME": ("temporal", "tls_server_name"),
+    "RIFTX_TEMPORAL_TLS_CLIENT_CERT_PATH": ("temporal", "tls_client_cert_path"),
+    "RIFTX_TEMPORAL_TLS_CLIENT_PRIVATE_KEY_PATH": (
+        "temporal",
+        "tls_client_private_key_path",
+    ),
+    "RIFTX_TEMPORAL_API_KEY": ("temporal", "api_key"),
     "RIFTX_NODE_ID": ("runner", "node_id"),
     "RIFTX_RUNNER_STATE": ("runner", "state_path"),
+    "RIFTX_RUNNER_CREDENTIALS": ("runner", "credential_path"),
     "RIFTX_RUNNER_REGISTRATION_TOKEN": ("runner", "registration_token"),
     "RIFTX_RUNNER_COMMAND_LEASE_SECONDS": ("runner", "command_lease_seconds"),
     "RIFTX_NODE_OFFLINE_AFTER_SECONDS": ("runner", "node_offline_after_seconds"),
@@ -197,12 +262,18 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_EXECUTION_POLICY": ("execution", "policy"),
     "RIFTX_DEFAULT_TIMEOUT": ("execution", "default_timeout"),
     "RIFTX_ENVIRONMENT_MODE": ("execution", "environment_mode"),
+    "RIFTX_REQUIRE_CONTAINMENT": ("execution", "require_containment"),
+    "RIFTX_PAYLOAD_UID": ("execution", "payload_uid"),
+    "RIFTX_PAYLOAD_GID": ("execution", "payload_gid"),
     "RIFTX_WORKSPACE_ROOT": ("workspace", "root"),
     "RIFTX_DEFAULT_APPROVAL_MODE": ("approval", "default_mode"),
     "RIFTX_TOOLS_CONFIG": ("tools", "path"),
     "RIFTX_WEB_DIST": ("web", "dist_path"),
     "RIFTX_MODELS_CONFIG": ("models", "path"),
+    "RIFTX_MODEL_SECRETS": ("models", "secrets_path"),
     "RIFTX_MODEL_PROFILE": ("models", "profile"),
+    "RIFTX_ADMIN_TOKEN": ("security", "admin_token"),
+    "RIFTX_TRUST_PROXY_AUTH": ("security", "trust_proxy_auth"),
     "RIFTX_AGENT_MAX_HISTORY_ITEMS": ("agent", "max_history_items"),
     "RIFTX_AGENT_MAX_TURNS": ("agent", "max_turns"),
     "RIFTX_SUBAGENT_MAX_PARALLEL_PER_RUN": ("subagents", "max_parallel_per_run"),
@@ -256,20 +327,36 @@ def load_riftx_config(
         _deep_merge(merged, _read_yaml_mapping(path))
     _deep_merge(merged, _environment_layer(env))
     if cli_overrides:
+        _reject_temporal_api_key_override(cli_overrides, "CLI overrides")
         _deep_merge(merged, dict(cli_overrides))
     if run_overrides:
+        _reject_temporal_api_key_override(run_overrides, "Run overrides")
         _deep_merge(merged, dict(run_overrides))
     try:
         return RiftXConfig.model_validate(merged)
     except ValidationError as exc:
-        raise RiftXConfigError(f"invalid RiftX configuration: {exc}") from exc
+        raise RiftXConfigError(
+            f"invalid RiftX configuration: {_validation_error_summary(exc)}"
+        ) from exc
 
 
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        payload = yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError) as exc:
-        raise RiftXConfigError(f"could not load configuration {path}: {exc}") from exc
+        content = path.read_text()
+    except OSError as exc:
+        raise RiftXConfigError(f"could not read configuration {path}") from exc
+    try:
+        payload = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        line = getattr(mark, "line", None)
+        column = getattr(mark, "column", None)
+        location = (
+            f" at line {line + 1}, column {column + 1}"
+            if isinstance(line, int) and isinstance(column, int)
+            else ""
+        )
+        raise RiftXConfigError(f"invalid YAML in configuration {path}{location}") from exc
     if payload is None:
         return {}
     if not isinstance(payload, dict):
@@ -327,3 +414,28 @@ def _reject_plaintext_secrets(payload: Mapping[str, object], path: Path) -> None
             raise RiftXConfigError(f"secret field {key!r} must not be stored in {path}")
         if isinstance(value, Mapping):
             _reject_plaintext_secrets(value, path)
+
+
+def _reject_temporal_api_key_override(
+    payload: Mapping[str, object],
+    source: str,
+) -> None:
+    temporal = payload.get("temporal")
+    api_key = temporal.get("api_key") if isinstance(temporal, Mapping) else None
+    if api_key is not None and api_key != "":
+        raise RiftXConfigError(
+            f"temporal.api_key must come from RIFTX_TEMPORAL_API_KEY, not {source}"
+        )
+
+
+def _validation_error_summary(error: ValidationError) -> str:
+    summaries: list[str] = []
+    for item in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    ):
+        location = ".".join(str(part) for part in item.get("loc", ())) or "configuration"
+        message = str(item.get("msg", "invalid value"))
+        summaries.append(f"{location}: {message}")
+    return "; ".join(summaries) or "validation failed"

@@ -18,6 +18,7 @@ from riftx.domain import (
     ExecutionStatus,
     ExecutorType,
     RunnerCommandKind,
+    RunnerPrincipal,
     TerminalOwner,
     TerminalSession,
     TerminalStatus,
@@ -26,6 +27,7 @@ from riftx.domain.base import new_id
 
 from .models import OutputSlice, TerminalLaunchRequest
 from .paths import RunnerPaths
+from .protocols import EffectGuard
 from .terminal import TerminalController
 
 
@@ -47,7 +49,13 @@ class RemoteTerminalSupervisor:
         self._control = control
         self._paths = paths
 
-    async def start(self, request: TerminalLaunchRequest) -> TerminalSession:
+    async def start(
+        self,
+        request: TerminalLaunchRequest,
+        *,
+        effect_guard: EffectGuard | None = None,
+    ) -> TerminalSession:
+        runner_principal = await self._control.current_principal(request.node_id)
         session_id = request.session_id or new_id()
         execution_id = request.execution_id or new_id()
         self._paths.ensure_run_layout(request.run_id)
@@ -61,6 +69,7 @@ class RemoteTerminalSupervisor:
             session_id=request.agent_session_id,
             tool_call_id=request.tool_call_id,
             node_id=request.node_id,
+            owner=runner_principal,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
             tool_id=request.tool_id,
@@ -70,8 +79,12 @@ class RemoteTerminalSupervisor:
             stdout_path=str(terminal_paths.transcript),
             stderr_path=str(terminal_paths.transcript),
         )
+        # Register STARTING before the final Run fence and before dispatch so a
+        # concurrent stop cannot complete without observing this execution.
+        execution.transition_to(ExecutionStatus.STARTING)
         execution, created = await self._executions.create_if_absent(execution)
         if not created:
+            _require_remote_owner(execution)
             return await self.get(session_id)
         terminal = TerminalSession(
             id=session_id,
@@ -85,13 +98,19 @@ class RemoteTerminalSupervisor:
             rows=request.rows,
         )
         await self._terminals.create(terminal)
-        execution.transition_to(ExecutionStatus.STARTING)
-        await self._executions.save(execution)
+
+        try:
+            if effect_guard is not None:
+                await effect_guard()
+        except BaseException:
+            await self._cancel_unstarted(execution, terminal)
+            raise
         try:
             await self._control.enqueue(
                 request.node_id,
                 kind=RunnerCommandKind.TERMINAL_START,
                 idempotency_key=f"terminal-start:{session_id}",
+                target=runner_principal,
                 payload={
                     "session_id": session_id,
                     "execution_id": execution.id,
@@ -99,20 +118,139 @@ class RemoteTerminalSupervisor:
                         update={
                             "session_id": session_id,
                             "execution_id": execution.id,
+                            "runner_principal": runner_principal,
                         }
                     ).model_dump(mode="json"),
                 },
             )
         except Exception:
-            execution.transition_to(ExecutionStatus.LOST)
-            await self._executions.save(execution)
+            current = await self.get_execution(session_id)
+            if current.status is ExecutionStatus.STARTING:
+                current.transition_to(ExecutionStatus.LOST)
+                await self._executions.save_if_status(
+                    current,
+                    expected={ExecutionStatus.STARTING},
+                )
             terminal.transition_to(TerminalStatus.LOST)
             await self._terminals.save(terminal)
             raise
+
+        try:
+            if effect_guard is not None:
+                await effect_guard()
+        except BaseException:
+            # TERMINAL_START may already be in flight.  A CANCEL tombstone is
+            # required; do not report CLOSED until the Runner acknowledges it.
+            try:
+                await self.close(terminal.id)
+            except Exception:
+                current = await self.get_execution(session_id)
+                if current.status is ExecutionStatus.STARTING:
+                    current.transition_to(ExecutionStatus.LOST)
+                    await self._executions.save_if_status(
+                        current,
+                        expected={ExecutionStatus.STARTING},
+                    )
+                terminal.transition_to(TerminalStatus.LOST)
+                await self._terminals.save(terminal)
+            raise
+
         execution.transition_to(ExecutionStatus.RUNNING)
-        await self._executions.save(execution)
-        terminal.transition_to(TerminalStatus.OPEN)
-        await self._terminals.save(terminal)
+        execution, started = await self._executions.save_if_status(
+            execution,
+            expected={ExecutionStatus.STARTING},
+        )
+        if not started:
+            durable_terminal = await self.get(session_id)
+            if execution.status is ExecutionStatus.RUNNING:
+                if durable_terminal.status is TerminalStatus.CREATED:
+                    candidate = durable_terminal.model_copy(deep=True)
+                    candidate.transition_to(TerminalStatus.OPEN)
+                    durable_terminal, opened = await self._terminals.save_if_status(
+                        candidate,
+                        expected={TerminalStatus.CREATED},
+                    )
+                    if opened:
+                        await self._append_opened_event(
+                            request,
+                            durable_terminal,
+                            execution,
+                        )
+                if durable_terminal.status is TerminalStatus.OPEN:
+                    return durable_terminal
+                # A CLOSED/LOST projection cannot prove the RUNNING process
+                # stopped. Request cancellation instead of treating it as a
+                # safe start failure.
+                await self.close(durable_terminal.id)
+                raise ApplicationConflictError(
+                    "terminal_start_projection_conflict",
+                    f"Terminal {terminal.id!r} is running with a "
+                    f"{durable_terminal.status.value} projection",
+                    details={"session_id": terminal.id, "run_id": terminal.run_id},
+                )
+            if _has_durable_stop_proof(execution) or _is_strict_predispatch_absence(
+                execution
+            ):
+                await self._close_confirmed_terminal_projection(durable_terminal)
+            else:
+                # The command may have started, but central state does not yet
+                # contain physical-stop proof. Leave a durable cancellation
+                # tombstone with the owning Runner before surfacing failure.
+                await self.close(durable_terminal.id)
+                if durable_terminal.status in {
+                    TerminalStatus.CREATED,
+                    TerminalStatus.OPEN,
+                }:
+                    durable_terminal.transition_to(TerminalStatus.LOST)
+                    await self._terminals.save(durable_terminal)
+                raise ApplicationConflictError(
+                    "terminal_start_state_unconfirmed",
+                    f"Terminal {terminal.id!r} start outcome is not confirmed",
+                    details={
+                        "session_id": terminal.id,
+                        "run_id": terminal.run_id,
+                        "execution_status": execution.status.value,
+                    },
+                )
+            raise ApplicationConflictError(
+                "terminal_start_cancelled",
+                f"Terminal {terminal.id!r} was cancelled before it could open",
+                details={"session_id": terminal.id, "run_id": terminal.run_id},
+            )
+        candidate = terminal.model_copy(deep=True)
+        candidate.transition_to(TerminalStatus.OPEN)
+        terminal, opened = await self._terminals.save_if_status(
+            candidate,
+            expected={TerminalStatus.CREATED},
+        )
+        if not opened:
+            latest_execution = await self.get_execution(session_id)
+            if terminal.status is TerminalStatus.OPEN:
+                return terminal
+            if _has_durable_stop_proof(
+                latest_execution
+            ) or _is_strict_predispatch_absence(latest_execution):
+                raise ApplicationConflictError(
+                    "terminal_start_cancelled",
+                    f"Terminal {terminal.id!r} was cancelled before it could open",
+                    details={"session_id": terminal.id, "run_id": terminal.run_id},
+                )
+            await self.close(terminal.id)
+            raise ApplicationConflictError(
+                "terminal_start_projection_conflict",
+                f"Terminal {terminal.id!r} is running with a "
+                f"{terminal.status.value} projection",
+                details={"session_id": terminal.id, "run_id": terminal.run_id},
+            )
+        await self._append_opened_event(request, terminal, execution)
+        return terminal
+
+    async def _append_opened_event(
+        self,
+        request: TerminalLaunchRequest,
+        terminal: TerminalSession,
+        execution: Execution,
+    ) -> None:
         await self._events.append(
             request.run_id,
             "terminal.opened",
@@ -126,7 +264,23 @@ class RemoteTerminalSupervisor:
                 "rows": terminal.rows,
             },
         )
-        return terminal
+
+    async def _cancel_unstarted(
+        self,
+        execution: Execution,
+        terminal: TerminalSession,
+    ) -> None:
+        current = await self._executions.get(execution.id)
+        if current is not None and current.status is ExecutionStatus.STARTING:
+            current.transition_to(ExecutionStatus.CANCELLED)
+            await self._executions.save_if_status(
+                current,
+                expected={ExecutionStatus.STARTING},
+            )
+        durable_terminal = await self._terminals.get(terminal.id)
+        if durable_terminal is not None and durable_terminal.status is TerminalStatus.CREATED:
+            durable_terminal.transition_to(TerminalStatus.CLOSED)
+            await self._terminals.save(durable_terminal)
 
     async def get(self, session_id: str) -> TerminalSession:
         terminal = await self._terminals.get(session_id)
@@ -255,35 +409,59 @@ class RemoteTerminalSupervisor:
 
     async def close(self, session_id: str) -> TerminalSession:
         terminal = await self.get(session_id)
-        if terminal.status is not TerminalStatus.OPEN:
-            return terminal
         execution = await self.get_execution(session_id)
-        operation_id = f"terminal-close:{session_id}"
+        if _has_durable_stop_proof(execution) or _is_strict_predispatch_absence(
+            execution
+        ):
+            return await self._close_confirmed_terminal_projection(terminal)
+        runner_principal = _require_remote_owner(execution)
+        operation_id = f"cancel:{execution.id}:{new_id()}"
         await self._control.enqueue(
             execution.node_id,
-            kind=RunnerCommandKind.TERMINAL_CLOSE,
+            kind=RunnerCommandKind.CANCEL,
             idempotency_key=operation_id,
+            target=runner_principal,
             payload={
-                "session_id": session_id,
                 "execution_id": execution.id,
-                "operation_id": operation_id,
+                "execution_key": execution.execution_key,
             },
         )
-        terminal.transition_to(TerminalStatus.CLOSED)
-        await self._terminals.save(terminal)
-        if execution.status in {ExecutionStatus.STARTING, ExecutionStatus.RUNNING}:
-            execution.transition_to(ExecutionStatus.CANCELLED)
-            await self._executions.save(execution)
         await self._events.append(
             terminal.run_id,
-            "terminal.closed",
+            "terminal.close_requested",
             {
                 "session_id": terminal.id,
                 "execution_id": terminal.execution_id,
-                "requested": True,
+                "execution_key": execution.execution_key,
+                "operation_id": operation_id,
+                "node_id": execution.node_id,
+                "terminal_status": terminal.status.value,
+                "execution_status": execution.status.value,
             },
         )
         return terminal
+
+    async def _close_confirmed_terminal_projection(
+        self,
+        terminal: TerminalSession,
+    ) -> TerminalSession:
+        for _ in range(8):
+            if terminal.status is TerminalStatus.CLOSED:
+                return terminal
+            expected_status = terminal.status
+            candidate = terminal.model_copy(deep=True)
+            candidate.transition_to(TerminalStatus.CLOSED)
+            terminal, saved = await self._terminals.save_if_status(
+                candidate,
+                expected={expected_status},
+            )
+            if saved:
+                return terminal
+        raise ApplicationConflictError(
+            "terminal_projection_update_conflict",
+            f"Terminal {terminal.id!r} changed repeatedly while confirming closure",
+            details={"session_id": terminal.id, "run_id": terminal.run_id},
+        )
 
     async def recover(self) -> list[TerminalSession]:
         return []
@@ -297,11 +475,13 @@ class RemoteTerminalSupervisor:
         kind: RunnerCommandKind,
         payload: dict[str, object],
     ) -> None:
+        runner_principal = _require_remote_owner(execution)
         operation_id = f"{kind.value}:{execution.id}:{new_id()}"
         await self._control.enqueue(
             execution.node_id,
             kind=kind,
             idempotency_key=operation_id,
+            target=runner_principal,
             payload={
                 **payload,
                 "execution_id": execution.id,
@@ -341,8 +521,16 @@ class NodeTerminalRouter:
         self._local = local
         self._remote = remote
 
-    async def start(self, request: TerminalLaunchRequest) -> TerminalSession:
-        return await self._for_node(request.node_id).start(request)
+    async def start(
+        self,
+        request: TerminalLaunchRequest,
+        *,
+        effect_guard: EffectGuard | None = None,
+    ) -> TerminalSession:
+        return await self._for_node(request.node_id).start(
+            request,
+            effect_guard=effect_guard,
+        )
 
     async def get(self, session_id: str) -> TerminalSession:
         controller = await self._for_session(session_id)
@@ -430,3 +618,39 @@ def _read_output_slice(path: Path, cursor: int, max_bytes: int) -> OutputSlice:
 
 def _output_size(path: Path) -> int:
     return path.stat().st_size if path.exists() else 0
+
+
+def _require_remote_owner(execution: Execution) -> RunnerPrincipal:
+    if execution.owner is None:
+        raise ApplicationConflictError(
+            "remote_execution_owner_missing",
+            f"Remote terminal execution {execution.id!r} has no bound Runner owner",
+            details={
+                "execution_id": execution.id,
+                "execution_key": execution.execution_key,
+                "node_id": execution.node_id,
+            },
+        )
+    return execution.owner
+
+
+def _has_durable_stop_proof(execution: Execution) -> bool:
+    return execution.status in {
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.EXITED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.HARD_TIMEOUT,
+    } and execution.physical_stop_confirmed_at is not None
+
+
+def _is_strict_predispatch_absence(execution: Execution) -> bool:
+    return execution.status is ExecutionStatus.CANCELLED and all(
+        value is None
+        for value in (
+            execution.started_at,
+            execution.process_created_at,
+            execution.pid,
+            execution.process_group_id,
+            execution.containment_id,
+        )
+    )

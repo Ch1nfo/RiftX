@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from riftx.domain import Execution
 
 from .models import ExecutionLaunchRequest, ExecutionOutput
 
+EffectGuard = Callable[[], Awaitable[None]]
+
 
 class ExecutionRunner(Protocol):
     """Common process execution interface consumed by Skills and Activities."""
 
-    async def start(self, request: ExecutionLaunchRequest) -> Execution: ...
+    async def start(
+        self,
+        request: ExecutionLaunchRequest,
+        *,
+        effect_guard: EffectGuard | None = None,
+    ) -> Execution: ...
 
     async def get(self, execution_id: str) -> Execution: ...
 

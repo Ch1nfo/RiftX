@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import platform
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+from pydantic import SecretStr
 from temporalio.client import Client
 
 from riftx import __version__
-from riftx.application.errors import ServiceUnavailableError
 from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
+    ModelProfileApplicationService,
     NodeApplicationService,
     NodeRegistration,
     ReportApplicationService,
@@ -32,8 +35,12 @@ from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
+from riftx.domain import RunStatus
+from riftx.domain.base import utc_now
+from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
+from riftx.models import ModelProfileRegistry
 from riftx.observability import RuntimeObservabilityService
 from riftx.persistence import (
     Database,
@@ -80,7 +87,8 @@ from riftx.runner import (
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.target_http.service import TargetHttpApplicationService
-from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
+from riftx.temporal.connection import TemporalConnectionSettings, connect_temporal
+from riftx.temporal.runtime import LazyTemporalRunClient, TemporalRuntimeConfig
 from riftx.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -89,7 +97,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class APISettings:
     database_url: str = "sqlite+aiosqlite:///./.riftx/riftx.db"
-    tools_config_path: Path = Path("configs/tools.example.yaml")
+    tools_config_path: Path = Path("configs/tools.yaml")
+    models_config_path: Path = Path("configs/models.yaml")
+    model_secrets_path: Path = Path(".riftx/secrets/models.json")
+    model_profile_override: str | None = None
     node_id: str = "local"
     workspace_root: Path = Path(".riftx/workspaces")
     runner_state_path: Path = Path(".riftx/runner")
@@ -98,12 +109,22 @@ class APISettings:
     temporal_namespace: str = "default"
     temporal_task_queue: str = "riftx-v2"
     temporal_workflow_id_prefix: str = "riftx-run"
+    temporal_tls_enabled: bool = False
+    temporal_tls_server_root_ca_path: Path | None = field(default=None, repr=False)
+    temporal_tls_server_name: str | None = field(default=None, repr=False)
+    temporal_tls_client_cert_path: Path | None = field(default=None, repr=False)
+    temporal_tls_client_private_key_path: Path | None = field(default=None, repr=False)
+    temporal_api_key: SecretStr | None = field(default=None, repr=False)
     sse_poll_interval_seconds: float = 0.5
     sse_heartbeat_seconds: float = 15.0
     node_offline_after_seconds: float = 30.0
     node_lost_after_seconds: float = 300.0
     runner_registration_token: str | None = None
     runner_command_lease_seconds: float = 30.0
+    require_containment: bool = True
+    payload_uid: int | None = None
+    payload_gid: int | None = None
+    admin_token: str | None = None
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -114,6 +135,9 @@ class APISettings:
         return cls(
             database_url=config.database.url,
             tools_config_path=config.tools.path.expanduser(),
+            models_config_path=config.models.path.expanduser(),
+            model_secrets_path=config.models.secrets_path.expanduser(),
+            model_profile_override=config.models.profile,
             node_id=config.runner.node_id,
             workspace_root=config.workspace.root.expanduser(),
             runner_state_path=config.runner.state_path.expanduser(),
@@ -122,18 +146,49 @@ class APISettings:
             temporal_namespace=config.temporal.namespace,
             temporal_task_queue=config.temporal.task_queue,
             temporal_workflow_id_prefix=config.temporal.workflow_id_prefix,
+            temporal_tls_enabled=config.temporal.tls_enabled,
+            temporal_tls_server_root_ca_path=config.temporal.tls_server_root_ca_path,
+            temporal_tls_server_name=config.temporal.tls_server_name,
+            temporal_tls_client_cert_path=config.temporal.tls_client_cert_path,
+            temporal_tls_client_private_key_path=config.temporal.tls_client_private_key_path,
+            temporal_api_key=config.temporal.api_key,
             sse_poll_interval_seconds=config.server.sse_poll_interval_seconds,
             sse_heartbeat_seconds=config.server.sse_heartbeat_seconds,
             node_offline_after_seconds=config.runner.node_offline_after_seconds,
             node_lost_after_seconds=config.runner.node_lost_after_seconds,
             runner_registration_token=config.runner.registration_token,
             runner_command_lease_seconds=config.runner.command_lease_seconds,
+            require_containment=config.execution.require_containment,
+            payload_uid=config.execution.payload_uid,
+            payload_gid=config.execution.payload_gid,
+            admin_token=config.security.admin_token,
             cors_origins=tuple(config.server.cors_origins),
         )
 
     @classmethod
     def from_environment(cls) -> APISettings:
         return cls.from_config(load_riftx_config())
+
+    def temporal_connection_settings(self) -> TemporalConnectionSettings:
+        return TemporalConnectionSettings(
+            target=self.temporal_address,
+            namespace=self.temporal_namespace,
+            tls_enabled=self.temporal_tls_enabled,
+            tls_server_root_ca_path=self.temporal_tls_server_root_ca_path,
+            tls_server_name=self.temporal_tls_server_name,
+            tls_client_cert_path=self.temporal_tls_client_cert_path,
+            tls_client_private_key_path=self.temporal_tls_client_private_key_path,
+            api_key=self.temporal_api_key,
+        )
+
+
+def _create_temporal_connector(settings: APISettings) -> Callable[[], Awaitable[Client]]:
+    connection_settings = settings.temporal_connection_settings()
+
+    async def connector() -> Client:
+        return await connect_temporal(connection_settings)
+
+    return connector
 
 
 @dataclass(slots=True)
@@ -148,6 +203,7 @@ class ControlPlane:
     runner_control_service: RunnerControlService
     report_service: ReportApplicationService
     tool_service: ToolApplicationService
+    model_profile_service: ModelProfileApplicationService
     approval_service: ApprovalApplicationService
     artifact_service: ArtifactApplicationService
     context_service: ContextApplicationService
@@ -161,62 +217,92 @@ class ControlPlane:
     process_supervisor: ProcessSupervisor | None = None
     execution_runner: ExecutionRunner | None = None
     target_http_service: TargetHttpApplicationService | None = None
+    _cleanup_reconciler_task: asyncio.Task[None] | None = None
+    _cleanup_failures: set[str] = field(default_factory=set)
+
+    def start_cleanup_reconciler(self) -> None:
+        """Start owner-process cleanup for in-memory local effect handles."""
+
+        if self._cleanup_reconciler_task is not None:
+            return
+        self._cleanup_reconciler_task = asyncio.create_task(
+            self._reconcile_completing_runs(),
+            name="riftx-control-plane-cleanup-reconciler",
+        )
+
+    async def _reconcile_completing_runs(self) -> None:
+        scan_unavailable = False
+        while True:
+            try:
+                for status in (
+                    RunStatus.PAUSING,
+                    RunStatus.CANCELLING,
+                    RunStatus.COMPLETING,
+                ):
+                    created_through = utc_now()
+                    after_created_at = None
+                    after_id = None
+                    while True:
+                        runs = await self.run_service.list_runs_for_reconciliation(
+                            status=status,
+                            created_through=created_through,
+                            after_created_at=after_created_at,
+                            after_id=after_id,
+                            limit=100,
+                        )
+                        for run in runs:
+                            try:
+                                result = await self.run_service.stop_resources_for_cleanup(run.id)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                if run.id not in self._cleanup_failures:
+                                    logger.exception(
+                                        "Owner-process cleanup reconciliation failed for Run %s",
+                                        run.id,
+                                    )
+                                self._cleanup_failures.add(run.id)
+                            else:
+                                if result.succeeded:
+                                    self._cleanup_failures.discard(run.id)
+                                elif run.id not in self._cleanup_failures:
+                                    logger.warning(
+                                        "Owner-process cleanup remains unconfirmed for Run %s: %s",
+                                        run.id,
+                                        result.failed_resource_types,
+                                    )
+                                    self._cleanup_failures.add(run.id)
+                        if len(runs) < 100:
+                            break
+                        after_created_at = runs[-1].created_at
+                        after_id = runs[-1].id
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not scan_unavailable:
+                    logger.exception("Owner-process cleanup reconciliation scan failed; retrying")
+                scan_unavailable = True
+            else:
+                if scan_unavailable:
+                    logger.info("Owner-process cleanup reconciliation scan recovered")
+                scan_unavailable = False
+            await asyncio.sleep(0.1)
 
     async def close(self) -> None:
+        cleanup_task = self._cleanup_reconciler_task
+        self._cleanup_reconciler_task = None
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
         if self.browser_manager is not None:
             await self.browser_manager.close_all()
         await self.terminal_supervisor.close_all()
         if self.process_supervisor is not None:
             await self.process_supervisor.close(cancel_running=True)
         await self.database.dispose()
-
-
-class UnavailableRunWorkflowClient:
-    """Keeps read-only API access available while Temporal is offline."""
-
-    def __init__(self, config: TemporalRuntimeConfig, reason: str) -> None:
-        self._config = config
-        self._reason = reason
-
-    async def start_run(self, run_id: str) -> object:
-        self._raise(run_id)
-
-    async def pause(self, run_id: str) -> None:
-        self._raise(run_id)
-
-    async def resume(self, run_id: str) -> None:
-        self._raise(run_id)
-
-    async def approve(self, run_id: str, call_id: str) -> None:
-        self._raise(run_id)
-
-    async def reject(self, run_id: str, call_id: str) -> None:
-        self._raise(run_id)
-
-    async def cancel_current_execution(self, run_id: str) -> None:
-        self._raise(run_id)
-
-    async def cancel(self, run_id: str) -> None:
-        self._raise(run_id)
-
-    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
-        self._raise(run_id)
-
-    async def switch_model(self, run_id: str, model_profile: str) -> None:
-        self._raise(run_id)
-
-    async def append_user_message(self, run_id: str, message: str) -> None:
-        self._raise(run_id)
-
-    def workflow_id(self, run_id: str) -> str:
-        return f"{self._config.workflow_id_prefix}-{run_id}"
-
-    def _raise(self, run_id: str) -> None:
-        raise ServiceUnavailableError(
-            "temporal_unavailable",
-            "Temporal is unavailable",
-            details={"run_id": run_id, "reason": self._reason},
-        )
 
 
 async def build_control_plane(settings: APISettings) -> ControlPlane:
@@ -226,21 +312,24 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
 
     registry = ToolRegistry(settings.tools_config_path, node_id=settings.node_id)
     tool_snapshot = await registry.refresh()
+    model_registry = ModelProfileRegistry(
+        settings.models_config_path,
+        settings.model_secrets_path,
+    )
+    await asyncio.to_thread(model_registry.refresh)
 
     temporal_config = TemporalRuntimeConfig(
         task_queue=settings.temporal_task_queue,
         workflow_id_prefix=settings.temporal_workflow_id_prefix,
     )
-    workflow_client: RunWorkflowClient
-    try:
-        temporal_client = await Client.connect(
-            settings.temporal_address,
-            namespace=settings.temporal_namespace,
-        )
-        workflow_client = TemporalRunClient(temporal_client, temporal_config)
-    except Exception as exc:
-        logger.warning("Temporal unavailable during API startup: %s", exc)
-        workflow_client = UnavailableRunWorkflowClient(temporal_config, str(exc))
+
+    # Do not make read/write Control Plane availability depend on Temporal at
+    # startup. Creating a Run only records its conversation context; the first
+    # message connects and starts/signals the durable Workflow atomically.
+    workflow_client: RunWorkflowClient = LazyTemporalRunClient(
+        _create_temporal_connector(settings),
+        temporal_config,
+    )
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
@@ -260,6 +349,12 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
+    model_profile_service = ModelProfileApplicationService(
+        model_registry,
+        run_repository=run_repository,
+        session_repository=agent_session_repository,
+        profile_override=settings.model_profile_override,
+    )
     node_service = NodeApplicationService(
         node_repository,
         offline_after=timedelta(seconds=settings.node_offline_after_seconds),
@@ -302,14 +397,33 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
     )
+    # Process and PTY work share one trusted containment root so durable
+    # identities resolve to the same kernel ownership namespace after restart.
+    containment_manager = LinuxCgroupV2Manager.autodetect(
+        payload_uid=settings.payload_uid,
+        payload_gid=settings.payload_gid,
+    )
+    process_executor = DirectProcessExecutor(
+        containment_manager=containment_manager,
+        autodetect_containment=False,
+        require_containment=settings.require_containment,
+        defer_activation=True,
+    )
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
         execution_repository=execution_repository,
         event_repository=event_repository,
         paths=runner_paths,
+        containment_manager=process_executor.containment_manager,
+        autodetect_containment=False,
+        require_containment=settings.require_containment,
     )
     await terminal_supervisor.recover(node_id=settings.node_id)
-    process_supervisor = ProcessSupervisor(execution_repository, runner_paths)
+    process_supervisor = ProcessSupervisor(
+        execution_repository,
+        runner_paths,
+        process_executor=process_executor,
+    )
     await process_supervisor.recover()
     remote_supervisor = RemoteExecutionSupervisor(
         execution_repository,
@@ -355,6 +469,26 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         event_repository=event_repository,
         paths=runner_paths,
     )
+    browser_service = BrowserApplicationService(
+        runs=run_repository,
+        agent_sessions=agent_session_repository,
+        repository=browser_repository,
+        runner=browser_router,
+        artifacts=artifact_service,
+        events=event_repository,
+    )
+    target_http_service = TargetHttpApplicationService(
+        runs=run_repository,
+        tool_calls=tool_call_intent_repository,
+        requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+        runner=NodeTargetHttpRouter(
+            local_node_id=settings.node_id,
+            local=RunnerTargetHttpClient(node_id=settings.node_id),
+            remote=RemoteTargetHttpClient(runner_control_service),
+        ),
+        artifacts=artifact_service,
+        events=event_repository,
+    )
 
     hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
     memory_writer = MemoryWriter(
@@ -370,9 +504,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         execution_repository=execution_repository,
         execution_runner=execution_runner,
         workspace_root=settings.workspace_root,
+        model_profiles=model_profile_service,
+        resource_stoppers={
+            "browser_sessions": browser_service,
+            "target_http_requests": target_http_service,
+        },
     )
 
-    return ControlPlane(
+    control_plane = ControlPlane(
         settings=settings,
         database=database,
         run_service=run_service,
@@ -405,6 +544,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             artifact_service=artifact_service,
         ),
         tool_service=ToolApplicationService(registry),
+        model_profile_service=model_profile_service,
         approval_service=ApprovalApplicationService(
             approval_repository=approval_repository,
             run_repository=run_repository,
@@ -425,38 +565,20 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             event_repository=event_repository,
             hooks=hooks,
         ),
-        browser_service=BrowserApplicationService(
-            runs=run_repository,
-            agent_sessions=agent_session_repository,
-            repository=browser_repository,
-            runner=browser_router,
-            artifacts=artifact_service,
-            events=event_repository,
-        ),
+        browser_service=browser_service,
         connector_service=ConnectorApplicationService(
             runs=run_service,
-            submissions=SQLAlchemyConnectorSubmissionRepository(
-                database.session_factory
-            ),
+            submissions=SQLAlchemyConnectorSubmissionRepository(database.session_factory),
             artifacts=artifact_service,
         ),
         terminal_supervisor=terminal_supervisor,
         browser_manager=browser_manager,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,
-        target_http_service=TargetHttpApplicationService(
-            runs=run_repository,
-            tool_calls=tool_call_intent_repository,
-            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
-            runner=NodeTargetHttpRouter(
-                local_node_id=settings.node_id,
-                local=RunnerTargetHttpClient(node_id=settings.node_id),
-                remote=RemoteTargetHttpClient(runner_control_service),
-            ),
-            artifacts=artifact_service,
-            events=event_repository,
-        ),
+        target_http_service=target_http_service,
     )
+    control_plane.start_cleanup_reconciler()
+    return control_plane
 
 
 def _prepare_local_paths(settings: APISettings) -> None:

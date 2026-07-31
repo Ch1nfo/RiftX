@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from riftx.domain import ExecutorType, ToolAvailability
 
-from .models import ToolDefinition
+from .models import ExecutionPolicy, ToolDefinition
 from .registry import ToolNotFoundError, ToolRegistry
 
 RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
@@ -114,6 +114,7 @@ class ToolSelection(BaseModel):
 class ToolVisibilitySnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    execution_policy: ExecutionPolicy
     available_tools: list[dict[str, object]] = Field(default_factory=list)
     always_visible_tools: list[str] = Field(default_factory=list)
     dynamically_loaded_tools: list[str] = Field(default_factory=list)
@@ -143,9 +144,7 @@ class DynamicToolIndex:
         self._ensure_current()
         entries = self._entries.values()
         if not include_unavailable:
-            entries = (
-                item for item in entries if item.availability is ToolAvailability.AVAILABLE
-            )
+            entries = (item for item in entries if item.availability is ToolAvailability.AVAILABLE)
         return sorted(entries, key=lambda item: item.id)
 
     def get(self, tool_id: str) -> ToolIndexEntry:
@@ -261,6 +260,18 @@ class ToolContextManager:
         self.resident_tool_ids = resident_tool_ids
         self._sets: dict[tuple[str, str, str], _ScopedToolSet] = {}
 
+    @property
+    def execution_policy(self) -> ExecutionPolicy:
+        return self.registry.config.execution_policy
+
+    @property
+    def visible_resident_tool_ids(self) -> tuple[str, ...]:
+        """Return resident tools authorized by the current Registry policy."""
+
+        if self.execution_policy is ExecutionPolicy.OPEN:
+            return self.resident_tool_ids
+        return tuple(tool_id for tool_id in self.resident_tool_ids if tool_id != "run_shell")
+
     def search_tools(
         self,
         *,
@@ -277,6 +288,25 @@ class ToolContextManager:
 
     def list_tools(self, *, include_unavailable: bool = True) -> list[ToolIndexEntry]:
         return self.index.list(include_unavailable=include_unavailable)
+
+    def list_tools_for_scope(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+        include_unavailable: bool = True,
+        max_results: int = 100,
+    ) -> list[ToolIndexEntry]:
+        """List bounded Tool metadata without leaking outside an Agent allowlist."""
+
+        if max_results < 1 or max_results > 100:
+            raise ValueError("max_results must be between 1 and 100")
+        scope = self._scope(run_id, session_id, agent_id)
+        entries = self.index.list(include_unavailable=include_unavailable)
+        if scope.allowed is not None:
+            entries = [entry for entry in entries if entry.id in scope.allowed]
+        return entries[:max_results]
 
     def get_tool(
         self,
@@ -340,7 +370,7 @@ class ToolContextManager:
         """Apply an explicit registered-Tool allowlist to one isolated agent scope."""
 
         allowed = set(tool_ids)
-        residents = set(self.resident_tool_ids)
+        residents = set(self.visible_resident_tool_ids)
         for tool_id in allowed - residents:
             self.index.schema(tool_id, require_available=True)
         scope = self._scope(run_id, session_id, agent_id)
@@ -362,6 +392,26 @@ class ToolContextManager:
             agent_id=agent_id,
         )
 
+    def assert_selected(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+    ) -> None:
+        """Require an available registered Tool to have been explicitly loaded."""
+
+        self._require_allowed(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+        if tool_id not in self._scope(run_id, session_id, agent_id).selected:
+            raise ToolNotFoundError(tool_id)
+        self.index.schema(tool_id, require_available=True)
+
     def visibility(
         self,
         *,
@@ -371,13 +421,16 @@ class ToolContextManager:
     ) -> ToolVisibilitySnapshot:
         scope = self._scope(run_id, session_id, agent_id)
         snapshot = self.registry.snapshot
+        execution_policy = self.execution_policy
         resident = [
             tool_id
-            for tool_id in dict.fromkeys(self.resident_tool_ids)
+            for tool_id in dict.fromkeys(self.visible_resident_tool_ids)
             if scope.allowed is None or tool_id in scope.allowed
         ]
         selected: list[str] = []
-        schemas = [_resident_schema(tool_id) for tool_id in resident]
+        schemas = [
+            _resident_schema(tool_id, execution_policy=execution_policy) for tool_id in resident
+        ]
         for tool_id in sorted(scope.selected):
             definition = snapshot.definitions.get(tool_id)
             state = snapshot.states.get(tool_id)
@@ -407,6 +460,7 @@ class ToolContextManager:
             and tool_id not in resident_set
         )
         return ToolVisibilitySnapshot(
+            execution_policy=execution_policy,
             available_tools=schemas,
             always_visible_tools=resident,
             dynamically_loaded_tools=selected,
@@ -426,6 +480,8 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> None:
+        if tool_id == "run_shell" and self.execution_policy is not ExecutionPolicy.OPEN:
+            raise ToolNotFoundError(tool_id)
         allowed = self._scope(run_id, session_id, agent_id).allowed
         if allowed is not None and tool_id not in allowed:
             raise ToolNotFoundError(tool_id)
@@ -477,7 +533,11 @@ def _function_schema(definition: ToolDefinition) -> dict[str, object]:
     }
 
 
-def _resident_schema(tool_id: str) -> dict[str, object]:
+def _resident_schema(
+    tool_id: str,
+    *,
+    execution_policy: ExecutionPolicy,
+) -> dict[str, object]:
     descriptions = {
         "search_tools": "Search the node Tool Index by task language or capability.",
         "list_tools": "List lightweight Tool Index entries without loading schemas.",
@@ -497,11 +557,30 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
         properties = {
             "query": {"type": "string"},
             "capability": {"type": ["string", "null"]},
-            "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+            "include_unavailable": {"type": "boolean"},
         }
         required = ["query"]
-    elif tool_id in {"get_tool", "run_registered_tool"}:
+    elif tool_id == "list_tools":
+        properties = {
+            "include_unavailable": {"type": "boolean"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
+    elif tool_id == "get_tool":
         properties = {"tool_id": {"type": "string"}}
+        required = ["tool_id"]
+    elif tool_id == "run_registered_tool":
+        properties = {
+            "tool_id": {"type": "string"},
+            "args": {"type": "array", "items": {"type": "string"}},
+            "cwd": {"type": ["string", "null"]},
+            "environment": {
+                "type": "object",
+                "additionalProperties": {"type": ["string", "null"]},
+            },
+            "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+            "reason": {"type": "string"},
+        }
         required = ["tool_id"]
     elif tool_id == "run_shell":
         properties = {
@@ -518,11 +597,39 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
             "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
         }
         required = ["script"]
-    elif tool_id in {"get_execution", "wait_execution", "cancel_execution"}:
+    elif tool_id == "get_execution":
         properties = {"execution_id": {"type": "string"}}
         required = ["execution_id"]
+    elif tool_id == "wait_execution":
+        properties = {
+            "execution_id": {"type": "string"},
+            "timeout_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 30,
+            },
+            "stdout_cursor": {"type": "integer", "minimum": 0},
+            "stderr_cursor": {"type": "integer", "minimum": 0},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+            "next_poll_after_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600,
+            },
+        }
+        required = ["execution_id"]
+    elif tool_id == "cancel_execution":
+        properties = {
+            "execution_id": {"type": "string"},
+            "reason": {"type": ["string", "null"], "maxLength": 1000},
+        }
+        required = ["execution_id"]
     elif tool_id == "read_artifact":
-        properties = {"artifact_id": {"type": "string"}}
+        properties = {
+            "artifact_id": {"type": "string"},
+            "offset": {"type": "integer", "minimum": 0},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        }
         required = ["artifact_id"]
     elif tool_id == "delegate":
         properties = {
@@ -554,6 +661,15 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
             "relevant_scope",
             "workspace",
         ]
+    elif tool_id == "complete_run":
+        properties = {
+            "run_summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16_384,
+            }
+        }
+        required = ["run_summary"]
     return {
         "type": "function",
         "name": tool_id,
@@ -562,9 +678,12 @@ def _resident_schema(tool_id: str) -> dict[str, object]:
             "type": "object",
             "properties": properties,
             "required": required,
-            "additionalProperties": tool_id != "run_shell",
+            "additionalProperties": False,
         },
-        "x-riftx": {"resident": True},
+        "x-riftx": {
+            "resident": True,
+            "execution_policy": execution_policy.value,
+        },
     }
 
 

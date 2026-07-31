@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -56,7 +57,20 @@ class ConcurrentInspector(ProcessInspector):
             self.active -= 1
 
 
-async def build_database(tmp_path: Path) -> tuple[
+class BlockingMissingInspector(ProcessInspector):
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def matches(self, execution: Execution) -> bool:
+        self.entered.set()
+        await self.release.wait()
+        return False
+
+
+async def build_database(
+    tmp_path: Path,
+) -> tuple[
     Database,
     SQLAlchemyExecutionRepository,
     SQLAlchemyNodeRepository,
@@ -121,7 +135,8 @@ async def test_runner_restart_reassociates_matching_live_process(tmp_path: Path)
             3131: ProcessIdentity(
                 pid=3131,
                 created_at=execution.process_created_at,
-                command=" ".join(execution.argv),
+                command=shlex.join(execution.argv),
+                process_group_id=3131,
             )
         }
     )
@@ -149,6 +164,7 @@ async def test_reused_pid_with_different_creation_time_becomes_lost(tmp_path: Pa
                 pid=4242,
                 created_at=execution.process_created_at + timedelta(minutes=1),
                 command=" ".join(execution.argv),
+                process_group_id=4242,
             )
         }
     )
@@ -179,6 +195,40 @@ async def test_missing_process_becomes_lost(tmp_path: Path) -> None:
     ).reconcile_execution(execution.id)
 
     assert reconciled.status is ExecutionStatus.LOST
+    await database.dispose()
+
+
+async def test_late_missing_verdict_does_not_overwrite_cancelled_execution(
+    tmp_path: Path,
+) -> None:
+    database, executions, nodes, _ = await build_database(tmp_path)
+    execution = running_execution(tmp_path, "cancel-wins", pid=5353)
+    await executions.create_if_absent(execution)
+    inspector = BlockingMissingInspector()
+    reconciler = ExecutionReconciler(
+        execution_repository=executions,
+        local_node_id="local",
+        process_inspector=inspector,
+        node_repository=nodes,
+    )
+
+    pending = asyncio.create_task(reconciler.reconcile_execution(execution.id))
+    await inspector.entered.wait()
+    current = await executions.get(execution.id)
+    assert current is not None
+    current.transition_to(ExecutionStatus.CANCELLED)
+    current, saved = await executions.save_if_status(
+        current,
+        expected={ExecutionStatus.RUNNING},
+    )
+    assert saved is True
+    inspector.release.set()
+
+    reconciled = await pending
+    assert reconciled.status is ExecutionStatus.CANCELLED
+    persisted = await executions.get(execution.id)
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
     await database.dispose()
 
 
@@ -276,6 +326,7 @@ async def test_native_pty_recovery_is_explicitly_deferred(tmp_path: Path) -> Non
     assert inspector.calls == []
     await database.dispose()
 
+
 async def test_reused_pid_with_different_command_becomes_lost(tmp_path: Path) -> None:
     database, executions, nodes, _ = await build_database(tmp_path)
     execution = running_execution(tmp_path, "wrong-command", pid=4343)
@@ -286,6 +337,7 @@ async def test_reused_pid_with_different_command_becomes_lost(tmp_path: Path) ->
                 pid=4343,
                 created_at=execution.process_created_at,
                 command="/usr/bin/other-tool --different-command",
+                process_group_id=4343,
             )
         }
     )

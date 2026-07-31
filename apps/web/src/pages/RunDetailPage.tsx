@@ -18,6 +18,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   Save,
   Send,
   ShieldAlert,
@@ -26,11 +27,11 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
-import { api } from "../api/client";
+import { api, RiftXAPIError } from "../api/client";
 import type {
   Approval,
   Artifact,
@@ -38,6 +39,7 @@ import type {
   Finding,
   FindingEvidence,
   Report,
+  Run,
   RunEvent,
 } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
@@ -61,18 +63,104 @@ import {
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
 import { useI18n, type Language } from "../i18n";
-import { coalesceTimelineEvents } from "./runTimeline";
+import {
+  reduceRunEvents,
+  type ConversationMessage,
+  type TimelineItem,
+} from "./runStreamReducer";
 
 type DetailTab =
   | "overview"
   | "agent"
   | "tool-calls"
   | "timeline"
+  | "raw-events"
   | "approvals"
   | "terminal"
   | "artifacts"
   | "findings"
   | "report";
+
+type MessageRetry = {
+  message: string;
+  eventId: string;
+};
+
+type MessageDraft = {
+  runId: string;
+  message: string;
+  retry: MessageRetry | null;
+};
+
+type MessageSubmissionToken = MessageRetry & {
+  runId: string;
+};
+
+const MESSAGE_RETRY_STORAGE_PREFIX = "riftx.run-message-retry:";
+
+function messageRetryStorageKey(runId: string) {
+  return `${MESSAGE_RETRY_STORAGE_PREFIX}${runId}`;
+}
+
+function readMessageRetry(runId: string): MessageRetry | null {
+  if (!runId || typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(messageRetryStorageKey(runId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<MessageRetry>;
+    if (
+      typeof value.message !== "string" ||
+      !value.message.trim() ||
+      typeof value.eventId !== "string" ||
+      !value.eventId
+    ) {
+      window.sessionStorage.removeItem(messageRetryStorageKey(runId));
+      return null;
+    }
+    return { message: value.message, eventId: value.eventId };
+  } catch {
+    // Storage can be unavailable in hardened/private browser contexts. Memory
+    // retry still works for the current mount, and malformed data is ignored.
+    return null;
+  }
+}
+
+function writeMessageRetry(runId: string, retry: MessageRetry | null) {
+  if (!runId || typeof window === "undefined") return;
+  try {
+    const key = messageRetryStorageKey(runId);
+    if (retry) {
+      window.sessionStorage.setItem(key, JSON.stringify(retry));
+    } else {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // See readMessageRetry: storage durability is a defense in depth, not a
+    // prerequisite for sending a message in restricted browser contexts.
+  }
+}
+
+function messageRetriesMatch(left: MessageRetry | null, right: MessageRetry) {
+  return left?.message === right.message && left.eventId === right.eventId;
+}
+
+function replaceMessageRetryIfMatches(
+  runId: string,
+  expected: MessageRetry,
+  replacement: MessageRetry | null,
+) {
+  if (!messageRetriesMatch(readMessageRetry(runId), expected)) return;
+  writeMessageRetry(runId, replacement);
+}
+
+function messageDraftForRun(runId: string): MessageDraft {
+  const retry = readMessageRetry(runId);
+  return {
+    runId,
+    message: retry?.message ?? "",
+    retry,
+  };
+}
 
 export function RunDetailPage() {
   const { language, t } = useI18n();
@@ -89,11 +177,31 @@ export function RunDetailPage() {
   const findingControls = useFindingControl(runId);
   const reportControls = useReportControl(runId);
   const controls = useRunControl(runId);
-  const [tab, setTab] = useState<DetailTab>("timeline");
-  const [message, setMessage] = useState("");
+  const [tab, setTab] = useState<DetailTab>("agent");
+  const [messageDraft, setMessageDraft] = useState<MessageDraft>(() =>
+    messageDraftForRun(runId),
+  );
+  const currentRunIdRef = useRef(runId);
+  const activeMessageSubmissionRef = useRef<MessageSubmissionToken | null>(null);
+  currentRunIdRef.current = runId;
   useEventStream(runId, events.isSuccess);
 
+  useEffect(() => {
+    setMessageDraft((current) =>
+      current.runId === runId ? current : messageDraftForRun(runId),
+    );
+  }, [runId]);
+
+  // Route parameters update one render before the effect above restores that
+  // Run's draft. Never expose the previous Run's draft to the new Run's form
+  // during that transition.
+  const currentMessageDraft =
+    messageDraft.runId === runId
+      ? messageDraft
+      : { runId, message: "", retry: null };
+
   const eventItems = events.data?.items ?? [];
+  const eventProjection = reduceRunEvents(eventItems);
   const planEvent = [...eventItems]
     .reverse()
     .find((event) => event.event_type === "agent.plan_updated");
@@ -107,13 +215,99 @@ export function RunDetailPage() {
   const terminalSessionId = terminalEvent?.payload.session_id as string | undefined;
   const pendingApprovals =
     approvals.data?.items.filter((approval) => approval.status === "pending") ?? [];
+  const approvalToResync = findApprovalToResync(
+    run.data?.status,
+    eventItems,
+    approvals.data?.items ?? [],
+  );
 
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalized = message.trim();
+    // The component is retained when navigating between /runs/:runId routes.
+    // Refuse a submit from the transition render until this Run owns the
+    // composer state; otherwise Run A's retry could be sent through Run B's
+    // mutation hook before the restoration effect runs.
+    if (messageDraft.runId !== runId) return;
+    const normalized = messageDraft.message.trim();
     if (!normalized) return;
-    await controls.message.mutateAsync(normalized);
-    setMessage("");
+    const messageEventId =
+      messageDraft.retry?.message === normalized
+        ? messageDraft.retry.eventId
+        : globalThis.crypto.randomUUID();
+    const submission: MessageSubmissionToken = {
+      runId,
+      message: normalized,
+      eventId: messageEventId,
+    };
+    activeMessageSubmissionRef.current = submission;
+    // Persist the client-generated UUID before awaiting the network. Even if
+    // the HTTP response itself is lost, the next unchanged submit reuses the
+    // same database/Workflow idempotency key.
+    const pendingRetry = { message: normalized, eventId: messageEventId };
+    setMessageDraft((current) =>
+      current.runId === submission.runId && current.message.trim() === normalized
+        ? { ...current, retry: pendingRetry }
+        : current,
+    );
+    // Keep the same idempotency key across a refresh after an ambiguous HTTP /
+    // Temporal outcome. Session storage is scoped to this browser tab and is
+    // cleared as soon as the server confirms delivery.
+    writeMessageRetry(runId, pendingRetry);
+    try {
+      await controls.message.mutateAsync({
+        message: normalized,
+        messageEventId,
+      });
+      // A later retry/edit may already own this Run's storage slot. Clear only
+      // the exact operation the server confirmed, never whichever entry happens
+      // to be current when this promise settles.
+      replaceMessageRetryIfMatches(submission.runId, pendingRetry, null);
+      if (
+        activeMessageSubmissionRef.current === submission &&
+        currentRunIdRef.current === submission.runId
+      ) {
+        activeMessageSubmissionRef.current = null;
+        setMessageDraft((current) =>
+          current.runId === submission.runId &&
+          current.message.trim() === submission.message &&
+          messageRetriesMatch(current.retry, pendingRetry)
+            ? { ...current, message: "", retry: null }
+            : current,
+        );
+      }
+    } catch (error) {
+      // The mutation exposes its structured API error above the conversation.
+      // Keep both the draft and its persisted event ID. Retrying that exact ID
+      // is safe even when Temporal accepted the first request but its response
+      // was lost, because the Workflow de-duplicates message event IDs.
+      if (
+        error instanceof RiftXAPIError &&
+        !Array.isArray(error.details) &&
+        error.details.retry_same_message === true &&
+        typeof error.details.message_event_id === "string"
+      ) {
+        const retry = {
+          message: normalized,
+          eventId: error.details.message_event_id,
+        };
+        replaceMessageRetryIfMatches(submission.runId, pendingRetry, retry);
+        if (
+          activeMessageSubmissionRef.current === submission &&
+          currentRunIdRef.current === submission.runId
+        ) {
+          setMessageDraft((current) =>
+            current.runId === submission.runId &&
+            current.message.trim() === submission.message &&
+            messageRetriesMatch(current.retry, pendingRetry)
+              ? { ...current, retry }
+              : current,
+          );
+        }
+      }
+      if (activeMessageSubmissionRef.current === submission) {
+        activeMessageSubmissionRef.current = null;
+      }
+    }
   }
 
   if (run.isLoading) return <LoadingState label="Loading durable run" />;
@@ -161,7 +355,7 @@ export function RunDetailPage() {
           </button>
           <button
             className="danger-button"
-            disabled={isFinal || anyControlPending}
+            disabled={anyControlPending}
             onClick={() => controls.emergencyStop.mutate()}
             title={t("Emergency stop — cancel the entire Run")}
             aria-label={t("Emergency stop — cancel the entire Run")}
@@ -171,12 +365,16 @@ export function RunDetailPage() {
         </div>
       </div>
 
-      {controls.pause.error || controls.resume.error || controls.emergencyStop.error ? (
+      {controls.pause.error ||
+      controls.resume.error ||
+      controls.emergencyStop.error ||
+      controls.message.error ? (
         <ErrorState
           error={
             controls.pause.error ??
             controls.resume.error ??
             controls.emergencyStop.error ??
+            controls.message.error ??
             new Error()
           }
         />
@@ -198,15 +396,67 @@ export function RunDetailPage() {
         </button>
       ) : null}
 
+      {approvalToResync ? (
+        <>
+          <section className="approval-alert approval-resync-alert" role="alert">
+            <ShieldAlert size={19} />
+            <span>
+              <strong>
+                {t("A saved {decision} decision still needs workflow synchronization", {
+                  decision: t(approvalToResync.status),
+                })}
+              </strong>
+              {t(
+                "The Run is still waiting for this approval. Re-send the immutable saved decision to the durable workflow.",
+              )}
+            </span>
+            <button
+              className="primary-button"
+              disabled={
+                approvalControls.approve.isPending || approvalControls.reject.isPending
+              }
+              onClick={() => {
+                if (approvalToResync.status === "approved") {
+                  approvalControls.approve.mutate({
+                    approvalId: approvalToResync.id,
+                  });
+                } else {
+                  approvalControls.reject.mutate({
+                    approvalId: approvalToResync.id,
+                  });
+                }
+              }}
+            >
+              {approvalControls.approve.isPending || approvalControls.reject.isPending ? (
+                <Loader2 className="spin" size={15} />
+              ) : (
+                <RefreshCw size={15} />
+              )}
+              {t("Resync saved decision")}
+            </button>
+          </section>
+          {approvalControls.approve.error || approvalControls.reject.error ? (
+            <ErrorState
+              error={
+                approvalControls.approve.error ??
+                approvalControls.reject.error ??
+                new Error()
+              }
+            />
+          ) : null}
+        </>
+      ) : null}
+
       <div className="detail-layout">
         <section className="detail-main panel">
           <div className="detail-tabs" role="tablist">
             {(
               [
                 ["overview", t("Overview")],
-                ["agent", "Agent"],
+                ["agent", t("Conversation")],
                 ["tool-calls", `${t("Tool Calls")} ${executions.data?.items.length ?? 0}`],
-                ["timeline", `${t("Timeline")} ${eventItems.length}`],
+                ["timeline", `${t("Timeline")} ${eventProjection.highLevelTimeline.length}`],
+                ["raw-events", `${t("Raw events")} ${eventProjection.rawEvents.length}`],
                 ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
                 ["terminal", t("Terminal")],
                 ["artifacts", `${t("Artifacts")} ${artifacts.data?.items.length ?? 0}`],
@@ -235,12 +485,21 @@ export function RunDetailPage() {
               />
             ) : null}
             {tab === "agent" ? (
-              <AgentActivity events={eventItems} loading={events.isLoading} />
+              <AgentConversation
+                run={run.data}
+                messages={eventProjection.conversationMessages}
+                loading={events.isLoading}
+              />
             ) : null}
             {tab === "tool-calls" ? (
               <ToolCalls executions={executions.data?.items ?? []} loading={executions.isLoading} />
             ) : null}
-            {tab === "timeline" ? <Timeline events={eventItems} loading={events.isLoading} /> : null}
+            {tab === "timeline" ? (
+              <Timeline items={eventProjection.highLevelTimeline} loading={events.isLoading} />
+            ) : null}
+            {tab === "raw-events" ? (
+              <RawEvents events={eventProjection.rawEvents} loading={events.isLoading} />
+            ) : null}
             {tab === "approvals" ? (
               <Approvals
                 approvals={approvals.data?.items ?? []}
@@ -276,19 +535,41 @@ export function RunDetailPage() {
             ) : null}
           </div>
 
-          {!isFinal ? (
+          {!isFinal && tab === "agent" ? (
             <form className="message-composer" onSubmit={(event) => void submitMessage(event)}>
               <MessageSquareText size={18} />
               <input
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder={t("Send guidance to the durable Agent session…")}
+                value={currentMessageDraft.message}
+                onChange={(event) => {
+                  const nextMessage = event.target.value;
+                  // Once the user edits, an older response is no longer allowed
+                  // to clear or restore this draft.
+                  activeMessageSubmissionRef.current = null;
+                  setMessageDraft((current) => {
+                    const retry =
+                      current.runId === runId ? current.retry : readMessageRetry(runId);
+                    const keepRetry = retry?.message === nextMessage.trim();
+                    if (retry && !keepRetry) {
+                      replaceMessageRetryIfMatches(runId, retry, null);
+                    }
+                    return {
+                      runId,
+                      message: nextMessage,
+                      retry: keepRetry ? retry : null,
+                    };
+                  });
+                }}
+                placeholder={t(
+                  run.data.started_at
+                    ? "Send guidance to the durable Agent session…"
+                    : "Tell the Agent what to do first…",
+                )}
                 aria-label={t("Message to Agent")}
               />
               <button
                 className="composer-send"
                 type="submit"
-                disabled={!message.trim() || controls.message.isPending}
+                disabled={!currentMessageDraft.message.trim() || controls.message.isPending}
                 aria-label={t("Send message")}
               >
                 {controls.message.isPending ? (
@@ -324,8 +605,10 @@ export function RunDetailPage() {
               </div>
               <div>
                 <dt>{t("Workflow")}</dt>
-                <dd title={run.data.temporal_workflow_id ?? ""}>
-                  {run.data.temporal_workflow_id ?? t("Not started")}
+                <dd title={run.data.started_at ? (run.data.temporal_workflow_id ?? "") : ""}>
+                  {run.data.started_at
+                    ? (run.data.temporal_workflow_id ?? t("Not started"))
+                    : t("Not started")}
                 </dd>
               </div>
             </dl>
@@ -371,19 +654,106 @@ export function RunDetailPage() {
   );
 }
 
-function AgentActivity({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+function AgentConversation({
+  run,
+  messages,
+  loading,
+}: {
+  run: Run;
+  messages: ConversationMessage[];
+  loading: boolean;
+}) {
   const { t } = useI18n();
-  const agentEvents = events.filter(
-    (event) => event.event_type.startsWith("agent.") || event.event_type === "user.message_queued",
+  const positiveScope = [
+    ...run.scope.cidrs,
+    ...run.scope.ips,
+    ...run.scope.domains,
+    ...run.scope.url_prefixes,
+  ];
+  const entryPoints = run.entry_points ?? [];
+
+  return (
+    <div className="conversation-view">
+      <section
+        className="conversation-context"
+        aria-label={t("Objective and authorized boundary")}
+      >
+        <div className="conversation-context-heading">
+          <span className="conversation-avatar system-avatar"><ShieldAlert size={18} /></span>
+          <div>
+            <span className="panel-kicker">{t("Task context")}</span>
+            <h3>{t("Objective and authorized boundary")}</h3>
+          </div>
+        </div>
+        <p className="conversation-objective">{run.objective.description}</p>
+        <div className="conversation-boundary-grid">
+          <div>
+            <strong>{t("Entry points")}</strong>
+            <div className="conversation-chips">
+              {entryPoints.length ? entryPoints.map((entry) => (
+                <span className="mono-chip" key={`${entry.kind}:${entry.value}`}>
+                  {entry.kind}={entry.value}
+                </span>
+              )) : <span className="muted-caption">{t("No entry points")}</span>}
+            </div>
+          </div>
+          <div>
+            <strong>{t("Authorized scope")}</strong>
+            <div className="conversation-chips">
+              {positiveScope.length ? positiveScope.map((item) => (
+                <span className="mono-chip" key={item}>{item}</span>
+              )) : <span className="muted-caption">{t("No explicit scope values")}</span>}
+            </div>
+          </div>
+          {run.scope.exclusions.length ? (
+            <div className="conversation-exclusions">
+              <strong>{t("Exclusions")}</strong>
+              <div className="conversation-chips">
+                {run.scope.exclusions.map((item) => <span key={item}>{item}</span>)}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        {!run.started_at ? (
+          <div className="conversation-waiting">
+            <Clock3 size={17} />
+            <div>
+              <strong>{t("Waiting for your first instruction")}</strong>
+              <span>{t("No model or tool action will start until you send a specific instruction below.")}</span>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      {loading ? <LoadingState label="Loading conversation" /> : null}
+      {!loading && !messages.length ? (
+        <div className="conversation-empty">
+          <Bot size={21} />
+          <div>
+            <strong>{t("What should I do first?")}</strong>
+            <span>{t("For example: review the scope, inspect one endpoint, or propose a plan without executing tools.")}</span>
+          </div>
+        </div>
+      ) : null}
+      {messages.length ? (
+        <div className="conversation-messages">
+          {messages.map((item) => (
+            <article className={`conversation-message ${item.role}`} key={item.key}>
+              <span className="conversation-avatar">
+                {item.role === "user" ? <MessageSquareText size={17} /> : <Bot size={17} />}
+              </span>
+              <div className="conversation-bubble">
+                <span className="conversation-role">
+                  {item.role === "user" ? t("You") : t("Agent")}
+                </span>
+                <div className="event-markdown"><ReactMarkdown>{item.content}</ReactMarkdown></div>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
-  if (!loading && !agentEvents.length) {
-    return (
-      <EmptyState icon={Bot} title="No Agent activity yet">
-        {t("Plans, messages, tool decisions, and cycle transitions will appear here.")}
-      </EmptyState>
-    );
-  }
-  return <Timeline events={agentEvents} loading={loading} />;
 }
 
 function ToolCalls({ executions, loading }: { executions: Execution[]; loading: boolean }) {
@@ -427,6 +797,15 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
                 {execution.exit_code !== null ? (
                   <small className="tool-reason">{t("exit")} {execution.exit_code}</small>
                 ) : null}
+                {execution.physical_stop_confirmed_at ? (
+                  <small className="tool-reason execution-stop-proof confirmed">
+                    <CheckCircle2 size={13} /> {t("Stop confirmed")}
+                  </small>
+                ) : executionNeedsStopProof(execution) ? (
+                  <small className="tool-reason execution-stop-proof unconfirmed">
+                    <ShieldAlert size={13} /> {t("Stop unconfirmed")}
+                  </small>
+                ) : null}
               </td>
               <td>
                 <strong>{execution.node_id}</strong>
@@ -447,10 +826,9 @@ function ToolCalls({ executions, loading }: { executions: Execution[]; loading: 
   );
 }
 
-function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+function Timeline({ items, loading }: { items: TimelineItem[]; loading: boolean }) {
   const { language, t } = useI18n();
   if (loading) return <LoadingState label="Loading event timeline" />;
-  const items = coalesceTimelineEvents(events);
   if (!items.length) {
     return (
       <EmptyState icon={Clock3} title="Timeline is empty">
@@ -462,11 +840,7 @@ function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean })
     <div className="timeline">
       {items.map((item) => {
         const eventType =
-          item.kind === "event"
-            ? item.event.event_type
-            : item.streamType === "assistant"
-              ? "agent.assistant_stream"
-              : "tool.argument_stream";
+          item.kind === "event" ? item.event.event_type : "agent.assistant_stream";
         return (
           <article className="timeline-event" key={item.key}>
             <div className="timeline-rail">
@@ -483,28 +857,54 @@ function Timeline({ events, loading }: { events: RunEvent[]; loading: boolean })
                   <strong>
                     {item.kind === "event"
                       ? t(eventTitle(item.event.event_type))
-                      : t(
-                          item.streamType === "assistant"
-                            ? "Agent response"
-                            : "Tool call arguments",
-                        )}
+                      : t("Agent response")}
                   </strong>
                 </div>
                 <time>{formatTimestamp(item.createdAt, language)}</time>
               </div>
               {item.kind === "event" ? (
                 <EventPayload event={item.event} />
-              ) : item.streamType === "assistant" ? (
+              ) : (
                 <div className="event-markdown">
                   <ReactMarkdown>{item.content}</ReactMarkdown>
                 </div>
-              ) : (
-                <pre className="event-json">{formatJsonLike(item.content)}</pre>
               )}
             </div>
           </article>
         );
       })}
+    </div>
+  );
+}
+
+function RawEvents({ events, loading }: { events: RunEvent[]; loading: boolean }) {
+  const { t } = useI18n();
+  if (loading) return <LoadingState label="Loading raw events" />;
+  const visible = events.slice(-200);
+  if (!visible.length) {
+    return (
+      <EmptyState icon={Archive} title="No raw events yet">
+        {t("Durable audit events will appear here.")}
+      </EmptyState>
+    );
+  }
+  const items: TimelineItem[] = visible.map((event) => ({
+    kind: "event",
+    key: `raw:${event.id}`,
+    event,
+    startSequence: event.sequence,
+    endSequence: event.sequence,
+    createdAt: event.created_at,
+  }));
+  return (
+    <div className="raw-events-view">
+      <p className="muted-caption">
+        {t("Showing the latest {visible} of {total} durable events.", {
+          visible: visible.length,
+          total: events.length,
+        })}
+      </p>
+      <Timeline items={items} loading={false} />
     </div>
   );
 }
@@ -528,6 +928,25 @@ function EventPayload({ event }: { event: RunEvent }) {
     return <p className="muted-caption">{t("No additional payload.")}</p>;
   }
   return <pre className="event-json">{JSON.stringify(event.payload, null, 2)}</pre>;
+}
+
+export function findApprovalToResync(
+  runStatus: Run["status"] | undefined,
+  events: RunEvent[],
+  approvals: Approval[],
+): Approval | null {
+  if (runStatus !== "waiting_approval") return null;
+  const latestYield = events.reduce<RunEvent | undefined>((latest, event) => {
+    if (event.event_type !== "runtime.cycle_yielded") return latest;
+    return !latest || event.sequence > latest.sequence ? event : latest;
+  }, undefined);
+  if (latestYield?.payload.yield_reason !== "approval_required") return null;
+  const waitingObjectId = latestYield.payload.waiting_object_id;
+  if (typeof waitingObjectId !== "string" || !waitingObjectId) return null;
+  const approval = approvals.find((item) => item.id === waitingObjectId);
+  return approval?.status === "approved" || approval?.status === "rejected"
+    ? approval
+    : null;
 }
 
 function RunOverview({
@@ -1287,14 +1706,6 @@ function formatSequenceRange(start: number, end: number) {
   return start === end ? `#${start}` : `#${start}–#${end}`;
 }
 
-function formatJsonLike(value: string) {
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
-}
-
 function formatTimestamp(value: string, language: Language = "en") {
   return new Intl.DateTimeFormat(language, {
     month: "short",
@@ -1315,6 +1726,10 @@ function executionDuration(execution: Execution) {
   if (milliseconds < 1000) return `${milliseconds}ms`;
   if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)}s`;
   return `${(milliseconds / 60_000).toFixed(1)}m`;
+}
+
+function executionNeedsStopProof(execution: Execution) {
+  return ["completed", "exited", "cancelled", "hard_timeout"].includes(execution.status);
 }
 
 function formatBytes(value: number) {

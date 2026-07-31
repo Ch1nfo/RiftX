@@ -30,6 +30,9 @@ def test_translation_interpolates_values_and_falls_back() -> None:
     assert tr("Tools on {node} (generation {generation})", node="local", generation=2) == (
         "节点 local 上的工具（代次 2）"
     )
+    assert tr("Resource type") == "资源类型"
+    assert tr("Browser session") == "浏览器会话"
+    assert tr("Target HTTP request") == "目标 HTTP 请求"
     assert tr("Untranslated source") == "Untranslated source"
 
 

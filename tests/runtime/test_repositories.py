@@ -204,3 +204,68 @@ async def test_run_lease_uses_optimistic_versioning(tmp_path: Path) -> None:
     await leases.release("run-1", owner_id="worker-1", expected_version=2)
     assert await leases.get("run-1") is None
     await database.dispose()
+
+
+async def test_tool_intent_run_enumeration_and_status_cas_are_terminal_wins(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'intent-stop.db'}")
+    await database.create_schema()
+    await create_run(database)
+    await SQLAlchemyAgentSessionRepository(database.session_factory).create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    await SQLAlchemyAgentCycleRepository(database.session_factory).create(
+        AgentCycle(id="cycle-1", run_id="run-1", session_id="session-1", sequence=1)
+    )
+    await SQLAlchemyAgentStepRepository(database.session_factory).create(
+        AgentStep(
+            id="step-1",
+            cycle_id="cycle-1",
+            sequence=1,
+            step_type=AgentStepType.TOOL_PROPOSAL,
+        )
+    )
+    intents = SQLAlchemyToolCallIntentRepository(database.session_factory)
+    try:
+        for intent_id, tool_id, status in [
+            ("ready-http", "request_target_url", ToolCallStatus.READY),
+            ("executing-http", "request_target_url", ToolCallStatus.EXECUTING),
+            ("completed-http", "request_target_url", ToolCallStatus.COMPLETED),
+            ("ready-shell", "run_shell", ToolCallStatus.READY),
+        ]:
+            await intents.create(
+                ToolCallIntent(
+                    id=intent_id,
+                    run_id="run-1",
+                    session_id="session-1",
+                    cycle_id="cycle-1",
+                    step_id="step-1",
+                    tool_id=tool_id,
+                    status=status,
+                )
+            )
+
+        active = await intents.active_for_run(
+            "run-1",
+            tool_ids={"request_target_url"},
+        )
+        assert {item.id for item in active} == {"ready-http", "executing-http"}
+
+        cancelled, changed = await intents.compare_and_set_status(
+            "ready-http",
+            expected={ToolCallStatus.READY},
+            target=ToolCallStatus.CANCELLED,
+        )
+        assert changed is True
+        assert cancelled.status is ToolCallStatus.CANCELLED
+
+        terminal, changed = await intents.compare_and_set_status(
+            "ready-http",
+            expected={ToolCallStatus.EXECUTING},
+            target=ToolCallStatus.COMPLETED,
+        )
+        assert changed is False
+        assert terminal.status is ToolCallStatus.CANCELLED
+    finally:
+        await database.dispose()

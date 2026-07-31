@@ -112,9 +112,7 @@ class BrowserEngineSession(Protocol):
 
     async def download_count(self) -> int: ...
 
-    async def downloads_since(
-        self, index: int
-    ) -> list[tuple[BrowserAttachment, bytes]]: ...
+    async def downloads_since(self, index: int) -> list[tuple[BrowserAttachment, bytes]]: ...
 
     async def close(self) -> None: ...
 
@@ -176,39 +174,53 @@ class RunnerBrowserManager:
                 )
 
         engine_session = await self._engine.open(command)
-        pages = await engine_session.pages()
-        if not pages:
-            await engine_session.close()
-            raise RuntimeError("Browser engine did not create or expose a page")
-        session = BrowserSession(
-            id=command.session_id,
-            run_id=command.run_id,
-            agent_session_id=command.agent_session_id,
-            node_id=command.node_id,
-            mode=command.mode,
-            status=BrowserSessionStatus.CREATED,
-            owner=BrowserOwner.AGENT,
-            browser_type="chromium",
-            profile_id=command.profile_id,
-            profile_path=engine_session.profile_path,
-            cdp_endpoint=command.cdp_endpoint,
-        )
-        session.transition_to(BrowserSessionStatus.STARTING)
-        for page in pages:
-            session.register_page(page.id, make_current=False)
-        session.current_page_id = pages[0].id
-        session.transition_to(BrowserSessionStatus.ACTIVE)
-        managed = _ManagedBrowserSession(session=session, scope=guard, engine=engine_session)
-        self._sessions[session.id] = managed
-        if command.mode is BrowserMode.MANAGED_PERSISTENT and command.profile_id:
-            self._persistent_profiles[command.profile_id] = session.id
-        async with managed.lock:
-            return await self._observe_exchange(
-                managed,
-                session.current_page_id,
-                include_screenshot=command.include_screenshot,
-                include_network=True,
+        managed: _ManagedBrowserSession | None = None
+        try:
+            pages = await engine_session.pages()
+            if not pages:
+                raise RuntimeError("Browser engine did not create or expose a page")
+            session = BrowserSession(
+                id=command.session_id,
+                run_id=command.run_id,
+                agent_session_id=command.agent_session_id,
+                node_id=command.node_id,
+                mode=command.mode,
+                status=BrowserSessionStatus.CREATED,
+                owner=BrowserOwner.AGENT,
+                browser_type="chromium",
+                profile_id=command.profile_id,
+                profile_path=engine_session.profile_path,
+                cdp_endpoint=command.cdp_endpoint,
             )
+            session.transition_to(BrowserSessionStatus.STARTING)
+            for page in pages:
+                session.register_page(page.id, make_current=False)
+            session.current_page_id = pages[0].id
+            session.transition_to(BrowserSessionStatus.ACTIVE)
+            managed = _ManagedBrowserSession(
+                session=session,
+                scope=guard,
+                engine=engine_session,
+            )
+            self._sessions[session.id] = managed
+            if command.mode is BrowserMode.MANAGED_PERSISTENT and command.profile_id:
+                self._persistent_profiles[command.profile_id] = session.id
+            async with managed.lock:
+                return await self._observe_exchange(
+                    managed,
+                    session.current_page_id,
+                    include_screenshot=command.include_screenshot,
+                    include_network=True,
+                )
+        except BaseException:
+            self._sessions.pop(command.session_id, None)
+            if command.profile_id is not None:
+                self._persistent_profiles.pop(command.profile_id, None)
+            try:
+                await asyncio.shield(engine_session.close())
+            except BaseException:
+                pass
+            raise
 
     async def observe(self, command: BrowserObserveCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
@@ -256,9 +268,7 @@ class RunnerBrowserManager:
                     f"{action.observation_version}; latest is {actual}"
                 )
             self._validate_action_scope(managed, action, latest)
-            running = action.model_copy(
-                update={"status": BrowserActionStatus.RUNNING, "error": ""}
-            )
+            running = action.model_copy(update={"status": BrowserActionStatus.RUNNING, "error": ""})
             managed.actions[action.action_key] = running
             try:
                 attachment, content = await managed.engine.act(running)
@@ -361,13 +371,9 @@ class RunnerBrowserManager:
             assert observation is not None
             current_pages = await managed.engine.pages()
             current_digest = await managed.engine.storage_digest()
-            downloads = await managed.engine.downloads_since(
-                managed.takeover_download_cursor
-            )
+            downloads = await managed.engine.downloads_since(managed.takeover_download_cursor)
             takeover_observations = [
-                item
-                for item in managed.observations
-                if item.observation_version > started_version
+                item for item in managed.observations if item.observation_version > started_version
             ]
             urls: list[str] = []
             network_by_sequence: dict[int, NetworkEventSummary] = {}
@@ -376,9 +382,7 @@ class RunnerBrowserManager:
                     urls.append(item.url)
                 for event in item.recent_network_summary:
                     network_by_sequence[event.sequence] = event
-            network = [
-                network_by_sequence[key] for key in sorted(network_by_sequence)
-            ]
+            network = [network_by_sequence[key] for key in sorted(network_by_sequence)]
             opened_pages = [
                 page.id for page in current_pages if page.id not in managed.takeover_page_ids
             ]
@@ -483,9 +487,7 @@ class RunnerBrowserManager:
         except ScopeViolationError:
             if managed.session.owner is not BrowserOwner.USER:
                 raise
-            observation = _redact_out_of_scope_observation(
-                observation, managed.scope
-            )
+            observation = _redact_out_of_scope_observation(observation, managed.scope)
             screenshot = b""
         pages = await managed.engine.pages()
         if managed.session.owner is BrowserOwner.USER:
@@ -603,12 +605,21 @@ class PlaywrightBrowserEngine:
                 browser_session_id=command.session_id,
                 attached=command.mode is BrowserMode.ATTACHED_CDP,
             )
-        except Exception:
+        except BaseException:
             if context is not None and command.mode is not BrowserMode.ATTACHED_CDP:
-                await context.close()
+                try:
+                    await asyncio.shield(context.close())
+                except BaseException:
+                    pass
             if browser is not None:
-                await browser.close()
-            await playwright.stop()
+                try:
+                    await asyncio.shield(browser.close())
+                except BaseException:
+                    pass
+            try:
+                await asyncio.shield(playwright.stop())
+            except BaseException:
+                pass
             raise
 
 
@@ -658,7 +669,6 @@ class _PlaywrightSession:
         page.on("dialog", lambda dialog: self._record_dialog(page_id, dialog))
         page.on("download", self._schedule_download_capture)
 
-
     def _schedule_download_capture(self, download: Any) -> None:
         task = asyncio.create_task(self._capture_download(download))
         self._download_tasks.add(task)
@@ -676,9 +686,7 @@ class _PlaywrightSession:
                     BrowserAttachment(
                         kind="download",
                         name=name,
-                        mime_type=(
-                            mimetypes.guess_type(name)[0] or "application/octet-stream"
-                        ),
+                        mime_type=(mimetypes.guess_type(name)[0] or "application/octet-stream"),
                         description="File downloaded during browser user takeover",
                     ),
                     content,
@@ -897,9 +905,7 @@ class _PlaywrightSession:
             await asyncio.gather(*tuple(self._download_tasks), return_exceptions=True)
         return len(self._downloads)
 
-    async def downloads_since(
-        self, index: int
-    ) -> list[tuple[BrowserAttachment, bytes]]:
+    async def downloads_since(self, index: int) -> list[tuple[BrowserAttachment, bytes]]:
         if self._download_tasks:
             await asyncio.gather(*tuple(self._download_tasks), return_exceptions=True)
         return list(self._downloads[max(index, 0) :])
@@ -969,7 +975,10 @@ class RemoteBrowserClient:
         return await self._dispatch(
             BrowserOperation.CLOSE,
             command.model_dump(mode="json"),
-            idempotency_key=f"browser:{command.session_id}:close",
+            # The local tombstone makes close idempotent.  A fresh command id
+            # lets a retry recover after an earlier offline/failed delivery.
+            idempotency_key=f"browser:{command.session_id}:close:{_nonce()}",
+            kind=RunnerCommandKind.BROWSER_CLOSE,
         )
 
     async def _dispatch(
@@ -978,10 +987,11 @@ class RemoteBrowserClient:
         command: dict[str, object],
         *,
         idempotency_key: str,
+        kind: RunnerCommandKind = RunnerCommandKind.BROWSER,
     ) -> BrowserRuntimeExchange:
         runner_command, _ = await self._control.enqueue(
             self._node_id,
-            kind=RunnerCommandKind.BROWSER,
+            kind=kind,
             idempotency_key=idempotency_key,
             payload={
                 "operation": operation.value,
@@ -989,9 +999,7 @@ class RemoteBrowserClient:
                 "max_attachment_bytes": 100_000_000,
             },
         )
-        completed = await self._control.wait_command(
-            runner_command.id, timeout_seconds=330
-        )
+        completed = await self._control.wait_command(runner_command.id, timeout_seconds=330)
         if completed.status is not RunnerCommandStatus.COMPLETED:
             raise RuntimeError(
                 f"Remote browser command failed: {completed.error or 'unknown error'}"
@@ -1072,7 +1080,6 @@ async def execute_browser_command(
     raise ValueError(f"Unsupported browser operation {operation.value!r}")
 
 
-
 def _is_scope_allowed(guard: ScopeGuard, url: str) -> bool:
     try:
         return guard.check(url, kind=ScopeTargetKind.URL).allowed
@@ -1084,9 +1091,7 @@ def _redact_out_of_scope_observation(
     observation: BrowserObservation, guard: ScopeGuard
 ) -> BrowserObservation:
     network = [
-        event
-        for event in observation.recent_network_summary
-        if _is_scope_allowed(guard, event.url)
+        event for event in observation.recent_network_summary if _is_scope_allowed(guard, event.url)
     ]
     return observation.model_copy(
         update={
@@ -1114,6 +1119,7 @@ def _redact_out_of_scope_page(page: BrowserPage, guard: ScopeGuard) -> BrowserPa
             "title": "Outside authorized scope",
         }
     )
+
 
 def _action_fingerprint(action: BrowserAction) -> str:
     payload = action.model_dump(
@@ -1152,7 +1158,6 @@ def _takeover_summary_text(
     )
 
 
-
 def _takeover_download_attachment(
     session_id: str,
     downloads: list[tuple[BrowserAttachment, bytes]],
@@ -1180,6 +1185,7 @@ def _takeover_download_attachment(
         ),
         buffer.getvalue(),
     )
+
 
 def _safe_download_name(value: str) -> str:
     name = Path(value).name.strip().replace("\x00", "")

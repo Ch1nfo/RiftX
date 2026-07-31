@@ -34,6 +34,7 @@ from riftx.domain import (
     RunnerCommandKind,
     RunnerCommandStatus,
     RunnerCredential,
+    RunnerPrincipal,
     TerminalStatus,
 )
 from riftx.domain.base import new_id, utc_now
@@ -46,8 +47,29 @@ _MAX_BROWSER_RESULT_BYTES = 512 * 1024
 _MAX_OUTPUT_CHUNK_BYTES = 256 * 1024
 _OFFLINE_SAFE_COMMANDS = {
     RunnerCommandKind.CANCEL,
+    RunnerCommandKind.TARGET_HTTP_CANCEL,
+    RunnerCommandKind.BROWSER_CLOSE,
     RunnerCommandKind.TERMINAL_CLOSE,
 }
+_RUNNER_REPORTED_EXECUTION_STATUSES = frozenset(
+    {
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.EXITED,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.HARD_TIMEOUT,
+        ExecutionStatus.LOST,
+    }
+)
+_PHYSICAL_STOP_PROOF_REQUIRED_STATUSES = frozenset(
+    {
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.EXITED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.HARD_TIMEOUT,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +77,7 @@ class RunnerRegistrationResult:
     node: Node
     created: bool
     token: str
+    principal: RunnerPrincipal
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +93,7 @@ class ExecutionStatusReport:
     platform_release: str = ""
     platform_architecture: str = ""
     process_created_at: datetime | None = None
+    physical_stop_confirmed: bool = False
 
 
 class RunnerControlService:
@@ -109,27 +133,33 @@ class RunnerControlService:
         *,
         bootstrap_token: str,
     ) -> RunnerRegistrationResult:
-        self._authenticate_bootstrap(bootstrap_token)
+        self.authenticate_bootstrap(bootstrap_token)
         node, created = await self._nodes.register(registration)
         token = secrets.token_urlsafe(32)
         now = self._clock()
-        existing = await self._credentials.get(node.id)
-        credential = RunnerCredential(
-            node_id=node.id,
+        credential = await self._credentials.issue(
+            node.id,
             token_hash=_token_hash(token),
             token_prefix=token[:8],
-            created_at=existing.created_at if existing else now,
-            rotated_at=now,
+            issued_at=now,
         )
-        await self._credentials.save(credential)
-        return RunnerRegistrationResult(node=node, created=created, token=token)
+        # Credential issuance also advances the node's current owner in the
+        # same transaction. Re-read so callers never observe the pre-issue node.
+        node = await self._nodes.get(node.id)
+        return RunnerRegistrationResult(
+            node=node,
+            created=created,
+            token=token,
+            principal=credential.principal,
+        )
 
     async def authenticate(self, node_id: str, token: str) -> RunnerCredential:
-        credential = await self._credentials.get(node_id)
+        token_hash = _token_hash(token)
+        credential = await self._credentials.get_by_token_hash(node_id, token_hash)
         if (
             credential is None
             or credential.revoked_at is not None
-            or not secrets.compare_digest(credential.token_hash, _token_hash(token))
+            or not secrets.compare_digest(credential.token_hash, token_hash)
         ):
             raise AuthenticationError(
                 "runner_authentication_failed",
@@ -143,8 +173,24 @@ class RunnerControlService:
         token: str,
         heartbeat: NodeHeartbeat,
     ) -> Node:
-        await self.authenticate(node_id, token)
+        credential = await self.authenticate(node_id, token)
+        node = await self._nodes.get(node_id)
+        if node.current_owner != credential.principal:
+            # Superseded owners remain authenticated so they can receive and
+            # acknowledge commands for effects they still own. They must not
+            # refresh the logical node's current-owner liveness metadata.
+            return node
         return await self._nodes.heartbeat(node_id, heartbeat)
+
+    async def current_principal(self, node_id: str) -> RunnerPrincipal:
+        credential = await self._credentials.get_current(node_id)
+        if credential is None or credential.revoked_at is not None:
+            raise ServiceUnavailableError(
+                "runner_owner_unavailable",
+                f"Runner node {node_id!r} has no active owner credential",
+                details={"node_id": node_id},
+            )
+        return credential.principal
 
     async def enqueue(
         self,
@@ -153,6 +199,7 @@ class RunnerControlService:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         node = await self._nodes.get(node_id)
         if (
@@ -164,12 +211,35 @@ class RunnerControlService:
                 f"Runner node {node_id!r} is not connected",
                 details={"node_id": node_id, "status": node.status.value},
             )
+        target = target or await self.current_principal(node_id)
+        target_credential = await self._credentials.get_by_principal(node_id, target)
+        if target_credential is None:
+            raise ServiceUnavailableError(
+                "runner_owner_unavailable",
+                "Runner command target is not registered for this node",
+                details={
+                    "node_id": node_id,
+                    "runner_instance_id": target.instance_id,
+                    "runner_epoch": target.epoch,
+                },
+            )
+        if target_credential.revoked_at is not None and kind not in _OFFLINE_SAFE_COMMANDS:
+            raise ServiceUnavailableError(
+                "runner_owner_revoked",
+                "Runner command target credential has been revoked",
+                details={
+                    "node_id": node_id,
+                    "runner_instance_id": target.instance_id,
+                    "runner_epoch": target.epoch,
+                },
+            )
         now = self._clock()
         return await self._commands.enqueue(
             RunnerCommand(
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
+                target=target,
                 payload=payload,
                 created_at=now,
                 updated_at=now,
@@ -182,17 +252,20 @@ class RunnerControlService:
         token: str,
         *,
         wait_seconds: float = 0,
+        safety_only: bool = False,
     ) -> RunnerCommand | None:
-        await self.authenticate(node_id, token)
-        await self._nodes.heartbeat(node_id, NodeHeartbeat())
+        credential = await self.authenticate(node_id, token)
+        await self._heartbeat_current_owner(node_id, credential)
         deadline = asyncio.get_running_loop().time() + min(max(wait_seconds, 0), 30)
         while True:
             now = self._clock()
             command = await self._commands.lease_next(
                 node_id,
+                principal=credential.principal,
                 lease_id=new_id(),
                 leased_until=now + self._lease_duration,
                 now=now,
+                safety_only=safety_only,
             )
             if command is not None:
                 return command
@@ -212,13 +285,9 @@ class RunnerControlService:
         result: dict[str, object] | None = None,
         error: str = "",
     ) -> RunnerCommand:
-        await self.authenticate(node_id, token)
+        credential = await self.authenticate(node_id, token)
         command = await self._require_command(command_id)
-        if command.node_id != node_id:
-            raise AuthenticationError(
-                "runner_command_scope_mismatch",
-                "Runner cannot complete a command assigned to another node",
-            )
+        self._require_command_scope(command, node_id, credential.principal)
         bounded_result = result or {}
         result_limit = (
             _MAX_BROWSER_RESULT_BYTES
@@ -230,13 +299,52 @@ class RunnerControlService:
                 "runner_result_too_large",
                 f"Runner command results must not exceed {result_limit} bytes",
             )
-        return await self._commands.finish(
+        if succeeded and command.kind is RunnerCommandKind.CANCEL:
+            _validate_cancel_ack(command, bounded_result)
+        finished = await self._commands.finish(
             command_id,
+            principal=credential.principal,
             lease_id=lease_id,
             status=(RunnerCommandStatus.COMPLETED if succeeded else RunnerCommandStatus.FAILED),
             result=bounded_result,
             error=error[:8192],
             completed_at=self._clock(),
+        )
+        if (
+            finished.kind is RunnerCommandKind.CANCEL
+            and finished.status is RunnerCommandStatus.COMPLETED
+        ):
+            cancel_identity = _validate_cancel_ack(finished, finished.result)
+            # Persist only after the repository has authenticated the exact
+            # command lease. If the proof write fails, retrying finish with the
+            # same lease is idempotent and will attempt this write again.
+            await self._record_cancel_ack_stop_proof(
+                finished,
+                node_id=node_id,
+                principal=credential.principal,
+                execution_id=cancel_identity[0],
+                execution_key=cancel_identity[1],
+            )
+        return finished
+
+    async def renew_command_lease(
+        self,
+        node_id: str,
+        token: str,
+        command_id: str,
+        *,
+        lease_id: str,
+    ) -> RunnerCommand:
+        credential = await self.authenticate(node_id, token)
+        command = await self._require_command(command_id)
+        self._require_command_scope(command, node_id, credential.principal)
+        now = self._clock()
+        return await self._commands.renew_lease(
+            command_id,
+            principal=credential.principal,
+            lease_id=lease_id,
+            leased_until=now + self._lease_duration,
+            now=now,
         )
 
     async def wait_command(
@@ -265,11 +373,11 @@ class RunnerControlService:
         offset: int,
         data: bytes,
     ) -> int:
-        await self.authenticate(node_id, token)
+        credential = await self.authenticate(node_id, token)
         command = await self._require_command(command_id)
+        self._require_command_scope(command, node_id, credential.principal)
         if (
-            command.node_id != node_id
-            or command.kind not in {RunnerCommandKind.TARGET_HTTP, RunnerCommandKind.BROWSER}
+            command.kind not in {RunnerCommandKind.TARGET_HTTP, RunnerCommandKind.BROWSER}
             or command.status is not RunnerCommandStatus.LEASED
             or command.lease_id != lease_id
         ):
@@ -320,55 +428,160 @@ class RunnerControlService:
         execution_id: str,
         report: ExecutionStatusReport,
     ) -> Execution:
-        await self.authenticate(node_id, token)
+        credential = await self.authenticate(node_id, token)
         execution = await self._require_execution(execution_id)
-        self._require_execution_scope(execution, node_id)
-        if execution.status is report.status:
-            changed = _apply_execution_provenance(execution, report)
-            if report.status is ExecutionStatus.RUNNING:
-                if report.pid is not None and execution.pid != report.pid:
-                    execution.pid = report.pid
+        self._require_execution_scope(execution, node_id, credential.principal)
+        _validate_execution_status_report(report)
+        received_at = self._clock()
+        for _ in range(8):
+            expected_status = execution.status
+            candidate = execution.model_copy(deep=True)
+            proof_compatible_retry = (
+                candidate.status is not report.status
+                and candidate.status in _PHYSICAL_STOP_PROOF_REQUIRED_STATUSES
+                and report.status in _PHYSICAL_STOP_PROOF_REQUIRED_STATUSES
+                and report.physical_stop_confirmed is True
+            )
+            if proof_compatible_retry:
+                changed = _apply_missing_execution_provenance(candidate, report)
+            else:
+                changed = _apply_execution_provenance(candidate, report)
+            if candidate.status is report.status:
+                if report.status is ExecutionStatus.RUNNING:
+                    if report.pid is not None and candidate.pid != report.pid:
+                        candidate.pid = report.pid
+                        changed = True
+                    if (
+                        report.process_group_id is not None
+                        and candidate.process_group_id != report.process_group_id
+                    ):
+                        candidate.process_group_id = report.process_group_id
+                        changed = True
+                elif report.exit_code is not None and candidate.exit_code is None:
+                    candidate.exit_code = report.exit_code
                     changed = True
+            elif proof_compatible_retry:
+                # The owning Runner may retry a natural-stop report after the
+                # Control Plane durably accepted it but its HTTP response was
+                # lost. Preserve the first proof-backed terminal state while
+                # allowing the retry to fill fields that were still unknown.
+                if report.exit_code is not None and candidate.exit_code is None:
+                    candidate.exit_code = report.exit_code
+                    changed = True
+            else:
+                target_status = report.status
                 if (
-                    report.process_group_id is not None
-                    and execution.process_group_id != report.process_group_id
+                    candidate.status
+                    in {
+                        ExecutionStatus.STARTING,
+                        ExecutionStatus.LOST,
+                        ExecutionStatus.FAILED,
+                    }
+                    and report.status
+                    in {
+                        ExecutionStatus.COMPLETED,
+                        ExecutionStatus.EXITED,
+                        ExecutionStatus.HARD_TIMEOUT,
+                    }
+                    and report.physical_stop_confirmed is True
                 ):
-                    execution.process_group_id = report.process_group_id
-                    changed = True
-            elif report.exit_code is not None and execution.exit_code is None:
-                execution.exit_code = report.exit_code
+                    # The Runner may naturally stop before its first RUNNING
+                    # upload commits, or reconciliation may record LOST/FAILED
+                    # while that upload is disconnected. The proof is still
+                    # valid, but these states may only converge to CANCELLED in
+                    # the domain state machine.
+                    target_status = ExecutionStatus.CANCELLED
+                if not candidate.can_transition_to(target_status):
+                    raise ApplicationConflictError(
+                        "invalid_runner_execution_transition",
+                        f"Execution cannot transition from {candidate.status.value} "
+                        f"to {report.status.value}",
+                    )
+                if target_status is ExecutionStatus.RUNNING:
+                    candidate.pid = report.pid
+                    candidate.process_group_id = report.process_group_id
+                candidate.transition_to(
+                    target_status,
+                    at=received_at,
+                    exit_code=report.exit_code,
+                )
                 changed = True
-            if changed:
-                execution = await self._executions.save(execution)
-            await self._sync_terminal_status(execution, report.status)
-            return execution
-        if report.status not in {
-            ExecutionStatus.RUNNING,
-            ExecutionStatus.COMPLETED,
-            ExecutionStatus.EXITED,
-            ExecutionStatus.FAILED,
-            ExecutionStatus.CANCELLED,
-            ExecutionStatus.HARD_TIMEOUT,
-            ExecutionStatus.LOST,
-        }:
-            raise ApplicationConflictError(
-                "invalid_runner_execution_status",
-                f"Runner cannot report execution status {report.status.value!r}",
+            if (
+                report.physical_stop_confirmed
+                and candidate.physical_stop_confirmed_at is None
+            ):
+                # Runner clocks are not trusted for durable safety evidence.
+                # Record when the owning callback reached the Control Plane.
+                candidate.physical_stop_confirmed_at = received_at
+                changed = True
+            if not changed:
+                execution = candidate
+                break
+            execution, saved = await self._executions.save_if_status(
+                candidate,
+                expected={expected_status},
             )
-        if not execution.can_transition_to(report.status):
+            if saved:
+                break
+            self._require_execution_scope(execution, node_id, credential.principal)
+        else:
             raise ApplicationConflictError(
-                "invalid_runner_execution_transition",
-                f"Execution cannot transition from {execution.status.value} "
-                f"to {report.status.value}",
+                "runner_execution_update_conflict",
+                "Runner execution status changed repeatedly while applying its report",
+                details={"execution_id": execution_id},
             )
-        if report.status is ExecutionStatus.RUNNING:
-            execution.pid = report.pid
-            execution.process_group_id = report.process_group_id
-        _apply_execution_provenance(execution, report)
-        execution.transition_to(report.status, exit_code=report.exit_code)
-        execution = await self._executions.save(execution)
-        await self._sync_terminal_status(execution, report.status)
+        await self._sync_terminal_status(execution, execution.status)
         return execution
+
+    async def _record_cancel_ack_stop_proof(
+        self,
+        command: RunnerCommand,
+        *,
+        node_id: str,
+        principal: RunnerPrincipal,
+        execution_id: str,
+        execution_key: str,
+    ) -> None:
+        execution = await self._require_execution(execution_id)
+        self._require_execution_scope(execution, node_id, principal)
+        if execution.execution_key != execution_key:
+            _raise_cancel_ack_invalid(command, ["execution.execution_key"])
+        received_at = self._clock()
+        for _ in range(8):
+            expected_status = execution.status
+            candidate = execution.model_copy(deep=True)
+            changed = False
+            if candidate.status not in _PHYSICAL_STOP_PROOF_REQUIRED_STATUSES:
+                if not candidate.can_transition_to(ExecutionStatus.CANCELLED):
+                    _raise_cancel_ack_invalid(command, ["execution.status"])
+                candidate.transition_to(
+                    ExecutionStatus.CANCELLED,
+                    at=received_at,
+                    exit_code=candidate.exit_code,
+                )
+                changed = True
+            if candidate.physical_stop_confirmed_at is None:
+                candidate.physical_stop_confirmed_at = received_at
+                changed = True
+            if not changed:
+                execution = candidate
+                break
+            execution, saved = await self._executions.save_if_status(
+                candidate,
+                expected={expected_status},
+            )
+            if saved:
+                break
+            self._require_execution_scope(execution, node_id, principal)
+            if execution.execution_key != execution_key:
+                _raise_cancel_ack_invalid(command, ["execution.execution_key"])
+        else:
+            raise ApplicationConflictError(
+                "runner_execution_update_conflict",
+                "Execution changed repeatedly while recording cancellation proof",
+                details={"execution_id": execution_id, "command_id": command.id},
+            )
+        await self._sync_terminal_status(execution, execution.status)
 
     async def _sync_terminal_status(
         self,
@@ -377,44 +590,79 @@ class RunnerControlService:
     ) -> None:
         if self._terminals is None or execution.executor_type is not ExecutorType.PTY:
             return
-        terminal = await self._terminals.get_by_execution(execution.id)
-        if terminal is None:
-            return
-        target: TerminalStatus | None = None
-        event_type: str | None = None
-        if status is ExecutionStatus.RUNNING and terminal.status is TerminalStatus.CREATED:
-            target = TerminalStatus.OPEN
-            event_type = "terminal.opened"
-        elif status is ExecutionStatus.LOST and terminal.status in {
-            TerminalStatus.CREATED,
-            TerminalStatus.OPEN,
-        }:
-            target = TerminalStatus.LOST
-            event_type = "terminal.lost"
-        elif status in {
-            ExecutionStatus.COMPLETED,
-            ExecutionStatus.EXITED,
-            ExecutionStatus.FAILED,
-            ExecutionStatus.CANCELLED,
-            ExecutionStatus.HARD_TIMEOUT,
-        } and terminal.status in {TerminalStatus.CREATED, TerminalStatus.OPEN}:
-            target = TerminalStatus.CLOSED
-            event_type = "terminal.closed"
-        if target is None:
-            return
-        terminal.transition_to(target)
-        await self._terminals.save(terminal)
-        if self._events is not None and event_type is not None:
-            await self._events.append(
-                terminal.run_id,
-                event_type,
-                {
-                    "session_id": terminal.id,
-                    "execution_id": execution.id,
-                    "status": status.value,
-                    "backend": "remote",
-                },
+        for _ in range(8):
+            latest_execution = await self._executions.get(execution.id)
+            if latest_execution is not None:
+                execution = latest_execution
+                status = execution.status
+            terminal = await self._terminals.get_by_execution(execution.id)
+            if terminal is None:
+                return
+            target: TerminalStatus | None = None
+            event_type: str | None = None
+            if status is ExecutionStatus.RUNNING and terminal.status is TerminalStatus.CREATED:
+                target = TerminalStatus.OPEN
+                event_type = "terminal.opened"
+            elif status is ExecutionStatus.LOST and terminal.status in {
+                TerminalStatus.CREATED,
+                TerminalStatus.OPEN,
+            }:
+                target = TerminalStatus.LOST
+                event_type = "terminal.lost"
+            elif status in {
+                ExecutionStatus.COMPLETED,
+                ExecutionStatus.EXITED,
+                ExecutionStatus.CANCELLED,
+                ExecutionStatus.HARD_TIMEOUT,
+            } and execution.physical_stop_confirmed_at is not None and terminal.status in {
+                TerminalStatus.CREATED,
+                TerminalStatus.OPEN,
+                TerminalStatus.LOST,
+            }:
+                target = TerminalStatus.CLOSED
+                event_type = "terminal.closed"
+            if target is None:
+                return
+            expected_terminal_status = terminal.status
+            candidate = terminal.model_copy(deep=True)
+            candidate.transition_to(target)
+            terminal, saved = await self._terminals.save_if_status(
+                candidate,
+                expected={expected_terminal_status},
             )
+            if not saved:
+                continue
+            if target is not TerminalStatus.CLOSED:
+                newest_execution = await self._executions.get(execution.id)
+                if newest_execution is not None and newest_execution.status is not status:
+                    execution = newest_execution
+                    status = newest_execution.status
+                    continue
+            if self._events is not None and event_type is not None:
+                projected = await self._events.append_terminal_projection_if_current(
+                    terminal.run_id,
+                    event_type,
+                    {"backend": "remote"},
+                    event_id=_terminal_projection_event_id(
+                        terminal.run_id,
+                        terminal.id,
+                        target,
+                    ),
+                    session_id=terminal.id,
+                    expected_terminal_status=target,
+                    expected_execution_status=status,
+                )
+                if projected is None:
+                    # A higher Execution/Terminal state committed after the
+                    # service-level recheck.  Re-read and converge instead of
+                    # appending a stale lower-state event.
+                    continue
+            return
+        raise ApplicationConflictError(
+            "terminal_projection_update_conflict",
+            "Terminal projection changed repeatedly while applying execution status",
+            details={"execution_id": execution.id},
+        )
 
     async def append_output(
         self,
@@ -426,9 +674,9 @@ class RunnerControlService:
         offset: int,
         data: bytes,
     ) -> int:
-        await self.authenticate(node_id, token)
+        credential = await self.authenticate(node_id, token)
         execution = await self._require_execution(execution_id)
-        self._require_execution_scope(execution, node_id)
+        self._require_execution_scope(execution, node_id, credential.principal)
         if stream not in {"stdout", "stderr"}:
             raise ValueError("stream must be stdout or stderr")
         if len(data) > _MAX_OUTPUT_CHUNK_BYTES:
@@ -443,7 +691,9 @@ class RunnerControlService:
             next_offset = await asyncio.to_thread(_append_exact, path, offset, data)
         return next_offset
 
-    def _authenticate_bootstrap(self, token: str) -> None:
+    def authenticate_bootstrap(self, token: str) -> None:
+        """Validate the shared token used to provision a Runner credential."""
+
         if not self._registration_token:
             raise ServiceUnavailableError(
                 "runner_registration_disabled",
@@ -467,17 +717,135 @@ class RunnerControlService:
             raise EntityNotFoundError("Execution", execution_id)
         return execution
 
+    async def _heartbeat_current_owner(
+        self,
+        node_id: str,
+        credential: RunnerCredential,
+    ) -> None:
+        node = await self._nodes.get(node_id)
+        if node.current_owner == credential.principal:
+            await self._nodes.heartbeat(node_id, NodeHeartbeat())
+
     @staticmethod
-    def _require_execution_scope(execution: Execution, node_id: str) -> None:
+    def _require_command_scope(
+        command: RunnerCommand,
+        node_id: str,
+        principal: RunnerPrincipal,
+    ) -> None:
+        if command.node_id != node_id or command.target != principal:
+            raise AuthenticationError(
+                "runner_command_scope_mismatch",
+                "Runner cannot access a command assigned to another owner",
+            )
+
+    @staticmethod
+    def _require_execution_scope(
+        execution: Execution,
+        node_id: str,
+        principal: RunnerPrincipal,
+    ) -> None:
         if execution.node_id != node_id:
             raise AuthenticationError(
                 "runner_execution_scope_mismatch",
                 "Runner cannot update an execution assigned to another node",
             )
+        if execution.owner is None:
+            raise AuthenticationError(
+                "runner_execution_owner_missing",
+                "Runner callbacks require an execution owner",
+            )
+        if execution.owner != principal:
+            raise AuthenticationError(
+                "runner_execution_owner_mismatch",
+                "Runner cannot update an execution assigned to another owner",
+            )
 
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _terminal_projection_event_id(
+    run_id: str,
+    session_id: str,
+    status: TerminalStatus,
+) -> str:
+    digest = hashlib.sha256(
+        f"{run_id}\0{session_id}\0{status.value}".encode()
+    ).hexdigest()
+    # Persistence IDs are capped at 64 characters.  The prefix identifies the
+    # reserved namespace while 176 digest bits keep collisions negligible.
+    return f"terminal-projection-{digest[:44]}"
+
+
+def _validate_cancel_ack(
+    command: RunnerCommand,
+    result: dict[str, object],
+) -> tuple[str, str]:
+    target = command.target
+    expected_execution_id = command.payload.get("execution_id")
+    expected_execution_key = command.payload.get("execution_key")
+    expected_owner = target.model_dump(mode="json") if target is not None else None
+    invalid_fields: list[str] = []
+    if not isinstance(expected_execution_id, str) or not expected_execution_id:
+        invalid_fields.append("command.execution_id")
+    if not isinstance(expected_execution_key, str) or not expected_execution_key:
+        invalid_fields.append("command.execution_key")
+    if expected_owner is None:
+        invalid_fields.append("command.owner")
+    if result.get("execution_id") != expected_execution_id:
+        invalid_fields.append("execution_id")
+    if result.get("local_execution_id") != expected_execution_id:
+        invalid_fields.append("local_execution_id")
+    if result.get("execution_key") != expected_execution_key:
+        invalid_fields.append("execution_key")
+    if result.get("owner") != expected_owner:
+        invalid_fields.append("owner")
+    if result.get("status") != ExecutionStatus.CANCELLED.value:
+        invalid_fields.append("status")
+    if result.get("physical_stop_confirmed") is not True:
+        invalid_fields.append("physical_stop_confirmed")
+    if invalid_fields:
+        _raise_cancel_ack_invalid(command, invalid_fields)
+    assert isinstance(expected_execution_id, str)
+    assert isinstance(expected_execution_key, str)
+    return expected_execution_id, expected_execution_key
+
+
+def _raise_cancel_ack_invalid(
+    command: RunnerCommand,
+    invalid_fields: list[str],
+) -> None:
+    raise ApplicationConflictError(
+        "runner_cancel_ack_invalid",
+        "Runner cancellation acknowledgement did not prove the owning process stopped",
+        details={
+            "command_id": command.id,
+            "invalid_fields": invalid_fields,
+        },
+    )
+
+
+def _validate_execution_status_report(report: ExecutionStatusReport) -> None:
+    if report.status not in _RUNNER_REPORTED_EXECUTION_STATUSES:
+        raise ApplicationConflictError(
+            "invalid_runner_execution_status",
+            f"Runner cannot report execution status {report.status.value!r}",
+        )
+    if report.status in _PHYSICAL_STOP_PROOF_REQUIRED_STATUSES:
+        if report.physical_stop_confirmed is not True:
+            raise ApplicationConflictError(
+                "runner_execution_stop_proof_required",
+                "Runner stopped-status reports require affirmative physical-stop proof",
+                details={"status": report.status.value},
+            )
+        return
+    if report.physical_stop_confirmed is not False:
+        raise ApplicationConflictError(
+            "runner_execution_stop_proof_invalid",
+            "Runner cannot attach physical-stop proof to this execution status",
+            details={"status": report.status.value},
+        )
 
 
 def _apply_execution_provenance(
@@ -496,6 +864,27 @@ def _apply_execution_provenance(
     ):
         value = getattr(report, name)
         if value not in {None, ""} and getattr(execution, name) != value:
+            setattr(execution, name, value)
+            changed = True
+    return changed
+
+
+def _apply_missing_execution_provenance(
+    execution: Execution,
+    report: ExecutionStatusReport,
+) -> bool:
+    changed = False
+    for name in (
+        "executable_path",
+        "tool_id",
+        "tool_version",
+        "platform_system",
+        "platform_release",
+        "platform_architecture",
+        "process_created_at",
+    ):
+        value = getattr(report, name)
+        if value not in {None, ""} and getattr(execution, name) in {None, ""}:
             setattr(execution, name, value)
             changed = True
     return changed

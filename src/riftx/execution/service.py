@@ -32,6 +32,7 @@ _EXECUTION_BLOCKED_RUN_STATUSES = {
     RunStatus.PAUSED,
     RunStatus.CANCELLING,
     RunStatus.CANCELLED,
+    RunStatus.COMPLETING,
     RunStatus.COMPLETED,
     RunStatus.FAILED,
 }
@@ -65,15 +66,23 @@ class ExecutionService:
             return existing
 
         await self._require_execution_allowed(request.run_id)
-        execution = await self._runner.start(request.to_launch_request())
+
+        async def effect_guard() -> None:
+            await self._require_execution_allowed(request.run_id)
+
+        execution = await self._runner.start(
+            request.to_launch_request(),
+            effect_guard=effect_guard,
+        )
         blocked_run = await self._blocked_run(request.run_id)
-        if blocked_run is not None and execution.status in {
-            ExecutionStatus.CREATED,
-            ExecutionStatus.QUEUED,
-            ExecutionStatus.STARTING,
-            ExecutionStatus.RUNNING,
-        }:
-            execution = await self._runner.cancel(execution.id)
+        if blocked_run is not None:
+            if execution.status in {
+                ExecutionStatus.CREATED,
+                ExecutionStatus.QUEUED,
+                ExecutionStatus.STARTING,
+                ExecutionStatus.RUNNING,
+            }:
+                execution = await self._runner.cancel(execution.id)
             await self._sync_intent(intent, execution)
             await self._append_event(
                 request.run_id,

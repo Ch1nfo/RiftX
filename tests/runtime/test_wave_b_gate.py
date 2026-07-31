@@ -130,10 +130,9 @@ async def test_wave_b_dynamic_discovery_deferred_execution_and_continuation(
     tool_context = ToolContextManager(tool_registry)
     compiler = DynamicToolContextCompiler(tool_context)
 
-    initial = await compiler.compile(
-        _compile_request()
-    )
-    assert [schema["name"] for schema in initial.available_tools] == list(RESIDENT_TOOL_IDS)
+    initial = await compiler.compile(_compile_request())
+    registered_residents = [tool_id for tool_id in RESIDENT_TOOL_IDS if tool_id != "run_shell"]
+    assert [schema["name"] for schema in initial.available_tools] == registered_residents
     assert len(initial.context_manifest["hidden_available_tools"]) == 80
 
     search_results = tool_context.search_tools(
@@ -152,7 +151,7 @@ async def test_wave_b_dynamic_discovery_deferred_execution_and_continuation(
     assert selected_tool.full_schema["name"] == "netexec-smb"
     selected = await compiler.compile(_compile_request())
     assert [schema["name"] for schema in selected.available_tools] == [
-        *RESIDENT_TOOL_IDS,
+        *registered_residents,
         "netexec-smb",
     ]
 

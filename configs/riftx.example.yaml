@@ -17,21 +17,40 @@ temporal:
   workflow_id_prefix: riftx-run
   max_concurrent_activities: 20
   max_cached_workflows: 1000
+  # Set true for managed/remote Temporal. With no paths below, TLS uses system roots.
+  tls_enabled: false
+  # Optional PEM file paths for private PKI or mTLS; never place PEM contents in YAML.
+  # tls_server_root_ca_path: /etc/riftx/temporal/server-ca.pem
+  # tls_server_name: temporal.example.internal
+  # tls_client_cert_path: /etc/riftx/temporal/client-cert.pem
+  # tls_client_private_key_path: /etc/riftx/temporal/client-key.pem
+  # Set an API key only through RIFTX_TEMPORAL_API_KEY, never YAML.
 
 runner:
   mode: local
   endpoint: http://127.0.0.1:8790
   node_id: local
   state_path: .riftx/runner
+  # Keep identity credentials outside clonable execution state.
+  credential_path: .riftx/secrets/runner-credentials.json
   # Set registration_token through RIFTX_RUNNER_REGISTRATION_TOKEN, not YAML.
   command_lease_seconds: 30
   node_offline_after_seconds: 30
   node_lost_after_seconds: 300
 
 execution:
-  policy: open
+  policy: registered_only
   default_timeout: 1800
   environment_mode: inherit
+  # Safe production default. Linux Runners need a trusted delegated cgroup v2
+  # root in RIFTX_CGROUP_V2_ROOT. Set false only for local development where
+  # an uncontained process can never be reported as affirmatively stopped.
+  require_containment: true
+  # Required on Linux when containment is enabled. Use a dedicated unprivileged
+  # account that is different from the Runner and cannot administer cgroups.
+  # Prefer RIFTX_PAYLOAD_UID/RIFTX_PAYLOAD_GID for host-specific numeric IDs.
+  payload_uid: null
+  payload_gid: null
 
 execution_output:
   max_inline_bytes: 32768
@@ -46,14 +65,20 @@ approval:
   default_mode: balanced
 
 tools:
-  path: configs/tools.example.yaml
+  path: configs/tools.yaml
 
 web:
   dist_path: apps/web/dist
 
 models:
-  path: configs/models.example.yaml
+  path: configs/models.yaml
+  secrets_path: .riftx/secrets/models.json
   # profile: primary
+
+# Set the Control Plane admin token through RIFTX_ADMIN_TOKEN, never YAML.
+# Non-loopback binds are rejected unless RIFTX_TRUST_PROXY_AUTH=true explicitly
+# acknowledges that an authenticated reverse proxy is the exclusive ingress.
+security: {}
 
 agent:
   max_history_items: 100

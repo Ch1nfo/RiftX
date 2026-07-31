@@ -88,6 +88,7 @@ async def test_runtime_cycle_activity_maps_only_durable_identifiers() -> None:
             latest_user_message_id="user-input-event-1",
             completed_execution_id="execution-0",
             approval_id="approval-1",
+            defer_run_completion=True,
         )
     )
 
@@ -107,19 +108,16 @@ async def test_runtime_cycle_activity_maps_only_durable_identifiers() -> None:
                         "execution_id": "execution-0",
                         "context_summary": "done",
                     },
-                    "source_refs": [
-                        "artifact://runs/run-1/executions/execution-0/stdout"
-                    ],
+                    "source_refs": ["artifact://runs/run-1/executions/execution-0/stdout"],
                     "required": True,
                 },
             ],
+            defer_run_completion=True,
         )
     ]
     assert result.yield_reason is RuntimeYieldReason.TOOL_RUNNING
     assert result.waiting_object_id == "execution-1"
     assert result.checkpoint_id == "provider-state-1"
     assert initializer.calls == [("run-1", "session-1")]
-    assert user_input_resolver.calls == [
-        ("run-1", "session-1", "user-input-event-1")
-    ]
+    assert user_input_resolver.calls == [("run-1", "session-1", "user-input-event-1")]
     assert execution_input_resolver.calls == [("run-1", "execution-0")]

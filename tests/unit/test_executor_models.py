@@ -33,6 +33,41 @@ def test_clean_environment_does_not_inherit_host_values() -> None:
     assert environment == {"ONLY": "explicit"}
 
 
+def test_inherited_environment_strips_control_plane_and_secret_values() -> None:
+    environment = merge_environment(
+        mode=EnvironmentMode.INHERIT,
+        host_environment={
+            "PATH": "/usr/bin:/bin",
+            "LANG": "en_US.UTF-8",
+            "RIFTX_CGROUP_V2_ROOT": "/sys/fs/cgroup/riftx",
+            "RIFTX_LLM_API_KEY": "model-secret",
+            "OPENAI_API_KEY": "openai-secret",
+            "TEMPORAL_API_KEY": "temporal-secret",
+            "GITHUB_TOKEN": "github-secret",
+            "DATABASE_URL": "postgresql://secret",
+            "SSH_AUTH_SOCK": "/private/agent.sock",
+        },
+    )
+
+    assert environment == {"PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
+
+
+def test_explicit_layer_can_intentionally_restore_filtered_variable() -> None:
+    environment = merge_environment(
+        {"OPENAI_API_KEY": "tool-scoped-key"},
+        mode=EnvironmentMode.INHERIT,
+        host_environment={
+            "PATH": "/usr/bin:/bin",
+            "OPENAI_API_KEY": "host-key",
+        },
+    )
+
+    assert environment == {
+        "PATH": "/usr/bin:/bin",
+        "OPENAI_API_KEY": "tool-scoped-key",
+    }
+
+
 def test_environment_rejects_invalid_names() -> None:
     with pytest.raises(ValueError, match="invalid environment"):
         merge_environment({"BAD=NAME": "value"}, mode=EnvironmentMode.CLEAN)

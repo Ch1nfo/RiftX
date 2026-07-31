@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from riftx.domain import Execution, Node, NodeStatus
+from riftx.domain import Execution, Node, NodeStatus, RunnerPrincipal
 
 
 class RegisterNodeRequest(BaseModel):
@@ -92,6 +92,7 @@ class NodeRegistrationResponse(BaseModel):
     node: NodeResponse
     created: bool
     runner_token: str
+    principal: RunnerPrincipal
 
 
 class NodeListResponse(BaseModel):

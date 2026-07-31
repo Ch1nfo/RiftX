@@ -13,6 +13,9 @@ import type {
   UpdateFindingPayload,
   RegisterArtifactPayload,
   GenerateReportsPayload,
+  ModelProfile,
+  ModelProfileList,
+  ModelProfileSummaryList,
   NodeList,
   NodeStatus,
   ReportList,
@@ -23,6 +26,8 @@ import type {
   TerminalSession,
   CreateTerminalPayload,
   ToolRegistrySnapshot,
+  ToolRegistrySummary,
+  UpdateModelProfilePayload,
   UpdateToolPayload,
 } from "./types";
 
@@ -126,11 +131,65 @@ export const api = {
   appendMessage(
     runId: string,
     message: string,
+    messageEventId?: string,
   ): Promise<{ accepted: boolean; run: Run }> {
     return request(`/api/v1/runs/${encodeURIComponent(runId)}/message`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        ...(messageEventId ? { message_event_id: messageEventId } : {}),
+      }),
     });
+  },
+
+  listModelProfiles(): Promise<ModelProfileSummaryList> {
+    return request<ModelProfileSummaryList>("/api/v1/model-profiles");
+  },
+
+  getModelProfile(profileName: string, adminToken: string): Promise<ModelProfile> {
+    return request<ModelProfile>(
+      `/api/v1/model-profiles/${encodeURIComponent(profileName)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } },
+    );
+  },
+
+  updateModelProfile(
+    profileName: string,
+    payload: UpdateModelProfilePayload,
+    adminToken: string,
+  ): Promise<ModelProfile> {
+    return request<ModelProfile>(
+      `/api/v1/model-profiles/${encodeURIComponent(profileName)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+  },
+
+  setDefaultModelProfile(
+    profileName: string,
+    adminToken: string,
+  ): Promise<ModelProfileList> {
+    return request<ModelProfileList>("/api/v1/model-profiles/default", {
+      method: "PUT",
+      body: JSON.stringify({ profile: profileName }),
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+  },
+
+  deleteModelProfile(
+    profileName: string,
+    adminToken: string,
+  ): Promise<ModelProfileList> {
+    return request<ModelProfileList>(
+      `/api/v1/model-profiles/${encodeURIComponent(profileName)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
   },
 
   listEvents(runId: string, afterSequence = 0): Promise<RunEventList> {
@@ -265,13 +324,23 @@ export const api = {
     return request<NodeList>(`/api/v1/nodes${query}`);
   },
 
-  listTools(nodeId = "local"): Promise<ToolRegistrySnapshot> {
+  listTools(nodeId = "local"): Promise<ToolRegistrySummary> {
     return request(`/api/v1/nodes/${encodeURIComponent(nodeId)}/tools`);
   },
 
-  refreshTools(nodeId = "local"): Promise<ToolRegistrySnapshot> {
+  listToolsForAdmin(
+    nodeId = "local",
+    adminToken = "",
+  ): Promise<ToolRegistrySnapshot> {
+    return request(`/api/v1/nodes/${encodeURIComponent(nodeId)}/tools/admin`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+  },
+
+  refreshTools(nodeId = "local", adminToken = ""): Promise<ToolRegistrySummary> {
     return request(`/api/v1/nodes/${encodeURIComponent(nodeId)}/refresh-tools`, {
       method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
     });
   },
 
@@ -279,10 +348,15 @@ export const api = {
     nodeId: string,
     toolId: string,
     payload: UpdateToolPayload,
-  ): Promise<ToolRegistrySnapshot> {
+    adminToken = "",
+  ): Promise<ToolRegistrySummary> {
     return request(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/tools/${encodeURIComponent(toolId)}`,
-      { method: "PUT", body: JSON.stringify(payload) },
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
     );
   },
 };

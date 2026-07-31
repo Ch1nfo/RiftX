@@ -1,189 +1,152 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { RunEventList } from "../api/types";
+import type { RunEvent, RunEventList } from "../api/types";
 import { queryKeys } from "./queries";
-import { useEventStream } from "./useEventStream";
-
-class FakeEventSource {
-  static latest: FakeEventSource | null = null;
-  readonly url: string;
-  onmessage: ((event: MessageEvent<string>) => void) | null = null;
-  listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
-  closed = false;
-
-  constructor(url: string | URL) {
-    this.url = String(url);
-    FakeEventSource.latest = this;
-  }
-
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-    const callback = listener as (event: MessageEvent<string>) => void;
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]);
-  }
-
-  close() {
-    this.closed = true;
-  }
-
-  emit(type: string, data: object) {
-    const event = new MessageEvent("message", { data: JSON.stringify(data) });
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
-  }
-}
+import { consumeServerSentEvents, useEventStream } from "./useEventStream";
 
 function Probe({ runId = "run-1" }: { runId?: string }) {
   useEventStream(runId);
   return null;
 }
 
+function event(sequence: number, eventType: string, payload: Record<string, unknown> = {}): RunEvent {
+  return {
+    id: `event-${sequence}`,
+    run_id: "run-1",
+    sequence,
+    event_type: eventType,
+    payload,
+    created_at: `2026-07-29T00:00:0${sequence}Z`,
+  };
+}
+
+function sseResponse(events: RunEvent[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const item of events) {
+          controller.enqueue(
+            encoder.encode(
+              `id: ${item.sequence}\nevent: ${item.event_type}\ndata: ${JSON.stringify(item)}\n\n`,
+            ),
+          );
+        }
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+}
+
+function pendingSseResponse(): Response {
+  return new Response(new ReadableStream<Uint8Array>(), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function wrapper(queryClient: QueryClient) {
+  return ({ children }: PropsWithChildren) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+
 afterEach(() => {
-  FakeEventSource.latest = null;
+  cleanup();
+  vi.unstubAllGlobals();
 });
 
 describe("useEventStream", () => {
-  it("resumes from the cached sequence and appends SSE events to query state", () => {
-    const original = globalThis.EventSource;
-    globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+  it("resumes from cache and ingests named stop events without an event registry", async () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<RunEventList>(queryKeys.events("run-1"), {
       after_sequence: 0,
-      items: [
-        {
-          id: "event-1",
-          run_id: "run-1",
-          sequence: 1,
-          event_type: "run.created",
-          payload: {},
-          created_at: "2026-07-29T00:00:00Z",
-        },
-      ],
+      items: [event(1, "run.created")],
     });
-    const Wrapper = ({ children }: PropsWithChildren) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    const streamed = [
+      event(2, "target_http.request_cancelled", { execution_key: "request-1" }),
+      event(3, "terminal.close_requested", { session_id: "terminal-1" }),
+      // A future backend event must remain observable without a Web release.
+      event(4, "future.stop_acknowledged", { resource_id: "resource-1" }),
+      event(5, "runtime.engine_event", {
+        cycle_id: "cycle-1",
+        event_type: "assistant_delta",
+        data: { delta: "hello" },
+      }),
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse(streamed));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const rendered = render(<Probe />, { wrapper: wrapper(queryClient) });
+
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData<RunEventList>(queryKeys.events("run-1"))?.items,
+      ).toHaveLength(5),
     );
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("after_sequence=1");
+    expect(
+      queryClient
+        .getQueryData<RunEventList>(queryKeys.events("run-1"))
+        ?.items.map((item) => item.event_type),
+    ).toEqual([
+      "run.created",
+      "target_http.request_cancelled",
+      "terminal.close_requested",
+      "future.stop_acknowledged",
+      "runtime.engine_event",
+    ]);
 
-    const rendered = render(<Probe />, { wrapper: Wrapper });
-    expect(FakeEventSource.latest?.url).toContain("after_sequence=1");
-
-    act(() => {
-      FakeEventSource.latest?.emit("user.message_queued", {
-        id: "event-2",
-        run_id: "run-1",
-        sequence: 2,
-        event_type: "user.message_queued",
-        payload: { message: "continue" },
-        created_at: "2026-07-29T00:00:01Z",
-      });
-    });
-
-    expect(FakeEventSource.latest?.listeners.has("agent.tool_completed")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("runtime.engine_event")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("tool.approval_required")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("terminal.opened")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("artifact.registered")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("finding.updated")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("report.generated")).toBe(true);
-    expect(FakeEventSource.latest?.listeners.has("tool.execution_completed")).toBe(false);
-
-    act(() => {
-      FakeEventSource.latest?.emit("runtime.engine_event", {
-        id: "event-runtime-1",
-        run_id: "run-1",
-        sequence: 3,
-        event_type: "runtime.engine_event",
-        payload: {
-          cycle_id: "cycle-1",
-          event_type: "assistant_delta",
-          data: { delta: "hello" },
-        },
-        created_at: "2026-07-29T00:00:02Z",
-      });
-    });
-
-    act(() => {
-      FakeEventSource.latest?.emit("agent.tool_completed", {
-        id: "event-4",
-        run_id: "run-1",
-        sequence: 4,
-        event_type: "agent.tool_completed",
-        payload: { tool_name: "nmap" },
-        created_at: "2026-07-29T00:00:03Z",
-      });
-    });
-
-    act(() => {
-      FakeEventSource.latest?.emit("terminal.opened", {
-        id: "event-5",
-        run_id: "run-1",
-        sequence: 5,
-        event_type: "terminal.opened",
-        payload: { session_id: "terminal-1" },
-        created_at: "2026-07-29T00:00:04Z",
-      });
-    });
-
-    act(() => {
-      FakeEventSource.latest?.emit("report.generated", {
-        id: "event-6",
-        run_id: "run-1",
-        sequence: 6,
-        event_type: "report.generated",
-        payload: { report_id: "report-1" },
-        created_at: "2026-07-29T00:00:05Z",
-      });
-    });
-
-    const cached = queryClient.getQueryData<RunEventList>(queryKeys.events("run-1"));
-    expect(cached?.items.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     rendered.unmount();
-    expect(FakeEventSource.latest?.closed).toBe(true);
-    globalThis.EventSource = original;
   });
 
-  it("resets the SSE cursor when navigating between runs", () => {
-    const original = globalThis.EventSource;
-    globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+  it("resets the stream cursor and aborts the old request when navigating between runs", async () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<RunEventList>(queryKeys.events("run-a"), {
       after_sequence: 0,
-      items: [
-        {
-          id: "event-a-100",
-          run_id: "run-a",
-          sequence: 100,
-          event_type: "run.created",
-          payload: {},
-          created_at: "2026-07-29T00:00:00Z",
-        },
-      ],
+      items: [{ ...event(100, "run.created"), id: "event-a-100", run_id: "run-a" }],
     });
     queryClient.setQueryData<RunEventList>(queryKeys.events("run-b"), {
       after_sequence: 0,
-      items: [
-        {
-          id: "event-b-2",
-          run_id: "run-b",
-          sequence: 2,
-          event_type: "run.created",
-          payload: {},
-          created_at: "2026-07-29T00:00:00Z",
-        },
-      ],
+      items: [{ ...event(2, "run.created"), id: "event-b-2", run_id: "run-b" }],
     });
-    const Wrapper = ({ children }: PropsWithChildren) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      signals.push(init.signal as AbortSignal);
+      return Promise.resolve(pendingSseResponse());
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
-    const rendered = render(<Probe runId="run-a" />, { wrapper: Wrapper });
-    expect(FakeEventSource.latest?.url).toContain("after_sequence=100");
+    const rendered = render(<Probe runId="run-a" />, { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("after_sequence=100");
 
     rendered.rerender(<Probe runId="run-b" />);
-    expect(FakeEventSource.latest?.url).toContain("after_sequence=2");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("after_sequence=2");
 
     rendered.unmount();
-    globalThis.EventSource = original;
+    expect(signals[1]?.aborted).toBe(true);
+  });
+
+  it("parses named SSE records split across transport chunks", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: brand.new.stop_ack\ndata: {\"sequence\":"));
+        controller.enqueue(encoder.encode("7,\"status\":\"stopped\"}\n\n: heartbeat\n\n"));
+        controller.close();
+      },
+    });
+    const received: string[] = [];
+
+    await consumeServerSentEvents(stream, (data) => received.push(data), new AbortController().signal);
+
+    expect(received).toEqual(['{"sequence":7,"status":"stopped"}']);
   });
 });

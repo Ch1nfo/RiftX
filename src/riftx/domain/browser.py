@@ -29,7 +29,10 @@ _SESSION_TRANSITIONS: Mapping[BrowserSessionStatus, frozenset[BrowserSessionStat
         {BrowserSessionStatus.CLOSED, BrowserSessionStatus.LOST}
     ),
     BrowserSessionStatus.CLOSED: frozenset(),
-    BrowserSessionStatus.LOST: frozenset(),
+    # LOST means the control plane could not confirm whether the browser is
+    # still alive.  A later, explicit Runner acknowledgement may resolve that
+    # uncertainty to CLOSED; it must never resolve back to an active state.
+    BrowserSessionStatus.LOST: frozenset({BrowserSessionStatus.CLOSED}),
 }
 
 
@@ -106,6 +109,23 @@ class BrowserSession(DomainModel):
     @property
     def agent_can_write(self) -> bool:
         return self.status is BrowserSessionStatus.ACTIVE and self.owner is BrowserOwner.AGENT
+
+    @property
+    def stop_confirmed(self) -> bool:
+        """Whether the Runner has durably confirmed that this session is closed."""
+
+        return self.status is BrowserSessionStatus.CLOSED
+
+    @property
+    def may_still_be_running(self) -> bool:
+        """Whether a safety stop must close or reconcile this session."""
+
+        return self.status in {
+            BrowserSessionStatus.CREATED,
+            BrowserSessionStatus.STARTING,
+            BrowserSessionStatus.ACTIVE,
+            BrowserSessionStatus.LOST,
+        }
 
 
 class BrowserPage(DomainModel):

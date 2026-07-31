@@ -90,10 +90,14 @@ class ExecutionReconciler:
         return node is not None and node.status in _ONLINE_RUNNER_STATUSES
 
     async def _mark_lost(self, execution: Execution, reason: str) -> Execution:
+        expected = execution.status
         execution.transition_to(ExecutionStatus.LOST)
-        saved = await self._executions.save(execution)
-        await self._record(saved, reason)
-        return saved
+        current, saved = await self._executions.save_if_status(
+            execution,
+            expected={expected},
+        )
+        await self._record(current, reason if saved else "concurrent_status_change")
+        return current
 
     async def _record(self, execution: Execution, outcome: str) -> None:
         if self._events is None:

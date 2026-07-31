@@ -112,3 +112,11 @@ class TargetHttpRunnerRequest(DomainModel):
     node_id: str
     scope: Scope
     request: TargetHttpRequest
+
+
+class TargetHttpRunnerStopOutcome(DomainModel):
+    """Per-intent proof returned by a Target HTTP Runner stop boundary."""
+
+    tool_call_id: str = Field(min_length=1)
+    confirmed: bool
+    reason: str | None = None

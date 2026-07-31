@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from agents.models.chatcmpl_converter import Converter
 
 from riftx.runtime.engine import (
     AgentEngine,
@@ -322,3 +323,84 @@ async def test_compiled_system_instructions_replace_factory_prompt() -> None:
     )
 
     assert captured["instructions"] == "compiled authoritative prompt"
+
+
+async def test_start_removes_riftx_metadata_before_agents_sdk_conversion() -> None:
+    result = FakeStreamingResult([])
+    captured: dict[str, object] = {}
+
+    def stream_runner(agent: object, engine_input: object, **kwargs: object) -> FakeStreamingResult:
+        captured["input"] = engine_input
+        return result
+
+    engine = OpenAIAgentsEngine(lambda request: object(), stream_runner=stream_runner)
+    await engine.start(
+        AgentEngineRequest(
+            session_id="session-1",
+            model="chat-profile",
+            input_items=[
+                {
+                    "role": "user",
+                    "content": "Begin the bounded task.",
+                    "source_event_id": "event-1",
+                    "source_refs": ["message://message-1"],
+                },
+                {
+                    "id": "tool-result:execution-1",
+                    "type": "tool_result",
+                    "tool_call_id": "call-1",
+                    "content": {"exit_code": 0, "summary": "safe result"},
+                    "source_refs": ["artifact://execution-1/stdout"],
+                    "priority": 100,
+                    "required": True,
+                },
+            ],
+        )
+    )
+
+    sdk_input = captured["input"]
+    assert sdk_input == [
+        {"role": "user", "content": "Begin the bounded task."},
+        {
+            "role": "user",
+            "content": (
+                '[RiftX context]\n{"content": {"exit_code": 0, '
+                '"summary": "safe result"}, "tool_call_id": "call-1", '
+                '"type": "tool_result"}'
+            ),
+        },
+    ]
+    assert Converter.items_to_messages(sdk_input, model="wire-chat-model") == sdk_input
+
+
+@pytest.mark.parametrize(
+    ("item", "message"),
+    [
+        ({"type": "unknown_context", "content": "unsafe"}, "unsupported model input"),
+        (
+            {"type": "function_call_output", "output": "missing identity"},
+            "requires a non-empty call_id",
+        ),
+        (
+            {"type": "function_call", "call_id": "call-1", "name": "scan"},
+            "requires call_id, name, and string arguments",
+        ),
+    ],
+)
+async def test_start_rejects_unknown_or_malformed_provider_items(
+    item: dict[str, object],
+    message: str,
+) -> None:
+    engine = OpenAIAgentsEngine(
+        lambda request: object(),
+        stream_runner=lambda *args, **kwargs: FakeStreamingResult([]),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        await engine.start(
+            AgentEngineRequest(
+                session_id="session-1",
+                model="chat-profile",
+                input_items=[item],
+            )
+        )

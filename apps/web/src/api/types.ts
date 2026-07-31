@@ -1,11 +1,19 @@
 export type RunStatus =
   | "created"
+  | "initializing"
+  | "ready"
   | "preparing"
   | "running"
+  | "waiting_tool"
   | "waiting_approval"
+  | "waiting_user"
+  | "pausing"
   | "paused"
+  | "compacting"
+  | "completing"
   | "completed"
   | "failed"
+  | "cancelling"
   | "cancelled";
 
 export type ApprovalMode = "auto" | "balanced" | "manual";
@@ -74,6 +82,54 @@ export interface CreateRunPayload {
     description?: string;
     authorization_reference?: string;
   };
+}
+
+export type ModelProviderKind = "openai" | "openai_compatible";
+export type ModelRequestMode = "chat_completions" | "responses";
+
+export interface ModelProfileSummary {
+  name: string;
+  model: string;
+  request_mode: ModelRequestMode;
+  api_key_configured: boolean;
+  is_default: boolean;
+  is_effective_default: boolean;
+}
+
+export interface ModelProfile extends ModelProfileSummary {
+  provider: ModelProviderKind;
+  base_url: string | null;
+  api_key_env: string | null;
+  requires_api_key: boolean;
+  timeout_seconds: number;
+  max_retries: number;
+  has_stored_api_key: boolean;
+}
+
+export interface ModelProfileSummaryList {
+  default_profile: string;
+  effective_default_profile: string;
+  profiles: ModelProfileSummary[];
+}
+
+export interface ModelProfileList extends ModelProfileSummaryList {
+  generation: number;
+  source_digest: string;
+  profile_override: string | null;
+  profiles: ModelProfile[];
+}
+
+export interface UpdateModelProfilePayload {
+  provider: ModelProviderKind;
+  model: string;
+  request_mode: ModelRequestMode;
+  base_url?: string | null;
+  api_key_env?: string | null;
+  requires_api_key: boolean;
+  timeout_seconds: number;
+  max_retries: number;
+  api_key?: string;
+  clear_stored_api_key?: boolean;
 }
 
 export interface RunEvent {
@@ -147,6 +203,9 @@ export interface Execution {
   id: string;
   execution_key: string;
   run_id: string;
+  session_id: string | null;
+  tool_call_id: string | null;
+  attempt_group: string | null;
   node_id: string;
   executor_type: "process" | "shell" | "pty";
   argv: string[];
@@ -159,15 +218,27 @@ export interface Execution {
   platform_system: string;
   platform_release: string;
   platform_architecture: string;
-  status: "pending" | "starting" | "running" | "exited" | "failed" | "cancelled" | "lost";
+  status:
+    | "created"
+    | "queued"
+    | "starting"
+    | "running"
+    | "completed"
+    | "exited"
+    | "failed"
+    | "cancelled"
+    | "hard_timeout"
+    | "lost";
   pid: number | null;
   process_group_id: number | null;
+  containment_id: string | null;
   exit_code: number | null;
   stdout_path: string;
   stderr_path: string;
   process_created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+  physical_stop_confirmed_at: string | null;
 }
 
 export interface ExecutionList {
@@ -193,12 +264,20 @@ export interface ToolDefinition {
   enabled: boolean;
   command: string[];
   executor: "process" | "shell" | "pty";
+  short_description?: string | null;
+  description?: string | null;
   capabilities: string[];
+  synonyms?: string[];
+  input_schema?: Record<string, unknown> | null;
   version_probe: ToolVersionProbe | null;
   approval_level: "never" | "sensitive" | "always";
   timeout_seconds: number;
   output: { preferred: string | null };
   environment: Record<string, string>;
+}
+
+export interface ToolDefinitionSummary extends Omit<ToolDefinition, "environment"> {
+  environment_variables: string[];
 }
 
 export interface UpdateToolPayload {
@@ -226,6 +305,19 @@ export interface ToolState {
 export interface RegisteredTool {
   definition: ToolDefinition;
   state: ToolState;
+}
+
+export interface RegisteredToolSummary {
+  definition: ToolDefinitionSummary;
+  state: ToolState;
+}
+
+export interface ToolRegistrySummary {
+  node_id: string;
+  generation: number;
+  source_digest: string;
+  execution_policy: "open" | "registered_only";
+  tools: RegisteredToolSummary[];
 }
 
 export interface ToolRegistrySnapshot {

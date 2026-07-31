@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from riftx.application.errors import RepositoryConflictError
+from riftx.application.services import ResourceStopDisposition, SafetyStopResult
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
 from riftx.domain import DomainError, Engagement, Objective, Run, RunStatus
 from riftx.hooks import (
@@ -99,6 +100,36 @@ class FakeSubagentBatchExecutor:
     ) -> None:
         self.calls.append((parent_session_id, requests))
 
+
+class RecordingSafetyStopper:
+    def __init__(self, runs: SQLAlchemyRunRepository, *, confirmed: bool = True) -> None:
+        self._runs = runs
+        self.confirmed = confirmed
+        self.observed_statuses: list[RunStatus] = []
+        self.calls: list[str] = []
+
+    async def stop_run(self, run_id: str, *, drain: bool = True) -> SafetyStopResult:
+        assert drain is True
+        self.calls.append(run_id)
+        run = await self._runs.get(run_id)
+        assert run is not None
+        self.observed_statuses.append(run.status)
+        failures = {} if self.confirmed else {"browser-1": "owner ACK pending"}
+        return SafetyStopResult(
+            resources={
+                "executions": ResourceStopDisposition((), {}, {}, {}, {}),
+                "browser_sessions": ResourceStopDisposition(
+                    ("browser-1",),
+                    {"browser-1": "node-1"},
+                    {"browser-1": "active"},
+                    {},
+                    failures,
+                ),
+                "target_http_requests": ResourceStopDisposition((), {}, {}, {}, {}),
+            }
+        )
+
+
 def event(sequence: int, event_type: AgentEngineEventType, **data: object) -> AgentEngineEvent:
     return AgentEngineEvent(sequence=sequence, event_type=event_type, data=data)
 
@@ -114,13 +145,15 @@ async def build_runtime(
     workspace_path: Path | None = None,
     hooks: HookBus | None = None,
     subagent_executor: object | None = None,
+    with_safety_stopper: bool = True,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Authorized")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             id="run-1",
             engagement_id="engagement-1",
@@ -133,6 +166,7 @@ async def build_runtime(
     await sessions.create(AgentSession(id="session-1", run_id="run-1", model_profile="fake-model"))
     engine = FakeEngine(events, start_error=start_error)
     repos: dict[str, object] = {
+        "runs": runs,
         "sessions": sessions,
         "cycles": SQLAlchemyAgentCycleRepository(database.session_factory),
         "steps": SQLAlchemyAgentStepRepository(database.session_factory),
@@ -140,6 +174,8 @@ async def build_runtime(
         "events": SQLAlchemyRunEventRepository(database.session_factory),
         "leases": SQLAlchemyRunLeaseRepository(database.session_factory),
     }
+    safety_stopper = RecordingSafetyStopper(runs)
+    repos["safety_stopper"] = safety_stopper
     context_compiler = MinimalContextCompiler()
     if observable_context:
         context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
@@ -149,7 +185,7 @@ async def build_runtime(
             ContextApplicationService(context_repository),
         )
     coordinator = RuntimeCoordinator(
-        run_repository=SQLAlchemyRunRepository(database.session_factory),
+        run_repository=runs,
         session_repository=sessions,
         cycle_repository=repos["cycles"],
         step_repository=repos["steps"],
@@ -159,11 +195,8 @@ async def build_runtime(
         context_compiler=context_compiler,
         agent_engine=engine,
         hooks=hooks,
-        **(
-            {"subagent_executor": subagent_executor}
-            if subagent_executor is not None
-            else {}
-        ),
+        **({"safety_stopper": safety_stopper} if with_safety_stopper else {}),
+        **({"subagent_executor": subagent_executor} if subagent_executor is not None else {}),
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
@@ -255,9 +288,7 @@ async def test_runtime_hooks_wrap_context_and_model_lifecycle(tmp_path: Path) ->
 
     request_items = engine.requests[0].input_items
     assert any("hooked" in str(item.get("content")) for item in request_items)
-    assert any(
-        item.get("content") == "Hook-provided bounded context" for item in request_items
-    )
+    assert any(item.get("content") == "Hook-provided bounded context" for item in request_items)
     assert seen == [
         HookPoint.BEFORE_CONTEXT_COMPILE,
         HookPoint.AFTER_CONTEXT_COMPILE,
@@ -356,6 +387,163 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert session.status is SessionStatus.ACTIVE
     run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
     assert run is not None and run.status is RunStatus.COMPLETED
+    stopper = repos["safety_stopper"]
+    assert isinstance(stopper, RecordingSafetyStopper)
+    assert stopper.calls == ["run-1"]
+    assert stopper.observed_statuses == [RunStatus.COMPLETING]
+    await database.dispose()
+
+
+async def test_non_deferred_cycle_without_safety_stopper_stays_fenced(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, _, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        with_safety_stopper=False,
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="standalone-worker",
+            cycle_id="standalone-completion",
+        )
+    )
+    run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+    runs = repos["runs"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    intent = await runs.get_finalization_intent("run-1")
+
+    assert result.yield_reason is YieldReason.RUN_COMPLETED
+    assert run is not None and run.status is RunStatus.COMPLETING
+    assert intent is not None and intent.target is RunStatus.COMPLETED
+    await database.dispose()
+
+
+async def test_non_deferred_cycle_retry_resumes_stop_gate_without_rerunning_model(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+    )
+    stopper = repos["safety_stopper"]
+    assert isinstance(stopper, RecordingSafetyStopper)
+    stopper.confirmed = False
+    request = RunCycleRequest(
+        run_id="run-1",
+        session_id="session-1",
+        worker_id="standalone-worker",
+        cycle_id="retry-safe-completion",
+    )
+
+    with pytest.raises(DomainError, match="could not confirm every Run effect stopped"):
+        await coordinator.run_cycle(request)
+    fenced = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+    runs = repos["runs"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    persisted_intent = await runs.get_finalization_intent("run-1")
+    stopper.confirmed = True
+    result = await coordinator.run_cycle(request)
+    completed = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+
+    assert fenced is not None and fenced.status is RunStatus.COMPLETING
+    assert persisted_intent is not None
+    assert persisted_intent.target is RunStatus.COMPLETED
+    assert result.yield_reason is YieldReason.RUN_COMPLETED
+    assert completed is not None and completed.status is RunStatus.COMPLETED
+    assert len(engine.requests) == 1
+    assert stopper.observed_statuses == [RunStatus.COMPLETING, RunStatus.COMPLETING]
+    await database.dispose()
+
+
+async def test_temporal_cycle_defers_terminal_status_until_workflow_drains_input(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+    )
+
+    first = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="temporal-worker",
+            cycle_id="temporal-cycle-1",
+            defer_run_completion=True,
+        )
+    )
+    after_first = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+    engine.run = FakeEngineRun([event(1, AgentEngineEventType.RUN_COMPLETED)])
+    second = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="temporal-worker",
+            cycle_id="temporal-cycle-2",
+            defer_run_completion=True,
+        )
+    )
+    after_second = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+
+    assert first.yield_reason is YieldReason.RUN_COMPLETED
+    assert second.yield_reason is YieldReason.RUN_COMPLETED
+    assert after_first is not None and after_first.status is RunStatus.RUNNING
+    assert after_second is not None and after_second.status is RunStatus.RUNNING
+    assert len(engine.requests) == 2
+    await database.dispose()
+
+
+async def test_temporal_cycle_defers_fatal_status_until_fail_closed_cleanup(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, _, _ = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.ERROR, retryable=False, message="fatal")],
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="temporal-worker",
+            cycle_id="temporal-fatal-cycle",
+            defer_run_completion=True,
+        )
+    )
+    run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+
+    assert result.yield_reason is YieldReason.FATAL_FAILURE
+    assert run is not None and run.status is RunStatus.RUNNING
+    await database.dispose()
+
+
+async def test_non_deferred_fatal_cycle_uses_stop_gate_before_failed_status(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, _, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.ERROR, retryable=False, message="fatal")],
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="standalone-worker",
+            cycle_id="standalone-fatal-cycle",
+        )
+    )
+    run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
+    stopper = repos["safety_stopper"]
+
+    assert result.yield_reason is YieldReason.FATAL_FAILURE
+    assert run is not None and run.status is RunStatus.FAILED
+    assert isinstance(stopper, RecordingSafetyStopper)
+    assert stopper.observed_statuses == [RunStatus.COMPLETING]
     await database.dispose()
 
 
@@ -496,6 +684,72 @@ async def test_tool_call_limit_prevents_unbounded_batch(tmp_path: Path) -> None:
     result = await coordinator.run_cycle(
         RunCycleRequest(run_id="run-1", session_id="session-1", worker_id="worker-1")
     )
+    assert result.yield_reason is YieldReason.CYCLE_LIMIT_REACHED
+    assert result.tool_call_count == 2
+    assert engine.run.suspended
+    await database.dispose()
+
+
+async def test_inline_control_tool_call_is_counted_once_across_sdk_start_events(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, _, repos = await build_runtime(
+        tmp_path,
+        [
+            event(
+                1,
+                AgentEngineEventType.TOOL_CALL_STARTED,
+                call_id="call-complete",
+                name="complete_run",
+            ),
+            event(
+                2,
+                AgentEngineEventType.TOOL_CALL_STARTED,
+                call_id="call-complete",
+                tool_id="complete_run",
+                arguments={"run_summary": "done"},
+            ),
+            event(3, AgentEngineEventType.RUN_COMPLETED),
+        ],
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(run_id="run-1", session_id="session-1", worker_id="worker-1")
+    )
+
+    assert result.yield_reason is YieldReason.RUN_COMPLETED
+    assert result.tool_call_count == 1
+    run = await repos["runs"].get("run-1")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    safety_stopper = repos["safety_stopper"]
+    assert safety_stopper.observed_statuses == [RunStatus.COMPLETING]
+    await database.dispose()
+
+
+async def test_inline_control_tool_calls_obey_cycle_limit(tmp_path: Path) -> None:
+    database, coordinator, engine, _ = await build_runtime(
+        tmp_path,
+        [
+            event(
+                1,
+                AgentEngineEventType.TOOL_CALL_STARTED,
+                call_id="control-1",
+                tool_id="search_tools",
+            ),
+            event(
+                2,
+                AgentEngineEventType.TOOL_CALL_STARTED,
+                call_id="control-2",
+                tool_id="list_tools",
+            ),
+        ],
+        limits=CycleLimits(max_tool_calls=2),
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(run_id="run-1", session_id="session-1", worker_id="worker-1")
+    )
+
     assert result.yield_reason is YieldReason.CYCLE_LIMIT_REACHED
     assert result.tool_call_count == 2
     assert engine.run.suspended

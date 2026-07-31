@@ -259,6 +259,8 @@ def test_node_table_matches_runner_lifecycle_contract() -> None:
         "status",
         "capabilities_json",
         "labels_json",
+        "current_runner_instance_id",
+        "current_runner_epoch",
         "last_seen_at",
         "created_at",
         "updated_at",
@@ -268,7 +270,9 @@ def test_node_table_matches_runner_lifecycle_contract() -> None:
 def test_runner_control_tables_match_durable_channel_contract() -> None:
     credentials = Base.metadata.tables["runner_credentials"]
     assert set(credentials.columns.keys()) == {
+        "runner_instance_id",
         "node_id",
+        "runner_epoch",
         "token_hash",
         "token_prefix",
         "created_at",
@@ -282,6 +286,8 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         "node_id",
         "kind",
         "idempotency_key",
+        "target_runner_instance_id",
+        "target_runner_epoch",
         "payload_json",
         "status",
         "attempts",
@@ -299,3 +305,34 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("node_id", "idempotency_key") in unique_columns
+
+    credential_unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in credentials.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("node_id", "runner_epoch") in credential_unique_columns
+    assert ("node_id", "token_hash") in credential_unique_columns
+    assert tuple(column.name for column in credentials.primary_key.columns) == (
+        "runner_instance_id",
+    )
+
+    command_indexes = {
+        index.name: tuple(column.name for column in index.columns) for index in commands.indexes
+    }
+    assert command_indexes["ix_runner_commands_target_poll"] == (
+        "node_id",
+        "target_runner_instance_id",
+        "target_runner_epoch",
+        "status",
+        "created_at",
+    )
+
+
+def test_execution_schema_tracks_owner_containment_and_stop_proof() -> None:
+    assert {
+        "owner_runner_instance_id",
+        "owner_runner_epoch",
+        "containment_id",
+        "physical_stop_confirmed_at",
+    } <= set(Base.metadata.tables["executions"].columns.keys())

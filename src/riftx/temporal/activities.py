@@ -17,8 +17,15 @@ from riftx.agent import (
     RiftXAgentContext,
     RiftXDatabaseSession,
 )
+from riftx.application.errors import RepositoryConflictError
+from riftx.application.finalization import (
+    REPORT_GENERATION_FAILED_EVENT_TYPE,
+    cleanup_event_id,
+    cleanup_event_payload,
+    report_failure_event_id,
+    report_failure_event_payload,
+)
 from riftx.application.ports import (
-    ExecutionRepository,
     RunEventRepository,
     RunRepository,
 )
@@ -27,20 +34,22 @@ from riftx.application.services import (
     ApprovalRequestRecorder,
     GenerateReports,
     ReportApplicationService,
+    RunSafetyStopService,
+    stop_resources_payload,
 )
 from riftx.context.compaction import (
     CompactContextCommand,
     ContextCompactionManager,
     SwitchModelCommand,
 )
-from riftx.domain import ReportFormat, Run, RunStatus
-from riftx.runner import ExecutionRunner
+from riftx.domain import InvalidStateTransitionError, ReportFormat, Run, RunStatus
 from riftx.tools import ToolRegistry
 
 from .models import (
     AgentCycleActivityInput,
     AgentCycleActivityResult,
     AgentCycleActivityStatus,
+    CleanupReportFailureInput,
     CleanupRunInput,
     CleanupRunResult,
     CompactContextInput,
@@ -48,6 +57,8 @@ from .models import (
     GenerateReportInput,
     GenerateReportResult,
     PendingApproval,
+    PrepareConversationInput,
+    PrepareConversationResult,
     PrepareRunInput,
     PrepareRunResult,
     RunAgentCycleActivityInput,
@@ -75,9 +86,8 @@ class RiftXActivities:
         *,
         run_repository: RunRepository,
         event_repository: RunEventRepository,
-        execution_repository: ExecutionRepository,
         tool_registry: ToolRegistry,
-        supervisor: ExecutionRunner,
+        safety_stopper: RunSafetyStopService,
         agent_cycle: AgentCycleRunner,
         approval_recorder: ApprovalRequestRecorder,
         report_service: ReportApplicationService,
@@ -86,18 +96,67 @@ class RiftXActivities:
     ) -> None:
         self._run_repository = run_repository
         self._event_repository = event_repository
-        self._execution_repository = execution_repository
         self._tool_registry = tool_registry
-        self._supervisor = supervisor
+        self._safety_stopper = safety_stopper
         self._agent_cycle = agent_cycle
         self._approval_recorder = approval_recorder
         self._report_service = report_service
         self._session_factory = session_factory
         self._compaction_manager = compaction_manager
 
+    @activity.defn(name="prepare_conversation_activity")
+    async def prepare_conversation_activity(
+        self,
+        input: PrepareConversationInput,
+    ) -> PrepareConversationResult:
+        run = await self._require_run(input.run_id)
+        if run.status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+            return PrepareConversationResult(run_id=run.id, cancelled=True)
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED}:
+            raise ApplicationError(
+                f"run {run.id!r} is paused before its initial instruction can start"
+            )
+        if run.status is RunStatus.CREATED:
+            try:
+                run = await self._run_repository.update_status(run.id, RunStatus.WAITING_USER)
+            except InvalidStateTransitionError:
+                run = await self._require_run(input.run_id)
+                if run.status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+                    return PrepareConversationResult(run_id=run.id, cancelled=True)
+                raise
+        if run.status is not RunStatus.WAITING_USER:
+            raise ApplicationError(
+                f"run {run.id!r} cannot wait for initial instruction from status "
+                f"{run.status.value!r}",
+                non_retryable=True,
+            )
+
+        existing_events = await self._event_repository.list_after(run.id, limit=1_000)
+        if not any(event.event_type == "conversation.context_ready" for event in existing_events):
+            await self._event_repository.append(
+                run.id,
+                "conversation.context_ready",
+                {
+                    "session_id": input.session_id,
+                    "status": run.status.value,
+                    "objective": run.objective.description,
+                    "success_criteria": [
+                        item.model_dump(mode="json") for item in run.success_criteria
+                    ],
+                    "entry_points": [item.model_dump(mode="json") for item in run.entry_points],
+                    "scope": run.scope.model_dump(mode="json"),
+                    "approval_mode": run.approval_mode.value,
+                    "model_profile": run.model_profile,
+                    "agent_started": False,
+                },
+            )
+        return PrepareConversationResult(run_id=run.id)
+
     @activity.defn(name="prepare_run_activity")
     async def prepare_run_activity(self, input: PrepareRunInput) -> PrepareRunResult:
         run = await self._require_run(input.run_id)
+        if run.status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+            return PrepareRunResult(run_id=run.id, prepared=False)
         if run.node_id != self._tool_registry.node_id:
             raise ApplicationError(
                 f"run node {run.node_id!r} does not match worker node "
@@ -124,6 +183,20 @@ class RiftXActivities:
         input: AgentCycleActivityInput,
     ) -> AgentCycleActivityResult:
         run = await self._require_run(input.run_id)
+        if not input.defer_run_completion and run.status in {
+            RunStatus.COMPLETING,
+            RunStatus.COMPLETED,
+        }:
+            # A legacy Activity retry may resume after its first attempt
+            # established the fence but failed to obtain every stop ACK. Do
+            # not invoke the model again: resume only the idempotent safety
+            # finalization step.
+            if not await self._finalize_compat_run(run.id, RunStatus.COMPLETED):
+                raise ApplicationError(
+                    f"run {run.id!r} completion lost to a control fence",
+                    type="cleanup_stop_unconfirmed",
+                )
+            return AgentCycleActivityResult(status=AgentCycleActivityStatus.COMPLETED)
         if run.status is RunStatus.COMPLETED:
             return AgentCycleActivityResult(status=AgentCycleActivityStatus.COMPLETED)
         if run.status is RunStatus.WAITING_APPROVAL:
@@ -183,7 +256,16 @@ class RiftXActivities:
         if output is None:
             raise ApplicationError("completed Agent Cycle did not return output")
         if output.completed:
-            await self._run_repository.update_status(run.id, RunStatus.COMPLETED)
+            if not input.defer_run_completion:
+                # Pre-deferred Workflow histories still schedule this legacy
+                # Activity before report/cleanup. Preserve that command order
+                # while requiring the same three-family physical-stop gate as
+                # modern cleanup before exposing a terminal Run status.
+                if not await self._finalize_compat_run(run.id, RunStatus.COMPLETED):
+                    raise ApplicationError(
+                        f"run {run.id!r} completion lost to a control fence",
+                        type="cleanup_stop_unconfirmed",
+                    )
             status = AgentCycleActivityStatus.COMPLETED
         elif output.needs_input:
             await self._run_repository.update_status(run.id, RunStatus.PAUSED)
@@ -215,6 +297,7 @@ class RiftXActivities:
                     if input.latest_user_message_id is not None
                     else []
                 ),
+                defer_run_completion=input.defer_run_completion,
             )
         )
         reason = {
@@ -334,10 +417,27 @@ class RiftXActivities:
         )
         return GenerateReportResult(report_id=markdown.id if markdown else None)
 
+    @activity.defn(name="cleanup_report_failure_activity")
+    async def cleanup_report_failure_activity(
+        self,
+        input: CleanupReportFailureInput,
+    ) -> CleanupRunResult:
+        """Persist an exhausted report attempt and release deferred cleanup."""
+
+        run = await self._require_run(input.run_id)
+        await self._event_repository.append(
+            run.id,
+            REPORT_GENERATION_FAILED_EVENT_TYPE,
+            report_failure_event_payload(),
+            event_id=report_failure_event_id(run.id),
+        )
+        return await self.cleanup_run_activity(
+            CleanupRunInput(run_id=run.id, final_status=RunStatus.COMPLETED.value)
+        )
+
     @activity.defn(name="cleanup_run_activity")
     async def cleanup_run_activity(self, input: CleanupRunInput) -> CleanupRunResult:
         run = await self._require_run(input.run_id)
-        await self._cancel_run_executions(run.id)
         try:
             target = RunStatus(input.final_status)
         except ValueError as exc:
@@ -345,28 +445,130 @@ class RiftXActivities:
                 f"invalid cleanup final status {input.final_status!r}",
                 non_retryable=True,
             ) from exc
-        if (
-            target is RunStatus.CANCELLED
-            and run.status is not RunStatus.CANCELLING
-            and run.can_transition_to(RunStatus.CANCELLING)
-        ):
-            run = await self._run_repository.update_status(run.id, RunStatus.CANCELLING)
-        if run.status is not target and run.can_transition_to(target):
-            run = await self._run_repository.update_status(run.id, target)
-        await self._event_repository.append(
+        if target not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise ApplicationError(
+                f"cleanup target {target.value!r} is not terminal",
+                non_retryable=True,
+            )
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED, RunStatus.CANCELLING}:
+            if target is RunStatus.FAILED and run.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+            }:
+                await self._record_paused_failure_intent(run.id)
+            return CleanupRunResult(cleaned=False)
+
+        # Cancellation remains owned by the Control Plane. It establishes the
+        # CANCELLING fence and only commits CANCELLED after its safety gate has
+        # obtained affirmative stop evidence from every effect controller.
+        if target is RunStatus.CANCELLED:
+            if run.status is RunStatus.CANCELLED:
+                await self._event_repository.append(
+                    run.id,
+                    "run.cleaned_up",
+                    cleanup_event_payload(RunStatus.CANCELLED),
+                    event_id=cleanup_event_id(run.id, RunStatus.CANCELLED),
+                )
+                return CleanupRunResult(cleaned=True)
+            if run.status is not RunStatus.CANCELLING and run.can_transition_to(
+                RunStatus.CANCELLING
+            ):
+                await self._update_cleanup_status(run.id, RunStatus.CANCELLING)
+            return CleanupRunResult(cleaned=False)
+
+        # Completion must serialize against durable user messages before the
+        # fence closes admission. A pending instruction keeps the Run open and
+        # no physical effect is stopped on behalf of a completion that lost.
+        if target is RunStatus.COMPLETED and input.completion_fence:
+            try:
+                (
+                    run,
+                    pending_user_message_ids,
+                ) = await self._run_repository.fence_completion_if_no_pending_user_messages(
+                    run.id,
+                    consumed_user_message_ids=input.consumed_user_message_ids,
+                    defer_cleanup_event=input.defer_cleanup_event,
+                )
+            except (InvalidStateTransitionError, RepositoryConflictError):
+                current = await self._require_run(run.id)
+                if current.status in {
+                    RunStatus.PAUSING,
+                    RunStatus.CANCELLING,
+                    RunStatus.COMPLETING,
+                    RunStatus.COMPLETED,
+                    RunStatus.FAILED,
+                    RunStatus.CANCELLED,
+                }:
+                    return CleanupRunResult(cleaned=False)
+                raise
+            if pending_user_message_ids:
+                return CleanupRunResult(
+                    cleaned=False,
+                    pending_user_message_ids=list(pending_user_message_ids),
+                )
+        elif run.status is not target:
+            updated = await self._fence_cleanup_finalization(
+                run.id,
+                target,
+                defer_cleanup_event=input.defer_cleanup_event,
+            )
+            if updated is None:
+                return CleanupRunResult(cleaned=False)
+            run = updated
+
+        # If another terminal state or a safety fence won, do not relabel it.
+        run = await self._require_run(run.id)
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED, RunStatus.CANCELLING}:
+            return CleanupRunResult(cleaned=False)
+        if run.status not in {target, RunStatus.COMPLETING}:
+            return CleanupRunResult(cleaned=False)
+
+        # COMPLETING is the cross-process admission fence for all three effect
+        # families. Only trusted physical-stop acknowledgements can release it
+        # into COMPLETED/FAILED. Any controller error is retryable and leaves
+        # the Run visibly non-terminal without a misleading run.cleaned_up.
+        stop_result = await self._safety_stopper.stop_run(run.id, drain=True)
+        if not stop_result.succeeded:
+            raise ApplicationError(
+                "cleanup could not confirm every Run effect stopped: "
+                f"{stop_resources_payload(stop_result)!r}",
+                type="cleanup_stop_unconfirmed",
+            )
+
+        run = await self._require_run(run.id)
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED, RunStatus.CANCELLING}:
+            return CleanupRunResult(cleaned=False)
+        updated = await self._commit_cleanup_finalization(
             run.id,
-            "run.cleaned_up",
-            {"status": run.status.value},
+            target,
+            defer_cleanup_event=input.defer_cleanup_event,
         )
-        return CleanupRunResult()
+        if updated is None:
+            return CleanupRunResult(cleaned=False)
+        run = updated
+        if run.status is not target:
+            return CleanupRunResult(cleaned=False)
+        if not input.defer_cleanup_event:
+            await self._event_repository.append(
+                run.id,
+                "run.cleanup_stop_confirmed",
+                {
+                    "status": run.status.value,
+                    "stop_resources": stop_resources_payload(stop_result),
+                    "owner": "workflow_activity",
+                },
+            )
+        return CleanupRunResult(cleaned=run.status is target)
 
     def registered(self, *, include_runtime_cycle_compat: bool = True) -> list[object]:
-        activities = [
+        activities: list[object] = [
+            self.prepare_conversation_activity,
             self.prepare_run_activity,
             self.agent_cycle_activity,
             self.compact_context_activity,
             self.switch_model_activity,
             self.generate_report_activity,
+            self.cleanup_report_failure_activity,
             self.cleanup_run_activity,
         ]
         if include_runtime_cycle_compat:
@@ -379,8 +581,142 @@ class RiftXActivities:
             raise ApplicationError(f"run {run_id!r} was not found", non_retryable=True)
         return run
 
+    async def _finalize_compat_run(self, run_id: str, target: RunStatus) -> bool:
+        """Safely terminalize legacy non-deferred Activity executions.
+
+        Workflow histories created before deferred completion cannot change
+        their already-recorded Activity command order during replay. Activity
+        implementation changes are replay-safe, so legacy retries establish
+        the shared COMPLETING fence and require physical-stop evidence here.
+        """
+
+        run = await self._require_run(run_id)
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED, RunStatus.CANCELLING}:
+            return False
+        if run.status is not target:
+            updated = await self._fence_cleanup_finalization(
+                run.id,
+                target,
+                defer_cleanup_event=False,
+            )
+            if updated is None:
+                return False
+            run = updated
+        if run.status not in {target, RunStatus.COMPLETING}:
+            return False
+
+        stop_result = await self._safety_stopper.stop_run(run.id, drain=True)
+        if not stop_result.succeeded:
+            raise ApplicationError(
+                "legacy completion could not confirm every Run effect stopped: "
+                f"{stop_resources_payload(stop_result)!r}",
+                type="cleanup_stop_unconfirmed",
+            )
+
+        run = await self._require_run(run.id)
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED, RunStatus.CANCELLING}:
+            return False
+        if run.status is not target and run.can_transition_to(target):
+            updated = await self._update_cleanup_status(run.id, target)
+            if updated is None:
+                return False
+            run = updated
+        return run.status is target
+
+    async def _fence_cleanup_finalization(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        defer_cleanup_event: bool,
+    ) -> Run | None:
+        try:
+            return await self._run_repository.fence_finalization(
+                run_id,
+                target,
+                defer_cleanup_event=defer_cleanup_event,
+            )
+        except (InvalidStateTransitionError, RepositoryConflictError):
+            current = await self._require_run(run_id)
+            if target is RunStatus.FAILED and current.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+            }:
+                await self._record_paused_failure_intent(run_id)
+            if current.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+                RunStatus.CANCELLING,
+                RunStatus.COMPLETING,
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+            }:
+                return None
+            raise
+
+    async def _record_paused_failure_intent(self, run_id: str) -> None:
+        try:
+            await self._run_repository.record_finalization_intent(
+                run_id,
+                RunStatus.FAILED,
+            )
+        except RepositoryConflictError:
+            current = await self._require_run(run_id)
+            if current.status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+                return
+            raise
+
+    async def _update_cleanup_status(self, run_id: str, target: RunStatus) -> Run | None:
+        try:
+            return await self._run_repository.update_status(run_id, target)
+        except InvalidStateTransitionError:
+            # The Control Plane can commit a pause/cancel fence after the
+            # Activity's last read. Domain transitions reject overwriting that
+            # fence; convert the expected lost race into a clean retry result
+            # instead of making Temporal repeatedly fail the cleanup Activity.
+            current = await self._require_run(run_id)
+            if current.status in {RunStatus.PAUSING, RunStatus.CANCELLING}:
+                return None
+            raise
+
+    async def _commit_cleanup_finalization(
+        self,
+        run_id: str,
+        target: RunStatus,
+        *,
+        defer_cleanup_event: bool,
+    ) -> Run | None:
+        try:
+            return await self._run_repository.commit_finalization(
+                run_id,
+                target,
+                defer_cleanup_event=defer_cleanup_event,
+            )
+        except (InvalidStateTransitionError, RepositoryConflictError):
+            current = await self._require_run(run_id)
+            if current.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+                RunStatus.CANCELLING,
+                RunStatus.CANCELLED,
+            } or (
+                current.status in {RunStatus.COMPLETED, RunStatus.FAILED}
+                and current.status is not target
+            ):
+                return None
+            # Do not hide an invalid intent or deterministic event collision.
+            # Those failures must remain visible so Temporal retries them.
+            raise
+
     async def _move_to_running(self, run: Run) -> Run:
-        if run.status is RunStatus.CREATED:
+        if run.status in {RunStatus.PAUSING, RunStatus.PAUSED}:
+            # The conversation-first Workflow uses an unbounded, backed-off
+            # retry policy for preparation.  Local resume returns the Run to
+            # WAITING_USER, after which a retry can safely continue without a
+            # Temporal resume signal.
+            raise ApplicationError(f"run {run.id!r} is paused before preparation")
+        if run.status in {RunStatus.CREATED, RunStatus.WAITING_USER}:
             run = await self._run_repository.update_status(run.id, RunStatus.PREPARING)
         if run.status is RunStatus.PREPARING:
             run = await self._run_repository.update_status(run.id, RunStatus.RUNNING)
@@ -390,21 +726,6 @@ class RiftXActivities:
                 non_retryable=True,
             )
         return run
-
-    async def _cancel_run_executions(self, run_id: str) -> None:
-        active = await self._execution_repository.list_active()
-        cancelled: list[str] = []
-        for execution in active:
-            if execution.run_id != run_id:
-                continue
-            await self._supervisor.cancel(execution.id)
-            cancelled.append(execution.id)
-        if cancelled:
-            await self._event_repository.append(
-                run_id,
-                "execution.cancel_requested",
-                {"execution_ids": cancelled},
-            )
 
 
 async def _await_with_heartbeats[ResultT](

@@ -23,7 +23,17 @@ from riftx.runtime.engine import AgentEngineEvent, AgentEngineEventType, AgentEn
 class EvaluationEngineRun:
     async def events(self) -> AsyncIterator[AgentEngineEvent]:
         yield AgentEngineEvent(sequence=1, event_type=AgentEngineEventType.RUN_STARTED)
-        yield AgentEngineEvent(sequence=2, event_type=AgentEngineEventType.RUN_COMPLETED)
+        yield AgentEngineEvent(
+            sequence=2,
+            event_type=AgentEngineEventType.TOOL_CALL_READY,
+            data={
+                "call_id": "qa-recovery-tool-call",
+                "tool_id": "qa-recovery-probe",
+                "arguments": {},
+                "approval_level": "never",
+            },
+        )
+        yield AgentEngineEvent(sequence=3, event_type=AgentEngineEventType.RUN_COMPLETED)
 
     async def suspend(self) -> AgentEngineState:
         return AgentEngineState(
@@ -58,7 +68,9 @@ class DurableEvaluationRunner:
         self._repository = repository
         self._launches = launches
 
-    async def start(self, request: ExecutionLaunchRequest) -> Execution:
+    async def start(self, request: ExecutionLaunchRequest, *, effect_guard=None) -> Execution:
+        if effect_guard is not None:
+            await effect_guard()
         execution = Execution(
             execution_key=request.execution_key,
             run_id=request.run_id,
@@ -152,8 +164,8 @@ class FaultingExecutionRunner:
         self._delegate = delegate
         self._injector = injector
 
-    async def start(self, request: ExecutionLaunchRequest) -> Execution:
-        execution = await self._delegate.start(request)
+    async def start(self, request: ExecutionLaunchRequest, *, effect_guard=None) -> Execution:
+        execution = await self._delegate.start(request, effect_guard=effect_guard)
         self._injector.trip(RecoveryBoundary.AFTER_EXECUTION_STARTED)
         return execution
 

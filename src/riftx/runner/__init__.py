@@ -11,7 +11,7 @@ from .conpty import ConPTYBackend, ConPTYUnavailableError
 from .models import ExecutionLaunchRequest, ExecutionOutput, OutputSlice, TerminalLaunchRequest
 from .paths import ExecutionPaths, RunnerPaths, TerminalPaths
 from .process_inspector import ProcessIdentity, ProcessInspector
-from .protocols import ExecutionRunner
+from .protocols import EffectGuard, ExecutionRunner
 from .supervisor import ProcessSupervisor
 from .target_http import (
     NodeTargetHttpRouter,
@@ -32,6 +32,7 @@ __all__ = [
     "ExecutionLaunchRequest",
     "ExecutionOutput",
     "ExecutionPaths",
+    "EffectGuard",
     "ExecutionRunner",
     "OutputSlice",
     "ProcessIdentity",

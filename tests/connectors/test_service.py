@@ -65,12 +65,14 @@ def capture(*, capture_id: str = "capture-1", url: str = "https://example.com/ap
     )
 
 
-async def test_connector_ingests_artifacts_notifies_run_and_replays_idempotently() -> None:
+async def test_connector_ingests_artifacts_without_starting_the_agent() -> None:
     runs = FakeRuns()
     artifacts = FakeArtifacts()
     submissions = FakeSubmissions()
     service = ConnectorApplicationService(
-        runs=runs, submissions=submissions, artifacts=artifacts  # type: ignore[arg-type]
+        runs=runs,
+        submissions=submissions,
+        artifacts=artifacts,  # type: ignore[arg-type]
     )
     first = await service.ingest("run-1", capture())
     replay = await service.ingest("run-1", capture())
@@ -80,8 +82,7 @@ async def test_connector_ingests_artifacts_notifies_run_and_replays_idempotently
     assert artifacts.items[0].mime_type == "message/http"
     assert artifacts.items[1].mime_type == "message/http"
     assert artifacts.items[2].mime_type == "application/json"
-    assert len(runs.messages) == 1
-    assert first.submission.request_artifact_id in runs.messages[0]
+    assert runs.messages == []
 
 
 async def test_connector_rejects_scope_escape_and_capture_id_conflict() -> None:
@@ -95,6 +96,4 @@ async def test_connector_rejects_scope_escape_and_capture_id_conflict() -> None:
 
     await service.ingest("run-1", capture())
     with pytest.raises(ApplicationConflictError, match="different content"):
-        await service.ingest(
-            "run-1", capture(url="https://example.com/different")
-        )
+        await service.ingest("run-1", capture(url="https://example.com/different"))

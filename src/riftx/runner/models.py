@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from riftx.domain import ExecutorType, TerminalOwner
+from riftx.domain import ExecutorType, RunnerPrincipal, TerminalOwner
 from riftx.executors import EnvironmentMode, ShellKind
 
 
@@ -20,6 +20,9 @@ class ExecutionLaunchRequest(BaseModel):
     tool_call_id: str | None = Field(default=None, min_length=1)
     attempt_group: str | None = Field(default=None, min_length=1)
     node_id: str = Field(min_length=1)
+    # Local launches leave this unset. Remote admission binds the exact Runner
+    # generation before dispatch so a cloned node ID cannot adopt the effect.
+    runner_principal: RunnerPrincipal | None = None
     executor_type: ExecutorType
     cwd: Path
     argv: list[str] = Field(default_factory=list)
@@ -81,6 +84,7 @@ class TerminalLaunchRequest(BaseModel):
     tool_call_id: str | None = Field(default=None, min_length=1)
     run_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
+    runner_principal: RunnerPrincipal | None = None
     cwd: Path
     argv: list[str]
     tool_id: str | None = Field(default=None, min_length=1)

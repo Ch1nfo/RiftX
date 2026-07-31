@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import math
 import platform
+import sys
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 import httpx
 import typer
@@ -20,6 +24,14 @@ from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
 from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
+from riftx.models import (
+    MAX_MODEL_TIMEOUT_SECONDS,
+    ModelAPI,
+    ModelProviderKind,
+    validate_provider_base_url,
+    validate_remote_api_key_env,
+    validate_remote_base_url,
+)
 from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 from riftx.temporal.worker_runtime import build_temporal_worker
 
@@ -37,6 +49,8 @@ from .render import (
     render_executions,
     render_memories,
     render_memory,
+    render_model_profile,
+    render_model_profiles,
     render_node,
     render_nodes,
     render_report,
@@ -65,6 +79,7 @@ terminal_app = typer.Typer(help="Create and control interactive terminal session
 artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
+model_app = typer.Typer(help="Configure model provider profiles.")
 app.add_typer(run_app, name="run")
 app.add_typer(execution_app, name="execution")
 app.add_typer(nodes_app, name="node")
@@ -73,6 +88,7 @@ app.add_typer(terminal_app, name="terminal")
 app.add_typer(artifact_app, name="artifact")
 app.add_typer(report_app, name="report")
 app.add_typer(memory_app, name="memory")
+app.add_typer(model_app, name="model")
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +181,13 @@ def serve(
         }
     )
     config = state.config.model_copy(update={"server": server})
+    if not _is_loopback_listen_host(server.host) and not config.security.trust_proxy_auth:
+        raise typer.BadParameter(
+            "Non-loopback Control Plane binds expose execution APIs. Keep server.host "
+            "on loopback or set RIFTX_TRUST_PROXY_AUTH=true only when an authenticated "
+            "reverse proxy is the exclusive ingress.",
+            param_hint="--host",
+        )
     settings = APISettings.from_config(config)
     uvicorn.run(
         create_app(settings=settings),
@@ -173,6 +196,18 @@ def serve(
         reload=reload,
         log_level="info",
     )
+
+
+def _is_loopback_listen_host(host: str) -> bool:
+    normalized = host.strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 @app.command()
@@ -202,6 +237,13 @@ def runner_daemon(
         Path | None,
         typer.Option("--state-path", help="Runner state directory override."),
     ] = None,
+    credential_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--credential-path",
+            help="Runner credential file override; keep it outside execution state.",
+        ),
+    ] = None,
     registration_token: Annotated[
         str | None,
         typer.Option("--registration-token", help="Bootstrap registration token override."),
@@ -219,11 +261,16 @@ def runner_daemon(
                 node_id=resolved_node_id,
                 name=name or platform.node() or resolved_node_id,
                 state_path=(state_path or config.runner.state_path).expanduser(),
+                credential_path=(credential_path or config.runner.credential_path).expanduser(),
                 registration_token=(
                     registration_token
                     if registration_token is not None
                     else config.runner.registration_token
                 ),
+                command_lease_seconds=config.runner.command_lease_seconds,
+                require_containment=config.execution.require_containment,
+                payload_uid=config.execution.payload_uid,
+                payload_gid=config.execution.payload_gid,
             )
         )
     )
@@ -518,6 +565,172 @@ def attach(
         raise typer.Exit(1) from exc
 
 
+@model_app.command("list")
+def list_model_profiles(context: typer.Context) -> None:
+    """List configured model profiles without exposing credentials."""
+
+    _run_with_client(
+        context,
+        lambda client: render_model_profiles(console, client.list_model_profiles()),
+    )
+
+
+@model_app.command("show")
+def show_model_profile(
+    context: typer.Context,
+    profile_name: Annotated[str, typer.Argument(help="Model profile name.")],
+) -> None:
+    """Show one model profile without exposing its API key."""
+
+    _run_with_client(
+        context,
+        lambda client: render_model_profile(console, client.get_model_profile(profile_name)),
+    )
+
+
+@model_app.command("configure")
+def configure_model_profile(
+    context: typer.Context,
+    profile_name: Annotated[str, typer.Argument(help="Model profile name.")],
+    model_name: Annotated[str, typer.Option("--model", help="Provider model name.")],
+    provider: Annotated[
+        ModelProviderKind,
+        typer.Option("--provider", case_sensitive=False),
+    ] = ModelProviderKind.OPENAI_COMPATIBLE,
+    request_mode: Annotated[
+        ModelAPI,
+        typer.Option("--request-mode", case_sensitive=False),
+    ] = ModelAPI.CHAT_COMPLETIONS,
+    base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    api_key_env: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key-env",
+            help="RIFTX_MODEL_* variable checked before local storage.",
+        ),
+    ] = "RIFTX_MODEL_API_KEY",
+    requires_api_key: Annotated[
+        bool,
+        typer.Option("--requires-api-key/--no-api-key"),
+    ] = True,
+    timeout_seconds: Annotated[float, typer.Option("--timeout")] = 120,
+    max_retries: Annotated[int, typer.Option("--max-retries", min=0, max=10)] = 2,
+    api_key_prompt: Annotated[
+        bool,
+        typer.Option("--api-key-prompt", help="Read and hide an API key interactively."),
+    ] = False,
+    api_key_stdin: Annotated[
+        bool,
+        typer.Option("--api-key-stdin", help="Read an API key from standard input."),
+    ] = False,
+    clear_stored_api_key: Annotated[
+        bool,
+        typer.Option("--clear-stored-api-key"),
+    ] = False,
+) -> None:
+    """Create or replace a model profile through the Control Plane."""
+
+    try:
+        base_url = validate_remote_base_url(base_url)
+        validate_provider_base_url(provider, base_url)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--base-url") from exc
+    try:
+        api_key_env = validate_remote_api_key_env(api_key_env)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--api-key-env") from exc
+
+    if api_key_prompt and api_key_stdin:
+        raise typer.BadParameter(
+            "choose either --api-key-prompt or --api-key-stdin",
+            param_hint="--api-key-prompt",
+        )
+    if clear_stored_api_key and (api_key_prompt or api_key_stdin):
+        raise typer.BadParameter(
+            "--clear-stored-api-key cannot be combined with API key input",
+            param_hint="--clear-stored-api-key",
+        )
+    if not requires_api_key and (api_key_prompt or api_key_stdin):
+        raise typer.BadParameter(
+            "API key input cannot be used with --no-api-key",
+            param_hint="--no-api-key",
+        )
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+        or timeout_seconds > MAX_MODEL_TIMEOUT_SECONDS
+    ):
+        raise typer.BadParameter(
+            f"timeout must be finite, greater than 0, and at most "
+            f"{MAX_MODEL_TIMEOUT_SECONDS:g} seconds",
+            param_hint="--timeout",
+        )
+
+    api_key: str | None = None
+    if api_key_prompt:
+        api_key = typer.prompt("API key", hide_input=True).strip()
+    elif api_key_stdin:
+        api_key = sys.stdin.read().strip()
+    if (api_key_prompt or api_key_stdin) and not api_key:
+        raise typer.BadParameter("API key input was empty")
+
+    payload: dict[str, object] = {
+        "provider": provider.value,
+        "model": model_name,
+        "request_mode": request_mode.value,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "requires_api_key": requires_api_key,
+        "timeout_seconds": timeout_seconds,
+        "max_retries": max_retries,
+        "clear_stored_api_key": clear_stored_api_key,
+    }
+    if api_key is not None:
+        payload["api_key"] = api_key
+    _run_with_client(
+        context,
+        lambda client: render_model_profile(
+            console,
+            client.configure_model_profile(profile_name, payload),
+        ),
+    )
+
+
+@model_app.command("default")
+def set_default_model_profile(
+    context: typer.Context,
+    profile_name: Annotated[str, typer.Argument(help="New default model profile.")],
+) -> None:
+    """Select the default model profile used for new Runs."""
+
+    _run_with_client(
+        context,
+        lambda client: render_model_profiles(
+            console,
+            client.set_default_model_profile(profile_name),
+        ),
+    )
+
+
+@model_app.command("remove")
+def remove_model_profile(
+    context: typer.Context,
+    profile_name: Annotated[str, typer.Argument(help="Model profile to remove.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+) -> None:
+    """Remove a non-default model profile and its stored local API key."""
+
+    if not yes and not typer.confirm(f"Remove model profile {profile_name!r}?"):
+        raise typer.Abort()
+    _run_with_client(
+        context,
+        lambda client: render_model_profiles(
+            console,
+            client.delete_model_profile(profile_name),
+        ),
+    )
+
+
 @run_app.command("create")
 def create_run(
     context: typer.Context,
@@ -548,7 +761,7 @@ def create_run(
         typer.Option("--entry", help="Repeatable entry point as KIND=VALUE."),
     ] = None,
 ) -> None:
-    """Create a durable Run and start its Temporal workflow."""
+    """Create a durable Run that waits for the first concrete instruction."""
 
     payload: dict[str, object] = {
         "objective": objective,
@@ -564,7 +777,39 @@ def create_run(
         payload["workspace_path"] = workspace
     if model_profile:
         payload["model_profile"] = model_profile
-    _run_with_client(context, lambda client: render_run(console, client.create_run(payload)))
+
+    state = _state(context)
+
+    def operation(client: APIClient) -> None:
+        run = client.create_run(payload)
+        render_run(console, run)
+        run_id = str(run.get("id") or "").strip()
+        console.print(
+            "[green]"
+            + tr(
+                "Run created. The objective and boundaries are saved; the Agent is "
+                "waiting for your first concrete instruction."
+            )
+            + "[/green]"
+        )
+        console.print(
+            f"[dim]{tr('No model or Tool will run before that instruction is sent.')}[/dim]"
+        )
+        if run_id:
+            console.print(
+                tr(
+                    'Send it with: riftx run message {run_id} "YOUR INSTRUCTION"',
+                    run_id=run_id,
+                )
+            )
+            console.print(
+                tr(
+                    "Open the conversation: {url}",
+                    url=f"{state.api_url.rstrip('/')}/runs/{run_id}",
+                )
+            )
+
+    _run_with_client(context, operation)
 
 
 @run_app.command("list")
@@ -615,10 +860,10 @@ def show_run_metrics(
 
 @run_app.command("pause")
 def pause_run(context: typer.Context, run_id: str) -> None:
-    """Request that a Run pause at a durable workflow boundary."""
+    """Pause a Run after confirming its active effects stopped."""
 
     _run_with_client(context, lambda client: client.pause_run(run_id))
-    console.print(f"[yellow]{tr('Pause requested.')}[/yellow]")
+    console.print(f"[green]{tr('Pause confirmed; active effects stopped.')}[/green]")
 
 
 @run_app.command("resume")
@@ -634,7 +879,7 @@ def cancel_current(context: typer.Context, run_id: str) -> None:
     """Cancel only the Run's current active execution."""
 
     _run_with_client(context, lambda client: client.cancel_current_execution(run_id))
-    console.print(f"[yellow]{tr('Current execution cancellation requested.')}[/yellow]")
+    console.print(f"[green]{tr('Current execution stop confirmed.')}[/green]")
 
 
 @run_app.command("cancel")
@@ -642,7 +887,9 @@ def cancel_run(context: typer.Context, run_id: str) -> None:
     """Cancel the durable Run and clean up its active executions."""
 
     _run_with_client(context, lambda client: client.cancel_run(run_id))
-    console.print(f"[yellow]{tr('Run cancellation requested.')}[/yellow]")
+    console.print(
+        f"[green]{tr('Run cancellation confirmed; active effects stopped.')}[/green]"
+    )
 
 
 @run_app.command("compact")
@@ -685,10 +932,29 @@ def send_message(
     context: typer.Context,
     run_id: Annotated[str, typer.Argument(help="Run ID.")],
     message: Annotated[str, typer.Argument(help="Message to append to the Agent session.")],
+    message_event_id: Annotated[
+        str | None,
+        typer.Option(
+            "--message-event-id",
+            help=(
+                "Stable UUID for safe retry after an ambiguous network/Temporal failure. "
+                "Reuse the same UUID only with the exact same Run and message."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Queue a user message through the durable workflow."""
 
-    _run_with_client(context, lambda client: client.append_message(run_id, message))
+    resolved_message_event_id = message_event_id or str(uuid4())
+    console.print(f"[dim]message_event_id={resolved_message_event_id}[/dim]")
+    _run_with_client(
+        context,
+        lambda client: client.append_message(
+            run_id,
+            message,
+            message_event_id=resolved_message_event_id,
+        ),
+    )
     console.print(f"[green]{tr('Message queued.')}[/green]")
 
 

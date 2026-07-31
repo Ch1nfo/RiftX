@@ -9,6 +9,7 @@ import {
   Network,
   Radar,
   Server,
+  Settings,
   ShieldCheck,
   Sun,
   Wrench,
@@ -25,6 +26,7 @@ const navigation = [
   { to: "/runs/new", label: "New run", icon: CirclePlus },
   { to: "/nodes", label: "Nodes", icon: Server },
   { to: "/tools", label: "Tools", icon: Wrench },
+  { to: "/settings/models", label: "Models", icon: Settings },
 ];
 
 const titles: Record<string, { eyebrow: string; title: string }> = {
@@ -32,6 +34,7 @@ const titles: Record<string, { eyebrow: string; title: string }> = {
   "/runs/new": { eyebrow: "Run configuration", title: "Launch a durable run" },
   "/nodes": { eyebrow: "Runner fleet", title: "Execution nodes" },
   "/tools": { eyebrow: "Execution environment", title: "Tool registry" },
+  "/settings/models": { eyebrow: "Agent configuration", title: "Model profiles" },
 };
 
 export function Layout() {
@@ -41,7 +44,7 @@ export function Layout() {
   const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUIStore((state) => state.setSidebarOpen);
   const current = location.pathname.startsWith("/runs/") && location.pathname !== "/runs/new"
-    ? { eyebrow: "Active operation", title: "Run timeline" }
+    ? { eyebrow: "Active operation", title: "Run conversation" }
     : (titles[location.pathname] ?? titles["/"]);
 
   return (

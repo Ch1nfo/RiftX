@@ -9,6 +9,7 @@ from .events import router as events_router
 from .executions import router as executions_router
 from .findings import router as findings_router
 from .memories import router as memories_router
+from .models import router as models_router
 from .nodes import router as nodes_router
 from .observability import router as observability_router
 from .reports import router as reports_router
@@ -27,6 +28,7 @@ __all__ = [
     "executions_router",
     "findings_router",
     "memories_router",
+    "models_router",
     "nodes_router",
     "observability_router",
     "reports_router",

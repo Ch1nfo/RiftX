@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 from riftx.application.errors import EntityNotFoundError
 from riftx.domain import Execution, ExecutionStatus, TerminalSession, TerminalStatus
+
+from ._durable_file import atomic_write_json, locked_file
 
 _ACTIVE_STATUSES = {
     ExecutionStatus.QUEUED,
@@ -16,10 +18,14 @@ _ACTIVE_STATUSES = {
     ExecutionStatus.STARTING,
     ExecutionStatus.RUNNING,
 }
+_ACTIVE_TERMINAL_STATUSES = {
+    TerminalStatus.CREATED,
+    TerminalStatus.OPEN,
+}
 
 
 class FileExecutionRepository:
-    """Small atomic JSON store used by the standalone Runner daemon."""
+    """Crash-durable JSON store used by the standalone Runner daemon."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -27,39 +33,44 @@ class FileExecutionRepository:
 
     async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            for existing in items.values():
-                if existing.execution_key == execution.execution_key:
-                    return _copy(existing), False
-            items[execution.id] = _copy(execution)
-            await asyncio.to_thread(self._write, items)
-            return _copy(execution), True
+            return await asyncio.to_thread(self._create_if_absent, _copy(execution))
 
     async def get(self, execution_id: str) -> Execution | None:
         async with self._lock:
-            execution = (await asyncio.to_thread(self._read)).get(execution_id)
+            execution = await asyncio.to_thread(self._get, execution_id)
             return _copy(execution) if execution is not None else None
 
     async def get_by_key(self, execution_key: str) -> Execution | None:
         async with self._lock:
-            for execution in (await asyncio.to_thread(self._read)).values():
-                if execution.execution_key == execution_key:
-                    return _copy(execution)
-        return None
+            execution = await asyncio.to_thread(self._get_by_key, execution_key)
+            return _copy(execution) if execution is not None else None
 
     async def save(self, execution: Execution) -> Execution:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            if execution.id not in items:
-                raise EntityNotFoundError("Execution", execution.id)
-            items[execution.id] = _copy(execution)
-            await asyncio.to_thread(self._write, items)
-        return _copy(execution)
+            saved = await asyncio.to_thread(self._save, _copy(execution))
+        return _copy(saved)
+
+    async def save_if_status(
+        self,
+        execution: Execution,
+        *,
+        expected: Collection[ExecutionStatus],
+    ) -> tuple[Execution, bool]:
+        expected_statuses = set(expected)
+        if not expected_statuses:
+            raise ValueError("expected execution statuses cannot be empty")
+        async with self._lock:
+            saved, updated = await asyncio.to_thread(
+                self._save_if_status,
+                _copy(execution),
+                expected_statuses,
+            )
+        return _copy(saved), updated
 
     async def list_active(self) -> Sequence[Execution]:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            return [_copy(item) for item in items.values() if item.status in _ACTIVE_STATUSES]
+            items = await asyncio.to_thread(self._list_active)
+            return [_copy(item) for item in items]
 
     async def list(
         self,
@@ -73,17 +84,83 @@ class FileExecutionRepository:
         if offset < 0:
             raise ValueError("offset must not be negative")
         async with self._lock:
-            matches = [
-                _copy(item)
-                for item in (await asyncio.to_thread(self._read)).values()
-                if item.run_id == run_id
-            ]
+            matches = await asyncio.to_thread(self._list_for_run, run_id)
         matches.sort(key=lambda item: (item.started_at is None, item.started_at, item.id))
-        return matches[offset : offset + limit]
+        return [_copy(item) for item in matches[offset : offset + limit]]
+
+    def _create_if_absent(self, execution: Execution) -> tuple[Execution, bool]:
+        with locked_file(self.path):
+            items = self._read()
+            existing_id = items.get(execution.id)
+            if existing_id is not None:
+                if existing_id.execution_key != execution.execution_key:
+                    raise RuntimeError(
+                        f"execution id {execution.id!r} is already bound to key "
+                        f"{existing_id.execution_key!r}"
+                    )
+                return _copy(existing_id), False
+            for existing in items.values():
+                if existing.execution_key == execution.execution_key:
+                    return _copy(existing), False
+            items[execution.id] = execution
+            self._write(items)
+            return _copy(execution), True
+
+    def _get(self, execution_id: str) -> Execution | None:
+        with locked_file(self.path):
+            return self._read().get(execution_id)
+
+    def _get_by_key(self, execution_key: str) -> Execution | None:
+        with locked_file(self.path):
+            for execution in self._read().values():
+                if execution.execution_key == execution_key:
+                    return execution
+        return None
+
+    def _save(self, execution: Execution) -> Execution:
+        with locked_file(self.path):
+            items = self._read()
+            current = items.get(execution.id)
+            if current is None:
+                raise EntityNotFoundError("Execution", execution.id)
+            stale = _validate_execution_update(current, execution)
+            if stale:
+                raise RuntimeError(
+                    f"stale execution update would clear a bound physical identity "
+                    f"for {current.id!r}"
+                )
+            items[execution.id] = execution
+            self._write(items)
+            return execution
+
+    def _save_if_status(
+        self,
+        execution: Execution,
+        expected: set[ExecutionStatus],
+    ) -> tuple[Execution, bool]:
+        with locked_file(self.path):
+            items = self._read()
+            current = items.get(execution.id)
+            if current is None:
+                raise EntityNotFoundError("Execution", execution.id)
+            stale = _validate_execution_update(current, execution)
+            if current.status not in expected or stale:
+                return current, False
+            items[execution.id] = execution
+            self._write(items)
+            return execution, True
+
+    def _list_active(self) -> list[Execution]:
+        with locked_file(self.path):
+            return [item for item in self._read().values() if item.status in _ACTIVE_STATUSES]
+
+    def _list_for_run(self, run_id: str) -> list[Execution]:
+        with locked_file(self.path):
+            return [item for item in self._read().values() if item.run_id == run_id]
 
     def _read(self) -> dict[str, Execution]:
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except json.JSONDecodeError as exc:
@@ -93,20 +170,14 @@ class FileExecutionRepository:
         return {item.id: item for item in (Execution.model_validate(value) for value in raw)}
 
     def _write(self, items: dict[str, Execution]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(
-                [item.model_dump(mode="json") for item in items.values()],
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        atomic_write_json(
+            self.path,
+            [item.model_dump(mode="json") for item in items.values()],
         )
-        temporary.replace(self.path)
 
 
 class FileTerminalRepository:
-    """Atomic JSON state for native terminals owned by a standalone Runner."""
+    """Crash-durable JSON state for native terminals owned by a Runner."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -114,46 +185,114 @@ class FileTerminalRepository:
 
     async def create(self, terminal: TerminalSession) -> TerminalSession:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            if terminal.id in items:
-                raise RuntimeError(f"terminal session already exists: {terminal.id}")
-            items[terminal.id] = _copy_terminal(terminal)
-            await asyncio.to_thread(self._write, items)
-        return _copy_terminal(terminal)
+            created = await asyncio.to_thread(self._create, _copy_terminal(terminal))
+        return _copy_terminal(created)
 
     async def get(self, session_id: str) -> TerminalSession | None:
         async with self._lock:
-            terminal = (await asyncio.to_thread(self._read)).get(session_id)
+            terminal = await asyncio.to_thread(self._get, session_id)
             return _copy_terminal(terminal) if terminal is not None else None
 
     async def get_by_execution(self, execution_id: str) -> TerminalSession | None:
         async with self._lock:
-            for terminal in (await asyncio.to_thread(self._read)).values():
-                if terminal.execution_id == execution_id:
-                    return _copy_terminal(terminal)
-        return None
+            terminal = await asyncio.to_thread(self._get_by_execution, execution_id)
+            return _copy_terminal(terminal) if terminal is not None else None
 
     async def save(self, terminal: TerminalSession) -> TerminalSession:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            if terminal.id not in items:
-                raise EntityNotFoundError("TerminalSession", terminal.id)
-            items[terminal.id] = _copy_terminal(terminal)
-            await asyncio.to_thread(self._write, items)
-        return _copy_terminal(terminal)
+            saved = await asyncio.to_thread(self._save, _copy_terminal(terminal))
+        return _copy_terminal(saved)
+
+    async def save_if_status(
+        self,
+        terminal: TerminalSession,
+        *,
+        expected: Collection[TerminalStatus],
+    ) -> tuple[TerminalSession, bool]:
+        expected_statuses = set(expected)
+        if not expected_statuses:
+            raise ValueError("expected terminal statuses cannot be empty")
+        async with self._lock:
+            saved, updated = await asyncio.to_thread(
+                self._save_if_status,
+                _copy_terminal(terminal),
+                expected_statuses,
+            )
+        return _copy_terminal(saved), updated
 
     async def list_open(self) -> Sequence[TerminalSession]:
         async with self._lock:
-            items = await asyncio.to_thread(self._read)
-            return [
-                _copy_terminal(item)
-                for item in items.values()
-                if item.status is TerminalStatus.OPEN
-            ]
+            items = await asyncio.to_thread(self._list_with_statuses, {TerminalStatus.OPEN})
+            return [_copy_terminal(item) for item in items]
+
+    async def list_active(self) -> Sequence[TerminalSession]:
+        """Include pre-open rows whose matching execution may already exist."""
+
+        async with self._lock:
+            items = await asyncio.to_thread(
+                self._list_with_statuses,
+                _ACTIVE_TERMINAL_STATUSES,
+            )
+            return [_copy_terminal(item) for item in items]
+
+    def _create(self, terminal: TerminalSession) -> TerminalSession:
+        with locked_file(self.path):
+            items = self._read()
+            if terminal.id in items:
+                raise RuntimeError(f"terminal session already exists: {terminal.id}")
+            items[terminal.id] = terminal
+            self._write(items)
+            return terminal
+
+    def _get(self, session_id: str) -> TerminalSession | None:
+        with locked_file(self.path):
+            return self._read().get(session_id)
+
+    def _get_by_execution(self, execution_id: str) -> TerminalSession | None:
+        with locked_file(self.path):
+            for terminal in self._read().values():
+                if terminal.execution_id == execution_id:
+                    return terminal
+        return None
+
+    def _save(self, terminal: TerminalSession) -> TerminalSession:
+        with locked_file(self.path):
+            items = self._read()
+            current = items.get(terminal.id)
+            if current is None:
+                raise EntityNotFoundError("TerminalSession", terminal.id)
+            if not _terminal_status_update_is_monotonic(current.status, terminal.status):
+                return current
+            items[terminal.id] = terminal
+            self._write(items)
+            return terminal
+
+    def _save_if_status(
+        self,
+        terminal: TerminalSession,
+        expected: set[TerminalStatus],
+    ) -> tuple[TerminalSession, bool]:
+        with locked_file(self.path):
+            items = self._read()
+            current = items.get(terminal.id)
+            if current is None:
+                raise EntityNotFoundError("TerminalSession", terminal.id)
+            if current.status not in expected or not _terminal_status_update_is_monotonic(
+                current.status,
+                terminal.status,
+            ):
+                return current, False
+            items[terminal.id] = terminal
+            self._write(items)
+            return terminal, True
+
+    def _list_with_statuses(self, statuses: Collection[TerminalStatus]) -> list[TerminalSession]:
+        with locked_file(self.path):
+            return [item for item in self._read().values() if item.status in statuses]
 
     def _read(self) -> dict[str, TerminalSession]:
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except json.JSONDecodeError as exc:
@@ -164,21 +303,80 @@ class FileTerminalRepository:
         return {item.id: item for item in terminals}
 
     def _write(self, items: dict[str, TerminalSession]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(
-                [item.model_dump(mode="json") for item in items.values()],
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        atomic_write_json(
+            self.path,
+            [item.model_dump(mode="json") for item in items.values()],
         )
-        temporary.replace(self.path)
-
 
 def _copy(execution: Execution) -> Execution:
     return Execution.model_validate(execution.model_dump())
 
 
+def _validate_execution_update(current: Execution, incoming: Execution) -> bool:
+    """Validate immutable bindings and report a stale first-write-wins snapshot."""
+
+    if current.execution_key != incoming.execution_key:
+        raise RuntimeError(
+            f"execution key is immutable for {current.id!r}: "
+            f"{current.execution_key!r} != {incoming.execution_key!r}"
+        )
+    if current.owner is not None and incoming.owner != current.owner:
+        raise RuntimeError(
+            f"execution owner is immutable for {current.id!r}: "
+            f"{current.owner.model_dump(mode='json')!r} != "
+            f"{incoming.owner.model_dump(mode='json') if incoming.owner is not None else None!r}"
+        )
+    stale = False
+    for field_name in (
+        "pid",
+        "process_group_id",
+        "containment_id",
+        "process_created_at",
+        "executable_path",
+        "tool_id",
+        "tool_version",
+        "platform_system",
+        "platform_release",
+        "platform_architecture",
+    ):
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if persisted in {None, ""}:
+            continue
+        if proposed in {None, ""}:
+            stale = True
+        elif proposed != persisted:
+            raise RuntimeError(
+                f"execution physical identity field {field_name!r} is immutable "
+                f"for {current.id!r}: {persisted!r} != {proposed!r}"
+            )
+    for field_name in ("started_at", "physical_stop_confirmed_at"):
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if persisted is not None and proposed != persisted:
+            # Concurrent timestamps are first-write-wins. Returning a CAS miss
+            # forces the caller to re-read rather than clearing or replacing
+            # durable evidence with a stale snapshot.
+            stale = True
+    return stale
+
+
 def _copy_terminal(terminal: TerminalSession) -> TerminalSession:
     return TerminalSession.model_validate(terminal.model_dump())
+
+
+_TERMINAL_STATUS_TRANSITIONS = {
+    TerminalStatus.CREATED: frozenset(
+        {TerminalStatus.OPEN, TerminalStatus.CLOSED, TerminalStatus.LOST}
+    ),
+    TerminalStatus.OPEN: frozenset({TerminalStatus.CLOSED, TerminalStatus.LOST}),
+    TerminalStatus.LOST: frozenset({TerminalStatus.CLOSED}),
+    TerminalStatus.CLOSED: frozenset(),
+}
+
+
+def _terminal_status_update_is_monotonic(
+    current: TerminalStatus,
+    incoming: TerminalStatus,
+) -> bool:
+    return incoming is current or incoming in _TERMINAL_STATUS_TRANSITIONS[current]

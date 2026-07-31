@@ -11,6 +11,7 @@ from riftx.application.errors import (
     ApplicationConflictError,
     ApplicationServiceError,
     EntityNotFoundError,
+    RepositoryConflictError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import ApprovalRepository, RunEventRepository, RunRepository
@@ -24,6 +25,17 @@ from riftx.runtime.types import (
     ToolCallIntent,
 )
 from riftx.tools import ToolRegistry
+
+_APPROVAL_BLOCKED_RUN_STATUSES = frozenset(
+    {
+        RunStatus.PAUSING,
+        RunStatus.CANCELLING,
+        RunStatus.COMPLETING,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+)
 
 
 class ApprovalWorkflowClient(Protocol):
@@ -284,42 +296,52 @@ class ApprovalApplicationService:
         run = await self._run_repository.get(approval.run_id)
         if run is None:
             raise EntityNotFoundError("Run", approval.run_id)
-        if run.status in {
-            RunStatus.COMPLETED,
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-        }:
-            raise ApplicationConflictError(
-                "approval_not_actionable",
-                f"Cannot decide Approval {approval.id!r} after Run {run.id!r} "
-                f"became {run.status.value}",
-                details={
-                    "approval_id": approval.id,
-                    "run_id": run.id,
-                    "run_status": run.status.value,
-                },
-            )
+        self._raise_if_approval_not_actionable(approval, run)
         tool_call = await self._approval_repository.get_tool_call(approval.tool_call_id)
         if tool_call is None:
             raise EntityNotFoundError("ToolCall", approval.tool_call_id)
 
-        approval, changed = await self._approval_repository.decide(
-            approval_id,
-            target,
-            decided_by=command.decided_by,
-            reason=command.reason,
-        )
+        try:
+            approval, changed = await self._approval_repository.decide(
+                approval_id,
+                target,
+                decided_by=command.decided_by,
+                reason=command.reason,
+                blocked_run_statuses=_APPROVAL_BLOCKED_RUN_STATUSES,
+            )
+        except RepositoryConflictError:
+            # The durable Run fence and Approval decision serialize in one
+            # repository transaction. Re-read after losing that race so the
+            # public API reports the lifecycle state instead of a generic
+            # persistence conflict.
+            current = await self._run_repository.get(approval.run_id)
+            if current is not None and current.status in _APPROVAL_BLOCKED_RUN_STATUSES:
+                self._raise_if_approval_not_actionable(approval, current)
+            raise
+        # A same-direction retry is normally only a durable signal retry.  It
+        # can also recover the narrow crash window after the public Approval
+        # committed but before its RuntimeApprovalRequest did.  In that case
+        # reconstruct strictly from persisted state, never from the retry
+        # payload; an unprovable Run-wide grant therefore becomes APPROVE_ONCE.
         if self._runtime_approvals is not None:
             runtime_request = await self._runtime_approvals.get(approval_id)
-            if runtime_request is not None:
-                decision = _runtime_decision(target, command)
+            if runtime_request is not None and runtime_request.status is ApprovalStatus.PENDING:
+                decision, decided_by, feedback = (
+                    (
+                        _runtime_decision(target, command),
+                        command.decided_by,
+                        command.reason,
+                    )
+                    if changed
+                    else _persisted_runtime_decision(approval)
+                )
                 runtime_request.decide(
                     decision,
-                    decided_by=command.decided_by,
-                    feedback=command.reason,
+                    decided_by=decided_by,
+                    feedback=feedback,
                 )
                 await self._runtime_approvals.save(runtime_request)
-        if target is ApprovalStatus.APPROVED and command.approve_for_run:
+        if changed and target is ApprovalStatus.APPROVED and command.approve_for_run:
             await self._approval_repository.grant_for_run(
                 approval.run_id,
                 tool_call.tool_id,
@@ -339,6 +361,15 @@ class ApprovalApplicationService:
                     "approve_for_run": command.approve_for_run,
                 },
             )
+
+        # A safety fence can win immediately after the atomic decision. The
+        # saved decision remains retryable after PAUSED is reached, but it must
+        # not release the Workflow while physical stop acknowledgement is still
+        # pending (or while finalization owns the Run).
+        current = await self._run_repository.get(approval.run_id)
+        if current is None:
+            raise EntityNotFoundError("Run", approval.run_id)
+        self._raise_if_approval_not_actionable(approval, current, approval_saved=True)
 
         try:
             if target is ApprovalStatus.APPROVED:
@@ -371,6 +402,29 @@ class ApprovalApplicationService:
             ) from exc
         return approval
 
+    @staticmethod
+    def _raise_if_approval_not_actionable(
+        approval: Approval,
+        run: Run,
+        *,
+        approval_saved: bool = False,
+    ) -> None:
+        if run.status not in _APPROVAL_BLOCKED_RUN_STATUSES:
+            return
+        details: dict[str, object] = {
+            "approval_id": approval.id,
+            "run_id": run.id,
+            "run_status": run.status.value,
+        }
+        if approval_saved:
+            details["approval_saved"] = True
+        raise ApplicationConflictError(
+            "approval_not_actionable",
+            f"Cannot decide Approval {approval.id!r} after Run {run.id!r} "
+            f"became {run.status.value}",
+            details=details,
+        )
+
 
 def _runtime_decision(target: ApprovalStatus, command: DecideApproval) -> ApprovalDecision:
     if target is ApprovalStatus.APPROVED:
@@ -384,6 +438,24 @@ def _runtime_decision(target: ApprovalStatus, command: DecideApproval) -> Approv
         if command.reason and command.reason.strip()
         else ApprovalDecision.REJECT
     )
+
+
+def _persisted_runtime_decision(
+    approval: Approval,
+) -> tuple[ApprovalDecision, str, str | None]:
+    """Recover a split Approval write without trusting a retry payload."""
+
+    decided_by = approval.decided_by or "unknown-operator"
+    if approval.status is ApprovalStatus.APPROVED:
+        return ApprovalDecision.APPROVE_ONCE, decided_by, None
+    if approval.status is ApprovalStatus.REJECTED:
+        feedback = approval.reason.strip() or None
+        return (
+            ApprovalDecision.REJECT_WITH_FEEDBACK if feedback else ApprovalDecision.REJECT,
+            decided_by,
+            feedback,
+        )
+    raise ValueError(f"Approval {approval.id!r} has no persisted decision to recover")
 
 
 def _intent_execution_summary(

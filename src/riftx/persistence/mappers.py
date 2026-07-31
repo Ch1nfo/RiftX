@@ -28,6 +28,7 @@ from riftx.domain import (
     RunnerCommandKind,
     RunnerCommandStatus,
     RunnerCredential,
+    RunnerPrincipal,
     RunStatus,
     Scope,
     SuccessCriterion,
@@ -65,6 +66,10 @@ def node_to_record(node: Node) -> NodeRecord:
         status=node.status.value,
         capabilities_json=node.capabilities,
         labels_json=node.labels,
+        current_runner_instance_id=(
+            node.current_owner.instance_id if node.current_owner is not None else None
+        ),
+        current_runner_epoch=(node.current_owner.epoch if node.current_owner is not None else 0),
         last_seen_at=node.last_seen_at,
         created_at=node.created_at,
         updated_at=node.updated_at,
@@ -93,6 +98,14 @@ def node_from_record(record: NodeRecord) -> Node:
         status=NodeStatus(record.status),
         capabilities=record.capabilities_json or [],
         labels=record.labels_json or {},
+        current_owner=(
+            RunnerPrincipal(
+                instance_id=record.current_runner_instance_id,
+                epoch=record.current_runner_epoch,
+            )
+            if record.current_runner_instance_id is not None and record.current_runner_epoch > 0
+            else None
+        ),
         last_seen_at=record.last_seen_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -153,7 +166,9 @@ def engagement_from_record(record: EngagementRecord) -> Engagement:
 
 def runner_credential_to_record(credential: RunnerCredential) -> RunnerCredentialRecord:
     return RunnerCredentialRecord(
+        runner_instance_id=credential.principal.instance_id,
         node_id=credential.node_id,
+        runner_epoch=credential.principal.epoch,
         token_hash=credential.token_hash,
         token_prefix=credential.token_prefix,
         created_at=credential.created_at,
@@ -166,6 +181,12 @@ def apply_runner_credential_to_record(
     credential: RunnerCredential,
     record: RunnerCredentialRecord,
 ) -> None:
+    if (
+        record.runner_instance_id != credential.principal.instance_id
+        or record.node_id != credential.node_id
+        or record.runner_epoch != credential.principal.epoch
+    ):
+        raise ValueError("Runner credential principal is immutable")
     record.token_hash = credential.token_hash
     record.token_prefix = credential.token_prefix
     record.rotated_at = credential.rotated_at
@@ -175,6 +196,10 @@ def apply_runner_credential_to_record(
 def runner_credential_from_record(record: RunnerCredentialRecord) -> RunnerCredential:
     return RunnerCredential(
         node_id=record.node_id,
+        principal=RunnerPrincipal(
+            instance_id=record.runner_instance_id,
+            epoch=record.runner_epoch,
+        ),
         token_hash=record.token_hash,
         token_prefix=record.token_prefix,
         created_at=record.created_at,
@@ -189,6 +214,10 @@ def runner_command_to_record(command: RunnerCommand) -> RunnerCommandRecord:
         node_id=command.node_id,
         kind=command.kind.value,
         idempotency_key=command.idempotency_key,
+        target_runner_instance_id=(
+            command.target.instance_id if command.target is not None else None
+        ),
+        target_runner_epoch=(command.target.epoch if command.target is not None else None),
         payload_json=command.payload,
         status=command.status.value,
         attempts=command.attempts,
@@ -208,6 +237,15 @@ def runner_command_from_record(record: RunnerCommandRecord) -> RunnerCommand:
         node_id=record.node_id,
         kind=RunnerCommandKind(record.kind),
         idempotency_key=record.idempotency_key,
+        target=(
+            RunnerPrincipal(
+                instance_id=record.target_runner_instance_id,
+                epoch=record.target_runner_epoch,
+            )
+            if record.target_runner_instance_id is not None
+            and record.target_runner_epoch is not None
+            else None
+        ),
         payload=record.payload_json or {},
         status=RunnerCommandStatus(record.status),
         attempts=record.attempts,
@@ -311,6 +349,10 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
         tool_call_id=execution.tool_call_id,
         attempt_group=execution.attempt_group,
         node_id=execution.node_id,
+        owner_runner_instance_id=(
+            execution.owner.instance_id if execution.owner is not None else None
+        ),
+        owner_runner_epoch=(execution.owner.epoch if execution.owner is not None else None),
         executor_type=execution.executor_type.value,
         argv_json=execution.argv,
         command_text=execution.command_text,
@@ -325,16 +367,52 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
         status=execution.status.value,
         pid=execution.pid,
         process_group_id=execution.process_group_id,
+        containment_id=execution.containment_id,
         exit_code=execution.exit_code,
         stdout_path=execution.stdout_path,
         stderr_path=execution.stderr_path,
         process_created_at=execution.process_created_at,
         started_at=execution.started_at,
         finished_at=execution.finished_at,
+        physical_stop_confirmed_at=execution.physical_stop_confirmed_at,
     )
 
 
 def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> None:
+    if record.execution_key != execution.execution_key:
+        raise ValueError("Execution key is immutable after creation")
+    incoming_owner = (
+        (execution.owner.instance_id, execution.owner.epoch)
+        if execution.owner is not None
+        else (None, None)
+    )
+    stored_owner = (record.owner_runner_instance_id, record.owner_runner_epoch)
+    if stored_owner != (None, None) and incoming_owner != stored_owner:
+        raise ValueError("Execution owner is immutable after creation")
+    if stored_owner == (None, None) and incoming_owner != (None, None):
+        assert execution.owner is not None
+        record.owner_runner_instance_id = execution.owner.instance_id
+        record.owner_runner_epoch = execution.owner.epoch
+    for field_name in (
+        "pid",
+        "process_group_id",
+        "containment_id",
+        "process_created_at",
+        "executable_path",
+        "tool_id",
+        "tool_version",
+        "platform_system",
+        "platform_release",
+        "platform_architecture",
+        "started_at",
+        "physical_stop_confirmed_at",
+    ):
+        persisted = getattr(record, field_name)
+        proposed = getattr(execution, field_name)
+        if persisted not in {None, ""} and proposed != persisted:
+            raise ValueError(
+                f"Execution bound field {field_name!r} is immutable after first write"
+            )
     record.session_id = execution.session_id
     record.tool_call_id = execution.tool_call_id
     record.attempt_group = execution.attempt_group
@@ -353,12 +431,14 @@ def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> 
     record.status = execution.status.value
     record.pid = execution.pid
     record.process_group_id = execution.process_group_id
+    record.containment_id = execution.containment_id
     record.exit_code = execution.exit_code
     record.stdout_path = execution.stdout_path
     record.stderr_path = execution.stderr_path
     record.process_created_at = execution.process_created_at
     record.started_at = execution.started_at
     record.finished_at = execution.finished_at
+    record.physical_stop_confirmed_at = execution.physical_stop_confirmed_at
 
 
 def execution_from_record(record: ExecutionRecord) -> Execution:
@@ -370,6 +450,14 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         tool_call_id=record.tool_call_id,
         attempt_group=record.attempt_group,
         node_id=record.node_id,
+        owner=(
+            RunnerPrincipal(
+                instance_id=record.owner_runner_instance_id,
+                epoch=record.owner_runner_epoch,
+            )
+            if record.owner_runner_instance_id is not None and record.owner_runner_epoch is not None
+            else None
+        ),
         executor_type=ExecutorType(record.executor_type),
         argv=record.argv_json,
         command_text=record.command_text,
@@ -384,12 +472,14 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         status=ExecutionStatus(record.status),
         pid=record.pid,
         process_group_id=record.process_group_id,
+        containment_id=record.containment_id,
         exit_code=record.exit_code,
         stdout_path=record.stdout_path,
         stderr_path=record.stderr_path,
         process_created_at=record.process_created_at,
         started_at=record.started_at,
         finished_at=record.finished_at,
+        physical_stop_confirmed_at=record.physical_stop_confirmed_at,
     )
 
 

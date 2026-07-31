@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,9 +25,12 @@ from riftx.application.services import (
     NodeRegistration,
     ReportApplicationService,
     RunnerControlService,
+    RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
     TerminalApplicationService,
+    stop_resources_payload,
 )
+from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig
 from riftx.context import (
     ContextApplicationService,
@@ -43,21 +46,25 @@ from riftx.context.compaction import ContextCompactionManager
 from riftx.domain import (
     Execution,
     ExecutorType,
+    InvalidStateTransitionError,
     MessageRole,
     MessageType,
     MessageVisibility,
+    RunStatus,
     TranscriptMessageDraft,
 )
+from riftx.domain.base import utc_now
 from riftx.execution import (
     DeferredExecutionDispatcher,
     ExecutionService,
     ExecutionWaitStatus,
     RegistryDeferredExecutionResolver,
 )
+from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
-from riftx.models import RiftXModelProvider, load_models_config
+from riftx.models import ModelProfileRegistry, RiftXModelProvider
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -81,15 +88,28 @@ from riftx.persistence import (
     SQLAlchemyTranscriptRepository,
     SQLAlchemyUserInputRequestRepository,
 )
+from riftx.persistence.browser_repositories import SQLAlchemyBrowserRepository
 from riftx.persistence.checkpoint_repositories import (
     SQLAlchemyContextCheckpointRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
+from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
-from riftx.runner import ProcessSupervisor, RunnerPaths, TerminalSupervisor
+from riftx.runner import (
+    NodeBrowserRouter,
+    NodeTargetHttpRouter,
+    ProcessSupervisor,
+    RemoteBrowserClient,
+    RemoteTargetHttpClient,
+    RunnerBrowserManager,
+    RunnerPaths,
+    RunnerTargetHttpClient,
+    TerminalSupervisor,
+)
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.coordinator import RuntimeCoordinator
 from riftx.runtime.engine import DeferredRuntimeAgentFactory, OpenAIAgentsEngine
 from riftx.runtime.leases import DatabaseRunLeaseManager
@@ -103,9 +123,11 @@ from riftx.subagents import (
     SubagentManager,
     SubagentOrchestrator,
 )
+from riftx.target_http.service import TargetHttpApplicationService
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
 
 from .activities import RiftXActivities
+from .connection import TemporalConnectionSettings, connect_temporal
 from .runtime import TemporalRunClient, TemporalRuntimeConfig, create_worker
 from .runtime_activity import RuntimeCycleActivities
 
@@ -118,11 +140,13 @@ class _PrimarySessionInitializer:
         *,
         runs: SQLAlchemyRunRepository,
         sessions: SQLAlchemyAgentSessionRepository,
-        default_model_profile: str,
+        model_registry: ModelProfileRegistry,
+        profile_override: str | None = None,
     ) -> None:
         self._runs = runs
         self._sessions = sessions
-        self._default_model_profile = default_model_profile
+        self._model_registry = model_registry
+        self._profile_override = profile_override
 
     async def ensure_primary_session(self, run_id: str, session_id: str) -> None:
         existing = await self._sessions.get(session_id)
@@ -135,10 +159,15 @@ class _PrimarySessionInitializer:
         run = await self._runs.get(run_id)
         if run is None:
             return
+        default_model_profile = await asyncio.to_thread(
+            self._model_registry.resolve,
+            None,
+            override=self._profile_override,
+        )
         session = AgentSession(
             id=session_id,
             run_id=run_id,
-            model_profile=run.model_profile or self._default_model_profile,
+            model_profile=run.model_profile or default_model_profile,
         )
         try:
             await self._sessions.create(session)
@@ -280,12 +309,12 @@ class _CompletedExecutionInputResolver:
                 f"execution {execution.id!r} does not belong to Run {run_id!r}"
             )
         tool = self._tool_definition(execution.tool_id, execution.executor_type)
-        item = processed_tool_result_context_item(
-            await self._processor.process(execution, tool)
-        )
+        item = processed_tool_result_context_item(await self._processor.process(execution, tool))
         return {
             "id": item.id,
             "type": "tool_result",
+            "execution_id": execution.id,
+            "tool_call_id": execution.tool_call_id,
             "content": item.content,
             "source_refs": item.source_refs,
             "priority": 100,
@@ -320,7 +349,13 @@ class TemporalWorkerRuntime:
     node_service: NodeApplicationService
     node_id: str
     heartbeat_interval_seconds: float
+    browser_manager: RunnerBrowserManager | None = None
+    run_repository: SQLAlchemyRunRepository | None = None
+    event_repository: SQLAlchemyRunEventRepository | None = None
+    safety_stopper: RunSafetyStopService | None = None
     _heartbeat_task: asyncio.Task[None] | None = None
+    _safety_reconciler_task: asyncio.Task[None] | None = None
+    _safety_failures: set[str] = field(default_factory=set)
     _closed: bool = False
 
     async def run(self) -> None:
@@ -328,10 +363,130 @@ class TemporalWorkerRuntime:
             self._heartbeat_loop(),
             name=f"riftx-node-heartbeat-{self.node_id}",
         )
+        if self.run_repository is not None and self.safety_stopper is not None:
+            self._safety_reconciler_task = asyncio.create_task(
+                self._safety_reconciler_loop(),
+                name=f"riftx-worker-safety-reconciler-{self.node_id}",
+            )
         try:
             await self.worker.run()
         finally:
             await self.close()
+
+    async def _safety_reconciler_loop(self) -> None:
+        assert self.run_repository is not None
+        assert self.safety_stopper is not None
+        scan_unavailable = False
+        while True:
+            try:
+                for status in (
+                    RunStatus.PAUSING,
+                    RunStatus.CANCELLING,
+                    RunStatus.COMPLETING,
+                ):
+                    created_through = utc_now()
+                    after_created_at = None
+                    after_id = None
+                    while True:
+                        runs = list(
+                            await self.run_repository.list_for_reconciliation(
+                                status=status,
+                                created_through=created_through,
+                                after_created_at=after_created_at,
+                                after_id=after_id,
+                                limit=100,
+                            )
+                        )
+                        for run in runs:
+                            try:
+                                result = await self.safety_stopper.stop_run(run.id, drain=True)
+                                if result.succeeded and status is RunStatus.COMPLETING:
+                                    await self._reconcile_finalization(run.id, result)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                if run.id not in self._safety_failures:
+                                    logger.exception(
+                                        "Worker cleanup reconciliation failed for Run %s",
+                                        run.id,
+                                    )
+                                self._safety_failures.add(run.id)
+                            else:
+                                if result.succeeded:
+                                    self._safety_failures.discard(run.id)
+                                elif run.id not in self._safety_failures:
+                                    logger.warning(
+                                        "Worker cleanup remains unconfirmed for Run %s: %s",
+                                        run.id,
+                                        result.failed_resource_types,
+                                    )
+                                    self._safety_failures.add(run.id)
+                        if len(runs) < 100:
+                            break
+                        after_created_at = runs[-1].created_at
+                        after_id = runs[-1].id
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not scan_unavailable:
+                    logger.exception("Worker cleanup reconciliation scan failed; retrying")
+                scan_unavailable = True
+            else:
+                if scan_unavailable:
+                    logger.info("Worker cleanup reconciliation scan recovered")
+                scan_unavailable = False
+            await asyncio.sleep(0.1)
+
+    async def _reconcile_finalization(self, run_id: str, stop_result: object) -> None:
+        if self.event_repository is None:
+            raise RepositoryConflictError(
+                f"run {run_id!r} cannot reconcile finalization without an event repository"
+            )
+        intent = await self.run_repository.get_finalization_intent(run_id)
+        if intent is None:
+            raise RepositoryConflictError(f"run {run_id!r} has no trustworthy finalization target")
+
+        current = await self.run_repository.get(run_id)
+        if current is None:
+            return
+        if current.status in {RunStatus.COMPLETING, intent.target}:
+            try:
+                current = await self.run_repository.commit_finalization(
+                    run_id,
+                    intent.target,
+                    defer_cleanup_event=intent.defer_cleanup_event,
+                )
+            except (InvalidStateTransitionError, RepositoryConflictError):
+                current = await self.run_repository.get(run_id)
+                if current is None:
+                    return
+                if current.status in {
+                    RunStatus.PAUSING,
+                    RunStatus.PAUSED,
+                    RunStatus.CANCELLING,
+                    RunStatus.CANCELLED,
+                } or (
+                    current.status in {RunStatus.COMPLETED, RunStatus.FAILED}
+                    and current.status is not intent.target
+                ):
+                    return
+                # A malformed intent or canonical-event collision is not a
+                # control race. Surface it so the reconciler keeps retrying.
+                raise
+        if current.status is not intent.target:
+            return
+
+        stop_payload = stop_resources_payload(stop_result)
+        await self.event_repository.append(
+            run_id,
+            "run.cleanup_reconciled",
+            {
+                "status": current.status.value,
+                "stop_resources": stop_payload,
+                "finalization_target": intent.target.value,
+                "owner": "worker",
+            },
+        )
 
     async def _heartbeat_loop(self) -> None:
         unavailable = False
@@ -356,6 +511,14 @@ class TemporalWorkerRuntime:
         self._closed = True
         heartbeat_task = self._heartbeat_task
         self._heartbeat_task = None
+        safety_task = self._safety_reconciler_task
+        self._safety_reconciler_task = None
+        if safety_task is not None:
+            safety_task.cancel()
+            try:
+                await safety_task
+            except asyncio.CancelledError:
+                pass
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             try:
@@ -366,6 +529,8 @@ class TemporalWorkerRuntime:
             await self.node_service.disconnect(self.node_id)
         except Exception:
             logger.exception("Unable to mark local Worker node %s offline", self.node_id)
+        if self.browser_manager is not None:
+            await self.browser_manager.close_all()
         await self.terminal_supervisor.close_all()
         await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
@@ -384,6 +549,7 @@ async def build_temporal_worker(
     model_provider: RiftXModelProvider | None = None
     process_supervisor: ProcessSupervisor | None = None
     terminal_supervisor: TerminalSupervisor | None = None
+    browser_manager: RunnerBrowserManager | None = None
     try:
         await database.create_schema()
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
@@ -394,9 +560,8 @@ async def build_temporal_worker(
             max_concurrent_activities=config.temporal.max_concurrent_activities,
             max_cached_workflows=config.temporal.max_cached_workflows,
         )
-        client = temporal_client or await Client.connect(
-            config.temporal.target,
-            namespace=config.temporal.namespace,
+        client = temporal_client or await connect_temporal(
+            TemporalConnectionSettings.from_config(config.temporal)
         )
         workflow_client = TemporalRunClient(client, worker_config)
 
@@ -409,6 +574,7 @@ async def build_temporal_worker(
         approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
         node_repository = SQLAlchemyNodeRepository(database.session_factory)
         terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
+        browser_repository = SQLAlchemyBrowserRepository(database.session_factory)
         runner_credential_repository = SQLAlchemyRunnerCredentialRepository(
             database.session_factory
         )
@@ -418,12 +584,8 @@ async def build_temporal_worker(
         agent_step_repository = SQLAlchemyAgentStepRepository(database.session_factory)
         provider_state_repository = SQLAlchemyProviderStateRepository(database.session_factory)
         run_lease_repository = SQLAlchemyRunLeaseRepository(database.session_factory)
-        runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(
-            database.session_factory
-        )
-        tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(
-            database.session_factory
-        )
+        runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
+        tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
         transcript_repository = SQLAlchemyTranscriptRepository(database.session_factory)
         user_input_repository = SQLAlchemyUserInputRequestRepository(database.session_factory)
         context_compilation_repository = SQLAlchemyContextCompilationRepository(
@@ -485,9 +647,24 @@ async def build_temporal_worker(
             events=event_repository,
             lease_duration=timedelta(seconds=config.runner.command_lease_seconds),
         )
+        # The Worker is a production execution owner too.  Share one trusted
+        # containment namespace between Process/Shell and PTY effects so the
+        # Control Plane can resolve their durable containment identities during
+        # an emergency stop even while Temporal or this Worker is unavailable.
+        containment_manager = LinuxCgroupV2Manager.autodetect(
+            payload_uid=config.execution.payload_uid,
+            payload_gid=config.execution.payload_gid,
+        )
+        process_executor = DirectProcessExecutor(
+            containment_manager=containment_manager,
+            autodetect_containment=False,
+            require_containment=config.execution.require_containment,
+            defer_activation=True,
+        )
         process_supervisor = ProcessSupervisor(
             execution_repository,
             paths,
+            process_executor=process_executor,
             on_completed=lambda execution: _signal_execution_completion(
                 workflow_client,
                 run_id=execution.run_id,
@@ -513,6 +690,9 @@ async def build_temporal_worker(
             execution_repository=execution_repository,
             event_repository=event_repository,
             paths=paths,
+            containment_manager=process_executor.containment_manager,
+            autodetect_containment=False,
+            require_containment=config.execution.require_containment,
             on_completed=lambda execution: _signal_execution_completion(
                 workflow_client,
                 run_id=execution.run_id,
@@ -541,6 +721,45 @@ async def build_temporal_worker(
             artifact_repository=artifact_repository,
             event_repository=event_repository,
             paths=paths,
+        )
+        browser_manager = RunnerBrowserManager(
+            node_id=config.runner.node_id,
+            paths=paths,
+        )
+        browser_service = BrowserApplicationService(
+            runs=run_repository,
+            agent_sessions=agent_session_repository,
+            repository=browser_repository,
+            runner=NodeBrowserRouter(
+                local_node_id=config.runner.node_id,
+                local=browser_manager,
+                remote_factory=lambda node_id: RemoteBrowserClient(
+                    node_id=node_id,
+                    control=runner_control,
+                ),
+            ),
+            artifacts=artifact_service,
+            events=event_repository,
+        )
+        target_http_service = TargetHttpApplicationService(
+            runs=run_repository,
+            tool_calls=tool_call_intent_repository,
+            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+            runner=NodeTargetHttpRouter(
+                local_node_id=config.runner.node_id,
+                local=RunnerTargetHttpClient(node_id=config.runner.node_id),
+                remote=RemoteTargetHttpClient(runner_control),
+            ),
+            artifacts=artifact_service,
+            events=event_repository,
+        )
+        safety_stopper = RunSafetyStopService(
+            execution_repository=execution_repository,
+            execution_runner=execution_runner,
+            resource_stoppers={
+                "browser_sessions": browser_service,
+                "target_http_requests": target_http_service,
+            },
         )
         tool_result_processor = ToolResultProcessor(
             ExecutionArtifactStore(artifact_service),
@@ -572,9 +791,17 @@ async def build_temporal_worker(
 
         skill_registry = create_default_skill_registry()
         skill_registry.load_entry_points()
-        models = load_models_config(config.models.path.expanduser())
-        profile = config.models.profile or models.default_profile
-        model_provider = RiftXModelProvider(models)
+        model_registry = ModelProfileRegistry(
+            config.models.path.expanduser(),
+            config.models.secrets_path.expanduser(),
+        )
+        await asyncio.to_thread(model_registry.refresh)
+        profile = await asyncio.to_thread(
+            model_registry.resolve,
+            None,
+            override=config.models.profile,
+        )
+        model_provider = RiftXModelProvider(model_registry)
         agent_services = AgentRuntimeServices(
             tool_registry=registry,
             skill_registry=skill_registry,
@@ -626,6 +853,13 @@ async def build_temporal_worker(
                 tool_context=tool_context,
             ),
         )
+        control_tools = RuntimeControlToolService(
+            tools=tool_context,
+            executions=execution_service,
+            artifacts=artifact_service,
+            events=event_repository,
+            transcript=transcript_repository,
+        )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,
             session_repository=agent_session_repository,
@@ -636,7 +870,7 @@ async def build_temporal_worker(
             lease_manager=DatabaseRunLeaseManager(run_lease_repository),
             context_compiler=context_compiler,
             agent_engine=OpenAIAgentsEngine(
-                DeferredRuntimeAgentFactory(),
+                DeferredRuntimeAgentFactory(control_handler=control_tools),
                 model_provider=model_provider,
             ),
             transcript_repository=transcript_repository,
@@ -650,6 +884,7 @@ async def build_temporal_worker(
             ),
             user_input_repository=user_input_repository,
             terminal_service=terminal_service,
+            safety_stopper=safety_stopper,
             hooks=hooks,
         )
         session_manager = SessionManager(
@@ -694,7 +929,8 @@ async def build_temporal_worker(
             session_initializer=_PrimarySessionInitializer(
                 runs=run_repository,
                 sessions=agent_session_repository,
-                default_model_profile=profile,
+                model_registry=model_registry,
+                profile_override=config.models.profile,
             ),
             user_input_resolver=_RunEventUserInputResolver(
                 events=event_repository,
@@ -707,9 +943,8 @@ async def build_temporal_worker(
         activities = RiftXActivities(
             run_repository=run_repository,
             event_repository=event_repository,
-            execution_repository=execution_repository,
             tool_registry=registry,
-            supervisor=execution_runner,
+            safety_stopper=safety_stopper,
             agent_cycle=agent_cycle,
             approval_recorder=ApprovalRequestRecorder(
                 approval_repository=approval_repository,
@@ -741,6 +976,10 @@ async def build_temporal_worker(
             database=database,
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
+            browser_manager=browser_manager,
+            run_repository=run_repository,
+            event_repository=event_repository,
+            safety_stopper=safety_stopper,
             model_provider=model_provider,
             node_service=node_service,
             node_id=config.runner.node_id,
@@ -751,6 +990,8 @@ async def build_temporal_worker(
             ),
         )
     except Exception:
+        if browser_manager is not None:
+            await browser_manager.close_all()
         if terminal_supervisor is not None:
             await terminal_supervisor.close_all()
         if process_supervisor is not None:

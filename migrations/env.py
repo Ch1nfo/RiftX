@@ -14,7 +14,10 @@ from riftx.persistence.orm import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic can run in the Control Plane process during tests or managed
+    # upgrade tooling. Do not disable already-imported RiftX loggers as a side
+    # effect of applying the migration logging configuration.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 configured_url = os.getenv("RIFTX_DATABASE_URL")
 if configured_url:

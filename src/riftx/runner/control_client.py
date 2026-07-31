@@ -6,13 +6,15 @@ import base64
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
-from riftx.domain import ExecutionStatus, RunnerCommandKind
+from riftx.domain import ExecutionStatus, RunnerCommandKind, RunnerPrincipal
 
 
 class RunnerControlClientError(RuntimeError):
@@ -46,28 +48,58 @@ class LeasedRunnerCommand:
     payload: dict[str, object]
     lease_id: str
     attempts: int
+    target: RunnerPrincipal | None = None
+    lease_expires_at: datetime | None = None
+    lease_duration_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRunnerCredential:
+    """Complete server-issued identity required for authenticated callbacks."""
+
+    token: str
+    principal: RunnerPrincipal
 
 
 class RunnerCredentialStore:
-    """Persists only the node-scoped credential returned after registration."""
+    """Persists one complete node-scoped credential returned after registration."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def load(self, node_id: str) -> str | None:
+    def load(self, node_id: str) -> StoredRunnerCredential | None:
         try:
             payload = json.loads(self.path.read_text())
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
+        if not isinstance(payload, dict):
+            return None
         if payload.get("node_id") != node_id:
             return None
         token = payload.get("runner_token")
-        return token if isinstance(token, str) and token else None
+        if not isinstance(token, str) or not token:
+            return None
+        try:
+            principal = RunnerPrincipal.model_validate(payload.get("principal"))
+        except ValidationError:
+            # Legacy token-only files are deliberately rejected. Inventing a
+            # principal here would let cloned execution state impersonate a
+            # server-issued owner generation.
+            return None
+        return StoredRunnerCredential(token=token, principal=principal)
 
-    def save(self, node_id: str, token: str) -> None:
+    def save(self, node_id: str, token: str, principal: RunnerPrincipal) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temporary.write_text(json.dumps({"node_id": node_id, "runner_token": token}))
+        temporary.write_text(
+            json.dumps(
+                {
+                    "node_id": node_id,
+                    "runner_token": token,
+                    "principal": principal.model_dump(mode="json"),
+                }
+            )
+        )
         if os.name == "posix":
             temporary.chmod(0o600)
         temporary.replace(self.path)
@@ -92,7 +124,7 @@ class RunnerControlClient:
         self.node_id = node_id
         self._registration_token = registration_token
         self._credentials = credentials
-        self._token = credentials.load(node_id)
+        self._credential = credentials.load(node_id)
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=server_url.rstrip("/"),
@@ -100,10 +132,10 @@ class RunnerControlClient:
         )
 
     async def connect(self, registration: NodeRegistration) -> str:
-        if self._token is not None:
+        if self._credential is not None:
             try:
                 await self.heartbeat()
-                return self._token
+                return self._credential.token
             except RunnerControlClientError as exc:
                 if exc.status_code != 401:
                     raise
@@ -135,8 +167,15 @@ class RunnerControlClient:
                 "runner_registration_invalid_response",
                 "Control Plane did not return a Runner token",
             )
-        self._token = token
-        self._credentials.save(self.node_id, token)
+        principal = _parse_runner_principal(
+            payload.get("principal"),
+            status_code=response.status_code,
+            code="runner_registration_invalid_response",
+            message="Control Plane did not return a valid Runner principal",
+        )
+        credential = StoredRunnerCredential(token=token, principal=principal)
+        self._credentials.save(self.node_id, token, principal)
+        self._credential = credential
         return token
 
     async def heartbeat(self, heartbeat: NodeHeartbeat | None = None) -> None:
@@ -152,11 +191,19 @@ class RunnerControlClient:
             },
         )
 
-    async def poll(self, *, wait_seconds: float = 30.0) -> LeasedRunnerCommand | None:
+    async def poll(
+        self,
+        *,
+        wait_seconds: float = 30.0,
+        safety_only: bool = False,
+    ) -> LeasedRunnerCommand | None:
         payload = await self._request(
             "GET",
             "/api/v1/runner/commands/next",
-            params={"wait_seconds": wait_seconds},
+            params={
+                "wait_seconds": wait_seconds,
+                "safety_only": str(safety_only).lower(),
+            },
         )
         raw = payload.get("command")
         if raw is None:
@@ -167,13 +214,40 @@ class RunnerControlClient:
                 "runner_command_invalid_response",
                 "Control Plane returned an invalid command",
             )
+        raw_lease_duration = raw.get("lease_duration_seconds")
+        lease_duration = (
+            float(raw_lease_duration)
+            if isinstance(raw_lease_duration, int | float)
+            and not isinstance(raw_lease_duration, bool)
+            and raw_lease_duration > 0
+            else None
+        )
         return LeasedRunnerCommand(
             id=str(raw["id"]),
             kind=RunnerCommandKind(str(raw["kind"])),
             payload=dict(raw.get("payload") or {}),
             lease_id=str(raw["lease_id"]),
             attempts=int(raw["attempts"]),
+            target=self._require_polled_target(raw.get("target")),
+            lease_expires_at=datetime.fromisoformat(str(raw["lease_expires_at"])),
+            lease_duration_seconds=lease_duration,
         )
+
+    async def renew(self, command: LeasedRunnerCommand) -> float:
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/commands/{command.id}/lease",
+            expected_principal=_required_command_target(command),
+            json={"lease_id": command.lease_id},
+        )
+        value = payload.get("lease_duration_seconds")
+        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane omitted the renewed command lease duration",
+            )
+        return float(value)
 
     async def finish(
         self,
@@ -186,6 +260,7 @@ class RunnerControlClient:
         await self._request(
             "POST",
             f"/api/v1/runner/commands/{command.id}/finish",
+            expected_principal=_required_command_target(command),
             json={
                 "lease_id": command.lease_id,
                 "succeeded": succeeded,
@@ -205,6 +280,7 @@ class RunnerControlClient:
             payload = await self._request(
                 "POST",
                 f"/api/v1/runner/commands/{command.id}/output",
+                expected_principal=_required_command_target(command),
                 json={
                     "lease_id": command.lease_id,
                     "offset": offset,
@@ -237,6 +313,7 @@ class RunnerControlClient:
         platform_release: str = "",
         platform_architecture: str = "",
         process_created_at: str | None = None,
+        physical_stop_confirmed: bool = False,
     ) -> None:
         await self._request(
             "POST",
@@ -253,6 +330,7 @@ class RunnerControlClient:
                 "platform_release": platform_release,
                 "platform_architecture": platform_architecture,
                 "process_created_at": process_created_at,
+                "physical_stop_confirmed": physical_stop_confirmed,
             },
         )
 
@@ -286,29 +364,89 @@ class RunnerControlClient:
         return int(payload["next_offset"])
 
     def invalidate_credentials(self) -> None:
-        self._token = None
+        self._credential = None
         self._credentials.clear()
+
+    @property
+    def principal(self) -> RunnerPrincipal | None:
+        credential = self._credential
+        return credential.principal if credential is not None else None
 
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, object]:
-        if self._token is None:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected_principal: RunnerPrincipal | None = None,
+        **kwargs: Any,
+    ) -> dict[str, object]:
+        credential = self._credential
+        if credential is None:
             raise RunnerControlClientError(
                 401,
                 "runner_not_connected",
                 "Runner has not authenticated with the Control Plane",
             )
+        if expected_principal is not None and credential.principal != expected_principal:
+            raise RunnerControlClientError(
+                409,
+                "runner_command_principal_mismatch",
+                "Runner command belongs to a different owner generation",
+            )
         headers = dict(kwargs.pop("headers", {}))
         headers.update(
             {
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {credential.token}",
                 "X-RiftX-Node-ID": self.node_id,
+                "X-RiftX-Runner-Instance-ID": credential.principal.instance_id,
+                "X-RiftX-Runner-Epoch": str(credential.principal.epoch),
             }
         )
         response = await self._client.request(method, path, headers=headers, **kwargs)
         return _response_payload(response)
+
+    def _require_polled_target(self, raw: object) -> RunnerPrincipal:
+        target = _parse_runner_principal(
+            raw,
+            status_code=500,
+            code="runner_command_invalid_response",
+            message="Control Plane returned a command without a valid target principal",
+        )
+        credential = self._credential
+        if credential is None or target != credential.principal:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_principal_mismatch",
+                "Control Plane returned a command for a different owner generation",
+            )
+        return target
+
+
+def _required_command_target(command: LeasedRunnerCommand) -> RunnerPrincipal:
+    if command.target is None:
+        raise RunnerControlClientError(
+            409,
+            "runner_command_principal_missing",
+            "Runner command omitted its owner generation",
+        )
+    return command.target
+
+
+def _parse_runner_principal(
+    raw: object,
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+) -> RunnerPrincipal:
+    try:
+        return RunnerPrincipal.model_validate(raw)
+    except ValidationError as exc:
+        raise RunnerControlClientError(status_code, code, message) from exc
 
 
 def _response_payload(response: httpx.Response) -> dict[str, object]:

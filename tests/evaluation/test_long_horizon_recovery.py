@@ -47,6 +47,7 @@ from riftx.domain import (
     MessageVisibility,
     Objective,
     Run,
+    RunStatus,
     Scope,
     TranscriptMessageDraft,
 )
@@ -175,6 +176,7 @@ def _delegation(index: int, workspace: Path) -> DelegationPacket:
 
 def _execution_service(
     *,
+    runs: SQLAlchemyRunRepository,
     executions: SQLAlchemyExecutionRepository,
     sessions: SQLAlchemyAgentSessionRepository,
     intents: SQLAlchemyToolCallIntentRepository,
@@ -187,6 +189,7 @@ def _execution_service(
         tool_call_repository=intents,
         runner=runner,  # type: ignore[arg-type]
         event_repository=events,
+        run_repository=runs,
     )
 
 
@@ -262,9 +265,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
                 f"qa-fault-{boundary.value}",
                 point,
                 PythonHook(
-                    lambda request, boundary=boundary: _fault_hook(
-                        injector, boundary, request
-                    )
+                    lambda request, boundary=boundary: _fault_hook(injector, boundary, request)
                 ),
                 failure_policy=HookFailurePolicy.BLOCK,
             )
@@ -301,7 +302,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
                 cycle_id="qa-model-crash",
             )
         )
-    completed_cycle = await coordinator.run_cycle(
+    recovered_cycle = await coordinator.run_cycle(
         RunCycleRequest(
             run_id=run.id,
             session_id="qa-primary",
@@ -309,7 +310,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             cycle_id="qa-model-recovered",
         )
     )
-    assert completed_cycle.yield_reason.value == "run_completed"
+    assert recovered_cycle.yield_reason.value == "tool_running"
     assert engine.model_calls == 2
 
     tool_cycle = AgentCycle(
@@ -323,6 +324,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
     durable_runner = DurableEvaluationRunner(executions, launch_counts)
     faulting_runner = FaultingExecutionRunner(durable_runner, injector)
     execution_service = _execution_service(
+        runs=runs,
         executions=executions,
         sessions=sessions,
         intents=intents,
@@ -386,11 +388,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             cycle=tool_cycle,
             step=step,
             event=event,
-            status=(
-                ToolCallStatus.WAITING_APPROVAL
-                if approval_required
-                else ToolCallStatus.READY
-            ),
+            status=(ToolCallStatus.WAITING_APPROVAL if approval_required else ToolCallStatus.READY),
         )
         if index == 0:
             with pytest.raises(InjectedRecoveryFault):
@@ -411,9 +409,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
                 cycle=tool_cycle,
                 step=step,
                 intent=intent,
-                context_compilation_id=(
-                    await compilations.latest_for_session(primary.id)
-                ).id,
+                context_compilation_id=(await compilations.latest_for_session(primary.id)).id,
                 working_memory_version=None,
             )
             if index == 20:
@@ -436,6 +432,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             assert fault.boundary is RecoveryBoundary.AFTER_EXECUTION_STARTED
             # A fresh Worker-side service sees the durable execution key and does not launch again.
             execution_service = _execution_service(
+                runs=runs,
                 executions=executions,
                 sessions=sessions,
                 intents=intents,
@@ -453,6 +450,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             assert index == 0
             assert fault.boundary is RecoveryBoundary.AFTER_EXECUTION_COMPLETED
             execution_service = _execution_service(
+                runs=runs,
                 executions=executions,
                 sessions=sessions,
                 intents=intents,
@@ -484,6 +482,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
             # Runner restart: reconstruct the Runner adapter over durable Execution rows.
             durable_runner = DurableEvaluationRunner(executions, launch_counts)
             execution_service = _execution_service(
+                runs=runs,
                 executions=executions,
                 sessions=sessions,
                 intents=intents,
@@ -536,12 +535,8 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
                 target="example.com",
                 tool_id=f"qa-tool-{index:03d}",
                 normalized_arguments={"index": index},
-                result_status=(
-                    AttemptStatus.FAILED if index < 10 else AttemptStatus.SUCCEEDED
-                ),
-                result_summary=(
-                    "expected injected tool failure" if index < 10 else "completed"
-                ),
+                result_status=(AttemptStatus.FAILED if index < 10 else AttemptStatus.SUCCEEDED),
+                result_summary=("expected injected tool failure" if index < 10 else "completed"),
             )
             for index in range(100)
         ],
@@ -703,9 +698,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         run_repository=runs,
         session_repository=sessions,
         transcript_repository=transcript,
-        provider_state_repository=SQLAlchemyProviderStateRepository(
-            database.session_factory
-        ),
+        provider_state_repository=SQLAlchemyProviderStateRepository(database.session_factory),
     )
     subagents = SubagentManager(
         sessions=session_manager,
@@ -851,6 +844,9 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         assert path.is_file()
         traced_artifact_ids.append(artifact.id)
 
+    await runs.update_status(run.id, RunStatus.RUNNING)
+    await runs.update_status(run.id, RunStatus.COMPLETING)
+    await runs.update_status(run.id, RunStatus.COMPLETED)
     final_run = await runs.get(run.id)
     assert final_run is not None
     final_intents = [await intents.get(tool_call_id) for tool_call_id in tool_call_ids]
@@ -858,8 +854,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
     processed_tool_call_ids = [
         intent.id
         for intent in final_intents
-        if intent is not None
-        and intent.status in {ToolCallStatus.COMPLETED, ToolCallStatus.FAILED}
+        if intent is not None and intent.status in {ToolCallStatus.COMPLETED, ToolCallStatus.FAILED}
     ]
     temporal_inputs = [
         RunAgentCycleActivityInput(
@@ -871,8 +866,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         for index in range(100)
     ]
     temporal_payloads = [
-        json.dumps(asdict(item), separators=(",", ":")).encode()
-        for item in temporal_inputs
+        json.dumps(asdict(item), separators=(",", ":")).encode() for item in temporal_inputs
     ]
     large_sentinel = "x" * (1024 * 1024)
     assert all(large_sentinel.encode() not in payload for payload in temporal_payloads)
@@ -911,16 +905,11 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
     assert runtime_metrics.metrics[RuntimeMetricName.REPEATED_TOOL_CALL_RATE].value == 0.0
     assert runtime_metrics.metrics[RuntimeMetricName.INVALID_TOOL_CALL_RATE].value == 0.0
     assert runtime_metrics.metrics[RuntimeMetricName.RECOVERY_SUCCESS_RATE].value == 1.0
-    assert (
-        runtime_metrics.metrics[RuntimeMetricName.EXECUTION_DUPLICATION_RATE].value == 0.0
-    )
+    assert runtime_metrics.metrics[RuntimeMetricName.EXECUTION_DUPLICATION_RATE].value == 0.0
     assert runtime_metrics.metrics[RuntimeMetricName.COMPACTION_FIDELITY].value == 1.0
     assert runtime_metrics.metrics[RuntimeMetricName.CONTEXT_TOKEN_EFFICIENCY].available
     assert runtime_metrics.metrics[RuntimeMetricName.SUBAGENT_UTILITY].value == 1.0
-    assert (
-        runtime_metrics.metrics[RuntimeMetricName.APPROVAL_RESUME_SUCCESS_RATE].value
-        == 1.0
-    )
+    assert runtime_metrics.metrics[RuntimeMetricName.APPROVAL_RESUME_SUCCESS_RATE].value == 1.0
     assert runtime_metrics.metrics[RuntimeMetricName.BROWSER_ACTION_FAILURE_RATE].value == 0.0
     assert runtime_metrics.metrics[RuntimeMetricName.CITATION_COVERAGE].value == 1.0
 
@@ -974,7 +963,5 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         "artifacts": 30,
         "max_temporal_payload_bytes": max(len(payload) for payload in temporal_payloads),
     }
-    assert workflow.signals == [
-        ("approve", run.id, approval_id) for approval_id in approval_ids
-    ]
+    assert workflow.signals == [("approve", run.id, approval_id) for approval_id in approval_ids]
     await database.dispose()

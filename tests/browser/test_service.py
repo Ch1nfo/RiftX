@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from riftx.application.errors import ApplicationConflictError
-from riftx.application.services import ArtifactApplicationService
+from riftx.application.services import (
+    ArtifactApplicationService,
+    RunSafetyStopService,
+)
 from riftx.browser.service import ActBrowser, BrowserApplicationService, OpenBrowser
 from riftx.domain import (
     BrowserAction,
@@ -14,11 +19,13 @@ from riftx.domain import (
     BrowserObservation,
     BrowserOwner,
     BrowserPage,
+    BrowserSessionStatus,
     Engagement,
     InteractiveElement,
     NetworkEventSummary,
     Objective,
     Run,
+    RunStatus,
     Scope,
 )
 from riftx.persistence import (
@@ -31,7 +38,7 @@ from riftx.persistence import (
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
 )
-from riftx.runner import RunnerBrowserManager, RunnerPaths
+from riftx.runner import ProcessSupervisor, RunnerBrowserManager, RunnerPaths
 from riftx.runtime.types import AgentSession
 
 
@@ -42,6 +49,7 @@ class ServiceEngineSession:
         self.session_id = session_id
         self.url = url
         self.owner_downloads = []
+        self.closed = False
 
     async def pages(self):
         return [
@@ -73,9 +81,7 @@ class ServiceEngineSession:
                 title="Example",
                 visible_text_excerpt="bounded",
                 interactive_elements=[
-                    InteractiveElement(
-                        ref="e-1", role="button", text="Continue"
-                    )
+                    InteractiveElement(ref="e-1", role="button", text="Continue")
                 ],
                 recent_network_summary=(
                     [
@@ -109,7 +115,19 @@ class ServiceEngineSession:
         return self.owner_downloads[index:]
 
     async def close(self):
-        return None
+        self.closed = True
+
+
+class EmptyRunResourceStopper:
+    async def stop_run(self, run_id: str):
+        assert run_id
+        return SimpleNamespace(
+            attempted_ids=(),
+            node_ids={},
+            observed_statuses={},
+            confirmed_statuses={},
+            failures={},
+        )
 
 
 class ServiceEngine:
@@ -158,9 +176,7 @@ async def test_browser_service_persists_artifacts_actions_and_takeover_ownership
         runs=runs,
         agent_sessions=agent_sessions,
         repository=browser_repository,
-        runner=RunnerBrowserManager(
-            node_id="local", paths=paths, engine=ServiceEngine()
-        ),
+        runner=RunnerBrowserManager(node_id="local", paths=paths, engine=ServiceEngine()),
         artifacts=artifacts,
         events=events,
     )
@@ -212,4 +228,112 @@ async def test_browser_service_persists_artifacts_actions_and_takeover_ownership
     assert "browser.session_opened" in [item.event_type for item in timeline]
     assert "browser.action_completed" in [item.event_type for item in timeline]
     assert "browser.takeover_released" in [item.event_type for item in timeline]
+    await database.dispose()
+
+
+async def test_two_browser_manager_instances_converge_on_owner_close_ack(
+    tmp_path: Path,
+) -> None:
+    """A foreign Worker observes the real owner's durable browser close ACK."""
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'two-browser-owners.db'}")
+    await database.create_schema()
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    agent_sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    browsers = SQLAlchemyBrowserRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Browser ownership")
+    )
+    await runs.create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="local",
+            objective=Objective(description="Close the owned browser"),
+            scope=Scope(domains=["example.com"]),
+            workspace_path=str(tmp_path / "workspace"),
+        )
+    )
+    await agent_sessions.create(
+        AgentSession(id="agent-session-1", run_id="run-1", model_profile="default")
+    )
+    paths = RunnerPaths(tmp_path / "runner")
+    artifacts = ArtifactApplicationService(
+        run_repository=runs,
+        execution_repository=executions,
+        artifact_repository=SQLAlchemyArtifactRepository(database.session_factory),
+        event_repository=events,
+        paths=paths,
+    )
+    owner_engine = ServiceEngine()
+    owner_manager = RunnerBrowserManager(
+        node_id="local",
+        paths=paths,
+        engine=owner_engine,
+    )
+    foreign_engine = ServiceEngine()
+    foreign_manager = RunnerBrowserManager(
+        node_id="local",
+        paths=RunnerPaths(tmp_path / "foreign-runner"),
+        engine=foreign_engine,
+    )
+
+    def browser_service(manager: RunnerBrowserManager) -> BrowserApplicationService:
+        return BrowserApplicationService(
+            runs=runs,
+            agent_sessions=agent_sessions,
+            repository=browsers,
+            runner=manager,
+            artifacts=artifacts,
+            events=events,
+            stop_timeout_seconds=0.05,
+        )
+
+    owner_browser = browser_service(owner_manager)
+    foreign_browser = browser_service(foreign_manager)
+    opened = await owner_browser.open(
+        OpenBrowser(
+            run_id="run-1",
+            agent_session_id="agent-session-1",
+            url="https://example.com/",
+            include_screenshot=False,
+        )
+    )
+    await runs.update_status("run-1", RunStatus.COMPLETING)
+    supervisor = ProcessSupervisor(executions, paths)
+    empty = EmptyRunResourceStopper()
+
+    def safety(browser: BrowserApplicationService) -> RunSafetyStopService:
+        return RunSafetyStopService(
+            execution_repository=executions,
+            execution_runner=supervisor,
+            resource_stoppers={
+                "browser_sessions": browser,
+                "target_http_requests": empty,
+            },
+            resource_stop_poll_seconds=0.001,
+            resource_stop_max_passes=100,
+        )
+
+    foreign_stop = asyncio.create_task(safety(foreign_browser).stop_run("run-1"))
+    for _ in range(100):
+        persisted = await browsers.get_session(opened.session.id)
+        if persisted is not None and persisted.status is BrowserSessionStatus.LOST:
+            break
+        await asyncio.sleep(0.001)
+    else:
+        raise AssertionError("foreign manager did not persist unconfirmed LOST state")
+
+    owner_result = await safety(owner_browser).stop_run("run-1", drain=False)
+    foreign_result = await asyncio.wait_for(foreign_stop, timeout=1)
+    persisted = await browsers.get_session(opened.session.id)
+
+    assert owner_result.succeeded is True
+    assert foreign_result.succeeded is True
+    assert persisted is not None and persisted.status is BrowserSessionStatus.CLOSED
+    assert owner_engine.sessions[opened.session.id].closed is True
+    assert foreign_engine.sessions == {}
+    await supervisor.close()
     await database.dispose()

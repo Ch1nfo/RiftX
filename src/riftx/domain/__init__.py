@@ -50,7 +50,7 @@ from .message import AgentCheckpoint, AgentMessage, TranscriptMessageDraft
 from .node import Node
 from .report import Report
 from .run import EntryPoint, Objective, Run, Scope, SuccessCriterion
-from .runner import RunnerCommand, RunnerCredential
+from .runner import RunnerCommand, RunnerCredential, RunnerPrincipal
 from .skill import Skill
 from .tool import Tool, ToolState
 
@@ -104,6 +104,7 @@ __all__ = [
     "RunnerCommandKind",
     "RunnerCommandStatus",
     "RunnerCredential",
+    "RunnerPrincipal",
     "Run",
     "RunEvent",
     "RunStatus",

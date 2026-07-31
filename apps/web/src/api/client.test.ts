@@ -76,6 +76,48 @@ describe("RiftX API client", () => {
     });
   });
 
+  it("updates model profiles without reading credentials back", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: "primary",
+          model: "example-model",
+          request_mode: "chat_completions",
+          has_stored_api_key: true,
+          api_key_configured: true,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    const profile = await api.updateModelProfile(
+      "primary profile",
+      {
+        provider: "openai_compatible",
+        model: "example-model",
+        request_mode: "chat_completions",
+        base_url: "https://llm.example.test/v1",
+        api_key_env: "RIFTX_MODEL_API_KEY",
+        requires_api_key: true,
+        timeout_seconds: 120,
+        max_retries: 2,
+        api_key: "write-only-secret",
+      },
+      "admin-secret",
+    );
+
+    expect(profile).not.toHaveProperty("api_key");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/model-profiles/primary%20profile",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"api_key":"write-only-secret"'),
+        headers: expect.objectContaining({ Authorization: "Bearer admin-secret" }),
+      }),
+    );
+  });
+
   it("sends durable approval decisions through the control plane", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: "approval-1", status: "approved" }), {
@@ -242,11 +284,13 @@ describe("RiftX API client", () => {
 });
 
 it("persists tool edits through the node registry API", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ node_id: "local", generation: 2, tools: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
+  const fetchMock = vi.fn().mockImplementation(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ node_id: "local", generation: 2, tools: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ),
   );
   globalThis.fetch = fetchMock;
   const payload = {
@@ -258,10 +302,39 @@ it("persists tool edits through the node registry API", async () => {
     timeout: 30,
   };
 
-  await api.updateTool("local", "nmap", payload);
+  await api.listTools("local");
+  await api.listToolsForAdmin("local", "admin-secret");
+  await api.refreshTools("local", "admin-secret");
+  await api.updateTool("local", "nmap", payload, "admin-secret");
 
-  expect(fetchMock).toHaveBeenCalledWith(
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    "/api/v1/nodes/local/tools",
+    expect.any(Object),
+  );
+  expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty("Authorization");
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    2,
+    "/api/v1/nodes/local/tools/admin",
+    expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer admin-secret" }),
+    }),
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    3,
+    "/api/v1/nodes/local/refresh-tools",
+    expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer admin-secret" }),
+    }),
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    4,
     "/api/v1/nodes/local/tools/nmap",
-    expect.objectContaining({ method: "PUT", body: JSON.stringify(payload) }),
+    expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify(payload),
+      headers: expect.objectContaining({ Authorization: "Bearer admin-secret" }),
+    }),
   );
 });

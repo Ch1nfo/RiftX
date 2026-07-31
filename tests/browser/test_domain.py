@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from riftx.domain import BrowserMode, BrowserSession
+from riftx.domain import BrowserMode, BrowserSession, BrowserSessionStatus
 
 
 def test_persistent_and_cdp_modes_require_their_runner_local_configuration() -> None:
@@ -56,3 +56,19 @@ def test_agent_tool_result_does_not_expose_runner_profile_or_cdp_secrets() -> No
     ).model_dump(mode="json")
     assert "profile_path" not in result["session"]
     assert "cdp_endpoint" not in result["session"]
+
+
+def test_lost_session_requires_later_closed_acknowledgement_for_confirmation() -> None:
+    session = BrowserSession(
+        run_id="run-1",
+        agent_session_id="session-1",
+        node_id="local",
+        mode=BrowserMode.MANAGED_EPHEMERAL,
+        status=BrowserSessionStatus.LOST,
+    )
+
+    assert session.may_still_be_running is True
+    assert session.stop_confirmed is False
+    session.transition_to(BrowserSessionStatus.CLOSED)
+    assert session.may_still_be_running is False
+    assert session.stop_confirmed is True

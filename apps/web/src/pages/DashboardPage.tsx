@@ -22,12 +22,20 @@ import { useI18n } from "../i18n";
 
 const statusColors: Record<RunStatus, string> = {
   created: "#6796ff",
+  initializing: "#6796ff",
+  ready: "#70a8ff",
   preparing: "#70a8ff",
   running: "#45d6a4",
+  waiting_tool: "#f2b95d",
   waiting_approval: "#f2b95d",
+  waiting_user: "#cfadff",
+  pausing: "#e4a853",
   paused: "#e4a853",
+  compacting: "#70a8ff",
+  completing: "#6ee7b7",
   completed: "#6ee7b7",
   failed: "#ff6f74",
+  cancelling: "#8b9290",
   cancelled: "#8b9290",
 };
 
@@ -45,9 +53,7 @@ export function DashboardPage() {
 
   const items = runs.data?.items ?? [];
   const active = items.filter((run) =>
-    ["created", "preparing", "running", "waiting_approval", "paused"].includes(
-      run.status,
-    ),
+    !["completed", "failed", "cancelled"].includes(run.status),
   );
   const waiting = items.filter((run) => run.status === "waiting_approval");
   const completed = items.filter((run) => run.status === "completed");

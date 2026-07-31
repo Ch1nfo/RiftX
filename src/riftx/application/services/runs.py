@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -12,20 +13,27 @@ from riftx.application.errors import (
     ApplicationConflictError,
     ApplicationServiceError,
     EntityNotFoundError,
+    RepositoryConflictError,
     ServiceUnavailableError,
 )
+from riftx.application.finalization import RunFinalizationIntent
 from riftx.application.ports import (
     EngagementRepository,
     ExecutionRepository,
     RunEventRepository,
     RunRepository,
 )
+from riftx.application.services.run_safety import (
+    RunResourceStopper,
+    RunSafetyStopService,
+    SafetyStopResult,
+    stop_resources_payload,
+)
 from riftx.domain import (
     ApprovalMode,
     Engagement,
     EntryPoint,
-    Execution,
-    ExecutionStatus,
+    InvalidStateTransitionError,
     Objective,
     Run,
     RunStatus,
@@ -34,19 +42,21 @@ from riftx.domain import (
 )
 from riftx.runner import ExecutionRunner
 
-_ACTIVE_EXECUTION_STATUSES = {
-    ExecutionStatus.CREATED,
-    ExecutionStatus.QUEUED,
-    ExecutionStatus.STARTING,
-    ExecutionStatus.RUNNING,
-}
-_STOP_CANDIDATE_EXECUTION_STATUSES = _ACTIVE_EXECUTION_STATUSES | {
-    # LOST means the Control Plane no longer has proof that the process
-    # stopped. A durable cancel tombstone must still be delivered and
-    # acknowledged before pause/cancel can claim success.
-    ExecutionStatus.LOST,
-}
-_EXECUTION_LIST_PAGE_SIZE = 1000
+_EVENT_LIST_PAGE_SIZE = 1000
+_TERMINAL_RUN_STATUSES = frozenset(
+    {
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+)
+_SAFETY_FENCE_RUN_STATUSES = frozenset(
+    {
+        RunStatus.PAUSING,
+        RunStatus.CANCELLING,
+        RunStatus.COMPLETING,
+    }
+)
 
 
 class RunWorkflowClient(Protocol):
@@ -75,6 +85,10 @@ class RunWorkflowClient(Protocol):
     def workflow_id(self, run_id: str) -> str: ...
 
 
+class ModelProfileResolver(Protocol):
+    async def resolve_profile(self, profile_name: str | None) -> str: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CreateEngagement:
     name: str
@@ -96,21 +110,6 @@ class CreateRun:
     engagement: CreateEngagement | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _ExecutionStopResult:
-    attempted_ids: tuple[str, ...]
-    confirmed_statuses: dict[str, str]
-    failures: dict[str, str]
-
-    @property
-    def confirmed_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self.confirmed_statuses))
-
-    @property
-    def succeeded(self) -> bool:
-        return not self.failures
-
-
 class RunApplicationService:
     def __init__(
         self,
@@ -122,9 +121,13 @@ class RunApplicationService:
         execution_repository: ExecutionRepository,
         execution_runner: ExecutionRunner,
         workspace_root: Path,
+        model_profiles: ModelProfileResolver | None = None,
+        resource_stoppers: Mapping[str, RunResourceStopper] | None = None,
+        safety_stopper: RunSafetyStopService | None = None,
         execution_cancel_timeout_seconds: float = 5.0,
         execution_cancel_poll_seconds: float = 0.05,
         execution_cancel_max_passes: int = 5,
+        workflow_signal_timeout_seconds: float = 0.5,
     ) -> None:
         if execution_cancel_timeout_seconds < 0:
             raise ValueError("execution_cancel_timeout_seconds must not be negative")
@@ -132,6 +135,8 @@ class RunApplicationService:
             raise ValueError("execution_cancel_poll_seconds must be positive")
         if execution_cancel_max_passes < 1:
             raise ValueError("execution_cancel_max_passes must be positive")
+        if workflow_signal_timeout_seconds <= 0:
+            raise ValueError("workflow_signal_timeout_seconds must be positive")
         self._engagement_repository = engagement_repository
         self._run_repository = run_repository
         self._event_repository = event_repository
@@ -139,11 +144,27 @@ class RunApplicationService:
         self._execution_repository = execution_repository
         self._execution_runner = execution_runner
         self._workspace_root = workspace_root
-        self._execution_cancel_timeout_seconds = execution_cancel_timeout_seconds
-        self._execution_cancel_poll_seconds = execution_cancel_poll_seconds
-        self._execution_cancel_max_passes = execution_cancel_max_passes
+        self._model_profiles = model_profiles
+        self._workflow_signal_timeout_seconds = workflow_signal_timeout_seconds
+        if safety_stopper is not None and resource_stoppers is not None:
+            raise ValueError("provide either safety_stopper or resource_stoppers, not both")
+        self._safety_stopper = safety_stopper or RunSafetyStopService(
+            execution_repository=execution_repository,
+            execution_runner=execution_runner,
+            resource_stoppers=resource_stoppers,
+            execution_cancel_timeout_seconds=execution_cancel_timeout_seconds,
+            execution_cancel_poll_seconds=execution_cancel_poll_seconds,
+            execution_cancel_max_passes=execution_cancel_max_passes,
+            # Standalone services may intentionally own only a subset. Both
+            # production assemblies supply all controllers, while Temporal
+            # cleanup injects a strict RunSafetyStopService directly.
+            require_all_resource_stoppers=False,
+        )
 
     async def create_run(self, command: CreateRun) -> Run:
+        model_profile = command.model_profile
+        if self._model_profiles is not None:
+            model_profile = await self._model_profiles.resolve_profile(model_profile)
         engagement = await self._resolve_engagement(command)
         run = Run(
             engagement_id=engagement.id,
@@ -153,8 +174,13 @@ class RunApplicationService:
             entry_points=command.entry_points,
             scope=command.scope,
             approval_mode=command.approval_mode,
-            model_profile=command.model_profile,
+            model_profile=model_profile,
             workspace_path=command.workspace_path or "",
+            # Creating a Run is deliberately conversation-only.  Temporal is
+            # started atomically with the first persisted user message, so a
+            # Control Plane can accept and display a scoped task even while
+            # Temporal is offline.
+            status=RunStatus.WAITING_USER,
         )
         if not run.workspace_path:
             run.workspace_path = str(self._workspace_root / run.id)
@@ -170,25 +196,20 @@ class RunApplicationService:
         run.workspace_path = str(workspace)
         run.temporal_workflow_id = self._workflow_client.workflow_id(run.id)
         await self._run_repository.create(run)
-
-        try:
-            await self._workflow_client.start_run(run.id)
-        except Exception as exc:
-            await self._event_repository.append(
-                run.id,
-                "workflow.start_failed",
-                {"workflow_id": run.temporal_workflow_id, "reason": str(exc)},
-            )
-            raise ServiceUnavailableError(
-                "temporal_unavailable",
-                "Temporal is unavailable; the run was saved but its workflow was not started",
-                details={"run_id": run.id},
-            ) from exc
-
         await self._event_repository.append(
             run.id,
-            "workflow.started",
-            {"workflow_id": run.temporal_workflow_id},
+            "conversation.context_ready",
+            {
+                "session_id": f"{run.id}:primary",
+                "status": run.status.value,
+                "objective": run.objective.description,
+                "success_criteria": [item.model_dump(mode="json") for item in run.success_criteria],
+                "entry_points": [item.model_dump(mode="json") for item in run.entry_points],
+                "scope": run.scope.model_dump(mode="json"),
+                "approval_mode": run.approval_mode.value,
+                "model_profile": run.model_profile,
+                "agent_started": False,
+            },
         )
         return run
 
@@ -207,55 +228,326 @@ class RunApplicationService:
     ) -> list[Run]:
         return list(await self._run_repository.list(status=status, limit=limit, offset=offset))
 
-    async def pause(self, run_id: str) -> Run:
-        run = await self._require_controllable_run(run_id, action="pause")
-        run = await self._transition_if_possible(run, RunStatus.PAUSING)
-        stop_result, workflow_synced = await asyncio.gather(
-            self._cancel_active_executions(run.id, drain=True),
-            self._invoke_workflow_best_effort(run, "pause", self._workflow_client.pause),
+    async def list_runs_for_reconciliation(
+        self,
+        *,
+        status: RunStatus,
+        created_through: datetime,
+        after_created_at: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Run]:
+        return list(
+            await self._run_repository.list_for_reconciliation(
+                status=status,
+                created_through=created_through,
+                after_created_at=after_created_at,
+                after_id=after_id,
+                limit=limit,
+            )
         )
+
+    async def stop_resources_for_cleanup(self, run_id: str) -> SafetyStopResult:
+        """Reconcile a fenced normal-finalization stop in the owner process.
+
+        Temporal performs the authoritative final transition. The Control
+        Plane calls this method in the background so in-process Browser and
+        Target HTTP handles are stopped by their actual owner, while the
+        Worker independently requires the same durable stop evidence.
+        """
+
+        run = await self.get_run(run_id)
+        if run.status not in {
+            RunStatus.PAUSING,
+            RunStatus.CANCELLING,
+            RunStatus.COMPLETING,
+        }:
+            raise ApplicationConflictError(
+                "run_cleanup_not_fenced",
+                f"Cannot reconcile cleanup for run {run.id!r} while it is {run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        result = await self._stop_run_resources(run.id, drain=True)
+        if not result.succeeded:
+            return result
+
+        # PAUSING/CANCELLING can survive the original API request when an
+        # owner was temporarily unable to acknowledge a physical stop. Once
+        # the background owner reconciler obtains complete evidence it must
+        # also finish the control transition; merely stopping handles would
+        # leave the Run permanently fenced and its Workflow unsignalled.
+        current = await self.get_run(run.id)
+        workflow_synced = current.started_at is None
+        finalization_intent: RunFinalizationIntent | None = None
+        if current.status is RunStatus.PAUSING:
+            workflow_synced = await self._invoke_workflow_best_effort_if_started(
+                current,
+                "reconcile pause",
+                self._workflow_client.pause,
+            )
+            current = await self._transition_if_possible(current, RunStatus.PAUSED)
+        elif current.status is RunStatus.CANCELLING:
+            current = await self._transition_if_possible(current, RunStatus.CANCELLED)
+            workflow_synced = await self._invoke_workflow_best_effort_if_started(
+                current,
+                "reconcile cancel",
+                self._workflow_client.cancel,
+            )
+        elif current.status is RunStatus.COMPLETING:
+            finalization_intent = await self._get_finalization_intent(current.id)
+            if finalization_intent is None:
+                # Old fences without a trusted target remain fail-closed. A
+                # guessed terminal status would be worse than a visible
+                # COMPLETING Run that an operator can inspect.
+                raise ApplicationConflictError(
+                    "run_finalization_intent_missing",
+                    f"Run {current.id!r} has no trustworthy finalization target",
+                    details={"run_id": current.id},
+                )
+            current = await self._commit_finalization_if_possible(
+                current.id,
+                finalization_intent,
+            )
+            workflow_synced = current.started_at is None
+        else:
+            return result
+
+        payload = self._stop_event_payload(result, workflow_synced=workflow_synced)
+        payload["status"] = current.status.value
+        if finalization_intent is not None:
+            payload["finalization_target"] = finalization_intent.target.value
+        await self._event_repository.append(run.id, "run.cleanup_reconciled", payload)
+        return result
+
+    async def _get_finalization_intent(self, run_id: str) -> RunFinalizationIntent | None:
+        try:
+            return await self._run_repository.get_finalization_intent(run_id)
+        except RepositoryConflictError as exc:
+            raise ApplicationConflictError(
+                "run_finalization_intent_invalid",
+                f"Run {run_id!r} has no trustworthy finalization target",
+                details={"run_id": run_id, "reason": str(exc)},
+            ) from exc
+
+    async def pause(self, run_id: str) -> Run:
+        run = await self._require_pauseable_run(run_id)
+        run = await self._transition_if_possible(run, RunStatus.PAUSING)
+        stop_result = await self._stop_run_resources(run.id, drain=True)
+        pause_fence_acquired = run.status in {RunStatus.PAUSING, RunStatus.PAUSED}
+        workflow_synced = True
+        if pause_fence_acquired:
+            workflow_synced = await self._invoke_workflow_best_effort_if_started(
+                run,
+                "pause",
+                self._workflow_client.pause,
+            )
+        payload = self._stop_event_payload(stop_result, workflow_synced=workflow_synced)
+        payload["pause_fence_acquired"] = pause_fence_acquired
+        if not pause_fence_acquired:
+            payload["superseded_by_status"] = run.status.value
         await self._event_repository.append(
             run.id,
             "run.pause_requested",
-            self._stop_event_payload(stop_result, workflow_synced=workflow_synced),
+            payload,
         )
         self._raise_if_stop_failed(run, stop_result)
         current = await self.get_run(run.id)
         return await self._transition_if_possible(current, RunStatus.PAUSED)
 
     async def resume(self, run_id: str) -> Run:
-        run = await self._require_controllable_run(run_id, action="resume")
+        run = await self._require_safety_controllable_run(run_id, action="resume")
         if run.status is RunStatus.PAUSING:
-            run = await self._transition_if_possible(run, RunStatus.PAUSED)
+            # PAUSING may be the durable remainder of a failed safety stop. Do
+            # not turn it into PAUSED/RUNNING merely because the operator asks
+            # to resume: first rerun the complete stop gate and require fresh
+            # affirmative evidence for every known effect.
+            run = await self.pause(run.id)
         if run.status is not RunStatus.PAUSED:
             raise ApplicationConflictError(
                 "run_not_paused",
                 f"Cannot resume run {run.id!r} while it is {run.status.value}",
                 details={"run_id": run.id, "status": run.status.value},
             )
-        run = await self._run_repository.update_status(run.id, RunStatus.RUNNING)
+        finalization_intent = await self._get_finalization_intent(run.id)
+        if finalization_intent is not None:
+            if finalization_intent.target is not RunStatus.FAILED:
+                raise ApplicationConflictError(
+                    "run_finalization_pending",
+                    f"Cannot resume run {run.id!r} while it is finalizing as "
+                    f"{finalization_intent.target.value}",
+                    details={
+                        "run_id": run.id,
+                        "status": run.status.value,
+                        "finalization_target": finalization_intent.target.value,
+                    },
+                )
+            return await self._resume_failed_finalization(run, finalization_intent)
+        # ``started_at`` is the authoritative local boundary between a
+        # conversation-only Run and an executing Run.  In particular, legacy
+        # databases may contain a ``workflow.started`` audit event even though
+        # no Temporal execution was ever created.  Resuming a pre-instruction
+        # Run must therefore be a local state change and must not connect to
+        # Temporal (or accidentally depend on that stale marker).
+        conversation_only = run.started_at is None
+        resume_status = RunStatus.WAITING_USER if conversation_only else RunStatus.RUNNING
+        try:
+            run = await self._run_repository.update_status(run.id, resume_status)
+        except RepositoryConflictError:
+            current = await self.get_run(run.id)
+            raced_intent = await self._get_finalization_intent(run.id)
+            if (
+                current.status is RunStatus.PAUSED
+                and raced_intent is not None
+                and raced_intent.target is RunStatus.FAILED
+            ):
+                return await self._resume_failed_finalization(current, raced_intent)
+            raise
+        if conversation_only:
+            # A conversation-only Run has no Temporal execution to resume. Its
+            # durable local state is authoritative until the first user
+            # message performs signal-with-start.
+            await self._event_repository.append(run.id, "run.resume_requested")
+            return run
         try:
             await self._invoke_workflow(run, "resume", self._workflow_client.resume)
-        except Exception:
+        except Exception as resume_failure:
             current = await self.get_run(run.id)
-            if current.status is RunStatus.RUNNING:
-                await self._run_repository.update_status(current.id, RunStatus.PAUSED)
+            if current.status not in {
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+            }:
+                # Temporal signal delivery is ambiguous on transport failure:
+                # the Workflow may already be unpaused and may have admitted a
+                # new effect. Never roll the local status straight back to
+                # PAUSED. Re-run the complete physical-stop gate and expose its
+                # failure if any effect cannot be affirmatively stopped.
+                try:
+                    await self.pause(current.id)
+                except Exception as stop_failure:
+                    raise stop_failure from resume_failure
             raise
+        current = await self.get_run(run.id)
+        if current.status in {
+            RunStatus.PAUSING,
+            RunStatus.PAUSED,
+            RunStatus.COMPLETING,
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+        }:
+            # A safety control can win after the local PAUSED -> RUNNING
+            # transition but before Temporal accepts this resume signal. The
+            # stale signal may therefore have cleared Workflow._paused after
+            # the Control Plane established its durable fence. Re-assert pause
+            # immediately; local effect admission remains closed throughout,
+            # and full cancellation will send its terminal signal only after
+            # every physical stop is affirmatively acknowledged.
+            workflow_resuspended = True
+            if current.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+                RunStatus.CANCELLING,
+            }:
+                workflow_resuspended = await self._invoke_workflow_best_effort_if_started(
+                    current,
+                    "re-pause a concurrently superseded resume",
+                    self._workflow_client.pause,
+                )
+            await self._event_repository.append(
+                run.id,
+                "run.resume_superseded",
+                {
+                    "status": current.status.value,
+                    "workflow_resuspended": workflow_resuspended,
+                },
+            )
+            raise ApplicationConflictError(
+                "run_resume_superseded",
+                f"Could not resume run {run.id!r} because a concurrent safety control "
+                "took precedence",
+                details={
+                    "run_id": run.id,
+                    "status": current.status.value,
+                    "workflow_resuspended": workflow_resuspended,
+                },
+            )
         await self._event_repository.append(run.id, "run.resume_requested")
-        return await self.get_run(run.id)
+        return current
+
+    async def _resume_failed_finalization(
+        self,
+        run: Run,
+        intent: RunFinalizationIntent,
+    ) -> Run:
+        """Converge a failure intent left by a paused legacy Workflow."""
+
+        try:
+            fenced = await self._run_repository.fence_finalization(
+                run.id,
+                intent.target,
+                defer_cleanup_event=intent.defer_cleanup_event,
+            )
+        except (InvalidStateTransitionError, RepositoryConflictError) as exc:
+            current = await self.get_run(run.id)
+            if current.status is not intent.target:
+                raise ApplicationConflictError(
+                    "run_finalization_conflict",
+                    f"Could not resume failure finalization for run {run.id!r}",
+                    details={
+                        "run_id": run.id,
+                        "status": current.status.value,
+                        "finalization_target": intent.target.value,
+                    },
+                ) from exc
+            return current
+
+        stop_result = await self._stop_run_resources(fenced.id, drain=True)
+        self._raise_if_stop_failed(fenced, stop_result)
+        current = await self._commit_finalization_if_possible(fenced.id, intent)
+        if current.status is not intent.target:
+            raise ApplicationConflictError(
+                "run_finalization_conflict",
+                f"Could not resume failure finalization for run {run.id!r}",
+                details={
+                    "run_id": run.id,
+                    "status": current.status.value,
+                    "finalization_target": intent.target.value,
+                },
+            )
+        workflow_synced = await self._invoke_workflow_best_effort_if_started(
+            current,
+            "resume failed cleanup",
+            self._workflow_client.resume,
+        )
+        payload = self._stop_event_payload(stop_result, workflow_synced=workflow_synced)
+        payload.update(
+            {
+                "status": current.status.value,
+                "finalization_target": intent.target.value,
+                "trigger": "resume",
+            }
+        )
+        await self._event_repository.append(current.id, "run.cleanup_reconciled", payload)
+        return current
 
     async def cancel_current_execution(self, run_id: str) -> Run:
         # Safety controls must remain available for a terminal Run because a
         # crashed Workflow can leave an orphaned host process behind.
         run = await self.get_run(run_id)
-        stop_result, workflow_synced = await asyncio.gather(
-            self._cancel_active_executions(run.id, drain=False),
-            self._invoke_workflow_best_effort(
+        stop_result = await self._stop_run_resources(run.id, drain=False)
+        # Releasing the Workflow's waiting Execution while its physical stop is
+        # unconfirmed would let the Agent continue and produce more effects next
+        # to the still-running process.  Keep the Workflow blocked until every
+        # current effect has affirmative stop evidence.
+        workflow_synced = run.started_at is None
+        if stop_result.succeeded:
+            workflow_synced = await self._invoke_workflow_best_effort_if_started(
                 run,
                 "cancel the current execution",
                 self._workflow_client.cancel_current_execution,
-            ),
-        )
+            )
         await self._event_repository.append(
             run.id,
             "execution.cancel_requested",
@@ -274,24 +566,35 @@ class RunApplicationService:
             RunStatus.CANCELLED,
         }:
             run = await self._transition_if_possible(run, RunStatus.CANCELLING)
-        stop_result, workflow_synced = await asyncio.gather(
-            self._cancel_active_executions(run.id, drain=True),
-            self._invoke_workflow_best_effort(run, "cancel", self._workflow_client.cancel),
-        )
+        stop_result = await self._stop_run_resources(run.id, drain=True)
+        # Temporal cleanup is not the authority for a physical safety stop.  In
+        # particular, its cleanup Activity cannot prove that Browser and Target
+        # HTTP effects on remote Runners have stopped.  Only notify the Workflow
+        # after every effect controller returned affirmative stop evidence, and
+        # make the locally fenced Run terminal first.  This also prevents an
+        # in-flight Workflow cleanup from turning an unconfirmed CANCELLING Run
+        # into a falsely reassuring CANCELLED Run.
+        workflow_synced = run.started_at is None
+        current = await self.get_run(run.id)
+        if stop_result.succeeded:
+            if current.status not in {
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+            }:
+                current = await self._transition_if_possible(current, RunStatus.CANCELLING)
+                current = await self._transition_if_possible(current, RunStatus.CANCELLED)
+            workflow_synced = await self._invoke_workflow_best_effort_if_started(
+                run,
+                "cancel",
+                self._workflow_client.cancel,
+            )
         await self._event_repository.append(
             run.id,
             "run.cancel_requested",
             self._stop_event_payload(stop_result, workflow_synced=workflow_synced),
         )
         self._raise_if_stop_failed(run, stop_result)
-        current = await self.get_run(run.id)
-        if current.status not in {
-            RunStatus.COMPLETED,
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-        }:
-            current = await self._transition_if_possible(current, RunStatus.CANCELLING)
-            current = await self._transition_if_possible(current, RunStatus.CANCELLED)
         return current
 
     async def compact(self, run_id: str, *, max_history_items: int = 100) -> Run:
@@ -316,6 +619,8 @@ class RunApplicationService:
                 "empty_model_profile",
                 "A model profile must not be empty",
             )
+        if self._model_profiles is not None:
+            normalized = await self._model_profiles.resolve_profile(normalized)
         await self._invoke_workflow(
             run,
             "switch model",
@@ -328,24 +633,105 @@ class RunApplicationService:
         )
         return run
 
-    async def append_user_message(self, run_id: str, message: str) -> Run:
+    async def append_user_message(
+        self,
+        run_id: str,
+        message: str,
+        *,
+        message_event_id: str | None = None,
+    ) -> Run:
         run = await self._require_controllable_run(run_id, action="send a message to")
+        if run.status in {
+            RunStatus.PAUSING,
+            RunStatus.COMPLETING,
+            RunStatus.CANCELLING,
+        }:
+            raise ApplicationConflictError(
+                "run_not_controllable",
+                f"Cannot send a message to run {run.id!r} while it is {run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
         normalized = message.strip()
         if not normalized:
             raise ApplicationConflictError(
                 "empty_message",
                 "A run message must not be empty",
             )
-        event = await self._event_repository.append(
-            run.id,
-            "user.message_queued",
-            {"message": normalized},
-        )
-        await self._invoke_workflow(
-            run,
-            "send a message",
-            lambda target: self._workflow_client.append_user_message(target, event.id),
-        )
+        try:
+            event = await self._event_repository.append_user_message(
+                run.id,
+                normalized,
+                event_id=message_event_id,
+            )
+        except RepositoryConflictError as exc:
+            # Pause/cancel/completion fences and message append serialize on
+            # the same Run row. Re-read after a lost race so the API returns an
+            # explicit lifecycle conflict instead of signalling an instruction
+            # after effect admission has closed.
+            current = await self.get_run(run.id)
+            if current.status in {
+                RunStatus.PAUSING,
+                RunStatus.COMPLETING,
+                RunStatus.CANCELLING,
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+            }:
+                raise ApplicationConflictError(
+                    "run_not_controllable",
+                    f"Cannot send a message to run {run.id!r} while it is {current.status.value}",
+                    details={"run_id": run.id, "status": current.status.value},
+                ) from exc
+            if message_event_id is not None:
+                raise ApplicationConflictError(
+                    "message_retry_conflict",
+                    "The requested message retry does not match a queued message for this Run",
+                    details={
+                        "run_id": run.id,
+                        "message_event_id": message_event_id,
+                    },
+                ) from exc
+            raise
+        if message_event_id is not None:
+            if (
+                event.run_id != run.id
+                or event.event_type != "user.message_queued"
+                or event.payload.get("message") != normalized
+            ):
+                raise ApplicationConflictError(
+                    "message_retry_conflict",
+                    "The requested message retry does not match a queued message for this Run",
+                    details={
+                        "run_id": run.id,
+                        "message_event_id": message_event_id,
+                    },
+                )
+        try:
+            await self._invoke_workflow(
+                run,
+                "send a message",
+                lambda target: self._workflow_client.append_user_message(target, event.id),
+            )
+        except ApplicationServiceError as exc:
+            # Temporal transport errors are delivery-ambiguous: the server may
+            # already have accepted Signal-With-Start. Return the durable event
+            # ID so clients can explicitly retry that exact instruction. The
+            # Workflow de-duplicates this ID even after consuming it.
+            exc.details = {
+                **exc.details,
+                "message_event_id": event.id,
+                "retry_same_message": True,
+            }
+            raise
+        if not await self._workflow_was_started(run):
+            await self._event_repository.append(
+                run.id,
+                "workflow.started",
+                {
+                    "workflow_id": run.temporal_workflow_id,
+                    "trigger": "user_message",
+                },
+            )
         return run
 
     async def _resolve_engagement(self, command: CreateRun) -> Engagement:
@@ -370,14 +756,32 @@ class RunApplicationService:
 
     async def _require_controllable_run(self, run_id: str, *, action: str) -> Run:
         run = await self.get_run(run_id)
-        if run.status in {
-            RunStatus.COMPLETED,
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-        }:
+        if run.status in _TERMINAL_RUN_STATUSES | _SAFETY_FENCE_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_not_controllable",
                 f"Cannot {action} run {run.id!r} while it is {run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        return run
+
+    async def _require_safety_controllable_run(self, run_id: str, *, action: str) -> Run:
+        """Keep recovery controls available while an admission fence is active."""
+
+        run = await self.get_run(run_id)
+        if run.status in _TERMINAL_RUN_STATUSES:
+            raise ApplicationConflictError(
+                "run_not_controllable",
+                f"Cannot {action} run {run.id!r} while it is {run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        return run
+
+    async def _require_pauseable_run(self, run_id: str) -> Run:
+        run = await self._require_safety_controllable_run(run_id, action="pause")
+        if run.status in {RunStatus.CANCELLING, RunStatus.COMPLETING}:
+            raise ApplicationConflictError(
+                "run_not_controllable",
+                f"Cannot pause run {run.id!r} while it is {run.status.value}",
                 details={"run_id": run.id, "status": run.status.value},
             )
         return run
@@ -410,13 +814,24 @@ class RunApplicationService:
         operation: Callable[[str], Awaitable[object]],
     ) -> bool:
         try:
-            await self._invoke_workflow(run, action, operation)
+            # Physical effect termination is authoritative.  A disconnected
+            # Temporal endpoint must never keep an emergency-stop HTTP request
+            # waiting on the SDK's transport retry horizon after local/remote
+            # resources have already been fenced and stopped.
+            await asyncio.wait_for(
+                self._invoke_workflow(run, action, operation),
+                timeout=self._workflow_signal_timeout_seconds,
+            )
         except Exception as exc:
             payload: dict[str, object] = {
                 "action": action,
                 "workflow_id": run.temporal_workflow_id,
                 "error_type": type(exc).__name__,
-                "reason": str(exc),
+                "reason": (
+                    str(exc)
+                    if not isinstance(exc, TimeoutError)
+                    else "Temporal workflow signal exceeded the safety-control deadline"
+                ),
             }
             if isinstance(exc, ApplicationServiceError):
                 payload["error_code"] = exc.code
@@ -425,97 +840,52 @@ class RunApplicationService:
             return False
         return True
 
-    async def _cancel_active_executions(
+    async def _invoke_workflow_best_effort_if_started(
+        self,
+        run: Run,
+        action: str,
+        operation: Callable[[str], Awaitable[object]],
+    ) -> bool:
+        # Before RUNNING is durably observed, local status fencing is both the
+        # source of truth and the safer control path.  A signal-with-start may
+        # have been accepted while its first Workflow task is still queued; if
+        # pause signalled that execution but a local resume did not (by design),
+        # it would remain paused forever.  The preparation activities re-read
+        # the Run and cannot enter RUNNING from PAUSING/PAUSED/CANCELLING, while
+        # Runner cancellation below still handles any anomalous orphan process.
+        if run.started_at is None:
+            return True
+        return await self._invoke_workflow_best_effort(run, action, operation)
+
+    async def _workflow_was_started(self, run: Run) -> bool:
+        # Once RUNNING has been observed, started_at is the cheapest durable
+        # proof. The event also covers old conversation-first Workflows which
+        # were started before their first instruction and therefore still had
+        # no started_at timestamp.
+        if run.started_at is not None:
+            return True
+        after_sequence = 0
+        while True:
+            page = list(
+                await self._event_repository.list_after(
+                    run.id,
+                    after_sequence=after_sequence,
+                    limit=_EVENT_LIST_PAGE_SIZE,
+                )
+            )
+            if any(event.event_type == "workflow.started" for event in page):
+                return True
+            if len(page) < _EVENT_LIST_PAGE_SIZE:
+                return False
+            after_sequence = page[-1].sequence
+
+    async def _stop_run_resources(
         self,
         run_id: str,
         *,
         drain: bool,
-    ) -> _ExecutionStopResult:
-        attempted: set[str] = set()
-        confirmed: dict[str, str] = {}
-        failures: dict[str, str] = {}
-        passes = self._execution_cancel_max_passes if drain else 1
-
-        for _ in range(passes):
-            candidates = [
-                execution
-                for execution in await self._list_run_executions(run_id)
-                if execution.status in _STOP_CANDIDATE_EXECUTION_STATUSES
-                and execution.id not in attempted
-            ]
-            if not candidates:
-                break
-            attempted.update(execution.id for execution in candidates)
-            results = await asyncio.gather(
-                *(self._cancel_and_confirm(execution) for execution in candidates),
-                return_exceptions=True,
-            )
-            for execution, result in zip(candidates, results, strict=True):
-                if isinstance(result, BaseException):
-                    failures[execution.id] = f"{type(result).__name__}: {result}"
-                    continue
-                confirmed[execution.id] = result.status.value
-                failures.pop(execution.id, None)
-            if not drain:
-                break
-            await asyncio.sleep(0)
-
-        refreshed = await self._list_run_executions(run_id)
-        remaining = []
-        for execution in refreshed:
-            if execution.status in _STOP_CANDIDATE_EXECUTION_STATUSES:
-                remaining.append(execution)
-            elif execution.id in attempted:
-                confirmed[execution.id] = execution.status.value
-                failures.pop(execution.id, None)
-        for execution in remaining:
-            attempted.add(execution.id)
-            failures.setdefault(
-                execution.id,
-                f"stop was not confirmed; execution remains {execution.status.value}",
-            )
-        return _ExecutionStopResult(
-            attempted_ids=tuple(sorted(attempted)),
-            confirmed_statuses=dict(sorted(confirmed.items())),
-            failures=dict(sorted(failures.items())),
-        )
-
-    async def _list_run_executions(self, run_id: str) -> list[Execution]:
-        executions: list[Execution] = []
-        offset = 0
-        while True:
-            page = list(
-                await self._execution_repository.list(
-                    run_id,
-                    limit=_EXECUTION_LIST_PAGE_SIZE,
-                    offset=offset,
-                )
-            )
-            executions.extend(page)
-            if len(page) < _EXECUTION_LIST_PAGE_SIZE:
-                return executions
-            offset += len(page)
-
-    async def _cancel_and_confirm(self, execution: Execution) -> Execution:
-        await self._execution_runner.cancel(execution.id)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._execution_cancel_timeout_seconds
-        while True:
-            current = await self._execution_repository.get(execution.id)
-            if current is None:
-                raise RuntimeError("execution disappeared before stop could be confirmed")
-            if current.status not in _STOP_CANDIDATE_EXECUTION_STATUSES:
-                return current
-            if loop.time() >= deadline:
-                if current.status is ExecutionStatus.LOST:
-                    raise TimeoutError(
-                        "execution remains lost; cancellation was queued but the Runner "
-                        "did not acknowledge that the process stopped"
-                    )
-                raise TimeoutError(
-                    f"execution remains {current.status.value} after cancellation"
-                )
-            await asyncio.sleep(self._execution_cancel_poll_seconds)
+    ) -> SafetyStopResult:
+        return await self._safety_stopper.stop_run(run_id, drain=drain)
 
     async def _transition_if_possible(self, run: Run, target: RunStatus) -> Run:
         current = await self.get_run(run.id)
@@ -523,33 +893,95 @@ class RunApplicationService:
             return current
         if not current.can_transition_to(target):
             return current
-        return await self._run_repository.update_status(current.id, target)
+        try:
+            return await self._run_repository.update_status(current.id, target)
+        except (InvalidStateTransitionError, RepositoryConflictError):
+            # The repository performs the authoritative transition from a
+            # freshly locked row. A competing terminal/fence transition may
+            # win after the optimistic read above. Treat that expected lost
+            # race as "no longer possible" so pause/cancel callers still run
+            # their physical-stop sweep instead of aborting before cleanup.
+            raced = await self.get_run(current.id)
+            if raced.status is target or not raced.can_transition_to(target):
+                return raced
+            raise
+
+    async def _commit_finalization_if_possible(
+        self,
+        run_id: str,
+        intent: RunFinalizationIntent,
+    ) -> Run:
+        """Atomically terminalize, while preserving a concurrent control winner."""
+
+        try:
+            return await self._run_repository.commit_finalization(
+                run_id,
+                intent.target,
+                defer_cleanup_event=intent.defer_cleanup_event,
+            )
+        except (InvalidStateTransitionError, RepositoryConflictError):
+            raced = await self.get_run(run_id)
+            if raced.status in {
+                RunStatus.PAUSING,
+                RunStatus.PAUSED,
+                RunStatus.CANCELLING,
+                RunStatus.CANCELLED,
+            } or (
+                raced.status in {RunStatus.COMPLETED, RunStatus.FAILED}
+                and raced.status is not intent.target
+            ):
+                return raced
+            # A collision or malformed/missing intent while the requested
+            # target owns the Run is not a benign race. Keep it retry-visible.
+            raise
 
     @staticmethod
     def _stop_event_payload(
-        result: _ExecutionStopResult,
+        result: SafetyStopResult,
         *,
         workflow_synced: bool,
     ) -> dict[str, object]:
+        execution = result.resources["executions"]
         return {
-            "execution_ids": list(result.attempted_ids),
-            "confirmed_execution_ids": list(result.confirmed_ids),
-            "confirmed_statuses": result.confirmed_statuses,
-            "failed_executions": result.failures,
+            # Preserve the original execution fields for older API/CLI/Web
+            # clients while exposing all effect families in one disposition.
+            "execution_ids": list(execution.attempted_ids),
+            "execution_nodes": execution.node_ids,
+            "execution_statuses": execution.observed_statuses,
+            "confirmed_execution_ids": list(execution.confirmed_ids),
+            "confirmed_statuses": execution.confirmed_statuses,
+            "failed_executions": execution.failures,
+            "stop_resources": RunApplicationService._stop_resources_payload(result),
+            "failed_resource_types": list(result.failed_resource_types),
             "workflow_synced": workflow_synced,
         }
 
     @staticmethod
-    def _raise_if_stop_failed(run: Run, result: _ExecutionStopResult) -> None:
+    def _stop_resources_payload(result: SafetyStopResult) -> dict[str, object]:
+        return stop_resources_payload(result)
+
+    @staticmethod
+    def _raise_if_stop_failed(run: Run, result: SafetyStopResult) -> None:
         if result.succeeded:
             return
+        execution = result.resources["executions"]
+        only_executions_failed = result.failed_resource_types == ("executions",)
         raise ServiceUnavailableError(
-            "execution_cancel_failed",
-            "Could not confirm that every execution requiring a safety stop was stopped",
+            "execution_cancel_failed" if only_executions_failed else "safety_stop_failed",
+            (
+                "Could not confirm that every execution requiring a safety stop was stopped"
+                if only_executions_failed
+                else "Could not confirm that every active effect was safely stopped"
+            ),
             details={
                 "run_id": run.id,
-                "execution_ids": list(result.attempted_ids),
-                "confirmed_execution_ids": list(result.confirmed_ids),
-                "failed_executions": result.failures,
+                "execution_ids": list(execution.attempted_ids),
+                "execution_nodes": execution.node_ids,
+                "execution_statuses": execution.observed_statuses,
+                "confirmed_execution_ids": list(execution.confirmed_ids),
+                "confirmed_statuses": execution.confirmed_statuses,
+                "failed_executions": execution.failures,
+                "stop_resources": RunApplicationService._stop_resources_payload(result),
+                "failed_resource_types": list(result.failed_resource_types),
             },
         )

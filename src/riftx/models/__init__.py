@@ -1,12 +1,20 @@
 """Model profile configuration and Agents SDK provider adapter."""
 
 from .config import (
+    MAX_MODEL_TIMEOUT_SECONDS,
     ModelAPI,
     ModelConfigError,
     ModelProfile,
     ModelProviderKind,
     ModelsConfig,
+    default_models_config,
     load_models_config,
+    parse_models_config,
+    same_credential_destination,
+    validate_no_key_base_url_environment,
+    validate_provider_base_url,
+    validate_remote_api_key_env,
+    validate_remote_base_url,
 )
 from .provider import (
     ModelConfigurationError,
@@ -15,17 +23,39 @@ from .provider import (
     RiftXModelProvider,
     classify_model_failure,
 )
+from .registry import (
+    ModelProfileNotFoundError,
+    ModelProfileRegistry,
+    ModelRegistryConflictError,
+    ModelRegistryError,
+    ModelRegistrySnapshot,
+    ModelSecretStore,
+)
 
 __all__ = [
+    "MAX_MODEL_TIMEOUT_SECONDS",
     "ModelAPI",
     "ModelConfigError",
     "ModelConfigurationError",
     "ModelFailure",
     "ModelFailureCategory",
     "ModelProfile",
+    "ModelProfileNotFoundError",
+    "ModelProfileRegistry",
     "ModelProviderKind",
+    "ModelRegistryConflictError",
+    "ModelRegistryError",
+    "ModelRegistrySnapshot",
+    "ModelSecretStore",
     "ModelsConfig",
     "RiftXModelProvider",
     "classify_model_failure",
+    "default_models_config",
     "load_models_config",
+    "parse_models_config",
+    "same_credential_destination",
+    "validate_no_key_base_url_environment",
+    "validate_remote_api_key_env",
+    "validate_remote_base_url",
+    "validate_provider_base_url",
 ]

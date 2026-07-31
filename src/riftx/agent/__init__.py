@@ -12,6 +12,12 @@ from .result import (
 )
 from .services import AgentRuntimeServices
 from .session import RiftXDatabaseSession
+from .tool_policy import (
+    AGENT_TOOL_POLICIES,
+    AgentToolAuthorization,
+    AgentToolEffect,
+    AgentToolPolicy,
+)
 from .tools import build_agent_tools
 
 __all__ = [
@@ -22,6 +28,10 @@ __all__ = [
     "AgentInterruption",
     "AgentRuntimeServices",
     "AgentToolSnapshot",
+    "AgentToolAuthorization",
+    "AgentToolEffect",
+    "AgentToolPolicy",
+    "AGENT_TOOL_POLICIES",
     "RiftXAgentContext",
     "RiftXDatabaseSession",
     "SQLAlchemyCheckpointStore",

@@ -143,6 +143,8 @@ class ExecutionRecord(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     attempt_group: Mapped[str | None] = mapped_column(String(64), index=True)
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    owner_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    owner_runner_epoch: Mapped[int | None] = mapped_column(BigInteger)
     executor_type: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     argv_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     command_text: Mapped[str | None] = mapped_column(Text)
@@ -157,12 +159,14 @@ class ExecutionRecord(Base):
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     pid: Mapped[int | None] = mapped_column(Integer)
     process_group_id: Mapped[int | None] = mapped_column(Integer)
+    containment_id: Mapped[str | None] = mapped_column(String(255))
     exit_code: Mapped[int | None] = mapped_column(Integer)
     stdout_path: Mapped[str] = mapped_column(Text, nullable=False)
     stderr_path: Mapped[str] = mapped_column(Text, nullable=False)
     process_created_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    physical_stop_confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class TerminalSessionRecord(Base):
@@ -309,6 +313,8 @@ class NodeRecord(Base):
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     capabilities_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     labels_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    current_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    current_runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -316,10 +322,24 @@ class NodeRecord(Base):
 
 class RunnerCredentialRecord(Base):
     __tablename__ = "runner_credentials"
-
-    node_id: Mapped[str] = mapped_column(
-        ForeignKey("nodes.id", ondelete="CASCADE"), primary_key=True
+    __table_args__ = (
+        UniqueConstraint(
+            "node_id",
+            "runner_epoch",
+            name="uq_runner_credentials_node_epoch",
+        ),
+        UniqueConstraint(
+            "node_id",
+            "token_hash",
+            name="uq_runner_credentials_node_token_hash",
+        ),
     )
+
+    runner_instance_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    node_id: Mapped[str] = mapped_column(
+        ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -335,6 +355,14 @@ class RunnerCommandRecord(Base):
             "idempotency_key",
             name="uq_runner_commands_node_idempotency",
         ),
+        Index(
+            "ix_runner_commands_target_poll",
+            "node_id",
+            "target_runner_instance_id",
+            "target_runner_epoch",
+            "status",
+            "created_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
@@ -343,6 +371,8 @@ class RunnerCommandRecord(Base):
     )
     kind: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    target_runner_epoch: Mapped[int | None] = mapped_column(BigInteger)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -784,6 +814,7 @@ class TargetHttpRequestRecord(Base):
     response_artifact_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
+
 class BrowserSessionRecord(Base):
     __tablename__ = "browser_sessions"
 
@@ -872,9 +903,7 @@ class BrowserObservationRecord(Base):
 class BrowserActionRecord(Base):
     __tablename__ = "browser_actions"
     __table_args__ = (
-        UniqueConstraint(
-            "browser_session_id", "action_key", name="uq_browser_actions_session_key"
-        ),
+        UniqueConstraint("browser_session_id", "action_key", name="uq_browser_actions_session_key"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
@@ -916,12 +945,11 @@ class BrowserTakeoverSummaryRecord(Base):
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     released_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
+
 class ConnectorSubmissionRecord(Base):
     __tablename__ = "connector_submissions"
     __table_args__ = (
-        UniqueConstraint(
-            "source", "capture_id", name="uq_connector_submissions_source_capture"
-        ),
+        UniqueConstraint("source", "capture_id", name="uq_connector_submissions_source_capture"),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)

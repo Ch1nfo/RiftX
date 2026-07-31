@@ -12,8 +12,10 @@ from riftx.application.errors import EntityNotFoundError
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
     CreateTerminal,
+    RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
     TerminalApplicationService,
+    stop_resources_payload,
 )
 from riftx.domain import (
     ApprovalLevel,
@@ -133,6 +135,7 @@ class RuntimeCoordinator:
         approval_recorder: RuntimeApprovalRequestRecorder | None = None,
         user_input_repository: SQLAlchemyUserInputRequestRepository | None = None,
         terminal_service: TerminalApplicationService | None = None,
+        safety_stopper: RunSafetyStopService | None = None,
         hooks: HookBus | None = None,
         subagent_executor: SubagentBatchExecutor | None = None,
         limits: CycleLimits | None = None,
@@ -160,6 +163,7 @@ class RuntimeCoordinator:
         self._approval_recorder = approval_recorder
         self._user_inputs = user_input_repository
         self._terminal_service = terminal_service
+        self._safety_stopper = safety_stopper
         self._hooks = hooks
         self._subagent_executor = subagent_executor
         self._limits = limits or CycleLimits()
@@ -190,12 +194,44 @@ class RuntimeCoordinator:
             if request.cycle_id is not None:
                 existing = await self._cycles.get(request.cycle_id)
                 if existing is not None:
-                    return self._completed_cycle_result(request, existing)
+                    completed = self._completed_cycle_result(request, existing)
+                    if (
+                        existing.session_id == request.session_id
+                        and not request.subagent_mode
+                        and existing.yield_reason
+                        in {YieldReason.RUN_COMPLETED, YieldReason.FATAL_FAILURE}
+                    ):
+                        # A previous non-deferred attempt may have persisted
+                        # the Cycle and COMPLETING fence before a stop
+                        # controller failed. Resume only safety finalization;
+                        # never re-run the model for the same durable Cycle ID.
+                        await self._transition_run_for_yield(
+                            request.run_id,
+                            existing.yield_reason,
+                            defer_run_completion=request.defer_run_completion,
+                        )
+                    return completed
             run = await self._runs.get(request.run_id)
             if run is None:
                 raise EntityNotFoundError("Run", request.run_id)
             run = await self._ensure_run_running(run)
             await self._ensure_active_session(session)
+            has_new_canonical_input = (
+                request.latest_user_message_id is not None
+                or request.input_text is not None
+                or bool(request.input_items)
+                or request.approval_id is not None
+            )
+            persisted_tool_results = await self._persist_tool_result_inputs(
+                session,
+                request.input_items,
+            )
+            if persisted_tool_results:
+                request.input_items = [
+                    item
+                    for item in request.input_items
+                    if _execution_id_from_tool_result_input(item) not in persisted_tool_results
+                ]
             latest_user_message_id = await self._persist_cycle_input(session, request)
 
             existing_cycles = await self._cycles.list_by_session(session.id)
@@ -212,14 +248,20 @@ class RuntimeCoordinator:
             await self._append(run.id, CYCLE_STARTED, {"cycle_id": cycle.id})
 
             if request.approval_id is not None:
-                approval_result = await self._resume_approval(
+                await self._resume_approval(
                     run,
                     session,
                     cycle,
                     request,
                 )
-                if approval_result is not None:
-                    return approval_result
+
+            pending_result = await self._yield_for_next_pending_intent(
+                run,
+                session,
+                cycle,
+            )
+            if pending_result is not None:
+                return pending_result
 
             if request.compaction_required:
                 return await self._yield_cycle(
@@ -232,12 +274,8 @@ class RuntimeCoordinator:
             delegation = await self._subagent_delegation(session)
             run_contract: dict[str, object] = {
                 "objective": run.objective.description,
-                "success_criteria": [
-                    item.model_dump(mode="json") for item in run.success_criteria
-                ],
-                "entry_points": [
-                    item.model_dump(mode="json") for item in run.entry_points
-                ],
+                "success_criteria": [item.model_dump(mode="json") for item in run.success_criteria],
+                "entry_points": [item.model_dump(mode="json") for item in run.entry_points],
                 "scope": run.scope.model_dump(mode="json"),
                 "approval_mode": run.approval_mode.value,
                 "node_id": run.node_id,
@@ -250,9 +288,7 @@ class RuntimeCoordinator:
                     "task_id": delegation.get("task_id", ""),
                     "run_contract_summary": delegation.get("run_contract_summary", ""),
                     "relevant_scope": delegation.get("relevant_scope", []),
-                    "expected_output_schema": delegation.get(
-                        "expected_output_schema", {}
-                    ),
+                    "expected_output_schema": delegation.get("expected_output_schema", {}),
                     "constraints": delegation.get("constraints", []),
                     "stop_conditions": delegation.get("stop_conditions", []),
                     "workspace": delegation.get("workspace", run.workspace_path),
@@ -298,9 +334,7 @@ class RuntimeCoordinator:
                     "input_items": context_request.input_items,
                 },
             )
-            context_request.input_text = _optional_string(
-                before_context.get("input_text")
-            )
+            context_request.input_text = _optional_string(before_context.get("input_text"))
             context_request.input_items = _object_list(before_context.get("input_items"))
             compiled = await self._context_compiler.compile(context_request)
             await self._dispatch_hook(
@@ -344,7 +378,7 @@ class RuntimeCoordinator:
             engine_request.input_items = _object_list(before_model.get("input_items"))
             if isinstance(before_model.get("max_turns"), int):
                 engine_request.max_turns = int(before_model["max_turns"])
-            if session.provider_state_id is not None:
+            if session.provider_state_id is not None and not has_new_canonical_input:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
                     raise EntityNotFoundError("ProviderState", session.provider_state_id)
@@ -355,16 +389,26 @@ class RuntimeCoordinator:
                     )
                 )
             else:
+                if session.provider_state_id is not None:
+                    superseded_provider_state_id = session.provider_state_id
+                    session.provider_state_id = None
+                    await self._sessions.save(session)
+                    await self._append(
+                        run.id,
+                        "runtime.provider_state_superseded",
+                        {
+                            "provider_state_id": superseded_provider_state_id,
+                            "reason": "new_canonical_input",
+                        },
+                    )
                 engine_run = await self._agent_engine.start(engine_request)
             started_at = self._clock()
             pending_tool = False
             approval_required = False
             assistant_message_seen = False
             step_sequence = 0
-            waiting_execution_id: str | None = None
-            waiting_approval_id: str | None = None
-            pending_yield_reason: YieldReason | None = None
             subagent_requests: list[dict[str, object]] = []
+            counted_tool_calls: set[str] = set()
 
             async for event in engine_run.events():
                 await self._append_engine_event(run.id, cycle.id, event)
@@ -418,6 +462,26 @@ class RuntimeCoordinator:
                 if event.event_type in _STEP_TYPES:
                     step_sequence += 1
                     persisted_step = await self._persist_step(cycle, step_sequence, event)
+                if event.event_type in {
+                    AgentEngineEventType.TOOL_CALL_STARTED,
+                    AgentEngineEventType.TOOL_CALL_READY,
+                }:
+                    call_id = _optional_string(event.data.get("call_id"))
+                    call_key = (
+                        f"call:{call_id}" if call_id is not None else f"event:{event.sequence}"
+                    )
+                    if call_key not in counted_tool_calls:
+                        counted_tool_calls.add(call_key)
+                        cycle.tool_call_count += 1
+                        await self._cycles.save(cycle)
+                        if cycle.tool_call_count >= self._limits.max_tool_calls:
+                            return await self._yield_cycle(
+                                run.id,
+                                session,
+                                cycle,
+                                YieldReason.CYCLE_LIMIT_REACHED,
+                                engine_run=engine_run,
+                            )
                 if event.event_type is AgentEngineEventType.TOOL_CALL_READY:
                     hook_result = await self._dispatch_hook(
                         HookPoint.BEFORE_TOOL_EXECUTION,
@@ -431,38 +495,21 @@ class RuntimeCoordinator:
                     event.data = hook_result
                     pending_tool = True
                     event_requires_approval = bool(event.data.get("approval_required", False))
-                    hook_requires_approval = bool(
-                        hook_result.pop("_hook_require_approval", False)
-                    )
+                    hook_requires_approval = bool(hook_result.pop("_hook_require_approval", False))
                     tool_id = _event_tool_id(event)
                     approval_level = ApprovalLevel(
                         str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
                     )
                     if self._approvals is not None:
                         granted = await self._approvals.is_granted(run.id, tool_id)
-                        event_requires_approval = (
-                            hook_requires_approval
-                            or requires_approval(
-                                run.approval_mode,
-                                approval_level,
-                                granted_for_run=granted,
-                            )
+                        event_requires_approval = hook_requires_approval or requires_approval(
+                            run.approval_mode,
+                            approval_level,
+                            granted_for_run=granted,
                         )
                     else:
-                        event_requires_approval = (
-                            event_requires_approval or hook_requires_approval
-                        )
+                        event_requires_approval = event_requires_approval or hook_requires_approval
                     approval_required = approval_required or event_requires_approval
-                    cycle.tool_call_count += 1
-                    await self._cycles.save(cycle)
-                    if cycle.tool_call_count >= self._limits.max_tool_calls:
-                        return await self._yield_cycle(
-                            run.id,
-                            session,
-                            cycle,
-                            YieldReason.CYCLE_LIMIT_REACHED,
-                            engine_run=engine_run,
-                        )
                     if self._deferred_executions is not None and persisted_step is not None:
                         intent = await self._deferred_executions.prepare(
                             session=session,
@@ -493,7 +540,7 @@ class RuntimeCoordinator:
                                     "Runtime approval recorder is required for an approval "
                                     "Tool Call"
                                 )
-                            request_record = await self._approval_recorder.record(
+                            await self._approval_recorder.record(
                                 run,
                                 session=session,
                                 cycle=cycle,
@@ -504,39 +551,7 @@ class RuntimeCoordinator:
                                     compiled.context_manifest
                                 ),
                             )
-                            if (
-                                waiting_approval_id is not None
-                                and waiting_approval_id != request_record.id
-                            ):
-                                raise DomainError(
-                                    "one Runtime cycle cannot defer multiple Approvals"
-                                )
-                            waiting_approval_id = request_record.id
                             continue
-                        pending_yield_reason, execution_id = (
-                            await self._execute_prepared_intent(run, intent)
-                        )
-                        await self._dispatch_hook(
-                            HookPoint.AFTER_TOOL_EXECUTION,
-                            run_id=run.id,
-                            session_id=session.id,
-                            cycle_id=cycle.id,
-                            step_id=persisted_step.id,
-                            payload={
-                                "tool_call_intent_id": intent.id,
-                                "tool_id": intent.tool_id,
-                                "execution_id": execution_id,
-                                "yield_reason": pending_yield_reason.value,
-                            },
-                        )
-                        if (
-                            waiting_execution_id is not None
-                            and waiting_execution_id != execution_id
-                        ):
-                            raise DomainError(
-                                "one Runtime cycle cannot defer multiple Executions"
-                            )
-                        waiting_execution_id = execution_id
                 if event.event_type is AgentEngineEventType.SUBAGENT_REQUESTED:
                     subagent_requests.append(dict(event.data))
                 if event.event_type is AgentEngineEventType.ASSISTANT_MESSAGE and event.data.get(
@@ -590,7 +605,12 @@ class RuntimeCoordinator:
                         else YieldReason.FATAL_FAILURE
                     )
                     return await self._yield_cycle(
-                        run.id, session, cycle, reason, engine_run=engine_run
+                        run.id,
+                        session,
+                        cycle,
+                        reason,
+                        engine_run=engine_run,
+                        defer_run_completion=request.defer_run_completion,
                     )
                 if event.event_type is AgentEngineEventType.RUN_COMPLETED:
                     await self._dispatch_hook(
@@ -619,31 +639,33 @@ class RuntimeCoordinator:
                             cycle,
                             YieldReason.CYCLE_LIMIT_REACHED,
                         )
-                    if approval_required:
-                        reason = YieldReason.APPROVAL_REQUIRED
-                    elif pending_tool:
-                        reason = pending_yield_reason or YieldReason.TOOL_RUNNING
-                    else:
-                        reason = YieldReason.RUN_COMPLETED
+                    if pending_tool:
+                        pending_result = await self._yield_for_next_pending_intent(
+                            run,
+                            session,
+                            cycle,
+                            engine_run=engine_run,
+                        )
+                        if pending_result is not None:
+                            return pending_result
+                        if self._deferred_executions is None:
+                            return await self._yield_cycle(
+                                run.id,
+                                session,
+                                cycle,
+                                (
+                                    YieldReason.APPROVAL_REQUIRED
+                                    if approval_required
+                                    else YieldReason.TOOL_RUNNING
+                                ),
+                                engine_run=engine_run,
+                            )
                     return await self._yield_cycle(
                         run.id,
                         session,
                         cycle,
-                        reason,
-                        engine_run=engine_run if reason is not YieldReason.RUN_COMPLETED else None,
-                        waiting_execution_id=(
-                            waiting_execution_id
-                            if reason in {
-                                YieldReason.TOOL_RUNNING,
-                                YieldReason.TERMINAL_OPEN,
-                            }
-                            else None
-                        ),
-                        waiting_object_id=(
-                            waiting_approval_id
-                            if reason is YieldReason.APPROVAL_REQUIRED
-                            else waiting_execution_id
-                        ),
+                        YieldReason.RUN_COMPLETED,
+                        defer_run_completion=request.defer_run_completion,
                     )
 
             return await self._yield_cycle(
@@ -766,20 +788,76 @@ class RuntimeCoordinator:
             raise DomainError(f"Run {run.id!r} cannot start a Runtime cycle from {run.status}")
         return run
 
-    async def _transition_run_for_yield(self, run_id: str, reason: YieldReason) -> None:
+    async def _transition_run_for_yield(
+        self,
+        run_id: str,
+        reason: YieldReason,
+        *,
+        defer_run_completion: bool = False,
+    ) -> None:
         targets = {
             YieldReason.TOOL_RUNNING: RunStatus.WAITING_TOOL,
             YieldReason.TERMINAL_OPEN: RunStatus.WAITING_TOOL,
             YieldReason.APPROVAL_REQUIRED: RunStatus.WAITING_APPROVAL,
             YieldReason.USER_INPUT_REQUIRED: RunStatus.WAITING_USER,
             YieldReason.COMPACTION_REQUIRED: RunStatus.COMPACTING,
-            YieldReason.FATAL_FAILURE: RunStatus.FAILED,
         }
-        if reason is YieldReason.RUN_COMPLETED:
-            await self._runs.update_status(run_id, RunStatus.COMPLETING)
-            await self._runs.update_status(run_id, RunStatus.COMPLETED)
+        terminal_target = {
+            YieldReason.RUN_COMPLETED: RunStatus.COMPLETED,
+            YieldReason.FATAL_FAILURE: RunStatus.FAILED,
+        }.get(reason)
+        if terminal_target is not None:
+            if defer_run_completion:
+                # The Temporal cleanup Activity owns the atomic message fence
+                # and final three-family physical-stop gate.
+                return
+            await self._finalize_compat_yield(run_id, terminal_target)
         elif target := targets.get(reason):
             await self._runs.update_status(run_id, target)
+
+    async def _finalize_compat_yield(self, run_id: str, target: RunStatus) -> None:
+        """Safely finalize pre-deferred or standalone Runtime cycles."""
+
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.status in {RunStatus.PAUSING, RunStatus.CANCELLING}:
+            return
+        if run.status is not target:
+            if run.status is not RunStatus.COMPLETING and not run.can_transition_to(
+                RunStatus.COMPLETING
+            ):
+                return
+            # Persist the terminal target in the same transaction as the
+            # COMPLETING admission fence.  A failed first stop attempt can
+            # then be recovered by a fresh coordinator or the reconciler
+            # without having to infer whether this Run meant COMPLETED or
+            # FAILED from an in-memory cycle result.
+            run = await self._runs.fence_finalization(run.id, target)
+
+        # A coordinator assembled without every resource controller cannot
+        # prove physical termination. COMPLETING is therefore the only safe
+        # result; production Worker assembly always injects the strict gate.
+        if self._safety_stopper is None:
+            return
+        stop_result = await self._safety_stopper.stop_run(run.id, drain=True)
+        if not stop_result.succeeded:
+            raise DomainError(
+                "Runtime completion could not confirm every Run effect stopped: "
+                f"{stop_resources_payload(stop_result)!r}"
+            )
+
+        run = await self._runs.get(run.id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.status in {RunStatus.PAUSING, RunStatus.CANCELLING}:
+            return
+        if run.status is not target and run.can_transition_to(target):
+            run = await self._runs.update_status(run.id, target)
+        if run.status is not target:
+            raise DomainError(
+                f"Run {run.id!r} could not finalize as {target.value!r} from {run.status.value!r}"
+            )
 
     async def _ensure_active_session(self, session: AgentSession) -> None:
         if session.status is SessionStatus.CREATED:
@@ -900,6 +978,48 @@ class RuntimeCoordinator:
             ),
         )
 
+    async def _persist_tool_result_inputs(
+        self,
+        session: AgentSession,
+        input_items: list[dict[str, object]],
+    ) -> set[str]:
+        """Retain completed Tool Results across cycles, idempotently by Execution ID."""
+
+        if self._transcript is None:
+            return set()
+        messages = await self._transcript.list_by_session(session.id)
+        persisted_execution_ids = {
+            message.execution_id
+            for message in messages
+            if message.message_type is MessageType.TOOL_RESULT_REFERENCE
+            and message.execution_id is not None
+        }
+        retained_execution_ids: set[str] = set()
+        drafts: list[TranscriptMessageDraft] = []
+        for item in input_items:
+            execution_id = _execution_id_from_tool_result_input(item)
+            if execution_id is None:
+                continue
+            retained_execution_ids.add(execution_id)
+            if execution_id in persisted_execution_ids:
+                continue
+            structured_content = {**item, "execution_id": execution_id}
+            drafts.append(
+                TranscriptMessageDraft(
+                    agent_id=session.agent_type,
+                    role=MessageRole.TOOL,
+                    message_type=MessageType.TOOL_RESULT_REFERENCE,
+                    structured_content=structured_content,
+                    tool_call_id=_optional_string(item.get("tool_call_id")),
+                    execution_id=execution_id,
+                    visibility=MessageVisibility.AGENT_ONLY,
+                )
+            )
+            persisted_execution_ids.add(execution_id)
+        if drafts:
+            await self._transcript.append_many(session.id, drafts)
+        return retained_execution_ids
+
     async def _persist_step(
         self, cycle: AgentCycle, sequence: int, event: AgentEngineEvent
     ) -> AgentStep:
@@ -937,6 +1057,7 @@ class RuntimeCoordinator:
         engine_run: AgentEngineRun | None = None,
         waiting_execution_id: str | None = None,
         waiting_object_id: str | None = None,
+        defer_run_completion: bool = False,
     ) -> RunCycleResult:
         provider_state_id = session.provider_state_id
         if engine_run is not None:
@@ -975,7 +1096,11 @@ class RuntimeCoordinator:
         cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
         await self._cycles.save(cycle)
         if session.parent_session_id is None:
-            await self._transition_run_for_yield(run_id, reason)
+            await self._transition_run_for_yield(
+                run_id,
+                reason,
+                defer_run_completion=defer_run_completion,
+            )
         await self._append(
             run_id,
             CYCLE_YIELDED,
@@ -1003,10 +1128,7 @@ class RuntimeCoordinator:
             and self._user_inputs is not None
         ):
             input_request = await self._user_inputs.get(cycle.waiting_object_id)
-            if (
-                input_request is not None
-                and input_request.provider_state_id != provider_state_id
-            ):
+            if input_request is not None and input_request.provider_state_id != provider_state_id:
                 input_request.provider_state_id = provider_state_id
                 await self._user_inputs.save(input_request)
         return RunCycleResult(
@@ -1021,13 +1143,92 @@ class RuntimeCoordinator:
             waiting_execution_id=waiting_execution_id,
         )
 
+    async def _yield_for_next_pending_intent(
+        self,
+        run: Run,
+        session: AgentSession,
+        cycle: AgentCycle,
+        *,
+        engine_run: AgentEngineRun | None = None,
+    ) -> RunCycleResult | None:
+        """Expose or launch only the earliest unresolved Tool Call Intent."""
+
+        if self._deferred_executions is None:
+            return None
+        for intent in await self._deferred_executions.pending_intents(session.id):
+            if intent.run_id != run.id:
+                raise DomainError(
+                    f"Tool Call Intent {intent.id!r} does not belong to Run {run.id!r}"
+                )
+            if intent.status is ToolCallStatus.WAITING_APPROVAL:
+                if self._runtime_approvals is None:
+                    raise DomainError("Runtime approval repository is unavailable")
+                approval = await self._runtime_approvals.get_for_intent(intent.id)
+                if approval is None:
+                    raise DomainError(
+                        f"Tool Call Intent {intent.id!r} has no durable Approval request"
+                    )
+                if approval.decision is None:
+                    return await self._yield_cycle(
+                        run.id,
+                        session,
+                        cycle,
+                        YieldReason.APPROVAL_REQUIRED,
+                        engine_run=engine_run,
+                        waiting_object_id=approval.id,
+                    )
+                await self._apply_approval_decision(
+                    run,
+                    session,
+                    cycle,
+                    approval.id,
+                )
+                if approval.decision in {
+                    ApprovalDecision.REJECT,
+                    ApprovalDecision.REJECT_WITH_FEEDBACK,
+                }:
+                    continue
+                intent.status = ToolCallStatus.READY
+
+            if intent.status not in {
+                ToolCallStatus.READY,
+                ToolCallStatus.EXECUTING,
+            }:
+                continue
+            first_dispatch = intent.status is ToolCallStatus.READY
+            reason, execution_id = await self._execute_prepared_intent(run, intent)
+            if first_dispatch:
+                await self._dispatch_hook(
+                    HookPoint.AFTER_TOOL_EXECUTION,
+                    run_id=run.id,
+                    session_id=session.id,
+                    cycle_id=cycle.id,
+                    step_id=intent.step_id,
+                    payload={
+                        "tool_call_intent_id": intent.id,
+                        "tool_id": intent.tool_id,
+                        "execution_id": execution_id,
+                        "yield_reason": reason.value,
+                    },
+                )
+            return await self._yield_cycle(
+                run.id,
+                session,
+                cycle,
+                reason,
+                engine_run=engine_run,
+                waiting_execution_id=execution_id,
+                waiting_object_id=execution_id,
+            )
+        return None
+
     async def _resume_approval(
         self,
         run: Run,
         session: AgentSession,
         cycle: AgentCycle,
         request: RunCycleRequest,
-    ) -> RunCycleResult | None:
+    ) -> None:
         approval_id = request.approval_id
         if (
             approval_id is None
@@ -1040,6 +1241,52 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        item = await self._apply_approval_decision(
+            run,
+            session,
+            cycle,
+            approval.id,
+        )
+        if self._transcript is None and not any(
+            existing.get("approval_id") == approval.id for existing in request.input_items
+        ):
+            request.input_items.append(item)
+
+    async def _apply_approval_decision(
+        self,
+        run: Run,
+        session: AgentSession,
+        cycle: AgentCycle,
+        approval_id: str,
+    ) -> dict[str, object]:
+        if self._runtime_approvals is None or self._deferred_executions is None:
+            raise DomainError("Runtime approval recovery dependencies are unavailable")
+        approval = await self._runtime_approvals.get(approval_id)
+        if approval is None:
+            raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
+        if approval.run_id != run.id or approval.session_id != session.id:
+            raise DomainError("Runtime Approval does not belong to this Run and Session")
+        if approval.decision in {
+            ApprovalDecision.APPROVE_ONCE,
+            ApprovalDecision.APPROVE_TOOL_FOR_RUN,
+        }:
+            await self._deferred_executions.approve_intent(approval.tool_call_intent_id)
+        elif approval.decision in {
+            ApprovalDecision.REJECT,
+            ApprovalDecision.REJECT_WITH_FEEDBACK,
+        }:
+            await self._deferred_executions.reject_intent(approval.tool_call_intent_id)
+        else:
+            raise DomainError(f"Runtime Approval {approval.id!r} has no durable decision")
+        item: dict[str, object] = {
+            "type": "approval_decision",
+            "approval_id": approval.id,
+            "decision": approval.decision.value,
+            "feedback": approval.feedback,
+            "tool_call_intent_id": approval.tool_call_intent_id,
+            "source_refs": [f"approval://{approval.id}"],
+        }
+        await self._persist_approval_decision(session, item)
         await self._dispatch_hook(
             HookPoint.APPROVAL_RESOLVED,
             run_id=run.id,
@@ -1047,43 +1294,38 @@ class RuntimeCoordinator:
             cycle_id=cycle.id,
             payload={
                 "approval_id": approval.id,
-                "decision": approval.decision.value if approval.decision is not None else None,
+                "decision": approval.decision.value,
                 "tool_call_intent_id": approval.tool_call_intent_id,
             },
         )
-        if approval.decision in {
-            ApprovalDecision.APPROVE_ONCE,
-            ApprovalDecision.APPROVE_TOOL_FOR_RUN,
-        }:
-            intent = await self._deferred_executions.approve_intent(
-                approval.tool_call_intent_id
-            )
-            reason, execution_id = await self._execute_prepared_intent(run, intent)
-            return await self._yield_cycle(
-                run.id,
-                session,
-                cycle,
-                reason,
-                waiting_execution_id=execution_id,
-                waiting_object_id=execution_id,
-            )
-        if approval.decision in {
-            ApprovalDecision.REJECT,
-            ApprovalDecision.REJECT_WITH_FEEDBACK,
-        }:
-            await self._deferred_executions.reject_intent(approval.tool_call_intent_id)
-            request.input_items.append(
-                {
-                    "type": "approval_decision",
-                    "approval_id": approval.id,
-                    "decision": approval.decision.value,
-                    "feedback": approval.feedback,
-                    "tool_call_intent_id": approval.tool_call_intent_id,
-                    "source_refs": [f"approval://{approval.id}"],
-                }
-            )
-            return None
-        raise DomainError(f"Runtime Approval {approval.id!r} has no durable decision")
+        return item
+
+    async def _persist_approval_decision(
+        self,
+        session: AgentSession,
+        item: dict[str, object],
+    ) -> None:
+        if self._transcript is None:
+            return
+        approval_id = _optional_string(item.get("approval_id"))
+        messages = await self._transcript.list_by_session(session.id)
+        if any(
+            message.message_type is MessageType.APPROVAL
+            and isinstance(message.structured_content, dict)
+            and message.structured_content.get("approval_id") == approval_id
+            for message in messages
+        ):
+            return
+        await self._transcript.append(
+            session.id,
+            TranscriptMessageDraft(
+                agent_id=session.agent_type,
+                role=MessageRole.SYSTEM,
+                message_type=MessageType.APPROVAL,
+                structured_content=item,
+                visibility=MessageVisibility.AGENT_ONLY,
+            ),
+        )
 
     async def _execute_prepared_intent(
         self,
@@ -1150,6 +1392,36 @@ def _event_tool_id(event: AgentEngineEvent) -> str:
     if not isinstance(value, str) or not value:
         raise DomainError("Tool Call event is missing a tool ID")
     return value
+
+
+def _execution_id_from_tool_result_input(item: Mapping[str, object]) -> str | None:
+    item_id = item.get("id")
+    item_type = item.get("type")
+    if item_type not in {"tool_result", "execution_completion"} and not (
+        isinstance(item_id, str) and item_id.startswith("tool-result:")
+    ):
+        return None
+    value = item.get("execution_id")
+    if isinstance(value, str) and value:
+        return value
+    content = item.get("content")
+    if isinstance(content, Mapping):
+        value = content.get("execution_id")
+        if isinstance(value, str) and value:
+            return value
+    if isinstance(item_id, str) and item_id.startswith("tool-result:"):
+        value = item_id.removeprefix("tool-result:")
+        if value:
+            return value
+    refs = item.get("source_refs")
+    if not isinstance(refs, list):
+        return None
+    for ref in refs:
+        if isinstance(ref, str) and ref.startswith("execution://"):
+            execution_id = ref.removeprefix("execution://")
+            if execution_id:
+                return execution_id
+    return None
 
 
 def _optional_string(value: object) -> str | None:

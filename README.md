@@ -4,8 +4,9 @@ RiftX V2 is a host-native durable agent execution platform. Its WebUI and CLI sh
 single control plane, while long-running work is executed through resumable workflows
 and node-local runners.
 
-The implementation follows [`RIFTX_V2_DESIGN.md`](RIFTX_V2_DESIGN.md) and is developed
-milestone by milestone:
+The tracked implementation coverage and release-qualification commands are documented in
+[`docs/v2-completion-audit.md`](docs/v2-completion-audit.md). The implementation is organized
+around these milestones:
 
 1. Domain and persistence
 2. Host runner
@@ -16,6 +17,10 @@ milestone by milestone:
 7. Approval and PTY
 8. Findings, artifacts, and reports
 9. Remote runners and Windows support
+
+The product and architecture decisions adopted from the CyberStrikeAI comparison are
+mapped to RiftX code and tests in
+[`docs/cyberstrikeai-adoption.md`](docs/cyberstrikeai-adoption.md).
 
 ## Development
 
@@ -42,10 +47,17 @@ Build the WebUI, then start the shared FastAPI Control Plane. The production-sty
 server serves the built WebUI and API from the same address:
 
 ```bash
+cp -n configs/tools.example.yaml configs/tools.yaml
+cp -n configs/models.example.yaml configs/models.yaml
 pnpm web:build
 conda run --no-capture-output -n agent riftx \
   --config configs/riftx.example.yaml serve
 ```
+
+`configs/tools.yaml` and `configs/models.yaml` are the local mutable registries used by
+WebUI/CLI edits and are ignored by Git; their `*.example.yaml` counterparts remain the
+sanitized, versioned templates. Configure the copied model profile before sending a
+Run's first instruction.
 
 Open <http://127.0.0.1:8787/> or print/open it with:
 
@@ -61,14 +73,47 @@ pnpm web:dev
 # Open http://127.0.0.1:5173/
 ```
 
-The API and read-only UI can start while Temporal is unavailable. Creating and running
-durable Agent workflows additionally requires a Temporal server at `127.0.0.1:7233`
-and a RiftX worker:
+The API, read-only UI, and conversation-only Run creation can all work while Temporal
+is unavailable. Sending the first instruction and running a durable Agent workflow
+additionally require a Temporal server at `127.0.0.1:7233` and a RiftX worker. Start
+them in separate terminals before sending that instruction:
+
+Install the Temporal CLI first. On macOS use `brew install temporal`; on other
+platforms install the official CLI package documented at
+<https://docs.temporal.io/cli> and verify `temporal --version`. If this executable or
+the server is absent, the Control Plane can still create a conversation-only Run, but
+the first instruction must fail explicitly with `temporal_unavailable`.
 
 ```bash
+# Terminal 1: local durable workflow service (UI: http://127.0.0.1:8233)
+mkdir -p .riftx
+temporal server start-dev \
+  --ip 127.0.0.1 \
+  --port 7233 \
+  --ui-port 8233 \
+  --db-filename .riftx/temporal.db
+
+# Terminal 2: RiftX workflow/activity worker
 conda run --no-capture-output -n agent riftx \
   --config configs/riftx.example.yaml worker
 ```
+
+For a managed Temporal service, set its TLS endpoint and namespace in the shared
+configuration used by both the Control Plane and Worker, enable `temporal.tls_enabled`,
+and export `RIFTX_TEMPORAL_API_KEY` when the service uses API-key authentication. TLS
+uses operating-system trust roots by default. Private PKI and mTLS deployments may set
+`tls_server_root_ca_path`, `tls_server_name`, `tls_client_cert_path`, and
+`tls_client_private_key_path`; the client certificate and private-key paths are required
+as a pair. Configuration contains file paths only—never API keys, certificate PEM, or
+private-key PEM. See [`docs/deployment.md`](docs/deployment.md) for a complete example.
+
+The Control Plane health endpoint only proves that the API is online. Before an
+acceptance run, also verify that Temporal is reachable and that a RiftX worker is
+polling the configured `riftx-v2` task queue.
+
+For supervised services, TLS reverse proxying, SSE/WebSocket settings, persistent
+state, backup, upgrade, and stop-path acceptance checks, see
+[`docs/deployment.md`](docs/deployment.md).
 
 ### English and Chinese
 
@@ -89,6 +134,156 @@ The language setting applies to Rich tables, empty states, statuses, errors, ope
 feedback, and interactive-mode guidance. Command names and machine identifiers remain
 unchanged.
 
+## Model profiles
+
+RiftX supports OpenAI and OpenAI-compatible endpoints through two request modes:
+`chat_completions` (the default) and `responses`. A profile contains the provider,
+Base URL, model name, request mode, timeout, retry policy, and credential source.
+
+The checked-in [`configs/models.example.yaml`](configs/models.example.yaml) is a
+metadata-only template. Runtime metadata is written to `configs/models.yaml`; local
+write-only API keys are stored separately in `.riftx/secrets/models.json` with owner-only
+permissions. Both runtime files are ignored by Git. API responses, WebUI state, CLI
+output, events, and logs never return the stored key.
+
+You can configure profiles from **Models** in the WebUI or from the CLI:
+
+```bash
+# Hidden interactive input avoids shell history and process-list disclosure.
+conda run --no-capture-output -n agent riftx model configure primary \
+  --provider openai_compatible \
+  --request-mode chat_completions \
+  --base-url https://api.example.com/v1 \
+  --model example-model \
+  --api-key-prompt
+
+conda run --no-capture-output -n agent riftx model list
+conda run --no-capture-output -n agent riftx model default primary
+```
+
+Environment credentials remain supported and take precedence over the local secret
+store:
+
+```bash
+export RIFTX_MODEL_BASE_URL="https://api.example.com/v1"
+export RIFTX_MODEL_API_KEY="replace-with-provider-key"
+```
+
+`openai_compatible` profiles must always declare a non-empty Base URL. Model request
+timeouts must be finite, greater than zero, and no more than 600 seconds; the same
+contract is enforced by YAML, the management API, and CLI validation. When
+`requires_api_key: false`, RiftX does not consult the profile's credential environment
+variable or local Secret Store and supplies only a fixed non-secret SDK placeholder.
+
+Metadata and local keys are read and changed under a shared OS file lock. Each stored
+key is also bound to the digest of its exact Profile metadata, so a crash or an
+uncooperative stale snapshot fails with a missing credential instead of pairing a new
+key with an old endpoint. Changing a Profile's provider or Base URL never carries a
+write-only stored key to the new destination; submit a key again for that endpoint. See
+[`docs/model-profile-hardening.md`](docs/model-profile-hardening.md) for the invariants
+and executable evidence.
+
+Profiles changed through WebUI, CLI, or the management API may reference only
+`RIFTX_MODEL_*` credential variables. This prevents a model administrator from selecting
+an unrelated Worker secret and forwarding it to a configured endpoint. Managed Base
+URLs cannot contain environment interpolation and reject literal link-local,
+unspecified, or multicast destinations; loopback remains available for a local model.
+Operator-owned `models.yaml` may use environment references such as
+`${RIFTX_MODEL_BASE_URL}` because direct filesystem access is a higher trust boundary.
+
+All model-administration endpoints require a high-entropy `RIFTX_ADMIN_TOKEN`, including
+localhost. Set it in the Control Plane environment and in the CLI environment before
+listing details or changing profiles:
+
+```bash
+export RIFTX_ADMIN_TOKEN="replace-with-a-long-random-token"
+```
+
+The Control Plane listens on loopback by default and rejects non-loopback binds because
+its execution and terminal APIs are privileged host controls. Production deployments
+should keep that loopback listener behind an authenticated reverse proxy. Only when the
+proxy is the exclusive ingress may an operator explicitly set
+`RIFTX_TRUST_PROXY_AUTH=true`; the flag is an acknowledgement, not an authentication
+mechanism. See `docs/deployment.md` for the trust boundary and proxy requirements.
+
+Every `/api/v1` route is included in a fail-closed policy inventory. OpenAPI operations
+publish `x-riftx-authorization` and `x-riftx-effect`; application construction fails if
+a new route is not classified. Model/tool administration requires the admin token,
+Runner callbacks require Runner credentials, and privileged operator routes rely on the
+loopback-or-authenticated-proxy boundary above. Agent-visible tools use a separate
+effect/authorization inventory, so an unclassified new tool is never exposed to a model.
+
+The public profile summary used by the New Run form contains only the profile name,
+model, request mode, credential-ready flag, and default flags. Base URLs, credential
+environment names, stored-key state, and mutations require the admin token. The WebUI
+accepts the token only in the Models page's in-memory field and never persists it in
+browser storage. Arbitrary browser-extension origins are not granted CORS access.
+
+## Conversation-first Runs
+
+Creating a Run stores its objective, success criteria, entry points, scope, exclusions,
+approval mode, node, workspace, and model profile, then opens the Run conversation in
+`waiting_user`. It does **not** prepare tools, call the model, or start an execution
+until the user sends the first concrete instruction.
+
+```bash
+conda run --no-capture-output -n agent riftx run create \
+  "Validate the authorized staging service" \
+  --model primary \
+  --entry url=https://staging.example.test
+
+conda run --no-capture-output -n agent riftx run message RUN_ID \
+  "Begin with passive service identification and report before active probing."
+```
+
+The WebUI follows the same flow: **New run** creates the durable context and navigates
+to Conversation, while Timeline remains available as the audit/debug projection.
+
+## Emergency stop semantics
+
+Pause and full cancel do not depend on Temporal being reachable. The Control Plane
+first fences the Run in `pausing`/`cancelling`, then directly stops and confirms every
+known Execution, managed Browser session, and Target HTTP request. Temporal is notified
+after those local dispositions are collected and only on a best-effort basis.
+
+The Run reaches `paused`/`cancelled` only when every known effect is confirmed stopped.
+Otherwise the API returns `execution_cancel_failed` or `safety_stop_failed`, leaves the
+Run fenced, and WebUI/CLI list each unconfirmed resource ID, node, observed state, and
+reason. A remote terminal close is likewise only a durable request until its Runner
+reports the PTY/ConPTY execution cancelled; enqueueing the request does not mark the
+Terminal `closed` or the Execution `cancelled`. The Runner persists a cancellation
+tombstone before termination whenever the effect has not yet produced an owner-fenced
+durable row. For an already admitted Process/PTY, that immutable owner-fenced row plus
+durable physical-stop proof is itself the no-restart barrier; a degraded journal write
+is reported explicitly but cannot make the same execution key spawn again. Missing-row
+cancel-before-start cannot succeed without its tombstone.
+Execution `failed` and `lost` states are not physical-stop evidence: both are retried
+through the owning Runner and must converge to an acknowledged `cancelled` state.
+Remote Terminal, Browser, or Target HTTP work without a Runner acknowledgement is never
+reported as stopped; use host-level containment while resolving an unconfirmed remote
+effect. See [`docs/deployment.md`](docs/deployment.md) for the acceptance procedure and
+failure-containment procedure.
+
+Host-native Process, Shell, and interactive-terminal execution requires kernel-backed
+process containment by default (`execution.require_containment: true`). On Linux, set
+`RIFTX_CGROUP_V2_ROOT` to a trusted delegated cgroup v2 directory owned by the Runner;
+set `RIFTX_PAYLOAD_UID` and `RIFTX_PAYLOAD_GID` to a dedicated, unprivileged account
+that is different from the Runner account;
+every Execution receives a separate leaf and stop succeeds only after `cgroup.kill`
+completes and `cgroup.events` reports `populated 0`. A process cannot escape that leaf
+with `setsid()`, a double fork, or leader exit, and the launcher refuses activation if
+the dropped payload identity can write the delegated root or an ancestor
+`cgroup.procs`. The persisted identity is bound to the root/leaf kernel inodes and
+mount/cgroup namespaces, so a restarted Runner cannot mistake the same pathname in a
+different container or namespace for the original boundary.
+
+RiftX currently has no equivalent proof boundary for native macOS execution or Windows
+Process/ConPTY execution. With the safe default those starts are rejected; route
+authorized high-risk work to an isolated Linux Runner with delegated cgroup v2. Setting
+`require_containment: false` is a local-development escape hatch only. It does not turn
+PID/process-group disappearance or `taskkill` success into complete-descendant stop
+evidence, and RiftX must leave an unprovable cancellation fenced and failed.
+
 ## Remote Runners
 
 Remote nodes use an outbound authenticated long-poll connection, so the Runner host
@@ -99,28 +294,42 @@ the Control Plane and start the daemon with the same token once:
 export RIFTX_RUNNER_REGISTRATION_TOKEN="replace-with-a-random-secret"
 riftx serve
 
-# On the remote host:
+# On the remote host, use the authenticated TLS endpoint exposed by the reverse proxy:
 export RIFTX_RUNNER_REGISTRATION_TOKEN="replace-with-a-random-secret"
 riftx-runner serve \
-  --server-url http://control-plane.example:8787 \
+  --server-url https://riftx.example.test \
   --node-id kali-a \
   --name "Kali Runner A"
 ```
+
+Plain HTTP is acceptable only for loopback-only development on the same host. Never send the
+bootstrap or rotated Runner credential over a remote plaintext connection.
 
 Registration returns a rotated node-scoped credential. The daemon stores it with
 owner-only permissions and uses it for heartbeats, command polling, execution status,
 and bounded output uploads. The bootstrap token can be removed from the Runner host
 after its node credential has been persisted. Commands are durable, idempotent, and
 leased, so a disconnected daemon can reconnect without starting the same execution
-key twice.
+key twice. The Runner executes independent commands concurrently, renews leases for
+long-running handlers, and lets cancellation commands preempt in-flight Browser and
+Target HTTP work. Cancel-before-start persists a tombstone before it can acknowledge
+the stop; already admitted Process/PTY work additionally relies on its immutable
+owner-fenced Execution row and durable physical-stop proof to reject replay.
+Target HTTP delivery additionally uses an atomic durable claim so an expired or
+replayed lease cannot resend a possibly non-idempotent request; a separate durable
+physical-stop confirmation is required before a delayed cancellation acknowledgement
+can be reused.
 
 ## Windows shell execution
 
 `ShellKind.POWERSHELL` resolves PowerShell 7 (`pwsh.exe`) first and falls back to
 Windows PowerShell (`powershell.exe`). RiftX always launches it with an explicit argv
 (`-NoLogo -NoProfile -Command`) rather than `shell=True`. Windows child processes are
-created in a new process group; cancellation escalates from normal termination to a
-`taskkill /T /F` process-tree cleanup after the grace period.
+created in a new process group; best-effort cancellation escalates from normal
+termination to `taskkill /T /F` after the grace period. This is not equivalent to a
+kernel-owned Job Object and does not satisfy `execution.require_containment`; do not use
+native Windows execution where immediate, provable whole-tree stop is a safety
+requirement.
 
 ## Windows interactive terminals
 
@@ -135,7 +344,8 @@ PTY and ConPTY handles cannot be reattached after the Runner process itself rest
 any previously open session is reported as `LOST`; its durable transcript remains
 available from the Control Plane. Windows ConPTY behavior is covered with a fake native
 backend on every platform, while the real PowerShell/ConPTY smoke path requires a
-Windows host.
+Windows host. ConPTY also lacks RiftX's required kernel containment boundary today, so
+safe-default production configuration rejects it rather than claiming a provable stop.
 
 ## Managed browser runtime
 

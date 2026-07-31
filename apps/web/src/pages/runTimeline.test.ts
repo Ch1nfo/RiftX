@@ -39,7 +39,7 @@ describe("coalesceTimelineEvents", () => {
     });
   });
 
-  it("keeps stream boundaries across cycles and non-delta events", () => {
+  it("keeps one stream across non-delta events and separates cycles", () => {
     const items = coalesceTimelineEvents([
       engineEvent(1, "assistant_delta", { delta: "first" }),
       engineEvent(2, "run_completed", { status: "completed" }),
@@ -47,10 +47,11 @@ describe("coalesceTimelineEvents", () => {
       engineEvent(4, "assistant_delta", { delta: "third" }, "cycle-2"),
     ]);
 
-    expect(items.map((item) => item.kind)).toEqual(["stream", "event", "stream", "stream"]);
+    expect(items.map((item) => item.kind)).toEqual(["stream", "event", "stream"]);
+    expect(items[0]).toMatchObject({ kind: "stream", content: "firstsecond" });
   });
 
-  it("does not merge interleaved cycles or non-contiguous engine sequences", () => {
+  it("merges interleaved and non-contiguous chunks by stable cycle key", () => {
     const items = coalesceTimelineEvents([
       engineEvent(1, "assistant_delta", { delta: "A1" }, "cycle-a", 1),
       engineEvent(2, "assistant_delta", { delta: "B1" }, "cycle-b", 1),
@@ -58,24 +59,18 @@ describe("coalesceTimelineEvents", () => {
       engineEvent(4, "assistant_delta", { delta: "A3" }, "cycle-a", 4),
     ]);
 
-    expect(items).toHaveLength(4);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ kind: "stream", content: "A1A2A3" });
+    expect(items[1]).toMatchObject({ kind: "stream", content: "B1" });
   });
 
-  it("combines streamed tool arguments by call id", () => {
+  it("omits streamed tool arguments from the high-level timeline", () => {
     const items = coalesceTimelineEvents([
       engineEvent(8, "tool_call_argument_delta", { call_id: "call-1", delta: "{\"script\":" }),
       engineEvent(9, "tool_call_argument_delta", { call_id: "call-1", delta: "\"pwd\"}" }),
       engineEvent(10, "tool_call_argument_delta", { call_id: "call-2", delta: "{}" }),
     ]);
 
-    expect(items).toHaveLength(2);
-    expect(items[0]).toMatchObject({
-      kind: "stream",
-      streamType: "tool_arguments",
-      callId: "call-1",
-      content: '{"script":"pwd"}',
-      startSequence: 8,
-      endSequence: 9,
-    });
+    expect(items).toEqual([]);
   });
 });

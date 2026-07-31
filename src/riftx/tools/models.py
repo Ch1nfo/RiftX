@@ -93,7 +93,7 @@ class ToolRegistryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(ge=1, le=1)
-    execution_policy: ExecutionPolicy = ExecutionPolicy.OPEN
+    execution_policy: ExecutionPolicy = ExecutionPolicy.REGISTERED_ONLY
     shells: ShellConfig = Field(default_factory=ShellConfig)
     tools: dict[str, RawToolDefinition] = Field(default_factory=dict)
 

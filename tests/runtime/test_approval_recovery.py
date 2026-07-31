@@ -12,9 +12,11 @@ from riftx.application.services import (
     DecideApproval,
     RuntimeApprovalRequestRecorder,
 )
+from riftx.context import ContextCompiler, StableInstructionSource, TranscriptContextSource
 from riftx.domain import (
     ApprovalStatus,
     Engagement,
+    MessageType,
     Objective,
     Run,
 )
@@ -131,9 +133,7 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
         )
     )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
-    await sessions.create(
-        AgentSession(id="session-1", run_id="run-1", model_profile="fake-model")
-    )
+    await sessions.create(AgentSession(id="session-1", run_id="run-1", model_profile="fake-model"))
     events = SQLAlchemyRunEventRepository(database.session_factory)
     approvals = SQLAlchemyApprovalRepository(database.session_factory)
     runtime_approvals = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
@@ -174,6 +174,8 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
 def build_coordinator(
     fixture: dict[str, object],
     engine: RestartableEngine,
+    *,
+    context_compiler: ContextCompiler | MinimalContextCompiler | None = None,
 ) -> RuntimeCoordinator:
     dispatcher = DeferredExecutionDispatcher(
         tool_call_repository=fixture["intents"],
@@ -187,7 +189,7 @@ def build_coordinator(
         provider_state_repository=fixture["providers"],
         event_repository=fixture["events"],
         lease_manager=DatabaseRunLeaseManager(fixture["leases"]),
-        context_compiler=MinimalContextCompiler(),
+        context_compiler=context_compiler or transcript_context_compiler(fixture),
         agent_engine=engine,
         deferred_execution_dispatcher=dispatcher,
         approval_repository=fixture["approvals"],
@@ -221,6 +223,60 @@ def approval_events(tmp_path: Path) -> list[AgentEngineEvent]:
         ),
         engine_event(2, AgentEngineEventType.RUN_COMPLETED),
     ]
+
+
+def tool_event(
+    tmp_path: Path,
+    sequence: int,
+    *,
+    call_id: str,
+    label: str,
+    approval_level: str,
+) -> AgentEngineEvent:
+    return engine_event(
+        sequence,
+        AgentEngineEventType.TOOL_CALL_READY,
+        call_id=call_id,
+        tool_id="python",
+        approval_level=approval_level,
+        approval_required=False,
+        arguments={"label": label},
+        execution={
+            "node_id": "local",
+            "executor_type": "process",
+            "cwd": str(tmp_path),
+            "argv": [sys.executable, "-c", f"print({label!r})"],
+        },
+    )
+
+
+def completed_execution_input(
+    execution_id: str,
+    label: str,
+    *,
+    artifact_source: bool = False,
+) -> dict[str, object]:
+    return {
+        "id": f"tool-result:{execution_id}",
+        "type": "tool_result",
+        "content": {"execution_id": execution_id, "output": label},
+        "source_refs": (
+            [f"artifact://{execution_id}/stdout"]
+            if artifact_source
+            else [f"execution://{execution_id}"]
+        ),
+        "priority": 100,
+        "required": True,
+        "compressible": False,
+        "removable": False,
+    }
+
+
+def transcript_context_compiler(fixture: dict[str, object]) -> ContextCompiler:
+    return ContextCompiler(
+        sources=[TranscriptContextSource(fixture["transcript"])],
+        stable_instruction_source=StableInstructionSource(),
+    )
 
 
 def approval_service(fixture: dict[str, object]) -> ApprovalApplicationService:
@@ -260,7 +316,25 @@ async def test_approve_executes_original_snapshot_after_worker_restart(tmp_path:
     command = DecideApproval(decided_by="operator", approve_for_run=False)
     service = approval_service(fixture)
     await service.approve(runtime_request.id, command)
-    await service.approve(runtime_request.id, command)
+    await service.approve(
+        runtime_request.id,
+        DecideApproval(
+            decided_by="retrying-browser",
+            reason="must not replace the saved decision",
+            approve_for_run=True,
+        ),
+    )
+
+    saved_runtime_request = await fixture["runtime_approvals"].get(runtime_request.id)
+    assert saved_runtime_request is not None
+    assert saved_runtime_request.decision is ApprovalDecision.APPROVE_ONCE
+    assert saved_runtime_request.decided_by == "operator"
+    assert saved_runtime_request.feedback is None
+    assert not await fixture["approvals"].is_granted("run-1", "python")
+    assert fixture["workflow"].calls == [
+        ("approve", "run-1", runtime_request.id),
+        ("approve", "run-1", runtime_request.id),
+    ]
 
     restarted_engine = RestartableEngine([])
     restarted = build_coordinator(fixture, restarted_engine)
@@ -299,13 +373,386 @@ async def test_approve_executes_original_snapshot_after_worker_restart(tmp_path:
 
 
 @pytest.mark.parametrize(
+    (
+        "status",
+        "persisted_reason",
+        "retry_command",
+        "expected_decision",
+        "expected_feedback",
+        "workflow_action",
+    ),
+    [
+        (
+            ApprovalStatus.APPROVED,
+            "Original approval record",
+            DecideApproval(
+                decided_by="retrying-browser",
+                reason="must not replace the saved approval",
+                approve_for_run=True,
+            ),
+            ApprovalDecision.APPROVE_ONCE,
+            None,
+            "approve",
+        ),
+        (
+            ApprovalStatus.REJECTED,
+            "Persisted rejection feedback",
+            DecideApproval(
+                decided_by="retrying-browser",
+                reason="must not replace the saved rejection",
+            ),
+            ApprovalDecision.REJECT_WITH_FEEDBACK,
+            "Persisted rejection feedback",
+            "reject",
+        ),
+    ],
+)
+async def test_signal_retry_recovers_split_public_and_runtime_decision(
+    tmp_path: Path,
+    status: ApprovalStatus,
+    persisted_reason: str,
+    retry_command: DecideApproval,
+    expected_decision: ApprovalDecision,
+    expected_feedback: str | None,
+    workflow_action: str,
+) -> None:
+    fixture = await build_fixture(tmp_path)
+    proposed = await build_coordinator(
+        fixture,
+        RestartableEngine(approval_events(tmp_path)),
+    ).run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-before-crash",
+            cycle_id="cycle-proposal",
+        )
+    )
+    assert proposed.waiting_object_id is not None
+    approval_id = proposed.waiting_object_id
+
+    # Model the process dying after the public Approval transaction commits
+    # but before the RuntimeApprovalRequest transaction is saved.
+    persisted, changed = await fixture["approvals"].decide(
+        approval_id,
+        status,
+        decided_by="original-operator",
+        reason=persisted_reason,
+    )
+    assert changed is True
+    assert persisted.status is status
+    split_runtime = await fixture["runtime_approvals"].get(approval_id)
+    assert split_runtime is not None
+    assert split_runtime.status is ApprovalStatus.PENDING
+
+    service = approval_service(fixture)
+    if status is ApprovalStatus.APPROVED:
+        await service.approve(approval_id, retry_command)
+    else:
+        await service.reject(approval_id, retry_command)
+
+    recovered = await fixture["runtime_approvals"].get(approval_id)
+    assert recovered is not None
+    assert recovered.decision is expected_decision
+    assert recovered.decided_by == "original-operator"
+    assert recovered.feedback == expected_feedback
+    assert fixture["workflow"].calls == [(workflow_action, "run-1", approval_id)]
+    assert not await fixture["approvals"].is_granted("run-1", "python")
+
+    await fixture["supervisor"].close()
+    await fixture["database"].dispose()
+
+
+async def test_two_ready_intents_execute_serially_and_retain_both_results(
+    tmp_path: Path,
+) -> None:
+    fixture = await build_fixture(tmp_path)
+    initial_engine = RestartableEngine(
+        [
+            tool_event(
+                tmp_path,
+                1,
+                call_id="ready-call-1",
+                label="first-ready-result",
+                approval_level="never",
+            ),
+            tool_event(
+                tmp_path,
+                2,
+                call_id="ready-call-2",
+                label="second-ready-result",
+                approval_level="never",
+            ),
+            engine_event(3, AgentEngineEventType.RUN_COMPLETED),
+        ]
+    )
+    first = await build_coordinator(fixture, initial_engine).run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-initial",
+            cycle_id="cycle-ready-proposals",
+        )
+    )
+
+    assert first.yield_reason is YieldReason.TOOL_RUNNING
+    assert first.waiting_execution_id is not None
+    assert len(await fixture["executions"].list("run-1")) == 1
+    await fixture["execution_service"].wait(
+        first.waiting_execution_id,
+        timeout_seconds=2,
+    )
+    first_input = completed_execution_input(
+        first.waiting_execution_id,
+        "first-ready-result",
+        artifact_source=True,
+    )
+
+    resumed_engine = RestartableEngine(
+        [engine_event(1, AgentEngineEventType.RUN_COMPLETED)],
+    )
+    resumed = build_coordinator(
+        fixture,
+        resumed_engine,
+        context_compiler=transcript_context_compiler(fixture),
+    )
+    second = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-second",
+            cycle_id="cycle-ready-second",
+            input_items=[first_input, first_input],
+        )
+    )
+
+    assert second.yield_reason is YieldReason.TOOL_RUNNING
+    assert second.waiting_execution_id is not None
+    assert second.waiting_execution_id != first.waiting_execution_id
+    assert len(await fixture["executions"].list("run-1")) == 2
+    assert resumed_engine.resume_requests == []
+    await fixture["execution_service"].wait(
+        second.waiting_execution_id,
+        timeout_seconds=2,
+    )
+    final = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-final",
+            cycle_id="cycle-ready-results",
+            input_items=[
+                completed_execution_input(
+                    second.waiting_execution_id,
+                    "second-ready-result",
+                )
+            ],
+        )
+    )
+
+    assert final.yield_reason is YieldReason.RUN_COMPLETED
+    messages = await fixture["transcript"].list_by_session("session-1")
+    tool_results = [
+        message for message in messages if message.message_type is MessageType.TOOL_RESULT_REFERENCE
+    ]
+    assert [message.execution_id for message in tool_results] == [
+        first.waiting_execution_id,
+        second.waiting_execution_id,
+    ]
+    serialized_context = json.dumps(
+        resumed_engine.start_requests[-1].input_items,
+        ensure_ascii=False,
+    )
+    assert "first-ready-result" in serialized_context
+    assert "second-ready-result" in serialized_context
+    tool_context_items = [
+        item
+        for item in resumed_engine.start_requests[-1].input_items
+        if item.get("type") == "relevant_tool_results"
+    ]
+    assert [item["content"]["execution_id"] for item in tool_context_items] == [
+        first.waiting_execution_id,
+        second.waiting_execution_id,
+    ]
+    session = await fixture["sessions"].get("session-1")
+    assert session is not None and session.provider_state_id is None
+    await fixture["supervisor"].close()
+    await fixture["database"].dispose()
+
+
+async def test_two_approvals_accept_second_signal_first_but_execute_in_intent_order(
+    tmp_path: Path,
+) -> None:
+    fixture = await build_fixture(tmp_path)
+    proposal_engine = RestartableEngine(
+        [
+            tool_event(
+                tmp_path,
+                1,
+                call_id="approval-call-1",
+                label="first-approved-result",
+                approval_level="sensitive",
+            ),
+            tool_event(
+                tmp_path,
+                2,
+                call_id="approval-call-2",
+                label="second-approved-result",
+                approval_level="sensitive",
+            ),
+            engine_event(3, AgentEngineEventType.RUN_COMPLETED),
+        ]
+    )
+    proposed = await build_coordinator(fixture, proposal_engine).run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-proposal",
+            cycle_id="cycle-approval-proposals",
+        )
+    )
+    intents = await fixture["intents"].pending_for_session("session-1")
+    assert len(intents) == 2
+    approvals = [await fixture["runtime_approvals"].get_for_intent(intent.id) for intent in intents]
+    assert all(approval is not None for approval in approvals)
+    first_approval, second_approval = approvals
+    assert first_approval is not None and second_approval is not None
+    assert proposed.waiting_object_id == first_approval.id
+
+    service = approval_service(fixture)
+    decision = DecideApproval(decided_by="operator", approve_for_run=False)
+    await service.approve(second_approval.id, decision)
+    resumed_engine = RestartableEngine(
+        [engine_event(1, AgentEngineEventType.RUN_COMPLETED)],
+    )
+    resumed = build_coordinator(
+        fixture,
+        resumed_engine,
+        context_compiler=transcript_context_compiler(fixture),
+    )
+    still_first = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-out-of-order",
+            cycle_id="cycle-second-approved-first",
+            approval_id=second_approval.id,
+        )
+    )
+
+    assert still_first.yield_reason is YieldReason.APPROVAL_REQUIRED
+    assert still_first.waiting_object_id == first_approval.id
+    assert await fixture["executions"].list("run-1") == []
+
+    await service.approve(first_approval.id, decision)
+    first = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-first-approved",
+            cycle_id="cycle-first-approved",
+            approval_id=first_approval.id,
+        )
+    )
+    assert first.yield_reason is YieldReason.TOOL_RUNNING
+    assert first.waiting_execution_id is not None
+    executions = await fixture["executions"].list("run-1")
+    assert len(executions) == 1
+    assert executions[0].tool_call_id == intents[0].id
+    await fixture["execution_service"].wait(
+        first.waiting_execution_id,
+        timeout_seconds=2,
+    )
+
+    first_input = completed_execution_input(
+        first.waiting_execution_id,
+        "first-approved-result",
+        artifact_source=True,
+    )
+    second = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-second-approved",
+            cycle_id="cycle-second-approved",
+            input_items=[first_input, first_input],
+        )
+    )
+    assert second.yield_reason is YieldReason.TOOL_RUNNING
+    assert second.waiting_execution_id is not None
+    executions = await fixture["executions"].list("run-1")
+    assert len(executions) == 2
+    assert [execution.tool_call_id for execution in executions] == [
+        intents[0].id,
+        intents[1].id,
+    ]
+    await fixture["execution_service"].wait(
+        second.waiting_execution_id,
+        timeout_seconds=2,
+    )
+
+    final = await resumed.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-results",
+            cycle_id="cycle-approved-results",
+            input_items=[
+                completed_execution_input(
+                    second.waiting_execution_id,
+                    "second-approved-result",
+                )
+            ],
+        )
+    )
+    assert final.yield_reason is YieldReason.RUN_COMPLETED
+    messages = await fixture["transcript"].list_by_session("session-1")
+    assert (
+        len([message for message in messages if message.message_type is MessageType.APPROVAL]) == 2
+    )
+    tool_results = [
+        message for message in messages if message.message_type is MessageType.TOOL_RESULT_REFERENCE
+    ]
+    assert [message.execution_id for message in tool_results] == [
+        first.waiting_execution_id,
+        second.waiting_execution_id,
+    ]
+    serialized_context = json.dumps(
+        resumed_engine.start_requests[-1].input_items,
+        ensure_ascii=False,
+    )
+    assert "first-approved-result" in serialized_context
+    assert "second-approved-result" in serialized_context
+    compiled_items = resumed_engine.start_requests[-1].input_items
+    tool_context_items = [
+        item for item in compiled_items if item.get("type") == "relevant_tool_results"
+    ]
+    assert [item["content"]["execution_id"] for item in tool_context_items] == [
+        first.waiting_execution_id,
+        second.waiting_execution_id,
+    ]
+    approval_context_items = [
+        item
+        for item in compiled_items
+        if isinstance(item.get("content"), dict)
+        and item["content"].get("type") == "approval_decision"
+    ]
+    assert [item["content"]["approval_id"] for item in approval_context_items] == [
+        second_approval.id,
+        first_approval.id,
+    ]
+    await fixture["supervisor"].close()
+    await fixture["database"].dispose()
+
+
+@pytest.mark.parametrize(
     ("feedback", "expected_decision"),
     [
         (None, ApprovalDecision.REJECT),
         ("Use the authorized staging host.", ApprovalDecision.REJECT_WITH_FEEDBACK),
     ],
 )
-async def test_rejection_resumes_model_with_durable_decision(
+async def test_rejection_restarts_model_with_durable_decision(
     tmp_path: Path,
     feedback: str | None,
     expected_decision: ApprovalDecision,
@@ -330,7 +777,6 @@ async def test_rejection_resumes_model_with_durable_decision(
     )
 
     restarted_engine = RestartableEngine(
-        [],
         [engine_event(1, AgentEngineEventType.RUN_COMPLETED)],
     )
     result = await build_coordinator(fixture, restarted_engine).run_cycle(
@@ -351,13 +797,16 @@ async def test_rejection_resumes_model_with_durable_decision(
     assert intent is not None and intent.status is ToolCallStatus.REJECTED
     assert result.yield_reason is YieldReason.RUN_COMPLETED
     assert await fixture["executions"].list("run-1") == []
-    assert len(restarted_engine.resume_requests) == 1
-    input_items = restarted_engine.resume_requests[0].input_items
+    assert len(restarted_engine.start_requests) == 1
+    assert restarted_engine.resume_requests == []
+    input_items = restarted_engine.start_requests[0].input_items
     serialized_input = json.dumps(input_items, ensure_ascii=False)
     assert approval_id in serialized_input
     assert expected_decision.value in serialized_input
     if feedback is not None:
         assert feedback in serialized_input
+    session = await fixture["sessions"].get("session-1")
+    assert session is not None and session.provider_state_id is None
     await fixture["supervisor"].close()
     await fixture["database"].dispose()
 
@@ -408,7 +857,6 @@ async def test_user_input_request_recovers_after_worker_restart(tmp_path: Path) 
     assert retried_message_id == message_id
 
     restarted_engine = RestartableEngine(
-        [],
         [engine_event(1, AgentEngineEventType.RUN_COMPLETED)],
     )
     result = await build_coordinator(fixture, restarted_engine).run_cycle(
@@ -425,6 +873,9 @@ async def test_user_input_request_recovers_after_worker_restart(tmp_path: Path) 
     assert answered is not None
     assert answered.response_message_id == message_id
     assert result.yield_reason is YieldReason.RUN_COMPLETED
-    assert len(restarted_engine.resume_requests) == 1
+    assert len(restarted_engine.start_requests) == 1
+    assert restarted_engine.resume_requests == []
+    session = await fixture["sessions"].get("session-1")
+    assert session is not None and session.provider_state_id is None
     await fixture["supervisor"].close()
     await fixture["database"].dispose()

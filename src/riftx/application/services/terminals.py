@@ -16,6 +16,7 @@ from riftx.domain import (
     RunStatus,
     TerminalOwner,
     TerminalSession,
+    TerminalStatus,
     TerminalTakeoverSummary,
 )
 from riftx.executors import EnvironmentMode
@@ -84,6 +85,13 @@ class TerminalApplicationService:
                 "owner": command.owner.value,
             },
         )
+
+        async def effect_guard() -> None:
+            current = await self._runs.get(run.id)
+            if current is None:
+                raise EntityNotFoundError("Run", run.id)
+            self._require_execution_allowed(current)
+
         try:
             terminal = await self._supervisor.start(
                 TerminalLaunchRequest(
@@ -102,7 +110,8 @@ class TerminalApplicationService:
                     cols=command.cols,
                     rows=command.rows,
                     owner=command.owner,
-                )
+                ),
+                effect_guard=effect_guard,
             )
         except (OSError, ValueError) as exc:
             raise ApplicationConflictError(
@@ -131,6 +140,7 @@ class TerminalApplicationService:
             RunStatus.PAUSED,
             RunStatus.CANCELLING,
             RunStatus.CANCELLED,
+            RunStatus.COMPLETING,
             RunStatus.COMPLETED,
             RunStatus.FAILED,
         }:
@@ -161,6 +171,11 @@ class TerminalApplicationService:
         )
 
     async def write(self, session_id: str, data: bytes, *, actor: TerminalOwner) -> None:
+        terminal = await self._supervisor.get(session_id)
+        run = await self._runs.get(terminal.run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", terminal.run_id)
+        self._require_execution_allowed(run)
         await self._supervisor.write(session_id, data, actor=actor)
 
     async def resize(self, session_id: str, *, cols: int, rows: int) -> TerminalView:
@@ -213,10 +228,7 @@ class TerminalApplicationService:
                 terminal.run_id,
                 RegisterArtifactContent(
                     content=content,
-                    name=(
-                        f"terminal-{terminal.id}-takeover-"
-                        f"{started_cursor}-{ended_cursor}.log"
-                    ),
+                    name=(f"terminal-{terminal.id}-takeover-{started_cursor}-{ended_cursor}.log"),
                     mime_type="application/octet-stream",
                     description="Immutable terminal character stream captured during takeover.",
                 ),
@@ -257,7 +269,11 @@ class TerminalApplicationService:
         )
         terminal = await self._supervisor.close(session_id)
         execution = await self._supervisor.get_execution(session_id)
-        if terminal.transcript_artifact_id is None and self._artifacts is not None:
+        if (
+            terminal.status is TerminalStatus.CLOSED
+            and terminal.transcript_artifact_id is None
+            and self._artifacts is not None
+        ):
             artifact = await self._artifacts.register(
                 terminal.run_id,
                 RegisterArtifact(
@@ -295,11 +311,7 @@ class TerminalApplicationService:
                     await self._events.append(
                         run_id,
                         event_type,
-                        {
-                            key: value
-                            for key, value in emitted.items()
-                            if key != "event_type"
-                        },
+                        {key: value for key, value in emitted.items() if key != "event_type"},
                     )
         if outcome.decision in {HookDecision.BLOCK, HookDecision.REQUIRE_APPROVAL}:
             raise DomainError(f"Runtime Hook blocked {point.value}")
@@ -339,7 +351,4 @@ def _terminal_delta_summary(content: bytes, *, max_characters: int = 4000) -> st
         return "User terminal takeover produced no output."
     text = content.decode("utf-8", errors="replace").replace("\x00", "")
     recent = text[-max_characters:]
-    return (
-        f"User terminal takeover produced {len(content)} bytes. "
-        f"Recent output:\n{recent}"
-    )
+    return f"User terminal takeover produced {len(content)} bytes. Recent output:\n{recent}"

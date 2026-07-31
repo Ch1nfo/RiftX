@@ -4,6 +4,7 @@ from pydantic import AwareDatetime, Field, field_validator
 
 from .base import DomainModel, new_id, utc_now
 from .enums import NodeStatus
+from .runner import RunnerPrincipal
 
 
 class Node(DomainModel):
@@ -15,6 +16,7 @@ class Node(DomainModel):
     status: NodeStatus = NodeStatus.UNKNOWN
     capabilities: list[str] = Field(default_factory=list)
     labels: dict[str, str] = Field(default_factory=dict)
+    current_owner: RunnerPrincipal | None = None
     last_seen_at: AwareDatetime | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
     updated_at: AwareDatetime = Field(default_factory=utc_now)

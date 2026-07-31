@@ -1,5 +1,5 @@
 version: 1
-execution_policy: open
+execution_policy: registered_only
 
 shells:
   default:

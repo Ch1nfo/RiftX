@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,7 @@ from riftx.persistence import (
     SQLAlchemyTerminalRepository,
 )
 from riftx.runner import RunnerPaths, TerminalLaunchRequest, TerminalSupervisor
+from riftx.runner.supervisor import ProcessTerminationError
 
 _SCRIPT = """\
 import os
@@ -50,6 +54,308 @@ print("READY", flush=True)
 for line in sys.stdin:
     print("ECHO:" + line.rstrip("\\r\\n"), flush=True)
 """
+
+_STUBBORN_GROUP_CHILD = """\
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+Path(sys.argv[1]).write_text(f"{os.getpid()}:{os.getpgrp()}")
+print("STUBBORN_CHILD_READY", flush=True)
+while True:
+    time.sleep(1)
+"""
+
+_STUBBORN_GROUP_LEADER = """\
+import signal
+import subprocess
+import sys
+import time
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+subprocess.Popen([sys.executable, "-u", "-c", sys.argv[1], sys.argv[2]])
+while True:
+    time.sleep(1)
+"""
+
+
+class RecordingTerminalHandle:
+    def __init__(self, pid: int = 424242) -> None:
+        self._pid = pid
+        self.terminated = asyncio.Event()
+        self.output_closed = asyncio.Event()
+        self.containment_cleaned = asyncio.Event()
+
+    @property
+    def pid(self) -> int:
+        return self._pid
+
+    @property
+    def process_group_id(self) -> int:
+        return self.pid
+
+    @property
+    def containment_identifier(self) -> None:
+        return None
+
+    @property
+    def activation_pending(self) -> bool:
+        return False
+
+    async def activate(self) -> None:
+        return None
+
+    async def abort_gated_start(
+        self,
+        *,
+        confirmation_seconds: float = 0.5,
+        cleanup_containment: bool = False,
+    ) -> bool:
+        return False
+
+    async def write(self, data: bytes) -> None:
+        return None
+
+    async def resize(self, cols: int, rows: int) -> None:
+        return None
+
+    async def interrupt(self) -> None:
+        return None
+
+    async def terminate(
+        self,
+        grace_seconds: float,
+        *,
+        cleanup_containment: bool = False,
+    ) -> None:
+        self.terminated.set()
+
+    async def wait(self, *, cleanup_containment: bool = False) -> int:
+        await self.terminated.wait()
+        return 0
+
+    async def cleanup_confirmed_containment(self) -> None:
+        self.containment_cleaned.set()
+
+    async def close_output(self) -> None:
+        self.output_closed.set()
+
+
+class FailingTerminationTerminalHandle(RecordingTerminalHandle):
+    def __init__(self, pid: int = 424242) -> None:
+        super().__init__(pid)
+        self.fail_termination = True
+
+    async def terminate(
+        self,
+        grace_seconds: float,
+        *,
+        cleanup_containment: bool = False,
+    ) -> None:
+        if self.fail_termination:
+            raise RuntimeError("native terminal termination failed")
+        await super().terminate(
+            grace_seconds,
+            cleanup_containment=cleanup_containment,
+        )
+
+
+class LeaderExitedFailingTerminationTerminalHandle(FailingTerminationTerminalHandle):
+    async def terminate(
+        self,
+        grace_seconds: float,
+        *,
+        cleanup_containment: bool = False,
+    ) -> None:
+        # Model a leader that exits immediately while tree/group termination
+        # confirmation fails. The monitor must not translate this into CANCELLED.
+        self.terminated.set()
+        if self.fail_termination:
+            raise RuntimeError("native terminal tree confirmation failed")
+
+
+class ContainedRecordingTerminalHandle(RecordingTerminalHandle):
+    def __init__(self, pid: int = 424242) -> None:
+        super().__init__(pid)
+        self.boundary_exists = True
+
+    @property
+    def containment_identifier(self) -> str:
+        return "recording-terminal-containment"
+
+    async def cleanup_confirmed_containment(self) -> None:
+        self.boundary_exists = False
+        await super().cleanup_confirmed_containment()
+
+
+class RecordingTerminalBackend:
+    def __init__(self, handle: RecordingTerminalHandle | None = None) -> None:
+        self.calls = 0
+        self.handle = handle or RecordingTerminalHandle()
+
+    async def start(self, request, *, transcript_path, environment):
+        self.calls += 1
+        return self.handle
+
+
+class MissingConfirmedTerminalContainment:
+    def __init__(self) -> None:
+        self.cleanup_calls = 0
+
+    @property
+    def identifier(self) -> str:
+        raise AssertionError("missing confirmed containment must not be re-identified")
+
+    def boundary_exists(self) -> bool:
+        return False
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+        raise AssertionError("missing confirmed containment must not be cleaned again")
+
+
+class MissingConfirmedTerminalContainmentManager:
+    def __init__(self, containment: MissingConfirmedTerminalContainment) -> None:
+        self.containment = containment
+
+    def containment_for(self, execution_key: str) -> MissingConfirmedTerminalContainment:
+        del execution_key
+        return self.containment
+
+
+class RecordingDetachedTerminalContainment:
+    def __init__(self, identifier: str) -> None:
+        self._identifier = identifier
+        self._boundary_exists = True
+        self.terminate_calls = 0
+        self.cleanup_calls = 0
+
+    @property
+    def identifier(self) -> str:
+        return self._identifier
+
+    def boundary_exists(self) -> bool:
+        return self._boundary_exists
+
+    async def terminate(self, *, grace_seconds: float) -> None:
+        del grace_seconds
+        self.terminate_calls += 1
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+        self._boundary_exists = False
+
+
+class RecordingDetachedTerminalContainmentManager:
+    def __init__(self, containment: RecordingDetachedTerminalContainment) -> None:
+        self.containment = containment
+
+    def containment_for(self, execution_key: str) -> RecordingDetachedTerminalContainment:
+        del execution_key
+        return self.containment
+
+
+class BlockingStartTerminalBackend(RecordingTerminalBackend):
+    def __init__(self, handle: RecordingTerminalHandle | None = None) -> None:
+        super().__init__(handle)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def start(self, request, *, transcript_path, environment):
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        return self.handle
+
+
+class BlockFirstTerminalExecutionSave:
+    def __init__(self, delegate: SQLAlchemyExecutionRepository) -> None:
+        self._delegate = delegate
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._block_next = True
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def save_if_status(self, execution: Execution, *, expected):
+        if self._block_next:
+            self._block_next = False
+            self.entered.set()
+            await self.release.wait()
+        return await self._delegate.save_if_status(execution, expected=expected)
+
+
+class RaceTerminalCancellationRepository:
+    """Inject RUNNING -> FAILED exactly before the monitor's cancellation CAS."""
+
+    def __init__(self, delegate: SQLAlchemyExecutionRepository) -> None:
+        self._delegate = delegate
+        self.race_injected = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def save(self, execution: Execution) -> Execution:
+        if execution.status in {ExecutionStatus.CANCELLED, ExecutionStatus.EXITED}:
+            raise AssertionError("terminal monitor must use save_if_status for final state")
+        return await self._delegate.save(execution)
+
+    async def save_if_status(self, execution: Execution, *, expected):
+        if execution.status is ExecutionStatus.CANCELLED and not self.race_injected:
+            current = await self._delegate.get(execution.id)
+            assert current is not None
+            assert current.status is ExecutionStatus.RUNNING
+            current.transition_to(ExecutionStatus.FAILED)
+            await self._delegate.save(current)
+            self.race_injected = True
+        return await self._delegate.save_if_status(execution, expected=expected)
+
+
+class RaceTerminalRecoveryRepository:
+    """Inject a confirmed cancellation before recovery can persist LOST."""
+
+    def __init__(self, delegate: SQLAlchemyExecutionRepository) -> None:
+        self._delegate = delegate
+        self.race_injected = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def save(self, execution: Execution) -> Execution:
+        if execution.status is ExecutionStatus.LOST:
+            raise AssertionError("terminal recovery must use save_if_status for LOST")
+        return await self._delegate.save(execution)
+
+    async def save_if_status(self, execution: Execution, *, expected):
+        if execution.status is ExecutionStatus.LOST and not self.race_injected:
+            current = await self._delegate.get(execution.id)
+            assert current is not None
+            assert current.status in {
+                ExecutionStatus.STARTING,
+                ExecutionStatus.RUNNING,
+            }
+            current.transition_to(ExecutionStatus.CANCELLED)
+            await self._delegate.save(current)
+            self.race_injected = True
+        return await self._delegate.save_if_status(execution, expected=expected)
+
+
+class RejectTerminalPhysicalStopProofSave:
+    def __init__(self, delegate: SQLAlchemyExecutionRepository) -> None:
+        self._delegate = delegate
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def save_if_status(self, execution: Execution, *, expected):
+        if execution.physical_stop_confirmed_at is not None:
+            raise RuntimeError("injected terminal stop-proof persistence failure")
+        return await self._delegate.save_if_status(execution, expected=expected)
 
 
 async def _runtime(
@@ -103,6 +409,656 @@ async def _wait_for_output(
                 return content, cursor
         await asyncio.sleep(0.02)
     raise AssertionError(f"did not observe {expected!r}; output={content!r}")
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def test_terminal_registers_starting_before_guard_and_does_not_open_when_blocked(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    backend = RecordingTerminalBackend()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "guarded-terminal-state"),
+        native_backend=backend,  # type: ignore[arg-type]
+    )
+    guard_entered = asyncio.Event()
+    guard_release = asyncio.Event()
+
+    async def blocked_guard() -> None:
+        guard_entered.set()
+        await guard_release.wait()
+        raise ApplicationConflictError("run_execution_blocked", "Run is cancelling")
+
+    start_task = asyncio.create_task(
+        supervisor.start(
+            TerminalLaunchRequest(
+                session_id="guarded-terminal",
+                run_id="run-1",
+                node_id="local",
+                cwd=tmp_path,
+                argv=["fake-shell"],
+            ),
+            effect_guard=blocked_guard,
+        )
+    )
+    await guard_entered.wait()
+    execution = (await executions.list("run-1"))[0]
+    terminal = await terminals.get("guarded-terminal")
+    assert execution.status is ExecutionStatus.STARTING
+    assert terminal is not None and terminal.status is TerminalStatus.CREATED
+    assert backend.calls == 0
+
+    guard_release.set()
+    with pytest.raises(ApplicationConflictError, match="Run is cancelling"):
+        await start_task
+
+    persisted_execution = await executions.get(execution.id)
+    persisted_terminal = await terminals.get("guarded-terminal")
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.CANCELLED
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.CLOSED
+    assert backend.calls == 0
+    await database.dispose()
+
+
+async def test_cancelled_terminal_start_terminates_spawned_handle_before_registration(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    barrier_repository = BlockFirstTerminalExecutionSave(executions)
+    backend = RecordingTerminalBackend()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=barrier_repository,  # type: ignore[arg-type]
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "cancelled-terminal-state"),
+        native_backend=backend,  # type: ignore[arg-type]
+    )
+    start_task = asyncio.create_task(
+        supervisor.start(
+            TerminalLaunchRequest(
+                session_id="cancelled-terminal",
+                run_id="run-1",
+                node_id="local",
+                cwd=tmp_path,
+                argv=["fake-shell"],
+            )
+        )
+    )
+    await barrier_repository.entered.wait()
+    assert backend.calls == 1
+
+    start_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    assert backend.handle.terminated.is_set()
+    assert backend.handle.output_closed.is_set()
+    execution = (await executions.list("run-1"))[0]
+    terminal = await terminals.get("cancelled-terminal")
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert terminal is not None and terminal.status is TerminalStatus.CLOSED
+    await database.dispose()
+
+
+async def test_cancelled_native_backend_start_collects_and_terminates_late_handle(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    backend = BlockingStartTerminalBackend()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "cancelled-native-start-state"),
+        native_backend=backend,  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    start_task = asyncio.create_task(
+        supervisor.start(
+            TerminalLaunchRequest(
+                session_id="cancelled-native-start",
+                run_id="run-1",
+                node_id="local",
+                cwd=tmp_path,
+                argv=["fake-shell"],
+            )
+        )
+    )
+    await backend.entered.wait()
+
+    start_task.cancel()
+    await asyncio.sleep(0)
+    assert not start_task.done()
+    backend.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+    assert backend.handle.terminated.is_set()
+    assert backend.handle.output_closed.is_set()
+    execution = (await executions.list("run-1"))[0]
+    terminal = await terminals.get("cancelled-native-start")
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert terminal is not None and terminal.status is TerminalStatus.CLOSED
+    await database.dispose()
+
+
+async def test_post_spawn_guard_cleanup_failure_retains_handle_for_cancel_retry(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    handle = FailingTerminationTerminalHandle()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "guard-cleanup-retry-state"),
+        native_backend=RecordingTerminalBackend(handle),  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    guard_calls = 0
+
+    async def post_spawn_cancel_guard() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            raise ApplicationConflictError("terminal_cancelled", "cancel tombstone won")
+
+    with pytest.raises(ApplicationConflictError, match="cancel tombstone won"):
+        await supervisor.start(
+            TerminalLaunchRequest(
+                session_id="guard-cleanup-retry",
+                run_id="run-1",
+                node_id="local",
+                cwd=tmp_path,
+                argv=["fake-shell"],
+            ),
+            effect_guard=post_spawn_cancel_guard,
+        )
+
+    execution = (await executions.list("run-1"))[0]
+    terminal = await terminals.get("guard-cleanup-retry")
+    assert guard_calls == 2
+    assert execution.status is ExecutionStatus.STARTING
+    assert execution.pid == handle.pid
+    assert terminal is not None and terminal.status is TerminalStatus.CREATED
+    assert "guard-cleanup-retry" in supervisor._managed
+
+    handle.fail_termination = False
+    closed = await supervisor.close("guard-cleanup-retry")
+    persisted = await executions.get(execution.id)
+
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted is not None and persisted.status is ExecutionStatus.CANCELLED
+    assert handle.terminated.is_set()
+    assert handle.output_closed.is_set()
+    await database.dispose()
+
+
+async def test_terminal_close_confirms_explicit_pre_spawn_failure(
+    tmp_path: Path,
+) -> None:
+    database, supervisor, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="failed-before-terminal-spawn",
+        execution_key="terminal:failed-before-terminal-spawn",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["missing-shell"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "failed-before-terminal-spawn.log"),
+        stderr_path=str(tmp_path / "failed-before-terminal-spawn.log"),
+        status=ExecutionStatus.FAILED,
+    )
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="failed-before-terminal-spawn",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.CLOSED)
+    await terminals.save(terminal)
+
+    closed = await supervisor.close(terminal.id)
+
+    persisted = await executions.get(execution.id)
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    await database.dispose()
+
+
+async def test_terminal_failed_with_containment_identity_must_terminate_before_proof(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    containment = RecordingDetachedTerminalContainment("failed-containment-only")
+    execution = Execution(
+        id="failed-containment-only",
+        execution_key="terminal:failed-containment-only",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["fake-shell"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "failed-containment-only.log"),
+        stderr_path=str(tmp_path / "failed-containment-only.log"),
+        status=ExecutionStatus.FAILED,
+        containment_id=containment.identifier,
+    )
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id=execution.id,
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "failed-containment-only-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        platform_name="posix",
+        containment_manager=RecordingDetachedTerminalContainmentManager(  # type: ignore[arg-type]
+            containment
+        ),
+    )
+
+    closed = await supervisor.close(terminal.id)
+
+    persisted = await executions.get(execution.id)
+    assert containment.terminate_calls == 1
+    assert containment.cleanup_calls == 1
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    assert persisted.physical_stop_confirmed_at is not None
+    await database.dispose()
+
+
+async def test_terminal_cancelled_with_containment_identity_is_not_pre_spawn_absence(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    containment = RecordingDetachedTerminalContainment("cancelled-containment-only")
+    execution = Execution(
+        id="cancelled-containment-only",
+        execution_key="terminal:cancelled-containment-only",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["fake-shell"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "cancelled-containment-only.log"),
+        stderr_path=str(tmp_path / "cancelled-containment-only.log"),
+        status=ExecutionStatus.CANCELLED,
+        containment_id=containment.identifier,
+    )
+    await executions.create_if_absent(execution)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "cancelled-containment-only-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        platform_name="posix",
+        containment_manager=RecordingDetachedTerminalContainmentManager(  # type: ignore[arg-type]
+            containment
+        ),
+    )
+
+    stopped = await supervisor.close_execution(execution.id)
+
+    assert containment.terminate_calls == 1
+    assert containment.cleanup_calls == 1
+    assert stopped.status is ExecutionStatus.CANCELLED
+    assert stopped.physical_stop_confirmed_at is not None
+    await database.dispose()
+
+
+async def test_terminal_close_terminates_live_handle_before_converging_failed_execution(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    backend = RecordingTerminalBackend()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "failed-live-terminal-state"),
+        native_backend=backend,  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="failed-live-terminal",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=["fake-shell"],
+        )
+    )
+    execution = await executions.get(terminal.execution_id)
+    assert execution is not None
+    execution.transition_to(ExecutionStatus.FAILED)
+    await executions.save(execution)
+
+    closed = await supervisor.close(terminal.id)
+
+    persisted = await executions.get(execution.id)
+    assert backend.handle.terminated.is_set()
+    assert backend.handle.output_closed.is_set()
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    await database.dispose()
+
+
+async def test_terminal_close_keeps_failed_when_live_handle_termination_fails(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    handle = FailingTerminationTerminalHandle()
+    backend = RecordingTerminalBackend(handle)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "failed-terminal-termination-state"),
+        native_backend=backend,  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="failed-terminal-termination",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=["fake-shell"],
+        )
+    )
+    execution = await executions.get(terminal.execution_id)
+    assert execution is not None
+    execution.transition_to(ExecutionStatus.FAILED)
+    await executions.save(execution)
+
+    with pytest.raises(RuntimeError, match="termination failed"):
+        await supervisor.close(terminal.id)
+
+    persisted = await executions.get(execution.id)
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.FAILED
+    handle.fail_termination = False
+    await supervisor.close(terminal.id)
+    await database.dispose()
+
+
+async def test_terminal_monitor_does_not_cancel_when_leader_exits_but_confirmation_fails(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    handle = LeaderExitedFailingTerminationTerminalHandle()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "leader-exit-confirmation-failure"),
+        native_backend=RecordingTerminalBackend(handle),  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="leader-exit-confirmation-failure",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=["fake-shell"],
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="tree confirmation failed"):
+        await supervisor.close(terminal.id)
+    await asyncio.sleep(0.05)
+
+    persisted_execution = await executions.get(terminal.execution_id)
+    persisted_terminal = await terminals.get(terminal.id)
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.RUNNING
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.OPEN
+
+    # The attached handle remains available for a later safety retry.
+    handle.fail_termination = False
+    closed = await supervisor.close(terminal.id)
+    persisted_execution = await executions.get(terminal.execution_id)
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.CANCELLED
+    await database.dispose()
+
+
+async def test_terminal_monitor_uses_cas_and_retries_a_concurrent_failed_outcome(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    repository = RaceTerminalCancellationRepository(executions)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=repository,  # type: ignore[arg-type]
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "terminal-cancellation-cas"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="terminal-cancellation-cas",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=["fake-shell"],
+        )
+    )
+
+    closed = await supervisor.close(terminal.id)
+
+    persisted = await executions.get(terminal.execution_id)
+    assert repository.race_injected
+    assert closed.status is TerminalStatus.CLOSED
+    assert persisted is not None
+    assert persisted.status is ExecutionStatus.CANCELLED
+    assert persisted.physical_stop_confirmed_at is not None
+    await database.dispose()
+
+
+async def test_terminal_containment_survives_stop_proof_persistence_failure(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    handle = ContainedRecordingTerminalHandle()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=RejectTerminalPhysicalStopProofSave(executions),  # type: ignore[arg-type]
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "terminal-proof-failure-state"),
+        native_backend=RecordingTerminalBackend(handle),  # type: ignore[arg-type]
+        termination_grace_seconds=0.1,
+    )
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="terminal-proof-failure",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=["fake-shell"],
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="stop-proof persistence failure"):
+        await supervisor.close(terminal.id)
+
+    persisted_execution = await executions.get(terminal.execution_id)
+    persisted_terminal = await terminals.get(terminal.id)
+    assert handle.terminated.is_set()
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.RUNNING
+    assert persisted_execution.physical_stop_confirmed_at is None
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.OPEN
+    assert handle.boundary_exists is True
+    assert not handle.containment_cleaned.is_set()
+    await database.dispose()
+
+
+async def test_terminal_close_does_not_confirm_failed_execution_without_native_handle(
+    tmp_path: Path,
+) -> None:
+    database, supervisor, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="failed-terminal-without-handle",
+        execution_key="terminal:failed-terminal-without-handle",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["fake-shell"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "failed-terminal-without-handle.log"),
+        stderr_path=str(tmp_path / "failed-terminal-without-handle.log"),
+    )
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.transition_to(ExecutionStatus.RUNNING)
+    execution.transition_to(ExecutionStatus.FAILED)
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="failed-terminal-without-handle",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.OPEN)
+    await terminals.save(terminal)
+
+    with pytest.raises(ProcessTerminationError, match="handle is not attached"):
+        await supervisor.close(terminal.id)
+
+    persisted_execution = await executions.get(execution.id)
+    persisted_terminal = await terminals.get(terminal.id)
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.FAILED
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.OPEN
+    await database.dispose()
+
+
+async def test_terminal_close_fails_closed_for_starting_created_without_native_handle(
+    tmp_path: Path,
+) -> None:
+    database, supervisor, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="unattached-starting-terminal",
+        execution_key="terminal:unattached-starting-terminal",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["fake-shell"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "unattached-starting-terminal.log"),
+        stderr_path=str(tmp_path / "unattached-starting-terminal.log"),
+    )
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.pid = 424242
+    execution.process_group_id = 424242
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="unattached-starting-terminal",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+
+    with pytest.raises(ProcessTerminationError, match="handle is not attached"):
+        await supervisor.close(terminal.id)
+
+    persisted_execution = await executions.get(execution.id)
+    persisted_terminal = await terminals.get(terminal.id)
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.STARTING
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.CREATED
+    await database.dispose()
+
+
+async def test_conpty_late_close_fails_closed_for_exited_closed_without_tree_handle(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "unattached-conpty-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        platform_name="nt",
+    )
+    execution = Execution(
+        id="unattached-exited-conpty",
+        execution_key="terminal:unattached-exited-conpty",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["pwsh.exe"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "unattached-exited-conpty.log"),
+        stderr_path=str(tmp_path / "unattached-exited-conpty.log"),
+    )
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.pid = 515151
+    execution.process_group_id = 515151
+    execution.transition_to(ExecutionStatus.RUNNING)
+    execution.transition_to(ExecutionStatus.EXITED, exit_code=0)
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="unattached-exited-conpty",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.OPEN)
+    terminal.transition_to(TerminalStatus.CLOSED)
+    await terminals.save(terminal)
+
+    with pytest.raises(ProcessTerminationError, match="handle is not attached"):
+        await supervisor.close(terminal.id)
+
+    persisted = await executions.get(execution.id)
+    assert persisted is not None and persisted.status is ExecutionStatus.EXITED
+    await database.dispose()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY implementation")
@@ -164,6 +1120,59 @@ async def test_terminal_enforces_owner_and_persists_unicode_transcript(tmp_path:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY implementation")
+async def test_terminal_close_kills_stubborn_same_group_child_before_cancelling(
+    tmp_path: Path,
+) -> None:
+    database, supervisor, terminals, executions = await _runtime(tmp_path)
+    identity_path = tmp_path / "stubborn-child.identity"
+    terminal = await supervisor.start(
+        TerminalLaunchRequest(
+            session_id="stubborn-pty-group",
+            run_id="run-1",
+            node_id="local",
+            cwd=tmp_path,
+            argv=[
+                sys.executable,
+                "-u",
+                "-c",
+                _STUBBORN_GROUP_LEADER,
+                _STUBBORN_GROUP_CHILD,
+                str(identity_path),
+            ],
+        )
+    )
+    await _wait_for_output(supervisor, terminal.id, "STUBBORN_CHILD_READY")
+    child_pid, child_process_group = (
+        int(value) for value in identity_path.read_text().split(":", maxsplit=1)
+    )
+    execution = await executions.get(terminal.execution_id)
+    assert execution is not None
+    assert execution.pid is not None
+    assert execution.process_group_id == execution.pid
+    assert child_pid != execution.pid
+    assert child_process_group == execution.process_group_id
+    assert child_process_group != os.getpgrp()
+
+    try:
+        closed = await supervisor.close(terminal.id)
+
+        persisted_execution = await executions.get(terminal.execution_id)
+        persisted_terminal = await terminals.get(terminal.id)
+        assert not _process_group_exists(child_process_group)
+        assert not _pid_exists(child_pid)
+        assert closed.status is TerminalStatus.CLOSED
+        assert persisted_terminal is not None
+        assert persisted_terminal.status is TerminalStatus.CLOSED
+        assert persisted_execution is not None
+        assert persisted_execution.status is ExecutionStatus.CANCELLED
+    finally:
+        if _process_group_exists(child_process_group):
+            os.killpg(child_process_group, signal.SIGKILL)
+        await supervisor.close_all()
+        await database.dispose()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix PTY implementation")
 async def test_shared_read_only_terminal_rejects_all_writers(tmp_path: Path) -> None:
     database, supervisor, _, _ = await _runtime(tmp_path)
     terminal = await supervisor.start(
@@ -184,6 +1193,42 @@ async def test_shared_read_only_terminal_rejects_all_writers(tmp_path: Path) -> 
             await supervisor.interrupt(terminal.id, actor=actor)
 
     await supervisor.close(terminal.id)
+    await database.dispose()
+
+
+async def test_recovery_includes_created_terminal_with_starting_execution(
+    tmp_path: Path,
+) -> None:
+    database, supervisor, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="execution-starting",
+        execution_key="terminal:created-starting",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["/bin/sh"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "starting.log"),
+        stderr_path=str(tmp_path / "starting.log"),
+    )
+    execution.transition_to(ExecutionStatus.STARTING)
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="created-starting",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+
+    recovered = await supervisor.recover()
+
+    assert [item.id for item in recovered] == [terminal.id]
+    persisted_terminal = await terminals.get(terminal.id)
+    persisted_execution = await executions.get(execution.id)
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.LOST
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.LOST
     await database.dispose()
 
 
@@ -222,6 +1267,158 @@ async def test_recovery_marks_unattached_native_pty_lost(tmp_path: Path) -> None
     assert persisted_terminal.status is TerminalStatus.LOST
     assert persisted_execution is not None
     assert persisted_execution.status is ExecutionStatus.LOST
+    await database.dispose()
+
+
+async def test_recovery_closes_active_terminal_from_durable_proof_after_leaf_cleanup(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="recovery-confirmed-stop",
+        execution_key="terminal:recovery-confirmed-stop",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["/bin/sh"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "recovery-confirmed.log"),
+        stderr_path=str(tmp_path / "recovery-confirmed.log"),
+    )
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.transition_to(ExecutionStatus.RUNNING)
+    execution.transition_to(ExecutionStatus.CANCELLED)
+    execution.containment_id = "already-cleaned-containment"
+    execution.physical_stop_confirmed_at = datetime(2026, 8, 1, tzinfo=UTC)
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id="recovery-confirmed-stop",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.OPEN)
+    await terminals.save(terminal)
+    containment = MissingConfirmedTerminalContainment()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "recovery-confirmed-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        platform_name="posix",
+        containment_manager=MissingConfirmedTerminalContainmentManager(  # type: ignore[arg-type]
+            containment
+        ),
+    )
+
+    recovered = await supervisor.recover()
+
+    persisted_terminal = await terminals.get(terminal.id)
+    assert [item.id for item in recovered] == [terminal.id]
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.CLOSED
+    assert containment.cleanup_calls == 0
+    await database.dispose()
+
+
+async def test_close_execution_repairs_stale_terminal_projection_from_existing_proof(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="close-existing-proof",
+        execution_key="terminal:close-existing-proof",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["/bin/sh"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "close-existing-proof.log"),
+        stderr_path=str(tmp_path / "close-existing-proof.log"),
+        status=ExecutionStatus.EXITED,
+        containment_id="already-cleaned-close-containment",
+        physical_stop_confirmed_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    await executions.create_if_absent(execution)
+    terminal = TerminalSession(
+        id=execution.id,
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.OPEN)
+    await terminals.save(terminal)
+    containment = MissingConfirmedTerminalContainment()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "close-existing-proof-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+        platform_name="posix",
+        containment_manager=MissingConfirmedTerminalContainmentManager(  # type: ignore[arg-type]
+            containment
+        ),
+    )
+
+    stopped = await supervisor.close_execution(execution.id)
+
+    persisted_terminal = await terminals.get(terminal.id)
+    assert stopped.status is ExecutionStatus.EXITED
+    assert stopped.physical_stop_confirmed_at is not None
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.CLOSED
+    assert containment.cleanup_calls == 0
+    await database.dispose()
+
+
+async def test_terminal_recovery_cas_preserves_concurrent_confirmed_cancellation(
+    tmp_path: Path,
+) -> None:
+    database, _, terminals, executions = await _runtime(tmp_path)
+    execution = Execution(
+        id="recovery-cancel-race",
+        execution_key="terminal:recovery-cancel-race",
+        run_id="run-1",
+        node_id="local",
+        executor_type=ExecutorType.PTY,
+        argv=["/bin/sh"],
+        cwd=str(tmp_path),
+        stdout_path=str(tmp_path / "recovery-cancel-race.log"),
+        stderr_path=str(tmp_path / "recovery-cancel-race.log"),
+    )
+    await executions.create_if_absent(execution)
+    execution.transition_to(ExecutionStatus.STARTING)
+    execution.transition_to(ExecutionStatus.RUNNING)
+    await executions.save(execution)
+    terminal = TerminalSession(
+        id="recovery-cancel-race",
+        run_id="run-1",
+        execution_id=execution.id,
+    )
+    await terminals.create(terminal)
+    terminal.transition_to(TerminalStatus.OPEN)
+    await terminals.save(terminal)
+    racing_repository = RaceTerminalRecoveryRepository(executions)
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=racing_repository,  # type: ignore[arg-type]
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        paths=RunnerPaths(tmp_path / "recovery-cancel-race-state"),
+        native_backend=RecordingTerminalBackend(),  # type: ignore[arg-type]
+    )
+
+    recovered = await supervisor.recover()
+
+    persisted_execution = await executions.get(execution.id)
+    persisted_terminal = await terminals.get(terminal.id)
+    assert racing_repository.race_injected
+    assert recovered == []
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.CANCELLED
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.OPEN
     await database.dispose()
 
 

@@ -19,6 +19,9 @@ const NodesPage = lazy(() =>
 const ToolsPage = lazy(() =>
   import("./pages/ToolsPage").then((module) => ({ default: module.ToolsPage })),
 );
+const ModelsPage = lazy(() =>
+  import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })),
+);
 const NotFoundPage = lazy(() =>
   import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })),
 );
@@ -33,6 +36,7 @@ export function App() {
           <Route path="runs/:runId" element={<RunDetailPage />} />
           <Route path="nodes" element={<NodesPage />} />
           <Route path="tools" element={<ToolsPage />} />
+          <Route path="settings/models" element={<ModelsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

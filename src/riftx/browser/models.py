@@ -68,6 +68,10 @@ class BrowserActCommand(DomainModel):
 
 class BrowserSessionCommand(DomainModel):
     session_id: str = Field(min_length=1)
+    # Close commands may carry the Control Plane's durable snapshot so a
+    # Runner can acknowledge a cancellation tombstone even when a delayed
+    # open never registered a local session.
+    session: BrowserSession | None = None
 
 
 class BrowserAttachment(DomainModel):

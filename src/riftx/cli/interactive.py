@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import shlex
 import webbrowser
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from uuid import UUID, uuid4
 
 import httpx
 from prompt_toolkit import PromptSession
@@ -65,6 +67,10 @@ class InteractiveState:
     node_id: str = "local"
     model_profile: str | None = None
     approval_mode: str = "balanced"
+    message_retry_ids: dict[tuple[str, str], str] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
 
 def _help_text() -> str:
@@ -258,7 +264,7 @@ def _handle_command(
         return False
     if command == "/pause":
         client.pause_run(_require_active(state))
-        console.print(f"[yellow]{tr('Pause requested.')}[/yellow]")
+        console.print(f"[green]{tr('Pause confirmed; active effects stopped.')}[/green]")
         return False
     if command == "/continue":
         client.resume_run(_require_active(state))
@@ -266,7 +272,9 @@ def _handle_command(
         return False
     if command == "/cancel":
         client.cancel_run(_require_active(state))
-        console.print(f"[yellow]{tr('Run cancellation requested.')}[/yellow]")
+        console.print(
+            f"[green]{tr('Run cancellation confirmed; active effects stopped.')}[/green]"
+        )
         return False
     if command == "/compact":
         max_history_items = int(args[0]) if args else 100
@@ -332,9 +340,60 @@ def _handle_message(
         created = client.create_run(_new_run_payload(text, state))
         state.active_run_id = str(created["id"])
         render_run(console, created)
+        if created.get("status") == "waiting_user":
+            console.print(
+                "[yellow]"
+                + tr(
+                    "Run created. The objective and boundaries are saved; the Agent is "
+                    "waiting for your first concrete instruction."
+                )
+                + "[/yellow]"
+            )
+            console.print(
+                f"[dim]{tr('No model or Tool will run before that instruction is sent.')}[/dim]"
+            )
         return
-    client.append_message(state.active_run_id, text)
+    run_id = state.active_run_id
+    retry_key = (run_id, text)
+    message_event_id = state.message_retry_ids.setdefault(
+        retry_key,
+        str(uuid4()),
+    )
+    try:
+        client.append_message(
+            run_id,
+            text,
+            message_event_id=message_event_id,
+        )
+    except (RiftXAPIError, httpx.HTTPError, OSError) as exc:
+        message_event_id = _server_message_retry_id(exc, fallback=message_event_id)
+        state.message_retry_ids[retry_key] = message_event_id
+        console.print(
+            "[yellow]"
+            + tr(
+                "Message delivery was not confirmed. Resend the exact same text to retry "
+                "safely; RiftX will reuse message_event_id={message_event_id}.",
+                message_event_id=message_event_id,
+            )
+            + "[/yellow]"
+        )
+        raise
+    state.message_retry_ids.pop(retry_key, None)
     console.print(f"[green]{tr('Message queued.')}[/green]")
+
+
+def _server_message_retry_id(error: Exception, *, fallback: str) -> str:
+    if not isinstance(error, RiftXAPIError) or not isinstance(error.details, Mapping):
+        return fallback
+    if error.details.get("retry_same_message") is not True:
+        return fallback
+    candidate = error.details.get("message_event_id")
+    if not isinstance(candidate, str):
+        return fallback
+    try:
+        return str(UUID(candidate))
+    except ValueError:
+        return fallback
 
 
 def _watch(client: APIClient, run_id: str, console: Console) -> None:

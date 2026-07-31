@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Iterable, Mapping
+from typing import Any, NamedTuple
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.json import JSON
 from rich.panel import Panel
 from rich.table import Table
@@ -24,6 +24,22 @@ _CONTEXT_CATEGORY_LABELS = {
     "subagent_results": "Subagent Results",
     "tool_schemas": "Tool Schemas",
 }
+
+_STOP_RESOURCE_TYPES = (
+    ("executions", "Execution"),
+    ("browser_sessions", "Browser session"),
+    ("target_http_requests", "Target HTTP request"),
+)
+
+
+class _StopResourceRow(NamedTuple):
+    resource_type: str
+    resource_id: str
+    node_id: str | None
+    observed_status: str | None
+    confirmed_status: str | None
+    failure: str | None
+    confirmed: bool
 
 
 def render_nodes(console: Console, nodes: Iterable[dict[str, Any]]) -> None:
@@ -71,6 +87,67 @@ def render_node(console: Console, node: dict[str, Any]) -> None:
     body.add_row(tr("Labels"), str(node.get("labels", {})))
     body.add_row(tr("Last seen"), str(node.get("last_seen_at") or "—"))
     console.print(Panel(body, title=tr("Execution Node"), border_style="cyan"))
+
+
+def render_model_profiles(console: Console, payload: dict[str, Any]) -> None:
+    profiles = payload.get("profiles", [])
+    if not profiles:
+        console.print(f"[dim]{tr('No model profiles configured.')}[/dim]")
+        return
+    table = Table(title=tr("Model Profiles"), expand=True)
+    table.add_column(tr("Name"), style="cyan", no_wrap=True)
+    table.add_column(tr("Provider"))
+    table.add_column(tr("Request mode"))
+    table.add_column(tr("Model"))
+    table.add_column(tr("Base URL"))
+    table.add_column(tr("Credential"))
+    table.add_column(tr("Default"))
+    for profile in profiles:
+        table.add_row(
+            str(profile.get("name", "")),
+            str(profile.get("provider", "")),
+            str(profile.get("request_mode", "")),
+            str(profile.get("model", "")),
+            str(profile.get("base_url") or "—"),
+            tr("configured") if profile.get("api_key_configured") else tr("missing"),
+            "*" if profile.get("is_effective_default") else "",
+        )
+    console.print(table)
+    configured_default = payload.get("default_profile")
+    effective_default = payload.get("effective_default_profile")
+    if configured_default != effective_default:
+        console.print(
+            f"[dim]{tr('Configured default')}: {configured_default}; "
+            f"{tr('effective default')}: {effective_default}[/dim]"
+        )
+
+
+def render_model_profile(console: Console, profile: dict[str, Any]) -> None:
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row(tr("Name"), str(profile.get("name", "")))
+    body.add_row(tr("Provider"), str(profile.get("provider", "")))
+    body.add_row(tr("Request mode"), str(profile.get("request_mode", "")))
+    body.add_row(tr("Model"), str(profile.get("model", "")))
+    body.add_row(tr("Base URL"), str(profile.get("base_url") or "—"))
+    body.add_row(
+        tr("Requires API key"),
+        tr("yes") if profile.get("requires_api_key") else tr("no"),
+    )
+    body.add_row(tr("API key environment"), str(profile.get("api_key_env") or "—"))
+    body.add_row(tr("Timeout (seconds)"), str(profile.get("timeout_seconds", "—")))
+    body.add_row(tr("Max retries"), str(profile.get("max_retries", "—")))
+    body.add_row(
+        tr("Stored API key"),
+        tr("yes") if profile.get("has_stored_api_key") else tr("no"),
+    )
+    body.add_row(
+        tr("Credential status"),
+        tr("configured") if profile.get("api_key_configured") else tr("missing"),
+    )
+    body.add_row(tr("Default"), tr("yes") if profile.get("is_default") else tr("no"))
+    console.print(Panel(body, title=tr("Model Profile"), border_style="cyan"))
 
 
 def render_context(console: Console, compilation: dict[str, Any]) -> None:
@@ -419,16 +496,121 @@ def render_error(console: Console, error: Exception) -> None:
     from .client import RiftXAPIError
 
     if isinstance(error, RiftXAPIError):
+        summary = Group(
+            Text(error.message, style="bold"),
+            Text(f"code={error.code} status={error.status_code}", style="dim"),
+        )
+        details = _safety_stop_table(error.code, error.details)
         console.print(
             Panel(
-                f"[bold]{error.message}[/bold]\n[dim]code={error.code} "
-                f"status={error.status_code}[/dim]",
+                Group(summary, details) if details is not None else summary,
                 title=tr("RiftX API error"),
                 border_style="red",
             )
         )
     else:
         console.print(Panel(str(error), title=tr("Error"), border_style="red"))
+
+
+def _safety_stop_table(code: str, details: object) -> Table | None:
+    if code not in {"execution_cancel_failed", "safety_stop_failed"} or not isinstance(
+        details, Mapping
+    ):
+        return None
+    rows = _stop_resource_rows(details.get("stop_resources"))
+    if not any(row.resource_type == "Execution" for row in rows):
+        rows = (
+            _resource_rows(
+                "Execution",
+                {
+                    "attempted_ids": details.get("execution_ids"),
+                    "node_ids": details.get("execution_nodes"),
+                    "observed_statuses": details.get("execution_statuses"),
+                    "confirmed_ids": details.get("confirmed_execution_ids"),
+                    "confirmed_statuses": details.get("confirmed_statuses"),
+                    "failures": details.get("failed_executions"),
+                },
+            )
+            + rows
+        )
+    if not rows:
+        return None
+
+    table = Table(title=tr("Safety stop disposition"), expand=True)
+    table.add_column(tr("Resource type"), overflow="fold")
+    table.add_column(tr("Resource ID"), style="cyan", overflow="fold")
+    table.add_column(tr("Node"), overflow="fold")
+    table.add_column(tr("Stop result"), overflow="fold")
+    table.add_column(tr("Reason"), overflow="fold")
+    for row in rows:
+        if row.confirmed_status is not None:
+            result = tr("Stopped ({status})", status=row.confirmed_status)
+        elif row.confirmed:
+            result = tr("Stop confirmed")
+        else:
+            result = tr("Stop unconfirmed")
+            if row.observed_status is not None:
+                result += f" ({row.observed_status})"
+        table.add_row(
+            Text(tr(row.resource_type)),
+            Text(row.resource_id),
+            Text(row.node_id or tr("Unknown node")),
+            Text(result),
+            Text(row.failure if not row.confirmed and row.failure is not None else "—"),
+        )
+    return table
+
+
+def _stop_resource_rows(value: object) -> list[_StopResourceRow]:
+    if not isinstance(value, Mapping):
+        return []
+    return [
+        row
+        for resource_key, resource_label in _STOP_RESOURCE_TYPES
+        for row in _resource_rows(resource_label, value.get(resource_key))
+    ]
+
+
+def _resource_rows(resource_type: str, value: object) -> list[_StopResourceRow]:
+    if not isinstance(value, Mapping):
+        return []
+    attempted_ids = _string_list(value.get("attempted_ids"))
+    node_ids = _string_map(value.get("node_ids"))
+    observed_statuses = _string_map(value.get("observed_statuses"))
+    confirmed_statuses = _string_map(value.get("confirmed_statuses"))
+    confirmed_ids = set(_string_list(value.get("confirmed_ids")))
+    failures = _string_map(value.get("failures"))
+    succeeded = value.get("succeeded") is True
+    rows: list[_StopResourceRow] = []
+    for resource_id in attempted_ids:
+        confirmed_status = confirmed_statuses.get(resource_id)
+        confirmed = succeeded or resource_id in confirmed_ids or confirmed_status is not None
+        rows.append(
+            _StopResourceRow(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                node_id=node_ids.get(resource_id),
+                observed_status=observed_statuses.get(resource_id),
+                confirmed_status=confirmed_status,
+                failure=None if confirmed else failures.get(resource_id),
+                confirmed=confirmed,
+            )
+        )
+    return rows
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(item for item in value if isinstance(item, str)))
+
+
+def _string_map(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)
+    }
 
 
 def _status_text(status: str) -> Text:
