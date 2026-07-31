@@ -348,6 +348,7 @@ const zhCN: Record<string, string> = {
   "Execution ID": "执行记录 ID",
   "Generate Markdown, HTML, and JSON from findings, artifact summaries, and key activity only.": "仅根据发现项、制品摘要和关键活动生成 Markdown、HTML 和 JSON。",
   "Generate a report set now, or let the durable workflow create one after Agent completion.": "现在生成一组报告，或由持久工作流在 Agent 完成后自动创建。",
+  "This Run has ended; the pending approval can no longer be decided.": "该任务已经结束，待处理审批不能再执行。",
   "Generate reports": "生成报告",
   "Immutable evidence": "不可变证据",
   "Impact": "影响",

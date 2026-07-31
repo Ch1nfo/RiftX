@@ -228,6 +228,30 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
   });
 
+  it("does not allow pending approvals to be decided after the Run ends", async () => {
+    mocks.runStatus = "failed";
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    screen.getByRole("button", { name: /1 tool call awaiting approval/i }).click();
+    expect(
+      await screen.findByText(
+        "This Run has ended; the pending approval can no longer be decided.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve once/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve for run/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reject/i })).not.toBeInTheDocument();
+  });
+
   it("uses the full-Run emergency stop control", () => {
     mocks.runStatus = "running";
     const queryClient = new QueryClient();

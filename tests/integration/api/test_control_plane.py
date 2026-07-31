@@ -33,6 +33,7 @@ from riftx.agent import (
     SQLAlchemyCheckpointStore,
 )
 from riftx.api import APISettings, ControlPlane, create_app
+from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
     ApprovalApplicationService,
     ApprovalRequestRecorder,
@@ -201,6 +202,7 @@ def _e2e_message(output: AgentCycleOutput) -> list[Any]:
 @dataclass
 class FakeWorkflowClient:
     fail: bool = False
+    error: Exception | None = None
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
 
     async def start_run(self, run_id: str) -> object:
@@ -238,6 +240,8 @@ class FakeWorkflowClient:
         return f"test-workflow-{run_id}"
 
     def _record(self, action: str, run_id: str, detail: str | None = None) -> None:
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise RuntimeError("Temporal test outage")
         self.calls.append((action, run_id, detail))
@@ -473,9 +477,7 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             metrics = await client.get(f"/api/v1/runs/{run_id}/metrics")
             assert metrics.status_code == 200
             metric_payload = metrics.json()
-            assert set(metric_payload["metrics"]) == {
-                metric.value for metric in RuntimeMetricName
-            }
+            assert set(metric_payload["metrics"]) == {metric.value for metric in RuntimeMetricName}
             assert metric_payload["metrics"]["task_completion_rate"] == {
                 "name": "task_completion_rate",
                 "numerator": 0,
@@ -952,6 +954,80 @@ async def test_approval_decision_remains_durable_when_temporal_signal_fails(
         persisted = await runtime.approval_repository.get("approval-outage")
         assert persisted is not None
         assert persisted.status.value == "approved"
+    await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_preserves_workflow_error_classification(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    async for client in _client(runtime.control_plane):
+        run = await _create_run(client)
+        tool_call = ToolCall(
+            id="tool-call-closed-workflow",
+            sdk_call_id="sdk-call-closed-workflow",
+            run_id=str(run["id"]),
+            agent_step_id="step-closed-workflow",
+            tool_id="python",
+        )
+        approval = Approval(
+            id="approval-closed-workflow",
+            run_id=str(run["id"]),
+            tool_call_id=tool_call.id,
+            tool_name="python",
+        )
+        await runtime.approval_repository.create_request(tool_call, approval)
+        assert isinstance(runtime.workflow, FakeWorkflowClient)
+        runtime.workflow.error = ApplicationConflictError(
+            "workflow_not_running",
+            "The Workflow is no longer running",
+        )
+
+        response = await client.post(
+            "/api/v1/approvals/approval-closed-workflow/approve",
+            json={"decided_by": "api-user"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "workflow_not_running"
+        assert response.json()["error"]["details"]["approval_saved"] is True
+    await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_approval_is_not_actionable(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    async for client in _client(runtime.control_plane):
+        run = await _create_run(client)
+        run_id = str(run["id"])
+        tool_call = ToolCall(
+            id="tool-call-terminal-run",
+            sdk_call_id="sdk-call-terminal-run",
+            run_id=run_id,
+            agent_step_id="step-terminal-run",
+            tool_id="python",
+        )
+        approval = Approval(
+            id="approval-terminal-run",
+            run_id=run_id,
+            tool_call_id=tool_call.id,
+            tool_name="python",
+        )
+        await runtime.approval_repository.create_request(tool_call, approval)
+        await runtime.run_repository.update_status(run_id, RunStatus.PREPARING)
+        await runtime.run_repository.update_status(run_id, RunStatus.FAILED)
+
+        response = await client.post(
+            "/api/v1/approvals/approval-terminal-run/approve",
+            json={"decided_by": "api-user"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "approval_not_actionable"
+        persisted = await runtime.approval_repository.get("approval-terminal-run")
+        assert persisted is not None
+        assert persisted.status.value == "pending"
+        assert isinstance(runtime.workflow, FakeWorkflowClient)
+        assert not any(call[0] == "approve" for call in runtime.workflow.calls)
     await runtime.control_plane.close()
 
 

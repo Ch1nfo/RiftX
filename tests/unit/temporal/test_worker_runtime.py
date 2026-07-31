@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -29,7 +31,7 @@ from riftx.persistence import (
 from riftx.runtime.types import AgentSession
 from riftx.temporal import worker_runtime
 from riftx.temporal.runtime import TemporalRuntimeConfig
-from riftx.temporal.worker_runtime import _RunEventUserInputResolver
+from riftx.temporal.worker_runtime import TemporalWorkerRuntime, _RunEventUserInputResolver
 
 
 @dataclass
@@ -38,6 +40,30 @@ class FakeWorker:
 
     async def run(self) -> None:
         self.run_calls += 1
+
+
+class BlockingWorker:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self) -> None:
+        self.started.set()
+        await self.release.wait()
+
+
+class RecordingNodeService:
+    def __init__(self) -> None:
+        self.heartbeat_calls = 0
+        self.first_heartbeat = asyncio.Event()
+        self.disconnected_node_id: str | None = None
+
+    async def heartbeat(self, node_id: str, heartbeat: object) -> None:
+        self.heartbeat_calls += 1
+        self.first_heartbeat.set()
+
+    async def disconnect(self, node_id: str) -> None:
+        self.disconnected_node_id = node_id
 
 
 def write_yaml(path: Path, payload: dict[str, object]) -> None:
@@ -158,6 +184,44 @@ async def test_build_temporal_worker_connects_with_configured_namespace(
         assert calls == [("temporal.test:7233", "test-namespace")]
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_temporal_worker_keeps_local_node_online_until_shutdown() -> None:
+    worker = BlockingWorker()
+    nodes = RecordingNodeService()
+    database = AsyncMock()
+    process_supervisor = AsyncMock()
+    terminal_supervisor = AsyncMock()
+    model_provider = AsyncMock()
+    runtime = TemporalWorkerRuntime(
+        worker=worker,  # type: ignore[arg-type]
+        database=database,
+        process_supervisor=process_supervisor,
+        terminal_supervisor=terminal_supervisor,
+        model_provider=model_provider,
+        node_service=nodes,  # type: ignore[arg-type]
+        node_id="worker-local",
+        heartbeat_interval_seconds=0.01,
+    )
+
+    run_task = asyncio.create_task(runtime.run())
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+    await asyncio.wait_for(nodes.first_heartbeat.wait(), timeout=1)
+    await asyncio.sleep(0.03)
+    assert nodes.heartbeat_calls >= 2
+
+    worker.release.set()
+    await asyncio.wait_for(run_task, timeout=1)
+    heartbeat_calls_after_close = nodes.heartbeat_calls
+    await asyncio.sleep(0.03)
+
+    assert nodes.heartbeat_calls == heartbeat_calls_after_close
+    assert nodes.disconnected_node_id == "worker-local"
+    terminal_supervisor.close_all.assert_awaited_once_with()
+    process_supervisor.close.assert_awaited_once_with(cancel_running=True)
+    model_provider.aclose.assert_awaited_once_with()
+    database.dispose.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

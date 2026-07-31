@@ -6,7 +6,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from agents import Agent, FunctionTool
+from agents import Agent, FunctionTool, ModelSettings
 
 from riftx.runtime.lifecycle import CompiledContext
 
@@ -35,11 +35,7 @@ class DeferredRuntimeAgentFactory:
     def __call__(self, request: AgentEngineRequest) -> Agent[Any]:
         compiled = request.context
         schemas = compiled.available_tools if isinstance(compiled, CompiledContext) else []
-        tools = [
-            self._tool(schema)
-            for schema in schemas
-            if _is_deferred_execution_schema(schema)
-        ]
+        tools = [self._tool(schema) for schema in schemas if _is_deferred_execution_schema(schema)]
         return Agent(
             name="RiftX Primary Runtime Agent",
             handoff_description="Plans the next authorized durable Runtime action.",
@@ -49,6 +45,7 @@ class DeferredRuntimeAgentFactory:
                 else "Follow the authorized RiftX Run contract."
             ),
             model=request.model,
+            model_settings=ModelSettings(parallel_tool_calls=False),
             tools=tools,
             tool_use_behavior={"stop_at_tool_names": [tool.name for tool in tools]},
         )

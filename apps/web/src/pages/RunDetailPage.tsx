@@ -246,6 +246,7 @@ export function RunDetailPage() {
                 approvals={approvals.data?.items ?? []}
                 loading={approvals.isLoading}
                 controls={approvalControls}
+                actionable={!isFinal}
               />
             ) : null}
             {tab === "terminal" ? (
@@ -1051,10 +1052,12 @@ function Approvals({
   approvals,
   loading,
   controls,
+  actionable,
 }: {
   approvals: Approval[];
   loading: boolean;
   controls: ReturnType<typeof useApprovalControl>;
+  actionable: boolean;
 }) {
   const { language, t } = useI18n();
   const [reasons, setReasons] = useState<Record<string, string>>({});
@@ -1106,7 +1109,7 @@ function Approvals({
                 <dd>{approval.reason || t("No reason supplied.")}</dd>
               </div>
             </dl>
-            {pending ? (
+            {pending && actionable ? (
               <div className="approval-actions">
                 <textarea
                   value={reasons[approval.id] ?? ""}
@@ -1153,6 +1156,10 @@ function Approvals({
                   </button>
                 </div>
               </div>
+            ) : pending ? (
+              <p className="approval-decision">
+                {t("This Run has ended; the pending approval can no longer be decided.")}
+              </p>
             ) : (
               <p className="approval-decision">
                 {t("Decided by {name}", { name: approval.decided_by ?? t("unknown") })}

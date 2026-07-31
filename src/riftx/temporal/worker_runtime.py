@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from riftx.application.services import (
     ArtifactApplicationService,
     FindingApplicationService,
     NodeApplicationService,
+    NodeHeartbeat,
     NodeRegistration,
     ReportApplicationService,
     RunnerControlService,
@@ -106,6 +108,8 @@ from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, T
 from .activities import RiftXActivities
 from .runtime import TemporalRunClient, TemporalRuntimeConfig, create_worker
 from .runtime_activity import RuntimeCycleActivities
+
+logger = logging.getLogger(__name__)
 
 
 class _PrimarySessionInitializer:
@@ -313,18 +317,55 @@ class TemporalWorkerRuntime:
     process_supervisor: ProcessSupervisor
     terminal_supervisor: TerminalSupervisor
     model_provider: RiftXModelProvider
+    node_service: NodeApplicationService
+    node_id: str
+    heartbeat_interval_seconds: float
+    _heartbeat_task: asyncio.Task[None] | None = None
     _closed: bool = False
 
     async def run(self) -> None:
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat_loop(),
+            name=f"riftx-node-heartbeat-{self.node_id}",
+        )
         try:
             await self.worker.run()
         finally:
             await self.close()
 
+    async def _heartbeat_loop(self) -> None:
+        unavailable = False
+        while True:
+            try:
+                await self.node_service.heartbeat(self.node_id, NodeHeartbeat())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not unavailable:
+                    logger.exception("Local Worker node heartbeat failed for %s", self.node_id)
+                unavailable = True
+            else:
+                if unavailable:
+                    logger.info("Local Worker node heartbeat recovered for %s", self.node_id)
+                unavailable = False
+            await asyncio.sleep(self.heartbeat_interval_seconds)
+
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        heartbeat_task = self._heartbeat_task
+        self._heartbeat_task = None
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        try:
+            await self.node_service.disconnect(self.node_id)
+        except Exception:
+            logger.exception("Unable to mark local Worker node %s offline", self.node_id)
         await self.terminal_supervisor.close_all()
         await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
@@ -701,6 +742,13 @@ async def build_temporal_worker(
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
             model_provider=model_provider,
+            node_service=node_service,
+            node_id=config.runner.node_id,
+            heartbeat_interval_seconds=min(
+                10.0,
+                max(0.25, config.runner.node_offline_after_seconds / 3.0),
+                config.runner.node_offline_after_seconds / 2.0,
+            ),
         )
     except Exception:
         if terminal_supervisor is not None:

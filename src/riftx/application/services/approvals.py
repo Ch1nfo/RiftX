@@ -9,11 +9,12 @@ from typing import Protocol
 
 from riftx.application.errors import (
     ApplicationConflictError,
+    ApplicationServiceError,
     EntityNotFoundError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import ApprovalRepository, RunEventRepository, RunRepository
-from riftx.domain import Approval, ApprovalStatus, Run, ToolCall
+from riftx.domain import Approval, ApprovalStatus, Run, RunStatus, ToolCall
 from riftx.runtime.types import (
     AgentCycle,
     AgentSession,
@@ -280,6 +281,24 @@ class ApprovalApplicationService:
         approval = await self._approval_repository.get(approval_id)
         if approval is None:
             raise EntityNotFoundError("Approval", approval_id)
+        run = await self._run_repository.get(approval.run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", approval.run_id)
+        if run.status in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            raise ApplicationConflictError(
+                "approval_not_actionable",
+                f"Cannot decide Approval {approval.id!r} after Run {run.id!r} "
+                f"became {run.status.value}",
+                details={
+                    "approval_id": approval.id,
+                    "run_id": run.id,
+                    "run_status": run.status.value,
+                },
+            )
         tool_call = await self._approval_repository.get_tool_call(approval.tool_call_id)
         if tool_call is None:
             raise EntityNotFoundError("ToolCall", approval.tool_call_id)
@@ -326,11 +345,29 @@ class ApprovalApplicationService:
                 await self._workflow_client.approve(approval.run_id, approval.id)
             else:
                 await self._workflow_client.reject(approval.run_id, approval.id)
+        except ApplicationServiceError as exc:
+            raise type(exc)(
+                exc.code,
+                f"Approval was saved, but the durable workflow could not be signaled: "
+                f"{exc.message}",
+                details={
+                    **exc.details,
+                    "approval_id": approval.id,
+                    "run_id": approval.run_id,
+                    "approval_saved": True,
+                },
+            ) from exc
         except Exception as exc:
             raise ServiceUnavailableError(
                 "temporal_unavailable",
                 "Approval was saved but the durable workflow could not be signaled",
-                details={"approval_id": approval.id, "run_id": approval.run_id},
+                details={
+                    "approval_id": approval.id,
+                    "run_id": approval.run_id,
+                    "approval_saved": True,
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
             ) from exc
         return approval
 

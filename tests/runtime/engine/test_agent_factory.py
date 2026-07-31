@@ -71,6 +71,7 @@ async def test_factory_exposes_only_deferred_execution_tools() -> None:
     assert agent.tool_use_behavior == {
         "stop_at_tool_names": ["delegate", "run_shell", "scanner", "interactive"]
     }
+    assert agent.model_settings.parallel_tool_calls is False
     result = await agent.tools[2].on_invoke_tool(None, json.dumps({"args": ["-sV"]}))  # type: ignore[arg-type]
     assert result == {"deferred": True}
     assert calls == [("scanner", {"args": ["-sV"]})]
