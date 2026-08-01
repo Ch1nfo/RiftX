@@ -39,10 +39,21 @@ describe("RiftX API client", () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ action_id: "action/1", run_id: "run/1" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({
+            action_id: "action/1",
+            run_id: "run/1",
+            graph_ref: {
+              view: "task",
+              node_id: "action:run/1:action/1",
+              projection_quality: "exact",
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
     globalThis.fetch = fetchMock;
 
@@ -54,6 +65,49 @@ describe("RiftX API client", () => {
     );
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
       "/api/v1/runs/run%2F1/actions/action%2F1",
+    );
+  });
+
+  it("encodes every bounded Graph view filter and forwards cancellation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          scope: { engagement_id: "engagement-1", run_id: "run/1" },
+          view: "evidence",
+          nodes: [],
+          edges: [],
+          type_metadata: [],
+          partial_reasons: [],
+          truncated: false,
+          has_more: false,
+          next_cursor: null,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    globalThis.fetch = fetchMock;
+    const controller = new AbortController();
+
+    await api.listRunGraph(
+      "run/1",
+      {
+        view: "evidence",
+        nodeType: "finding type",
+        edgeType: "supports/edge",
+        focus: "finding:1/2",
+        search: "host=a&port=443",
+        limit: 75,
+        cursor: "cursor+/=",
+      },
+      controller.signal,
+    );
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/v1/runs/run%2F1/graph?view=evidence&node_type=finding+type&edge_type=supports%2Fedge&focus=finding%3A1%2F2&search=host%3Da%26port%3D443&limit=75&cursor=cursor%2B%2F%3D",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: controller.signal }),
     );
   });
 

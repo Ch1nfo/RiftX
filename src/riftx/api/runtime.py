@@ -52,6 +52,7 @@ from riftx.persistence import (
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyGraphReadRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
@@ -269,6 +270,7 @@ class ControlPlane:
     runtime_observability_service: RuntimeObservabilityService
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
+    graph_repository: SQLAlchemyGraphReadRepository
     browser_service: BrowserApplicationService | None = None
     connector_service: ConnectorApplicationService | None = None
     browser_manager: RunnerBrowserManager | None = None
@@ -393,6 +395,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     action_read_repository = SQLAlchemyActionReadRepository(database.session_factory)
+    graph_repository = SQLAlchemyGraphReadRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -637,6 +640,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             artifacts=artifact_service,
         ),
         terminal_supervisor=terminal_supervisor,
+        graph_repository=graph_repository,
         browser_manager=browser_manager,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,

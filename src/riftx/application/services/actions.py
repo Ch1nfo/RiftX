@@ -28,6 +28,7 @@ from riftx.application.actions import (
     ActionEvidenceView,
     ActionExecutionRead,
     ActionExecutionView,
+    ActionGraphRef,
     ActionIntentRead,
     ActionLifecycle,
     ActionListAggregateRead,
@@ -75,6 +76,8 @@ _MAX_CURSOR_RUN_ID_CHARS = 64
 _MAX_CURSOR_ACTION_ID_CHARS = 128
 _MAX_CURSOR_TIME_CHARS = 64
 _MAX_CURSOR_SORT_CHARS = 64
+_ACTION_GRAPH_COMPONENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+~-]{0,127}")
+_ACTION_GRAPH_NODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,511}")
 
 _SENSITIVE_KEY_PATTERN = (
     r"(?:authorization|proxy[-_ ]?authorization|cookie|set[-_ ]?cookie|password|passwd|"
@@ -317,6 +320,7 @@ class ActionApplicationService:
         }
         approval_view = detail.approval
         view = RunActionListItemView(
+            graph_ref=detail.graph_ref,
             action_id=detail.action_id,
             run_id=detail.run_id,
             session_id=detail.session_id,
@@ -604,6 +608,7 @@ class ActionApplicationService:
             for event in aggregate.events
         )
         view = RunActionView(
+            graph_ref=_action_graph_ref(intent.run_id, intent.action_id),
             action_id=intent.action_id,
             run_id=intent.run_id,
             session_id=intent.session_id,
@@ -651,6 +656,26 @@ class ActionApplicationService:
         )
         version = _action_metadata_version(view, view.executions)
         return view.model_copy(update={"version": version})
+
+
+def _action_graph_ref(run_id: str, action_id: str) -> ActionGraphRef | None:
+    """Return a graph pointer only for unambiguous strict Graph components."""
+
+    if (
+        type(run_id) is not str
+        or _ACTION_GRAPH_COMPONENT_ID.fullmatch(run_id) is None
+        or type(action_id) is not str
+        or _ACTION_GRAPH_COMPONENT_ID.fullmatch(action_id) is None
+    ):
+        return None
+    node_id = f"action:{run_id}:{action_id}"
+    if len(node_id) > 512 or _ACTION_GRAPH_NODE_ID.fullmatch(node_id) is None:
+        return None
+    return ActionGraphRef(
+        view="task",
+        node_id=node_id,
+        projection_quality="exact",
+    )
 
 
 def _action_metadata_version(

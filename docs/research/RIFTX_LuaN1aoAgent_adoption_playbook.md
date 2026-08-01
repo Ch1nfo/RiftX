@@ -262,7 +262,7 @@ flowchart LR
 | RX-LN-AUTH | 部署 Trust Profile、Principal 与对象授权 | 00 | done | [Profile A 交付报告](RIFTX_LuaN1aoAgent_RX-LN-AUTH_delivery.md)；1422 Python/109 Web、typecheck/build、独立复核 APPROVE |
 | RX-LN-01 | Run Action Read Model/API | 00、AUTH | done | [交付报告](RIFTX_LuaN1aoAgent_RX-LN-01_delivery.md)；2412 Python、release gate、独立复核 APPROVE |
 | RX-LN-02 | Action Timeline 与 Inspector | 01、AUTH | done | [交付报告](RIFTX_LuaN1aoAgent_RX-LN-02_delivery.md)；164 Web、2412 Python、release gate、独立复核 APPROVE |
-| RX-LN-03 | Task/Evidence/Operation 语义视图 | 01–02、AUTH | not_started | Graph API/UI、provenance 测试 |
+| RX-LN-03 | Task/Evidence/Operation 语义视图 | 01–02、AUTH | done | [交付报告](RIFTX_LuaN1aoAgent_RX-LN-03_delivery.md)；2473 Python/217 Web、release gate、独立复核 APPROVE |
 | RX-LN-04A | Target HTTP Exchange 元数据 History/Inspector | 01–02、AUTH | not_started | 元数据分页、父 Run 授权、脱敏测试 |
 | RX-LN-04B0 | Safety Gate、敏感存储与网络强制基础 | 04A、AUTH、用户明确选择 | not_started | Gate CAS、SensitiveAccessIntent、加密、DNS/peer-IP 测试 |
 | RX-LN-04B1 | 受控 Reveal 与安全 Replay | 04B0 | not_started | Reveal/Replay intent、Scope、幂等、审计、停止测试 |

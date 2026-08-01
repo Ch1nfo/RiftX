@@ -15,6 +15,11 @@ const listItem: RunActionListItem = {
   cycle_id: "cycle-shared",
   step_id: "step-7",
   engine_call_id: "provider-call-1",
+  graph_ref: {
+    view: "task",
+    node_id: "action:run-1:action-1",
+    projection_quality: "exact",
+  },
   tool_id: "nmap",
   skill_id: null,
   reason: "Identify the authorized service before testing it.",
@@ -87,6 +92,7 @@ const detail: RunAction = {
   cycle_id: listItem.cycle_id,
   step_id: listItem.step_id,
   engine_call_id: listItem.engine_call_id,
+  graph_ref: listItem.graph_ref,
   tool_id: listItem.tool_id,
   skill_id: listItem.skill_id,
   reason: listItem.reason,
@@ -146,6 +152,13 @@ const detail: RunAction = {
   version: listItem.version,
 };
 
+function runtimeActionWithGraphRef(
+  graphRef: unknown,
+  overrides: Partial<RunAction> = {},
+): RunAction {
+  return { ...detail, ...overrides, graph_ref: graphRef } as unknown as RunAction;
+}
+
 function installLocalStorage() {
   const values = new Map<string, string>();
   Object.defineProperty(window, "localStorage", {
@@ -198,6 +211,7 @@ describe("ActionTimeline", () => {
     const second = {
       ...listItem,
       action_id: "action-2",
+      graph_ref: { ...listItem.graph_ref!, node_id: "action:run-1:action-2" },
       engine_call_id: "provider-call-1",
       step_id: "step-8",
       tool_id: "curl",
@@ -463,6 +477,10 @@ describe("ActionTimeline", () => {
     const cancelled = {
       ...listItem,
       action_id: "action-cancelled",
+      graph_ref: {
+        ...listItem.graph_ref!,
+        node_id: "action:run-1:action-cancelled",
+      },
       lifecycle: "cancelled" as const,
       attempts: [{ ...listItem.attempts[0], status: "hard_timeout" as const }],
       current_execution_status: "hard_timeout" as const,
@@ -507,6 +525,7 @@ describe("ActionTimeline", () => {
           error={null}
           focusOnOpen={false}
           onClose={vi.fn()}
+          onOpenGraph={vi.fn()}
         />
       </LanguageProvider>,
     );
@@ -520,10 +539,136 @@ describe("ActionTimeline", () => {
     expect(screen.getByText("会话")).toBeInTheDocument();
     expect(screen.getByText("轮次")).toBeInTheDocument();
     expect(screen.getByText("步骤")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在图谱中打开" })).toBeInTheDocument();
   });
 });
 
 describe("ActionInspector", () => {
+  it("opens the exact server Graph reference with keyboard activation", async () => {
+    const onOpenGraph = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ActionInspector
+        actionId="action-1"
+        action={detail}
+        loading={false}
+        error={null}
+        focusOnOpen={false}
+        onClose={vi.fn()}
+        onOpenGraph={onOpenGraph}
+      />,
+    );
+
+    const openGraph = screen.getByRole("button", { name: "Open in Graph" });
+    openGraph.focus();
+    await user.keyboard("{Enter}");
+
+    expect(openGraph).toHaveFocus();
+    expect(onOpenGraph).toHaveBeenCalledOnce();
+    expect(onOpenGraph).toHaveBeenCalledWith("action:run-1:action-1");
+  });
+
+  it.each([
+    {
+      name: "missing ref",
+      action: runtimeActionWithGraphRef(undefined),
+    },
+    {
+      name: "null legacy ref",
+      action: runtimeActionWithGraphRef(null),
+    },
+    {
+      name: "partial ref",
+      action: runtimeActionWithGraphRef({
+        view: "task",
+        node_id: "action:run-1:action-1",
+        projection_quality: "partial",
+      }),
+    },
+    {
+      name: "foreign Run ref",
+      action: runtimeActionWithGraphRef({
+        view: "task",
+        node_id: "action:run-2:action-1",
+        projection_quality: "exact",
+      }),
+    },
+    {
+      name: "same-Run wrong-Action ref",
+      action: runtimeActionWithGraphRef({
+        view: "task",
+        node_id: "action:run-1:action-2",
+        projection_quality: "exact",
+      }),
+    },
+    {
+      name: "extra-colon ref",
+      action: runtimeActionWithGraphRef({
+        view: "task",
+        node_id: "action:run-1:action-1:extra",
+        projection_quality: "exact",
+      }),
+    },
+    {
+      name: "legacy colon Action component",
+      action: runtimeActionWithGraphRef(
+        {
+          view: "task",
+          node_id: "action:run-1:legacy:action",
+          projection_quality: "exact",
+        },
+        { action_id: "legacy:action" },
+      ),
+    },
+    {
+      name: "wrong view ref",
+      action: runtimeActionWithGraphRef({
+        view: "evidence",
+        node_id: "action:run-1:action-1",
+        projection_quality: "exact",
+      }),
+    },
+    {
+      name: "Unicode ref",
+      action: runtimeActionWithGraphRef(
+        {
+          view: "task",
+          node_id: "action:run-1:action-一",
+          projection_quality: "exact",
+        },
+        { action_id: "action-一" },
+      ),
+    },
+    {
+      name: "overlong ref",
+      action: runtimeActionWithGraphRef(
+        {
+          view: "task",
+          node_id: `action:run-1:${"a".repeat(500)}`,
+          projection_quality: "exact",
+        },
+        { action_id: "a".repeat(500) },
+      ),
+    },
+  ])("fails closed for a $name", ({ action }) => {
+    const onOpenGraph = vi.fn();
+    render(
+      <ActionInspector
+        actionId={action.action_id}
+        action={action}
+        loading={false}
+        error={null}
+        focusOnOpen={false}
+        onClose={vi.fn()}
+        onOpenGraph={onOpenGraph}
+      />,
+    );
+
+    expect(screen.getByText(/Action-to-Graph link unsupported/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open in Graph" })).not.toBeInTheDocument();
+    expect(onOpenGraph).not.toHaveBeenCalled();
+  });
+
   it("loads detail on selection and keeps artifacts behind authenticated download", async () => {
     const download = vi.spyOn(api, "downloadAuthenticatedUrl").mockResolvedValue();
     const onClose = vi.fn();
@@ -534,6 +679,7 @@ describe("ActionInspector", () => {
         loading={false}
         error={null}
         onClose={onClose}
+        onOpenGraph={vi.fn()}
       />,
     );
 
@@ -564,10 +710,18 @@ describe("ActionInspector", () => {
     render(
       <ActionInspector
         actionId="foreign-action"
-        action={{ ...detail, action_id: "foreign-action" }}
+        action={{
+          ...detail,
+          action_id: "foreign-action",
+          graph_ref: {
+            ...detail.graph_ref!,
+            node_id: "action:run-1:foreign-action",
+          },
+        }}
         loading={false}
         error={new RiftXAPIError(403, "local_operator_capability_denied", "Forbidden")}
         onClose={vi.fn()}
+        onOpenGraph={vi.fn()}
       />,
     );
 
@@ -592,6 +746,7 @@ describe("ActionInspector", () => {
         error={null}
         focusOnOpen={false}
         onClose={vi.fn()}
+        onOpenGraph={vi.fn()}
       />,
     );
 
@@ -612,6 +767,7 @@ describe("ActionInspector", () => {
           loading={false}
           error={null}
           onClose={vi.fn()}
+          onOpenGraph={vi.fn()}
         />
       </>,
     );
@@ -633,6 +789,7 @@ describe("ActionInspector", () => {
         loading={false}
         error={null}
         onClose={vi.fn()}
+        onOpenGraph={vi.fn()}
       />,
     );
     fireEvent.click(
@@ -646,6 +803,7 @@ describe("ActionInspector", () => {
         action={{
           ...detail,
           action_id: "action-2",
+          graph_ref: { ...detail.graph_ref!, node_id: "action:run-1:action-2" },
           reason: "Second Action reason",
           result: { ...detail.result, artifact_ids: [] },
           evidence: { ...detail.evidence, artifact_ids: [] },
@@ -653,6 +811,7 @@ describe("ActionInspector", () => {
         loading={false}
         error={null}
         onClose={vi.fn()}
+        onOpenGraph={vi.fn()}
       />,
     );
     await act(async () => rejectOld(new Error("Old Artifact forbidden")));

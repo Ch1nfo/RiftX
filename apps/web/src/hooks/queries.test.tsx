@@ -204,7 +204,15 @@ describe("Run Action queries", () => {
   });
 
   it("keys detail by both Run and Action and does not fetch an empty selection", async () => {
-    mocks.getRunAction.mockResolvedValue({ action_id: "action-1", run_id: "run-1" });
+    mocks.getRunAction.mockResolvedValue({
+      action_id: "action-1",
+      run_id: "run-1",
+      graph_ref: {
+        view: "task",
+        node_id: "action:run-1:action-1",
+        projection_quality: "exact",
+      },
+    });
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -261,7 +269,15 @@ describe("Run Action queries", () => {
   it.each([401, 403] as const)(
     "surfaces a cached detail refetch HTTP %s without waiting for the production retry",
     async (status) => {
-      const cached = { action_id: "cached-action", run_id: "run-1" };
+      const cached = {
+        action_id: "cached-action",
+        run_id: "run-1",
+        graph_ref: {
+          view: "task",
+          node_id: "action:run-1:cached-action",
+          projection_quality: "exact",
+        },
+      };
       mocks.getRunAction.mockResolvedValueOnce(cached);
       const queryClient = productionQueryClient();
       const wrapper = ({ children }: { children: ReactNode }) => (
@@ -364,7 +380,15 @@ function actionPage(
   runId = "run-1",
 ): RunActionList {
   return {
-    items: actionIds.map((actionId) => ({ action_id: actionId, run_id: runId })),
+    items: actionIds.map((actionId) => ({
+      action_id: actionId,
+      run_id: runId,
+      graph_ref: {
+        view: "task",
+        node_id: `action:${runId}:${actionId}`,
+        projection_quality: "exact",
+      },
+    })),
     limit: 50,
     sort: "created_at_desc",
     has_more: nextCursor !== null,

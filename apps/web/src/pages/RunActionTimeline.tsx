@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Download,
   FileSearch,
+  GitBranch,
   Loader2,
   Server,
   ShieldCheck,
@@ -30,6 +31,9 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { useI18n } from "../i18n";
+
+const GRAPH_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,511}$/;
+const GRAPH_ACTION_COMPONENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@+~-]{0,127}$/;
 
 interface ActionTimelineProps {
   items: RunActionListItem[];
@@ -260,6 +264,7 @@ interface ActionInspectorProps {
   loading: boolean;
   error: Error | null;
   onClose: () => void;
+  onOpenGraph: (nodeId: string) => void;
   focusOnOpen?: boolean;
 }
 
@@ -269,6 +274,7 @@ export function ActionInspector({
   loading,
   error,
   onClose,
+  onOpenGraph,
   focusOnOpen = true,
 }: ActionInspectorProps) {
   const { language, t } = useI18n();
@@ -283,6 +289,9 @@ export function ActionInspector({
   activeActionIdRef.current = actionId;
   const candidateAction = action?.action_id === actionId ? action : undefined;
   const displayedAction = !loading && !error ? candidateAction : undefined;
+  const graphNodeId = displayedAction
+    ? explicitActionGraphNodeId(displayedAction)
+    : null;
 
   useEffect(() => {
     downloadOperationRef.current += 1;
@@ -457,6 +466,23 @@ export function ActionInspector({
             {displayedAction.result.truncated ? <p className="coverage-warning"><AlertTriangle size={13} /> {t("Artifact references are truncated")}</p> : null}
           </InspectorSection>
 
+          <InspectorSection title={t("Graph lineage")} icon={<GitBranch size={15} />}>
+            {graphNodeId ? (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onOpenGraph(graphNodeId)}
+              >
+                <GitBranch size={13} /> {t("Open in Graph")}
+              </button>
+            ) : (
+              <p className="coverage-warning">
+                <AlertTriangle size={13} />
+                {t("Action-to-Graph link unsupported: the server Graph reference is missing, partial, malformed, or outside this Run; RiftX will not infer one.")}
+              </p>
+            )}
+          </InspectorSection>
+
           {displayedAction.correlation_quality !== "exact" || displayedAction.partial_reasons.length ? (
             <InspectorSection title={t("Data quality")} icon={<AlertTriangle size={15} />}>
               <p>{t("This Action is partial or ambiguous; RiftX will not infer missing lineage.")}</p>
@@ -478,6 +504,35 @@ export function ActionInspector({
       </span>
     </section>
   );
+}
+
+function explicitActionGraphNodeId(action: RunAction): string | null {
+  const graphRef: unknown = (action as { graph_ref?: unknown }).graph_ref;
+  if (
+    typeof graphRef !== "object" ||
+    graphRef === null ||
+    Array.isArray(graphRef)
+  ) {
+    return null;
+  }
+  const candidate = graphRef as Record<string, unknown>;
+  if (
+    candidate.view !== "task" ||
+    candidate.projection_quality !== "exact" ||
+    typeof candidate.node_id !== "string"
+  ) {
+    return null;
+  }
+  const nodeId = candidate.node_id;
+  const expectedNodeId = `action:${action.run_id}:${action.action_id}`;
+  // The expected value validates the server reference; it is never used as a
+  // fallback navigation target when the reference is absent or malformed.
+  return GRAPH_ACTION_COMPONENT_PATTERN.test(action.run_id) &&
+    GRAPH_ACTION_COMPONENT_PATTERN.test(action.action_id) &&
+    GRAPH_NODE_ID_PATTERN.test(nodeId) &&
+    nodeId === expectedNodeId
+    ? nodeId
+    : null;
 }
 
 function InspectorSection({

@@ -27,6 +27,7 @@ from .executions import (
     ExecutionWaitResponse,
 )
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
+from .graphs import GraphViewPage, GraphViewQuery
 from .memories import (
     CreateMemoryRequest,
     MemoryListResponse,
@@ -112,6 +113,8 @@ __all__ = [
     "ExecutionResponse",
     "ExecutionWaitResponse",
     "FindingListResponse",
+    "GraphViewPage",
+    "GraphViewQuery",
     "MemoryListResponse",
     "MemoryResponse",
     "ModelProfileListResponse",

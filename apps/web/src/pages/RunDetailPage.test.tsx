@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useLayoutEffect } from "react";
 import {
   Link,
@@ -12,7 +13,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, RiftXAPIError } from "../api/client";
-import type { RunAction, RunActionListItem } from "../api/types";
+import type { GraphViewPage, RunAction, RunActionListItem } from "../api/types";
 import { LanguageProvider, languageStorageKey } from "../i18n";
 import { RunDetailPage } from "./RunDetailPage";
 
@@ -61,11 +62,12 @@ vi.mock("../components/TerminalPanel", () => ({ TerminalPanel: () => null }));
 vi.mock("../hooks/queries", () => ({
   flattenRunActionPages: (pages: Array<{ items: RunActionListItem[] }> | undefined) =>
     pages?.flatMap((page) => page.items) ?? [],
-  useRun: () => ({
+  useRun: (runId: string) => ({
     isLoading: false,
     error: null,
     data: {
-      id: "run-1",
+      id: runId,
+      engagement_id: runId === "run-1" ? "engagement-1" : "engagement-2",
       objective: { description: "Inspect local service" },
       node_id: "local",
       approval_mode: "balanced",
@@ -343,6 +345,19 @@ function ActionHistoryHarness() {
   );
 }
 
+function SameRawActionRunHarness() {
+  const location = useLocation();
+  return (
+    <>
+      <output aria-label="Current location">{`${location.pathname}${location.search}`}</output>
+      <Link to="/runs/run-2?action=action-shared">Open same Action in Run 2</Link>
+      <Routes>
+        <Route path="/runs/:runId" element={<RunDetailPage />} />
+      </Routes>
+    </>
+  );
+}
+
 function actionListItem(
   actionId = "action-1",
   runId = "run-1",
@@ -355,6 +370,11 @@ function actionListItem(
     cycle_id: "cycle-shared",
     step_id: `step-${actionId}`,
     engine_call_id: "provider-call-shared",
+    graph_ref: {
+      view: "task",
+      node_id: `action:${runId}:${actionId}`,
+      projection_quality: "exact",
+    },
     tool_id: "nmap",
     skill_id: null,
     reason: `Public reason for ${actionId}`,
@@ -417,6 +437,7 @@ function actionDetail(item: RunActionListItem, overrides: Partial<RunAction> = {
     cycle_id: item.cycle_id,
     step_id: item.step_id,
     engine_call_id: item.engine_call_id,
+    graph_ref: item.graph_ref,
     tool_id: item.tool_id,
     skill_id: item.skill_id,
     reason: item.reason,
@@ -463,6 +484,43 @@ function actionDetail(item: RunActionListItem, overrides: Partial<RunAction> = {
     updated_at: item.updated_at,
     version: item.version,
     ...overrides,
+  };
+}
+
+function graphPageForAction(
+  runId: string,
+  engagementId: string,
+  actionId: string,
+): GraphViewPage {
+  return {
+    scope: { engagement_id: engagementId, run_id: runId },
+    view: "task",
+    snapshot: { id: `snapshot-${runId}`, stale: false },
+    nodes: [
+      {
+        id: `action:${runId}:${actionId}`,
+        type: "action",
+        domain_id: actionId,
+        label: `Action ${actionId}`,
+        status: "succeeded",
+        provenance_refs: ["tool_call_intents"],
+        projection_quality: "exact",
+        partial_reasons: [],
+      },
+    ],
+    edges: [],
+    type_metadata: [
+      {
+        kind: "node",
+        type: "action",
+        label: "Server action",
+        color: "#16a34a",
+      },
+    ],
+    partial_reasons: [],
+    truncated: false,
+    has_more: false,
+    next_cursor: null,
   };
 }
 
@@ -1650,6 +1708,291 @@ describe("RunDetailPage approvals", () => {
     fireEvent.click(screen.getByRole("link", { name: "Open Run 2" }));
     expect(screen.queryByText("OLD RUN DETAIL SECRET")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Context Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("loads and requests the Graph workspace only after its Run detail tab is activated", async () => {
+    const listRunGraph = vi.spyOn(
+      api as typeof api & {
+        listRunGraph: (...args: unknown[]) => Promise<unknown>;
+      },
+      "listRunGraph",
+    ).mockResolvedValue({
+      scope: { engagement_id: "engagement-1", run_id: "run-1" },
+      view: "task",
+      snapshot: { id: "snapshot-1", stale: false },
+      nodes: [],
+      edges: [],
+      type_metadata: [],
+      partial_reasons: [],
+      truncated: false,
+      has_more: false,
+      next_cursor: null,
+    });
+
+    renderActionRoute("/runs/run-1");
+
+    expect(listRunGraph).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Run Graph" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Graph" }));
+
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    expect(listRunGraph).toHaveBeenCalledTimes(1);
+    expect(listRunGraph).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({ view: "task" }),
+      expect.anything(),
+    );
+  });
+
+  it("restores the default tab on a plain Run switch without requesting that Run's Graph", async () => {
+    const listRunGraph = vi.spyOn(api, "listRunGraph").mockResolvedValue({
+      scope: { engagement_id: "engagement-1", run_id: "run-1" },
+      view: "task",
+      snapshot: { id: "snapshot-1", stale: false },
+      nodes: [],
+      edges: [],
+      type_metadata: [],
+      partial_reasons: [],
+      truncated: false,
+      has_more: false,
+      next_cursor: null,
+    });
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1?graph_view=task"]}>
+          <RunNavigationHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    await waitFor(() => expect(listRunGraph).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("link", { name: "Open Run 2" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(screen.queryByRole("heading", { name: "Run Graph" })).not.toBeInTheDocument();
+    expect(
+      listRunGraph.mock.calls.some(([candidateRunId]) => candidateRunId === "run-2"),
+    ).toBe(false);
+  });
+
+  it("roundtrips Graph to Action to the exact server ref with Back/Forward focus", async () => {
+    const actionId = "intent-1";
+    const nodeId = `action:run-1:${actionId}`;
+    const item = actionListItem(actionId);
+    mocks.actionItems = [item];
+    mocks.actionDetails.set(`run-1:${actionId}`, actionDetail(item));
+    const listRunGraph = vi
+      .spyOn(api, "listRunGraph")
+      .mockResolvedValue(graphPageForAction("run-1", "engagement-1", actionId));
+    const user = userEvent.setup();
+    renderActionRoute(
+      `/runs/run-1?graph_view=task&graph_focus=${encodeURIComponent(nodeId)}`,
+      { history: true },
+    );
+
+    const graphList = await screen.findByRole("region", { name: "Complete Graph list" });
+    expect(
+      within(graphList).getByRole("button", { name: /^Inspect Action intent-1/ }),
+    ).toHaveAttribute("aria-current", "true");
+    fireEvent.click(
+      within(graphList).getByRole("button", { name: `Open Action ${actionId}` }),
+    );
+
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      `/runs/run-1?action=${actionId}`,
+    );
+    const inspector = await screen.findByRole("region", { name: "Context Inspector" });
+    await waitFor(() =>
+      expect(
+        within(inspector).getByRole("button", { name: "Close Context Inspector" }),
+      ).toHaveFocus(),
+    );
+    const openGraph = within(inspector).getByRole("button", { name: "Open in Graph" });
+    openGraph.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      `/runs/run-1?graph_view=task&graph_focus=${encodeURIComponent(nodeId)}`,
+    );
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Graph" })).toHaveFocus(),
+    );
+    await waitFor(() =>
+      expect(listRunGraph).toHaveBeenLastCalledWith(
+        "run-1",
+        expect.objectContaining({ focus: nodeId, view: "task" }),
+        expect.anything(),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "History back" }));
+
+    expect(await screen.findByRole("region", { name: "Context Inspector" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      `/runs/run-1?action=${actionId}`,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Close Context Inspector" }),
+      ).toHaveFocus(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "History forward" }));
+
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      `/runs/run-1?graph_view=task&graph_focus=${encodeURIComponent(nodeId)}`,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Graph" })).toHaveFocus(),
+    );
+  });
+
+  it("cancels stale Graph focus restoration during a rapid browser Back", async () => {
+    const item = actionListItem("intent-race");
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:intent-race", actionDetail(item));
+    vi.spyOn(api, "listRunGraph").mockResolvedValue(
+      graphPageForAction("run-1", "engagement-1", "intent-race"),
+    );
+    renderActionRoute("/runs/run-1?action=intent-race", { history: true });
+
+    const openGraph = await screen.findByRole("button", { name: "Open in Graph" });
+    fireEvent.click(openGraph);
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      "/runs/run-1?graph_view=task&graph_focus=action%3Arun-1%3Aintent-race",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "History back" }));
+
+    const close = await screen.findByRole("button", { name: "Close Context Inspector" });
+    await waitFor(() => expect(close).toHaveFocus());
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(close).toHaveFocus();
+  });
+
+  it("clears an Action focus when switching to another Graph semantic view", async () => {
+    const item = actionListItem("intent-view");
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:intent-view", actionDetail(item));
+    const listRunGraph = vi.spyOn(api, "listRunGraph").mockImplementation(
+      (_runId, options) =>
+        Promise.resolve(
+          options.view === "task"
+            ? graphPageForAction("run-1", "engagement-1", "intent-view")
+            : {
+                ...graphPageForAction("run-1", "engagement-1", "intent-view"),
+                view: options.view,
+                nodes: [],
+              },
+        ),
+    );
+    renderActionRoute("/runs/run-1?action=intent-view", { history: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open in Graph" }));
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(
+        "/runs/run-1?graph_view=evidence",
+      ),
+    );
+    expect(screen.getByLabelText("Current location")).not.toHaveTextContent("graph_focus");
+    await waitFor(() =>
+      expect(listRunGraph).toHaveBeenLastCalledWith(
+        "run-1",
+        expect.objectContaining({ focus: undefined, view: "evidence" }),
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("clears Graph route state when the pending-approval alert opens Approvals", async () => {
+    vi.spyOn(api, "listRunGraph").mockResolvedValue(
+      graphPageForAction("run-1", "engagement-1", "intent-approval"),
+    );
+    renderActionRoute(
+      "/runs/run-1?graph_view=task&graph_focus=action%3Arun-1%3Aintent-approval",
+      { history: true },
+    );
+
+    expect(await screen.findByRole("heading", { name: "Run Graph" })).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /tool call awaiting approval/i }),
+    );
+
+    expect(screen.getByRole("tab", { name: /Approvals 1/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent("/runs/run-1"),
+    );
+    expect(screen.getByLabelText("Current location")).not.toHaveTextContent("graph_");
+  });
+
+  it("keeps the same raw Action ID isolated by Run when opening its server Graph ref", async () => {
+    const run1Item = actionListItem("action-shared", "run-1");
+    const run2Item = actionListItem("action-shared", "run-2");
+    mocks.actionItemsByRun.set("run-1", [run1Item]);
+    mocks.actionItemsByRun.set("run-2", [run2Item]);
+    mocks.actionDetails.set("run-1:action-shared", actionDetail(run1Item));
+    mocks.actionDetails.set("run-2:action-shared", actionDetail(run2Item));
+    vi.spyOn(api, "listRunGraph").mockImplementation((runId) =>
+      Promise.resolve(
+        graphPageForAction(
+          runId,
+          runId === "run-1" ? "engagement-1" : "engagement-2",
+          "action-shared",
+        ),
+      ),
+    );
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1?action=action-shared"]}>
+          <SameRawActionRunHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Open in Graph" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Open same Action in Run 2" }));
+    const run2Inspector = await screen.findByRole("region", { name: "Context Inspector" });
+    fireEvent.click(within(run2Inspector).getByRole("button", { name: "Open in Graph" }));
+
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      `/runs/run-2?graph_view=task&graph_focus=${encodeURIComponent("action:run-2:action-shared")}`,
+    );
+    expect(screen.getByLabelText("Current location")).not.toHaveTextContent(
+      "action%3Arun-1%3Aaction-shared",
+    );
+  });
+
+  it("keeps a legacy Action without graph_ref unsupported and never invents a reverse link", async () => {
+    const item = actionListItem();
+    mocks.actionItems = [item];
+    mocks.actionDetails.set(
+      "run-1:action-1",
+      { ...actionDetail(item), graph_ref: undefined } as unknown as RunAction,
+    );
+    renderActionRoute("/runs/run-1?action=action-1");
+
+    const inspector = await screen.findByRole("region", { name: "Context Inspector" });
+    expect(within(inspector).getByText(/Action-to-Graph link unsupported/)).toBeInTheDocument();
+    expect(within(inspector).queryByRole("link", { name: /graph/i })).not.toBeInTheDocument();
+    expect(within(inspector).queryByRole("button", { name: /graph/i })).not.toBeInTheDocument();
   });
 
   it("implements roving tabs whose controls always reference the live tabpanel", () => {

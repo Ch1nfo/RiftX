@@ -29,6 +29,8 @@ import {
 } from "lucide-react";
 import {
   FormEvent,
+  lazy,
+  Suspense,
   type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
   useRef,
@@ -47,6 +49,7 @@ import type {
   Artifact,
   Finding,
   FindingEvidence,
+  GraphViewKind,
   Report,
   Run,
   RunEvent,
@@ -81,10 +84,13 @@ import {
   type TimelineItem,
 } from "./runStreamReducer";
 
+const RunGraphWorkspace = lazy(() => import("./RunGraphWorkspace"));
+
 type DetailTab =
   | "overview"
   | "agent"
   | "actions"
+  | "graph"
   | "timeline"
   | "raw-events"
   | "approvals"
@@ -194,6 +200,14 @@ export function RunDetailPage() {
   const { runId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const actionParam = searchParams.get("action") ?? "";
+  const graphViewParam = parseGraphView(searchParams.get("graph_view"));
+  const graphFocusParam = searchParams.get("graph_focus") ?? "";
+  const graphRouteActive = Boolean(graphViewParam || graphFocusParam);
+  const routeDefaultTab = detailTabForRoute(
+    actionParam,
+    graphViewParam,
+    graphFocusParam,
+  );
   const [selectionRoute, setSelectionRoute] = useState(() => ({
     actionId: actionParam,
     runId,
@@ -216,7 +230,14 @@ export function RunDetailPage() {
   const reportControls = useReportControl(runId);
   const controls = useRunControl(runId);
   const eventStream = useEventStream(runId, events.isSuccess);
-  const [tab, setTab] = useState<DetailTab>(actionParam ? "actions" : "agent");
+  const [tabSelection, setTabSelection] = useState(() => ({
+    runId,
+    value: routeDefaultTab,
+  }));
+  const tab = tabSelection.runId === runId ? tabSelection.value : routeDefaultTab;
+  function setTab(value: DetailTab) {
+    setTabSelection({ runId, value });
+  }
   const [inspectorFocusKey, setInspectorFocusKey] = useState<string | null>(null);
   const [actionAnnouncement, setActionAnnouncement] = useState("");
   const [actionAuthorizationLatch, setActionAuthorizationLatch] =
@@ -227,25 +248,57 @@ export function RunDetailPage() {
   const currentRunIdRef = useRef(runId);
   const activeMessageSubmissionRef = useRef<MessageSubmissionToken | null>(null);
   const actionTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
-  const previousActionRouteRef = useRef({ actionId: actionParam, runId });
+  const previousActionRouteRef = useRef({
+    actionId: actionParam,
+    graphActive: graphRouteActive,
+    runId,
+  });
   const actionRevisionRef = useRef({ revision: 0, runId });
   const tabRefs = useRef(new Map<DetailTab, HTMLButtonElement>());
   currentRunIdRef.current = runId;
 
   useEffect(() => {
     const previous = previousActionRouteRef.current;
+    let focusTimer: number | null = null;
     if (previous.runId === runId && previous.actionId && !actionParam) {
       const trigger = actionTriggerRefs.current.get(previous.actionId);
-      const focusTarget = trigger?.isConnected
-        ? trigger
-        : tabRefs.current.get("actions");
-      window.setTimeout(() => focusTarget?.focus(), 0);
+      const focusTarget = graphRouteActive
+        ? tabRefs.current.get("graph")
+        : trigger?.isConnected
+          ? trigger
+          : tabRefs.current.get("actions");
+      focusTimer = window.setTimeout(() => {
+        const current = previousActionRouteRef.current;
+        if (
+          current.runId === runId &&
+          current.actionId === actionParam &&
+          current.graphActive === graphRouteActive
+        ) {
+          focusTarget?.focus();
+        }
+      }, 0);
+    }
+    if (
+      previous.runId === runId &&
+      previous.graphActive &&
+      actionParam
+    ) {
+      setInspectorFocusKey(`${runId}:${actionParam}`);
     }
     if (previous.runId !== runId) actionTriggerRefs.current.clear();
-    previousActionRouteRef.current = { actionId: actionParam, runId };
+    previousActionRouteRef.current = {
+      actionId: actionParam,
+      graphActive: graphRouteActive,
+      runId,
+    };
     setSelectionRoute({ actionId: actionParam, runId });
-    if (actionParam) setTab("actions");
-  }, [actionParam, runId]);
+    if (graphViewParam || graphFocusParam) setTab("graph");
+    else if (actionParam) setTab("actions");
+    else if (previous.runId !== runId) setTab("agent");
+    return () => {
+      if (focusTimer !== null) window.clearTimeout(focusTimer);
+    };
+  }, [actionParam, graphFocusParam, graphRouteActive, graphViewParam, runId]);
 
   const focusInspector =
     selectedActionId !== null && inspectorFocusKey === `${runId}:${selectedActionId}`;
@@ -465,6 +518,7 @@ export function RunDetailPage() {
     ["overview", t("Overview")],
     ["agent", t("Conversation")],
     ["actions", `${t("Actions")} ${visibleActionItems.length}`],
+    ["graph", t("Graph")],
     ["timeline", `${t("Timeline")} ${eventProjection.highLevelTimeline.length}`],
     ["raw-events", `${t("Raw events")} ${eventProjection.rawEvents.length}`],
     ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
@@ -488,6 +542,68 @@ export function RunDetailPage() {
     setSearchParams({ action: actionId });
   }
 
+  function activateDetailTab(nextTab: DetailTab) {
+    setTab(nextTab);
+    if (nextTab === "graph") {
+      setSelectionRoute({ actionId: "", runId });
+      setInspectorFocusKey(null);
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("action");
+        next.set("graph_view", graphViewParam ?? "task");
+        return next;
+      });
+      return;
+    }
+    if (tab === "graph" || graphViewParam || graphFocusParam) {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("graph_view");
+        next.delete("graph_focus");
+        return next;
+      });
+    }
+  }
+
+  function changeGraphView(nextView: GraphViewKind) {
+    setTab("graph");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("action");
+      if (nextView !== graphViewParam) next.delete("graph_focus");
+      next.set("graph_view", nextView);
+      return next;
+    });
+  }
+
+  function changeGraphFocus(focusId: string) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("action");
+      next.set("graph_view", graphViewParam ?? "task");
+      if (focusId) next.set("graph_focus", focusId);
+      else next.delete("graph_focus");
+      return next;
+    });
+  }
+
+  function openGraphAction(actionId: string) {
+    setSelectionRoute({ actionId, runId });
+    setInspectorFocusKey(`${runId}:${actionId}`);
+    setTab("actions");
+    setSearchParams({ action: actionId });
+  }
+
+  function openActionGraph(nodeId: string) {
+    setSelectionRoute({ actionId: "", runId });
+    setInspectorFocusKey(null);
+    setTab("graph");
+    setSearchParams({
+      graph_view: "task",
+      graph_focus: nodeId,
+    });
+  }
+
   function closeActionInspector() {
     setInspectorFocusKey(null);
     setSelectionRoute({ actionId: "", runId });
@@ -505,7 +621,7 @@ export function RunDetailPage() {
     if (nextIndex === null) return;
     event.preventDefault();
     const nextTab = detailTabs[nextIndex]![0];
-    setTab(nextTab);
+    activateDetailTab(nextTab);
     tabRefs.current.get(nextTab)?.focus();
   }
 
@@ -592,7 +708,7 @@ export function RunDetailPage() {
       </span>
 
       {pendingApprovals.length ? (
-        <button className="approval-alert" onClick={() => setTab("approvals")}>
+        <button className="approval-alert" onClick={() => activateDetailTab("approvals")}>
           <ShieldAlert size={19} />
           <span>
             <strong>{t(
@@ -670,7 +786,7 @@ export function RunDetailPage() {
                 }}
                 id={`run-detail-tab-${value}`}
                 className={tab === value ? "active" : ""}
-                onClick={() => setTab(value)}
+                onClick={() => activateDetailTab(value)}
                 onKeyDown={(event) => moveTabFocus(event, index)}
                 role="tab"
                 aria-selected={tab === value}
@@ -717,6 +833,19 @@ export function RunDetailPage() {
                 onLoadMore={() => void actions.fetchNextPage()}
                 onSelect={selectAction}
               />
+            ) : null}
+            {tab === "graph" ? (
+              <Suspense fallback={<LoadingState label="Loading Graph workspace" />}>
+                <RunGraphWorkspace
+                  runId={runId}
+                  expectedEngagementId={run.data.engagement_id}
+                  view={graphViewParam ?? "task"}
+                  focusId={graphFocusParam}
+                  onViewChange={changeGraphView}
+                  onFocusChange={changeGraphFocus}
+                  onOpenAction={openGraphAction}
+                />
+              </Suspense>
             ) : null}
             {tab === "timeline" ? (
               <Timeline items={eventProjection.highLevelTimeline} loading={events.isLoading} />
@@ -816,6 +945,7 @@ export function RunDetailPage() {
               error={actionAuthorizationError ?? selectedAction.error}
               focusOnOpen={focusInspector}
               onClose={closeActionInspector}
+              onOpenGraph={openActionGraph}
             />
           ) : null}
           <article className="panel compact-panel">
@@ -1879,6 +2009,22 @@ function useAuthenticatedDownload() {
   }
 
   return { error, isPending, start };
+}
+
+function parseGraphView(value: string | null): GraphViewKind | null {
+  return value === "task" || value === "evidence" || value === "operation"
+    ? value
+    : null;
+}
+
+function detailTabForRoute(
+  actionId: string,
+  graphView: GraphViewKind | null,
+  graphFocus: string,
+): DetailTab {
+  if (graphView || graphFocus) return "graph";
+  if (actionId) return "actions";
+  return "agent";
 }
 
 function EventIcon({ eventType }: { eventType: string }) {

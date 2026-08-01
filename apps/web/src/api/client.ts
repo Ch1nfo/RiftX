@@ -13,6 +13,8 @@ import type {
   UpdateFindingPayload,
   RegisterArtifactPayload,
   GenerateReportsPayload,
+  GraphViewPage,
+  ListRunGraphOptions,
   ModelProfile,
   ModelProfileList,
   ModelProfileSummaryList,
@@ -249,6 +251,24 @@ export const api = {
   getRunAction(runId: string, actionId: string): Promise<RunAction> {
     return request(
       `/api/v1/runs/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionId)}`,
+    );
+  },
+
+  listRunGraph(
+    runId: string,
+    options: ListRunGraphOptions,
+    signal?: AbortSignal,
+  ): Promise<GraphViewPage> {
+    const query = new URLSearchParams({ view: options.view });
+    if (options.nodeType) query.set("node_type", options.nodeType);
+    if (options.edgeType) query.set("edge_type", options.edgeType);
+    if (options.focus) query.set("focus", options.focus);
+    if (options.search) query.set("search", options.search);
+    query.set("limit", String(options.limit ?? 100));
+    if (options.cursor) query.set("cursor", options.cursor);
+    return request(
+      `/api/v1/runs/${encodeURIComponent(runId)}/graph?${query.toString()}`,
+      { signal },
     );
   },
 

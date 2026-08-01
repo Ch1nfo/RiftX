@@ -146,6 +146,73 @@ export interface RunEventList {
   after_sequence: number;
 }
 
+export type GraphViewKind = "task" | "evidence" | "operation";
+
+export interface GraphScope {
+  run_id: string;
+  engagement_id: string;
+}
+
+export interface GraphSnapshot {
+  id: string;
+  stale: boolean;
+  generated_at?: string | null;
+  topology_signature?: string | null;
+}
+
+export interface GraphNode {
+  id: string;
+  type: string;
+  domain_id: string;
+  label: string;
+  status: string | null;
+  provenance_refs: string[];
+  projection_quality: string;
+  partial_reasons: string[];
+}
+
+export interface GraphEdge {
+  id: string;
+  type: string;
+  source: string;
+  target: string;
+  provenance_refs: string[];
+  projection_quality: string;
+}
+
+export interface GraphTypeMetadata {
+  kind: "node" | "edge";
+  type: string;
+  label: string;
+  color: string;
+  description?: string | null;
+}
+
+export interface GraphViewPage {
+  scope: GraphScope;
+  view: GraphViewKind;
+  snapshot?: GraphSnapshot | string | null;
+  snapshot_id?: string;
+  projection_sources?: string[];
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  type_metadata: GraphTypeMetadata[];
+  partial_reasons: string[];
+  truncated: boolean;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface ListRunGraphOptions {
+  view: GraphViewKind;
+  nodeType?: string;
+  edgeType?: string;
+  focus?: string;
+  search?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 
 export interface Approval {
@@ -330,6 +397,12 @@ export interface RunActionListAttempt {
   stop_confirmation: ActionStopConfirmation | null;
 }
 
+export interface RunActionGraphRef {
+  view: "task";
+  node_id: string;
+  projection_quality: "exact";
+}
+
 export interface RunActionListItem {
   action_id: string;
   run_id: string;
@@ -337,6 +410,7 @@ export interface RunActionListItem {
   cycle_id: string;
   step_id: string;
   engine_call_id: string | null;
+  graph_ref?: RunActionGraphRef | null;
   tool_id: string | null;
   skill_id: string | null;
   reason: string;
@@ -428,6 +502,7 @@ export interface RunAction {
   cycle_id: string;
   step_id: string;
   engine_call_id: string | null;
+  graph_ref?: RunActionGraphRef | null;
   tool_id: string | null;
   skill_id: string | null;
   reason: string;

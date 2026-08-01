@@ -1,11 +1,12 @@
 """FastAPI dependency accessors for the control-plane service container."""
 
+import secrets
 from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, Request
 
-from riftx.application.errors import AuthenticationError
+from riftx.application.errors import AuthenticationError, ResourceNotAccessibleError
 from riftx.application.services import (
     ActionApplicationService,
     ApprovalApplicationService,
@@ -21,12 +22,14 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.application.services.graphs import GraphApplicationService
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
-from riftx.domain import LocalPrincipal, RunnerPrincipal
+from riftx.domain import LocalPrincipal, OperatorCapability, RunnerPrincipal
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
+from riftx.security import LocalObjectAuthorizer
 
 from .auth import (
     authorize_local_operator as authorize_local_operator,
@@ -47,6 +50,38 @@ class RunnerAuthorization:
     principal: RunnerPrincipal
 
 
+class _GraphObjectAuthorizer:
+    """Adapt the app-owned Run authorizer to the Graph service's scope port."""
+
+    def __init__(self, delegate: LocalObjectAuthorizer) -> None:
+        self.delegate = delegate
+
+    def require_run_engagement(
+        self,
+        principal: LocalPrincipal,
+        *,
+        parent_run_id: str,
+        resource_run_id: str | None,
+        parent_engagement_id: str,
+        resource_engagement_id: str | None,
+        capability: OperatorCapability,
+    ) -> None:
+        self.delegate.require_child_run(
+            principal,
+            parent_run_id=parent_run_id,
+            resource_run_id=resource_run_id,
+            capability=capability,
+        )
+        if resource_engagement_id is None or not secrets.compare_digest(
+            parent_engagement_id,
+            resource_engagement_id,
+        ):
+            raise ResourceNotAccessibleError(
+                "resource_not_accessible",
+                "The requested resource was not found",
+            )
+
+
 def get_control_plane(request: Request) -> object:
     return request.app.state.control_plane
 
@@ -57,6 +92,25 @@ def get_run_service(request: Request) -> RunApplicationService:
 
 def get_action_service(request: Request) -> ActionApplicationService:
     return request.app.state.control_plane.action_service
+
+
+def get_graph_service(request: Request) -> GraphApplicationService:
+    """Build one app-resident Graph service with the server's exact authorizer/key."""
+
+    service = getattr(request.app.state, "graph_service", None)
+    if service is None:
+        repository = request.app.state.control_plane.graph_repository
+        authorizer = _GraphObjectAuthorizer(
+            request.app.state.local_object_authorizer,
+        )
+        service = GraphApplicationService(
+            repository,
+            authorizer=authorizer,
+            cursor_signing_key=request.app.state.graph_cursor_signing_key,
+        )
+        request.app.state.graph_object_authorizer = authorizer
+        request.app.state.graph_service = service
+    return service
 
 
 def get_event_service(request: Request) -> EventApplicationService:
@@ -132,6 +186,7 @@ def authorize_admin(
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 ActionServiceDependency = Annotated[ActionApplicationService, Depends(get_action_service)]
+GraphServiceDependency = Annotated[GraphApplicationService, Depends(get_graph_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
 FindingServiceDependency = Annotated[FindingApplicationService, Depends(get_finding_service)]

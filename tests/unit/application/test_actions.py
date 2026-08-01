@@ -452,6 +452,150 @@ async def test_action_reads_authorize_the_parent_run_with_read_capability() -> N
     assert repository.list_calls[0][1] == 1
 
 
+async def test_action_graph_ref_is_exact_and_shared_by_detail_and_list() -> None:
+    service = _service(FakeActionReadRepository((_aggregate(),)))
+
+    detail = await service.get("run-1", "intent-1", principal=PRINCIPAL)
+    listed = await service.list("run-1", principal=PRINCIPAL)
+
+    assert detail.graph_ref is not None
+    assert detail.graph_ref.model_dump() == {
+        "view": "task",
+        "node_id": "action:run-1:intent-1",
+        "projection_quality": "exact",
+    }
+    assert listed.items[0].graph_ref == detail.graph_ref
+
+
+async def test_action_graph_ref_namespaces_same_action_id_by_run() -> None:
+    aggregates = (
+        _aggregate(intent=replace(_intent(action_id="same-action"), run_id="run-1")),
+        _aggregate(intent=replace(_intent(action_id="same-action"), run_id="run-2")),
+    )
+    service = _service(FakeActionReadRepository(aggregates))
+
+    expected_node_ids = {
+        "run-1": "action:run-1:same-action",
+        "run-2": "action:run-2:same-action",
+    }
+    for run_id, expected_node_id in expected_node_ids.items():
+        detail = await service.get(run_id, "same-action", principal=PRINCIPAL)
+        listed = await service.list(run_id, principal=PRINCIPAL)
+
+        assert detail.graph_ref is not None
+        assert detail.graph_ref.node_id == expected_node_id
+        assert listed.items[0].graph_ref == detail.graph_ref
+
+
+@pytest.mark.parametrize(
+    ("reference_kind", "legacy_id"),
+    [
+        ("action_id", "legacy/action"),
+        ("action_id", "legacy:action"),
+        ("action_id", "历史动作"),
+        ("run_id", "legacy:run"),
+        ("run_id", "历史运行"),
+    ],
+)
+async def test_legacy_action_identity_without_a_strict_graph_component_returns_no_ref(
+    reference_kind: str,
+    legacy_id: str,
+) -> None:
+    aggregate = _aggregate_with_reference_id(reference_kind, legacy_id)
+    repository_type = (
+        PermissiveRunRepository if reference_kind == "run_id" else FakeActionReadRepository
+    )
+    service = _service(repository_type((aggregate,)))
+
+    detail = await service.get(
+        aggregate.intent.run_id,
+        aggregate.intent.action_id,
+        principal=PRINCIPAL,
+    )
+    listed = await service.list(aggregate.intent.run_id, principal=PRINCIPAL)
+
+    assert detail.action_id == aggregate.intent.action_id
+    assert detail.run_id == aggregate.intent.run_id
+    assert detail.graph_ref is None
+    assert listed.items[0].action_id == aggregate.intent.action_id
+    assert listed.items[0].run_id == aggregate.intent.run_id
+    assert listed.items[0].graph_ref is None
+
+
+@pytest.mark.parametrize(
+    ("reference_kind", "invalid_id"),
+    [
+        ("action_id", "ACTION_GRAPH_REF_CANARY\u200bunsafe"),
+        ("action_id", "ACTION_GRAPH_REF_CANARY" + "x" * 512),
+        ("run_id", "RUN_GRAPH_REF_CANARY\u202eunsafe"),
+        ("run_id", "RUN_GRAPH_REF_CANARY" + "x" * 512),
+    ],
+)
+async def test_invalid_action_identity_still_fails_before_graph_ref_generation(
+    reference_kind: str,
+    invalid_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    aggregate = _aggregate_with_reference_id(reference_kind, invalid_id)
+    repository_type = (
+        PermissiveRunRepository if reference_kind == "run_id" else FakeActionReadRepository
+    )
+    service = _service(repository_type((aggregate,)))
+    graph_ref_calls: list[tuple[str, str]] = []
+
+    def forbidden_graph_ref(run_id: str, action_id: str) -> object:
+        graph_ref_calls.append((run_id, action_id))
+        raise AssertionError("graph ref generation must follow aggregate validation")
+
+    monkeypatch.setattr(actions_service, "_action_graph_ref", forbidden_graph_ref)
+
+    with pytest.raises(RuntimeError, match="invalid Action aggregate") as detail_error:
+        await service.get(
+            aggregate.intent.run_id,
+            aggregate.intent.action_id,
+            principal=PRINCIPAL,
+        )
+    with pytest.raises(RuntimeError, match="invalid Action aggregate") as list_error:
+        await service.list(aggregate.intent.run_id, principal=PRINCIPAL)
+
+    assert "GRAPH_REF_CANARY" not in str(detail_error.value)
+    assert "GRAPH_REF_CANARY" not in str(list_error.value)
+    assert graph_ref_calls == []
+
+
+async def test_action_graph_ref_serialization_cannot_carry_repository_secrets() -> None:
+    canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_GRAPH_REF_123"
+    execution = replace(
+        _execution_read(error_summary=canary),
+        status=ExecutionStatus.FAILED,
+        finished_at=NOW,
+    )
+    aggregate = _aggregate(
+        intent=replace(
+            _intent(status=ToolCallStatus.FAILED, arguments={"secret": canary}),
+            reason=canary,
+        ),
+        approval=_approval_read(feedback=canary),
+        executions=(execution,),
+    )
+    repository = FakeActionReadRepository((aggregate,))
+    service = _service(repository)
+
+    detail = await service.get("run-1", "intent-1", principal=PRINCIPAL)
+    listed = await service.list("run-1", principal=PRINCIPAL)
+
+    for serialized in (detail.model_dump_json(), listed.model_dump_json()):
+        assert canary not in serialized
+        assert '"node_id":"action:run-1:intent-1"' in serialized
+        assert '"projection_quality":"exact"' in serialized
+
+    page = await repository.list_page("run-1", limit=10, after=None, snapshot=None)
+    assert not hasattr(aggregate, "graph_ref")
+    assert not hasattr(page.items[0], "graph_ref")
+    with pytest.raises(TypeError):
+        replace(aggregate, graph_ref=detail.graph_ref)
+
+
 async def test_action_detail_wrong_run_and_missing_id_are_indistinguishable() -> None:
     service = _service(FakeActionReadRepository((_aggregate(),)))
 
@@ -2149,7 +2293,7 @@ async def test_reference_identifiers_reject_unsafe_unicode_before_versioning(
         assert "REFERENCE_UNICODE_CANARY" not in listed.model_dump_json()
 
 
-async def test_reference_identifiers_preserve_safe_unicode_without_nfc_rewriting() -> None:
+async def test_non_graph_reference_ids_preserve_safe_unicode_without_nfc_rewriting() -> None:
     safe_ids = {
         "action": "动作-550e8400-e29b-41d4-a716-446655440000:part.name",
         "run": "运行-1",
@@ -2205,6 +2349,8 @@ async def test_reference_identifiers_preserve_safe_unicode_without_nfc_rewriting
     assert detail.evidence.events[0].event_id == safe_ids["event"]
     assert listed.items[0].action_id == safe_ids["action"]
     assert listed.items[0].run_id == safe_ids["run"]
+    assert detail.graph_ref is None
+    assert listed.items[0].graph_ref is None
     assert len(detail.version) == 64
     assert listed.items[0].version == detail.version
 
@@ -3815,6 +3961,8 @@ async def test_safe_unicode_reference_ids_round_trip_through_cursor() -> None:
     assert first.items[0].run_id == run_id
     assert second.items[0].run_id == run_id
     assert {first.items[0].action_id, second.items[0].action_id} == set(action_ids)
+    assert first.items[0].graph_ref is None
+    assert second.items[0].graph_ref is None
 
 
 async def test_list_rejects_malformed_repository_page_invariants() -> None:

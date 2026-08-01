@@ -4,6 +4,7 @@ from .action_repositories import SQLAlchemyActionReadRepository
 from .browser_repositories import SQLAlchemyBrowserRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
+from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .orm import Base
 from .repositories import (
@@ -46,6 +47,8 @@ __all__ = [
     "SQLAlchemyEngagementRepository",
     "SQLAlchemyExecutionRepository",
     "SQLAlchemyFindingRepository",
+    "GraphReadLimits",
+    "SQLAlchemyGraphReadRepository",
     "SQLAlchemyNodeRepository",
     "SQLAlchemyProviderStateRepository",
     "SQLAlchemyReportRepository",

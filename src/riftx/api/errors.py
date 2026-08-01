@@ -21,6 +21,11 @@ from riftx.application.errors import (
     ResourceNotAccessibleError,
     ServiceUnavailableError,
 )
+from riftx.application.graphs import (
+    InvalidGraphCursorError,
+    StaleGraphCursorError,
+    UnsupportedGraphViewError,
+)
 from riftx.domain import InvalidStateTransitionError
 
 from .schemas import ErrorDetail, ErrorResponse
@@ -55,6 +60,9 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ServiceUnavailableError, _handle_service_unavailable)
     app.add_exception_handler(InvalidStateTransitionError, _handle_invalid_transition)
     app.add_exception_handler(InvalidActionCursorError, _handle_invalid_action_cursor)
+    app.add_exception_handler(InvalidGraphCursorError, _handle_invalid_graph_cursor)
+    app.add_exception_handler(StaleGraphCursorError, _handle_stale_graph_cursor)
+    app.add_exception_handler(UnsupportedGraphViewError, _handle_unsupported_graph_view)
     app.add_exception_handler(RequestValidationError, _handle_validation)
     app.add_exception_handler(HTTPException, _handle_http_exception)
     app.add_exception_handler(Exception, _handle_unexpected)
@@ -112,6 +120,21 @@ async def _handle_invalid_transition(_: Request, exc: Exception) -> JSONResponse
 async def _handle_invalid_action_cursor(_: Request, exc: Exception) -> JSONResponse:
     _expect(exc, InvalidActionCursorError)
     return _response(422, "invalid_action_cursor", "The Action cursor is invalid")
+
+
+async def _handle_invalid_graph_cursor(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, InvalidGraphCursorError)
+    return _response(422, "invalid_graph_cursor", "The Graph cursor is invalid")
+
+
+async def _handle_stale_graph_cursor(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, StaleGraphCursorError)
+    return _response(409, "stale_graph_cursor", "The Graph cursor is stale")
+
+
+async def _handle_unsupported_graph_view(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, UnsupportedGraphViewError)
+    return _response(422, "unsupported_graph_view", "The Graph view is unavailable")
 
 
 async def _handle_validation(_: Request, exc: Exception) -> JSONResponse:
@@ -177,7 +200,7 @@ def _redact_validation_errors(
         copied.pop("ctx", None)
         location = copied.get("loc")
         if isinstance(location, (list, tuple)) and any(
-            _is_sensitive_field(part) for part in location if isinstance(part, str)
+            _redact_validation_field(part) for part in location if isinstance(part, str)
         ):
             copied["input"] = "[redacted]"
         else:
@@ -243,3 +266,12 @@ def _is_sensitive_field(name: str) -> bool:
     return compact in {"env", "environment"} or compact.endswith(
         ("apikey", "password", "secret", "token")
     )
+
+
+def _redact_validation_field(name: str) -> bool:
+    return _is_sensitive_field(name) or name in {
+        "node_type",
+        "edge_type",
+        "focus",
+        "search",
+    }

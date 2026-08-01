@@ -9,6 +9,7 @@ from .context import router as context_router
 from .events import router as events_router
 from .executions import router as executions_router
 from .findings import router as findings_router
+from .graphs import router as graphs_router
 from .memories import router as memories_router
 from .models import router as models_router
 from .nodes import router as nodes_router
@@ -30,6 +31,7 @@ __all__ = [
     "events_router",
     "executions_router",
     "findings_router",
+    "graphs_router",
     "memories_router",
     "models_router",
     "nodes_router",

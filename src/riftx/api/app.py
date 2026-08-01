@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -26,6 +27,7 @@ from .routes import (
     events_router,
     executions_router,
     findings_router,
+    graphs_router,
     memories_router,
     models_router,
     nodes_router,
@@ -90,6 +92,7 @@ def create_app(
     )
     app.state.local_operator_security = local_operator_security
     app.state.local_object_authorizer = LocalObjectAuthorizer(local_operator_security)
+    app.state.graph_cursor_signing_key = secrets.token_bytes(32)
     install_error_handlers(app)
     if configured_settings.cors_origins:
         app.add_middleware(
@@ -107,6 +110,7 @@ def create_app(
     app.include_router(events_router, prefix="/api/v1")
     app.include_router(executions_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
+    app.include_router(graphs_router, prefix="/api/v1")
     app.include_router(memories_router, prefix="/api/v1")
     app.include_router(models_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")

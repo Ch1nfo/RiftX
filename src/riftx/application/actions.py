@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from riftx.domain import ApprovalLevel, ApprovalStatus, ExecutionStatus
 from riftx.runtime.types import ToolCallStatus
@@ -277,6 +279,24 @@ class _ActionViewModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+_ACTION_GRAPH_NODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,511}")
+
+
+class ActionGraphRef(_ActionViewModel):
+    """Exact server-derived pointer to this Action's Task graph node."""
+
+    view: Literal["task"]
+    node_id: str = Field(min_length=1, max_length=512)
+    projection_quality: Literal["exact"]
+
+    @field_validator("node_id")
+    @classmethod
+    def validate_node_id(cls, value: str) -> str:
+        if _ACTION_GRAPH_NODE_ID.fullmatch(value) is None or not value.startswith("action:"):
+            raise ValueError("Action graph node ID is invalid")
+        return value
+
+
 class ActionApprovalView(_ActionViewModel):
     approval_id: str
     status: ApprovalStatus | None
@@ -341,6 +361,7 @@ class ActionEvidenceView(_ActionViewModel):
 
 
 class RunActionView(_ActionViewModel):
+    graph_ref: ActionGraphRef | None = None
     action_id: str
     run_id: str
     session_id: str
@@ -374,6 +395,7 @@ class RunActionView(_ActionViewModel):
 
 
 class RunActionListItemView(_ActionViewModel):
+    graph_ref: ActionGraphRef | None = None
     action_id: str
     run_id: str
     session_id: str
