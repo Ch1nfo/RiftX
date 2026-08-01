@@ -265,7 +265,10 @@ async def test_remote_supervisor_dispatches_idempotently_and_cancels(tmp_path: P
 
     execution = await remote.start(request)
     duplicate = await remote.start(request)
+    persisted = await repository.get(execution.id)
     assert duplicate.id == execution.id
+    assert execution.created_at is not None
+    assert persisted is not None and persisted.created_at == execution.created_at
     assert len(control.enqueued) == 1
     node_id, kind, idempotency_key, payload = control.enqueued[0]
     assert (node_id, kind, idempotency_key) == (
@@ -279,6 +282,66 @@ async def test_remote_supervisor_dispatches_idempotently_and_cancels(tmp_path: P
     await remote.cancel(execution.id)
     assert control.enqueued[-1][1] is RunnerCommandKind.CANCEL
     assert control.enqueued[-1][3]["execution_key"] == "remote-key"
+
+
+@pytest.mark.asyncio
+async def test_remote_execution_preserves_explicit_id_and_rejects_legacy_rebinding(
+    tmp_path: Path,
+) -> None:
+    repository = FileExecutionRepository(tmp_path / "remote-explicit-executions.json")
+    control = FakeControlService()
+    remote = RemoteExecutionSupervisor(
+        repository,
+        RunnerPaths(tmp_path / "remote-explicit-runner"),
+        control,  # type: ignore[arg-type]
+        FakeNodeService(),  # type: ignore[arg-type]
+    )
+    explicit = _request(
+        tmp_path,
+        key="remote-explicit-key",
+        node_id="runner-a",
+    ).model_copy(update={"execution_id": "remote-explicit-execution"})
+
+    started = await remote.start(explicit)
+    duplicate = await remote.start(explicit)
+
+    assert started.id == duplicate.id == "remote-explicit-execution"
+    assert len(control.enqueued) == 1
+    assert control.enqueued[0][3]["execution_id"] == "remote-explicit-execution"
+    assert control.enqueued[0][3]["request"]["execution_id"] == (  # type: ignore[index]
+        "remote-explicit-execution"
+    )
+
+    legacy_request = _request(
+        tmp_path,
+        key="remote-legacy-explicit-key",
+        node_id="runner-a",
+    )
+    legacy = Execution(
+        id="remote-legacy-original",
+        execution_key=legacy_request.execution_key,
+        launch_fingerprint=None,
+        run_id=legacy_request.run_id,
+        node_id=legacy_request.node_id,
+        owner=_OWNER,
+        executor_type=legacy_request.executor_type,
+        argv=legacy_request.argv,
+        cwd=str(legacy_request.cwd),
+        env_diff=legacy_request.env,
+        status=ExecutionStatus.STARTING,
+        stdout_path=str(tmp_path / "remote-legacy.stdout"),
+        stderr_path=str(tmp_path / "remote-legacy.stderr"),
+    )
+    assert (await repository.create_if_absent(legacy))[1] is True
+    enqueued_before = len(control.enqueued)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await remote.start(
+            legacy_request.model_copy(update={"execution_id": "remote-legacy-foreign"})
+        )
+
+    assert captured.value.code == "execution_idempotency_conflict"
+    assert len(control.enqueued) == enqueued_before
 
 
 @pytest.mark.parametrize("operation", ["wait", "recover"])

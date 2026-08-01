@@ -16,10 +16,15 @@ from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
 )
-from riftx.application.ports import RunRepository
+from riftx.application.ports import (
+    ExecutionAdmissionIdentity,
+    RunRepository,
+    ToolCallIntentExecutionClaim,
+    ToolCallIntentRepository,
+)
 from riftx.domain import ApprovalLevel, Execution, ExecutorType
 from riftx.executors import EnvironmentMode, ShellKind
-from riftx.persistence.runtime_repositories import SQLAlchemyToolCallIntentRepository
+from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
 from riftx.tools import ExecutionPolicy, ToolContextManager, ToolRegistry
@@ -142,7 +147,7 @@ class DeferredExecutionDispatcher:
     def __init__(
         self,
         *,
-        tool_call_repository: SQLAlchemyToolCallIntentRepository,
+        tool_call_repository: ToolCallIntentRepository,
         execution_service: ExecutionService,
         resolver: DeferredExecutionResolver | None = None,
     ) -> None:
@@ -247,47 +252,175 @@ class DeferredExecutionDispatcher:
         intent = await self.approve_intent(intent_id)
         return await self.execute_intent(intent)
 
+    async def claim_intent_execution(
+        self,
+        intent: ToolCallIntent,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> ToolCallIntentExecutionClaim:
+        """Acquire the exact durable claim used by a non-generic execution path."""
+
+        claim = await self._tool_calls.claim_execution(
+            intent.id,
+            execution_key=execution_key,
+            attempt_group=attempt_group,
+        )
+        if claim.acquired:
+            return claim
+        raise ApplicationConflictError(
+            "tool_call_not_ready",
+            f"Tool Call intent cannot claim execution {execution_key!r} "
+            f"from status {claim.intent.status.value!r}",
+        )
+
+    async def require_current_intent_execution_claim(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> None:
+        if await self._tool_calls.execution_claim_is_current(
+            intent_id,
+            execution_key=execution_key,
+            attempt_group=attempt_group,
+        ):
+            return
+        raise ApplicationConflictError(
+            "tool_call_execution_claim_lost",
+            f"Tool Call {intent_id!r} no longer owns execution {execution_key!r}",
+        )
+
+    async def rollback_intent_execution_claim(
+        self,
+        claim: ToolCallIntentExecutionClaim,
+        *,
+        admission: ExecutionAdmissionIdentity,
+    ) -> tuple[ToolCallIntent, bool]:
+        return await self._tool_calls.rollback_execution_claim(
+            claim,
+            admission=admission,
+        )
+
+    async def find_execution_admission(
+        self,
+        admission: ExecutionAdmissionIdentity,
+    ) -> Execution | None:
+        return await self._executions.find_admission(admission)
+
+    async def sync_intent_execution(
+        self,
+        intent: ToolCallIntent,
+        execution: Execution,
+    ) -> ToolCallIntent:
+        return await self._executions.sync_intent_execution(intent, execution)
+
+    async def settle_failed_intent_execution_start(
+        self,
+        claim: ToolCallIntentExecutionClaim,
+        *,
+        launch_request: TerminalLaunchRequest,
+    ) -> ToolCallIntent:
+        """Keep any durable admission claimed; roll back only a row-less start."""
+
+        if launch_request.execution_id is None or launch_request.session_id is None:
+            raise ValueError("terminal settlement requires explicit session and execution IDs")
+        execution_key = launch_request.execution_key or f"terminal:{launch_request.session_id}"
+        if (
+            execution_key != claim.execution_key
+            or launch_request.run_id != claim.intent.run_id
+            or launch_request.agent_session_id != claim.intent.session_id
+            or launch_request.tool_call_id != claim.intent.id
+            or launch_request.attempt_group != claim.attempt_group
+        ):
+            raise ValueError("terminal launch request does not match the claimed Tool Call")
+        admission = ExecutionAdmissionIdentity(
+            execution_id=launch_request.execution_id,
+            execution_key=execution_key,
+            run_id=launch_request.run_id,
+            session_id=launch_request.agent_session_id,
+            tool_call_id=launch_request.tool_call_id,
+            attempt_group=launch_request.attempt_group,
+            executor_type=ExecutorType.PTY,
+            node_id=launch_request.node_id,
+            argv=tuple(launch_request.argv),
+            command_text=None,
+            tool_id=launch_request.tool_id,
+            tool_version=launch_request.tool_version,
+            cwd=str(launch_request.cwd),
+            env=dict(launch_request.env),
+            launch_fingerprint=launch_request.launch_fingerprint,
+        )
+        admitted = await self.find_execution_admission(admission)
+        if admitted is not None:
+            return await self.sync_intent_execution(claim.intent, admitted)
+        if not claim.newly_acquired:
+            return claim.intent
+        authoritative, _ = await self.rollback_intent_execution_claim(
+            claim,
+            admission=admission,
+        )
+        # A same-identity starter may have registered its row while this
+        # failure was settling. Never restore READY once that exact row is visible.
+        admitted = await self.find_execution_admission(admission)
+        if admitted is not None:
+            return await self.sync_intent_execution(authoritative, admitted)
+        return authoritative
+
     async def approve_intent(self, intent_id: str) -> ToolCallIntent:
         """Move an approved persisted intent to READY without launching it."""
-        intent = await self._require_intent(intent_id)
-        if intent.status is ToolCallStatus.WAITING_APPROVAL:
-            intent.status = ToolCallStatus.READY
-            await self._tool_calls.save(intent)
-        elif intent.status is ToolCallStatus.REJECTED:
+        intent, _ = await self._tool_calls.compare_and_set_status(
+            intent_id,
+            expected={
+                ToolCallStatus.WAITING_APPROVAL,
+                ToolCallStatus.READY,
+            },
+            target=ToolCallStatus.READY,
+        )
+        if intent.status is ToolCallStatus.REJECTED:
             raise ApplicationConflictError(
                 "tool_call_rejected",
                 f"Tool Call {intent.id!r} was rejected and cannot execute",
             )
+        if intent.status is ToolCallStatus.PROPOSED:
+            raise ApplicationConflictError(
+                "tool_call_not_waiting_approval",
+                f"Tool Call {intent.id!r} cannot be approved from {intent.status.value!r}",
+            )
         return intent
 
     async def reject_intent(self, intent_id: str) -> ToolCallIntent:
-        intent = await self._require_intent(intent_id)
+        intent, _ = await self._tool_calls.compare_and_set_status(
+            intent_id,
+            expected={
+                ToolCallStatus.WAITING_APPROVAL,
+                ToolCallStatus.REJECTED,
+            },
+            target=ToolCallStatus.REJECTED,
+        )
         if intent.status is ToolCallStatus.REJECTED:
             return intent
-        if intent.status is not ToolCallStatus.WAITING_APPROVAL:
-            raise ApplicationConflictError(
-                "tool_call_not_waiting_approval",
-                f"Tool Call {intent.id!r} cannot be rejected from {intent.status.value!r}",
-            )
-        intent.status = ToolCallStatus.REJECTED
-        return await self._tool_calls.save(intent)
+        raise ApplicationConflictError(
+            "tool_call_not_waiting_approval",
+            f"Tool Call {intent.id!r} cannot be rejected from {intent.status.value!r}",
+        )
 
     async def mark_intent_executing(self, intent: ToolCallIntent) -> ToolCallIntent:
-        if intent.status is ToolCallStatus.EXECUTING:
-            return intent
-        if intent.status is not ToolCallStatus.READY:
-            raise ApplicationConflictError(
-                "tool_call_not_ready",
-                f"Tool Call {intent.id!r} cannot execute from {intent.status.value!r}",
-            )
-        intent.status = ToolCallStatus.EXECUTING
-        return await self._tool_calls.save(intent)
-
-    async def _require_intent(self, intent_id: str) -> ToolCallIntent:
-        intent = await self._tool_calls.get(intent_id)
-        if intent is None:
-            raise EntityNotFoundError("ToolCallIntent", intent_id)
-        return intent
+        authoritative, _ = await self._tool_calls.compare_and_set_status(
+            intent.id,
+            expected={
+                ToolCallStatus.READY,
+                ToolCallStatus.EXECUTING,
+            },
+            target=ToolCallStatus.EXECUTING,
+        )
+        if authoritative.status is ToolCallStatus.EXECUTING:
+            return authoritative
+        raise ApplicationConflictError(
+            "tool_call_not_ready",
+            f"Tool Call {authoritative.id!r} cannot execute from {authoritative.status.value!r}",
+        )
 
     async def _persist_intent(
         self,
@@ -301,18 +434,13 @@ class DeferredExecutionDispatcher:
         spec: DeferredExecutionSpec,
         status: ToolCallStatus,
     ) -> ToolCallIntent:
-        intent_id = build_tool_call_intent_id(
-            run_id=session.run_id,
-            session_id=session.id,
-            engine_call_id=call_id,
-        )
-        existing = await self._tool_calls.get(intent_id)
-        if existing is not None:
-            _validate_existing_intent(existing, session=session, call_id=call_id, tool_id=tool_id)
-            return existing
-
         intent = ToolCallIntent(
-            id=intent_id,
+            id=build_tool_call_intent_id(
+                run_id=session.run_id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                engine_call_id=call_id,
+            ),
             run_id=session.run_id,
             session_id=session.id,
             cycle_id=cycle.id,
@@ -329,17 +457,48 @@ class DeferredExecutionDispatcher:
             engine_call_id=call_id,
             execution_spec=spec.model_dump(mode="json"),
         )
+        existing = await self._tool_calls.get(intent.id)
+        if existing is not None:
+            _validate_existing_intent(existing, expected=intent)
+            return existing
+
+        legacy_id = _build_legacy_tool_call_intent_id(
+            run_id=session.run_id,
+            session_id=session.id,
+            engine_call_id=call_id,
+        )
+        legacy = await self._tool_calls.get(legacy_id)
+        if legacy is not None and legacy.cycle_id == cycle.id:
+            _validate_existing_intent(legacy, expected=intent)
+            return legacy
+
         try:
             return await self._tool_calls.create(intent)
         except RepositoryConflictError:
-            raced = await self._tool_calls.get(intent_id)
+            raced = await self._tool_calls.get(intent.id)
             if raced is None:
                 raise
-            _validate_existing_intent(raced, session=session, call_id=call_id, tool_id=tool_id)
+            _validate_existing_intent(raced, expected=intent)
             return raced
 
 
-def build_tool_call_intent_id(*, run_id: str, session_id: str, engine_call_id: str) -> str:
+def build_tool_call_intent_id(
+    *,
+    run_id: str,
+    session_id: str,
+    cycle_id: str,
+    engine_call_id: str,
+) -> str:
+    identity = "\x1f".join((run_id, session_id, cycle_id, engine_call_id))
+    return f"tool-call:v2:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _build_legacy_tool_call_intent_id(
+    *,
+    run_id: str,
+    session_id: str,
+    engine_call_id: str,
+) -> str:
     identity = "\x1f".join((run_id, session_id, engine_call_id))
     return f"tool-call:v1:{hashlib.sha256(identity.encode()).hexdigest()}"
 
@@ -438,17 +597,37 @@ def _shell_kind(path: Path) -> ShellKind:
 def _validate_existing_intent(
     intent: ToolCallIntent,
     *,
-    session: AgentSession,
-    call_id: str,
-    tool_id: str,
+    expected: ToolCallIntent,
 ) -> None:
-    if (
-        intent.run_id != session.run_id
-        or intent.session_id != session.id
-        or intent.engine_call_id != call_id
-        or intent.tool_id != tool_id
-    ):
-        raise ApplicationConflictError(
-            "tool_call_identity_mismatch",
-            f"Persisted Tool Call {intent.id!r} does not match the deferred request",
+    mismatched_fields = [
+        field_name
+        for field_name in (
+            "run_id",
+            "session_id",
+            "cycle_id",
+            "step_id",
+            "tool_id",
+            "skill_id",
+            "command_preview",
+            "reason",
+            "target_summary",
+            "approval_level",
+            "engine_call_id",
         )
+        if getattr(intent, field_name) != getattr(expected, field_name)
+    ]
+    if _canonical_json(intent.arguments) != _canonical_json(expected.arguments):
+        mismatched_fields.append("arguments")
+    if _canonical_json(intent.execution_spec) != _canonical_json(expected.execution_spec):
+        mismatched_fields.append("execution_spec")
+    if not mismatched_fields:
+        return
+    raise ApplicationConflictError(
+        "tool_call_identity_mismatch",
+        f"Persisted Tool Call {intent.id!r} does not match the deferred request",
+        details={"mismatched_fields": sorted(mismatched_fields)},
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)

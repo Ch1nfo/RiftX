@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from riftx.domain import (
     Approval,
+    ApprovalDecision,
     ApprovalGrant,
     ApprovalMode,
     ApprovalStatus,
@@ -340,10 +343,15 @@ def event_from_record(record: RunEventRecord) -> RunEvent:
     )
 
 
-def execution_to_record(execution: Execution) -> ExecutionRecord:
+def execution_to_record(
+    execution: Execution,
+    *,
+    updated_at: datetime,
+) -> ExecutionRecord:
     return ExecutionRecord(
         id=execution.id,
         execution_key=execution.execution_key,
+        launch_fingerprint=execution.launch_fingerprint,
         run_id=execution.run_id,
         session_id=execution.session_id,
         tool_call_id=execution.tool_call_id,
@@ -371,16 +379,22 @@ def execution_to_record(execution: Execution) -> ExecutionRecord:
         exit_code=execution.exit_code,
         stdout_path=execution.stdout_path,
         stderr_path=execution.stderr_path,
+        created_at=execution.created_at,
         process_created_at=execution.process_created_at,
         started_at=execution.started_at,
         finished_at=execution.finished_at,
         physical_stop_confirmed_at=execution.physical_stop_confirmed_at,
+        updated_at=updated_at,
     )
 
 
 def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> None:
     if record.execution_key != execution.execution_key:
         raise ValueError("Execution key is immutable after creation")
+    if record.launch_fingerprint != execution.launch_fingerprint:
+        raise ValueError("Execution launch fingerprint is immutable after creation")
+    if record.created_at != execution.created_at:
+        raise ValueError("Execution created_at is immutable after creation")
     incoming_owner = (
         (execution.owner.instance_id, execution.owner.epoch)
         if execution.owner is not None
@@ -410,9 +424,7 @@ def apply_execution_to_record(execution: Execution, record: ExecutionRecord) -> 
         persisted = getattr(record, field_name)
         proposed = getattr(execution, field_name)
         if persisted not in {None, ""} and proposed != persisted:
-            raise ValueError(
-                f"Execution bound field {field_name!r} is immutable after first write"
-            )
+            raise ValueError(f"Execution bound field {field_name!r} is immutable after first write")
     record.session_id = execution.session_id
     record.tool_call_id = execution.tool_call_id
     record.attempt_group = execution.attempt_group
@@ -445,6 +457,7 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
     return Execution(
         id=record.id,
         execution_key=record.execution_key,
+        launch_fingerprint=record.launch_fingerprint,
         run_id=record.run_id,
         session_id=record.session_id,
         tool_call_id=record.tool_call_id,
@@ -476,6 +489,7 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
         exit_code=record.exit_code,
         stdout_path=record.stdout_path,
         stderr_path=record.stderr_path,
+        created_at=record.created_at,
         process_created_at=record.process_created_at,
         started_at=record.started_at,
         finished_at=record.finished_at,
@@ -483,7 +497,12 @@ def execution_from_record(record: ExecutionRecord) -> Execution:
     )
 
 
-def finding_to_record(finding: Finding) -> FindingRecord:
+def finding_to_record(
+    finding: Finding,
+    *,
+    created_at: datetime,
+    updated_at: datetime,
+) -> FindingRecord:
     return FindingRecord(
         id=finding.id,
         run_id=finding.run_id,
@@ -496,12 +515,18 @@ def finding_to_record(finding: Finding) -> FindingRecord:
         reproduction_steps_json=finding.reproduction_steps,
         impact=finding.impact,
         recommendation=finding.recommendation,
-        created_at=finding.created_at,
-        updated_at=finding.updated_at,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
 def apply_finding_to_record(finding: Finding, record: FindingRecord) -> None:
+    if record.id != finding.id:
+        raise ValueError("Finding id is immutable after creation")
+    if record.run_id != finding.run_id:
+        raise ValueError("Finding run_id is immutable after creation")
+    if record.created_at != finding.created_at:
+        raise ValueError("Finding created_at is immutable after creation")
     record.title = finding.title
     record.severity = finding.severity.value
     record.status = finding.status.value
@@ -511,7 +536,6 @@ def apply_finding_to_record(finding: Finding, record: FindingRecord) -> None:
     record.reproduction_steps_json = finding.reproduction_steps
     record.impact = finding.impact
     record.recommendation = finding.recommendation
-    record.updated_at = finding.updated_at
 
 
 def finding_from_record(record: FindingRecord) -> Finding:
@@ -574,6 +598,8 @@ def approval_to_record(approval: Approval) -> ApprovalRecord:
         target_summary=approval.target_summary,
         env_diff_json=approval.env_diff,
         reason=approval.reason,
+        decision=approval.decision.value if approval.decision is not None else None,
+        decision_feedback=approval.decision_feedback,
         decided_by=approval.decided_by,
         created_at=approval.created_at,
         decided_at=approval.decided_at,
@@ -583,6 +609,8 @@ def approval_to_record(approval: Approval) -> ApprovalRecord:
 def apply_approval_to_record(approval: Approval, record: ApprovalRecord) -> None:
     record.status = approval.status.value
     record.reason = approval.reason
+    record.decision = approval.decision.value if approval.decision is not None else None
+    record.decision_feedback = approval.decision_feedback
     record.decided_by = approval.decided_by
     record.decided_at = approval.decided_at
 
@@ -599,6 +627,8 @@ def approval_from_record(record: ApprovalRecord) -> Approval:
         target_summary=record.target_summary,
         env_diff=record.env_diff_json or {},
         reason=record.reason,
+        decision=ApprovalDecision(record.decision) if record.decision is not None else None,
+        decision_feedback=record.decision_feedback,
         decided_by=record.decided_by,
         created_at=record.created_at,
         decided_at=record.decided_at,

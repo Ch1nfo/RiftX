@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryConflictError,
+)
 from riftx.application.ports import (
     ArtifactRepository,
     ExecutionRepository,
@@ -19,7 +23,6 @@ from riftx.domain import (
     FindingSeverity,
     FindingStatus,
 )
-from riftx.domain.base import utc_now
 
 if TYPE_CHECKING:
     from riftx.memory import MemoryCandidateFactory, MemoryWriter
@@ -91,7 +94,7 @@ class FindingApplicationService:
             recommendation=command.recommendation.strip(),
         )
         await self._validate_evidence(run_id, finding.evidence)
-        await self._finding_repository.create(finding)
+        finding = await self._finding_repository.create(finding)
         event_payload: dict[str, object] = {
             "finding_id": finding.id,
             "title": finding.title,
@@ -120,7 +123,7 @@ class FindingApplicationService:
         command: UpdateFinding,
     ) -> Finding:
         current = await self.get_finding(finding_id)
-        updates: dict[str, object] = {"updated_at": utc_now()}
+        updates: dict[str, object] = {}
         if command.title is not None:
             updates["title"] = _required_text(command.title, "title")
         if command.severity is not None:
@@ -140,7 +143,7 @@ class FindingApplicationService:
         if command.recommendation is not None:
             updates["recommendation"] = command.recommendation.strip()
 
-        if len(updates) == 1:
+        if not updates:
             raise ApplicationConflictError(
                 "empty_finding_update",
                 "At least one Finding field must be supplied for update",
@@ -148,7 +151,24 @@ class FindingApplicationService:
 
         finding = current.model_copy(update=updates)
         await self._validate_evidence(finding.run_id, finding.evidence)
-        await self._finding_repository.save(finding)
+        try:
+            finding, changed = await self._finding_repository.save(
+                finding,
+                expected_updated_at=current.updated_at,
+            )
+        except RepositoryConflictError as exc:
+            raise ApplicationConflictError(
+                "finding_update_conflict",
+                "Finding was updated by another writer",
+                details={"finding_id": finding_id},
+            ) from exc
+        if not changed:
+            return finding
+        updated_fields = sorted(
+            field_name
+            for field_name in updates
+            if getattr(current, field_name) != getattr(finding, field_name)
+        )
         await self._append_event(
             finding.run_id,
             "finding.updated",
@@ -157,7 +177,7 @@ class FindingApplicationService:
                 "title": finding.title,
                 "severity": finding.severity.value,
                 "status": finding.status.value,
-                "updated_fields": sorted(key for key in updates if key != "updated_at"),
+                "updated_fields": updated_fields,
             },
         )
         if (

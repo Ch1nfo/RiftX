@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from riftx.application.errors import EntityNotFoundError
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import ExecutionRepository
 from riftx.domain import Execution, ExecutionStatus, ExecutorType
 from riftx.domain.base import new_id, utc_now
@@ -73,9 +73,7 @@ class ProcessSupervisor:
     ) -> None:
         self._repository = repository
         self._paths = paths
-        self._process_executor = process_executor or DirectProcessExecutor(
-            defer_activation=True
-        )
+        self._process_executor = process_executor or DirectProcessExecutor(defer_activation=True)
         self._shell_executor = shell_executor or ShellExecutor(self._process_executor)
         self._inspector = inspector or ProcessInspector()
         self._termination_grace_seconds = termination_grace_seconds
@@ -91,12 +89,14 @@ class ProcessSupervisor:
         *,
         effect_guard: EffectGuard | None = None,
     ) -> Execution:
+        requested_execution_id = request.execution_id
         execution_id = request.execution_id or new_id()
         self._paths.ensure_run_layout(request.run_id)
         output_paths = self._paths.execution(request.run_id, execution_id)
         execution = Execution(
             id=execution_id,
             execution_key=request.execution_key,
+            launch_fingerprint=request.launch_fingerprint,
             run_id=request.run_id,
             session_id=request.session_id,
             tool_call_id=request.tool_call_id,
@@ -133,6 +133,12 @@ class ProcessSupervisor:
         execution.transition_to(ExecutionStatus.STARTING)
         execution, created = await self._repository.create_if_absent(execution)
         if not created:
+            if requested_execution_id is not None and execution.id != requested_execution_id:
+                raise ApplicationConflictError(
+                    "execution_idempotency_conflict",
+                    f"Execution key {request.execution_key!r} is already bound to "
+                    f"execution ID {execution.id!r}",
+                )
             return execution
 
         try:
@@ -976,9 +982,7 @@ class ProcessSupervisor:
                     execution_id,
                     result,
                     cancel_confirmed=True,
-                    physical_stop_confirmed=(
-                        managed.handle.containment_identifier is not None
-                    ),
+                    physical_stop_confirmed=(managed.handle.containment_identifier is not None),
                 )
                 await managed.handle.cleanup_confirmed_containment()
                 return

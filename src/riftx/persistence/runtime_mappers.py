@@ -1,5 +1,7 @@
 """Mappings for the durable Agent Runtime persistence records."""
 
+from datetime import datetime
+
 from riftx.domain import ApprovalLevel, ApprovalStatus
 from riftx.runtime.types import (
     AgentCycle,
@@ -191,7 +193,11 @@ def provider_state_from_record(record: ProviderStateRecord) -> ProviderState:
     )
 
 
-def tool_call_intent_to_record(intent: ToolCallIntent) -> ToolCallIntentRecord:
+def tool_call_intent_to_record(
+    intent: ToolCallIntent,
+    *,
+    updated_at: datetime,
+) -> ToolCallIntentRecord:
     return ToolCallIntentRecord(
         id=intent.id,
         run_id=intent.run_id,
@@ -206,14 +212,16 @@ def tool_call_intent_to_record(intent: ToolCallIntent) -> ToolCallIntentRecord:
         target_summary=intent.target_summary,
         approval_level=intent.approval_level.value,
         status=intent.status.value,
+        claimed_execution_key=None,
+        claimed_attempt_group=None,
         engine_call_id=intent.engine_call_id,
         execution_spec_json=intent.execution_spec,
         created_at=intent.created_at,
+        updated_at=updated_at,
     )
 
 
 def apply_tool_call_intent_to_record(intent: ToolCallIntent, record: ToolCallIntentRecord) -> None:
-    record.status = intent.status.value
     record.engine_call_id = intent.engine_call_id
     record.command_preview = intent.command_preview
     record.reason = intent.reason
@@ -261,18 +269,6 @@ def runtime_approval_to_record(
         created_at=request.created_at,
         decided_at=request.decided_at,
     )
-
-
-def apply_runtime_approval_to_record(
-    request: RuntimeApprovalRequest,
-    record: RuntimeApprovalRequestRecord,
-) -> None:
-    record.provider_state_id = request.provider_state_id
-    record.status = request.status.value
-    record.decision = request.decision.value if request.decision is not None else None
-    record.feedback = request.feedback
-    record.decided_by = request.decided_by
-    record.decided_at = request.decided_at
 
 
 def runtime_approval_from_record(

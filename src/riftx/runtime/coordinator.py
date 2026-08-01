@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
@@ -1118,10 +1119,10 @@ class RuntimeCoordinator:
             and cycle.waiting_object_id is not None
             and self._runtime_approvals is not None
         ):
-            approval = await self._runtime_approvals.get(cycle.waiting_object_id)
-            if approval is not None and approval.provider_state_id != provider_state_id:
-                approval.provider_state_id = provider_state_id
-                await self._runtime_approvals.save(approval)
+            await self._runtime_approvals.set_provider_state_id(
+                cycle.waiting_object_id,
+                provider_state_id,
+            )
         if (
             reason is YieldReason.USER_INPUT_REQUIRED
             and cycle.waiting_object_id is not None
@@ -1340,22 +1341,61 @@ class RuntimeCoordinator:
             return YieldReason.TOOL_RUNNING, execution.id
         if self._terminal_service is None:
             raise DomainError("Terminal service is unavailable for an interactive Tool Call")
-        digest = hashlib.sha256(intent.id.encode()).hexdigest()[:40]
-        view = await self._terminal_service.create(
-            run.id,
-            CreateTerminal(
-                session_id=f"terminal:{digest}",
-                execution_id=f"terminal-exec:{digest}",
-                agent_session_id=intent.session_id,
-                tool_call_id=intent.id,
-                argv=spec.argv,
-                tool_id=intent.tool_id,
-                tool_version=spec.tool_version,
-                cwd=str(spec.cwd),
-                env=spec.env,
-            ),
+        digest_source = (
+            intent.id
+            if spec.attempt_group == "initial"
+            else "\x1f".join((intent.id, spec.attempt_group))
         )
-        await self._deferred_executions.mark_intent_executing(intent)
+        digest = hashlib.sha256(digest_source.encode()).hexdigest()[:40]
+        terminal_id = f"terminal:{digest}"
+        execution_id = f"terminal-exec:{digest}"
+        execution_key = f"terminal:{terminal_id}"
+        terminal_command = CreateTerminal(
+            session_id=terminal_id,
+            execution_id=execution_id,
+            execution_key=execution_key,
+            agent_session_id=intent.session_id,
+            tool_call_id=intent.id,
+            attempt_group=spec.attempt_group,
+            argv=spec.argv,
+            tool_id=intent.tool_id,
+            tool_version=spec.tool_version,
+            cwd=str(spec.cwd),
+            env=spec.env,
+        )
+        launch_request = await self._terminal_service.materialize_launch_request(
+            run.id,
+            terminal_command,
+        )
+        claim = await self._deferred_executions.claim_intent_execution(
+            intent,
+            execution_key=execution_key,
+            attempt_group=spec.attempt_group,
+        )
+
+        async def admission_guard() -> None:
+            await self._deferred_executions.require_current_intent_execution_claim(
+                intent.id,
+                execution_key=execution_key,
+                attempt_group=spec.attempt_group,
+            )
+
+        try:
+            view = await self._terminal_service.create(
+                run.id,
+                terminal_command,
+                effect_guard=admission_guard,
+                launch_request=launch_request,
+            )
+        except BaseException:
+            await asyncio.shield(
+                self._deferred_executions.settle_failed_intent_execution_start(
+                    claim,
+                    launch_request=launch_request,
+                )
+            )
+            raise
+        await self._deferred_executions.sync_intent_execution(claim.intent, view.execution)
         return YieldReason.TERMINAL_OPEN, view.execution.id
 
     async def _append_engine_event(

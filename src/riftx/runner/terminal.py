@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryConflictError,
+)
 from riftx.application.ports import (
     ExecutionRepository,
     RunEventRepository,
@@ -40,6 +44,7 @@ from .terminal_backend import (
     NativeTerminalHandle,
     UnconfirmedTerminalStartError,
 )
+from .terminal_identity import require_terminal_start_replay_matches
 
 
 class TerminalController(Protocol):
@@ -147,8 +152,12 @@ class TerminalSupervisor:
     ) -> TerminalSession:
         backend = self._backend()
         self._ensure_required_containment_available(backend)
+        explicit_identity = request.session_id is not None
         session_id = request.session_id or new_id()
         execution_id = request.execution_id or new_id()
+        request = request.model_copy(
+            update={"session_id": session_id, "execution_id": execution_id}
+        )
         self._paths.ensure_run_layout(request.run_id)
         terminal_paths = self._paths.terminal(request.run_id, session_id)
         terminal_paths.directory.mkdir(parents=True, exist_ok=True)
@@ -156,10 +165,12 @@ class TerminalSupervisor:
 
         execution = Execution(
             id=execution_id,
-            execution_key=f"terminal:{session_id}",
+            execution_key=request.execution_key or f"terminal:{session_id}",
+            launch_fingerprint=request.launch_fingerprint,
             run_id=request.run_id,
             session_id=request.agent_session_id,
             tool_call_id=request.tool_call_id,
+            attempt_group=request.attempt_group,
             node_id=request.node_id,
             owner=request.runner_principal,
             executor_type=ExecutorType.PTY,
@@ -176,38 +187,228 @@ class TerminalSupervisor:
         )
         environment = merge_environment(request.env, mode=request.environment_mode)
         execution.executable_path = _resolve_terminal_executable(request.argv[0], environment)
-        # STARTING is persisted before the Run guard and the PTY backend.  A
-        # stop therefore either rejects this admission or must account for it.
-        execution.transition_to(ExecutionStatus.STARTING)
-        execution, created = await self._executions.create_if_absent(execution)
+        # CREATED is an explicit durable proof that no PTY backend has been
+        # admitted yet.  The terminal projection is created first, then a
+        # CREATED -> STARTING CAS selects the only caller allowed to dispatch.
+        # This also lets a create failure race a concurrent stop without
+        # either side manufacturing physical-stop proof after dispatch.
+        try:
+            execution, created = await self._executions.create_if_absent(execution)
+        except RepositoryConflictError as exc:
+            raise ApplicationConflictError(
+                "execution_idempotency_conflict",
+                str(exc),
+                details={
+                    "execution_id": execution.id,
+                    "execution_key": execution.execution_key,
+                },
+            ) from exc
+        terminal: TerminalSession | None = None
         if not created:
+            if explicit_identity and execution.id != execution_id:
+                raise ApplicationConflictError(
+                    "execution_idempotency_conflict",
+                    f"Terminal execution key {execution.execution_key!r} is already bound "
+                    f"to execution ID {execution.id!r}",
+                )
+            self._require_exact_execution_replay(execution, request)
             existing_terminal = await self._terminals.get_by_execution(execution.id)
+            if execution.status is ExecutionStatus.CREATED and execution.launch_fingerprint is None:
+                await self._shield_predispatch_cleanup(
+                    execution.id,
+                    existing_terminal,
+                    expected={ExecutionStatus.CREATED},
+                )
+                raise ApplicationConflictError(
+                    "execution_idempotency_conflict",
+                    f"Legacy terminal execution {execution.id!r} has no durable "
+                    "launch fingerprint for CREATED admission",
+                    details={"execution_id": execution.id},
+                )
             if existing_terminal is not None:
-                return existing_terminal
-            if execution.status is not ExecutionStatus.CREATED:
+                self._require_exact_terminal_replay(
+                    existing_terminal,
+                    execution,
+                    request,
+                )
+                if execution.status is ExecutionStatus.CREATED:
+                    # CREATED proves no caller has won dispatch yet.  An exact
+                    # retry may adopt this projection and compete on the same
+                    # execution-ID CAS without replaying an effect.
+                    terminal = existing_terminal
+                elif existing_terminal.status is TerminalStatus.CREATED:
+                    if execution.physical_stop_confirmed_at is not None:
+                        return await self._close_terminal_projection(existing_terminal)
+                    raise ApplicationConflictError(
+                        "terminal_start_in_progress",
+                        f"Terminal {existing_terminal.id!r} has a durable admission "
+                        "whose dispatch outcome is not yet confirmed",
+                        details={
+                            "session_id": existing_terminal.id,
+                            "execution_id": execution.id,
+                            "execution_status": execution.status.value,
+                        },
+                    )
+                if terminal is None:
+                    if effect_guard is not None:
+                        await effect_guard()
+                    return existing_terminal
+            if terminal is None and execution.status is ExecutionStatus.STARTING:
+                # Compatibility recovery for the old ordering, which wrote
+                # STARTING immediately before the non-deleting Terminal store.
+                # Missing projection is therefore durable pre-dispatch proof.
+                await self._shield_predispatch_cleanup(
+                    execution.id,
+                    None,
+                    expected={ExecutionStatus.STARTING},
+                )
+                if execution.launch_fingerprint is None:
+                    raise ApplicationConflictError(
+                        "execution_idempotency_conflict",
+                        f"Legacy terminal execution {execution.id!r} has no durable "
+                        "session launch fingerprint",
+                        details={"execution_id": execution.id},
+                    )
+                return await self._create_closed_terminal_projection(
+                    terminal=TerminalSession(
+                        id=session_id,
+                        run_id=request.run_id,
+                        execution_id=execution.id,
+                        runner_id=request.node_id,
+                        shell=request.argv[0],
+                        cwd=str(request.cwd),
+                        owner=request.owner,
+                        cols=request.cols,
+                        rows=request.rows,
+                    ),
+                    execution=await self._require_execution(execution.id),
+                    request=request,
+                )
+            if terminal is None and execution.status is not ExecutionStatus.CREATED:
                 raise ApplicationConflictError(
                     "terminal_execution_exists",
                     f"Terminal execution {execution.execution_key!r} already exists",
                 )
-        terminal = TerminalSession(
-            id=session_id,
-            run_id=request.run_id,
-            execution_id=execution.id,
-            runner_id=request.node_id,
-            shell=request.argv[0],
-            cwd=str(request.cwd),
-            owner=request.owner,
-            cols=request.cols,
-            rows=request.rows,
+        if terminal is None:
+            terminal = TerminalSession(
+                id=session_id,
+                run_id=request.run_id,
+                execution_id=execution.id,
+                runner_id=request.node_id,
+                shell=request.argv[0],
+                cwd=str(request.cwd),
+                owner=request.owner,
+                cols=request.cols,
+                rows=request.rows,
+            )
+            create_task = asyncio.create_task(
+                self._terminals.create(terminal),
+                name=f"riftx-terminal-projection-create-{session_id}",
+            )
+            create_interrupted = await _wait_for_shielded_task(create_task)
+            try:
+                terminal = create_task.result()
+            except BaseException as create_error:
+                durable_terminal = await self._terminals.get_by_execution(execution.id)
+                if durable_terminal is not None:
+                    self._require_exact_terminal_replay(
+                        durable_terminal,
+                        execution,
+                        request,
+                    )
+                    if not _is_terminal_projection_conflict(create_error):
+                        latest = await self._require_execution(execution.id)
+                        if latest.status is ExecutionStatus.CREATED:
+                            await self._shield_predispatch_cleanup(
+                                latest.id,
+                                durable_terminal,
+                                expected={ExecutionStatus.CREATED},
+                            )
+                    # Exact callers that first observed absence may adopt a
+                    # concurrently created projection and contend on the
+                    # execution-ID CAS. A non-conflict post-commit error
+                    # instead settles CREATED and never dispatches.
+                    if create_interrupted:
+                        raise asyncio.CancelledError from None
+                    if _is_terminal_projection_conflict(create_error):
+                        terminal = durable_terminal
+                    else:
+                        raise
+                else:
+                    await self._shield_predispatch_cleanup(
+                        execution.id,
+                        None,
+                        expected={ExecutionStatus.CREATED},
+                    )
+                    if create_interrupted:
+                        raise asyncio.CancelledError from None
+                    raise
+
+            if create_interrupted:
+                await self._shield_predispatch_cleanup(
+                    execution.id,
+                    terminal,
+                    expected={ExecutionStatus.CREATED},
+                )
+                raise asyncio.CancelledError
+
+        starting = execution.model_copy(deep=True)
+        starting.transition_to(ExecutionStatus.STARTING)
+        claim_task = asyncio.create_task(
+            self._executions.save_if_status(
+                starting,
+                expected={ExecutionStatus.CREATED},
+            ),
+            name=f"riftx-terminal-admission-claim-{execution.id}",
         )
-        await self._terminals.create(terminal)
+        claim_interrupted = await _wait_for_shielded_task(claim_task)
+        try:
+            execution, admitted = claim_task.result()
+        except BaseException:
+            latest = await self._require_execution(execution.id)
+            if latest.status is ExecutionStatus.CREATED:
+                await self._shield_predispatch_cleanup(
+                    latest.id,
+                    terminal,
+                    expected={ExecutionStatus.CREATED},
+                )
+            raise
+        if claim_interrupted:
+            if admitted:
+                await self._shield_predispatch_cleanup(
+                    execution.id,
+                    terminal,
+                    expected={ExecutionStatus.STARTING},
+                )
+            raise asyncio.CancelledError
+        if not admitted:
+            if execution.physical_stop_confirmed_at is not None:
+                await self._close_terminal_projection(terminal)
+            raise ApplicationConflictError(
+                "terminal_start_cancelled",
+                f"Terminal {terminal.id!r} was cancelled before it could start",
+                details={"session_id": terminal.id, "run_id": terminal.run_id},
+            )
 
         try:
             if effect_guard is not None:
                 await effect_guard()
         except BaseException:
-            await self._close_unstarted_terminal(execution, terminal)
+            await self._shield_predispatch_cleanup(
+                execution.id,
+                terminal,
+                expected={ExecutionStatus.STARTING},
+            )
             raise
+        execution = await self._require_execution(execution.id)
+        if execution.status is not ExecutionStatus.STARTING:
+            if execution.physical_stop_confirmed_at is not None:
+                await self._close_terminal_projection(terminal)
+            raise ApplicationConflictError(
+                "terminal_start_cancelled",
+                f"Terminal {terminal.id!r} was cancelled before backend dispatch",
+                details={"session_id": terminal.id, "run_id": terminal.run_id},
+            )
         backend_request = request.model_copy(
             update={"session_id": session_id, "execution_id": execution.id}
         )
@@ -359,24 +560,174 @@ class TerminalSupervisor:
         durable = await self._terminals.get(terminal.id)
         return durable or terminal
 
-    async def _close_unstarted_terminal(
-        self,
+    async def _require_execution(self, execution_id: str) -> Execution:
+        execution = await self._executions.get(execution_id)
+        if execution is None:
+            raise ProcessTerminationError(
+                f"Terminal execution {execution_id!r} disappeared during admission"
+            )
+        return execution
+
+    @staticmethod
+    def _require_exact_execution_replay(
         execution: Execution,
-        terminal: TerminalSession,
+        request: TerminalLaunchRequest,
     ) -> None:
-        await self._finalize_execution(
-            execution.id,
-            exit_code=0,
-            cancel_confirmed=True,
-            physical_stop_confirmed=True,
+        expected_key = request.execution_key or f"terminal:{request.session_id}"
+        fields: tuple[tuple[str, object, object], ...] = (
+            ("execution_id", execution.id, request.execution_id),
+            ("execution_key", execution.execution_key, expected_key),
+            ("run_id", execution.run_id, request.run_id),
+            ("agent_session_id", execution.session_id, request.agent_session_id),
+            ("tool_call_id", execution.tool_call_id, request.tool_call_id),
+            ("attempt_group", execution.attempt_group, request.attempt_group),
+            ("node_id", execution.node_id, request.node_id),
+            ("runner_principal", execution.owner, request.runner_principal),
+            ("executor_type", execution.executor_type, ExecutorType.PTY),
+            ("argv", execution.argv, request.argv),
+            ("tool_id", execution.tool_id, request.tool_id),
+            ("tool_version", execution.tool_version, request.tool_version),
+            ("cwd", execution.cwd, str(request.cwd)),
+            ("env", execution.env_diff, request.env),
         )
+        mismatched = [name for name, persisted, requested in fields if persisted != requested]
+        if (
+            execution.launch_fingerprint is not None
+            and execution.launch_fingerprint != request.launch_fingerprint
+        ):
+            mismatched.append("launch_fingerprint")
+        if mismatched:
+            raise ApplicationConflictError(
+                "execution_idempotency_conflict",
+                f"Terminal execution {execution.id!r} conflicts with requested launch "
+                f"fields: {', '.join(sorted(set(mismatched)))}",
+                details={
+                    "execution_id": execution.id,
+                    "mismatched_fields": sorted(set(mismatched)),
+                },
+            )
+
+    @staticmethod
+    def _require_exact_terminal_replay(
+        terminal: TerminalSession,
+        execution: Execution,
+        request: TerminalLaunchRequest,
+    ) -> None:
+        try:
+            require_terminal_start_replay_matches(terminal, execution, request)
+        except ValueError as exc:
+            raise ApplicationConflictError(
+                "execution_idempotency_conflict",
+                str(exc),
+                details={
+                    "execution_id": execution.id,
+                    "session_id": terminal.id,
+                },
+            ) from exc
+
+    async def _cancel_predispatch_execution(
+        self,
+        execution_id: str,
+        *,
+        expected: set[ExecutionStatus],
+    ) -> tuple[Execution, bool]:
+        execution = await self._require_execution(execution_id)
+        if execution.physical_stop_confirmed_at is not None:
+            return execution, False
+        if execution.status not in expected:
+            return execution, False
+        if not _has_no_terminal_dispatch_identity(execution):
+            raise ProcessTerminationError(
+                f"Refusing pre-dispatch cleanup for terminal execution {execution.id!r} "
+                "because durable dispatch identity already exists"
+            )
+        candidate = execution.model_copy(deep=True)
+        candidate.transition_to(ExecutionStatus.CANCELLED, exit_code=0)
+        candidate.physical_stop_confirmed_at = utc_now()
+        execution, saved = await self._executions.save_if_status(
+            candidate,
+            expected={execution.status},
+        )
+        if saved:
+            return execution, True
+        if execution.physical_stop_confirmed_at is not None:
+            return execution, False
+        return execution, False
+
+    async def _shield_predispatch_cleanup(
+        self,
+        execution_id: str,
+        terminal: TerminalSession | None,
+        *,
+        expected: set[ExecutionStatus],
+    ) -> None:
+        cleanup_task = asyncio.create_task(
+            self._cancel_predispatch_execution(
+                execution_id,
+                expected=expected,
+            ),
+            name=f"riftx-terminal-predispatch-cleanup-{execution_id}",
+        )
+        interrupted = await _wait_for_shielded_task(cleanup_task)
+        execution, _ = cleanup_task.result()
+        if execution.physical_stop_confirmed_at is None:
+            raise ProcessTerminationError(
+                f"Could not persist pre-dispatch physical-stop proof for terminal "
+                f"execution {execution_id!r}; durable status is "
+                f"{execution.status.value!r}"
+            )
+        if terminal is None:
+            if interrupted:
+                raise asyncio.CancelledError
+            return
+        await self._close_terminal_projection(terminal)
+        if interrupted:
+            raise asyncio.CancelledError
+
+    async def _close_terminal_projection(
+        self,
+        terminal: TerminalSession,
+    ) -> TerminalSession:
         durable_terminal = await self._terminals.get(terminal.id)
+        if durable_terminal is None:
+            return terminal
         if durable_terminal is not None and durable_terminal.status in {
             TerminalStatus.CREATED,
             TerminalStatus.OPEN,
+            TerminalStatus.LOST,
         }:
-            durable_terminal.transition_to(TerminalStatus.CLOSED)
-            await self._terminals.save(durable_terminal)
+            candidate = durable_terminal.model_copy(deep=True)
+            candidate.transition_to(TerminalStatus.CLOSED)
+            durable_terminal, _ = await self._terminals.save_if_status(
+                candidate,
+                expected={durable_terminal.status},
+            )
+        return durable_terminal
+
+    async def _create_closed_terminal_projection(
+        self,
+        *,
+        terminal: TerminalSession,
+        execution: Execution,
+        request: TerminalLaunchRequest,
+    ) -> TerminalSession:
+        closed = terminal.model_copy(deep=True)
+        closed.transition_to(TerminalStatus.CLOSED)
+        create_task = asyncio.create_task(
+            self._terminals.create(closed),
+            name=f"riftx-terminal-closed-projection-create-{closed.id}",
+        )
+        interrupted = await _wait_for_shielded_task(create_task)
+        try:
+            durable = create_task.result()
+        except BaseException:
+            durable = await self._terminals.get_by_execution(execution.id)
+            if durable is None:
+                raise
+            self._require_exact_terminal_replay(durable, execution, request)
+        if interrupted:
+            raise asyncio.CancelledError
+        return durable
 
     async def _terminate_unadmitted_terminal(
         self,
@@ -723,6 +1074,16 @@ class TerminalSupervisor:
             await self._cleanup_confirmed_detached_containment(execution)
             return execution
 
+        if execution.status is ExecutionStatus.CREATED and _has_no_terminal_dispatch_identity(
+            execution
+        ):
+            await self._shield_predispatch_cleanup(
+                execution.id,
+                terminal,
+                expected={ExecutionStatus.CREATED},
+            )
+            return await self._require_execution(execution.id)
+
         if terminal is not None:
             await self.close(terminal.id)
             closed = await self._executions.get(execution.id)
@@ -732,9 +1093,8 @@ class TerminalSupervisor:
                 )
             return closed
 
-        if (
-            execution.status is ExecutionStatus.CANCELLED
-            and _is_explicit_pre_spawn_absence(execution)
+        if execution.status is ExecutionStatus.CANCELLED and _is_explicit_pre_spawn_absence(
+            execution
         ):
             finalized, _ = await self._finalize_execution(
                 execution.id,
@@ -894,15 +1254,13 @@ class TerminalSupervisor:
             containment = resolver(execution.execution_key)
         except Exception as exc:
             raise ProcessTerminationError(
-                f"Could not resolve containment for detached terminal execution "
-                f"{execution.id!r}"
+                f"Could not resolve containment for detached terminal execution {execution.id!r}"
             ) from exc
         try:
             boundary_exists = containment.boundary_exists()
         except Exception as exc:
             raise ProcessTerminationError(
-                f"Could not inspect containment for detached terminal execution "
-                f"{execution.id!r}"
+                f"Could not inspect containment for detached terminal execution {execution.id!r}"
             ) from exc
         if not boundary_exists:
             # The caller will fail closed with the explicit missing-boundary
@@ -913,8 +1271,7 @@ class TerminalSupervisor:
             current_identifier = containment.identifier
         except Exception as exc:
             raise ProcessTerminationError(
-                f"Could not identify containment for detached terminal execution "
-                f"{execution.id!r}"
+                f"Could not identify containment for detached terminal execution {execution.id!r}"
             ) from exc
         if current_identifier != execution.containment_id:
             raise ProcessTerminationError(
@@ -956,6 +1313,17 @@ class TerminalSupervisor:
                 await self._terminals.save(terminal)
                 await self._cleanup_confirmed_detached_containment(execution)
                 recovered.append(terminal)
+                continue
+            if execution is not None and execution.status is ExecutionStatus.CREATED:
+                # CREATED is the durable pre-dispatch phase introduced for
+                # projection admission. A restart can close it affirmatively;
+                # it must not become a LOST row with an endless monitor.
+                await self._shield_predispatch_cleanup(
+                    execution.id,
+                    terminal,
+                    expected={ExecutionStatus.CREATED},
+                )
+                recovered.append(await self.get(terminal.id))
                 continue
             if execution is not None and execution.status in {
                 ExecutionStatus.STARTING,
@@ -1245,6 +1613,39 @@ def _is_explicit_pre_spawn_absence(execution: Execution) -> bool:
         and execution.process_group_id is None
         and execution.containment_id is None
     )
+
+
+def _has_no_terminal_dispatch_identity(execution: Execution) -> bool:
+    return all(
+        value is None
+        for value in (
+            execution.started_at,
+            execution.process_created_at,
+            execution.pid,
+            execution.process_group_id,
+            execution.containment_id,
+        )
+    )
+
+
+def _is_terminal_projection_conflict(error: BaseException) -> bool:
+    return isinstance(error, RepositoryConflictError) or (
+        isinstance(error, RuntimeError) and "terminal session already exists" in str(error)
+    )
+
+
+async def _wait_for_shielded_task(task: asyncio.Task[object]) -> bool:
+    """Wait for a side-effect task to settle despite caller cancellation."""
+
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    return interrupted
 
 
 def _observe_task_exception(task: asyncio.Task[object]) -> None:

@@ -72,10 +72,12 @@ def test_pty_launcher_rejects_residual_payload_capabilities(
     monkeypatch.setattr(
         pty_launcher_module,
         "_read_self_status",
-        lambda: "CapInh:\t0000000000000000\n"
-        "CapPrm:\t0000000000000000\n"
-        "CapEff:\t0000000000000000\n"
-        "CapAmb:\t0000000000000002\n",
+        lambda: (
+            "CapInh:\t0000000000000000\n"
+            "CapPrm:\t0000000000000000\n"
+            "CapEff:\t0000000000000000\n"
+            "CapAmb:\t0000000000000002\n"
+        ),
     )
 
     with pytest.raises(RuntimeError, match="CapAmb"):
@@ -85,6 +87,7 @@ def test_pty_launcher_rejects_residual_payload_capabilities(
 def _request(tmp_path: Path, *argv: str, session_id: str) -> TerminalLaunchRequest:
     return TerminalLaunchRequest(
         session_id=session_id,
+        execution_id=f"execution:{session_id}",
         run_id="run-pty-containment",
         node_id="local",
         cwd=tmp_path,
@@ -186,9 +189,12 @@ async def test_unix_pty_target_stays_gated_until_activation(tmp_path: Path) -> N
     assert handle.activation_pending
     assert handle.containment_identifier is not None
     assert not marker.exists()
-    assert str(handle.pid) in (
-        manager.containment_for("terminal:activation-gate").path / "cgroup.procs"
-    ).read_text().splitlines()
+    assert (
+        str(handle.pid)
+        in (manager.containment_for("terminal:activation-gate").path / "cgroup.procs")
+        .read_text()
+        .splitlines()
+    )
 
     await handle.activate()
     assert not handle.activation_pending
@@ -209,8 +215,7 @@ async def test_unix_pty_launcher_defers_target_python_environment_until_activati
     site_marker = tmp_path / "pty-sitecustomize-ran"
     target_marker = tmp_path / "pty-target-environment"
     (site_directory / "sitecustomize.py").write_text(
-        "from pathlib import Path\n"
-        f"Path({str(site_marker)!r}).write_text('loaded')\n",
+        f"from pathlib import Path\nPath({str(site_marker)!r}).write_text('loaded')\n",
         encoding="utf-8",
     )
     manager = FakeKernelContainmentManager(tmp_path / "containment")
@@ -397,6 +402,7 @@ async def test_pty_spawn_cleanup_failure_stays_cancellable_without_false_stop_pr
     monkeypatch.setattr(asyncio.subprocess.Process, "wait", injected_wait)
     monkeypatch.setattr(unix_pty_module, "_read_launcher_readiness", fail_readiness)
     if failure_mode == "force_terminate":
+
         async def fail_after_prepare(*args, **kwargs) -> bytes:
             assert manager.containment is not None
             manager.containment.fail_force_terminate = True
@@ -430,9 +436,7 @@ async def test_pty_spawn_cleanup_failure_stays_cancellable_without_false_stop_pr
     assert execution.physical_stop_confirmed_at is None
 
     expected_error = (
-        "force_terminate failure"
-        if failure_mode == "force_terminate"
-        else "process.wait failure"
+        "force_terminate failure" if failure_mode == "force_terminate" else "process.wait failure"
     )
     with pytest.raises(RuntimeError, match=expected_error):
         await supervisor.close(session_id)
@@ -1074,9 +1078,7 @@ async def test_terminal_supervisor_require_containment_rejects_backend_before_st
     )
 
     with pytest.raises(ProcessStartError, match="no delegated cgroup v2 boundary"):
-        await supervisor.start(
-            _request(tmp_path, "fake-shell", session_id="containment-required")
-        )
+        await supervisor.start(_request(tmp_path, "fake-shell", session_id="containment-required"))
 
     assert await executions.list("run-pty-containment") == []
     assert not handle.activated.is_set()

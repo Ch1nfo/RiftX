@@ -16,6 +16,7 @@ from temporalio.client import Client
 
 from riftx import __version__
 from riftx.application.services import (
+    ActionApplicationService,
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
@@ -44,6 +45,7 @@ from riftx.models import ModelProfileRegistry
 from riftx.observability import RuntimeObservabilityService
 from riftx.persistence import (
     Database,
+    SQLAlchemyActionReadRepository,
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
@@ -87,6 +89,7 @@ from riftx.runner import (
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
 from riftx.security import (
+    LocalObjectAuthorizer,
     LocalOperatorSecurity,
     validate_deployment_profile,
     validate_operator_runner_credential_separation,
@@ -250,6 +253,7 @@ class ControlPlane:
     settings: APISettings
     database: Database
     run_service: RunApplicationService
+    action_service: ActionApplicationService
     event_service: EventApplicationService
     execution_service: ExecutionApplicationService
     finding_service: FindingApplicationService
@@ -388,6 +392,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
+    action_read_repository = SQLAlchemyActionReadRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -491,6 +496,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         repository=execution_repository,
         local=process_supervisor,
         remote=remote_supervisor,
+        local_terminal=terminal_supervisor,
     )
     remote_terminal_supervisor = RemoteTerminalSupervisor(
         terminal_repository=terminal_repository,
@@ -570,6 +576,10 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         settings=settings,
         database=database,
         run_service=run_service,
+        action_service=ActionApplicationService(
+            action_read_repository,
+            authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
+        ),
         event_service=EventApplicationService(
             run_repository=run_repository,
             event_repository=event_repository,

@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from riftx.domain.enums import ApprovalDecision as ApprovalDecision
+
 
 class SessionStatus(StrEnum):
     CREATED = "created"
@@ -85,13 +87,6 @@ class ToolCallStatus(StrEnum):
     REJECTED = "rejected"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-class ApprovalDecision(StrEnum):
-    APPROVE_ONCE = "approve_once"
-    APPROVE_TOOL_FOR_RUN = "approve_tool_for_run"
-    REJECT = "reject"
-    REJECT_WITH_FEEDBACK = "reject_with_feedback"
 
 
 class UserInputStatus(StrEnum):

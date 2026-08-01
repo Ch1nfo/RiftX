@@ -39,8 +39,13 @@ from riftx.agent import (
     SQLAlchemyCheckpointStore,
 )
 from riftx.api import APISettings, ControlPlane, build_control_plane, create_app
-from riftx.application.errors import ApplicationConflictError, ServiceUnavailableError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    RepositoryConflictError,
+    ServiceUnavailableError,
+)
 from riftx.application.services import (
+    ActionApplicationService,
     ApprovalApplicationService,
     ApprovalRequestRecorder,
     ArtifactApplicationService,
@@ -81,6 +86,7 @@ from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
 from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
 from riftx.persistence import (
     Database,
+    SQLAlchemyActionReadRepository,
     SQLAlchemyAgentCycleRepository,
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
@@ -125,7 +131,7 @@ from riftx.runtime import (
     RuntimeApprovalRequest,
     ToolCallIntent,
 )
-from riftx.security import DeploymentProfileError
+from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
@@ -501,6 +507,10 @@ tools:
                 },
                 execution_cancel_timeout_seconds=0.2,
                 execution_cancel_poll_seconds=0.01,
+            ),
+            action_service=ActionApplicationService(
+                SQLAlchemyActionReadRepository(database.session_factory),
+                authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
             ),
             event_service=EventApplicationService(
                 run_repository=run_repository,
@@ -1052,7 +1062,7 @@ async def test_approval_does_not_signal_when_pause_wins_after_atomic_decision(
                 tool_name="python",
             )
             await runtime.approval_repository.create_request(tool_call, approval)
-            original_decide = runtime.approval_repository.decide
+            original_decide = runtime.approval_repository.decide_runtime
 
             async def hold_after_atomic_decision(
                 *args: Any,
@@ -1064,7 +1074,11 @@ async def test_approval_does_not_signal_when_pause_wins_after_atomic_decision(
                 await continue_service.wait()
                 return result
 
-            monkeypatch.setattr(runtime.approval_repository, "decide", hold_after_atomic_decision)
+            monkeypatch.setattr(
+                runtime.approval_repository,
+                "decide_runtime",
+                hold_after_atomic_decision,
+            )
             approval_task = asyncio.create_task(
                 client.post(
                     f"/api/v1/approvals/{approval.id}/approve",
@@ -1658,6 +1672,7 @@ models:
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
     assert runtime.terminal_supervisor._containment_manager is process_executor.containment_manager
+    assert runtime.execution_runner._local_terminal is runtime.terminal_supervisor
     cleanup_reconciler = runtime._cleanup_reconciler_task
     try:
         assert cleanup_reconciler is not None and not cleanup_reconciler.done()
@@ -2183,8 +2198,8 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
                 "approve_for_run": True,
             },
             {
-                "reason": "must not replace the saved approval",
-                "approve_for_run": False,
+                "reason": "Authorized after review",
+                "approve_for_run": True,
             },
         ),
         (
@@ -2194,7 +2209,7 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
                 "reason": "Outside the authorized boundary",
             },
             {
-                "reason": "must not replace the saved rejection",
+                "reason": "Outside the authorized boundary",
             },
         ),
     ],
@@ -2397,6 +2412,84 @@ async def test_terminal_rest_lifecycle_and_start_failure(tmp_path: Path) -> None
             assert failed.json()["error"]["code"] == "terminal_start_failed"
     finally:
         await runtime.control_plane.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX PTY process verification")
+@pytest.mark.asyncio
+async def test_production_pause_stops_local_pty_through_execution_router(
+    tmp_path: Path,
+) -> None:
+    tools_path = tmp_path / "tools.yaml"
+    tools_path.write_text("version: 1\nexecution_policy: registered_only\ntools: {}\n")
+    models_path = tmp_path / "models.yaml"
+    models_path.write_text(
+        """\
+default_profile: primary
+models:
+  primary:
+    provider: openai_compatible
+    model: test-model
+    api: chat_completions
+    base_url: http://127.0.0.1:8000/v1
+    requires_api_key: false
+"""
+    )
+    settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "secrets" / "local-principal.json",
+        admin_token="test-only-local-operator-token-0001",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'local-pty-stop.db'}",
+        tools_config_path=tools_path,
+        models_config_path=models_path,
+        model_secrets_path=tmp_path / "secrets" / "models.json",
+        workspace_root=tmp_path / "workspaces",
+        runner_state_path=tmp_path / "runner",
+        temporal_address="temporal.test:7233",
+        sse_poll_interval_seconds=0.001,
+        sse_heartbeat_seconds=0.005,
+    )
+    runtime = await build_control_plane(settings)
+    try:
+        async for client in _client(runtime):
+            run_response = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Stop a local PTY through Run safety"},
+            )
+            assert run_response.status_code == 201, run_response.text
+            run = run_response.json()
+            created = await client.post(
+                f"/api/v1/runs/{run['id']}/terminals",
+                json={"argv": [sys.executable, "-u", "-c", _TERMINAL_SCRIPT]},
+            )
+            assert created.status_code == 201, created.text
+            session = created.json()
+            assert session["execution_status"] == "running"
+            assert session["pid"] is not None
+            os.kill(int(session["pid"]), 0)
+
+            paused = await client.post(f"/api/v1/runs/{run['id']}/pause")
+
+            assert paused.status_code == 202, paused.text
+            assert paused.json()["run"]["status"] == "paused"
+            terminal = await runtime.terminal_supervisor.get(str(session["id"]))
+            execution = await runtime.terminal_supervisor.get_execution(str(session["id"]))
+            assert terminal.status is TerminalStatus.CLOSED
+            assert execution.status is ExecutionStatus.CANCELLED
+            assert execution.physical_stop_confirmed_at is not None
+            with pytest.raises(ProcessLookupError):
+                os.kill(int(session["pid"]), 0)
+
+            events = await client.get(f"/api/v1/runs/{run['id']}/events")
+            pause_event = next(
+                item
+                for item in events.json()["items"]
+                if item["event_type"] == "run.pause_requested"
+            )
+            execution_stop = pause_event["payload"]["stop_resources"]["executions"]
+            assert execution_stop["confirmed_statuses"] == {session["execution_id"]: "cancelled"}
+            assert execution_stop["failures"] == {}
+    finally:
+        await runtime.close()
 
 
 def _receive_ws_message(websocket: Any, expected_type: str) -> dict[str, object]:
@@ -2703,6 +2796,13 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
             assert updated.json()["title"] == "Exposed service"
             assert updated.json()["updated_at"] > finding["updated_at"]
 
+            same_value = await client.patch(
+                f"/api/v1/findings/{finding_id}",
+                json={"severity": "critical"},
+            )
+            assert same_value.status_code == 200
+            assert same_value.json() == updated.json()
+
             promoted = await client.get(
                 "/api/v1/memories",
                 params={
@@ -2773,6 +2873,41 @@ async def test_findings_are_editable_and_validate_artifact_evidence(tmp_path: Pa
                 "finding.updated",
                 "memory.promotion_evaluated",
             ]
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_finding_repository_conflict_has_stable_api_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            created_run = await _create_run(client)
+            created = await client.post(
+                f"/api/v1/runs/{created_run['id']}/findings",
+                json={"title": "Finding", "severity": "info"},
+            )
+            assert created.status_code == 201
+
+            async def reject_stale_write(
+                finding: Finding,
+                *,
+                expected_updated_at: datetime,
+            ) -> tuple[Finding, bool]:
+                del finding, expected_updated_at
+                raise RepositoryConflictError("simulated stale writer")
+
+            monkeypatch.setattr(runtime.finding_repository, "save", reject_stale_write)
+            response = await client.patch(
+                f"/api/v1/findings/{created.json()['id']}",
+                json={"title": "Changed"},
+            )
+
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "finding_update_conflict"
     finally:
         await runtime.control_plane.close()
 

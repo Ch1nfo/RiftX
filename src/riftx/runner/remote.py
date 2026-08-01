@@ -12,6 +12,7 @@ from riftx.application.services.runner_control import RunnerControlService
 from riftx.domain import (
     Execution,
     ExecutionStatus,
+    ExecutorType,
     NodeStatus,
     RunnerCommandKind,
     RunnerCommandStatus,
@@ -21,7 +22,7 @@ from riftx.domain.base import new_id, utc_now
 
 from .models import ExecutionLaunchRequest, ExecutionOutput, OutputSlice
 from .paths import RunnerPaths
-from .protocols import EffectGuard, ExecutionRunner
+from .protocols import EffectGuard, ExecutionCloser, ExecutionRunner
 
 _TERMINAL_EXECUTION_STATUSES = {
     ExecutionStatus.COMPLETED,
@@ -70,12 +71,14 @@ class RemoteExecutionSupervisor:
         effect_guard: EffectGuard | None = None,
     ) -> Execution:
         owner = await self._control.current_principal(request.node_id)
-        execution_id = new_id()
+        requested_execution_id = request.execution_id
+        execution_id = request.execution_id or new_id()
         self._paths.ensure_run_layout(request.run_id)
         output_paths = self._paths.execution(request.run_id, execution_id)
         execution = Execution(
             id=execution_id,
             execution_key=request.execution_key,
+            launch_fingerprint=request.launch_fingerprint,
             run_id=request.run_id,
             session_id=request.session_id,
             tool_call_id=request.tool_call_id,
@@ -103,6 +106,12 @@ class RemoteExecutionSupervisor:
         execution, created = await self._repository.create_if_absent(execution)
         if not created:
             _require_remote_owner(execution)
+            if requested_execution_id is not None and execution.id != requested_execution_id:
+                raise ApplicationConflictError(
+                    "execution_idempotency_conflict",
+                    f"Execution key {request.execution_key!r} is already bound to "
+                    f"execution ID {execution.id!r}",
+                )
             return execution
 
         try:
@@ -340,11 +349,13 @@ class NodeExecutionRouter:
         repository: ExecutionRepository,
         local: ExecutionRunner,
         remote: ExecutionRunner,
+        local_terminal: ExecutionCloser,
     ) -> None:
         self._local_node_id = local_node_id
         self._repository = repository
         self._local = local
         self._remote = remote
+        self._local_terminal = local_terminal
 
     async def start(
         self,
@@ -367,6 +378,8 @@ class NodeExecutionRouter:
 
     async def cancel(self, execution_id: str) -> Execution:
         execution = await self._require(execution_id)
+        if execution.node_id == self._local_node_id and execution.executor_type is ExecutorType.PTY:
+            return await self._local_terminal.close_execution(execution_id)
         return await self._runner_for_node(execution.node_id).cancel(execution_id)
 
     async def read_output(

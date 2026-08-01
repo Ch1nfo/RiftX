@@ -1,5 +1,6 @@
 """Application services used by API and other adapters."""
 
+from .actions import ActionApplicationService
 from .approvals import (
     ApprovalApplicationService,
     ApprovalInterruption,
@@ -45,6 +46,7 @@ from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
 
 __all__ = [
+    "ActionApplicationService",
     "ApprovalApplicationService",
     "ApprovalInterruption",
     "ApprovalRequestRecorder",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from riftx.application.errors import (
@@ -12,6 +13,7 @@ from riftx.application.errors import (
     ApplicationServiceError,
     EntityNotFoundError,
     RepositoryConflictError,
+    RepositoryDecisionConflictError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import ApprovalRepository, RunEventRepository, RunRepository
@@ -49,7 +51,21 @@ class RuntimeApprovalRepository(Protocol):
 
     async def get(self, approval_id: str) -> RuntimeApprovalRequest | None: ...
 
-    async def save(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest: ...
+    async def set_provider_state_id(
+        self,
+        approval_id: str,
+        provider_state_id: str | None,
+    ) -> RuntimeApprovalRequest: ...
+
+    async def decide_if_pending(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        *,
+        decided_by: str,
+        feedback: str | None = None,
+        decided_at: datetime,
+    ) -> tuple[RuntimeApprovalRequest, bool]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +207,7 @@ class RuntimeApprovalRequestRecorder:
         context_compilation_id: str | None,
         working_memory_version: int | None,
     ) -> RuntimeApprovalRequest:
-        call_id = intent.engine_call_id or intent.id
+        call_id = _runtime_public_sdk_call_id(intent)
         tool_id = intent.tool_id or intent.skill_id or "unknown"
         tool_call = ToolCall(
             sdk_call_id=call_id,
@@ -213,17 +229,34 @@ class RuntimeApprovalRequestRecorder:
             reason=intent.reason or f"Agent requested {tool_id!r} during step {step.id}.",
         )
         approval, created = await self._approvals.create_request(tool_call, approval)
-        request = await self._runtime.create(
-            RuntimeApprovalRequest(
-                id=approval.id,
-                run_id=run.id,
-                session_id=session.id,
-                cycle_id=cycle.id,
-                tool_call_intent_id=intent.id,
-                context_compilation_id=context_compilation_id,
-                working_memory_version=working_memory_version,
+        if not created:
+            await _validate_public_approval_bridge(
+                self._approvals,
+                persisted=approval,
+                expected_tool_call=tool_call,
+                expected_approval_summary={
+                    "run_id": run.id,
+                    "tool_name": tool_id,
+                    "command": command,
+                    "cwd": cwd or run.workspace_path,
+                    "target_summary": intent.target_summary or _target_summary(run),
+                    "env_diff": env,
+                    "reason": (
+                        intent.reason or f"Agent requested {tool_id!r} during step {step.id}."
+                    ),
+                },
             )
+        expected_request = RuntimeApprovalRequest(
+            id=approval.id,
+            run_id=run.id,
+            session_id=session.id,
+            cycle_id=cycle.id,
+            tool_call_intent_id=intent.id,
+            context_compilation_id=context_compilation_id,
+            working_memory_version=working_memory_version,
         )
+        request = await self._runtime.create(expected_request)
+        _validate_runtime_approval_bridge(request, expected=expected_request)
         if created:
             await self._events.append(
                 run.id,
@@ -297,18 +330,21 @@ class ApprovalApplicationService:
         if run is None:
             raise EntityNotFoundError("Run", approval.run_id)
         self._raise_if_approval_not_actionable(approval, run)
-        tool_call = await self._approval_repository.get_tool_call(approval.tool_call_id)
-        if tool_call is None:
-            raise EntityNotFoundError("ToolCall", approval.tool_call_id)
-
+        decision = _runtime_decision(target, command)
         try:
-            approval, changed = await self._approval_repository.decide(
+            approval, _ = await self._approval_repository.decide_runtime(
                 approval_id,
-                target,
+                decision,
                 decided_by=command.decided_by,
-                reason=command.reason,
+                feedback=command.reason,
                 blocked_run_statuses=_APPROVAL_BLOCKED_RUN_STATUSES,
             )
+        except RepositoryDecisionConflictError as exc:
+            raise ApplicationConflictError(
+                "runtime_approval_decision_conflict",
+                str(exc),
+                details=exc.details,
+            ) from exc
         except RepositoryConflictError:
             # The durable Run fence and Approval decision serialize in one
             # repository transaction. Re-read after losing that race so the
@@ -318,50 +354,6 @@ class ApprovalApplicationService:
             if current is not None and current.status in _APPROVAL_BLOCKED_RUN_STATUSES:
                 self._raise_if_approval_not_actionable(approval, current)
             raise
-        # A same-direction retry is normally only a durable signal retry.  It
-        # can also recover the narrow crash window after the public Approval
-        # committed but before its RuntimeApprovalRequest did.  In that case
-        # reconstruct strictly from persisted state, never from the retry
-        # payload; an unprovable Run-wide grant therefore becomes APPROVE_ONCE.
-        if self._runtime_approvals is not None:
-            runtime_request = await self._runtime_approvals.get(approval_id)
-            if runtime_request is not None and runtime_request.status is ApprovalStatus.PENDING:
-                decision, decided_by, feedback = (
-                    (
-                        _runtime_decision(target, command),
-                        command.decided_by,
-                        command.reason,
-                    )
-                    if changed
-                    else _persisted_runtime_decision(approval)
-                )
-                runtime_request.decide(
-                    decision,
-                    decided_by=decided_by,
-                    feedback=feedback,
-                )
-                await self._runtime_approvals.save(runtime_request)
-        if changed and target is ApprovalStatus.APPROVED and command.approve_for_run:
-            await self._approval_repository.grant_for_run(
-                approval.run_id,
-                tool_call.tool_id,
-                created_by=command.decided_by,
-            )
-        if changed:
-            await self._event_repository.append(
-                approval.run_id,
-                "tool.approved" if target is ApprovalStatus.APPROVED else "tool.rejected",
-                {
-                    "approval_id": approval.id,
-                    "tool_call_id": approval.tool_call_id,
-                    "sdk_call_id": tool_call.sdk_call_id,
-                    "tool_name": approval.tool_name,
-                    "decided_by": approval.decided_by,
-                    "reason": approval.reason,
-                    "approve_for_run": command.approve_for_run,
-                },
-            )
-
         # A safety fence can win immediately after the atomic decision. The
         # saved decision remains retryable after PAUSED is reached, but it must
         # not release the Workflow while physical stop acknowledgement is still
@@ -440,22 +432,88 @@ def _runtime_decision(target: ApprovalStatus, command: DecideApproval) -> Approv
     )
 
 
-def _persisted_runtime_decision(
-    approval: Approval,
-) -> tuple[ApprovalDecision, str, str | None]:
-    """Recover a split Approval write without trusting a retry payload."""
+def _runtime_public_sdk_call_id(intent: ToolCallIntent) -> str:
+    if intent.id.startswith("tool-call:v1:"):
+        return intent.engine_call_id or intent.id
+    return intent.id
 
-    decided_by = approval.decided_by or "unknown-operator"
-    if approval.status is ApprovalStatus.APPROVED:
-        return ApprovalDecision.APPROVE_ONCE, decided_by, None
-    if approval.status is ApprovalStatus.REJECTED:
-        feedback = approval.reason.strip() or None
-        return (
-            ApprovalDecision.REJECT_WITH_FEEDBACK if feedback else ApprovalDecision.REJECT,
-            decided_by,
-            feedback,
+
+async def _validate_public_approval_bridge(
+    approvals: ApprovalRepository,
+    *,
+    persisted: Approval,
+    expected_tool_call: ToolCall,
+    expected_approval_summary: dict[str, object],
+) -> None:
+    durable_tool_call = await approvals.get_tool_call(persisted.tool_call_id)
+    mismatched_fields: list[str] = []
+    if durable_tool_call is None:
+        mismatched_fields.append("tool_call_id")
+    else:
+        for field_name in (
+            "sdk_call_id",
+            "run_id",
+            "agent_step_id",
+            "tool_id",
+            "skill_id",
+        ):
+            if getattr(durable_tool_call, field_name) != getattr(expected_tool_call, field_name):
+                mismatched_fields.append(f"tool_call.{field_name}")
+        if _canonical_json(durable_tool_call.arguments) != _canonical_json(
+            expected_tool_call.arguments
+        ):
+            mismatched_fields.append("tool_call.arguments")
+    for field_name in (
+        "run_id",
+        "tool_name",
+        "command",
+        "cwd",
+        "target_summary",
+        "env_diff",
+        "reason",
+    ):
+        if _canonical_json(getattr(persisted, field_name)) != _canonical_json(
+            expected_approval_summary[field_name]
+        ):
+            mismatched_fields.append(f"approval.{field_name}")
+    if not mismatched_fields:
+        return
+    raise ApplicationConflictError(
+        "approval_bridge_identity_mismatch",
+        f"Persisted Approval {persisted.id!r} does not match the Runtime Tool Call",
+        details={"mismatched_fields": sorted(mismatched_fields)},
+    )
+
+
+def _validate_runtime_approval_bridge(
+    request: RuntimeApprovalRequest,
+    *,
+    expected: RuntimeApprovalRequest,
+) -> None:
+    mismatched_fields = [
+        field_name
+        for field_name in (
+            "id",
+            "run_id",
+            "session_id",
+            "cycle_id",
+            "tool_call_intent_id",
+            "context_compilation_id",
+            "working_memory_version",
         )
-    raise ValueError(f"Approval {approval.id!r} has no persisted decision to recover")
+        if getattr(request, field_name) != getattr(expected, field_name)
+    ]
+    if not mismatched_fields:
+        return
+    raise ApplicationConflictError(
+        "approval_bridge_identity_mismatch",
+        f"Persisted Runtime Approval {request.id!r} does not match the Tool Call intent",
+        details={"mismatched_fields": sorted(mismatched_fields)},
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _intent_execution_summary(

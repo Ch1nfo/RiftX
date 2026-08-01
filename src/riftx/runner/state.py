@@ -8,7 +8,14 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 
 from riftx.application.errors import EntityNotFoundError
-from riftx.domain import Execution, ExecutionStatus, TerminalSession, TerminalStatus
+from riftx.application.ports import ExecutionAdmissionIdentity
+from riftx.domain import (
+    Execution,
+    ExecutionStatus,
+    ExecutorType,
+    TerminalSession,
+    TerminalStatus,
+)
 
 from ._durable_file import atomic_write_json, locked_file
 
@@ -43,6 +50,14 @@ class FileExecutionRepository:
     async def get_by_key(self, execution_key: str) -> Execution | None:
         async with self._lock:
             execution = await asyncio.to_thread(self._get_by_key, execution_key)
+            return _copy(execution) if execution is not None else None
+
+    async def find_admission(
+        self,
+        identity: ExecutionAdmissionIdentity,
+    ) -> Execution | None:
+        async with self._lock:
+            execution = await asyncio.to_thread(self._find_admission, identity)
             return _copy(execution) if execution is not None else None
 
     async def save(self, execution: Execution) -> Execution:
@@ -98,9 +113,11 @@ class FileExecutionRepository:
                         f"execution id {execution.id!r} is already bound to key "
                         f"{existing_id.execution_key!r}"
                     )
+                _validate_execution_duplicate(existing_id, execution)
                 return _copy(existing_id), False
             for existing in items.values():
                 if existing.execution_key == execution.execution_key:
+                    _validate_execution_duplicate(existing, execution)
                     return _copy(existing), False
             items[execution.id] = execution
             self._write(items)
@@ -117,6 +134,16 @@ class FileExecutionRepository:
                     return execution
         return None
 
+    def _find_admission(
+        self,
+        identity: ExecutionAdmissionIdentity,
+    ) -> Execution | None:
+        with locked_file(self.path):
+            for execution in self._read().values():
+                if identity.matches(execution):
+                    return execution
+        return None
+
     def _save(self, execution: Execution) -> Execution:
         with locked_file(self.path):
             items = self._read()
@@ -129,6 +156,8 @@ class FileExecutionRepository:
                     f"stale execution update would clear a bound physical identity "
                     f"for {current.id!r}"
                 )
+            if not _execution_status_update_is_monotonic(current.status, execution.status):
+                return current
             items[execution.id] = execution
             self._write(items)
             return execution
@@ -144,7 +173,11 @@ class FileExecutionRepository:
             if current is None:
                 raise EntityNotFoundError("Execution", execution.id)
             stale = _validate_execution_update(current, execution)
-            if current.status not in expected or stale:
+            if (
+                current.status not in expected
+                or stale
+                or not _execution_status_update_is_monotonic(current.status, execution.status)
+            ):
                 return current, False
             items[execution.id] = execution
             self._write(items)
@@ -167,7 +200,15 @@ class FileExecutionRepository:
             raise RuntimeError(f"Runner execution state is corrupted: {self.path}") from exc
         if not isinstance(raw, list):
             raise RuntimeError(f"Runner execution state has an invalid shape: {self.path}")
-        return {item.id: item for item in (Execution.model_validate(value) for value in raw)}
+        restored: list[Execution] = []
+        for value in raw:
+            if isinstance(value, dict) and "created_at" not in value:
+                # Runner state written before RX-LN-01 has no trustworthy
+                # admission timestamp. Do not invoke the new-row default and
+                # manufacture a different chronology on every restart.
+                value = {**value, "created_at": None}
+            restored.append(Execution.model_validate(value))
+        return {item.id: item for item in restored}
 
     def _write(self, items: dict[str, Execution]) -> None:
         atomic_write_json(
@@ -308,6 +349,7 @@ class FileTerminalRepository:
             [item.model_dump(mode="json") for item in items.values()],
         )
 
+
 def _copy(execution: Execution) -> Execution:
     return Execution.model_validate(execution.model_dump())
 
@@ -315,11 +357,24 @@ def _copy(execution: Execution) -> Execution:
 def _validate_execution_update(current: Execution, incoming: Execution) -> bool:
     """Validate immutable bindings and report a stale first-write-wins snapshot."""
 
+    if current.created_at != incoming.created_at:
+        raise RuntimeError(
+            f"execution creation time is immutable for {current.id!r}: "
+            f"{current.created_at!r} != {incoming.created_at!r}"
+        )
     if current.execution_key != incoming.execution_key:
         raise RuntimeError(
             f"execution key is immutable for {current.id!r}: "
             f"{current.execution_key!r} != {incoming.execution_key!r}"
         )
+    for field_name in _EXECUTION_STRICT_ADMISSION_FIELDS:
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RuntimeError(
+                f"execution admission field {field_name!r} is immutable for "
+                f"{current.id!r}: {persisted!r} != {proposed!r}"
+            )
     if current.owner is not None and incoming.owner != current.owner:
         raise RuntimeError(
             f"execution owner is immutable for {current.id!r}: "
@@ -350,6 +405,14 @@ def _validate_execution_update(current: Execution, incoming: Execution) -> bool:
                 f"execution physical identity field {field_name!r} is immutable "
                 f"for {current.id!r}: {persisted!r} != {proposed!r}"
             )
+    if current.argv:
+        if not incoming.argv:
+            stale = True
+        elif incoming.argv != current.argv:
+            raise RuntimeError(
+                f"execution resolved argv is immutable for {current.id!r}: "
+                f"{current.argv!r} != {incoming.argv!r}"
+            )
     for field_name in ("started_at", "physical_stop_confirmed_at"):
         persisted = getattr(current, field_name)
         proposed = getattr(incoming, field_name)
@@ -359,6 +422,126 @@ def _validate_execution_update(current: Execution, incoming: Execution) -> bool:
             # durable evidence with a stale snapshot.
             stale = True
     return stale
+
+
+def _validate_execution_duplicate(current: Execution, incoming: Execution) -> None:
+    for field_name in _EXECUTION_DUPLICATE_ADMISSION_FIELDS:
+        if (
+            field_name == "launch_fingerprint"
+            and current.launch_fingerprint is None
+            and incoming.launch_fingerprint is not None
+        ):
+            continue
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RuntimeError(
+                f"execution key {current.execution_key!r} is already bound to "
+                f"admission field {field_name!r}={persisted!r}, not {proposed!r}"
+            )
+    if incoming.owner != current.owner:
+        raise RuntimeError(
+            f"execution key {current.execution_key!r} is already bound to owner "
+            f"{current.owner.model_dump(mode='json') if current.owner is not None else None!r}"
+        )
+    shell_resolved_argv_replay = (
+        current.executor_type is ExecutorType.SHELL and bool(current.argv) and not incoming.argv
+    )
+    if incoming.argv != current.argv and not shell_resolved_argv_replay:
+        raise RuntimeError(
+            f"execution key {current.execution_key!r} is already bound to resolved argv "
+            f"{current.argv!r}, not {incoming.argv!r}"
+        )
+    for field_name in ("tool_id", "tool_version"):
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RuntimeError(
+                f"execution key {current.execution_key!r} is already bound to "
+                f"{field_name} {persisted!r}, not {proposed!r}"
+            )
+
+
+_EXECUTION_STRICT_ADMISSION_FIELDS = (
+    "launch_fingerprint",
+    "run_id",
+    "session_id",
+    "tool_call_id",
+    "attempt_group",
+    "node_id",
+    "executor_type",
+    "command_text",
+    "cwd",
+    "env_diff",
+    "stdout_path",
+    "stderr_path",
+)
+_EXECUTION_DUPLICATE_ADMISSION_FIELDS = tuple(
+    field_name
+    for field_name in _EXECUTION_STRICT_ADMISSION_FIELDS
+    if field_name not in {"stdout_path", "stderr_path"}
+)
+
+_EXECUTION_STATUS_TRANSITIONS = {
+    ExecutionStatus.QUEUED: frozenset(
+        {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.CREATED: frozenset(
+        {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.STARTING: frozenset(
+        {
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.RUNNING: frozenset(
+        {
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.FAILED: frozenset({ExecutionStatus.CANCELLED}),
+    ExecutionStatus.LOST: frozenset({ExecutionStatus.CANCELLED}),
+    ExecutionStatus.COMPLETED: frozenset(),
+    ExecutionStatus.EXITED: frozenset(),
+    ExecutionStatus.CANCELLED: frozenset(),
+    ExecutionStatus.HARD_TIMEOUT: frozenset(),
+}
+
+
+def _execution_status_update_is_monotonic(
+    current: ExecutionStatus,
+    incoming: ExecutionStatus,
+) -> bool:
+    return incoming is current or incoming in _EXECUTION_STATUS_TRANSITIONS[current]
 
 
 def _copy_terminal(terminal: TerminalSession) -> TerminalSession:

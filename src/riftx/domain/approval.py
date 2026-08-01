@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import AwareDatetime, Field
 
 from .base import DomainModel, new_id, utc_now
-from .enums import ApprovalLevel, ApprovalMode, ApprovalStatus
+from .enums import ApprovalDecision, ApprovalLevel, ApprovalMode, ApprovalStatus
 from .errors import InvalidStateTransitionError
 
 
@@ -20,6 +20,8 @@ class Approval(DomainModel):
     target_summary: str = ""
     env_diff: dict[str, str | None] = Field(default_factory=dict)
     reason: str = ""
+    decision: ApprovalDecision | None = None
+    decision_feedback: str | None = None
     decided_by: str | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
     decided_at: AwareDatetime | None = None
@@ -30,6 +32,7 @@ class Approval(DomainModel):
         *,
         decided_by: str,
         reason: str | None = None,
+        decision: ApprovalDecision | None = None,
         at: AwareDatetime | None = None,
     ) -> None:
         if self.status is not ApprovalStatus.PENDING or status not in {
@@ -39,6 +42,17 @@ class Approval(DomainModel):
         }:
             raise InvalidStateTransitionError("Approval", self.status, status)
         self.status = status
+        if decision is None:
+            if status is ApprovalStatus.APPROVED:
+                decision = ApprovalDecision.APPROVE_ONCE
+            elif status is ApprovalStatus.REJECTED:
+                decision = (
+                    ApprovalDecision.REJECT_WITH_FEEDBACK
+                    if reason and reason.strip()
+                    else ApprovalDecision.REJECT
+                )
+        self.decision = decision
+        self.decision_feedback = reason
         self.decided_by = decided_by
         if reason is not None:
             self.reason = reason

@@ -1,5 +1,6 @@
 """Public schemas for the RiftX control plane."""
 
+from .actions import RunActionListView, RunActionView
 from .approvals import ApprovalDecisionRequest, ApprovalListResponse, ApprovalResponse
 from .artifacts import (
     ArtifactListResponse,
@@ -137,6 +138,8 @@ __all__ = [
     "RunnerCommandOutputReportRequest",
     "RunnerPollResponse",
     "RunActionResponse",
+    "RunActionListView",
+    "RunActionView",
     "RunEventListResponse",
     "RunEventResponse",
     "RunListResponse",

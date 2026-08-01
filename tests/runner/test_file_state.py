@@ -36,6 +36,28 @@ def _execution(identifier: str, *, execution_key: str | None = None) -> Executio
     )
 
 
+def _logical_execution(tmp_path: Path, *, legacy: bool = False) -> Execution:
+    return Execution(
+        id="logical-file-execution",
+        execution_key="logical-file-key",
+        launch_fingerprint=None if legacy else "launch:v1:file-logical",
+        run_id="run-state",
+        session_id="session-state",
+        tool_call_id="tool-call-state",
+        attempt_group="initial",
+        node_id="runner-state",
+        owner=RunnerPrincipal(instance_id="runner-state", epoch=1),
+        executor_type=ExecutorType.PROCESS,
+        argv=["probe", "--safe"],
+        tool_id="probe",
+        tool_version="1.0",
+        cwd=str(tmp_path),
+        env_diff={"LANG": "C", "REMOVED": None},
+        stdout_path=str(tmp_path / "logical.stdout"),
+        stderr_path=str(tmp_path / "logical.stderr"),
+    )
+
+
 def _create_execution_in_process(path: str, identifier: str, start) -> None:
     if not start.wait(timeout=10):
         raise RuntimeError("execution repository concurrency test timed out")
@@ -100,9 +122,7 @@ def test_execution_repository_processes_merge_concurrent_creates(
                 process.join(timeout=5)
 
     persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert {item["id"] for item in persisted} == {
-        f"execution-{index}" for index in range(12)
-    }
+    assert {item["id"] for item in persisted} == {f"execution-{index}" for index in range(12)}
 
 
 def test_execution_repository_processes_allow_one_execution_key_claim(
@@ -174,9 +194,7 @@ def test_terminal_repository_processes_merge_concurrent_creates(
                 process.join(timeout=5)
 
     persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert {item["id"] for item in persisted} == {
-        f"terminal-{index}" for index in range(12)
-    }
+    assert {item["id"] for item in persisted} == {f"terminal-{index}" for index in range(12)}
 
 
 async def test_state_replace_fsyncs_file_and_parent_directory(
@@ -202,6 +220,20 @@ async def test_state_replace_fsyncs_file_and_parent_directory(
         assert "directory" in fsynced
 
 
+async def test_legacy_execution_file_keeps_unknown_creation_time(tmp_path: Path) -> None:
+    path = tmp_path / "executions.json"
+    payload = _execution("legacy-created-at").model_dump(mode="json")
+    payload.pop("created_at")
+    path.write_text(json.dumps([payload]), encoding="utf-8")
+    repository = FileExecutionRepository(path)
+
+    first = await repository.get("legacy-created-at")
+    second = await repository.get("legacy-created-at")
+
+    assert first is not None and first.created_at is None
+    assert second is not None and second.created_at is None
+
+
 async def test_failed_replace_preserves_previous_state_and_removes_temporary_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -219,9 +251,7 @@ async def test_failed_replace_preserves_previous_state_and_removes_temporary_fil
         await repository.create_if_absent(_execution("not-committed"))
 
     assert path.read_bytes() == original
-    temporary_files = await asyncio.to_thread(
-        lambda: list(tmp_path.glob(".executions.json.*.tmp"))
-    )
+    temporary_files = await asyncio.to_thread(lambda: list(tmp_path.glob(".executions.json.*.tmp")))
     assert temporary_files == []
 
 
@@ -297,6 +327,118 @@ async def test_execution_id_cannot_be_rebound_to_a_different_key(tmp_path: Path)
 
     persisted = await repository.get("immutable-id")
     assert persisted is not None and persisted.execution_key == "original-key"
+
+
+async def test_execution_creation_time_cannot_be_replaced(tmp_path: Path) -> None:
+    repository = FileExecutionRepository(tmp_path / "executions.json")
+    execution = _execution("immutable-created-at")
+    await repository.create_if_absent(execution)
+    replaced = execution.model_copy(update={"created_at": datetime(2026, 8, 2, tzinfo=UTC)})
+
+    with pytest.raises(RuntimeError, match="creation time.*immutable"):
+        await repository.save(replaced)
+
+    persisted = await repository.get(execution.id)
+    assert persisted is not None and persisted.created_at == execution.created_at
+
+
+async def test_file_launch_fingerprint_roundtrip_and_idempotency_conflicts(
+    tmp_path: Path,
+) -> None:
+    repository = FileExecutionRepository(tmp_path / "launch-identity.json")
+    original = _logical_execution(tmp_path)
+
+    created, was_created = await repository.create_if_absent(original)
+    roundtrip = await FileExecutionRepository(repository.path).get(original.id)
+
+    assert was_created is True
+    assert created.launch_fingerprint == "launch:v1:file-logical"
+    assert roundtrip is not None
+    for field_name in (
+        "execution_key",
+        "launch_fingerprint",
+        "run_id",
+        "session_id",
+        "tool_call_id",
+        "attempt_group",
+        "node_id",
+        "owner",
+        "executor_type",
+        "argv",
+        "command_text",
+        "tool_id",
+        "tool_version",
+        "cwd",
+        "env_diff",
+    ):
+        assert getattr(roundtrip, field_name) == getattr(original, field_name)
+
+    mutations: tuple[tuple[str, object], ...] = (
+        ("launch_fingerprint", "launch:v1:foreign"),
+        ("run_id", "foreign-run"),
+        ("session_id", None),
+        ("tool_call_id", "foreign-tool-call"),
+        ("attempt_group", "retry-1"),
+        ("node_id", "foreign-node"),
+        ("owner", RunnerPrincipal(instance_id="foreign-runner", epoch=1)),
+        ("executor_type", ExecutorType.SHELL),
+        ("argv", ["probe", "--foreign"]),
+        ("command_text", "probe --foreign"),
+        ("tool_id", "foreign-tool"),
+        ("tool_version", "2.0"),
+        ("cwd", str(tmp_path / "foreign-cwd")),
+        ("env_diff", {"LANG": "foreign"}),
+    )
+    for index, (field_name, foreign_value) in enumerate(mutations):
+        duplicate = original.model_copy(
+            update={"id": f"duplicate-{index}", field_name: foreign_value}
+        )
+        with pytest.raises(RuntimeError):
+            await repository.create_if_absent(duplicate)
+        rebound = original.model_copy(update={field_name: foreign_value})
+        with pytest.raises(RuntimeError):
+            await repository.save(rebound)
+
+    with pytest.raises(RuntimeError):
+        await repository.save(original.model_copy(update={"execution_key": "foreign-key"}))
+    with pytest.raises(RuntimeError):
+        await repository.create_if_absent(
+            original.model_copy(update={"execution_key": "foreign-key"})
+        )
+    durable = await FileExecutionRepository(repository.path).get(original.id)
+    assert durable is not None
+    assert durable.execution_key == original.execution_key
+    assert durable.launch_fingerprint == original.launch_fingerprint
+    assert durable.argv == original.argv
+    assert durable.env_diff == original.env_diff
+
+
+async def test_file_legacy_null_launch_fingerprint_replay_checks_stable_fields(
+    tmp_path: Path,
+) -> None:
+    repository = FileExecutionRepository(tmp_path / "legacy-launch.json")
+    legacy = _logical_execution(tmp_path, legacy=True)
+    assert (await repository.create_if_absent(legacy))[1] is True
+    replay = legacy.model_copy(
+        update={
+            "id": "legacy-file-replay",
+            "launch_fingerprint": "launch:v1:current-request",
+        }
+    )
+
+    authoritative, created = await repository.create_if_absent(replay)
+
+    assert created is False
+    assert authoritative.id == legacy.id
+    assert authoritative.launch_fingerprint is None
+    with pytest.raises(RuntimeError):
+        await repository.create_if_absent(
+            replay.model_copy(update={"id": "legacy-foreign", "node_id": "foreign-node"})
+        )
+    with pytest.raises(RuntimeError):
+        await repository.create_if_absent(
+            replay.model_copy(update={"id": "legacy-empty-argv", "argv": []})
+        )
 
 
 async def test_execution_owner_binding_is_one_way_across_repository_instances(

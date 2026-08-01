@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.application.errors import (
+    EntityNotFoundError,
+    RepositoryConflictError,
+    RepositoryDecisionConflictError,
+)
 from riftx.application.finalization import (
     FINALIZATION_INTENT_EVENT_TYPE,
     FINALIZATION_TARGETS,
@@ -22,14 +26,17 @@ from riftx.application.finalization import (
     report_failure_event_id,
     resolve_finalization_intent,
 )
+from riftx.application.ports import ExecutionAdmissionIdentity
 from riftx.domain import (
     Approval,
+    ApprovalDecision,
     ApprovalGrant,
     ApprovalStatus,
     Artifact,
     Engagement,
     Execution,
     ExecutionStatus,
+    ExecutorType,
     Finding,
     FindingSeverity,
     FindingStatus,
@@ -88,6 +95,7 @@ from .mappers import (
     tool_call_from_record,
     tool_call_to_record,
 )
+from .mutation_clock import Clock, next_mutation_at
 from .orm import (
     ApprovalGrantRecord,
     ApprovalRecord,
@@ -101,6 +109,7 @@ from .orm import (
     RunnerCommandRecord,
     RunnerCredentialRecord,
     RunRecord,
+    RuntimeApprovalRequestRecord,
     TerminalSessionRecord,
     ToolCallRecord,
 )
@@ -1444,36 +1453,101 @@ class SQLAlchemyRunEventRepository:
         return [event_from_record(record) for record in records]
 
 
+_FINDING_MUTABLE_FIELDS = (
+    "title",
+    "severity",
+    "status",
+    "affected_assets",
+    "description",
+    "evidence",
+    "reproduction_steps",
+    "impact",
+    "recommendation",
+)
+
+
+def _finding_payload(finding: Finding) -> tuple[object, ...]:
+    return tuple(getattr(finding, field_name) for field_name in _FINDING_MUTABLE_FIELDS)
+
+
+def _validate_finding_identity(current: Finding, incoming: Finding) -> None:
+    for field_name in ("id", "run_id", "created_at"):
+        if getattr(current, field_name) != getattr(incoming, field_name):
+            raise RepositoryConflictError(
+                f"Finding {current.id!r} field {field_name!r} is immutable after creation"
+            )
+
+
 class SQLAlchemyFindingRepository:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        clock: Clock = utc_now,
+    ) -> None:
         self._session_factory = session_factory
+        self._clock = clock
 
     async def create(self, finding: Finding) -> Finding:
         try:
-            async with self._session_factory() as session, session.begin():
-                session.add(finding_to_record(finding))
+            async with _serialized_run_write(self._session_factory) as session:
+                run_exists = await session.scalar(
+                    select(RunRecord.id).where(RunRecord.id == finding.run_id).with_for_update()
+                )
+                existing = await session.scalar(
+                    select(FindingRecord.id).where(FindingRecord.id == finding.id).with_for_update()
+                )
+                if run_exists is None or existing is not None:
+                    raise RepositoryConflictError(f"could not create finding {finding.id!r}")
+                created_at = next_mutation_at(self._clock)
+                authoritative = finding.model_copy(
+                    update={"created_at": created_at, "updated_at": created_at}
+                )
+                session.add(
+                    finding_to_record(
+                        authoritative,
+                        created_at=created_at,
+                        updated_at=created_at,
+                    )
+                )
                 await session.flush()
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not create finding {finding.id!r}") from exc
-        return finding
+        return authoritative
 
     async def get(self, finding_id: str) -> Finding | None:
         async with self._session_factory() as session:
             record = await session.get(FindingRecord, finding_id)
         return finding_from_record(record) if record is not None else None
 
-    async def save(self, finding: Finding) -> Finding:
-        async with self._session_factory() as session, session.begin():
+    async def save(
+        self,
+        finding: Finding,
+        *,
+        expected_updated_at: datetime,
+    ) -> tuple[Finding, bool]:
+        async with _serialized_run_write(self._session_factory) as session:
             record = await session.scalar(
                 select(FindingRecord).where(FindingRecord.id == finding.id).with_for_update()
             )
             if record is None:
                 raise EntityNotFoundError("Finding", finding.id)
-            if record.run_id != finding.run_id:
-                raise RepositoryConflictError(f"cannot move finding {finding.id!r} between runs")
+            current = finding_from_record(record)
+            _validate_finding_identity(current, finding)
+            payload_matches = _finding_payload(current) == _finding_payload(finding)
+            if expected_updated_at != current.updated_at:
+                if payload_matches:
+                    return current, False
+                raise RepositoryConflictError(
+                    f"Finding {finding.id!r} was updated by another writer"
+                )
+            if payload_matches:
+                return current, False
             apply_finding_to_record(finding, record)
+            record.updated_at = next_mutation_at(self._clock, stored=record.updated_at)
             await session.flush()
-        return finding
+            persisted = finding_from_record(record)
+        return persisted, True
 
     async def list(
         self,
@@ -1546,8 +1620,14 @@ class SQLAlchemyReportRepository:
 
 
 class SQLAlchemyApprovalRepository:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        decision_failpoint: Callable[[str], None] | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._decision_failpoint = decision_failpoint
 
     async def create_request(
         self,
@@ -1646,6 +1726,247 @@ class SQLAlchemyApprovalRepository:
         raise RepositoryConflictError(
             f"could not decide approval {approval_id!r} after concurrent retries"
         ) from last_conflict
+
+    async def decide_runtime(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        *,
+        decided_by: str,
+        feedback: str | None = None,
+        blocked_run_statuses: Collection[RunStatus] = (),
+    ) -> tuple[Approval, bool]:
+        """Commit every durable effect of one Runtime Approval decision together."""
+
+        if decision is ApprovalDecision.REJECT_WITH_FEEDBACK and not feedback:
+            raise ValueError("reject_with_feedback requires feedback")
+        expected_status = _approval_status_for_decision(decision)
+        blocked = frozenset(blocked_run_statuses)
+        last_conflict: IntegrityError | OperationalError | None = None
+        for attempt in range(10):
+            try:
+                async with _serialized_run_write(self._session_factory) as session:
+                    # Approval.run_id is immutable. This first lookup only discovers
+                    # which Run row must be locked before the mutable aggregate rows.
+                    run_id = await session.scalar(
+                        select(ApprovalRecord.run_id).where(ApprovalRecord.id == approval_id)
+                    )
+                    if run_id is None:
+                        raise EntityNotFoundError("Approval", approval_id)
+                    run_record = await session.scalar(
+                        select(RunRecord).where(RunRecord.id == run_id).with_for_update()
+                    )
+                    if run_record is None:
+                        raise EntityNotFoundError("Run", run_id)
+                    run_status = RunStatus(run_record.status)
+                    if run_status in blocked:
+                        raise RepositoryConflictError(
+                            f"approval {approval_id!r} is not actionable while run "
+                            f"{run_id!r} is {run_status.value!r}"
+                        )
+
+                    approval_record = await session.scalar(
+                        select(ApprovalRecord)
+                        .where(ApprovalRecord.id == approval_id)
+                        .with_for_update()
+                    )
+                    if approval_record is None:
+                        raise EntityNotFoundError("Approval", approval_id)
+                    tool_call_record = await session.scalar(
+                        select(ToolCallRecord)
+                        .where(ToolCallRecord.id == approval_record.tool_call_id)
+                        .with_for_update()
+                    )
+                    if tool_call_record is None:
+                        raise EntityNotFoundError("ToolCall", approval_record.tool_call_id)
+                    runtime_record = await session.scalar(
+                        select(RuntimeApprovalRequestRecord)
+                        .where(RuntimeApprovalRequestRecord.id == approval_id)
+                        .with_for_update()
+                    )
+                    if runtime_record is not None and runtime_record.run_id != run_id:
+                        raise RepositoryConflictError(
+                            f"runtime approval {approval_id!r} belongs to a different Run"
+                        )
+                    grant_record = await session.scalar(
+                        select(ApprovalGrantRecord)
+                        .where(
+                            ApprovalGrantRecord.run_id == run_id,
+                            ApprovalGrantRecord.tool_id == tool_call_record.tool_id,
+                        )
+                        .with_for_update()
+                    )
+
+                    changed = False
+                    runtime_was_terminal = (
+                        runtime_record is not None
+                        and runtime_record.status != ApprovalStatus.PENDING.value
+                    )
+                    if runtime_was_terminal:
+                        _require_runtime_record_match(
+                            runtime_record,
+                            approval_id=approval_id,
+                            status=expected_status,
+                            decision=decision,
+                            decided_by=decided_by,
+                            feedback=feedback,
+                        )
+
+                    if approval_record.status == ApprovalStatus.PENDING.value:
+                        decided_at = (
+                            runtime_record.decided_at
+                            if runtime_was_terminal and runtime_record is not None
+                            else utc_now()
+                        )
+                        if decided_at is None:
+                            _raise_decision_conflict(
+                                approval_id,
+                                "The terminal Runtime Approval has no decision timestamp",
+                                runtime_record=runtime_record,
+                                requested_decision=decision,
+                            )
+                        approval = approval_from_record(approval_record)
+                        approval.decide(
+                            expected_status,
+                            decided_by=decided_by,
+                            reason=feedback,
+                            decision=decision,
+                            at=decided_at,
+                        )
+                        apply_approval_to_record(approval, approval_record)
+                        tool_call_record.approval_status = expected_status.value
+                        changed = True
+                    else:
+                        changed = (
+                            _backfill_legacy_public_decision(
+                                approval_record,
+                                runtime_record=runtime_record,
+                            )
+                            or changed
+                        )
+                        approval = approval_from_record(approval_record)
+                        _require_public_approval_match(
+                            approval,
+                            status=expected_status,
+                            decision=decision,
+                            decided_by=decided_by,
+                            feedback=feedback,
+                        )
+                        decided_at = approval.decided_at
+                        if decided_at is None:
+                            _raise_decision_conflict(
+                                approval_id,
+                                "The terminal public Approval has no decision timestamp",
+                                runtime_record=runtime_record,
+                                requested_decision=decision,
+                            )
+                        if runtime_was_terminal and runtime_record is not None:
+                            if runtime_record.decided_at != decided_at:
+                                _raise_decision_conflict(
+                                    approval_id,
+                                    "The public and Runtime Approval timestamps disagree",
+                                    runtime_record=runtime_record,
+                                    requested_decision=decision,
+                                )
+                    await session.flush()
+                    self._hit_decision_failpoint("after_public")
+
+                    if runtime_record is not None and not runtime_was_terminal:
+                        if (
+                            runtime_record.status != ApprovalStatus.PENDING.value
+                            or runtime_record.decision is not None
+                            or runtime_record.feedback is not None
+                            or runtime_record.decided_by is not None
+                            or runtime_record.decided_at is not None
+                        ):
+                            raise RepositoryConflictError(
+                                f"runtime approval {approval_id!r} has an invalid partial decision"
+                            )
+                        runtime_record.status = expected_status.value
+                        runtime_record.decision = decision.value
+                        runtime_record.feedback = feedback
+                        runtime_record.decided_by = decided_by
+                        runtime_record.decided_at = decided_at
+                        changed = True
+                    await session.flush()
+                    self._hit_decision_failpoint("after_runtime")
+
+                    if decision is ApprovalDecision.APPROVE_TOOL_FOR_RUN and grant_record is None:
+                        grant = ApprovalGrant(
+                            run_id=run_id,
+                            tool_id=tool_call_record.tool_id,
+                            created_by=decided_by,
+                            created_at=decided_at,
+                        )
+                        session.add(approval_grant_to_record(grant))
+                        changed = True
+                    await session.flush()
+                    self._hit_decision_failpoint("after_grant")
+
+                    event_type = (
+                        "tool.approved"
+                        if expected_status is ApprovalStatus.APPROVED
+                        else "tool.rejected"
+                    )
+                    event_payload: dict[str, object] = {
+                        "approval_id": approval.id,
+                        "tool_call_id": approval.tool_call_id,
+                        "sdk_call_id": tool_call_record.sdk_call_id,
+                        "tool_name": approval.tool_name,
+                        "decided_by": approval.decided_by,
+                        "reason": approval.decision_feedback,
+                        "approve_for_run": (decision is ApprovalDecision.APPROVE_TOOL_FOR_RUN),
+                    }
+                    existing_events = (
+                        await session.scalars(
+                            select(RunEventRecord)
+                            .where(
+                                RunEventRecord.run_id == run_id,
+                                RunEventRecord.event_type == event_type,
+                            )
+                            .with_for_update()
+                        )
+                    ).all()
+                    decision_event = next(
+                        (
+                            record
+                            for record in existing_events
+                            if record.payload_json.get("approval_id") == approval_id
+                        ),
+                        None,
+                    )
+                    if decision_event is None:
+                        decision_event = RunEventRecord(
+                            id=_approval_decision_event_id(
+                                approval_id,
+                                expected_status,
+                            ),
+                            run_id=run_id,
+                            sequence=await _next_event_sequence(session, run_id),
+                            event_type=event_type,
+                            payload_json=event_payload,
+                            created_at=decided_at,
+                        )
+                        session.add(decision_event)
+                        changed = True
+                    elif decision_event.payload_json != event_payload:
+                        decision_event.payload_json = event_payload
+                        changed = True
+                    await session.flush()
+                    self._hit_decision_failpoint("after_event")
+                    return approval_from_record(approval_record), changed
+            except (RepositoryConflictError, EntityNotFoundError):
+                raise
+            except (IntegrityError, OperationalError) as exc:
+                last_conflict = exc
+                await asyncio.sleep(attempt / 1000)
+        raise RepositoryConflictError(
+            f"could not decide runtime approval {approval_id!r} after concurrent retries"
+        ) from last_conflict
+
+    def _hit_decision_failpoint(self, stage: str) -> None:
+        if self._decision_failpoint is not None:
+            self._decision_failpoint(stage)
 
     async def grant_for_run(
         self,
@@ -1821,20 +2142,97 @@ _EXECUTION_IMMUTABLE_IDENTITY_FIELDS = (
     "platform_release",
     "platform_architecture",
 )
+_EXECUTION_STRICT_ADMISSION_FIELDS = (
+    "launch_fingerprint",
+    "run_id",
+    "session_id",
+    "tool_call_id",
+    "attempt_group",
+    "node_id",
+    "executor_type",
+    "command_text",
+    "cwd",
+    "env_diff",
+    "stdout_path",
+    "stderr_path",
+)
+_EXECUTION_DUPLICATE_ADMISSION_FIELDS = tuple(
+    field_name
+    for field_name in _EXECUTION_STRICT_ADMISSION_FIELDS
+    if field_name not in {"stdout_path", "stderr_path"}
+)
 _EXECUTION_FIRST_WRITE_WINS_FIELDS = (
     "started_at",
     "physical_stop_confirmed_at",
 )
+_EXECUTION_MUTABLE_RECORD_FIELDS = (
+    "session_id",
+    "tool_call_id",
+    "attempt_group",
+    "node_id",
+    "owner_runner_instance_id",
+    "owner_runner_epoch",
+    "executor_type",
+    "argv_json",
+    "command_text",
+    "tool_id",
+    "tool_version",
+    "executable_path",
+    "cwd",
+    "env_diff_json",
+    "platform_system",
+    "platform_release",
+    "platform_architecture",
+    "status",
+    "pid",
+    "process_group_id",
+    "containment_id",
+    "exit_code",
+    "stdout_path",
+    "stderr_path",
+    "process_created_at",
+    "started_at",
+    "finished_at",
+    "physical_stop_confirmed_at",
+)
+
+
+def _execution_metadata_state(record: ExecutionRecord) -> tuple[object, ...]:
+    return tuple(getattr(record, field_name) for field_name in _EXECUTION_MUTABLE_RECORD_FIELDS)
+
+
+def _execution_lifecycle_timestamps(
+    execution: Execution | ExecutionRecord,
+) -> tuple[datetime | None, ...]:
+    return (
+        execution.created_at,
+        execution.process_created_at,
+        execution.started_at,
+        execution.finished_at,
+        execution.physical_stop_confirmed_at,
+    )
 
 
 def _validate_execution_bound_fields(current: Execution, incoming: Execution) -> bool:
     """Return whether ``incoming`` is stale; reject split-brain identity changes."""
 
+    if current.created_at != incoming.created_at:
+        raise RepositoryConflictError(
+            f"Execution {current.id!r} creation time is immutable after creation"
+        )
     if current.execution_key != incoming.execution_key:
         raise RepositoryConflictError(
             f"Execution {current.id!r} key is already bound to "
             f"{current.execution_key!r}, not {incoming.execution_key!r}"
         )
+    for field_name in _EXECUTION_STRICT_ADMISSION_FIELDS:
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RepositoryConflictError(
+                f"Execution {current.id!r} admission field {field_name!r} "
+                f"is already bound to {persisted!r}, not {proposed!r}"
+            )
     if current.owner is not None and incoming.owner != current.owner:
         raise RepositoryConflictError(
             f"Execution {current.id!r} owner is already bound to "
@@ -1853,6 +2251,14 @@ def _validate_execution_bound_fields(current: Execution, incoming: Execution) ->
                 f"Execution {current.id!r} physical identity field {field_name!r} "
                 f"is already bound to {persisted!r}, not {proposed!r}"
             )
+    if current.argv:
+        if not incoming.argv:
+            stale = True
+        elif incoming.argv != current.argv:
+            raise RepositoryConflictError(
+                f"Execution {current.id!r} resolved argv is already bound to "
+                f"{current.argv!r}, not {incoming.argv!r}"
+            )
     for field_name in _EXECUTION_FIRST_WRITE_WINS_FIELDS:
         persisted = getattr(current, field_name)
         proposed = getattr(incoming, field_name)
@@ -1861,19 +2267,141 @@ def _validate_execution_bound_fields(current: Execution, incoming: Execution) ->
     return stale
 
 
+def _validate_execution_duplicate(current: Execution, incoming: Execution) -> None:
+    """Reject a same-key create carrying different logical launch semantics."""
+
+    for field_name in _EXECUTION_DUPLICATE_ADMISSION_FIELDS:
+        if field_name == "launch_fingerprint":
+            # Rows admitted before launch fingerprints remain replayable by a
+            # fully described current request after all reconstructable fields
+            # below match. A fingerprinted row never accepts an opaque replay.
+            if current.launch_fingerprint is None and incoming.launch_fingerprint is not None:
+                continue
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RepositoryConflictError(
+                f"Execution key {current.execution_key!r} is already bound to "
+                f"admission field {field_name!r}={persisted!r}, not {proposed!r}"
+            )
+    if incoming.owner != current.owner:
+        raise RepositoryConflictError(
+            f"Execution key {current.execution_key!r} is already bound to owner "
+            f"{current.owner.model_dump(mode='json') if current.owner is not None else None!r}"
+        )
+    shell_resolved_argv_replay = (
+        current.executor_type is ExecutorType.SHELL and bool(current.argv) and not incoming.argv
+    )
+    if incoming.argv != current.argv and not shell_resolved_argv_replay:
+        raise RepositoryConflictError(
+            f"Execution key {current.execution_key!r} is already bound to resolved argv "
+            f"{current.argv!r}, not {incoming.argv!r}"
+        )
+    for field_name in ("tool_id", "tool_version"):
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if proposed != persisted:
+            raise RepositoryConflictError(
+                f"Execution key {current.execution_key!r} is already bound to "
+                f"{field_name} {persisted!r}, not {proposed!r}"
+            )
+
+
+_EXECUTION_STATUS_TRANSITIONS = {
+    ExecutionStatus.QUEUED: frozenset(
+        {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.CREATED: frozenset(
+        {
+            ExecutionStatus.STARTING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.STARTING: frozenset(
+        {
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.RUNNING: frozenset(
+        {
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }
+    ),
+    ExecutionStatus.FAILED: frozenset({ExecutionStatus.CANCELLED}),
+    ExecutionStatus.LOST: frozenset({ExecutionStatus.CANCELLED}),
+    ExecutionStatus.COMPLETED: frozenset(),
+    ExecutionStatus.EXITED: frozenset(),
+    ExecutionStatus.CANCELLED: frozenset(),
+    ExecutionStatus.HARD_TIMEOUT: frozenset(),
+}
+
+
+def _execution_status_update_is_monotonic(
+    current: ExecutionStatus,
+    incoming: ExecutionStatus,
+) -> bool:
+    return incoming is current or incoming in _EXECUTION_STATUS_TRANSITIONS[current]
+
+
 class SQLAlchemyExecutionRepository:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        clock: Clock = utc_now,
+    ) -> None:
         self._session_factory = session_factory
+        self._clock = clock
 
     async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]:
         try:
-            async with self._session_factory() as session, session.begin():
-                session.add(execution_to_record(execution))
+            async with _serialized_run_write(self._session_factory) as session:
+                existing = await session.scalar(
+                    select(ExecutionRecord)
+                    .where(ExecutionRecord.execution_key == execution.execution_key)
+                    .with_for_update()
+                )
+                if existing is not None:
+                    authoritative = execution_from_record(existing)
+                    _validate_execution_duplicate(authoritative, execution)
+                    return authoritative, False
+                updated_at = next_mutation_at(
+                    self._clock,
+                    lifecycle_timestamps=_execution_lifecycle_timestamps(execution),
+                )
+                session.add(execution_to_record(execution, updated_at=updated_at))
                 await session.flush()
             return execution, True
         except IntegrityError as exc:
             existing = await self.get_by_key(execution.execution_key)
             if existing is not None:
+                _validate_execution_duplicate(existing, execution)
                 return existing, False
             raise RepositoryConflictError(f"could not create execution {execution.id!r}") from exc
 
@@ -1889,8 +2417,24 @@ class SQLAlchemyExecutionRepository:
             )
             return execution_from_record(record) if record else None
 
+    async def find_admission(
+        self,
+        identity: ExecutionAdmissionIdentity,
+    ) -> Execution | None:
+        predicates = [ExecutionRecord.execution_key == identity.execution_key]
+        if identity.execution_id is not None:
+            predicates.append(ExecutionRecord.id == identity.execution_id)
+        statement = select(ExecutionRecord).where(or_(*predicates))
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        for record in records:
+            execution = execution_from_record(record)
+            if identity.matches(execution):
+                return execution
+        return None
+
     async def save(self, execution: Execution) -> Execution:
-        async with self._session_factory() as session, session.begin():
+        async with _serialized_run_write(self._session_factory) as session:
             record = await session.scalar(
                 select(ExecutionRecord).where(ExecutionRecord.id == execution.id).with_for_update()
             )
@@ -1902,7 +2446,17 @@ class SQLAlchemyExecutionRepository:
                     f"Stale execution update would clear first-write-wins physical "
                     f"identity for {execution.id!r}"
                 )
+            if not _execution_status_update_is_monotonic(current.status, execution.status):
+                return current
+            before = _execution_metadata_state(record)
             apply_execution_to_record(execution, record)
+            if _execution_metadata_state(record) == before:
+                return execution
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=_execution_lifecycle_timestamps(record),
+            )
             await session.flush()
         return execution
 
@@ -1930,9 +2484,21 @@ class SQLAlchemyExecutionRepository:
                 raise EntityNotFoundError("Execution", execution.id)
             current = execution_from_record(record)
             stale = _validate_execution_bound_fields(current, execution)
-            if current.status not in expected_statuses or stale:
+            if (
+                current.status not in expected_statuses
+                or stale
+                or not _execution_status_update_is_monotonic(current.status, execution.status)
+            ):
                 return current, False
+            before = _execution_metadata_state(record)
             apply_execution_to_record(execution, record)
+            if _execution_metadata_state(record) == before:
+                return execution, True
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=_execution_lifecycle_timestamps(record),
+            )
             await session.flush()
         return execution, True
 
@@ -1976,6 +2542,135 @@ class SQLAlchemyExecutionRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [execution_from_record(record) for record in records]
+
+
+def _approval_status_for_decision(decision: ApprovalDecision) -> ApprovalStatus:
+    if decision in {
+        ApprovalDecision.APPROVE_ONCE,
+        ApprovalDecision.APPROVE_TOOL_FOR_RUN,
+    }:
+        return ApprovalStatus.APPROVED
+    return ApprovalStatus.REJECTED
+
+
+def _approval_decision_event_id(
+    approval_id: str,
+    status: ApprovalStatus,
+) -> str:
+    return str(uuid5(NAMESPACE_URL, f"riftx:approval:{approval_id}:{status.value}"))
+
+
+def _backfill_legacy_public_decision(
+    approval: ApprovalRecord,
+    *,
+    runtime_record: RuntimeApprovalRequestRecord | None,
+) -> bool:
+    """Repair an old terminal public row before enforcing the complete tuple."""
+
+    if approval.decision is not None:
+        return False
+    if (
+        runtime_record is not None
+        and runtime_record.status != ApprovalStatus.PENDING.value
+        and runtime_record.decision is not None
+    ):
+        approval.decision = runtime_record.decision
+        approval.decision_feedback = runtime_record.feedback
+        return True
+    if approval.status == ApprovalStatus.APPROVED.value:
+        # Grants are scoped only by Run/Tool and carry no source Approval ID.
+        # A later Approval may have created the surviving grant, so it cannot
+        # widen this legacy row's decision during an idempotent retry.
+        approval.decision = ApprovalDecision.APPROVE_ONCE.value
+        approval.decision_feedback = None
+        return True
+    if approval.status == ApprovalStatus.REJECTED.value:
+        feedback = approval.reason if approval.reason.strip() else None
+        approval.decision = (
+            ApprovalDecision.REJECT_WITH_FEEDBACK.value
+            if feedback is not None
+            else ApprovalDecision.REJECT.value
+        )
+        approval.decision_feedback = feedback
+        return True
+    return False
+
+
+def _require_public_approval_match(
+    approval: Approval,
+    *,
+    status: ApprovalStatus,
+    decision: ApprovalDecision,
+    decided_by: str,
+    feedback: str | None,
+) -> None:
+    if (
+        approval.status is status
+        and approval.decision is decision
+        and approval.decided_by == decided_by
+        and approval.decision_feedback == feedback
+        and approval.decided_at is not None
+    ):
+        return
+    raise RepositoryDecisionConflictError(
+        "The public Approval already has a conflicting durable decision",
+        details={
+            "approval_id": approval.id,
+            "public_status": approval.status.value,
+            "public_decision": (approval.decision.value if approval.decision is not None else None),
+            "public_decided_by": approval.decided_by,
+            "public_feedback": approval.decision_feedback,
+            "requested_decision": decision.value,
+        },
+    )
+
+
+def _require_runtime_record_match(
+    request: RuntimeApprovalRequestRecord | None,
+    *,
+    approval_id: str,
+    status: ApprovalStatus,
+    decision: ApprovalDecision,
+    decided_by: str,
+    feedback: str | None,
+) -> None:
+    if (
+        request is not None
+        and request.status == status.value
+        and request.decision == decision.value
+        and request.decided_by == decided_by
+        and request.feedback == feedback
+        and request.decided_at is not None
+    ):
+        return
+    _raise_decision_conflict(
+        approval_id,
+        "The Runtime Approval already has a conflicting durable decision",
+        runtime_record=request,
+        requested_decision=decision,
+    )
+
+
+def _raise_decision_conflict(
+    approval_id: str,
+    message: str,
+    *,
+    runtime_record: RuntimeApprovalRequestRecord | None,
+    requested_decision: ApprovalDecision,
+) -> None:
+    raise RepositoryDecisionConflictError(
+        message,
+        details={
+            "approval_id": approval_id,
+            "runtime_status": runtime_record.status if runtime_record is not None else None,
+            "runtime_decision": (runtime_record.decision if runtime_record is not None else None),
+            "runtime_decided_by": (
+                runtime_record.decided_by if runtime_record is not None else None
+            ),
+            "runtime_feedback": (runtime_record.feedback if runtime_record is not None else None),
+            "requested_decision": requested_decision.value,
+        },
+    )
 
 
 async def _next_event_sequence(session: AsyncSession, run_id: str) -> int:

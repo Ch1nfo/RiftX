@@ -36,3 +36,9 @@ class ExecutionRunner(Protocol):
         stderr_cursor: int = 0,
         max_bytes: int = 64 * 1024,
     ) -> ExecutionOutput: ...
+
+
+class ExecutionCloser(Protocol):
+    """Closes an execution owned by a specialized local supervisor."""
+
+    async def close_execution(self, execution_id: str) -> Execution: ...

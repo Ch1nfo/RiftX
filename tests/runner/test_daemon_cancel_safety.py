@@ -1184,9 +1184,7 @@ async def test_cancel_never_publishes_returned_but_unpersisted_stop_proof(
 
     client = _RunnerClient()
     terminal_handler = (
-        _UnpersistedProofTerminal(execution)
-        if executor_type is ExecutorType.PTY
-        else None
+        _UnpersistedProofTerminal(execution) if executor_type is ExecutorType.PTY else None
     )
     daemon = _daemon(
         tmp_path,
@@ -1282,10 +1280,7 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
                     "argv": [
                         sys.executable,
                         "-c",
-                        (
-                            "from pathlib import Path; "
-                            f"Path({str(marker)!r}).write_text('unsafe')"
-                        ),
+                        (f"from pathlib import Path; Path({str(marker)!r}).write_text('unsafe')"),
                     ]
                 }
             ).model_dump(mode="json"),
@@ -1298,7 +1293,9 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
         assert durable is not None
         assert durable.status is ExecutionStatus.CANCELLED
         assert durable.physical_stop_confirmed_at is not None
-        assert reopened_client.finished[0][1] is True
+        assert durable.launch_fingerprint == request.launch_fingerprint
+        assert reopened_client.finished[0][0:2] == (delayed_execute.id, False)
+        assert "launch_fingerprint" in reopened_client.finished[0][3]
         assert not marker.exists()
     finally:
         await reopened_daemon.close()

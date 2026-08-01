@@ -11,6 +11,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from riftx.application.actions import InvalidActionCursorError
 from riftx.application.errors import (
     ApplicationConflictError,
     AuthenticationError,
@@ -53,6 +54,7 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RepositoryConflictError, _handle_repository_conflict)
     app.add_exception_handler(ServiceUnavailableError, _handle_service_unavailable)
     app.add_exception_handler(InvalidStateTransitionError, _handle_invalid_transition)
+    app.add_exception_handler(InvalidActionCursorError, _handle_invalid_action_cursor)
     app.add_exception_handler(RequestValidationError, _handle_validation)
     app.add_exception_handler(HTTPException, _handle_http_exception)
     app.add_exception_handler(Exception, _handle_unexpected)
@@ -105,6 +107,11 @@ async def _handle_service_unavailable(_: Request, exc: Exception) -> JSONRespons
 
 async def _handle_invalid_transition(_: Request, exc: Exception) -> JSONResponse:
     return _response(409, "invalid_state_transition", str(exc))
+
+
+async def _handle_invalid_action_cursor(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, InvalidActionCursorError)
+    return _response(422, "invalid_action_cursor", "The Action cursor is invalid")
 
 
 async def _handle_validation(_: Request, exc: Exception) -> JSONResponse:

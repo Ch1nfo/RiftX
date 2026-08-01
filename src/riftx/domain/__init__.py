@@ -16,6 +16,7 @@ from .browser import (
 from .engagement import Engagement
 from .enums import (
     AgentStepStatus,
+    ApprovalDecision,
     ApprovalLevel,
     ApprovalMode,
     ApprovalStatus,
@@ -63,6 +64,7 @@ __all__ = [
     "AgentStep",
     "AgentStepStatus",
     "Approval",
+    "ApprovalDecision",
     "ApprovalGrant",
     "ApprovalLevel",
     "ApprovalMode",

@@ -1,5 +1,6 @@
 """Control-plane route modules."""
 
+from .actions import router as actions_router
 from .approvals import router as approvals_router
 from .artifacts import router as artifacts_router
 from .browser import router as browser_router
@@ -20,6 +21,7 @@ from .terminals import router as terminals_router
 from .tools import router as tools_router
 
 __all__ = [
+    "actions_router",
     "approvals_router",
     "artifacts_router",
     "browser_router",

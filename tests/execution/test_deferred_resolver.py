@@ -274,3 +274,56 @@ async def test_registered_tool_must_be_selected_and_raw_spec_cannot_override_reg
     ]
     assert intent.execution_spec["cwd"] == str(workspace)
     assert intent.execution_spec["command_text"] is None
+
+
+async def test_same_engine_call_id_in_distinct_cycles_creates_distinct_intents(
+    tmp_path: Path,
+) -> None:
+    tool_calls = FakeToolCalls()
+    dispatcher = DeferredExecutionDispatcher(
+        tool_call_repository=tool_calls,  # type: ignore[arg-type]
+        execution_service=object(),  # type: ignore[arg-type]
+    )
+    session = AgentSession(id="session-1", run_id="run-1", model_profile="test")
+    event = AgentEngineEvent(
+        sequence=1,
+        event_type=AgentEngineEventType.TOOL_CALL_READY,
+        data={
+            "call_id": "provider-call-1",
+            "tool_id": "scanner",
+            "arguments": {"target": "127.0.0.1"},
+            "execution": {
+                "node_id": "node-1",
+                "executor_type": "process",
+                "cwd": str(tmp_path),
+                "argv": [sys.executable, "--version"],
+            },
+        },
+    )
+
+    first = await dispatcher.prepare(
+        session=session,
+        cycle=AgentCycle(id="cycle-1", run_id="run-1", session_id=session.id, sequence=1),
+        step=AgentStep(
+            id="step-1",
+            cycle_id="cycle-1",
+            sequence=1,
+            step_type=AgentStepType.TOOL_PROPOSAL,
+        ),
+        event=event,
+    )
+    second = await dispatcher.prepare(
+        session=session,
+        cycle=AgentCycle(id="cycle-2", run_id="run-1", session_id=session.id, sequence=2),
+        step=AgentStep(
+            id="step-2",
+            cycle_id="cycle-2",
+            sequence=1,
+            step_type=AgentStepType.TOOL_PROPOSAL,
+        ),
+        event=event,
+    )
+
+    assert first.id != second.id
+    assert first.cycle_id == "cycle-1"
+    assert second.cycle_id == "cycle-2"

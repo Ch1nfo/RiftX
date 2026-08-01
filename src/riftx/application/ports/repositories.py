@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
+from riftx.application.actions import (
+    ActionAggregateRead,
+    ActionPageKey,
+    ActionReadPage,
+)
 from riftx.application.finalization import RunFinalizationIntent
 from riftx.domain import (
     Approval,
+    ApprovalDecision,
     ApprovalGrant,
     ApprovalStatus,
     Artifact,
     Engagement,
     Execution,
     ExecutionStatus,
+    ExecutorType,
     Finding,
     FindingSeverity,
     FindingStatus,
@@ -33,6 +42,81 @@ from riftx.domain import (
     TerminalStatus,
     ToolCall,
 )
+from riftx.runtime.types import ToolCallIntent, ToolCallStatus
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallIntentExecutionClaim:
+    """Store-issued receipt for one exact deferred-execution claim."""
+
+    intent: ToolCallIntent
+    acquired: bool
+    newly_acquired: bool
+    execution_key: str
+    attempt_group: str
+    previous_status: ToolCallStatus | None = None
+    previous_execution_key: str | None = None
+    previous_attempt_group: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAdmissionIdentity:
+    """Exact logical identity of one durable execution admission.
+
+    A matching key or deterministic ID alone is never sufficient: either can
+    collide with a row owned by another Run, Session, Tool Call, attempt, or
+    executor path. Historical rows may legitimately predate launch
+    fingerprints, so a NULL persisted fingerprint is accepted only after all
+    reconstructable identity fields match.
+    """
+
+    execution_key: str
+    run_id: str
+    session_id: str | None
+    tool_call_id: str | None
+    attempt_group: str | None
+    executor_type: ExecutorType
+    node_id: str
+    argv: tuple[str, ...]
+    command_text: str | None
+    tool_id: str | None
+    tool_version: str | None
+    cwd: str
+    env: dict[str, str | None]
+    execution_id: str | None = None
+    launch_fingerprint: str | None = None
+
+    def matches(self, execution: Execution) -> bool:
+        if self.execution_id is not None and execution.id != self.execution_id:
+            return False
+        if (
+            execution.execution_key != self.execution_key
+            or execution.run_id != self.run_id
+            or execution.session_id != self.session_id
+            or execution.tool_call_id != self.tool_call_id
+            or execution.attempt_group != self.attempt_group
+            or execution.executor_type is not self.executor_type
+            or execution.node_id != self.node_id
+            or execution.command_text != self.command_text
+            or execution.tool_id != self.tool_id
+            or execution.tool_version != self.tool_version
+            or _canonical_path(execution.cwd) != _canonical_path(self.cwd)
+            or execution.env_diff != self.env
+        ):
+            return False
+        expected_argv = list(self.argv)
+        if execution.argv != expected_argv and not (
+            self.executor_type is ExecutorType.SHELL and not expected_argv and bool(execution.argv)
+        ):
+            return False
+        return self.launch_fingerprint is None or execution.launch_fingerprint in {
+            None,
+            self.launch_fingerprint,
+        }
+
+
+def _canonical_path(value: str) -> str:
+    return str(Path(value).expanduser().resolve())
 
 
 class EngagementRepository(Protocol):
@@ -271,6 +355,18 @@ class ApprovalRepository(Protocol):
         blocked_run_statuses: Collection[RunStatus] = (),
     ) -> tuple[Approval, bool]: ...
 
+    async def decide_runtime(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        *,
+        decided_by: str,
+        feedback: str | None = None,
+        blocked_run_statuses: Collection[RunStatus] = (),
+    ) -> tuple[Approval, bool]:
+        """Atomically persist the public/runtime tuple, grant, and decision event."""
+        ...
+
     async def grant_for_run(
         self,
         run_id: str,
@@ -288,6 +384,13 @@ class ExecutionRepository(Protocol):
     async def get(self, execution_id: str) -> Execution | None: ...
 
     async def get_by_key(self, execution_key: str) -> Execution | None: ...
+
+    async def find_admission(
+        self,
+        identity: ExecutionAdmissionIdentity,
+    ) -> Execution | None:
+        """Return a row only when its complete logical admission identity matches."""
+        ...
 
     async def save(self, execution: Execution) -> Execution: ...
 
@@ -307,6 +410,101 @@ class ExecutionRepository(Protocol):
     ) -> Sequence[Execution]: ...
 
     async def list_active(self) -> Sequence[Execution]: ...
+
+
+class ToolCallIntentRepository(Protocol):
+    async def create(self, intent: ToolCallIntent) -> ToolCallIntent: ...
+
+    async def get(self, intent_id: str) -> ToolCallIntent | None: ...
+
+    async def pending_for_session(self, session_id: str) -> list[ToolCallIntent]: ...
+
+    async def active_for_run(
+        self,
+        run_id: str,
+        *,
+        tool_ids: Collection[str] | None = None,
+    ) -> list[ToolCallIntent]: ...
+
+    async def compare_and_set_status(
+        self,
+        intent_id: str,
+        *,
+        expected: Collection[ToolCallStatus],
+        target: ToolCallStatus,
+    ) -> tuple[ToolCallIntent, bool]: ...
+
+    async def claim_execution(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> ToolCallIntentExecutionClaim: ...
+
+    async def execution_claim_is_current(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> bool: ...
+
+    async def project_execution_status(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+        expected: Collection[ToolCallStatus],
+        target: ToolCallStatus,
+    ) -> tuple[ToolCallIntent, bool]: ...
+
+    async def adopt_execution_claim(
+        self,
+        intent_id: str,
+        *,
+        execution_id: str,
+        execution_key: str,
+        attempt_group: str,
+    ) -> tuple[ToolCallIntent, bool]: ...
+
+    async def rollback_execution_claim(
+        self,
+        claim: ToolCallIntentExecutionClaim,
+        *,
+        admission: ExecutionAdmissionIdentity,
+    ) -> tuple[ToolCallIntent, bool]: ...
+
+    async def save(self, intent: ToolCallIntent) -> ToolCallIntent:
+        """Persist mutable metadata only; status and claims remain store-owned."""
+        ...
+
+
+class ActionReadRepository(Protocol):
+    """Batch-oriented persistence port for the application Action projection.
+
+    Aggregate ``updated_at`` values are aware high-water marks for every
+    Action-projected child metadata change, including children omitted or truncated
+    from the returned projection. Non-projected database fields are outside this contract.
+    """
+
+    async def resolve_run(self, run_id: str) -> str | None: ...
+
+    async def resolve_action_run(self, run_id: str, action_id: str) -> str | None: ...
+
+    async def list_page(
+        self,
+        run_id: str,
+        *,
+        limit: int,
+        after: ActionPageKey | None,
+        snapshot: ActionPageKey | None,
+    ) -> ActionReadPage:
+        """Return at most ``limit + 1`` rows; the extra row is a pagination sentinel."""
+        ...
+
+    async def get(self, run_id: str, action_id: str) -> ActionAggregateRead | None: ...
 
 
 class TerminalRepository(Protocol):
@@ -346,11 +544,20 @@ class ArtifactRepository(Protocol):
 
 
 class FindingRepository(Protocol):
-    async def create(self, finding: Finding) -> Finding: ...
+    async def create(self, finding: Finding) -> Finding:
+        """Persist and return repository-owned creation and mutation timestamps."""
+        ...
 
     async def get(self, finding_id: str) -> Finding | None: ...
 
-    async def save(self, finding: Finding) -> Finding: ...
+    async def save(
+        self,
+        finding: Finding,
+        *,
+        expected_updated_at: datetime,
+    ) -> tuple[Finding, bool]:
+        """CAS mutable payload and preserve ``updated_at`` as a monotonic high-water mark."""
+        ...
 
     async def list(
         self,

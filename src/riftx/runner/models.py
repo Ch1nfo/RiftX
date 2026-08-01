@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -53,6 +55,34 @@ class ExecutionLaunchRequest(BaseModel):
             raise ValueError("PTY execution is handled by the terminal subsystem")
         return self
 
+    @property
+    def launch_fingerprint(self) -> str:
+        return _launch_fingerprint(
+            "execution",
+            {
+                "execution_id": self.execution_id,
+                "execution_key": self.execution_key,
+                "run_id": self.run_id,
+                "session_id": self.session_id,
+                "tool_call_id": self.tool_call_id,
+                "attempt_group": self.attempt_group,
+                "node_id": self.node_id,
+                "executor_type": self.executor_type.value,
+                "argv": self.argv,
+                "command_text": self.command_text,
+                "tool_id": self.tool_id,
+                "tool_version": self.tool_version,
+                "cwd": _canonical_path(self.cwd),
+                "environment_mode": self.environment_mode.value,
+                "env": self.env,
+                "shell": self.shell.value if self.shell is not None else None,
+                "shell_path": (
+                    _canonical_path(self.shell_path) if self.shell_path is not None else None
+                ),
+                "timeout_seconds": self.timeout_seconds,
+            },
+        )
+
 
 class OutputSlice(BaseModel):
     model_config = ConfigDict(
@@ -80,8 +110,10 @@ class TerminalLaunchRequest(BaseModel):
 
     session_id: str | None = Field(default=None, min_length=1)
     execution_id: str | None = Field(default=None, min_length=1)
+    execution_key: str | None = Field(default=None, min_length=1, max_length=255)
     agent_session_id: str | None = Field(default=None, min_length=1)
     tool_call_id: str | None = Field(default=None, min_length=1)
+    attempt_group: str | None = Field(default=None, min_length=1, max_length=64)
     run_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
     runner_principal: RunnerPrincipal | None = None
@@ -101,4 +133,56 @@ class TerminalLaunchRequest(BaseModel):
             raise ValueError(f"cwd does not exist or is not a directory: {self.cwd}")
         if not self.argv or any(not item for item in self.argv):
             raise ValueError("terminal execution requires non-empty argv")
+        if (self.session_id is None) != (self.execution_id is None):
+            raise ValueError("terminal session_id and execution_id must be supplied together")
+        if self.tool_call_id is not None and (
+            self.execution_key is None
+            or self.attempt_group is None
+            or self.agent_session_id is None
+        ):
+            raise ValueError(
+                "tool-bound terminal execution requires agent_session_id, "
+                "execution_key, and attempt_group"
+            )
+        if self.tool_call_id is None and self.attempt_group is not None:
+            raise ValueError("terminal attempt_group requires tool_call_id")
         return self
+
+    @property
+    def launch_fingerprint(self) -> str:
+        return _launch_fingerprint(
+            "terminal",
+            {
+                "session_id": self.session_id,
+                "execution_id": self.execution_id,
+                "execution_key": self.execution_key,
+                "run_id": self.run_id,
+                "agent_session_id": self.agent_session_id,
+                "tool_call_id": self.tool_call_id,
+                "attempt_group": self.attempt_group,
+                "node_id": self.node_id,
+                "argv": self.argv,
+                "tool_id": self.tool_id,
+                "tool_version": self.tool_version,
+                "cwd": _canonical_path(self.cwd),
+                "environment_mode": self.environment_mode.value,
+                "env": self.env,
+                "cols": self.cols,
+                "rows": self.rows,
+                "owner": self.owner.value,
+            },
+        )
+
+
+def _canonical_path(path: Path) -> str:
+    return str(path.expanduser().resolve())
+
+
+def _launch_fingerprint(kind: str, payload: dict[str, object]) -> str:
+    canonical = json.dumps(
+        {"kind": kind, **payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"launch:v1:{hashlib.sha256(canonical.encode()).hexdigest()}"

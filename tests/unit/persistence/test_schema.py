@@ -84,6 +84,14 @@ def test_event_sequence_is_unique_per_run() -> None:
     assert ("run_id", "sequence") in unique_columns
 
 
+def test_public_approval_schema_persists_the_authoritative_decision_tuple() -> None:
+    approvals = Base.metadata.tables["approvals"]
+
+    assert approvals.c.decision.type.length == 32
+    assert approvals.c.decision.nullable is True
+    assert approvals.c.decision_feedback.nullable is True
+
+
 def test_web_source_registry_preserves_canonical_document_contract() -> None:
     assert {
         "requested_url",
@@ -336,3 +344,39 @@ def test_execution_schema_tracks_owner_containment_and_stop_proof() -> None:
         "containment_id",
         "physical_stop_confirmed_at",
     } <= set(Base.metadata.tables["executions"].columns.keys())
+
+
+def test_action_read_schema_has_durable_ordering_and_wide_intent_references() -> None:
+    intents = Base.metadata.tables["tool_call_intents"]
+    executions = Base.metadata.tables["executions"]
+    runtime_approvals = Base.metadata.tables["runtime_approval_requests"]
+    target_http = Base.metadata.tables["target_http_requests"]
+
+    assert intents.c.id.type.length == 128
+    assert runtime_approvals.c.tool_call_intent_id.type.length == 128
+    assert executions.c.tool_call_id.type.length == 128
+    assert target_http.c.tool_call_id.type.length == 128
+    assert Base.metadata.tables["approvals"].c.tool_call_id.type.length == 64
+
+    assert "created_at" in executions.c
+    assert intents.c.updated_at.nullable is False
+    assert executions.c.updated_at.nullable is False
+    assert intents.c.updated_at.server_default is None
+    assert executions.c.updated_at.server_default is None
+    intent_indexes = {
+        index.name: tuple(column.name for column in index.columns) for index in intents.indexes
+    }
+    execution_indexes = {
+        index.name: tuple(column.name for column in index.columns) for index in executions.indexes
+    }
+    assert intent_indexes["ix_tool_call_intents_run_created_id"] == (
+        "run_id",
+        "created_at",
+        "id",
+    )
+    assert execution_indexes["ix_executions_run_tool_created_id"] == (
+        "run_id",
+        "tool_call_id",
+        "created_at",
+        "id",
+    )

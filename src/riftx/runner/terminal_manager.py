@@ -29,6 +29,7 @@ from .models import TerminalLaunchRequest
 from .protocols import EffectGuard
 from .supervisor import ProcessTerminationError
 from .terminal import TerminalSupervisor
+from .terminal_identity import require_terminal_start_replay_matches
 
 logger = logging.getLogger(__name__)
 
@@ -343,10 +344,45 @@ class RemoteTerminalManager:
         if existing is not None:
             if existing.execution_id != execution_id:
                 raise ValueError("terminal_start conflicts with an existing session")
+            execution = await self._require_execution(execution_id)
+            require_terminal_start_replay_matches(existing, execution, request)
+            if existing.status is TerminalStatus.CREATED and execution.status in {
+                ExecutionStatus.CREATED,
+                ExecutionStatus.STARTING,
+            }:
+                # Do not turn a crash between durable admission phases into a
+                # successful duplicate.  The supervisor can safely converge
+                # CREATED, while STARTING remains fail-closed and is never
+                # replayed without an attached native handle.
+                try:
+                    existing = await self._supervisor.start(
+                        request,
+                        effect_guard=effect_guard,
+                    )
+                except Exception:
+                    if on_admitted is not None:
+                        on_admitted()
+                    execution = await self._executions.get(execution_id)
+                    if execution is not None and execution.status in _FINAL_STATUSES:
+                        await self._report_execution(execution)
+                    raise
+                if on_admitted is not None:
+                    on_admitted()
+                execution = await self._require_execution(existing.execution_id)
+                await self._report_execution(execution)
+                if execution.status not in _FINAL_STATUSES:
+                    self._start_monitor(execution.id)
+                return {
+                    "session_id": existing.id,
+                    "execution_id": execution.id,
+                    "status": execution.status.value,
+                    "duplicate": True,
+                }
+            # A foreign payload must be rejected before invoking any callback,
+            # reporting durable state, or starting a monitor. The complete
+            # replay identity above includes the authenticated Runner owner.
             if effect_guard is not None:
                 await effect_guard()
-            execution = await self._require_execution(execution_id)
-            self._require_execution_owner(execution, owner)
             if on_admitted is not None:
                 on_admitted()
             await self._report_execution(execution)

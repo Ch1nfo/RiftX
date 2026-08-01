@@ -456,10 +456,13 @@ class RunnerDaemon:
                 result = await self._handle_cancel(command.payload, owner)
             elif command.kind is RunnerCommandKind.TERMINAL_CLOSE:
                 session_id = _required_string(command.payload, "session_id")
+                execution_key = command.payload.get("execution_key")
+                if not isinstance(execution_key, str) or not execution_key:
+                    execution_key = f"terminal:{session_id}"
                 result = await self._handle_cancel(
                     {
                         "execution_id": _required_string(command.payload, "execution_id"),
-                        "execution_key": f"terminal:{session_id}",
+                        "execution_key": execution_key,
                     },
                     owner,
                 )
@@ -561,6 +564,13 @@ class RunnerDaemon:
             raw_request = payload.get("request")
             if not isinstance(raw_request, dict):
                 raise ValueError("terminal_start command is missing request")
+            raw_execution_key = raw_request.get("execution_key")
+            if raw_execution_key is None:
+                execution_key = f"terminal:{session_id}"
+            elif isinstance(raw_execution_key, str) and raw_execution_key:
+                execution_key = raw_execution_key
+            else:
+                raise ValueError("terminal_start request has an invalid execution key")
             declared_owner = _runner_principal(raw_request.get("runner_principal"))
             if declared_owner != owner:
                 raise RuntimeError("Terminal start request owner does not match command owner")
@@ -648,7 +658,16 @@ class RunnerDaemon:
         if not isinstance(session_id, str) or not session_id:
             return
         try:
-            execution_key = f"terminal:{session_id}"
+            raw_request = payload.get("request")
+            if not isinstance(raw_request, dict):
+                return
+            raw_execution_key = raw_request.get("execution_key")
+            if raw_execution_key is None:
+                execution_key = f"terminal:{session_id}"
+            elif isinstance(raw_execution_key, str) and raw_execution_key:
+                execution_key = raw_execution_key
+            else:
+                return
             # The daemon-owned stop task is authoritative once the tombstone
             # exists. Do not race it by uploading a stale STARTING/RUNNING
             # snapshot from the failed start handler.

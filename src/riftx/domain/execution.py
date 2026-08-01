@@ -98,6 +98,7 @@ class ToolCall(DomainModel):
 class Execution(DomainModel):
     id: str = Field(default_factory=new_id)
     execution_key: str = Field(min_length=1)
+    launch_fingerprint: str | None = Field(default=None, min_length=1, max_length=80)
     run_id: str
     session_id: str | None = None
     tool_call_id: str | None = None
@@ -124,6 +125,10 @@ class Execution(DomainModel):
     exit_code: int | None = None
     stdout_path: str
     stderr_path: str
+    # New executions persist this immutable admission timestamp. Legacy rows
+    # intentionally remain NULL because their chronological order cannot be
+    # reconstructed safely from process or finish timestamps.
+    created_at: AwareDatetime | None = Field(default_factory=utc_now, frozen=True)
     process_created_at: AwareDatetime | None = None
     started_at: AwareDatetime | None = None
     finished_at: AwareDatetime | None = None

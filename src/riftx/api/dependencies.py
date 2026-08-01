@@ -7,6 +7,7 @@ from fastapi import Depends, Header, Request
 
 from riftx.application.errors import AuthenticationError
 from riftx.application.services import (
+    ActionApplicationService,
     ApprovalApplicationService,
     ArtifactApplicationService,
     EventApplicationService,
@@ -52,6 +53,10 @@ def get_control_plane(request: Request) -> object:
 
 def get_run_service(request: Request) -> RunApplicationService:
     return request.app.state.control_plane.run_service
+
+
+def get_action_service(request: Request) -> ActionApplicationService:
+    return request.app.state.control_plane.action_service
 
 
 def get_event_service(request: Request) -> EventApplicationService:
@@ -126,6 +131,7 @@ def authorize_admin(
 
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
+ActionServiceDependency = Annotated[ActionApplicationService, Depends(get_action_service)]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
 FindingServiceDependency = Annotated[FindingApplicationService, Depends(get_finding_service)]

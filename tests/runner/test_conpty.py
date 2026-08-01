@@ -318,6 +318,7 @@ async def test_conpty_tree_kill_failure_does_not_persist_cancelled_and_can_retry
     terminal = await supervisor.start(
         TerminalLaunchRequest(
             session_id="terminal-conpty-fail-closed",
+            execution_id="terminal-conpty-fail-closed-execution",
             run_id="run-fail-closed",
             node_id="windows-a",
             cwd=tmp_path,

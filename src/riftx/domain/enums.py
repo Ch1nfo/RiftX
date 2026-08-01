@@ -59,6 +59,13 @@ class ApprovalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ApprovalDecision(StrEnum):
+    APPROVE_ONCE = "approve_once"
+    APPROVE_TOOL_FOR_RUN = "approve_tool_for_run"
+    REJECT = "reject"
+    REJECT_WITH_FEEDBACK = "reject_with_feedback"
+
+
 class ToolAvailability(StrEnum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"

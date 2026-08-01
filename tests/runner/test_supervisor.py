@@ -9,11 +9,12 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import riftx.executors.process as process_module
-from riftx.application.errors import ApplicationConflictError
+from riftx.application.errors import ApplicationConflictError, RepositoryConflictError
 from riftx.application.services.run_safety import RunSafetyStopService
 from riftx.domain import (
     Engagement,
@@ -26,10 +27,12 @@ from riftx.domain import (
 )
 from riftx.executors import (
     DirectProcessExecutor,
+    EnvironmentMode,
     LinuxCgroupV2Manager,
     ProcessResult,
     ProcessStartError,
     ShellKind,
+    build_shell_argv,
 )
 from riftx.persistence import (
     Database,
@@ -176,8 +179,8 @@ class _DetachedProcessExecutor:
 
 
 class ActivationFailingProcessHandle:
-    def __init__(self) -> None:
-        self.request = SimpleNamespace(argv=["activation-failing-process"])
+    def __init__(self, argv: list[str]) -> None:
+        self.request = SimpleNamespace(argv=list(argv))
         self.pid = 424245
         self.process_group_id = 424245
         self.containment_identifier = "activation-failing-containment"
@@ -280,9 +283,7 @@ class FailingSpawnCleanupManager:
         self.containment: FailingSpawnCleanupContainment | None = None
 
     async def prepare(self, execution_key: str) -> FailingSpawnCleanupContainment:
-        containment = FailingSpawnCleanupContainment(
-            await self._delegate.prepare(execution_key)
-        )
+        containment = FailingSpawnCleanupContainment(await self._delegate.prepare(execution_key))
         self.containment = containment
         return containment
 
@@ -372,9 +373,10 @@ def shell_launch_request(
 async def test_supervisor_persists_lifecycle_and_reads_output_by_cursor(
     tmp_path: Path,
 ) -> None:
-    database, _, supervisor = await make_supervisor(tmp_path)
+    database, executions, supervisor = await make_supervisor(tmp_path)
     started = await supervisor.start(launch_request(tmp_path, "success-key", "success"))
     completed = await supervisor.wait(started.id)
+    persisted = await executions.get(completed.id)
 
     first = await supervisor.read_output(completed.id, max_bytes=8)
     second = await supervisor.read_output(
@@ -393,6 +395,8 @@ async def test_supervisor_persists_lifecycle_and_reads_output_by_cursor(
     assert completed.platform_release
     assert completed.platform_architecture
     assert completed.process_created_at == completed.started_at
+    assert completed.created_at is not None
+    assert persisted is not None and persisted.created_at == completed.created_at
     assert first.stdout.data + second.stdout.data == (
         b"stdout: \xe4\xbd\xa0\xe5\xa5\xbd RiftX\nenv: supervised\n"
     )
@@ -542,6 +546,145 @@ async def test_execution_key_is_idempotent(tmp_path: Path) -> None:
     await database.dispose()
 
 
+async def test_process_launch_fingerprint_rejects_stable_field_replay(
+    tmp_path: Path,
+) -> None:
+    database, _, supervisor = await make_supervisor(tmp_path)
+    request = launch_request(tmp_path, "process-launch-identity", "success")
+
+    first = await supervisor.start(request)
+    exact = await supervisor.start(request)
+    assert exact.id == first.id
+    assert exact.launch_fingerprint == request.launch_fingerprint
+
+    foreign_requests = (
+        request.model_copy(update={"argv": [sys.executable, "-c", "print('foreign')"]}),
+        request.model_copy(update={"env": {"RIFTX_TEST_VALUE": "foreign"}}),
+        request.model_copy(update={"timeout_seconds": 17.0}),
+        request.model_copy(update={"tool_version": "foreign-version"}),
+        request.model_copy(update={"session_id": "foreign-session"}),
+        request.model_copy(update={"execution_id": "foreign-explicit-id"}),
+    )
+    for foreign in foreign_requests:
+        with pytest.raises(RepositoryConflictError):
+            await supervisor.start(foreign)
+
+    completed = await supervisor.wait(first.id)
+    output = await supervisor.read_output(first.id)
+    assert completed.status is ExecutionStatus.EXITED
+    assert output.stdout.data.count(b"stdout:") == 1
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_shell_empty_argv_first_binds_and_fingerprint_replay_is_exact(
+    tmp_path: Path,
+) -> None:
+    database, _, supervisor = await make_supervisor(tmp_path)
+    request = shell_launch_request(
+        tmp_path,
+        "shell-launch-identity",
+        script="printf 'shell-ok\\n'",
+    )
+    assert request.argv == []
+
+    first = await supervisor.start(request)
+    exact = await supervisor.start(request)
+
+    assert first.argv == build_shell_argv(
+        request.shell,
+        request.shell_path or Path("/bin/sh"),
+        request.command_text or "",
+    )
+    assert exact.id == first.id
+    assert exact.argv == first.argv
+    for foreign in (
+        request.model_copy(update={"command_text": "printf 'foreign\\n'"}),
+        request.model_copy(update={"timeout_seconds": 19.0}),
+        request.model_copy(update={"environment_mode": EnvironmentMode.CLEAN}),
+        request.model_copy(update={"shell_path": tmp_path / "foreign-shell"}),
+    ):
+        with pytest.raises(RepositoryConflictError):
+            await supervisor.start(foreign)
+
+    completed = await supervisor.wait(first.id)
+    assert completed.status is ExecutionStatus.EXITED
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_legacy_null_fingerprint_shell_replay_allows_resolved_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, executions, supervisor = await make_supervisor(tmp_path)
+    request = shell_launch_request(
+        tmp_path,
+        "legacy-shell-key",
+        script="printf 'legacy\\n'",
+    )
+    assert request.shell is not None
+    shell_path = request.shell_path or Path("/bin/sh")
+    legacy = Execution(
+        id="legacy-shell-execution",
+        execution_key=request.execution_key,
+        launch_fingerprint=None,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        executor_type=ExecutorType.SHELL,
+        argv=build_shell_argv(request.shell, shell_path, request.command_text or ""),
+        command_text=request.command_text,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        stdout_path=str(tmp_path / "legacy-shell.stdout"),
+        stderr_path=str(tmp_path / "legacy-shell.stderr"),
+    )
+    assert (await executions.create_if_absent(legacy))[1] is True
+    start_handle = AsyncMock(side_effect=AssertionError("legacy replay must not spawn"))
+    monkeypatch.setattr(supervisor, "_start_handle", start_handle)
+
+    replay = await supervisor.start(request)
+
+    assert replay.id == legacy.id
+    assert replay.argv == legacy.argv
+    start_handle.assert_not_awaited()
+    with pytest.raises(RepositoryConflictError):
+        await supervisor.start(request.model_copy(update={"command_text": "printf 'foreign\\n'"}))
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_legacy_null_fingerprint_rejects_foreign_explicit_execution_id(
+    tmp_path: Path,
+) -> None:
+    database, executions, supervisor = await make_supervisor(tmp_path)
+    request = launch_request(tmp_path, "legacy-explicit-id", "success")
+    legacy = Execution(
+        id="legacy-original-id",
+        execution_key=request.execution_key,
+        launch_fingerprint=None,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        executor_type=request.executor_type,
+        argv=request.argv,
+        tool_id=request.tool_id,
+        tool_version=request.tool_version,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        stdout_path=str(tmp_path / "legacy-explicit.stdout"),
+        stderr_path=str(tmp_path / "legacy-explicit.stderr"),
+    )
+    assert (await executions.create_if_absent(legacy))[1] is True
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await supervisor.start(request.model_copy(update={"execution_id": "foreign-explicit-id"}))
+
+    assert captured.value.code == "execution_idempotency_conflict"
+    assert (await executions.get(legacy.id)) is not None
+    await supervisor.close()
+    await database.dispose()
+
+
 async def test_start_registers_starting_before_effect_guard_and_never_spawns_when_blocked(
     tmp_path: Path,
 ) -> None:
@@ -592,7 +735,8 @@ async def test_safely_aborted_activation_persists_cancelled_proof_before_cleanup
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, executions, supervisor = await make_supervisor(tmp_path)
-    handle = ActivationFailingProcessHandle()
+    request = launch_request(tmp_path, "activation-failure-proof", "success")
+    handle = ActivationFailingProcessHandle(request.argv)
 
     async def return_activation_failing_handle(*args: object) -> ActivationFailingProcessHandle:
         del args
@@ -600,9 +744,7 @@ async def test_safely_aborted_activation_persists_cancelled_proof_before_cleanup
 
     monkeypatch.setattr(supervisor, "_start_handle", return_activation_failing_handle)
 
-    stopped = await supervisor.start(
-        launch_request(tmp_path, "activation-failure-proof", "success")
-    )
+    stopped = await supervisor.start(request)
 
     persisted = await executions.get(stopped.id)
     assert handle.aborted is True
@@ -777,9 +919,7 @@ async def test_spawn_cleanup_failure_retains_identity_and_never_manufactures_sto
     assert started.physical_stop_confirmed_at is None
 
     expected_error = (
-        "force_terminate failure"
-        if failure_mode == "force_terminate"
-        else "process.wait failure"
+        "force_terminate failure" if failure_mode == "force_terminate" else "process.wait failure"
     )
     with pytest.raises(RuntimeError, match=expected_error):
         await supervisor.cancel(started.id)

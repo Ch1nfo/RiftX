@@ -108,6 +108,7 @@ async def test_control_plane_owner_reconciler_covers_every_fence_and_stops_clean
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]
@@ -153,6 +154,7 @@ async def test_control_plane_owner_reconciler_recovers_after_list_failure() -> N
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]
@@ -195,6 +197,7 @@ async def test_control_plane_owner_reconciler_keyset_scan_does_not_skip_mutated_
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]

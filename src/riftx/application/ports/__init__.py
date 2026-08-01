@@ -1,9 +1,11 @@
 """Interfaces implemented by RiftX infrastructure adapters."""
 
 from .repositories import (
+    ActionReadRepository,
     ApprovalRepository,
     ArtifactRepository,
     EngagementRepository,
+    ExecutionAdmissionIdentity,
     ExecutionRepository,
     FindingRepository,
     NodeRepository,
@@ -13,12 +15,16 @@ from .repositories import (
     RunnerCredentialRepository,
     RunRepository,
     TerminalRepository,
+    ToolCallIntentExecutionClaim,
+    ToolCallIntentRepository,
 )
 
 __all__ = [
+    "ActionReadRepository",
     "ApprovalRepository",
     "ArtifactRepository",
     "EngagementRepository",
+    "ExecutionAdmissionIdentity",
     "ExecutionRepository",
     "FindingRepository",
     "NodeRepository",
@@ -28,4 +34,6 @@ __all__ = [
     "RunEventRepository",
     "RunRepository",
     "TerminalRepository",
+    "ToolCallIntentExecutionClaim",
+    "ToolCallIntentRepository",
 ]

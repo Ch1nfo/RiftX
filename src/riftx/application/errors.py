@@ -18,6 +18,14 @@ class RepositoryConflictError(RepositoryError):
     """Raised when a database constraint rejects an operation."""
 
 
+class RepositoryDecisionConflictError(RepositoryConflictError):
+    """Raised when a durable approval tuple differs from the requested tuple."""
+
+    def __init__(self, message: str, *, details: dict[str, object]) -> None:
+        super().__init__(message)
+        self.details = details
+
+
 class ApplicationServiceError(RuntimeError):
     """Base error carrying a stable machine-readable control-plane code."""
 

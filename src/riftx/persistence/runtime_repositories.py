@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from datetime import UTC, datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
-from riftx.domain import ApprovalStatus
+from riftx.application.ports import ExecutionAdmissionIdentity, ToolCallIntentExecutionClaim
+from riftx.domain import ApprovalStatus, ExecutorType
+from riftx.domain.base import utc_now
 from riftx.runtime.types import (
     AgentCycle,
     AgentSession,
     AgentStep,
+    ApprovalDecision,
     ProviderState,
     RunLease,
     RuntimeApprovalRequest,
@@ -24,16 +28,20 @@ from riftx.runtime.types import (
     UserInputStatus,
 )
 
+from .mappers import execution_from_record
+from .mutation_clock import Clock, next_mutation_at
 from .orm import (
     AgentCycleRecord,
     AgentRuntimeStepRecord,
     AgentSessionRecord,
+    ExecutionRecord,
     ProviderStateRecord,
     RunLeaseRecord,
     RuntimeApprovalRequestRecord,
     ToolCallIntentRecord,
     UserInputRequestRecord,
 )
+from .repositories import _serialized_run_write
 from .runtime_mappers import (
     agent_cycle_from_record,
     agent_cycle_to_record,
@@ -44,7 +52,6 @@ from .runtime_mappers import (
     apply_agent_cycle_to_record,
     apply_agent_session_to_record,
     apply_agent_step_to_record,
-    apply_runtime_approval_to_record,
     apply_tool_call_intent_to_record,
     apply_user_input_request_to_record,
     provider_state_from_record,
@@ -226,13 +233,23 @@ class SQLAlchemyProviderStateRepository:
 
 
 class SQLAlchemyToolCallIntentRepository:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        clock: Clock = utc_now,
+    ) -> None:
         self._session_factory = session_factory
+        self._clock = clock
 
     async def create(self, intent: ToolCallIntent) -> ToolCallIntent:
         try:
-            async with self._session_factory() as session, session.begin():
-                session.add(tool_call_intent_to_record(intent))
+            async with _serialized_run_write(self._session_factory) as session:
+                updated_at = next_mutation_at(
+                    self._clock,
+                    lifecycle_timestamps=(intent.created_at,),
+                )
+                session.add(tool_call_intent_to_record(intent, updated_at=updated_at))
                 await session.flush()
         except IntegrityError as exc:
             raise RepositoryConflictError(
@@ -308,30 +325,350 @@ class SQLAlchemyToolCallIntentRepository:
         expected_values = {status.value for status in expected}
         if not expected_values:
             raise ValueError("expected Tool Call intent statuses cannot be empty")
-        async with self._session_factory() as session, session.begin():
-            result = await session.execute(
-                update(ToolCallIntentRecord)
-                .where(
-                    ToolCallIntentRecord.id == intent_id,
-                    ToolCallIntentRecord.status.in_(expected_values),
-                )
-                .values(status=target.value)
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == intent_id)
+                .with_for_update()
             )
-            record = await session.get(ToolCallIntentRecord, intent_id)
             if record is None:
                 raise EntityNotFoundError("ToolCallIntent", intent_id)
+            if record.status not in expected_values:
+                return tool_call_intent_from_record(record), False
+            if record.status == target.value:
+                return tool_call_intent_from_record(record), True
+            record.status = target.value
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=(record.created_at,),
+            )
             await session.flush()
             intent = tool_call_intent_from_record(record)
-        return intent, result.rowcount == 1
+        return intent, True
+
+    async def claim_execution(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> ToolCallIntentExecutionClaim:
+        """Claim one exact execution identity before any Runner effect."""
+
+        _validate_execution_claim_identity(execution_key, attempt_group)
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == intent_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("ToolCallIntent", intent_id)
+            exact_claim = (
+                record.claimed_execution_key == execution_key
+                and record.claimed_attempt_group == attempt_group
+            )
+            if record.status == ToolCallStatus.EXECUTING.value:
+                return ToolCallIntentExecutionClaim(
+                    intent=tool_call_intent_from_record(record),
+                    acquired=exact_claim,
+                    newly_acquired=False,
+                    execution_key=execution_key,
+                    attempt_group=attempt_group,
+                )
+
+            previous_status = ToolCallStatus(record.status)
+            previous_execution_key = record.claimed_execution_key
+            previous_attempt_group = record.claimed_attempt_group
+            if previous_status is ToolCallStatus.READY:
+                claimable = (
+                    previous_execution_key is None and previous_attempt_group is None
+                ) or exact_claim
+            elif previous_status in _RETRYABLE_TERMINAL_INTENT_STATUSES:
+                claimable = (
+                    attempt_group != "initial"
+                    and execution_key != previous_execution_key
+                    and attempt_group != previous_attempt_group
+                )
+            else:
+                claimable = False
+            if not claimable:
+                return ToolCallIntentExecutionClaim(
+                    intent=tool_call_intent_from_record(record),
+                    acquired=False,
+                    newly_acquired=False,
+                    execution_key=execution_key,
+                    attempt_group=attempt_group,
+                )
+
+            record.status = ToolCallStatus.EXECUTING.value
+            record.claimed_execution_key = execution_key
+            record.claimed_attempt_group = attempt_group
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=(record.created_at,),
+            )
+            await session.flush()
+            return ToolCallIntentExecutionClaim(
+                intent=tool_call_intent_from_record(record),
+                acquired=True,
+                newly_acquired=True,
+                execution_key=execution_key,
+                attempt_group=attempt_group,
+                previous_status=previous_status,
+                previous_execution_key=previous_execution_key,
+                previous_attempt_group=previous_attempt_group,
+            )
+
+    async def execution_claim_is_current(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+    ) -> bool:
+        _validate_execution_claim_identity(execution_key, attempt_group)
+        statement = select(ToolCallIntentRecord.id).where(
+            ToolCallIntentRecord.id == intent_id,
+            ToolCallIntentRecord.status == ToolCallStatus.EXECUTING.value,
+            ToolCallIntentRecord.claimed_execution_key == execution_key,
+            ToolCallIntentRecord.claimed_attempt_group == attempt_group,
+        )
+        async with self._session_factory() as session:
+            return await session.scalar(statement) is not None
+
+    async def project_execution_status(
+        self,
+        intent_id: str,
+        *,
+        execution_key: str,
+        attempt_group: str,
+        expected: Collection[ToolCallStatus],
+        target: ToolCallStatus,
+    ) -> tuple[ToolCallIntent, bool]:
+        """Project one execution only while its exact claim is still current."""
+
+        _validate_execution_claim_identity(execution_key, attempt_group)
+        expected_values = {status.value for status in expected}
+        if not expected_values:
+            raise ValueError("expected Tool Call intent statuses cannot be empty")
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == intent_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("ToolCallIntent", intent_id)
+            exact_claim = (
+                record.claimed_execution_key == execution_key
+                and record.claimed_attempt_group == attempt_group
+            )
+            if not exact_claim:
+                return tool_call_intent_from_record(record), False
+            if record.status == target.value:
+                return tool_call_intent_from_record(record), True
+            if record.status not in expected_values:
+                return tool_call_intent_from_record(record), False
+            record.status = target.value
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=(record.created_at,),
+            )
+            await session.flush()
+            intent = tool_call_intent_from_record(record)
+        return intent, True
+
+    async def adopt_execution_claim(
+        self,
+        intent_id: str,
+        *,
+        execution_id: str,
+        execution_key: str,
+        attempt_group: str,
+    ) -> tuple[ToolCallIntent, bool]:
+        """Adopt a claim-null legacy execution only when it is uniquely provable."""
+
+        _validate_execution_claim_identity(execution_key, attempt_group)
+        async with _serialized_run_write(self._session_factory) as session:
+            intent_record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == intent_id)
+                .with_for_update()
+            )
+            if intent_record is None:
+                raise EntityNotFoundError("ToolCallIntent", intent_id)
+            exact_claim = (
+                intent_record.claimed_execution_key == execution_key
+                and intent_record.claimed_attempt_group == attempt_group
+            )
+            if exact_claim:
+                return tool_call_intent_from_record(intent_record), True
+            if (
+                intent_record.claimed_execution_key is not None
+                or intent_record.claimed_attempt_group is not None
+            ):
+                return tool_call_intent_from_record(intent_record), False
+
+            executions = list(
+                await session.scalars(
+                    select(ExecutionRecord)
+                    .where(
+                        ExecutionRecord.run_id == intent_record.run_id,
+                        ExecutionRecord.session_id == intent_record.session_id,
+                        ExecutionRecord.tool_call_id == intent_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            if len(executions) != 1:
+                return tool_call_intent_from_record(intent_record), False
+            execution = executions[0]
+            legacy_initial_pty = (
+                execution.attempt_group is None
+                and attempt_group == "initial"
+                and execution.executor_type == ExecutorType.PTY.value
+            )
+            if (
+                execution.id != execution_id
+                or execution.execution_key != execution_key
+                or (execution.attempt_group != attempt_group and not legacy_initial_pty)
+            ):
+                return tool_call_intent_from_record(intent_record), False
+
+            if legacy_initial_pty:
+                execution.attempt_group = attempt_group
+                execution.updated_at = next_mutation_at(
+                    self._clock,
+                    stored=execution.updated_at,
+                    lifecycle_timestamps=(execution.created_at,),
+                )
+
+            intent_record.claimed_execution_key = execution_key
+            intent_record.claimed_attempt_group = attempt_group
+            intent_record.updated_at = next_mutation_at(
+                self._clock,
+                stored=intent_record.updated_at,
+                lifecycle_timestamps=(intent_record.created_at,),
+            )
+            await session.flush()
+            intent = tool_call_intent_from_record(intent_record)
+        return intent, True
+
+    async def rollback_execution_claim(
+        self,
+        claim: ToolCallIntentExecutionClaim,
+        *,
+        admission: ExecutionAdmissionIdentity,
+    ) -> tuple[ToolCallIntent, bool]:
+        """Restore the pre-claim state only while the exact claim still owns EXECUTING."""
+
+        if not claim.acquired or not claim.newly_acquired or claim.previous_status is None:
+            raise ValueError("only a newly acquired execution claim can be rolled back")
+        _validate_execution_claim_identity(claim.execution_key, claim.attempt_group)
+        if (
+            admission.execution_key != claim.execution_key
+            or admission.run_id != claim.intent.run_id
+            or admission.session_id != claim.intent.session_id
+            or admission.tool_call_id != claim.intent.id
+            or admission.attempt_group != claim.attempt_group
+        ):
+            raise ValueError("execution admission identity does not match the claimed Tool Call")
+        if (claim.previous_execution_key is None) != (claim.previous_attempt_group is None):
+            raise ValueError("previous execution claim identity must be complete or absent")
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == claim.intent.id)
+                .with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("ToolCallIntent", claim.intent.id)
+            admission_candidates = [
+                ExecutionRecord.execution_key == admission.execution_key,
+            ]
+            if admission.execution_id is not None:
+                admission_candidates.append(ExecutionRecord.id == admission.execution_id)
+            candidate_records = (
+                await session.scalars(
+                    select(ExecutionRecord).where(or_(*admission_candidates)).with_for_update()
+                )
+            ).all()
+            if any(
+                admission.matches(execution_from_record(candidate))
+                for candidate in candidate_records
+            ):
+                return tool_call_intent_from_record(record), False
+            if (
+                record.status != ToolCallStatus.EXECUTING.value
+                or record.claimed_execution_key != claim.execution_key
+                or record.claimed_attempt_group != claim.attempt_group
+            ):
+                return tool_call_intent_from_record(record), False
+            record.status = claim.previous_status.value
+            record.claimed_execution_key = claim.previous_execution_key
+            record.claimed_attempt_group = claim.previous_attempt_group
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=(record.created_at,),
+            )
+            await session.flush()
+            intent = tool_call_intent_from_record(record)
+        return intent, True
 
     async def save(self, intent: ToolCallIntent) -> ToolCallIntent:
-        async with self._session_factory() as session, session.begin():
-            record = await session.get(ToolCallIntentRecord, intent.id)
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(ToolCallIntentRecord)
+                .where(ToolCallIntentRecord.id == intent.id)
+                .with_for_update()
+            )
             if record is None:
                 raise EntityNotFoundError("ToolCallIntent", intent.id)
+            before = _tool_call_intent_metadata_state(record)
             apply_tool_call_intent_to_record(intent, record)
+            if _tool_call_intent_metadata_state(record) == before:
+                return tool_call_intent_from_record(record)
+            record.updated_at = next_mutation_at(
+                self._clock,
+                stored=record.updated_at,
+                lifecycle_timestamps=(record.created_at,),
+            )
             await session.flush()
-        return intent
+            authoritative = tool_call_intent_from_record(record)
+        return authoritative
+
+
+_TOOL_CALL_INTENT_MUTABLE_RECORD_FIELDS = (
+    "engine_call_id",
+    "command_preview",
+    "reason",
+    "target_summary",
+    "execution_spec_json",
+)
+
+_RETRYABLE_TERMINAL_INTENT_STATUSES = {
+    ToolCallStatus.COMPLETED,
+    ToolCallStatus.FAILED,
+    ToolCallStatus.CANCELLED,
+}
+
+
+def _validate_execution_claim_identity(execution_key: str, attempt_group: str) -> None:
+    if not execution_key or len(execution_key) > 255:
+        raise ValueError("execution claim key must contain 1-255 characters")
+    if not attempt_group or len(attempt_group) > 64:
+        raise ValueError("execution claim attempt group must contain 1-64 characters")
+
+
+def _tool_call_intent_metadata_state(record: ToolCallIntentRecord) -> tuple[object, ...]:
+    return tuple(
+        getattr(record, field_name) for field_name in _TOOL_CALL_INTENT_MUTABLE_RECORD_FIELDS
+    )
 
 
 class SQLAlchemyRuntimeApprovalRepository:
@@ -365,14 +702,71 @@ class SQLAlchemyRuntimeApprovalRepository:
             record = await session.scalar(statement)
         return runtime_approval_from_record(record) if record is not None else None
 
-    async def save(self, request: RuntimeApprovalRequest) -> RuntimeApprovalRequest:
-        async with self._session_factory() as session, session.begin():
-            record = await session.get(RuntimeApprovalRequestRecord, request.id)
-            if record is None:
-                raise EntityNotFoundError("RuntimeApprovalRequest", request.id)
-            apply_runtime_approval_to_record(request, record)
-            await session.flush()
+    async def set_provider_state_id(
+        self,
+        approval_id: str,
+        provider_state_id: str | None,
+    ) -> RuntimeApprovalRequest:
+        try:
+            async with _serialized_run_write(self._session_factory) as session:
+                record = await session.scalar(
+                    select(RuntimeApprovalRequestRecord)
+                    .where(RuntimeApprovalRequestRecord.id == approval_id)
+                    .with_for_update()
+                )
+                if record is None:
+                    raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
+                if record.provider_state_id != provider_state_id:
+                    record.provider_state_id = provider_state_id
+                    await session.flush()
+                request = runtime_approval_from_record(record)
+        except IntegrityError as exc:
+            raise RepositoryConflictError(
+                f"could not set provider state for runtime approval {approval_id!r}"
+            ) from exc
         return request
+
+    async def decide_if_pending(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        *,
+        decided_by: str,
+        feedback: str | None = None,
+        decided_at: datetime,
+    ) -> tuple[RuntimeApprovalRequest, bool]:
+        if decision is ApprovalDecision.REJECT_WITH_FEEDBACK and not feedback:
+            raise ValueError("reject_with_feedback requires feedback")
+        if decided_at.tzinfo is None or decided_at.utcoffset() is None:
+            raise ValueError("runtime approval decided_at must be timezone-aware")
+        normalized_decided_at = decided_at.astimezone(UTC)
+        target = (
+            ApprovalStatus.APPROVED
+            if decision
+            in {
+                ApprovalDecision.APPROVE_ONCE,
+                ApprovalDecision.APPROVE_TOOL_FOR_RUN,
+            }
+            else ApprovalStatus.REJECTED
+        )
+        async with _serialized_run_write(self._session_factory) as session:
+            record = await session.scalar(
+                select(RuntimeApprovalRequestRecord)
+                .where(RuntimeApprovalRequestRecord.id == approval_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
+            if record.status != ApprovalStatus.PENDING.value:
+                return runtime_approval_from_record(record), False
+            record.status = target.value
+            record.decision = decision.value
+            record.feedback = feedback
+            record.decided_by = decided_by
+            record.decided_at = normalized_decided_at
+            await session.flush()
+            request = runtime_approval_from_record(record)
+        return request, True
 
     async def pending_for_run(self, run_id: str) -> list[RuntimeApprovalRequest]:
         statement = (

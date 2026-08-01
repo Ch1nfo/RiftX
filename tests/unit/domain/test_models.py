@@ -143,3 +143,18 @@ def test_tool_rejects_empty_command() -> None:
 def test_event_type_must_be_namespaced() -> None:
     with pytest.raises(ValidationError):
         RunEvent(run_id="run-1", sequence=1, event_type="created")
+
+
+def test_execution_creation_time_is_immutable() -> None:
+    execution = Execution(
+        execution_key="immutable-created-at",
+        run_id="run-1",
+        node_id="node-1",
+        executor_type=ExecutorType.PROCESS,
+        cwd="/tmp",
+        stdout_path="/tmp/stdout.log",
+        stderr_path="/tmp/stderr.log",
+    )
+
+    with pytest.raises(ValidationError, match="Field is frozen"):
+        execution.created_at = datetime(2026, 8, 2, tzinfo=UTC)

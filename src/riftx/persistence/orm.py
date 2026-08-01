@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     Index,
@@ -22,6 +23,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from .types import UTCDateTime
 
 ID_LENGTH = 64
+TOOL_CALL_INTENT_ID_LENGTH = 128
 STATUS_LENGTH = 32
 
 
@@ -131,16 +133,26 @@ class ToolCallRecord(Base):
 
 class ExecutionRecord(Base):
     __tablename__ = "executions"
+    __table_args__ = (
+        Index(
+            "ix_executions_run_tool_created_id",
+            "run_id",
+            "tool_call_id",
+            "created_at",
+            "id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     execution_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    launch_fingerprint: Mapped[str | None] = mapped_column(String(80))
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_sessions.id", ondelete="SET NULL"), index=True
     )
-    tool_call_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(TOOL_CALL_INTENT_ID_LENGTH), index=True)
     attempt_group: Mapped[str | None] = mapped_column(String(64), index=True)
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     owner_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
@@ -163,10 +175,12 @@ class ExecutionRecord(Base):
     exit_code: Mapped[int | None] = mapped_column(Integer)
     stdout_path: Mapped[str] = mapped_column(Text, nullable=False)
     stderr_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     process_created_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     physical_stop_confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class TerminalSessionRecord(Base):
@@ -213,6 +227,8 @@ class ApprovalRecord(Base):
     target_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     env_diff_json: Mapped[dict[str, str | None]] = mapped_column(JSON, nullable=False, default=dict)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decision: Mapped[str | None] = mapped_column(String(STATUS_LENGTH))
+    decision_feedback: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -804,7 +820,9 @@ class TargetHttpRequestRecord(Base):
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     session_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
-    tool_call_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    tool_call_id: Mapped[str] = mapped_column(
+        String(TOOL_CALL_INTENT_ID_LENGTH), nullable=False, index=True
+    )
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     method: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -974,8 +992,20 @@ class ConnectorSubmissionRecord(Base):
 
 class ToolCallIntentRecord(Base):
     __tablename__ = "tool_call_intents"
+    __table_args__ = (
+        CheckConstraint(
+            "(claimed_execution_key IS NULL) = (claimed_attempt_group IS NULL)",
+            name="ck_tool_call_intents_execution_claim_pair",
+        ),
+        Index("ix_tool_call_intents_run_created_id", "run_id", "created_at", "id"),
+        Index(
+            "ix_tool_call_intents_execution_claim",
+            "claimed_execution_key",
+            "claimed_attempt_group",
+        ),
+    )
 
-    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    id: Mapped[str] = mapped_column(String(TOOL_CALL_INTENT_ID_LENGTH), primary_key=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -996,9 +1026,12 @@ class ToolCallIntentRecord(Base):
     target_summary: Mapped[str | None] = mapped_column(Text)
     approval_level: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    claimed_execution_key: Mapped[str | None] = mapped_column(String(255))
+    claimed_attempt_group: Mapped[str | None] = mapped_column(String(64))
     engine_call_id: Mapped[str | None] = mapped_column(String(255), index=True)
     execution_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class RuntimeApprovalRequestRecord(Base):
@@ -1015,6 +1048,7 @@ class RuntimeApprovalRequestRecord(Base):
         ForeignKey("agent_cycles.id", ondelete="CASCADE"), nullable=False, index=True
     )
     tool_call_intent_id: Mapped[str] = mapped_column(
+        String(TOOL_CALL_INTENT_ID_LENGTH),
         ForeignKey("tool_call_intents.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,

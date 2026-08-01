@@ -5,7 +5,7 @@ import base64
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -50,6 +50,33 @@ from ._containment_support import FakeKernelContainmentManager
 _OWNER = RunnerPrincipal(instance_id="runner-instance-windows-a", epoch=1)
 
 
+def _foreign_terminal_start_replays(
+    request: TerminalLaunchRequest,
+) -> list[tuple[str, TerminalLaunchRequest]]:
+    return [
+        (
+            "execution_key",
+            request.model_copy(update={"execution_key": f"{request.execution_key}:foreign"}),
+        ),
+        (
+            "tool_call_id",
+            request.model_copy(update={"tool_call_id": "foreign-tool-call"}),
+        ),
+        (
+            "attempt_group",
+            request.model_copy(update={"attempt_group": "foreign-attempt"}),
+        ),
+        ("argv", request.model_copy(update={"argv": ["cmd.exe"]})),
+        ("tool_id", request.model_copy(update={"tool_id": "foreign-terminal.exec"})),
+        ("launch_fingerprint", request.model_copy(update={"cols": request.cols + 1})),
+        ("launch_fingerprint", request.model_copy(update={"rows": request.rows + 1})),
+        (
+            "launch_fingerprint",
+            request.model_copy(update={"owner": TerminalOwner.USER}),
+        ),
+    ]
+
+
 class FakeControlService:
     def __init__(self) -> None:
         self.enqueued: list[tuple[str, RunnerCommandKind, str, dict[str, object]]] = []
@@ -70,6 +97,97 @@ class FakeControlService:
         assert target == _OWNER
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         return object(), True
+
+
+class FailOnceTerminalCreateRepository:
+    def __init__(
+        self,
+        delegate: SQLAlchemyTerminalRepository,
+        *,
+        after_commit: bool = False,
+    ) -> None:
+        self._delegate = delegate
+        self._after_commit = after_commit
+        self._failed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def create(self, terminal: TerminalSession) -> TerminalSession:
+        if self._failed:
+            return await self._delegate.create(terminal)
+        self._failed = True
+        if self._after_commit:
+            await self._delegate.create(terminal)
+        raise RuntimeError("injected remote terminal projection create failure")
+
+
+class BarrierTerminalCreateRepository:
+    def __init__(self, delegate: SQLAlchemyTerminalRepository, parties: int = 2) -> None:
+        self._delegate = delegate
+        self._parties = parties
+        self._calls = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def create(self, terminal: TerminalSession) -> TerminalSession:
+        self._calls += 1
+        if self._calls >= self._parties:
+            self.entered.set()
+        await self.release.wait()
+        return await self._delegate.create(terminal)
+
+
+class BlockFirstExecutionSave:
+    def __init__(self, delegate: SQLAlchemyExecutionRepository) -> None:
+        self._delegate = delegate
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._block_next = True
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def save_if_status(self, execution: Execution, *, expected):
+        if self._block_next:
+            self._block_next = False
+            self.entered.set()
+            await self.release.wait()
+        return await self._delegate.save_if_status(execution, expected=expected)
+
+
+async def _central_terminal_runtime(
+    tmp_path: Path,
+    database_name: str,
+) -> tuple[
+    Database,
+    SQLAlchemyTerminalRepository,
+    SQLAlchemyExecutionRepository,
+    SQLAlchemyRunEventRepository,
+]:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / database_name}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Remote admission")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="windows-a",
+            objective=Objective(description="Remote admission"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    return (
+        database,
+        SQLAlchemyTerminalRepository(database.session_factory),
+        SQLAlchemyExecutionRepository(database.session_factory),
+        SQLAlchemyRunEventRepository(database.session_factory),
+    )
 
 
 class FakeTerminalClient:
@@ -191,6 +309,503 @@ class FakeNativeBackend:
 
 
 @pytest.mark.asyncio
+async def test_remote_terminal_projection_create_failure_persists_predispatch_stop_proof(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'create-failure-central.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Remote projection failure")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="windows-a",
+            objective=Objective(description="Remote projection failure"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    terminals = SQLAlchemyTerminalRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=FailOnceTerminalCreateRepository(terminals),  # type: ignore[arg-type]
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "create-failure-central-state"),
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-create-failure",
+        execution_id="remote-create-failure-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+
+    with pytest.raises(RuntimeError, match="projection create failure"):
+        await remote.start(request)
+
+    execution = await executions.get(str(request.execution_id))
+    assert execution is not None
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert await terminals.get(str(request.session_id)) is None
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_projection_post_commit_failure_closes_without_dispatch(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'post-commit-central.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Remote post-commit failure")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="windows-a",
+            objective=Objective(description="Remote post-commit failure"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    terminals = SQLAlchemyTerminalRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=FailOnceTerminalCreateRepository(
+            terminals,
+            after_commit=True,
+        ),  # type: ignore[arg-type]
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "post-commit-central-state"),
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-post-commit",
+        execution_id="remote-post-commit-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+
+    with pytest.raises(RuntimeError, match="projection create failure"):
+        await remote.start(request)
+
+    execution = await executions.get(str(request.execution_id))
+    terminal = await terminals.get(str(request.session_id))
+    assert execution is not None
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert terminal is not None and terminal.status is TerminalStatus.CLOSED
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_exact_retry_closes_legacy_starting_without_projection(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'orphan-central.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Remote orphan")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="windows-a",
+            objective=Objective(description="Remote orphan recovery"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    terminals = SQLAlchemyTerminalRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    request = TerminalLaunchRequest(
+        session_id="remote-legacy-orphan",
+        execution_id="remote-legacy-orphan-execution",
+        execution_key="remote-legacy-orphan-key",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    orphan = Execution(
+        id=str(request.execution_id),
+        execution_key=str(request.execution_key),
+        launch_fingerprint=request.launch_fingerprint,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.STARTING,
+        stdout_path=str(tmp_path / "remote-legacy-orphan.log"),
+        stderr_path=str(tmp_path / "remote-legacy-orphan.log"),
+    )
+    await executions.create_if_absent(orphan)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "orphan-central-state"),
+    )
+
+    repaired = await remote.start(request)
+
+    execution = await executions.get(orphan.id)
+    assert repaired.id == request.session_id
+    assert repaired.execution_id == orphan.id
+    assert repaired.status is TerminalStatus.CLOSED
+    assert execution is not None
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_exact_retry_adopts_created_projection_and_dispatches_once(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "created-projection-central.db",
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-created-projection",
+        execution_id="remote-created-projection-execution",
+        execution_key="remote-created-projection-key",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    reserved = Execution(
+        id=str(request.execution_id),
+        execution_key=str(request.execution_key),
+        launch_fingerprint=request.launch_fingerprint,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CREATED,
+        stdout_path=str(tmp_path / "remote-created-projection.log"),
+        stderr_path=str(tmp_path / "remote-created-projection.log"),
+    )
+    await executions.create_if_absent(reserved)
+    await terminals.create(
+        TerminalSession(
+            id=str(request.session_id),
+            run_id=request.run_id,
+            execution_id=reserved.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
+            owner=request.owner,
+            cols=request.cols,
+            rows=request.rows,
+        )
+    )
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "created-projection-central-state"),
+    )
+
+    opened = await remote.start(request)
+
+    execution = await executions.get(reserved.id)
+    assert opened.id == request.session_id
+    assert opened.status is TerminalStatus.OPEN
+    assert execution is not None and execution.status is ExecutionStatus.RUNNING
+    assert execution.physical_stop_confirmed_at is None
+    assert [item[1] for item in control.enqueued] == [RunnerCommandKind.TERMINAL_START]
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_missing_projection_rejects_immutable_launch_mismatch(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "missing-identity-central.db",
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-missing-identity",
+        execution_id="remote-missing-identity-execution",
+        execution_key="remote-missing-identity-key",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    reserved = Execution(
+        id=str(request.execution_id),
+        execution_key=str(request.execution_key),
+        launch_fingerprint=request.launch_fingerprint,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CREATED,
+        stdout_path=str(tmp_path / "remote-missing-identity.log"),
+        stderr_path=str(tmp_path / "remote-missing-identity.log"),
+    )
+    await executions.create_if_absent(reserved)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "missing-identity-central-state"),
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await remote.start(request.model_copy(update={"cols": request.cols + 1}))
+
+    persisted = await executions.get(reserved.id)
+    assert captured.value.code == "execution_idempotency_conflict"
+    assert persisted is not None and persisted.status is ExecutionStatus.CREATED
+    assert persisted.physical_stop_confirmed_at is None
+    assert await terminals.get(str(request.session_id)) is None
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_created_without_fingerprint_closes_without_dispatch(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "legacy-created-central.db",
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-legacy-created",
+        execution_id="remote-legacy-created-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    reserved = Execution(
+        id=str(request.execution_id),
+        execution_key=f"terminal:{request.session_id}",
+        launch_fingerprint=None,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CREATED,
+        stdout_path=str(tmp_path / "remote-legacy-created.log"),
+        stderr_path=str(tmp_path / "remote-legacy-created.log"),
+    )
+    await executions.create_if_absent(reserved)
+    await terminals.create(
+        TerminalSession(
+            id=str(request.session_id),
+            run_id=request.run_id,
+            execution_id=reserved.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
+            owner=request.owner,
+            cols=request.cols,
+            rows=request.rows,
+        )
+    )
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "legacy-created-central-state"),
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await remote.start(request)
+
+    persisted = await executions.get(reserved.id)
+    projection = await terminals.get(str(request.session_id))
+    assert captured.value.code == "execution_idempotency_conflict"
+    assert persisted is not None and persisted.status is ExecutionStatus.CANCELLED
+    assert persisted.physical_stop_confirmed_at is not None
+    assert projection is not None and projection.status is TerminalStatus.CLOSED
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_concurrent_exact_admission_dispatches_once(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "concurrent-central.db",
+    )
+    barrier = BarrierTerminalCreateRepository(terminals)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=barrier,  # type: ignore[arg-type]
+        execution_repository=executions,
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "concurrent-central-state"),
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-concurrent-admission",
+        execution_id="remote-concurrent-admission-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    first = asyncio.create_task(remote.start(request))
+    second = asyncio.create_task(remote.start(request))
+    await barrier.entered.wait()
+    barrier.release.set()
+
+    outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    successes = [item for item in outcomes if isinstance(item, TerminalSession)]
+    conflicts = [item for item in outcomes if isinstance(item, ApplicationConflictError)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert conflicts[0].code == "terminal_start_cancelled"
+    assert [item[1] for item in control.enqueued] == [RunnerCommandKind.TERMINAL_START]
+    execution = await executions.get(str(request.execution_id))
+    terminal = await terminals.get(str(request.session_id))
+    assert execution is not None and execution.status is ExecutionStatus.RUNNING
+    assert execution.physical_stop_confirmed_at is None
+    assert terminal is not None and terminal.status is TerminalStatus.OPEN
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_stop_wins_created_admission_cas_without_dispatch(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "created-stop-central.db",
+    )
+    blocked_claim = BlockFirstExecutionSave(executions)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=blocked_claim,  # type: ignore[arg-type]
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "created-stop-central-state"),
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-created-stop",
+        execution_id="remote-created-stop-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    start_task = asyncio.create_task(remote.start(request))
+    await blocked_claim.entered.wait()
+    created = await executions.get(str(request.execution_id))
+    projection = await terminals.get(str(request.session_id))
+    assert created is not None and created.status is ExecutionStatus.CREATED
+    assert projection is not None and projection.status is TerminalStatus.CREATED
+
+    stopped_projection = await remote.close(str(request.session_id))
+    blocked_claim.release.set()
+    with pytest.raises(ApplicationConflictError) as captured:
+        await start_task
+
+    execution = await executions.get(str(request.execution_id))
+    assert captured.value.code == "terminal_start_cancelled"
+    assert stopped_projection.status is TerminalStatus.CLOSED
+    assert execution is not None and execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_cancelled_claim_is_settled_before_propagation(
+    tmp_path: Path,
+) -> None:
+    database, terminals, executions, events = await _central_terminal_runtime(
+        tmp_path,
+        "cancelled-claim-central.db",
+    )
+    blocked_claim = BlockFirstExecutionSave(executions)
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=blocked_claim,  # type: ignore[arg-type]
+        event_repository=events,
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "cancelled-claim-central-state"),
+    )
+    request = TerminalLaunchRequest(
+        session_id="remote-cancelled-claim",
+        execution_id="remote-cancelled-claim-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    start_task = asyncio.create_task(remote.start(request))
+    await blocked_claim.entered.wait()
+    start_task.cancel()
+    blocked_claim.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    execution = await executions.get(str(request.execution_id))
+    terminal = await terminals.get(str(request.session_id))
+    assert execution is not None and execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert terminal is not None and terminal.status is TerminalStatus.CLOSED
+    assert control.enqueued == []
+    await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
     tmp_path: Path,
 ) -> None:
@@ -227,18 +842,19 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
         remote=remote,
     )
 
-    terminal = await router.start(
-        TerminalLaunchRequest(
-            session_id="terminal-1",
-            execution_id="execution-1",
-                run_id="run-1",
-                node_id="windows-a",
-                runner_principal=_OWNER,
-                cwd=tmp_path,
-            argv=["pwsh.exe"],
-        )
+    request = TerminalLaunchRequest(
+        session_id="terminal-1",
+        execution_id="execution-1",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
     )
+    terminal = await router.start(request)
     assert terminal.status is TerminalStatus.OPEN
+    created_execution = await executions.get("execution-1")
+    assert created_execution is not None and created_execution.created_at is not None
     assert control.enqueued[0][1] is RunnerCommandKind.TERMINAL_START
     start_payload = control.enqueued[0][3]
     assert start_payload["session_id"] == "terminal-1"
@@ -259,6 +875,12 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
     for _, _, idempotency_key, payload in control.enqueued[1:]:
         assert payload["operation_id"] == idempotency_key
         assert payload["execution_id"] == "execution-1"
+
+    enqueued_before_replay = list(control.enqueued)
+    replayed = await router.start(request)
+    assert replayed.owner is TerminalOwner.USER
+    assert (replayed.cols, replayed.rows) == (160, 50)
+    assert control.enqueued == enqueued_before_replay
 
     close_requested = await router.close("terminal-1")
     assert close_requested.status is TerminalStatus.OPEN
@@ -448,6 +1070,107 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
     assert persisted_terminal.status is TerminalStatus.CLOSED
     assert [event.event_type for event in events] == ["terminal.closed"]
     assert events[0].payload["status"] == "cancelled"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_legacy_replay_binds_explicit_identity_pair(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'legacy-central.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Legacy remote terminal")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="windows-a",
+            objective=Objective(description="Legacy remote identity"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    terminals = SQLAlchemyTerminalRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    request = TerminalLaunchRequest(
+        session_id="legacy-central-session",
+        execution_id="legacy-central-execution",
+        execution_key="legacy-central-key",
+        run_id="run-1",
+        node_id="windows-a",
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+        cols=132,
+        rows=48,
+    )
+    legacy_execution = Execution(
+        id=str(request.execution_id),
+        execution_key=str(request.execution_key),
+        launch_fingerprint=None,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CANCELLED,
+        stdout_path=str(tmp_path / "legacy-central.log"),
+        stderr_path=str(tmp_path / "legacy-central.log"),
+    )
+    await executions.create_if_absent(legacy_execution)
+    await terminals.create(
+        TerminalSession(
+            id=str(request.session_id),
+            run_id=request.run_id,
+            execution_id=legacy_execution.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
+            status=TerminalStatus.CLOSED,
+            owner=request.owner,
+            cols=request.cols,
+            rows=request.rows,
+        )
+    )
+    control = FakeControlService()
+    remote = RemoteTerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=SQLAlchemyRunEventRepository(database.session_factory),
+        control=control,  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "legacy-central-state"),
+    )
+
+    exact = await remote.start(request)
+    assert exact.id == request.session_id
+    assert control.enqueued == []
+    for foreign in (
+        request.model_copy(
+            update={
+                "session_id": "foreign-session",
+                "execution_id": "foreign-execution",
+            }
+        ),
+        request.model_copy(update={"session_id": "foreign-session"}),
+    ):
+        guard = AsyncMock()
+        with pytest.raises(ApplicationConflictError) as captured:
+            await remote.start(foreign, effect_guard=guard)
+        assert captured.value.code == "execution_idempotency_conflict"
+        guard.assert_not_awaited()
+    for mismatch, foreign in (
+        ("terminal_owner", request.model_copy(update={"owner": TerminalOwner.USER})),
+        ("terminal_cols", request.model_copy(update={"cols": request.cols + 1})),
+        ("terminal_rows", request.model_copy(update={"rows": request.rows + 1})),
+    ):
+        guard = AsyncMock()
+        with pytest.raises(ApplicationConflictError, match=mismatch) as captured:
+            await remote.start(foreign, effect_guard=guard)
+        assert captured.value.code == "execution_idempotency_conflict"
+        guard.assert_not_awaited()
+    assert control.enqueued == []
     await database.dispose()
 
 
@@ -815,11 +1538,17 @@ async def test_remote_terminal_manager_streams_and_deduplicates_commands(tmp_pat
     request = TerminalLaunchRequest(
         session_id="terminal-1",
         execution_id="execution-1",
+        execution_key="terminal-tool:tool-call-1:initial",
+        agent_session_id="agent-session-1",
+        tool_call_id="tool-call-1",
+        attempt_group="initial",
         run_id="run-1",
         node_id="windows-a",
         runner_principal=_OWNER,
         cwd=tmp_path,
         argv=["pwsh.exe"],
+        tool_id="terminal.exec",
+        tool_version="1",
     )
     payload = {
         "session_id": "terminal-1",
@@ -830,6 +1559,28 @@ async def test_remote_terminal_manager_streams_and_deduplicates_commands(tmp_pat
     duplicate = await manager.handle(RunnerCommandKind.TERMINAL_START, payload)
     assert duplicate["duplicate"] is True  # type: ignore[index]
     assert backend.starts == 1
+    reported_before_foreign_replays = list(client.status_details)
+    monitor_spy = Mock(wraps=manager._start_monitor)
+    manager._start_monitor = monitor_spy  # type: ignore[method-assign]
+    for mismatch, foreign_request in _foreign_terminal_start_replays(request):
+        guard = AsyncMock()
+        admitted = Mock()
+        with pytest.raises(ValueError, match=mismatch):
+            await manager.handle(
+                RunnerCommandKind.TERMINAL_START,
+                {
+                    "session_id": foreign_request.session_id,
+                    "execution_id": foreign_request.execution_id,
+                    "request": foreign_request.model_dump(mode="json"),
+                },
+                effect_guard=guard,
+                on_admitted=admitted,
+            )
+        guard.assert_not_awaited()
+        admitted.assert_not_called()
+    assert backend.starts == 1
+    assert client.status_details == reported_before_foreign_replays
+    monitor_spy.assert_not_called()
     await _wait_for(lambda: bytes(client.output.get("execution-1", b"")) == b"READY\n")
 
     write_payload = {
@@ -967,11 +1718,17 @@ async def test_pty_durable_stop_row_blocks_same_key_spawn_after_runner_restart(
     request = TerminalLaunchRequest(
         session_id="terminal-row-restart",
         execution_id="execution-row-restart",
+        execution_key="terminal-tool:tool-call-restart:initial",
+        agent_session_id="agent-session-restart",
+        tool_call_id="tool-call-restart",
+        attempt_group="initial",
         run_id="run-1",
         node_id="windows-a",
         runner_principal=_OWNER,
         cwd=tmp_path,
         argv=["pwsh.exe"],
+        tool_id="terminal.exec",
+        tool_version="1",
     )
     payload = {
         "session_id": request.session_id,
@@ -994,6 +1751,7 @@ async def test_pty_durable_stop_row_blocks_same_key_spawn_after_runner_restart(
     await first_manager.close()
 
     reopened_backend = FakeNativeBackend()
+    reopened_client = FakeTerminalClient()
     reopened_manager = RemoteTerminalManager(
         node_id="windows-a",
         supervisor=TerminalSupervisor(
@@ -1007,7 +1765,7 @@ async def test_pty_durable_stop_row_blocks_same_key_spawn_after_runner_restart(
         ),
         terminals=FileTerminalRepository(terminals.path),
         executions=FileExecutionRepository(executions.path),
-        client=FakeTerminalClient(),
+        client=reopened_client,
         operation_journal=OperationJournal(tmp_path / "restart-operations-2.json"),
         output_poll_seconds=0.001,
     )
@@ -1019,14 +1777,147 @@ async def test_pty_durable_stop_row_blocks_same_key_spawn_after_runner_restart(
 
         assert duplicate["duplicate"] is True  # type: ignore[index]
         assert reopened_backend.starts == 0
-        durable = await FileExecutionRepository(executions.path).get(
-            str(request.execution_id)
-        )
+        durable = await FileExecutionRepository(executions.path).get(str(request.execution_id))
         assert durable is not None
         assert durable.status is ExecutionStatus.CANCELLED
         assert durable.physical_stop_confirmed_at is not None
+        reported_before_foreign_replays = list(reopened_client.status_details)
+        monitor_spy = Mock(wraps=reopened_manager._start_monitor)
+        reopened_manager._start_monitor = monitor_spy  # type: ignore[method-assign]
+        for mismatch, foreign_request in _foreign_terminal_start_replays(request):
+            guard = AsyncMock()
+            admitted = Mock()
+            with pytest.raises(ValueError, match=mismatch):
+                await reopened_manager.handle(
+                    RunnerCommandKind.TERMINAL_START,
+                    {
+                        "session_id": foreign_request.session_id,
+                        "execution_id": foreign_request.execution_id,
+                        "request": foreign_request.model_dump(mode="json"),
+                    },
+                    effect_guard=guard,
+                    on_admitted=admitted,
+                )
+            guard.assert_not_awaited()
+            admitted.assert_not_called()
+        assert reopened_backend.starts == 0
+        assert reopened_client.status_details == reported_before_foreign_replays
+        monitor_spy.assert_not_called()
     finally:
         await reopened_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_manager_legacy_replay_checks_terminal_identity(
+    tmp_path: Path,
+) -> None:
+    executions = FileExecutionRepository(tmp_path / "legacy-replay-executions.json")
+    terminals = FileTerminalRepository(tmp_path / "legacy-replay-terminals.json")
+    request = TerminalLaunchRequest(
+        session_id="legacy-terminal",
+        execution_id="legacy-execution",
+        execution_key="legacy-terminal-key",
+        agent_session_id="legacy-agent-session",
+        tool_call_id="legacy-tool-call",
+        attempt_group="initial",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+        tool_id="terminal.exec",
+        tool_version="1",
+        cols=132,
+        rows=48,
+    )
+    execution = Execution(
+        id=str(request.execution_id),
+        execution_key=str(request.execution_key),
+        launch_fingerprint=None,
+        run_id=request.run_id,
+        session_id=request.agent_session_id,
+        tool_call_id=request.tool_call_id,
+        attempt_group=request.attempt_group,
+        node_id=request.node_id,
+        owner=request.runner_principal,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        tool_id=request.tool_id,
+        tool_version=request.tool_version,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CANCELLED,
+        stdout_path=str(tmp_path / "legacy-terminal.log"),
+        stderr_path=str(tmp_path / "legacy-terminal.log"),
+    )
+    await executions.create_if_absent(execution)
+    await terminals.create(
+        TerminalSession(
+            id=str(request.session_id),
+            run_id=request.run_id,
+            execution_id=execution.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
+            status=TerminalStatus.CLOSED,
+            owner=request.owner,
+            cols=request.cols,
+            rows=request.rows,
+        )
+    )
+    backend = FakeNativeBackend()
+    client = FakeTerminalClient()
+    manager = RemoteTerminalManager(
+        node_id="windows-a",
+        supervisor=TerminalSupervisor(
+            terminal_repository=terminals,
+            execution_repository=executions,
+            event_repository=NullRunEventRepository(),
+            paths=RunnerPaths(tmp_path / "legacy-replay-state"),
+            native_backend=backend,
+            platform_name="nt",
+            termination_grace_seconds=0.01,
+        ),
+        terminals=terminals,
+        executions=executions,
+        client=client,
+        operation_journal=OperationJournal(tmp_path / "legacy-replay-operations.json"),
+        output_poll_seconds=0.001,
+    )
+    payload = {
+        "session_id": request.session_id,
+        "execution_id": request.execution_id,
+        "request": request.model_dump(mode="json"),
+    }
+    try:
+        replay = await manager.handle(RunnerCommandKind.TERMINAL_START, payload)
+        assert replay["duplicate"] is True  # type: ignore[index]
+        assert backend.starts == 0
+        reported = list(client.status_details)
+        for mismatch, foreign_request in (
+            ("terminal_owner", request.model_copy(update={"owner": TerminalOwner.USER})),
+            ("terminal_cols", request.model_copy(update={"cols": request.cols + 1})),
+            ("terminal_rows", request.model_copy(update={"rows": request.rows + 1})),
+        ):
+            guard = AsyncMock()
+            admitted = Mock()
+            with pytest.raises(ValueError, match=mismatch):
+                await manager.handle(
+                    RunnerCommandKind.TERMINAL_START,
+                    {
+                        "session_id": foreign_request.session_id,
+                        "execution_id": foreign_request.execution_id,
+                        "request": foreign_request.model_dump(mode="json"),
+                    },
+                    effect_guard=guard,
+                    on_admitted=admitted,
+                )
+            guard.assert_not_awaited()
+            admitted.assert_not_called()
+        assert client.status_details == reported
+        assert backend.starts == 0
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio
@@ -1094,10 +1985,10 @@ async def test_remote_terminal_manager_marks_unattachable_sessions_lost(
     execution = Execution(
         id="execution-lost",
         execution_key="terminal:terminal-lost",
-            run_id="run-1",
-            node_id="windows-a",
-            owner=_OWNER,
-            executor_type=ExecutorType.PTY,
+        run_id="run-1",
+        node_id="windows-a",
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
         argv=["pwsh.exe"],
         cwd=str(tmp_path),
         stdout_path=str(transcript),
@@ -1141,6 +2032,94 @@ async def test_remote_terminal_manager_marks_unattachable_sessions_lost(
     assert restored_terminal is not None and restored_terminal.status is TerminalStatus.LOST
     assert restored_execution is not None and restored_execution.status is ExecutionStatus.LOST
     assert client.statuses[-1] == ("execution-lost", ExecutionStatus.LOST)
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_terminal_manager_restart_closes_created_admission_without_monitor(
+    tmp_path: Path,
+) -> None:
+    executions = FileExecutionRepository(tmp_path / "created-restart-executions.json")
+    terminals = FileTerminalRepository(tmp_path / "created-restart-terminals.json")
+    request = TerminalLaunchRequest(
+        session_id="created-restart-terminal",
+        execution_id="created-restart-execution",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    execution = Execution(
+        id=str(request.execution_id),
+        execution_key=f"terminal:{request.session_id}",
+        launch_fingerprint=request.launch_fingerprint,
+        run_id=request.run_id,
+        node_id=request.node_id,
+        owner=_OWNER,
+        executor_type=ExecutorType.PTY,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        env_diff=request.env,
+        status=ExecutionStatus.CREATED,
+        stdout_path=str(tmp_path / "created-restart.log"),
+        stderr_path=str(tmp_path / "created-restart.log"),
+    )
+    await executions.create_if_absent(execution)
+    await terminals.create(
+        TerminalSession(
+            id=str(request.session_id),
+            run_id=request.run_id,
+            execution_id=execution.id,
+            runner_id=request.node_id,
+            shell=request.argv[0],
+            cwd=str(request.cwd),
+            owner=request.owner,
+            cols=request.cols,
+            rows=request.rows,
+        )
+    )
+    backend = FakeNativeBackend()
+    supervisor = TerminalSupervisor(
+        terminal_repository=terminals,
+        execution_repository=executions,
+        event_repository=NullRunEventRepository(),
+        paths=RunnerPaths(tmp_path / "created-restart-state"),
+        native_backend=backend,
+        platform_name="nt",
+    )
+    client = FakeTerminalClient()
+    manager = RemoteTerminalManager(
+        node_id="windows-a",
+        supervisor=supervisor,
+        terminals=terminals,
+        executions=executions,
+        client=client,
+        operation_journal=OperationJournal(tmp_path / "created-restart-operations.json"),
+        output_poll_seconds=0.001,
+    )
+
+    await manager.resume_active()
+    duplicate = await manager.handle(
+        RunnerCommandKind.TERMINAL_START,
+        {
+            "session_id": request.session_id,
+            "execution_id": request.execution_id,
+            "request": request.model_dump(mode="json"),
+        },
+    )
+
+    persisted_execution = await executions.get(execution.id)
+    persisted_terminal = await terminals.get(str(request.session_id))
+    assert persisted_execution is not None
+    assert persisted_execution.status is ExecutionStatus.CANCELLED
+    assert persisted_execution.physical_stop_confirmed_at is not None
+    assert persisted_terminal is not None
+    assert persisted_terminal.status is TerminalStatus.CLOSED
+    assert duplicate["duplicate"] is True  # type: ignore[index]
+    assert client.statuses[-1] == (execution.id, ExecutionStatus.CANCELLED)
+    assert backend.starts == 0
+    assert manager._monitors == {}
     await manager.close()
 
 

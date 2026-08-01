@@ -17,6 +17,7 @@ from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from .errors import APIError, install_error_handlers
 from .policy import apply_route_policy_inventory, install_local_operator_dependencies
 from .routes import (
+    actions_router,
     approvals_router,
     artifacts_router,
     browser_router,
@@ -98,6 +99,7 @@ def create_app(
             allow_headers=["*"],
         )
     app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(actions_router, prefix="/api/v1")
     app.include_router(nodes_router, prefix="/api/v1")
     app.include_router(observability_router, prefix="/api/v1")
     app.include_router(runner_control_router, prefix="/api/v1")

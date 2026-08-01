@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from riftx.domain import (
 )
 from riftx.executors import EnvironmentMode
 from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
-from riftx.runner import OutputSlice, TerminalController, TerminalLaunchRequest
+from riftx.runner import EffectGuard, OutputSlice, TerminalController, TerminalLaunchRequest
 
 from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArtifactContent
 
@@ -30,8 +31,10 @@ from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArt
 class CreateTerminal:
     session_id: str | None = None
     execution_id: str | None = None
+    execution_key: str | None = None
     agent_session_id: str | None = None
     tool_call_id: str | None = None
+    attempt_group: str | None = None
     argv: list[str] = field(default_factory=list)
     tool_id: str | None = None
     tool_version: str | None = None
@@ -65,15 +68,53 @@ class TerminalApplicationService:
         self._events = event_repository
         self._hooks = hooks
 
-    async def create(self, run_id: str, command: CreateTerminal) -> TerminalView:
+    async def materialize_launch_request(
+        self,
+        run_id: str,
+        command: CreateTerminal,
+    ) -> TerminalLaunchRequest:
+        """Resolve the exact launch identity shared by start and failure settlement."""
+
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
         self._require_execution_allowed(run)
-        cwd = await asyncio.to_thread(
-            lambda: Path(command.cwd or run.workspace_path).expanduser().resolve()
-        )
-        argv = command.argv or [_default_shell()]
+        return await self._build_launch_request(run, command)
+
+    async def create(
+        self,
+        run_id: str,
+        command: CreateTerminal,
+        *,
+        effect_guard: EffectGuard | None = None,
+        launch_request: TerminalLaunchRequest | None = None,
+    ) -> TerminalView:
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        self._require_execution_allowed(run)
+        if launch_request is None:
+            launch_request = await self._build_launch_request(run, command)
+        else:
+            await self._require_materialized_request_matches(
+                run,
+                command,
+                launch_request,
+            )
+        cwd = launch_request.cwd
+        argv = launch_request.argv
+
+        async def combined_effect_guard() -> None:
+            current = await self._runs.get(run.id)
+            if current is None:
+                raise EntityNotFoundError("Run", run.id)
+            self._require_execution_allowed(current)
+            if effect_guard is not None:
+                await effect_guard()
+
+        # A terminal hook is itself part of admission.  The caller's durable
+        # claim must still be current before the hook can observe the launch.
+        await combined_effect_guard()
         await self._terminal_hook(
             HookPoint.TERMINAL_OPEN,
             run.id,
@@ -86,32 +127,10 @@ class TerminalApplicationService:
             },
         )
 
-        async def effect_guard() -> None:
-            current = await self._runs.get(run.id)
-            if current is None:
-                raise EntityNotFoundError("Run", run.id)
-            self._require_execution_allowed(current)
-
         try:
             terminal = await self._supervisor.start(
-                TerminalLaunchRequest(
-                    session_id=command.session_id,
-                    execution_id=command.execution_id,
-                    agent_session_id=command.agent_session_id,
-                    tool_call_id=command.tool_call_id,
-                    run_id=run.id,
-                    node_id=run.node_id,
-                    cwd=cwd,
-                    argv=argv,
-                    tool_id=command.tool_id,
-                    tool_version=command.tool_version,
-                    environment_mode=EnvironmentMode.INHERIT,
-                    env=command.env,
-                    cols=command.cols,
-                    rows=command.rows,
-                    owner=command.owner,
-                ),
-                effect_guard=effect_guard,
+                launch_request,
+                effect_guard=combined_effect_guard,
             )
         except (OSError, ValueError) as exc:
             raise ApplicationConflictError(
@@ -119,19 +138,84 @@ class TerminalApplicationService:
                 f"Unable to start terminal command: {exc}",
                 details={"argv": argv, "cwd": str(cwd)},
             ) from exc
-        current = await self._runs.get(run.id)
-        if current is None:
-            await self._supervisor.close(terminal.id)
-            raise EntityNotFoundError("Run", run.id)
         try:
-            self._require_execution_allowed(current)
-        except ApplicationConflictError:
-            await self._supervisor.close(terminal.id)
+            await combined_effect_guard()
+        except BaseException:
+            # Preserve the admission failure even if best-effort cleanup also
+            # has trouble confirming the terminal stop.
+            with suppress(Exception):
+                await self._supervisor.close(terminal.id)
             raise
         return TerminalView(
             terminal=terminal,
             execution=await self._supervisor.get_execution(terminal.id),
         )
+
+    @staticmethod
+    async def _build_launch_request(
+        run: Run,
+        command: CreateTerminal,
+    ) -> TerminalLaunchRequest:
+        cwd = await asyncio.to_thread(
+            lambda: Path(command.cwd or run.workspace_path).expanduser().resolve()
+        )
+        argv = command.argv or [_default_shell()]
+        return TerminalLaunchRequest(
+            session_id=command.session_id,
+            execution_id=command.execution_id,
+            execution_key=command.execution_key,
+            agent_session_id=command.agent_session_id,
+            tool_call_id=command.tool_call_id,
+            attempt_group=command.attempt_group,
+            run_id=run.id,
+            node_id=run.node_id,
+            cwd=cwd,
+            argv=argv,
+            tool_id=command.tool_id,
+            tool_version=command.tool_version,
+            environment_mode=EnvironmentMode.INHERIT,
+            env=command.env,
+            cols=command.cols,
+            rows=command.rows,
+            owner=command.owner,
+        )
+
+    @staticmethod
+    async def _require_materialized_request_matches(
+        run: Run,
+        command: CreateTerminal,
+        request: TerminalLaunchRequest,
+    ) -> None:
+        cwd = await asyncio.to_thread(
+            lambda: Path(command.cwd or run.workspace_path).expanduser().resolve()
+        )
+        argv = command.argv or [_default_shell()]
+        fields: tuple[tuple[str, object, object], ...] = (
+            ("session_id", request.session_id, command.session_id),
+            ("execution_id", request.execution_id, command.execution_id),
+            ("execution_key", request.execution_key, command.execution_key),
+            ("agent_session_id", request.agent_session_id, command.agent_session_id),
+            ("tool_call_id", request.tool_call_id, command.tool_call_id),
+            ("attempt_group", request.attempt_group, command.attempt_group),
+            ("run_id", request.run_id, run.id),
+            ("node_id", request.node_id, run.node_id),
+            ("runner_principal", request.runner_principal, None),
+            ("cwd", request.cwd, cwd),
+            ("argv", request.argv, argv),
+            ("tool_id", request.tool_id, command.tool_id),
+            ("tool_version", request.tool_version, command.tool_version),
+            ("environment_mode", request.environment_mode, EnvironmentMode.INHERIT),
+            ("env", request.env, command.env),
+            ("cols", request.cols, command.cols),
+            ("rows", request.rows, command.rows),
+            ("owner", request.owner, command.owner),
+        )
+        mismatched = [name for name, actual, expected in fields if actual != expected]
+        if mismatched:
+            raise ValueError(
+                "materialized terminal launch does not match command: "
+                + ", ".join(sorted(mismatched))
+            )
 
     @staticmethod
     def _require_execution_allowed(run: Run) -> None:

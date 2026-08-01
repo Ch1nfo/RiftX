@@ -165,10 +165,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
-    assert (
-        runtime.terminal_supervisor._containment_manager
-        is process_executor.containment_manager
-    )
+    assert runtime.terminal_supervisor._containment_manager is process_executor.containment_manager
+    assert runtime.safety_stopper._execution_runner._local_terminal is runtime.terminal_supervisor
     assert set(runtime.safety_stopper._resource_stoppers) == {
         "browser_sessions",
         "target_http_requests",

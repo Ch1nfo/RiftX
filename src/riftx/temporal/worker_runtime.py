@@ -678,13 +678,6 @@ async def build_temporal_worker(
             runner_control,
             node_service,
         )
-        execution_runner = NodeExecutionRouter(
-            local_node_id=config.runner.node_id,
-            repository=execution_repository,
-            local=process_supervisor,
-            remote=remote_supervisor,
-        )
-
         terminal_supervisor = TerminalSupervisor(
             terminal_repository=terminal_repository,
             execution_repository=execution_repository,
@@ -700,6 +693,13 @@ async def build_temporal_worker(
             ),
         )
         await terminal_supervisor.recover(node_id=config.runner.node_id)
+        execution_runner = NodeExecutionRouter(
+            local_node_id=config.runner.node_id,
+            repository=execution_repository,
+            local=process_supervisor,
+            remote=remote_supervisor,
+            local_terminal=terminal_supervisor,
+        )
         remote_terminal = RemoteTerminalSupervisor(
             terminal_repository=terminal_repository,
             execution_repository=execution_repository,
