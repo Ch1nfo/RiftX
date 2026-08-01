@@ -11,6 +11,8 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from riftx.security import is_loopback_host
+
 
 class RiftXAPIError(RuntimeError):
     def __init__(
@@ -46,12 +48,20 @@ class APIClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         resolved_admin_token = admin_token or os.environ.get("RIFTX_ADMIN_TOKEN")
+        parsed_base_url = urlsplit(self.base_url)
+        if resolved_admin_token and (
+            parsed_base_url.hostname is None or not is_loopback_host(parsed_base_url.hostname)
+        ):
+            raise ValueError("RIFTX_ADMIN_TOKEN may only be sent to a loopback Control Plane")
         self._admin_token = resolved_admin_token
+        default_headers = {"Accept": "application/json"}
+        if resolved_admin_token:
+            default_headers["Authorization"] = f"Bearer {resolved_admin_token}"
         self._client = httpx.Client(
             base_url=self.base_url,
             timeout=timeout_seconds,
             transport=transport,
-            headers={"Accept": "application/json"},
+            headers=default_headers,
         )
 
     def close(self) -> None:
@@ -426,15 +436,11 @@ class APIClient:
         approval_id: str,
         *,
         approve_for_run: bool = False,
-        decided_by: str = "local-user",
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/api/v1/approvals/{approval_id}/approve",
-            json={
-                "decided_by": decided_by,
-                "approve_for_run": approve_for_run,
-            },
+            json={"approve_for_run": approve_for_run},
         )
 
     def reject(
@@ -442,12 +448,11 @@ class APIClient:
         approval_id: str,
         *,
         reason: str | None = None,
-        decided_by: str = "local-user",
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/api/v1/approvals/{approval_id}/reject",
-            json={"decided_by": decided_by, "reason": reason},
+            json={"reason": reason},
         )
 
     def create_terminal(
@@ -487,6 +492,11 @@ class APIClient:
         path = f"{base_path}/api/v1/terminals/{session_id}/ws"
         query = urlencode({"cursor": max(cursor, 0)})
         return urlunsplit((scheme, parsed.netloc, path, query, ""))
+
+    def local_operator_headers(self) -> dict[str, str]:
+        if not self._admin_token:
+            return {}
+        return {"Authorization": f"Bearer {self._admin_token}"}
 
     def _json(self, method: str, path: str, **kwargs: object) -> dict[str, Any]:
         response = self._client.request(method, path, **kwargs)

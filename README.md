@@ -50,6 +50,7 @@ server serves the built WebUI and API from the same address:
 cp -n configs/tools.example.yaml configs/tools.yaml
 cp -n configs/models.example.yaml configs/models.yaml
 pnpm web:build
+export RIFTX_ADMIN_TOKEN="$(openssl rand -hex 32)"
 conda run --no-capture-output -n agent riftx \
   --config configs/riftx.example.yaml serve
 ```
@@ -58,6 +59,12 @@ conda run --no-capture-output -n agent riftx \
 WebUI/CLI edits and are ignored by Git; their `*.example.yaml` counterparts remain the
 sanitized, versioned templates. Configure the copied model profile before sending a
 Run's first instruction.
+
+The checked-in example explicitly selects the only implemented trust profile,
+`local_single_operator`. `RIFTX_ADMIN_TOKEN` authenticates that stable server-owned
+LocalPrincipal as well as administration requests. The WebUI asks for the token after
+opening and keeps it only in page memory; CLI/API clients read it from the environment.
+The token is never the Principal ID and is never written to the Principal state file.
 
 Open <http://127.0.0.1:8787/> or print/open it with:
 
@@ -191,33 +198,47 @@ unspecified, or multicast destinations; loopback remains available for a local m
 Operator-owned `models.yaml` may use environment references such as
 `${RIFTX_MODEL_BASE_URL}` because direct filesystem access is a higher trust boundary.
 
-All model-administration endpoints require a high-entropy `RIFTX_ADMIN_TOKEN`, including
-localhost. Set it in the Control Plane environment and in the CLI environment before
-listing details or changing profiles:
+All local-operator routes and model/tool administration endpoints require the same
+`RIFTX_ADMIN_TOKEN`, including localhost. Startup requires at least 32 printable,
+non-whitespace ASCII characters. That length check catches missing and trivially weak values;
+it does not prove randomness, so generate the token from a cryptographically secure
+source and set it in the Control Plane and CLI environments before using the API:
 
 ```bash
-export RIFTX_ADMIN_TOKEN="replace-with-a-long-random-token"
+export RIFTX_ADMIN_TOKEN="$(openssl rand -hex 32)"
 ```
 
-The Control Plane listens on loopback by default and rejects non-loopback binds because
-its execution and terminal APIs are privileged host controls. Production deployments
-should keep that loopback listener behind an authenticated reverse proxy. Only when the
-proxy is the exclusive ingress may an operator explicitly set
-`RIFTX_TRUST_PROXY_AUTH=true`; the flag is an acknowledgement, not an authentication
-mechanism. See `docs/deployment.md` for the trust boundary and proxy requirements.
+If `RIFTX_RUNNER_REGISTRATION_TOKEN` is configured, startup also enforces at least 32
+printable, non-whitespace ASCII characters, and it must be generated independently.
+Control Plane startup rejects weak values and reuse of the operator token as the Runner
+bootstrap token. Deliver it only through an owner-scoped environment or equivalent
+process-scoped secret injection; never place it in process command-line arguments.
 
-Every `/api/v1` route is included in a fail-closed policy inventory. OpenAPI operations
+The current release implements only `local_single_operator`. It requires a loopback
+listener and loopback browser origins, rejects proxy/remote identity configuration, and
+keeps remote capabilities disabled. `remote_multiuser` is recognized but unavailable;
+non-loopback binds and `RIFTX_TRUST_PROXY_AUTH=true` fail at startup. This local profile
+is not tenant-safe and must not be exposed through a LAN/public reverse proxy. See
+`docs/deployment.md` for the exact trust boundary.
+
+Secure LocalPrincipal publication currently requires POSIX `dir_fd`, `O_NOFOLLOW`,
+owner/mode checks, hard-link no-replace publication, and directory `fsync`. A Control
+Plane on Windows or another platform without those primitives fails before writing
+state with `local_principal_platform_unsupported`; this does not describe Runner host
+compatibility.
+
+Every `/api/*` route is included in a fail-closed policy inventory. OpenAPI operations
 publish `x-riftx-authorization` and `x-riftx-effect`; application construction fails if
 a new route is not classified. Model/tool administration requires the admin token,
-Runner callbacks require Runner credentials, and privileged operator routes rely on the
-loopback-or-authenticated-proxy boundary above. Agent-visible tools use a separate
+Runner callbacks require Runner credentials, and local operator routes require the
+same token-backed server Principal described above. Agent-visible tools use a separate
 effect/authorization inventory, so an unclassified new tool is never exposed to a model.
 
-The public profile summary used by the New Run form contains only the profile name,
+The model profile summary used by the New Run form contains only the profile name,
 model, request mode, credential-ready flag, and default flags. Base URLs, credential
 environment names, stored-key state, and mutations require the admin token. The WebUI
-accepts the token only in the Models page's in-memory field and never persists it in
-browser storage. Arbitrary browser-extension origins are not granted CORS access.
+keeps the local operator token only in page memory and never persists it in browser
+storage. Arbitrary browser-extension origins are not granted CORS access.
 
 ## Conversation-first Runs
 
@@ -284,26 +305,31 @@ authorized high-risk work to an isolated Linux Runner with delegated cgroup v2. 
 PID/process-group disappearance or `taskkill` success into complete-descendant stop
 evidence, and RiftX must leave an unprovable cancellation fenced and failed.
 
-## Remote Runners
+## Runner credentials and current deployment limit
 
-Remote nodes use an outbound authenticated long-poll connection, so the Runner host
-does not need an inbound listening port. Configure a high-entropy bootstrap token on
-the Control Plane and start the daemon with the same token once:
+The node-scoped outbound long-poll protocol is implemented, but a remote Runner needs a
+remotely reachable Control Plane. The only currently selectable trust profile requires
+the Control Plane to remain on loopback, so a remote Runner deployment is not available
+in this release. Do not publish the local Control Plane through a reverse proxy to work
+around that gate. Same-host development may exercise the Runner protocol over loopback:
 
 ```bash
-export RIFTX_RUNNER_REGISTRATION_TOKEN="replace-with-a-random-secret"
-riftx serve
-
-# On the remote host, use the authenticated TLS endpoint exposed by the reverse proxy:
-export RIFTX_RUNNER_REGISTRATION_TOKEN="replace-with-a-random-secret"
+export RIFTX_RUNNER_REGISTRATION_TOKEN="$(openssl rand -hex 32)"
 riftx-runner serve \
-  --server-url https://riftx.example.test \
-  --node-id kali-a \
-  --name "Kali Runner A"
+  --server-url http://127.0.0.1:8787 \
+  --node-id local-runner \
+  --name "Local Runner"
 ```
 
-Plain HTTP is acceptable only for loopback-only development on the same host. Never send the
-bootstrap or rotated Runner credential over a remote plaintext connection.
+The former `--registration-token` option has been removed from both Runner commands;
+old invocations now fail with an unknown-option error. Migrate by removing the flag and
+supplying the bootstrap credential only through an owner-scoped
+`RIFTX_RUNNER_REGISTRATION_TOKEN` environment or equivalent process-scoped secret
+injection. Never put the credential in argv or shell history.
+
+`remote_multiuser` must add TLS, real remote identity/session controls, and object ACLs
+before this endpoint can be made remotely reachable. Never send the bootstrap or rotated
+Runner credential over a remote plaintext connection.
 
 Registration returns a rotated node-scoped credential. The daemon stores it with
 owner-only permissions and uses it for heartbeats, command polling, execution status,

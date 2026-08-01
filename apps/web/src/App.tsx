@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
+import { LocalOperatorGate } from "./components/LocalOperatorGate";
 import { LoadingState } from "./components/LoadingState";
 
 const DashboardPage = lazy(() =>
@@ -28,18 +29,20 @@ const NotFoundPage = lazy(() =>
 
 export function App() {
   return (
-    <Suspense fallback={<LoadingState />}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="runs/new" element={<NewRunPage />} />
-          <Route path="runs/:runId" element={<RunDetailPage />} />
-          <Route path="nodes" element={<NodesPage />} />
-          <Route path="tools" element={<ToolsPage />} />
-          <Route path="settings/models" element={<ModelsPage />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
-      </Routes>
-    </Suspense>
+    <LocalOperatorGate>
+      <Suspense fallback={<LoadingState />}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="runs/new" element={<NewRunPage />} />
+            <Route path="runs/:runId" element={<RunDetailPage />} />
+            <Route path="nodes" element={<NodesPage />} />
+            <Route path="tools" element={<ToolsPage />} />
+            <Route path="settings/models" element={<ModelsPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </LocalOperatorGate>
   );
 }

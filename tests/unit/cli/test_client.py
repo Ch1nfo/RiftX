@@ -64,7 +64,7 @@ def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
         return httpx.Response(200, json={"profiles": []})
 
     with APIClient(
-        "http://control-plane",
+        "http://127.0.0.1",
         transport=httpx.MockTransport(handler),
         admin_token="admin-secret",
     ) as client:
@@ -116,12 +116,12 @@ def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
             "POST",
             "/api/v1/runs",
             {"objective": "ordinary request"},
-            None,
+            "Bearer admin-secret",
         ),
     ]
 
 
-def test_tool_client_keeps_public_reads_unauthenticated_and_authorizes_refresh() -> None:
+def test_tool_client_authorizes_local_reads_and_admin_refresh() -> None:
     requests: list[tuple[str, str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -129,7 +129,7 @@ def test_tool_client_keeps_public_reads_unauthenticated_and_authorizes_refresh()
         return httpx.Response(200, json={"tools": []})
 
     with APIClient(
-        "http://control-plane",
+        "http://127.0.0.1",
         transport=httpx.MockTransport(handler),
         admin_token="admin-secret",
     ) as client:
@@ -137,7 +137,7 @@ def test_tool_client_keeps_public_reads_unauthenticated_and_authorizes_refresh()
         client.refresh_tools("local")
 
     assert requests == [
-        ("GET", "/api/v1/nodes/local/tools", None),
+        ("GET", "/api/v1/nodes/local/tools", "Bearer admin-secret"),
         ("POST", "/api/v1/nodes/local/refresh-tools", "Bearer admin-secret"),
     ]
 
@@ -167,6 +167,7 @@ def test_api_client_preserves_unified_error_details() -> None:
 def test_api_client_streams_sse_with_resume_header() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["last-event-id"] == "41"
+        assert request.headers["authorization"] == "Bearer local-operator-secret"
         assert request.url.params["follow"] == "false"
         return httpx.Response(
             200,
@@ -180,7 +181,11 @@ def test_api_client_streams_sse_with_resume_header() -> None:
             ),
         )
 
-    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+    with APIClient(
+        "http://127.0.0.1",
+        transport=httpx.MockTransport(handler),
+        admin_token="local-operator-secret",
+    ) as client:
         events = list(client.stream_events("run-1", last_event_id="41", follow=False))
 
     assert len(events) == 1
@@ -220,7 +225,11 @@ def test_approval_client_uses_control_plane_endpoints() -> None:
             return httpx.Response(200, json={"items": []})
         return httpx.Response(200, json={"id": "approval-1", "status": "approved"})
 
-    with APIClient("http://control-plane", transport=httpx.MockTransport(handler)) as client:
+    with APIClient(
+        "http://127.0.0.1",
+        transport=httpx.MockTransport(handler),
+        admin_token="local-operator-secret",
+    ) as client:
         client.list_approvals("run-1")
         client.approve("approval-1", approve_for_run=True)
         client.reject("approval-2", reason="Denied")
@@ -230,14 +239,19 @@ def test_approval_client_uses_control_plane_endpoints() -> None:
         (
             "POST",
             "/api/v1/approvals/approval-1/approve",
-            {"decided_by": "local-user", "approve_for_run": True},
+            {"approve_for_run": True},
         ),
         (
             "POST",
             "/api/v1/approvals/approval-2/reject",
-            {"decided_by": "local-user", "reason": "Denied"},
+            {"reason": "Denied"},
         ),
     ]
+
+
+def test_api_client_never_sends_local_operator_token_to_remote_host() -> None:
+    with pytest.raises(ValueError, match="loopback Control Plane"):
+        APIClient("https://control-plane.example", admin_token="must-not-leak")
 
 
 def test_terminal_client_uses_rest_endpoints_and_builds_websocket_url() -> None:

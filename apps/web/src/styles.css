@@ -3322,3 +3322,30 @@ button:disabled {
     flex: 1 1 100%;
   }
 }
+/* The local profile keeps its credential in memory and gates all API-backed UI. */
+.local-operator-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: var(--color-background, #07100d);
+}
+
+.local-operator-card {
+  width: min(28rem, 100%);
+  display: grid;
+  gap: 1rem;
+  padding: 2rem;
+  border: 1px solid var(--color-border, #315046);
+  border-radius: 1rem;
+  background: var(--color-surface, #0d1c17);
+}
+
+.local-operator-card label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.local-operator-card input {
+  width: 100%;
+}

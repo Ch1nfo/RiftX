@@ -4,7 +4,8 @@ import { useLayoutEffect } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RiftXAPIError } from "../api/client";
+import { api, RiftXAPIError } from "../api/client";
+import { LanguageProvider, languageStorageKey } from "../i18n";
 import { RunDetailPage } from "./RunDetailPage";
 
 const mocks = vi.hoisted(() => ({
@@ -235,6 +236,24 @@ function deferredVoid() {
   return { promise, reject, resolve };
 }
 
+function installLocalStorage() {
+  const values = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => values.delete(key),
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+}
+
 function SubmitComposerBeforePassiveEffects({ path }: { path: string }) {
   const location = useLocation();
   useLayoutEffect(() => {
@@ -261,6 +280,8 @@ function RunNavigationHarness({ autoSubmitPath }: { autoSubmitPath?: string }) {
 describe("RunDetailPage approvals", () => {
   beforeEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+    installLocalStorage();
     window.sessionStorage.clear();
     mocks.runStatus = "waiting_approval";
     mocks.approvalStatus = "pending";
@@ -774,7 +795,8 @@ describe("RunDetailPage approvals", () => {
     expect(window.sessionStorage.getItem("riftx.run-message-retry:run-1")).toBeNull();
   });
 
-  it("shows immutable artifacts and their download link", async () => {
+  it("downloads immutable artifacts through the authenticated client", async () => {
+    const download = vi.spyOn(api, "downloadAuthenticatedUrl").mockResolvedValue();
     const queryClient = new QueryClient();
     render(
       <QueryClientProvider client={queryClient}>
@@ -789,10 +811,65 @@ describe("RunDetailPage approvals", () => {
     screen.getAllByRole("tab", { name: /artifacts 1/i }).at(-1)?.click();
     expect(await screen.findByText("scan.txt")).toBeInTheDocument();
     expect(screen.getByText("Service scan output")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /download/i })).toHaveAttribute(
-      "href",
+    fireEvent.click(screen.getByRole("button", { name: /download/i }));
+    expect(download).toHaveBeenCalledWith(
       "/api/v1/artifacts/artifact-1/content",
+      "scan.txt",
     );
+  });
+
+  it("shows a localized visible error when an authenticated download fails", async () => {
+    vi.spyOn(api, "downloadAuthenticatedUrl").mockRejectedValue(
+      new RiftXAPIError(401, "local_operator_authentication_failed", "rejected"),
+    );
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    screen.getAllByRole("tab", { name: /artifacts 1/i }).at(-1)?.click();
+    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Download failed. Please try again.");
+    expect(alert).toHaveTextContent("local_operator_authentication_failed");
+    expect(alert).not.toHaveTextContent("rejected");
+  });
+
+  it("explains an oversized authenticated download in Chinese", async () => {
+    window.localStorage.setItem(languageStorageKey, "zh-CN");
+    vi.spyOn(api, "downloadAuthenticatedUrl").mockRejectedValue(
+      new RiftXAPIError(413, "download_too_large", "unlocalized transport message", {
+        limit_bytes: 64 * 1024 * 1024,
+      }),
+    );
+    const queryClient = new QueryClient();
+    render(
+      <LanguageProvider>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/runs/run-1"]}>
+            <Routes>
+              <Route path="/runs/:runId" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </LanguageProvider>,
+    );
+
+    screen.getAllByRole("tab", { name: /制品 1/ }).at(-1)?.click();
+    fireEvent.click(await screen.findByRole("button", { name: "下载" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("下载已阻止：文件超过 64 MiB 安全上限。");
+    expect(alert).toHaveTextContent("download_too_large");
+    expect(alert).not.toHaveTextContent("下载失败，请重试。");
+    expect(alert).not.toHaveTextContent("unlocalized transport message");
   });
 
   it("keeps plan updates out of Conversation and separates host tool-call provenance", async () => {
@@ -840,6 +917,7 @@ describe("RunDetailPage approvals", () => {
 
   it("links evidence to artifacts and saves user edits", async () => {
     mocks.updateFinding.mockResolvedValue({});
+    const download = vi.spyOn(api, "downloadAuthenticatedUrl").mockResolvedValue();
     const queryClient = new QueryClient();
     render(
       <QueryClientProvider client={queryClient}>
@@ -853,9 +931,10 @@ describe("RunDetailPage approvals", () => {
 
     screen.getAllByRole("tab", { name: /findings 1/i }).at(-1)?.click();
     expect(await screen.findByText("Banner capture")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /artifact artifact-1/i })).toHaveAttribute(
-      "href",
+    fireEvent.click(screen.getByRole("button", { name: /artifact artifact-1/i }));
+    expect(download).toHaveBeenCalledWith(
       "/api/v1/artifacts/artifact-1/content",
+      undefined,
     );
     screen.getByRole("button", { name: /edit exposed service/i }).click();
     expect(await screen.findByDisplayValue("Exposed service")).toBeInTheDocument();
@@ -876,6 +955,7 @@ describe("RunDetailPage approvals", () => {
   });
   it("opens generated reports and can request a fresh report set", async () => {
     mocks.runStatus = "completed";
+    const download = vi.spyOn(api, "downloadAuthenticatedUrl").mockResolvedValue();
     const queryClient = new QueryClient();
     render(
       <QueryClientProvider client={queryClient}>
@@ -889,9 +969,10 @@ describe("RunDetailPage approvals", () => {
 
     screen.getAllByRole("tab", { name: /reports 1/i }).at(-1)?.click();
     expect(await screen.findByText("MARKDOWN")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /open report/i })).toHaveAttribute(
-      "href",
+    fireEvent.click(screen.getByRole("button", { name: /open report/i }));
+    expect(download).toHaveBeenCalledWith(
       "/api/v1/artifacts/artifact-report-1/content",
+      undefined,
     );
     screen.getByRole("button", { name: /generate reports/i }).click();
     expect(mocks.generateReports).toHaveBeenCalled();

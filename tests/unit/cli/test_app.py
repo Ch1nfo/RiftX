@@ -592,9 +592,7 @@ def test_cancel_current_reports_confirmed_execution_stop() -> None:
 
     assert result.exit_code == 0, result.output
     assert "Current execution stop confirmed." in result.output
-    assert FakeAPIClient.instances[0].calls == [
-        ("cancel_current_execution", "run-1")
-    ]
+    assert FakeAPIClient.instances[0].calls == [("cancel_current_execution", "run-1")]
 
 
 def test_run_metrics_uses_shared_observability_endpoint() -> None:
@@ -1100,9 +1098,16 @@ def test_serve_applies_cli_overrides_after_config(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "RIFTX_ADMIN_TOKEN",
+        "test-only-local-operator-token-0001",
+    )
     config_path = tmp_path / "riftx.yaml"
     config_path.write_text(
-        "server:\n  host: 0.0.0.0\n  port: 9000\nsecurity:\n  trust_proxy_auth: true\n"
+        "server:\n  host: 127.0.0.1\n  port: 9000\n"
+        "security:\n"
+        "  trust_profile: local_single_operator\n"
+        f"  local_principal_path: {tmp_path / 'local-principal.json'}\n"
     )
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1117,7 +1122,7 @@ def test_serve_applies_cli_overrides_after_config(
     )
 
     assert result.exit_code == 0, result.output
-    assert calls[0]["host"] == "0.0.0.0"
+    assert calls[0]["host"] == "127.0.0.1"
     assert calls[0]["port"] == 9001
 
 
@@ -1125,6 +1130,7 @@ def test_serve_applies_cli_overrides_after_config(
 def test_serve_rejects_non_loopback_bind_without_trusted_proxy(
     host: str,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1133,11 +1139,19 @@ def test_serve_rejects_non_loopback_bind_without_trusted_proxy(
         lambda application, **kwargs: calls.append({"application": application, **kwargs}),
     )
 
-    result = runner.invoke(cli_module.app, ["serve", "--host", host])
+    result = runner.invoke(
+        cli_module.app,
+        ["serve", "--host", host],
+        env={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_LOCAL_PRINCIPAL_PATH": str(tmp_path / "local-principal.json"),
+            "RIFTX_ADMIN_TOKEN": "test-only-local-operator-token-0001",
+        },
+    )
 
     assert result.exit_code == 2
-    assert "Non-loopback Control Plane" in result.output
-    assert "exclusive ingress" in result.output
+    assert "local_profile_requires_loopback" in result.output
+    assert "要求监听回环地址" in result.output
     assert calls == []
 
 
@@ -1145,6 +1159,7 @@ def test_serve_rejects_non_loopback_bind_without_trusted_proxy(
 def test_serve_accepts_loopback_bind(
     host: str,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1153,10 +1168,45 @@ def test_serve_accepts_loopback_bind(
         lambda application, **kwargs: calls.append({"application": application, **kwargs}),
     )
 
-    result = runner.invoke(cli_module.app, ["serve", "--host", host])
+    result = runner.invoke(
+        cli_module.app,
+        ["serve", "--host", host],
+        env={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_LOCAL_PRINCIPAL_PATH": str(tmp_path / "local-principal.json"),
+            "RIFTX_ADMIN_TOKEN": "test-only-local-operator-token-0001",
+        },
+    )
 
     assert result.exit_code == 0, result.output
     assert calls[0]["host"] == host
+
+
+def test_serve_rejects_weak_operator_credential_before_uvicorn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cli_module.uvicorn,
+        "run",
+        lambda application, **kwargs: calls.append({"application": application, **kwargs}),
+    )
+
+    result = runner.invoke(
+        cli_module.app,
+        ["serve"],
+        env={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_LOCAL_PRINCIPAL_PATH": str(tmp_path / "local-principal.json"),
+            "RIFTX_ADMIN_TOKEN": "short-test-token",
+        },
+    )
+
+    assert result.exit_code == 2
+    assert "local_operator_credential_weak" in result.output
+    assert "至少包含 32 个" in result.output
+    assert calls == []
 
 
 def test_tools_show_filters_registry_response() -> None:
@@ -1194,11 +1244,44 @@ def test_worker_command_builds_and_runs_runtime(monkeypatch: pytest.MonkeyPatch)
     assert calls[1] == "run"
 
 
-def test_runner_command_applies_cli_overrides(
+def test_runner_command_help_omits_registration_token_option() -> None:
+    result = runner.invoke(
+        cli_module.app,
+        ["runner", "--help"],
+        terminal_width=200,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--registration-t" not in result.output
+
+
+def test_runner_command_rejects_registration_token_argv_without_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[cli_module.RunnerDaemonConfig] = []
+    canary = "shared-cli-bootstrap-canary-never-log-0001"
+
+    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+        calls.append(config)
+
+    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    result = runner.invoke(
+        cli_module.app,
+        ["runner", "--registration-token", canary],
+    )
+
+    assert result.exit_code == 2
+    assert "No such option: --registration-token" in result.output
+    assert canary not in result.output
+    assert calls == []
+
+
+def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[cli_module.RunnerDaemonConfig] = []
+    bootstrap_token = "test-only-runner-bootstrap-token-0004"
 
     async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
         calls.append(config)
@@ -1221,9 +1304,8 @@ def test_runner_command_applies_cli_overrides(
             str(state_path),
             "--credential-path",
             str(credential_path),
-            "--registration-token",
-            "bootstrap-token",
         ],
+        env={"RIFTX_RUNNER_REGISTRATION_TOKEN": bootstrap_token},
     )
 
     assert result.exit_code == 0, result.output
@@ -1234,7 +1316,7 @@ def test_runner_command_applies_cli_overrides(
             name="Runner Seven",
             state_path=state_path,
             credential_path=credential_path,
-            registration_token="bootstrap-token",
+            registration_token=bootstrap_token,
         )
     ]
 

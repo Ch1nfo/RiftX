@@ -23,6 +23,7 @@ import type {
   RunEventList,
   RunList,
   RunStatus,
+  SecurityProfile,
   TerminalSession,
   CreateTerminalPayload,
   ToolRegistrySnapshot,
@@ -35,6 +36,31 @@ const API_BASE_URL = (import.meta.env.VITE_RIFTX_API_URL as string | undefined)?
   /\/$/,
   "",
 ) ?? "";
+
+const LOCAL_OPERATOR_WS_PROTOCOL = "riftx.local-operator.v1";
+const LOCAL_OPERATOR_WS_CREDENTIAL_PREFIX = "riftx.local-operator.bearer.v1.";
+export const AUTHENTICATED_DOWNLOAD_LIMIT_MIB = 64;
+export const MAX_AUTHENTICATED_DOWNLOAD_BYTES =
+  AUTHENTICATED_DOWNLOAD_LIMIT_MIB * 1024 * 1024;
+let localOperatorToken = "";
+
+export function setLocalOperatorToken(token: string) {
+  const normalized = token.trim();
+  if (normalized && !isLoopbackAPI()) {
+    throw new Error("The local operator token may only be sent to a loopback Control Plane");
+  }
+  localOperatorToken = normalized;
+}
+
+export function clearLocalOperatorToken() {
+  localOperatorToken = "";
+}
+
+export function localOperatorHeaders(): Record<string, string> {
+  return localOperatorToken
+    ? { Authorization: `Bearer ${localOperatorToken}` }
+    : {};
+}
 
 export class RiftXAPIError extends Error {
   readonly status: number;
@@ -61,6 +87,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       Accept: "application/json",
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...localOperatorHeaders(),
       ...init?.headers,
     },
   });
@@ -94,6 +121,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getSecurityProfile(): Promise<SecurityProfile> {
+    return request<SecurityProfile>("/api/v1/security/profile");
+  },
+
   listRuns(status?: RunStatus): Promise<RunList> {
     const query = status ? `?status=${encodeURIComponent(status)}` : "";
     return request<RunList>(`/api/v1/runs${query}`);
@@ -319,6 +350,59 @@ export const api = {
     return url.toString();
   },
 
+  terminalWebSocketProtocols(): string[] {
+    if (!localOperatorToken) return [LOCAL_OPERATOR_WS_PROTOCOL];
+    const encoded = base64UrlEncode(localOperatorToken);
+    return [
+      LOCAL_OPERATOR_WS_PROTOCOL,
+      `${LOCAL_OPERATOR_WS_CREDENTIAL_PREFIX}${encoded}`,
+    ];
+  },
+
+  async downloadAuthenticatedUrl(
+    path: string,
+    filename?: string,
+    options: { maxBytes?: number } = {},
+  ): Promise<void> {
+    const maxBytes = authenticatedDownloadLimit(options.maxBytes);
+    const url = authenticatedURL(path);
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: localOperatorHeaders(),
+    });
+    if (!response.ok) {
+      throw await errorFromResponse(response);
+    }
+
+    const blob = await readBoundedDownload(response, maxBytes);
+    let objectUrl: string | null = null;
+    let anchor: HTMLAnchorElement | null = null;
+    try {
+      objectUrl = URL.createObjectURL(blob);
+      anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      if (filename) anchor.download = filename;
+      else {
+        anchor.target = "_blank";
+        anchor.rel = "noreferrer";
+      }
+      anchor.hidden = true;
+      document.body.append(anchor);
+      anchor.click();
+    } finally {
+      try {
+        anchor?.remove();
+      } finally {
+        if (objectUrl !== null) {
+          // Revoking on the next task lets the browser consume the URL after a
+          // successful click while still cleaning it up when setup or click fails.
+          const urlToRevoke = objectUrl;
+          window.setTimeout(() => URL.revokeObjectURL(urlToRevoke), 0);
+        }
+      }
+    }
+  },
+
   listNodes(status?: NodeStatus): Promise<NodeList> {
     const query = status ? `?status=${encodeURIComponent(status)}` : "";
     return request<NodeList>(`/api/v1/nodes${query}`);
@@ -360,3 +444,150 @@ export const api = {
     );
   },
 };
+
+function isLoopbackAPI(): boolean {
+  if (typeof window === "undefined") return true;
+  const base = new URL(API_BASE_URL || window.location.origin, window.location.origin);
+  return isLoopbackHostname(base.hostname);
+}
+
+function authenticatedURL(path: string): string {
+  const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const apiBase = new URL(API_BASE_URL || base, base);
+  const target = new URL(path, apiBase);
+  if (!isLoopbackHostname(target.hostname) || target.origin !== apiBase.origin) {
+    throw new Error("Authenticated downloads must stay on the loopback Control Plane");
+  }
+  return target.toString();
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return normalized === "localhost"
+    || normalized === "::1"
+    || /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+function base64UrlEncode(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function readBoundedDownload(response: Response, maxBytes: number): Promise<Blob> {
+  const declaredBytes = usableContentLength(response.headers.get("content-length"));
+  if (declaredBytes !== null && declaredBytes > BigInt(maxBytes)) {
+    await cancelBody(response.body);
+    throw downloadTooLargeError(maxBytes, {
+      declared_bytes: declaredBytes.toString(),
+    });
+  }
+
+  if (response.body === null) {
+    return new Blob([], { type: response.headers.get("content-type") ?? "" });
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let receivedBytes = 0;
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        completed = true;
+        break;
+      }
+      const nextSize = receivedBytes + value.byteLength;
+      if (nextSize > maxBytes) {
+        throw downloadTooLargeError(maxBytes, { received_bytes: nextSize });
+      }
+      const ownedChunk: Uint8Array<ArrayBuffer> = new Uint8Array(value.byteLength);
+      ownedChunk.set(value);
+      chunks.push(ownedChunk);
+      receivedBytes = nextSize;
+    }
+  } finally {
+    if (!completed) await cancelReader(reader);
+    reader.releaseLock();
+  }
+
+  return new Blob(chunks, { type: response.headers.get("content-type") ?? "" });
+}
+
+function usableContentLength(value: string | null): bigint | null {
+  const normalized = value?.trim();
+  if (!normalized || !/^\d+$/.test(normalized)) return null;
+  try {
+    return BigInt(normalized);
+  } catch {
+    return null;
+  }
+}
+
+function authenticatedDownloadLimit(requestedMaxBytes: number | undefined): number {
+  if (requestedMaxBytes === undefined) return MAX_AUTHENTICATED_DOWNLOAD_BYTES;
+  if (!Number.isSafeInteger(requestedMaxBytes) || requestedMaxBytes < 1) {
+    throw new Error("Authenticated download maxBytes must be a positive safe integer");
+  }
+  return Math.min(requestedMaxBytes, MAX_AUTHENTICATED_DOWNLOAD_BYTES);
+}
+
+async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+  if (body === null) return;
+  try {
+    await body.cancel();
+  } catch {
+    // The stable size error must not be hidden by a transport cancellation error.
+  }
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // The stable size error must not be hidden by a transport cancellation error.
+  }
+}
+
+function downloadTooLargeError(
+  maxBytes: number,
+  observed: Record<string, unknown>,
+): RiftXAPIError {
+  return new RiftXAPIError(
+    413,
+    "download_too_large",
+    `Download blocked because it exceeds the ${formatByteLimit(maxBytes)} safety limit.`,
+    {
+      limit_bytes: maxBytes,
+      ...observed,
+    },
+  );
+}
+
+function formatByteLimit(value: number): string {
+  const mib = 1024 * 1024;
+  if (value % mib === 0) return `${value / mib} MiB`;
+  if (value % 1024 === 0) return `${value / 1024} KiB`;
+  return `${value} B`;
+}
+
+async function errorFromResponse(response: Response): Promise<RiftXAPIError> {
+  const payload = (await response.json().catch(() => null)) as APIErrorEnvelope | null;
+  if (payload?.error) {
+    return new RiftXAPIError(
+      response.status,
+      payload.error.code,
+      payload.error.message,
+      payload.error.details,
+    );
+  }
+  return new RiftXAPIError(
+    response.status,
+    "http_error",
+    `RiftX API returned HTTP ${response.status}`,
+  );
+}

@@ -39,6 +39,7 @@ from riftx.domain import (
 )
 from riftx.domain.base import new_id, utc_now
 from riftx.runner.paths import RunnerPaths
+from riftx.security import validate_runner_registration_credential
 
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
 
@@ -120,7 +121,7 @@ class RunnerControlService:
         self._nodes = nodes
         self._executions = executions
         self._paths = paths
-        self._registration_token = registration_token
+        self._registration_token = validate_runner_registration_credential(registration_token)
         self._terminals = terminals
         self._events = events
         self._lease_duration = lease_duration
@@ -506,10 +507,7 @@ class RunnerControlService:
                     exit_code=report.exit_code,
                 )
                 changed = True
-            if (
-                report.physical_stop_confirmed
-                and candidate.physical_stop_confirmed_at is None
-            ):
+            if report.physical_stop_confirmed and candidate.physical_stop_confirmed_at is None:
                 # Runner clocks are not trusted for durable safety evidence.
                 # Record when the owning callback reached the Control Plane.
                 candidate.physical_stop_confirmed_at = received_at
@@ -609,16 +607,22 @@ class RunnerControlService:
             }:
                 target = TerminalStatus.LOST
                 event_type = "terminal.lost"
-            elif status in {
-                ExecutionStatus.COMPLETED,
-                ExecutionStatus.EXITED,
-                ExecutionStatus.CANCELLED,
-                ExecutionStatus.HARD_TIMEOUT,
-            } and execution.physical_stop_confirmed_at is not None and terminal.status in {
-                TerminalStatus.CREATED,
-                TerminalStatus.OPEN,
-                TerminalStatus.LOST,
-            }:
+            elif (
+                status
+                in {
+                    ExecutionStatus.COMPLETED,
+                    ExecutionStatus.EXITED,
+                    ExecutionStatus.CANCELLED,
+                    ExecutionStatus.HARD_TIMEOUT,
+                }
+                and execution.physical_stop_confirmed_at is not None
+                and terminal.status
+                in {
+                    TerminalStatus.CREATED,
+                    TerminalStatus.OPEN,
+                    TerminalStatus.LOST,
+                }
+            ):
                 target = TerminalStatus.CLOSED
                 event_type = "terminal.closed"
             if target is None:
@@ -770,9 +774,7 @@ def _terminal_projection_event_id(
     session_id: str,
     status: TerminalStatus,
 ) -> str:
-    digest = hashlib.sha256(
-        f"{run_id}\0{session_id}\0{status.value}".encode()
-    ).hexdigest()
+    digest = hashlib.sha256(f"{run_id}\0{session_id}\0{status.value}".encode()).hexdigest()
     # Persistence IDs are capped at 64 characters.  The prefix identifies the
     # reserved namespace while 176 digest bits keep collisions negligible.
     return f"terminal-projection-{digest[:44]}"

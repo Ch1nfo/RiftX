@@ -259,7 +259,7 @@ flowchart LR
 | ID | 阶段 | 依赖 | 当前状态 | 完成证据 |
 |---|---|---|---|---|
 | RX-LN-00 | 基线、ADR 与安全契约 | 无 | done | [基线、ADR 与安全契约](RIFTX_LuaN1aoAgent_RX-LN-00_baseline_adr.md)；327 Python/94 Web、typecheck/build、独立复核 PASS |
-| RX-LN-AUTH | 部署 Trust Profile、Principal 与对象授权 | 00 | not_started | loopback/remote 启动门禁、ACL/actor 测试 |
+| RX-LN-AUTH | 部署 Trust Profile、Principal 与对象授权 | 00 | done | [Profile A 交付报告](RIFTX_LuaN1aoAgent_RX-LN-AUTH_delivery.md)；1422 Python/109 Web、typecheck/build、独立复核 APPROVE |
 | RX-LN-01 | Run Action Read Model/API | 00、AUTH | not_started | 后端单元/集成/API policy 测试 |
 | RX-LN-02 | Action Timeline 与 Inspector | 01、AUTH | not_started | Web 测试、SSE 恢复、可访问性 |
 | RX-LN-03 | Task/Evidence/Operation 语义视图 | 01–02、AUTH | not_started | Graph API/UI、provenance 测试 |

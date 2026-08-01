@@ -73,6 +73,7 @@ from riftx.domain import (
     TerminalSession,
     TerminalStatus,
     ToolCall,
+    TrustProfile,
 )
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
@@ -80,7 +81,9 @@ from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
 from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
 from riftx.persistence import (
     Database,
+    SQLAlchemyAgentCycleRepository,
     SQLAlchemyAgentSessionRepository,
+    SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
     SQLAlchemyBrowserRepository,
@@ -93,6 +96,7 @@ from riftx.persistence import (
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
 )
@@ -113,6 +117,15 @@ from riftx.runner import (
     TerminalSupervisor,
 )
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.runtime import AgentCycle as RuntimeAgentCycle
+from riftx.runtime import (
+    AgentSession,
+    AgentStep,
+    AgentStepType,
+    RuntimeApprovalRequest,
+    ToolCallIntent,
+)
+from riftx.security import DeploymentProfileError
 from riftx.skills import create_default_skill_registry
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
@@ -122,6 +135,7 @@ from riftx.tools import ToolRegistry
 
 FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
 PROCESS_TREE_FIXTURE = Path(__file__).parents[2] / "runner" / "fixtures" / "fake_process.py"
+RUNNER_BOOTSTRAP_TOKEN = "test-only-runner-bootstrap-token-0003"
 
 
 class FullRunModel(Model):
@@ -311,6 +325,7 @@ class RuntimeFixture:
     workflow: FakeWorkflowClient | TemporalRunClient
     finding_repository: SQLAlchemyFindingRepository
     approval_repository: SQLAlchemyApprovalRepository
+    runtime_approval_repository: SQLAlchemyRuntimeApprovalRepository
     artifact_repository: SQLAlchemyArtifactRepository
     report_repository: SQLAlchemyReportRepository
     run_repository: SQLAlchemyRunRepository
@@ -325,7 +340,7 @@ async def _build_runtime(
     workflow: FakeWorkflowClient | TemporalRunClient | None = None,
     model_profile_override: str | None = None,
     model_environment: dict[str, str] | None = None,
-    admin_token: str | None = None,
+    admin_token: str | None = "test-only-local-operator-token-0001",
     runner_command_lease_seconds: float = 0.05,
 ) -> RuntimeFixture:
     db_path = database_path or (tmp_path / "riftx.db")
@@ -355,6 +370,7 @@ tools:
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     report_repository = SQLAlchemyReportRepository(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
+    runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     agent_session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
@@ -374,6 +390,8 @@ tools:
     )
     workflow_client = workflow or FakeWorkflowClient()
     settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "secrets" / "local-principal.json",
         database_url=database.url,
         tools_config_path=tools_path,
         models_config_path=tmp_path / "models.yaml",
@@ -383,7 +401,7 @@ tools:
         runner_state_path=tmp_path / "runner",
         sse_poll_interval_seconds=0.001,
         sse_heartbeat_seconds=0.005,
-        runner_registration_token="test-bootstrap",
+        runner_registration_token=RUNNER_BOOTSTRAP_TOKEN,
         runner_command_lease_seconds=runner_command_lease_seconds,
         admin_token=admin_token,
     )
@@ -519,6 +537,7 @@ tools:
                 run_repository=run_repository,
                 event_repository=event_repository,
                 workflow_client=workflow_client,
+                runtime_approval_repository=runtime_approval_repository,
             ),
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
@@ -541,6 +560,7 @@ tools:
         workflow=workflow_client,
         finding_repository=finding_repository,
         approval_repository=approval_repository,
+        runtime_approval_repository=runtime_approval_repository,
         artifact_repository=artifact_repository,
         report_repository=report_repository,
         run_repository=run_repository,
@@ -555,6 +575,11 @@ async def _client(control_plane: ControlPlane) -> AsyncIterator[httpx.AsyncClien
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
+            headers=(
+                {"Authorization": f"Bearer {control_plane.settings.admin_token}"}
+                if control_plane.settings.admin_token
+                else None
+            ),
         ) as client:
             yield client
 
@@ -846,11 +871,11 @@ async def test_slow_pause_fence_rejects_ordinary_controls_until_paused(tmp_path:
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approvals[0].id}/approve",
-                    json={"decided_by": "operator"},
+                    json={},
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approvals[1].id}/reject",
-                    json={"decided_by": "operator", "reason": "Not now"},
+                    json={"reason": "Not now"},
                 ),
             ]
 
@@ -897,11 +922,11 @@ async def test_slow_pause_fence_rejects_ordinary_controls_until_paused(tmp_path:
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approvals[0].id}/approve",
-                    json={"decided_by": "operator"},
+                    json={},
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approvals[1].id}/reject",
-                    json={"decided_by": "operator", "reason": "Not now"},
+                    json={"reason": "Not now"},
                 ),
             ]
             assert [response.status_code for response in accepted] == [202, 202, 202, 200, 200]
@@ -967,11 +992,11 @@ async def test_every_safety_fence_rejects_ordinary_workflow_signals(
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approval.id}/approve",
-                    json={"decided_by": "operator"},
+                    json={},
                 ),
                 await client.post(
                     f"/api/v1/approvals/{approval.id}/reject",
-                    json={"decided_by": "operator", "reason": "Blocked"},
+                    json={"reason": "Blocked"},
                 ),
             ]
 
@@ -1043,7 +1068,7 @@ async def test_approval_does_not_signal_when_pause_wins_after_atomic_decision(
             approval_task = asyncio.create_task(
                 client.post(
                     f"/api/v1/approvals/{approval.id}/approve",
-                    json={"decided_by": "operator"},
+                    json={},
                 )
             )
             await asyncio.wait_for(decision_committed.wait(), timeout=1)
@@ -1362,10 +1387,13 @@ async def test_sse_resumes_from_last_event_id(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_tools_and_findings_share_persisted_control_plane(tmp_path: Path) -> None:
-    runtime = await _build_runtime(tmp_path, admin_token="admin-secret")
+    runtime = await _build_runtime(
+        tmp_path,
+        admin_token="test-only-admin-operator-token-0002",
+    )
     try:
         async for client in _client(runtime.control_plane):
-            admin_headers = {"Authorization": "Bearer admin-secret"}
+            admin_headers = {"Authorization": "Bearer test-only-admin-operator-token-0002"}
             tools = await client.get("/api/v1/nodes/local/tools")
             assert tools.status_code == 200
             assert tools.json()["execution_policy"] == "registered_only"
@@ -1373,7 +1401,10 @@ async def test_tools_and_findings_share_persisted_control_plane(tmp_path: Path) 
             assert tools.json()["tools"][0]["state"]["availability"] == "available"
             assert "environment" not in tools.json()["tools"][0]["definition"]
 
-            denied_admin_tools = await client.get("/api/v1/nodes/local/tools/admin")
+            denied_admin_tools = await client.get(
+                "/api/v1/nodes/local/tools/admin",
+                headers={"Authorization": ""},
+            )
             assert denied_admin_tools.status_code == 401
             invalid_admin_token = "administrator-token-must-not-echo"
             denied_wrong_admin = await client.get(
@@ -1383,7 +1414,10 @@ async def test_tools_and_findings_share_persisted_control_plane(tmp_path: Path) 
             assert denied_wrong_admin.status_code == 401
             assert invalid_admin_token not in denied_wrong_admin.text
 
-            denied_refresh = await client.post("/api/v1/nodes/local/refresh-tools")
+            denied_refresh = await client.post(
+                "/api/v1/nodes/local/refresh-tools",
+                headers={"Authorization": ""},
+            )
             assert denied_refresh.status_code == 401
             refreshed = await client.post(
                 "/api/v1/nodes/local/refresh-tools",
@@ -1604,6 +1638,9 @@ models:
 
     monkeypatch.setattr(Client, "connect", classmethod(connect))
     settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "secrets" / "local-principal.json",
+        admin_token="test-only-local-operator-token-0001",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'lazy-temporal.db'}",
         tools_config_path=tools_path,
         models_config_path=models_path,
@@ -1793,6 +1830,9 @@ models:
         unavailable_temporal.bind(("127.0.0.1", 0))
         temporal_port = unavailable_temporal.getsockname()[1]
         settings = APISettings(
+            trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+            local_principal_path=tmp_path / "secrets" / "local-principal.json",
+            admin_token="test-only-local-operator-token-0001",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'stop-outage.db'}",
             tools_config_path=tools_path,
             models_config_path=models_path,
@@ -1867,9 +1907,10 @@ models:
                 error = cancelled.json()["error"]
                 assert error["code"] == "execution_cancel_failed"
                 assert error["details"]["confirmed_execution_ids"] == []
-                assert "complete descendant absence cannot be proven" in error["details"][
-                    "failed_executions"
-                ][started.id]
+                assert (
+                    "complete descendant absence cannot be proven"
+                    in error["details"]["failed_executions"][started.id]
+                )
                 await wait_for_process_exit(parent_pid)
                 await wait_for_process_exit(child_pid)
                 await wait_for_process_group_exit(process_group_id)
@@ -1900,9 +1941,7 @@ models:
                 assert stop_resources["target_http_requests"]["attempted_ids"] == []
                 # The Workflow must stay blocked when physical stop cannot be
                 # proven, so Temporal is intentionally not signalled at all.
-                assert all(
-                    item["event_type"] != "workflow.signal_failed" for item in event_items
-                )
+                assert all(item["event_type"] != "workflow.signal_failed" for item in event_items)
         finally:
             try:
                 if runtime is not None:
@@ -1945,6 +1984,8 @@ def test_api_settings_load_web_dist_from_environment(
 ) -> None:
     web_dist = tmp_path / "web-dist"
     monkeypatch.setenv("RIFTX_WEB_DIST", str(web_dist))
+    monkeypatch.setenv("RIFTX_TRUST_PROFILE", "local_single_operator")
+    monkeypatch.setenv("RIFTX_ADMIN_TOKEN", "test-only-local-operator-token-0001")
 
     assert APISettings.from_environment().web_dist_path == web_dist
 
@@ -1994,19 +2035,104 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
             reason="Verify the local runtime.",
         )
         await runtime.approval_repository.create_request(tool_call, approval)
+        database = runtime.control_plane.database
+        await SQLAlchemyAgentSessionRepository(database.session_factory).create(
+            AgentSession(
+                id="session-1",
+                run_id=str(run["id"]),
+                model_profile="fast",
+            )
+        )
+        await SQLAlchemyAgentCycleRepository(database.session_factory).create(
+            RuntimeAgentCycle(
+                id="cycle-1",
+                run_id=str(run["id"]),
+                session_id="session-1",
+                sequence=1,
+            )
+        )
+        await SQLAlchemyAgentStepRepository(database.session_factory).create(
+            AgentStep(
+                id="step-1",
+                cycle_id="cycle-1",
+                sequence=1,
+                step_type=AgentStepType.TOOL_PROPOSAL,
+            )
+        )
+        await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+            ToolCallIntent(
+                id="intent-1",
+                run_id=str(run["id"]),
+                session_id="session-1",
+                cycle_id="cycle-1",
+                step_id="step-1",
+                tool_id="python",
+            )
+        )
+        await runtime.runtime_approval_repository.create(
+            RuntimeApprovalRequest(
+                id=approval.id,
+                run_id=str(run["id"]),
+                session_id="session-1",
+                cycle_id="cycle-1",
+                tool_call_intent_id="intent-1",
+            )
+        )
+
+        profile = await client.get("/api/v1/security/profile")
+        principal_id = profile.json()["principal_id"]
 
         listed = await client.get(f"/api/v1/runs/{run['id']}/approvals")
         assert listed.status_code == 200
         assert listed.json()["items"][0]["command"] == ["python", "--version"]
 
+        forged = await client.post(
+            "/api/v1/approvals/approval-1/approve",
+            json={
+                "approve_for_run": True,
+                "decided_by": "forged-client",
+                "created_by": "forged-client",
+                "requester_principal_id": "forged-client",
+                "role": "owner",
+                "user_id": "forged-client",
+            },
+        )
+        assert forged.status_code == 422
+        assert (await runtime.approval_repository.get(approval.id)).status.value == "pending"
+        runtime_approval = await runtime.runtime_approval_repository.get(approval.id)
+        assert runtime_approval is not None
+        assert runtime_approval.status.value == "pending"
+        assert not await runtime.approval_repository.is_granted(str(run["id"]), "python")
+        assert not [call for call in runtime.workflow.calls if call[0] == "approve"]
+
         approved = await client.post(
             "/api/v1/approvals/approval-1/approve",
-            json={"decided_by": "api-user", "approve_for_run": True},
+            json={"approve_for_run": True},
+            headers={
+                "Authorization": "Bearer test-only-local-operator-token-0001",
+                "X-Forwarded-User": "proxy-forgery",
+                "X-Forwarded-Role": "owner",
+            },
         )
         assert approved.status_code == 200
         assert approved.json()["status"] == "approved"
+        assert approved.json()["decided_by"] == principal_id
         assert await runtime.approval_repository.is_granted(str(run["id"]), "python")
+        grant = await runtime.approval_repository._get_grant(str(run["id"]), "python")
+        assert grant is not None
+        assert grant.created_by == principal_id
+        runtime_request = await runtime.runtime_approval_repository.get(approval.id)
+        assert runtime_request is not None
+        assert runtime_request.decided_by == principal_id
         assert ("approve", str(run["id"]), "approval-1") in runtime.workflow.calls
+        decision_events = await client.get(f"/api/v1/runs/{run['id']}/events")
+        approved_event = next(
+            item
+            for item in decision_events.json()["items"]
+            if item["event_type"] == "tool.approved"
+        )
+        assert approved_event["payload"]["decided_by"] == principal_id
+        assert "forged-client" not in json.dumps(approved_event)
 
         rejected_call = ToolCall(
             id="tool-call-2",
@@ -2029,7 +2155,7 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
         await runtime.approval_repository.create_request(rejected_call, rejected_request)
         rejected = await client.post(
             "/api/v1/approvals/approval-2/reject",
-            json={"decided_by": "api-user", "reason": "Outside authorized scope"},
+            json={"reason": "Outside authorized scope"},
         )
         assert rejected.status_code == 200
         assert rejected.json()["reason"] == "Outside authorized scope"
@@ -2053,12 +2179,10 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
             "approve",
             "approved",
             {
-                "decided_by": "api-user",
                 "reason": "Authorized after review",
                 "approve_for_run": True,
             },
             {
-                "decided_by": "different-user",
                 "reason": "must not replace the saved approval",
                 "approve_for_run": False,
             },
@@ -2067,11 +2191,9 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
             "reject",
             "rejected",
             {
-                "decided_by": "api-user",
                 "reason": "Outside the authorized boundary",
             },
             {
-                "decided_by": "different-user",
                 "reason": "must not replace the saved rejection",
             },
         ),
@@ -2113,7 +2235,9 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
         persisted = await runtime.approval_repository.get(approval.id)
         assert persisted is not None
         assert persisted.status.value == expected_status
-        assert persisted.decided_by == first_payload["decided_by"]
+        profile = await client.get("/api/v1/security/profile")
+        principal_id = profile.json()["principal_id"]
+        assert persisted.decided_by == principal_id
         assert persisted.reason == first_payload["reason"]
 
         runtime.workflow.fail = False
@@ -2124,7 +2248,7 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
 
         assert recovered.status_code == 200, recovered.text
         assert recovered.json()["status"] == expected_status
-        assert recovered.json()["decided_by"] == first_payload["decided_by"]
+        assert recovered.json()["decided_by"] == principal_id
         assert recovered.json()["reason"] == first_payload["reason"]
         assert [call for call in runtime.workflow.calls if call[0] in {"approve", "reject"}] == [
             (action, str(run["id"]), approval.id)
@@ -2170,7 +2294,7 @@ async def test_approval_preserves_workflow_error_classification(tmp_path: Path) 
 
         response = await client.post(
             "/api/v1/approvals/approval-closed-workflow/approve",
-            json={"decided_by": "api-user"},
+            json={},
         )
 
         assert response.status_code == 409
@@ -2204,7 +2328,7 @@ async def test_terminal_run_approval_is_not_actionable(tmp_path: Path) -> None:
 
         response = await client.post(
             "/api/v1/approvals/approval-terminal-run/approve",
-            json={"decided_by": "api-user"},
+            json={},
         )
 
         assert response.status_code == 409
@@ -2307,8 +2431,9 @@ def _receive_ws_output(websocket: Any, expected: str) -> str:
 def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: Path) -> None:
     runtime = asyncio.run(_build_runtime(tmp_path))
     app = create_app(control_plane=runtime.control_plane)
+    operator_headers = {"Authorization": "Bearer test-only-local-operator-token-0001"}
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=operator_headers) as client:
             run_response = client.post(
                 "/api/v1/runs",
                 json={"objective": "Exercise the local PTY"},
@@ -2325,7 +2450,12 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
             assert created.status_code == 201, created.text
             session_id = created.json()["id"]
 
-            with client.websocket_connect(f"/api/v1/terminals/{session_id}/ws") as websocket:
+            websocket_path = f"/api/v1/terminals/{session_id}/ws"
+            assert "test-only-local-operator-token-0001" not in websocket_path
+            with client.websocket_connect(
+                websocket_path,
+                headers=operator_headers,
+            ) as websocket:
                 _receive_ws_state(websocket, owner="agent", status="open")
                 _receive_ws_output(websocket, "READY")
 
@@ -2357,7 +2487,10 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
             assert closed.json()["status"] == "closed"
             assert closed.json()["transcript_artifact_id"]
 
-            with client.websocket_connect("/api/v1/terminals/missing/ws") as websocket:
+            with client.websocket_connect(
+                "/api/v1/terminals/missing/ws",
+                headers=operator_headers,
+            ) as websocket:
                 error = websocket.receive_json()
                 assert error["type"] == "error"
                 assert error["code"] == "terminal_session_not_found"
@@ -2715,7 +2848,10 @@ async def test_reports_generate_list_get_and_link_finding_evidence(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path) -> None:
-    runtime = await _build_runtime(tmp_path, admin_token="admin-secret")
+    runtime = await _build_runtime(
+        tmp_path,
+        admin_token="test-only-admin-operator-token-0002",
+    )
     async for client in _client(runtime.control_plane):
         missing_auth = await client.post(
             "/api/v1/nodes/register",
@@ -2743,7 +2879,7 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
 
         registered = await client.post(
             "/api/v1/nodes/register",
-            headers={"Authorization": "Bearer test-bootstrap"},
+            headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
             json={
                 "node_id": "windows-a",
                 "name": "Windows Runner A",
@@ -2764,7 +2900,7 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
 
         repeated = await client.post(
             "/api/v1/nodes/register",
-            headers={"Authorization": "Bearer test-bootstrap"},
+            headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
             json={
                 "node_id": "windows-a",
                 "name": "Windows Runner Primary",
@@ -2846,11 +2982,14 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
         assert listed.status_code == 200
         assert [node["id"] for node in listed.json()["items"]] == ["windows-a"]
 
-        denied_disconnect = await client.post("/api/v1/nodes/windows-a/disconnect")
+        denied_disconnect = await client.post(
+            "/api/v1/nodes/windows-a/disconnect",
+            headers={"Authorization": ""},
+        )
         assert denied_disconnect.status_code == 401
         disconnected = await client.post(
             "/api/v1/nodes/windows-a/disconnect",
-            headers={"Authorization": "Bearer admin-secret"},
+            headers={"Authorization": "Bearer test-only-admin-operator-token-0002"},
         )
         assert disconnected.status_code == 200
         assert disconnected.json()["status"] == "offline"
@@ -2964,7 +3103,7 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
         async for client in _client(runtime.control_plane):
             registration = await client.post(
                 "/api/v1/nodes/register",
-                headers={"Authorization": "Bearer test-bootstrap"},
+                headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
                 json={
                     "node_id": "runner-cancel-ack",
                     "name": "Runner Cancel ACK",
@@ -3108,7 +3247,7 @@ async def test_runner_cancel_ack_preserves_confirmed_natural_execution_outcome(
         async for client in _client(runtime.control_plane):
             registration = await client.post(
                 "/api/v1/nodes/register",
-                headers={"Authorization": "Bearer test-bootstrap"},
+                headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
                 json={
                     "node_id": "runner-natural-ack",
                     "name": "Runner Natural Outcome ACK",
@@ -3211,7 +3350,7 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
         async for client in _client(runtime.control_plane):
             registration = await client.post(
                 "/api/v1/nodes/register",
-                headers={"Authorization": "Bearer test-bootstrap"},
+                headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
                 json={
                     "node_id": "runner-starting-natural",
                     "name": "Runner Starting Natural Stop",
@@ -3393,7 +3532,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
     async for client in _client(runtime.control_plane):
         registration = await client.post(
             "/api/v1/nodes/register",
-            headers={"Authorization": "Bearer test-bootstrap"},
+            headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
             json={
                 "node_id": "runner-a",
                 "name": "Runner A",
@@ -3411,7 +3550,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         }
         other_registration = await client.post(
             "/api/v1/nodes/register",
-            headers={"Authorization": "Bearer test-bootstrap"},
+            headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
             json={
                 "node_id": "runner-b",
                 "name": "Runner B",
@@ -3484,9 +3623,9 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert renewed.status_code == 200
         renewed_payload = renewed.json()
         assert renewed_payload["id"] == command.id
-        assert datetime.fromisoformat(
-            renewed_payload["lease_expires_at"]
-        ) > datetime.fromisoformat(leased_command["lease_expires_at"])
+        assert datetime.fromisoformat(renewed_payload["lease_expires_at"]) > datetime.fromisoformat(
+            leased_command["lease_expires_at"]
+        )
 
         cross_node_renewal = await client.post(
             f"/api/v1/runner/commands/{command.id}/lease",
@@ -3640,10 +3779,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert legacy_terminal_reconciled.json()["status"] == "completed"
         assert legacy_terminal_reconciled.json()["physical_stop_confirmed_at"] is not None
         assert legacy_terminal_reconciled.json()["exit_code"] == 0
-        assert (
-            legacy_terminal_reconciled.json()["executable_path"]
-            == "/usr/bin/legacy-tool"
-        )
+        assert legacy_terminal_reconciled.json()["executable_path"] == "/usr/bin/legacy-tool"
         assert legacy_terminal_reconciled.json()["tool_version"] == "1.0"
 
         terminal_paths = paths.terminal(str(run["id"]), "terminal-remote")
@@ -3823,9 +3959,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         )
         assert repeated_natural_stop.status_code == 200
         assert repeated_natural_stop.json()["status"] == "cancelled"
-        assert repeated_natural_stop.json()["physical_stop_confirmed_at"] == (
-            stop_confirmed_at
-        )
+        assert repeated_natural_stop.json()["physical_stop_confirmed_at"] == (stop_confirmed_at)
         enriched_natural_stop = await client.post(
             f"/api/v1/runner/executions/{lost_execution.id}/status",
             headers=headers,
@@ -3914,10 +4048,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
             session_id = item["payload"].get("session_id")
             if session_id in {"terminal-failed-projection", "terminal-lost-projection"}:
                 session_events.setdefault(session_id, []).append(item["event_type"])
-            if (
-                session_id == "terminal-lost-projection"
-                and item["event_type"] == "terminal.closed"
-            ):
+            if session_id == "terminal-lost-projection" and item["event_type"] == "terminal.closed":
                 lost_closed_statuses.append(item["payload"]["status"])
         assert session_events["terminal-failed-projection"] == [
             "terminal.opened",
@@ -3982,7 +4113,7 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
         async for client in _client(runtime.control_plane):
             registration = await client.post(
                 "/api/v1/nodes/register",
-                headers={"Authorization": "Bearer test-bootstrap"},
+                headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
                 json={
                     "node_id": "runner-http",
                     "name": "Runner HTTP",
@@ -4070,7 +4201,7 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
         async for client in _client(runtime.control_plane):
             registration = await client.post(
                 "/api/v1/nodes/register",
-                headers={"Authorization": "Bearer test-bootstrap"},
+                headers={"Authorization": f"Bearer {RUNNER_BOOTSTRAP_TOKEN}"},
                 json={
                     "node_id": "windows-a",
                     "name": "Windows Runner A",
@@ -4472,11 +4603,11 @@ async def test_model_profile_configuration_is_redacted_and_drives_run_defaults(
     runtime = await _build_runtime(
         tmp_path,
         model_environment={"RIFTX_MODEL_AVAILABLE_KEY": "environment-secret-value"},
-        admin_token="admin-secret",
+        admin_token="test-only-admin-operator-token-0002",
     )
     try:
         async for client in _client(runtime.control_plane):
-            admin_headers = {"Authorization": "Bearer admin-secret"}
+            admin_headers = {"Authorization": "Bearer test-only-admin-operator-token-0002"}
             initial = await client.get("/api/v1/model-profiles")
             assert initial.status_code == 200
             assert {item["request_mode"] for item in initial.json()["profiles"]} == {
@@ -4779,15 +4910,22 @@ async def test_model_profile_configuration_is_redacted_and_drives_run_defaults(
 async def test_model_profile_administration_requires_configured_admin_token(
     tmp_path: Path,
 ) -> None:
-    runtime = await _build_runtime(tmp_path, admin_token="admin-secret")
+    runtime = await _build_runtime(
+        tmp_path,
+        admin_token="test-only-admin-operator-token-0002",
+    )
     try:
         async for client in _client(runtime.control_plane):
             readable = await client.get("/api/v1/model-profiles")
             assert readable.status_code == 200
-            denied_detail = await client.get("/api/v1/model-profiles/admin")
+            denied_detail = await client.get(
+                "/api/v1/model-profiles/admin",
+                headers={"Authorization": ""},
+            )
             assert denied_detail.status_code == 401
             denied = await client.put(
                 "/api/v1/model-profiles/lab",
+                headers={"Authorization": ""},
                 json={
                     "model": "lab-model",
                     "base_url": "http://127.0.0.1:11434/v1",
@@ -4797,7 +4935,7 @@ async def test_model_profile_administration_requires_configured_admin_token(
             assert denied.status_code == 401
             allowed = await client.put(
                 "/api/v1/model-profiles/lab",
-                headers={"Authorization": "Bearer admin-secret"},
+                headers={"Authorization": "Bearer test-only-admin-operator-token-0002"},
                 json={
                     "model": "lab-model",
                     "base_url": "http://127.0.0.1:11434/v1",
@@ -4807,25 +4945,9 @@ async def test_model_profile_administration_requires_configured_admin_token(
             assert allowed.status_code == 200
 
         runtime.control_plane.settings = replace(runtime.control_plane.settings, admin_token=None)
-        app = create_app(control_plane=runtime.control_plane)
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 43123)),
-                base_url="http://test",
-            ) as local_client:
-                denied_without_server_token = await local_client.put(
-                    "/api/v1/model-profiles/local",
-                    json={
-                        "model": "remote-model",
-                        "base_url": "http://127.0.0.1:11434/v1",
-                        "requires_api_key": False,
-                    },
-                )
-                assert denied_without_server_token.status_code == 401
-                assert (
-                    denied_without_server_token.json()["error"]["code"]
-                    == "admin_authentication_not_configured"
-                )
+        with pytest.raises(DeploymentProfileError) as captured:
+            create_app(control_plane=runtime.control_plane)
+        assert captured.value.code == "local_operator_credential_required"
     finally:
         await runtime.control_plane.close()
 
@@ -4835,7 +4957,7 @@ async def test_model_profile_override_is_effective_and_cannot_be_removed(tmp_pat
     runtime = await _build_runtime(
         tmp_path,
         model_profile_override="fast",
-        admin_token="admin-secret",
+        admin_token="test-only-admin-operator-token-0002",
     )
     try:
         async for client in _client(runtime.control_plane):
@@ -4856,7 +4978,7 @@ async def test_model_profile_override_is_effective_and_cannot_be_removed(tmp_pat
 
             blocked = await client.delete(
                 "/api/v1/model-profiles/fast",
-                headers={"Authorization": "Bearer admin-secret"},
+                headers={"Authorization": "Bearer test-only-admin-operator-token-0002"},
             )
             assert blocked.status_code == 409
             assert blocked.json()["error"]["code"] == "model_profile_in_use"

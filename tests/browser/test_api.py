@@ -15,6 +15,7 @@ from riftx.domain import (
     BrowserPage,
     BrowserSession,
     BrowserSessionStatus,
+    TrustProfile,
 )
 
 
@@ -90,6 +91,9 @@ class FakeBrowserService:
 def test_browser_routes_expose_bounded_state_without_runner_secrets(tmp_path: Path) -> None:
     service = FakeBrowserService()
     settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "local-principal.json",
+        admin_token="test-only-local-operator-token-0001",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'unused.db'}",
         web_dist_path=tmp_path / "web",
         cors_origins=(),
@@ -97,7 +101,10 @@ def test_browser_routes_expose_bounded_state_without_runner_secrets(tmp_path: Pa
     control_plane = SimpleNamespace(settings=settings, browser_service=service)
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
 
-    with TestClient(app) as client:
+    with TestClient(
+        app,
+        headers={"Authorization": "Bearer test-only-local-operator-token-0001"},
+    ) as client:
         response = client.post(
             "/api/v1/browser/sessions",
             json={

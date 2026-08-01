@@ -61,7 +61,7 @@ class ApprovalInterruption:
 
 @dataclass(frozen=True, slots=True)
 class DecideApproval:
-    decided_by: str = "local-user"
+    decided_by: str
     reason: str | None = None
     approve_for_run: bool = False
 

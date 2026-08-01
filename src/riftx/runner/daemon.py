@@ -36,6 +36,7 @@ from riftx.executors import (
     PowerShellNotFoundError,
     PowerShellResolver,
 )
+from riftx.security import validate_runner_registration_credential
 from riftx.target_http.models import (
     TargetHttpRequest,
     TargetHttpRunnerRequest,
@@ -132,7 +133,7 @@ class RunnerDaemonConfig:
     name: str
     state_path: Path
     credential_path: Path = Path(".riftx/secrets/runner-credentials.json")
-    registration_token: str | None = None
+    registration_token: str | None = field(default=None, repr=False)
     platform: str = platform_module.system().lower()
     architecture: str = platform_module.machine().lower()
     runner_version: str = __version__
@@ -150,6 +151,7 @@ class RunnerDaemonConfig:
     payload_gid: int | None = None
 
     def __post_init__(self) -> None:
+        validate_runner_registration_credential(self.registration_token)
         if self.command_lease_seconds <= 0:
             raise ValueError("Runner command lease duration must be positive")
         if self.max_concurrent_commands < 1:
@@ -1315,9 +1317,7 @@ class RunnerDaemon:
             )
         if execution.owner != owner:
             actual = (
-                execution.owner.model_dump(mode="json")
-                if execution.owner is not None
-                else None
+                execution.owner.model_dump(mode="json") if execution.owner is not None else None
             )
             raise RuntimeError(
                 f"Runner execution owner mismatch for {execution_id!r}: "
@@ -1675,13 +1675,6 @@ def serve(
             help="Runner credential file, kept outside execution state.",
         ),
     ] = Path(".riftx/secrets/runner-credentials.json"),
-    registration_token: Annotated[
-        str | None,
-        typer.Option(
-            envvar="RIFTX_RUNNER_REGISTRATION_TOKEN",
-            help="Bootstrap registration token.",
-        ),
-    ] = None,
     require_containment: Annotated[
         bool,
         typer.Option(
@@ -1717,7 +1710,7 @@ def serve(
                 name=name,
                 state_path=state_path,
                 credential_path=credential_path,
-                registration_token=registration_token,
+                registration_token=os.environ.get("RIFTX_RUNNER_REGISTRATION_TOKEN"),
                 require_containment=require_containment,
                 payload_uid=payload_uid,
                 payload_gid=payload_gid,

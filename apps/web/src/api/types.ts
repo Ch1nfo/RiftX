@@ -169,9 +169,23 @@ export interface ApprovalList {
 }
 
 export interface ApprovalDecisionPayload {
-  decided_by?: string;
   reason?: string | null;
   approve_for_run?: boolean;
+}
+
+export type OperatorCapability =
+  | "local.read"
+  | "local.write"
+  | "local.control"
+  | "local.host.execute"
+  | "local.host.control";
+
+export interface SecurityProfile {
+  profile: "local_single_operator";
+  principal_id: string;
+  capabilities: OperatorCapability[];
+  features: Record<string, boolean>;
+  tenant_safe: false;
 }
 
 export type NodeStatus = "online" | "offline" | "degraded" | "lost" | "unknown";

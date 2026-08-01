@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import math
 import platform
@@ -33,6 +32,7 @@ from riftx.models import (
     validate_remote_base_url,
 )
 from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
+from riftx.security import DeploymentProfileError, is_loopback_host
 from riftx.temporal.worker_runtime import build_temporal_worker
 
 from .client import APIClient, RiftXAPIError
@@ -181,14 +181,10 @@ def serve(
         }
     )
     config = state.config.model_copy(update={"server": server})
-    if not _is_loopback_listen_host(server.host) and not config.security.trust_proxy_auth:
-        raise typer.BadParameter(
-            "Non-loopback Control Plane binds expose execution APIs. Keep server.host "
-            "on loopback or set RIFTX_TRUST_PROXY_AUTH=true only when an authenticated "
-            "reverse proxy is the exclusive ingress.",
-            param_hint="--host",
-        )
-    settings = APISettings.from_config(config)
+    try:
+        settings = APISettings.from_config(config)
+    except DeploymentProfileError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--host/--config") from exc
     uvicorn.run(
         create_app(settings=settings),
         host=server.host,
@@ -199,15 +195,7 @@ def serve(
 
 
 def _is_loopback_listen_host(host: str) -> bool:
-    normalized = host.strip().lower().rstrip(".")
-    if normalized == "localhost":
-        return True
-    if normalized.startswith("[") and normalized.endswith("]"):
-        normalized = normalized[1:-1]
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
+    return is_loopback_host(host)
 
 
 @app.command()
@@ -244,10 +232,6 @@ def runner_daemon(
             help="Runner credential file override; keep it outside execution state.",
         ),
     ] = None,
-    registration_token: Annotated[
-        str | None,
-        typer.Option("--registration-token", help="Bootstrap registration token override."),
-    ] = None,
 ) -> None:
     """Start the outbound Runner daemon using the shared RiftX configuration."""
 
@@ -262,11 +246,7 @@ def runner_daemon(
                 name=name or platform.node() or resolved_node_id,
                 state_path=(state_path or config.runner.state_path).expanduser(),
                 credential_path=(credential_path or config.runner.credential_path).expanduser(),
-                registration_token=(
-                    registration_token
-                    if registration_token is not None
-                    else config.runner.registration_token
-                ),
+                registration_token=config.runner.registration_token,
                 command_lease_seconds=config.runner.command_lease_seconds,
                 require_containment=config.execution.require_containment,
                 payload_uid=config.execution.payload_uid,
@@ -887,9 +867,7 @@ def cancel_run(context: typer.Context, run_id: str) -> None:
     """Cancel the durable Run and clean up its active executions."""
 
     _run_with_client(context, lambda client: client.cancel_run(run_id))
-    console.print(
-        f"[green]{tr('Run cancellation confirmed; active effects stopped.')}[/green]"
-    )
+    console.print(f"[green]{tr('Run cancellation confirmed; active effects stopped.')}[/green]")
 
 
 @run_app.command("compact")

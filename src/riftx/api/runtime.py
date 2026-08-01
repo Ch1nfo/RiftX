@@ -35,7 +35,7 @@ from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig, load_riftx_config
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
-from riftx.domain import RunStatus
+from riftx.domain import OperatorCapability, RunStatus, TrustProfile
 from riftx.domain.base import utc_now
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
@@ -86,6 +86,11 @@ from riftx.runner import (
 )
 from riftx.runner.remote import NodeExecutionRouter, RemoteExecutionSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.security import (
+    LocalOperatorSecurity,
+    validate_deployment_profile,
+    validate_operator_runner_credential_separation,
+)
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal.connection import TemporalConnectionSettings, connect_temporal
 from riftx.temporal.runtime import LazyTemporalRunClient, TemporalRuntimeConfig
@@ -96,6 +101,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class APISettings:
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 8787
+    trust_profile: TrustProfile | None = None
+    trust_proxy_auth: bool = False
+    local_principal_path: Path = Path(".riftx/secrets/local-principal.json")
+    local_operator_capabilities: frozenset[OperatorCapability] = field(
+        default_factory=lambda: frozenset(OperatorCapability)
+    )
     database_url: str = "sqlite+aiosqlite:///./.riftx/riftx.db"
     tools_config_path: Path = Path("configs/tools.yaml")
     models_config_path: Path = Path("configs/models.yaml")
@@ -119,12 +132,12 @@ class APISettings:
     sse_heartbeat_seconds: float = 15.0
     node_offline_after_seconds: float = 30.0
     node_lost_after_seconds: float = 300.0
-    runner_registration_token: str | None = None
+    runner_registration_token: str | None = field(default=None, repr=False)
     runner_command_lease_seconds: float = 30.0
     require_containment: bool = True
     payload_uid: int | None = None
     payload_gid: int | None = None
-    admin_token: str | None = None
+    admin_token: str | None = field(default=None, repr=False)
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -132,7 +145,13 @@ class APISettings:
 
     @classmethod
     def from_config(cls, config: RiftXConfig) -> APISettings:
-        return cls(
+        settings = cls(
+            listen_host=config.server.host,
+            listen_port=config.server.port,
+            trust_profile=config.security.trust_profile,
+            trust_proxy_auth=config.security.trust_proxy_auth,
+            local_principal_path=config.security.local_principal_path.expanduser(),
+            local_operator_capabilities=config.security.local_operator_capabilities,
             database_url=config.database.url,
             tools_config_path=config.tools.path.expanduser(),
             models_config_path=config.models.path.expanduser(),
@@ -164,6 +183,8 @@ class APISettings:
             admin_token=config.security.admin_token,
             cors_origins=tuple(config.server.cors_origins),
         )
+        settings.validate_api_security_boundary()
+        return settings
 
     @classmethod
     def from_environment(cls) -> APISettings:
@@ -180,6 +201,39 @@ class APISettings:
             tls_client_private_key_path=self.temporal_tls_client_private_key_path,
             api_key=self.temporal_api_key,
         )
+
+    def validate_deployment_profile(self) -> TrustProfile:
+        return validate_deployment_profile(
+            trust_profile=self.trust_profile,
+            listen_host=self.listen_host,
+            trust_proxy_auth=self.trust_proxy_auth,
+            cors_origins=self.cors_origins,
+        )
+
+    def create_local_operator_security(self) -> LocalOperatorSecurity:
+        self.validate_api_security_boundary()
+        return LocalOperatorSecurity.create(
+            principal_path=self.local_principal_path,
+            configured_token=self.admin_token,
+            capabilities=self.local_operator_capabilities,
+            allowed_origins=self.allowed_browser_origins(),
+        )
+
+    def validate_api_security_boundary(self) -> TrustProfile:
+        profile = self.validate_deployment_profile()
+        validate_operator_runner_credential_separation(
+            self.admin_token,
+            self.runner_registration_token,
+        )
+        return profile
+
+    def allowed_browser_origins(self) -> tuple[str, ...]:
+        host = self.listen_host.strip().lower().rstrip(".")
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        authority_host = f"[{host}]" if ":" in host else host
+        control_plane_origin = f"http://{authority_host}:{self.listen_port}"
+        return tuple(dict.fromkeys((*self.cors_origins, control_plane_origin)))
 
 
 def _create_temporal_connector(settings: APISettings) -> Callable[[], Awaitable[Client]]:
@@ -306,6 +360,7 @@ class ControlPlane:
 
 
 async def build_control_plane(settings: APISettings) -> ControlPlane:
+    settings.validate_api_security_boundary()
     _prepare_local_paths(settings)
     database = Database(settings.database_url)
     await database.create_schema()

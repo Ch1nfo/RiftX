@@ -74,6 +74,7 @@ from .runs import (
     SuccessCriterionRequest,
     SwitchRunModelRequest,
 )
+from .security import SecurityProfileResponse
 from .terminals import TerminalCreateRequest, TerminalResponse
 from .tools import (
     RegisteredToolResponse,
@@ -146,6 +147,7 @@ __all__ = [
     "ReportResponse",
     "PinMemoryRequest",
     "ScopeRequest",
+    "SecurityProfileResponse",
     "SuccessCriterionRequest",
     "SetDefaultModelProfileRequest",
     "SwitchRunModelRequest",

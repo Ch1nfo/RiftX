@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
-import { api } from "../api/client";
+import { api, localOperatorHeaders } from "../api/client";
 import type { RunEvent, RunEventList } from "../api/types";
 import { queryKeys } from "./queries";
 
@@ -39,7 +39,7 @@ export function useEventStream(runId: string, enabled = true) {
       try {
         const response = await fetch(api.eventStreamUrl(runId, lastSequence.current), {
           cache: "no-store",
-          headers: { Accept: "text/event-stream" },
+          headers: { Accept: "text/event-stream", ...localOperatorHeaders() },
           signal: controller.signal,
         });
         if (!response.ok) {

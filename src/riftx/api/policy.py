@@ -8,10 +8,13 @@ from types import MappingProxyType
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
+from fastapi.dependencies.utils import get_parameterless_sub_dependant
+from fastapi.params import Depends
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from .dependencies import (
     authorize_admin,
+    authorize_local_operator,
     authorize_runner,
     authorize_runner_bootstrap,
     authorize_runner_node,
@@ -19,7 +22,7 @@ from .dependencies import (
 
 
 class RouteAuthorization(StrEnum):
-    LOCAL_OPERATOR = "local_operator_or_authenticated_proxy"
+    LOCAL_OPERATOR = "local_operator"
     ADMIN_TOKEN = "admin_token"
     RUNNER_BOOTSTRAP_TOKEN = "runner_bootstrap_token"
     RUNNER_TOKEN = "runner_token"
@@ -33,6 +36,24 @@ class RouteEffect(StrEnum):
     HOST_CONTROL = "host_control"
     ADMINISTRATION = "administration"
     RUNNER_CALLBACK = "runner_callback"
+
+
+_LOCAL_OPERATOR_EFFECTS = frozenset(
+    {
+        RouteEffect.READ_ONLY,
+        RouteEffect.DURABLE_WRITE,
+        RouteEffect.WORKFLOW_CONTROL,
+        RouteEffect.HOST_EXECUTION,
+        RouteEffect.HOST_CONTROL,
+    }
+)
+_ADMIN_OPERATOR_EFFECTS = frozenset(
+    {
+        RouteEffect.READ_ONLY,
+        RouteEffect.DURABLE_WRITE,
+        RouteEffect.WORKFLOW_CONTROL,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +111,11 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "get_run_context",
                 "get_terminal",
                 "get_browser",
-                "observe_browser",
                 "list_connector_runs",
                 "connector_events",
                 "connector_webui",
+                "get_security_profile",
+                "api_not_found",
             }
         ),
     ),
@@ -147,24 +169,35 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "takeover_browser",
                 "release_browser",
                 "stream_browser",
+                "observe_browser",
             }
         ),
     ),
     (
-        _policy(RouteAuthorization.ADMIN_TOKEN, RouteEffect.ADMINISTRATION),
+        _policy(RouteAuthorization.ADMIN_TOKEN, RouteEffect.READ_ONLY),
         frozenset(
             {
-                "disconnect_node",
                 "list_tools_for_admin",
+                "list_model_profiles_for_admin",
+                "get_model_profile",
+            }
+        ),
+    ),
+    (
+        _policy(RouteAuthorization.ADMIN_TOKEN, RouteEffect.DURABLE_WRITE),
+        frozenset(
+            {
                 "refresh_tools",
                 "update_tool",
-                "list_model_profiles_for_admin",
                 "set_default_model_profile",
-                "get_model_profile",
                 "upsert_model_profile",
                 "delete_model_profile",
             }
         ),
+    ),
+    (
+        _policy(RouteAuthorization.ADMIN_TOKEN, RouteEffect.WORKFLOW_CONTROL),
+        frozenset({"disconnect_node"}),
     ),
     (
         _policy(RouteAuthorization.RUNNER_BOOTSTRAP_TOKEN, RouteEffect.RUNNER_CALLBACK),
@@ -203,6 +236,7 @@ def _build_route_policies() -> MappingProxyType[str, RoutePolicy]:
 ROUTE_POLICIES = _build_route_policies()
 
 _AUTHENTICATION_DEPENDENCIES = (
+    authorize_local_operator,
     authorize_admin,
     authorize_runner_bootstrap,
     authorize_runner,
@@ -220,7 +254,30 @@ def _expected_authentication_dependency(
         return authorize_runner_bootstrap
     if authorization is RouteAuthorization.RUNNER_TOKEN:
         return authorize_runner_node if route_name == "heartbeat_node" else authorize_runner
+    if authorization is RouteAuthorization.LOCAL_OPERATOR:
+        return authorize_local_operator
     return None
+
+
+def install_local_operator_dependencies(app: FastAPI) -> None:
+    """Attach local authentication only to routes classified for that principal."""
+
+    for route in app.routes:
+        if not isinstance(route, (APIRoute, APIWebSocketRoute)):
+            continue
+        policy = ROUTE_POLICIES.get(route.name)
+        if policy is None or policy.authorization is not RouteAuthorization.LOCAL_OPERATOR:
+            continue
+        actual = _authentication_dependencies(route.dependant)
+        if authorize_local_operator in actual:
+            continue
+        route.dependant.dependencies.insert(
+            0,
+            get_parameterless_sub_dependant(
+                depends=Depends(authorize_local_operator),
+                path=route.path,
+            ),
+        )
 
 
 def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
@@ -232,11 +289,12 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
     duplicate_names: list[str] = []
     missing_admin_dependency: list[str] = []
     authentication_dependency_mismatches: list[str] = []
+    unsupported_operator_effects: list[str] = []
 
     for route in app.routes:
         if not isinstance(route, (APIRoute, APIWebSocketRoute)):
             continue
-        if not route.path.startswith("/api/v1/") and route.path != "/api/v1":
+        if not route.path.startswith("/api/") and route.path != "/api":
             continue
         name = route.name
         if name in seen_names:
@@ -246,6 +304,15 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
         if policy is None:
             unclassified.append(f"{name}:{route.path}")
             continue
+        supported_operator_effects = {
+            RouteAuthorization.LOCAL_OPERATOR: _LOCAL_OPERATOR_EFFECTS,
+            RouteAuthorization.ADMIN_TOKEN: _ADMIN_OPERATOR_EFFECTS,
+        }.get(policy.authorization)
+        if (
+            supported_operator_effects is not None
+            and policy.effect not in supported_operator_effects
+        ):
+            unsupported_operator_effects.append(f"{name}:{policy.effect.value}")
         expected_dependency = _expected_authentication_dependency(name, policy.authorization)
         actual_dependencies = _authentication_dependencies(route.dependant)
         dependency_matches = (
@@ -296,6 +363,7 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
         or stale
         or missing_admin_dependency
         or authentication_dependency_mismatches
+        or unsupported_operator_effects
     ):
         raise RuntimeError(
             "Control Plane route policy inventory validation failed: "
@@ -303,7 +371,8 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
             f"duplicate_names={sorted(duplicate_names)}, stale={stale}, "
             f"missing_admin_dependency={sorted(missing_admin_dependency)}, "
             "authentication_dependency_mismatches="
-            f"{sorted(authentication_dependency_mismatches)}"
+            f"{sorted(authentication_dependency_mismatches)}, "
+            f"unsupported_operator_effects={sorted(unsupported_operator_effects)}"
         )
     inventory = tuple(sorted(records, key=lambda item: (item.path, item.methods, item.name)))
     app.state.route_policy_inventory = inventory

@@ -33,7 +33,11 @@ runner:
   state_path: .riftx/runner
   # Keep identity credentials outside clonable execution state.
   credential_path: .riftx/secrets/runner-credentials.json
-  # Set registration_token through RIFTX_RUNNER_REGISTRATION_TOKEN, not YAML.
+  # Set registration_token only through an owner-scoped
+  # RIFTX_RUNNER_REGISTRATION_TOKEN environment or equivalent process-scoped secret
+  # injection, never YAML or process argv. There is no CLI token option.
+  # Any configured value must contain at least 32 printable, non-whitespace ASCII
+  # characters and be independently generated from RIFTX_ADMIN_TOKEN.
   command_lease_seconds: 30
   node_offline_after_seconds: 30
   node_lost_after_seconds: 300
@@ -75,10 +79,22 @@ models:
   secrets_path: .riftx/secrets/models.json
   # profile: primary
 
-# Set the Control Plane admin token through RIFTX_ADMIN_TOKEN, never YAML.
-# Non-loopback binds are rejected unless RIFTX_TRUST_PROXY_AUTH=true explicitly
-# acknowledges that an authenticated reverse proxy is the exclusive ingress.
-security: {}
+# The current release implements exactly one explicit deployment profile.
+# RIFTX_ADMIN_TOKEN is the shared local operator/admin credential and must come
+# from the process environment, never YAML. It must contain at least 32 printable,
+# non-whitespace ASCII characters and be generated from a secure random source. If a
+# Runner bootstrap token is configured, it must contain at least 32 printable,
+# non-whitespace ASCII characters and be an independently generated value delivered
+# only through an owner-scoped RIFTX_RUNNER_REGISTRATION_TOKEN environment or equivalent
+# process-scoped secret injection, never process argv.
+# The stable Principal ID below is
+# generated server-side on first start and the state file is kept owner-only.
+# Non-loopback binds, remote identity/proxy auth, and remote_multiuser all fail
+# closed until that separate profile's TLS/session/CSRF/tenant ACL work exists.
+security:
+  trust_profile: local_single_operator
+  local_principal_path: .riftx/secrets/local-principal.json
+  trust_proxy_auth: false
 
 agent:
   max_history_items: 100

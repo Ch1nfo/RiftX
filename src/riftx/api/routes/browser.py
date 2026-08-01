@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from riftx.application.errors import ApplicationServiceError, EntityNotFoundError
 from riftx.domain.errors import DomainError
 
+from ..auth import accept_local_operator_websocket
 from ..dependencies import BrowserServiceDependency
 from ..schemas.browser import (
     BrowserActionRequest,
@@ -69,9 +70,7 @@ async def observe_browser(
     request: BrowserObserveRequest,
     service: BrowserServiceDependency,
 ) -> BrowserViewResponse:
-    return BrowserViewResponse.from_view(
-        await service.observe(session_id, **request.model_dump())
-    )
+    return BrowserViewResponse.from_view(await service.observe(session_id, **request.model_dump()))
 
 
 @router.post(
@@ -84,9 +83,7 @@ async def act_browser(
     request: BrowserActionRequest,
     service: BrowserServiceDependency,
 ) -> BrowserViewResponse:
-    return BrowserViewResponse.from_view(
-        await service.act(session_id, request.to_command())
-    )
+    return BrowserViewResponse.from_view(await service.act(session_id, request.to_command()))
 
 
 @router.post(
@@ -115,7 +112,7 @@ async def release_browser(
 
 @router.websocket("/{session_id}/stream")
 async def stream_browser(session_id: str, websocket: WebSocket) -> None:
-    await websocket.accept()
+    await accept_local_operator_websocket(websocket)
     service = websocket.app.state.control_plane.browser_service
     send_lock = asyncio.Lock()
 
@@ -167,9 +164,7 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
                     await send(
                         {
                             "type": "browser_state",
-                            "state": BrowserViewResponse.from_view(view).model_dump(
-                                mode="json"
-                            ),
+                            "state": BrowserViewResponse.from_view(view).model_dump(mode="json"),
                         }
                     )
                 elif message_type == "takeover":
@@ -177,9 +172,7 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
                     await send(
                         {
                             "type": "browser_state",
-                            "state": BrowserViewResponse.from_view(view).model_dump(
-                                mode="json"
-                            ),
+                            "state": BrowserViewResponse.from_view(view).model_dump(mode="json"),
                         }
                     )
                 elif message_type == "release":
@@ -197,9 +190,7 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
                     await send(
                         {
                             "type": "browser_state",
-                            "state": BrowserViewResponse.from_view(view).model_dump(
-                                mode="json"
-                            ),
+                            "state": BrowserViewResponse.from_view(view).model_dump(mode="json"),
                         }
                     )
                 elif message_type == "close":
@@ -207,9 +198,7 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
                     await send(
                         {
                             "type": "browser_state",
-                            "state": BrowserViewResponse.from_view(view).model_dump(
-                                mode="json"
-                            ),
+                            "state": BrowserViewResponse.from_view(view).model_dump(mode="json"),
                         }
                     )
                     return

@@ -226,3 +226,20 @@ class MessageVisibility(StrEnum):
     AGENT_ONLY = "agent_only"
     INTERNAL_STATE = "internal_state"
     SUBAGENT_PRIVATE = "subagent_private"
+
+
+class TrustProfile(StrEnum):
+    """Explicit deployment trust boundary selected by the operator."""
+
+    LOCAL_SINGLE_OPERATOR = "local_single_operator"
+    REMOTE_MULTIUSER = "remote_multiuser"
+
+
+class OperatorCapability(StrEnum):
+    """Server-owned capabilities for the local single-operator principal."""
+
+    READ = "local.read"
+    WRITE = "local.write"
+    CONTROL = "local.control"
+    HOST_EXECUTE = "local.host.execute"
+    HOST_CONTROL = "local.host.control"

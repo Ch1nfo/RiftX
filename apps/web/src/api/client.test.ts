@@ -1,15 +1,340 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./client";
+import {
+  MAX_AUTHENTICATED_DOWNLOAD_BYTES,
+  api,
+  clearLocalOperatorToken,
+  localOperatorHeaders,
+  setLocalOperatorToken,
+} from "./client";
 
 const originalFetch = globalThis.fetch;
+const originalCreateObjectURL = URL.createObjectURL;
+const originalRevokeObjectURL = URL.revokeObjectURL;
+const TEST_DOWNLOAD_LIMIT_BYTES = 8;
 
 afterEach(() => {
+  clearLocalOperatorToken();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  restoreURLMethod("createObjectURL", originalCreateObjectURL);
+  restoreURLMethod("revokeObjectURL", originalRevokeObjectURL);
 });
 
 describe("RiftX API client", () => {
+  it("keeps the local token in memory and sends it on REST requests", async () => {
+    const localStorageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          profile: "local_single_operator",
+          principal_id: "local-principal:v1:test",
+          capabilities: ["local.read"],
+          features: {},
+          tenant_safe: false,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    setLocalOperatorToken("  memory-only-secret  ");
+    await api.getSecurityProfile();
+
+    expect(localOperatorHeaders()).toEqual({
+      Authorization: "Bearer memory-only-secret",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/security/profile",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer memory-only-secret",
+        }),
+      }),
+    );
+    expect(localStorageWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps WebSocket credentials out of the URL and offers only protocol tokens", () => {
+    setLocalOperatorToken("websocket-secret");
+
+    const url = api.terminalWebSocketUrl("terminal-1", 42);
+    const protocols = api.terminalWebSocketProtocols();
+
+    expect(url).toMatch(/\/api\/v1\/terminals\/terminal-1\/ws\?cursor=42$/);
+    expect(url).not.toContain("websocket-secret");
+    expect(url).not.toContain("bearer");
+    expect(protocols).toHaveLength(2);
+    expect(protocols[0]).toBe("riftx.local-operator.v1");
+    expect(protocols[1]).toMatch(/^riftx\.local-operator\.bearer\.v1\.[A-Za-z0-9_-]+$/);
+    expect(protocols.join(",")).not.toContain("websocket-secret");
+  });
+
+  it("downloads through authenticated fetch, a Blob URL, and timely cleanup", async () => {
+    setLocalOperatorToken("download-secret");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("evidence", {
+        status: 200,
+        headers: {
+          "content-length": "8",
+          "content-type": "text/plain",
+        },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURL = vi.fn().mockReturnValue("blob:riftx-evidence");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const clicked: Array<{ download: string; href: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      clicked.push({ download: this.download, href: this.href });
+    });
+
+    try {
+      await api.downloadAuthenticatedUrl("/api/v1/artifacts/artifact-1/content", "scan.txt");
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/api\/v1\/artifacts\/artifact-1\/content$/),
+        {
+          cache: "no-store",
+          headers: { Authorization: "Bearer download-secret" },
+        },
+      );
+      expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+      const downloadedBlob = createObjectURL.mock.calls[0]?.[0] as Blob;
+      expect(await downloadedBlob.text()).toBe("evidence");
+      expect(clicked).toEqual([{ download: "scan.txt", href: "blob:riftx-evidence" }]);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:riftx-evidence");
+      expect(document.querySelector('a[href="blob:riftx-evidence"]')).toBeNull();
+    } finally {
+      if (originalCreateObjectURL) {
+        Object.defineProperty(URL, "createObjectURL", {
+          configurable: true,
+          value: originalCreateObjectURL,
+        });
+      } else {
+        Reflect.deleteProperty(URL, "createObjectURL");
+      }
+      if (originalRevokeObjectURL) {
+        Object.defineProperty(URL, "revokeObjectURL", {
+          configurable: true,
+          value: originalRevokeObjectURL,
+        });
+      } else {
+        Reflect.deleteProperty(URL, "revokeObjectURL");
+      }
+    }
+  });
+
+  it("rejects a declared oversized download before buffering its body", async () => {
+    const cancel = vi.fn();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      {
+        status: 200,
+        headers: {
+          "content-length": String(TEST_DOWNLOAD_LIMIT_BYTES + 1),
+        },
+      },
+    );
+    globalThis.fetch = vi.fn().mockResolvedValue(response);
+    const createObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+
+    await expect(
+      api.downloadAuthenticatedUrl(
+        "/api/v1/artifacts/artifact-oversized/content",
+        "oversized.bin",
+        { maxBytes: TEST_DOWNLOAD_LIMIT_BYTES },
+      ),
+    ).rejects.toMatchObject({
+      status: 413,
+      code: "download_too_large",
+      message: "Download blocked because it exceeds the 8 B safety limit.",
+      details: {
+        limit_bytes: TEST_DOWNLOAD_LIMIT_BYTES,
+        declared_bytes: String(TEST_DOWNLOAD_LIMIT_BYTES + 1),
+      },
+    });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(document.querySelector("a[download='oversized.bin']")).toBeNull();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["falsely small", "1"],
+    ["invalid", "not-a-decimal-length"],
+  ])(
+    "enforces the cumulative stream limit when Content-Length is %s",
+    async (_caseName, contentLength) => {
+      const cancel = vi.fn();
+      const chunk = new Uint8Array(4);
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(chunk);
+          },
+          cancel,
+        }),
+        {
+          status: 200,
+          headers: contentLength === undefined
+            ? undefined
+            : { "content-length": contentLength },
+        },
+      );
+      globalThis.fetch = vi.fn().mockResolvedValue(response);
+      const createObjectURL = vi.fn();
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: createObjectURL,
+      });
+
+      await expect(
+        api.downloadAuthenticatedUrl(
+          "/api/v1/artifacts/artifact-streamed/content",
+          "streamed.bin",
+          { maxBytes: TEST_DOWNLOAD_LIMIT_BYTES },
+        ),
+      ).rejects.toMatchObject({
+        status: 413,
+        code: "download_too_large",
+        details: {
+          limit_bytes: TEST_DOWNLOAD_LIMIT_BYTES,
+          received_bytes: TEST_DOWNLOAD_LIMIT_BYTES + chunk.byteLength,
+        },
+      });
+
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(response.body?.locked).toBe(false);
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(document.querySelector("a[download='streamed.bin']")).toBeNull();
+    },
+  );
+
+  it("does not allow a caller to raise the authenticated download safety cap", async () => {
+    const cancel = vi.fn();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 200,
+        headers: {
+          "content-length": String(MAX_AUTHENTICATED_DOWNLOAD_BYTES + 1),
+        },
+      }),
+    );
+
+    await expect(
+      api.downloadAuthenticatedUrl(
+        "/api/v1/artifacts/artifact-oversized/content",
+        "oversized.bin",
+        { maxBytes: MAX_AUTHENTICATED_DOWNLOAD_BYTES * 2 },
+      ),
+    ).rejects.toMatchObject({
+      code: "download_too_large",
+      details: { limit_bytes: MAX_AUTHENTICATED_DOWNLOAD_BYTES },
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("revokes the Blob URL and removes the link when triggering the download fails", async () => {
+    setLocalOperatorToken("download-secret");
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("evidence", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURL = vi.fn().mockReturnValue("blob:riftx-failed-download");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {
+      throw new Error("download click failed");
+    });
+
+    try {
+      await expect(
+        api.downloadAuthenticatedUrl(
+          "/api/v1/artifacts/artifact-1/content",
+          "scan.txt",
+        ),
+      ).rejects.toThrow("download click failed");
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+      expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:riftx-failed-download");
+      expect(document.querySelector('a[href="blob:riftx-failed-download"]')).toBeNull();
+    } finally {
+      if (originalCreateObjectURL) {
+        Object.defineProperty(URL, "createObjectURL", {
+          configurable: true,
+          value: originalCreateObjectURL,
+        });
+      } else {
+        Reflect.deleteProperty(URL, "createObjectURL");
+      }
+      if (originalRevokeObjectURL) {
+        Object.defineProperty(URL, "revokeObjectURL", {
+          configurable: true,
+          value: originalRevokeObjectURL,
+        });
+      } else {
+        Reflect.deleteProperty(URL, "revokeObjectURL");
+      }
+    }
+  });
+
+  it("rejects authenticated downloads to a different or remote origin", async () => {
+    setLocalOperatorToken("download-secret");
+    globalThis.fetch = vi.fn();
+
+    await expect(
+      api.downloadAuthenticatedUrl("http://127.0.0.1:9999/private"),
+    ).rejects.toThrow("Authenticated downloads must stay on the loopback Control Plane");
+    await expect(
+      api.downloadAuthenticatedUrl("https://remote.example.test/private"),
+    ).rejects.toThrow("Authenticated downloads must stay on the loopback Control Plane");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to retain a token for a remotely configured API base", async () => {
+    vi.stubEnv("VITE_RIFTX_API_URL", "https://remote.example.test");
+    vi.resetModules();
+    const remoteClient = await import("./client");
+
+    expect(() => remoteClient.setLocalOperatorToken("must-not-leave-loopback")).toThrow(
+      "The local operator token may only be sent to a loopback Control Plane",
+    );
+    expect(remoteClient.localOperatorHeaders()).toEqual({});
+  });
+
   it("creates runs through the shared control-plane route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -282,6 +607,20 @@ describe("RiftX API client", () => {
     );
   });
 });
+
+function restoreURLMethod(
+  name: "createObjectURL" | "revokeObjectURL",
+  original: unknown,
+) {
+  if (typeof original === "function") {
+    Object.defineProperty(URL, name, {
+      configurable: true,
+      value: original,
+    });
+  } else {
+    Reflect.deleteProperty(URL, name);
+  }
+}
 
 it("persists tool edits through the node registry API", async () => {
   const fetchMock = vi.fn().mockImplementation(() =>

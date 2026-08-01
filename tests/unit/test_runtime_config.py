@@ -6,12 +6,19 @@ import pytest
 import yaml
 
 from riftx.api import APISettings
+from riftx.application.errors import AuthenticationError
+from riftx.application.services import RunnerControlService
 from riftx.config import (
     EnvironmentSecretProvider,
     RiftXConfigError,
     load_riftx_config,
     resolve_secret,
 )
+from riftx.runner import RunnerPaths
+from riftx.runner.daemon import RunnerDaemonConfig
+from riftx.security import DeploymentProfileError
+
+_RUNNER_BOOTSTRAP_CANARY = "synthetic-runner-bootstrap-canary-never-log"
 
 
 def write_yaml(path: Path, payload: dict[str, object]) -> None:
@@ -67,16 +74,17 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
             "RIFTX_TEMPORAL_TLS_CLIENT_CERT_PATH": "tls/client-cert.pem",
             "RIFTX_TEMPORAL_TLS_CLIENT_PRIVATE_KEY_PATH": "tls/client-key.pem",
             "RIFTX_TEMPORAL_API_KEY": "temporal-secret-from-env",
-            "RIFTX_CORS_ORIGINS": "https://one.test, https://two.test",
-            "RIFTX_RUNNER_REGISTRATION_TOKEN": "from-secret-env",
+            "RIFTX_CORS_ORIGINS": "http://127.0.0.1:3000, http://localhost:4000",
+            "RIFTX_RUNNER_REGISTRATION_TOKEN": _RUNNER_BOOTSTRAP_CANARY,
             "RIFTX_REQUIRE_CONTAINMENT": "false",
             "RIFTX_PAYLOAD_UID": "65532",
             "RIFTX_PAYLOAD_GID": "65533",
             "RIFTX_MODELS_CONFIG": "custom-models.yaml",
             "RIFTX_MODEL_SECRETS": "private/model-secrets.json",
             "RIFTX_MODEL_PROFILE": "fast",
-            "RIFTX_ADMIN_TOKEN": "admin-secret",
-            "RIFTX_TRUST_PROXY_AUTH": "true",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_TRUST_PROXY_AUTH": "false",
         },
     )
 
@@ -101,8 +109,19 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert "tls/client-key.pem" not in repr(config)
     assert "tls/client-key.pem" not in repr(settings)
     assert "tls/client-key.pem" not in str(config.model_dump(mode="python"))
-    assert settings.cors_origins == ("https://one.test", "https://two.test")
-    assert settings.runner_registration_token == "from-secret-env"
+    assert settings.cors_origins == (
+        "http://127.0.0.1:3000",
+        "http://localhost:4000",
+    )
+    assert config.runner.registration_token == _RUNNER_BOOTSTRAP_CANARY
+    assert settings.runner_registration_token == _RUNNER_BOOTSTRAP_CANARY
+    runner_dump = config.model_dump(mode="python")["runner"]
+    assert isinstance(runner_dump, dict)
+    assert "registration_token" not in runner_dump
+    assert _RUNNER_BOOTSTRAP_CANARY not in config.model_dump_json()
+    assert _RUNNER_BOOTSTRAP_CANARY not in repr(config.runner)
+    assert _RUNNER_BOOTSTRAP_CANARY not in repr(config)
+    assert _RUNNER_BOOTSTRAP_CANARY not in repr(settings)
     assert config.execution.require_containment is False
     assert settings.require_containment is False
     assert config.execution.payload_uid == 65532
@@ -112,15 +131,103 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert settings.models_config_path == Path("custom-models.yaml")
     assert settings.model_secrets_path == Path("private/model-secrets.json")
     assert settings.model_profile_override == "fast"
-    assert settings.admin_token == "admin-secret"
-    assert config.security.trust_proxy_auth is True
+    assert settings.admin_token == "test-only-admin-operator-token-0002"
+    assert config.security.trust_proxy_auth is False
+    assert settings.trust_profile.value == "local_single_operator"
+
+
+def test_runner_bootstrap_canary_reaches_auth_boundary_without_repr_or_error_leak(
+    tmp_path: Path,
+) -> None:
+    config = load_riftx_config(
+        system_path=tmp_path / "missing-system.yaml",
+        user_path=tmp_path / "missing-user.yaml",
+        environment={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+            "RIFTX_RUNNER_REGISTRATION_TOKEN": _RUNNER_BOOTSTRAP_CANARY,
+        },
+    )
+    settings = APISettings.from_config(config)
+    assert settings.runner_registration_token == _RUNNER_BOOTSTRAP_CANARY
+
+    service = RunnerControlService(
+        credentials=object(),  # type: ignore[arg-type]
+        commands=object(),  # type: ignore[arg-type]
+        nodes=object(),  # type: ignore[arg-type]
+        executions=object(),  # type: ignore[arg-type]
+        paths=RunnerPaths(tmp_path / "runner"),
+        registration_token=settings.runner_registration_token,
+    )
+    service.authenticate_bootstrap(_RUNNER_BOOTSTRAP_CANARY)
+    with pytest.raises(AuthenticationError) as captured:
+        service.authenticate_bootstrap("synthetic-wrong-bootstrap-token")
+
+    assert captured.value.code == "runner_registration_denied"
+    assert _RUNNER_BOOTSTRAP_CANARY not in repr(captured.value)
+
+    daemon_config = RunnerDaemonConfig(
+        server_url="http://127.0.0.1:8787",
+        node_id="runner-canary",
+        name="Runner Canary",
+        state_path=tmp_path / "runner-state",
+        registration_token=_RUNNER_BOOTSTRAP_CANARY,
+    )
+    assert daemon_config.registration_token == _RUNNER_BOOTSTRAP_CANARY
+    assert _RUNNER_BOOTSTRAP_CANARY not in repr(daemon_config)
+
+    with pytest.raises(DeploymentProfileError) as weak_service:
+        RunnerControlService(
+            credentials=object(),  # type: ignore[arg-type]
+            commands=object(),  # type: ignore[arg-type]
+            nodes=object(),  # type: ignore[arg-type]
+            executions=object(),  # type: ignore[arg-type]
+            paths=RunnerPaths(tmp_path / "weak-runner"),
+            registration_token="weak-bootstrap-token",
+        )
+    assert weak_service.value.code == "runner_registration_credential_weak"
+
+
+@pytest.mark.parametrize("credential", ["", "r" * 31, " " * 32, "引" * 32])
+def test_runner_config_rejects_weak_registration_credential_without_echo(
+    tmp_path: Path,
+    credential: str,
+) -> None:
+    with pytest.raises(RiftXConfigError) as captured:
+        load_riftx_config(
+            system_path=tmp_path / "missing-system.yaml",
+            user_path=tmp_path / "missing-user.yaml",
+            environment={"RIFTX_RUNNER_REGISTRATION_TOKEN": credential},
+        )
+
+    assert "runner_registration_credential_weak" in str(captured.value)
+    assert "至少包含 32 个" in str(captured.value)
+    if credential:
+        assert credential not in str(captured.value)
+
+
+def test_runner_daemon_config_rejects_weak_registration_credential() -> None:
+    with pytest.raises(DeploymentProfileError) as captured:
+        RunnerDaemonConfig(
+            server_url="http://127.0.0.1:8787",
+            node_id="runner-weak",
+            name="Runner Weak",
+            state_path=Path("runner-state"),
+            registration_token="r" * 31,
+        )
+
+    assert captured.value.code == "runner_registration_credential_weak"
+    assert "r" * 31 not in repr(captured.value)
 
 
 def test_runtime_model_paths_default_to_local_non_example_files(tmp_path: Path) -> None:
     config = load_riftx_config(
         system_path=tmp_path / "missing-system.yaml",
         user_path=tmp_path / "missing-user.yaml",
-        environment={},
+        environment={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+        },
     )
 
     settings = APISettings.from_config(config)
@@ -136,7 +243,10 @@ def test_runtime_tool_path_defaults_to_local_non_example_file(tmp_path: Path) ->
     config = load_riftx_config(
         system_path=tmp_path / "missing-system.yaml",
         user_path=tmp_path / "missing-user.yaml",
-        environment={},
+        environment={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+        },
     )
 
     settings = APISettings.from_config(config)
@@ -149,7 +259,10 @@ def test_kernel_containment_is_required_by_default(tmp_path: Path) -> None:
     config = load_riftx_config(
         system_path=tmp_path / "missing-system.yaml",
         user_path=tmp_path / "missing-user.yaml",
-        environment={},
+        environment={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+        },
     )
 
     settings = APISettings.from_config(config)
@@ -319,6 +432,9 @@ def test_example_runtime_config_is_valid(tmp_path: Path) -> None:
     assert config.tools.path == Path("configs/tools.yaml")
     assert config.models.path == Path("configs/models.yaml")
     assert config.models.secrets_path == Path(".riftx/secrets/models.json")
+    assert config.security.trust_profile.value == "local_single_operator"
+    assert config.security.local_principal_path == Path(".riftx/secrets/local-principal.json")
+    assert config.security.trust_proxy_auth is False
     assert config.mcp.max_concurrent_per_server == 2
     assert config.mcp.max_concurrent_total == 16
     assert config.mcp.circuit_breaker.failure_threshold == 3

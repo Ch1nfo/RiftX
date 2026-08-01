@@ -44,3 +44,11 @@ class ServiceUnavailableError(ApplicationServiceError):
 
 class AuthenticationError(ApplicationServiceError):
     """Runner or registration credentials were missing or invalid."""
+
+
+class AuthorizationError(ApplicationServiceError):
+    """An authenticated principal lacks a required server-owned capability."""
+
+
+class ResourceNotAccessibleError(ApplicationServiceError):
+    """A resource is absent or not accessible without revealing which case applies."""

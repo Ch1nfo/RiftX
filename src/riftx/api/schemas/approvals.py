@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from riftx.domain import Approval, ApprovalStatus
 
@@ -32,6 +32,7 @@ class ApprovalListResponse(BaseModel):
 
 
 class ApprovalDecisionRequest(BaseModel):
-    decided_by: str = Field(default="local-user", min_length=1, max_length=255)
+    model_config = ConfigDict(extra="forbid")
+
     reason: str | None = Field(default=None, max_length=4000)
     approve_for_run: bool = False

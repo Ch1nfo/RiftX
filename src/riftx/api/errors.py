@@ -14,8 +14,10 @@ from fastapi.responses import JSONResponse
 from riftx.application.errors import (
     ApplicationConflictError,
     AuthenticationError,
+    AuthorizationError,
     EntityNotFoundError,
     RepositoryConflictError,
+    ResourceNotAccessibleError,
     ServiceUnavailableError,
 )
 from riftx.domain import InvalidStateTransitionError
@@ -46,6 +48,8 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)
     app.add_exception_handler(ApplicationConflictError, _handle_application_conflict)
     app.add_exception_handler(AuthenticationError, _handle_authentication)
+    app.add_exception_handler(AuthorizationError, _handle_authorization)
+    app.add_exception_handler(ResourceNotAccessibleError, _handle_resource_not_accessible)
     app.add_exception_handler(RepositoryConflictError, _handle_repository_conflict)
     app.add_exception_handler(ServiceUnavailableError, _handle_service_unavailable)
     app.add_exception_handler(InvalidStateTransitionError, _handle_invalid_transition)
@@ -73,6 +77,16 @@ async def _handle_not_found(_: Request, exc: Exception) -> JSONResponse:
 async def _handle_authentication(_: Request, exc: Exception) -> JSONResponse:
     error = _expect(exc, AuthenticationError)
     return _response(401, error.code, error.message, error.details)
+
+
+async def _handle_authorization(_: Request, exc: Exception) -> JSONResponse:
+    error = _expect(exc, AuthorizationError)
+    return _response(403, error.code, error.message, error.details)
+
+
+async def _handle_resource_not_accessible(_: Request, exc: Exception) -> JSONResponse:
+    error = _expect(exc, ResourceNotAccessibleError)
+    return _response(404, error.code, error.message, error.details)
 
 
 async def _handle_application_conflict(_: Request, exc: Exception) -> JSONResponse:

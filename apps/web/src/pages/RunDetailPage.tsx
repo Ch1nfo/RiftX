@@ -31,7 +31,11 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
-import { api, RiftXAPIError } from "../api/client";
+import {
+  api,
+  AUTHENTICATED_DOWNLOAD_LIMIT_MIB,
+  RiftXAPIError,
+} from "../api/client";
 import type {
   Approval,
   Artifact,
@@ -1097,6 +1101,7 @@ function Findings({
 
 function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
   const { t } = useI18n();
+  const download = useAuthenticatedDownload();
   if (!evidence.length) return null;
   return (
     <div className="finding-evidence-list">
@@ -1112,18 +1117,22 @@ function FindingEvidenceList({ evidence }: { evidence: FindingEvidence[] }) {
           <p>{item.description || t("No evidence description.")}</p>
           <div className="finding-evidence-links">
             {item.artifact_id ? (
-              <a
-                href={api.artifactContentUrlById(item.artifact_id)}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                className="link-button"
+                disabled={download.isPending}
+                onClick={() => void download.start(
+                  api.artifactContentUrlById(item.artifact_id!),
+                )}
+                type="button"
               >
                 <ExternalLink size={12} /> {t("Artifact")} {item.artifact_id}
-              </a>
+              </button>
             ) : null}
             {item.execution_id ? <code>{t("Execution")} {item.execution_id}</code> : null}
           </div>
         </article>
       ))}
+      {download.error ? <ErrorState error={download.error} /> : null}
     </div>
   );
 }
@@ -1359,6 +1368,7 @@ function Artifacts({
   controls: ReturnType<typeof useArtifactControl>;
 }) {
   const { t } = useI18n();
+  const download = useAuthenticatedDownload();
   const [sourcePath, setSourcePath] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -1452,17 +1462,22 @@ function Artifacts({
                   {artifact.execution_id ? <span>exec / {artifact.execution_id}</span> : null}
                 </div>
               </div>
-              <a
+              <button
                 className="secondary-button artifact-download"
-                href={api.artifactContentUrl(artifact)}
-                download={artifact.name}
+                disabled={download.isPending}
+                onClick={() => void download.start(
+                  api.artifactContentUrl(artifact),
+                  artifact.name,
+                )}
+                type="button"
               >
                 <Download size={15} /> {t("Download")}
-              </a>
+              </button>
             </article>
           ))}
         </div>
       ) : null}
+      {download.error ? <ErrorState error={download.error} /> : null}
     </div>
   );
 }
@@ -1607,6 +1622,7 @@ function Reports({
   controls: ReturnType<typeof useReportControl>;
 }) {
   const { language, t } = useI18n();
+  const download = useAuthenticatedDownload();
   if (loading) return <LoadingState label="Loading generated reports" />;
   const grouped = [...reports].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
@@ -1652,20 +1668,53 @@ function Reports({
               <p>{t(report.finding_ids.length === 1 ? "{count} linked finding" : "{count} linked findings", { count: report.finding_ids.length })}</p>
               <code>{report.id}</code>
               <span>{formatTimestamp(report.created_at, language)}</span>
-              <a
+              <button
                 className="secondary-button report-open-button"
-                href={api.artifactContentUrl({ content_url: report.content_url })}
-                target="_blank"
-                rel="noreferrer"
+                disabled={download.isPending}
+                onClick={() => void download.start(
+                  api.artifactContentUrl({ content_url: report.content_url }),
+                )}
+                type="button"
               >
                 <ExternalLink size={14} /> {t("Open report")}
-              </a>
+              </button>
             </article>
           ))}
         </div>
       )}
+      {download.error ? <ErrorState error={download.error} /> : null}
     </div>
   );
+}
+
+function useAuthenticatedDownload() {
+  const { t } = useI18n();
+  const [error, setError] = useState<Error | null>(null);
+  const [isPending, setIsPending] = useState(false);
+
+  async function start(path: string, filename?: string) {
+    setError(null);
+    setIsPending(true);
+    try {
+      await api.downloadAuthenticatedUrl(path, filename);
+    } catch (cause) {
+      const message =
+        cause instanceof RiftXAPIError && cause.code === "download_too_large"
+          ? t("Download blocked because it exceeds the {size} safety limit.", {
+              size: `${AUTHENTICATED_DOWNLOAD_LIMIT_MIB} MiB`,
+            })
+          : t("Download failed. Please try again.");
+      setError(
+        cause instanceof RiftXAPIError
+          ? new RiftXAPIError(cause.status, cause.code, message, cause.details)
+          : new Error(message),
+      );
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return { error, isPending, start };
 }
 
 function EventIcon({ eventType }: { eventType: string }) {

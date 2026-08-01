@@ -18,7 +18,7 @@ from riftx.context import (
     ContextManifest,
     ManifestingContextCompiler,
 )
-from riftx.domain import Engagement, Objective, Run
+from riftx.domain import Engagement, Objective, Run, TrustProfile
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentSessionRepository,
@@ -227,10 +227,18 @@ async def test_context_inspector_api_and_cli_output(
         )
     )
     control_plane = SimpleNamespace(
-        settings=APISettings(web_dist_path=tmp_path / "missing-web"),
+        settings=APISettings(
+            trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+            local_principal_path=tmp_path / "local-principal.json",
+            admin_token="test-only-local-operator-token-0001",
+            web_dist_path=tmp_path / "missing-web",
+        ),
         context_service=context_harness.service,
     )
-    with TestClient(create_app(control_plane=control_plane)) as client:
+    with TestClient(
+        create_app(control_plane=control_plane),
+        headers={"Authorization": "Bearer test-only-local-operator-token-0001"},
+    ) as client:
         session_response = client.get("/api/v1/sessions/session-1/context")
         detail_response = client.get("/api/v1/context-compilations/compilation-1")
         run_response = client.get("/api/v1/runs/run-1/context")

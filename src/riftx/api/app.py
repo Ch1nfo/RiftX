@@ -12,8 +12,10 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
+from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
+
 from .errors import APIError, install_error_handlers
-from .policy import apply_route_policy_inventory
+from .policy import apply_route_policy_inventory, install_local_operator_dependencies
 from .routes import (
     approvals_router,
     artifacts_router,
@@ -30,6 +32,7 @@ from .routes import (
     reports_router,
     runner_control_router,
     runs_router,
+    security_router,
     terminals_router,
     tools_router,
 )
@@ -56,9 +59,17 @@ def create_app(
     control_plane: ControlPlane | None = None,
     settings: APISettings | None = None,
 ) -> FastAPI:
+    if control_plane is not None and settings is not None:
+        raise DeploymentProfileError(
+            "control_plane_settings_ambiguous",
+            "Pass either a ControlPlane or APISettings to create_app, not both",
+            "create_app 只能传入 ControlPlane 或 APISettings，不能同时传入",
+        )
     configured_settings = settings or (
         control_plane.settings if control_plane is not None else APISettings.from_environment()
     )
+    configured_settings.validate_api_security_boundary()
+    local_operator_security = configured_settings.create_local_operator_security()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -76,6 +87,8 @@ def create_app(
         version="2.0.0a0",
         lifespan=lifespan,
     )
+    app.state.local_operator_security = local_operator_security
+    app.state.local_object_authorizer = LocalObjectAuthorizer(local_operator_security)
     install_error_handlers(app)
     if configured_settings.cors_origins:
         app.add_middleware(
@@ -101,10 +114,14 @@ def create_app(
     app.include_router(terminals_router, prefix="/api/v1")
     app.include_router(browser_router, prefix="/api/v1")
     app.include_router(connectors_router, prefix="/api/v1")
+    app.include_router(security_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "trust_profile": local_operator_security.principal.profile.value,
+        }
 
     @app.api_route(
         "/api/{unmatched_path:path}",
@@ -118,6 +135,7 @@ def create_app(
             f"API route '/api/{unmatched_path}' was not found",
         )
 
+    install_local_operator_dependencies(app)
     apply_route_policy_inventory(app)
 
     web_dist = configured_settings.web_dist_path
@@ -125,6 +143,3 @@ def create_app(
         app.mount("/", SPAStaticFiles(directory=web_dist, html=True), name="web")
 
     return app
-
-
-app = create_app()

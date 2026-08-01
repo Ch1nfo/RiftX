@@ -115,7 +115,10 @@ export function TerminalPanel({ runId, initialSessionId }: TerminalPanelProps) {
 
     setConnection("connecting");
     setSocketError(null);
-    socket = new WebSocket(api.terminalWebSocketUrl(sessionId, cursor));
+    socket = new WebSocket(
+      api.terminalWebSocketUrl(sessionId, cursor),
+      api.terminalWebSocketProtocols(),
+    );
     socketRef.current = socket;
     socket.onopen = () => {
       if (disposed) return;

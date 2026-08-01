@@ -23,11 +23,18 @@ from riftx.application.services import (
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
-from riftx.domain import RunnerPrincipal
+from riftx.domain import LocalPrincipal, RunnerPrincipal
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
 
-from .auth import bearer_token, require_admin_token
+from .auth import (
+    authorize_local_operator as authorize_local_operator,
+)
+from .auth import (
+    bearer_token,
+    get_authenticated_local_principal,
+    require_admin_token,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +121,8 @@ def get_model_profile_service(request: Request) -> ModelProfileApplicationServic
 def authorize_admin(
     request: Request,
     authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    require_admin_token(request, authorization)
+) -> LocalPrincipal:
+    return require_admin_token(request, authorization)
 
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
@@ -160,6 +167,10 @@ RuntimeObservabilityServiceDependency = Annotated[
 ModelProfileServiceDependency = Annotated[
     ModelProfileApplicationService,
     Depends(get_model_profile_service),
+]
+LocalPrincipalDependency = Annotated[
+    LocalPrincipal,
+    Depends(get_authenticated_local_principal),
 ]
 
 
@@ -227,7 +238,7 @@ def _require_matching_runner_principal(
 
 
 AdminDependency = Annotated[
-    None,
+    LocalPrincipal,
     Depends(authorize_admin),
 ]
 ModelProfileAdminDependency = AdminDependency

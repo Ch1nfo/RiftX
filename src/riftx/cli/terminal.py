@@ -44,7 +44,12 @@ def attach_terminal(
     output = _binary_output(sys.stdout)
     error_output = console
 
-    with connect(url, open_timeout=10, close_timeout=2) as websocket:
+    with connect(
+        url,
+        open_timeout=10,
+        close_timeout=2,
+        additional_headers=client.local_operator_headers(),
+    ) as websocket:
         if take_over:
             websocket.send(json.dumps({"type": "takeover"}))
         _send_resize(websocket)
@@ -95,7 +100,12 @@ def control_terminal(
 
     if action not in {"takeover", "release"}:
         raise ValueError(tr("unsupported terminal control action {action}", action=repr(action)))
-    with connect(client.terminal_websocket_url(session_id), open_timeout=10, close_timeout=2) as ws:
+    with connect(
+        client.terminal_websocket_url(session_id),
+        open_timeout=10,
+        close_timeout=2,
+        additional_headers=client.local_operator_headers(),
+    ) as ws:
         ws.send(json.dumps({"type": action}))
         while True:
             raw = ws.recv()

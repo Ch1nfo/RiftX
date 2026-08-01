@@ -14,6 +14,7 @@ from riftx.application.errors import (
 )
 from riftx.domain import DomainError, TerminalOwner, TerminalStatus
 
+from ..auth import accept_local_operator_websocket
 from ..dependencies import TerminalServiceDependency
 from ..schemas import ErrorResponse, TerminalCreateRequest, TerminalResponse
 
@@ -69,7 +70,7 @@ async def close_terminal(
 async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     service = websocket.app.state.control_plane.terminal_service
     cursor = _cursor(websocket.query_params.get("cursor"))
-    await websocket.accept()
+    await accept_local_operator_websocket(websocket)
     send_lock = asyncio.Lock()
 
     async def send(payload: dict[str, object]) -> None:

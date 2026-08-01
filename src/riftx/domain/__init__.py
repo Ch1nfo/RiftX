@@ -34,6 +34,7 @@ from .enums import (
     MessageType,
     MessageVisibility,
     NodeStatus,
+    OperatorCapability,
     ReportFormat,
     RunnerCommandKind,
     RunnerCommandStatus,
@@ -41,6 +42,7 @@ from .enums import (
     TerminalOwner,
     TerminalStatus,
     ToolAvailability,
+    TrustProfile,
 )
 from .errors import DomainError, InvalidStateTransitionError
 from .event import RunEvent
@@ -48,6 +50,7 @@ from .execution import AgentStep, Execution, TerminalSession, TerminalTakeoverSu
 from .finding import Finding, FindingEvidence
 from .message import AgentCheckpoint, AgentMessage, TranscriptMessageDraft
 from .node import Node
+from .principal import LocalPrincipal
 from .report import Report
 from .run import EntryPoint, Objective, Run, Scope, SuccessCriterion
 from .runner import RunnerCommand, RunnerCredential, RunnerPrincipal
@@ -94,8 +97,10 @@ __all__ = [
     "MessageRole",
     "MessageType",
     "MessageVisibility",
+    "LocalPrincipal",
     "Node",
     "NodeStatus",
+    "OperatorCapability",
     "NetworkEventSummary",
     "Objective",
     "Report",
@@ -120,5 +125,6 @@ __all__ = [
     "ToolAvailability",
     "ToolCall",
     "ToolState",
+    "TrustProfile",
     "requires_approval",
 ]

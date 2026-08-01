@@ -3,6 +3,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { clearLocalOperatorToken, setLocalOperatorToken } from "../api/client";
 import type { RunEvent, RunEventList } from "../api/types";
 import { queryKeys } from "./queries";
 import { consumeServerSentEvents, useEventStream } from "./useEventStream";
@@ -56,12 +57,14 @@ function wrapper(queryClient: QueryClient) {
 }
 
 afterEach(() => {
+  clearLocalOperatorToken();
   cleanup();
   vi.unstubAllGlobals();
 });
 
 describe("useEventStream", () => {
   it("resumes from cache and ingests named stop events without an event registry", async () => {
+    setLocalOperatorToken("stream-memory-secret");
     const queryClient = new QueryClient();
     queryClient.setQueryData<RunEventList>(queryKeys.events("run-1"), {
       after_sequence: 0,
@@ -89,6 +92,15 @@ describe("useEventStream", () => {
       ).toHaveLength(5),
     );
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("after_sequence=1");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer stream-memory-secret",
+        }),
+      }),
+    );
     expect(
       queryClient
         .getQueryData<RunEventList>(queryKeys.events("run-1"))
@@ -105,6 +117,7 @@ describe("useEventStream", () => {
   });
 
   it("resets the stream cursor and aborts the old request when navigating between runs", async () => {
+    setLocalOperatorToken("run-switch-memory-secret");
     const queryClient = new QueryClient();
     queryClient.setQueryData<RunEventList>(queryKeys.events("run-a"), {
       after_sequence: 0,
@@ -124,11 +137,29 @@ describe("useEventStream", () => {
     const rendered = render(<Probe runId="run-a" />, { wrapper: wrapper(queryClient) });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("after_sequence=100");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer run-switch-memory-secret",
+        }),
+      }),
+    );
 
     rendered.rerender(<Probe runId="run-b" />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(signals[0]?.aborted).toBe(true);
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("after_sequence=2");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer run-switch-memory-secret",
+        }),
+      }),
+    );
 
     rendered.unmount();
     expect(signals[1]?.aborted).toBe(true);

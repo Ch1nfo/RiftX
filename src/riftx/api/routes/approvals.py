@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query
 from riftx.application.services import DecideApproval
 from riftx.domain import ApprovalStatus
 
-from ..dependencies import ApprovalServiceDependency
+from ..dependencies import ApprovalServiceDependency, LocalPrincipalDependency
 from ..schemas import (
     ApprovalDecisionRequest,
     ApprovalListResponse,
@@ -50,11 +50,12 @@ async def approve(
     approval_id: str,
     request: ApprovalDecisionRequest,
     service: ApprovalServiceDependency,
+    principal: LocalPrincipalDependency,
 ) -> ApprovalResponse:
     approval = await service.approve(
         approval_id,
         DecideApproval(
-            decided_by=request.decided_by,
+            decided_by=principal.id,
             reason=request.reason,
             approve_for_run=request.approve_for_run,
         ),
@@ -71,11 +72,12 @@ async def reject(
     approval_id: str,
     request: ApprovalDecisionRequest,
     service: ApprovalServiceDependency,
+    principal: LocalPrincipalDependency,
 ) -> ApprovalResponse:
     approval = await service.reject(
         approval_id,
         DecideApproval(
-            decided_by=request.decided_by,
+            decided_by=principal.id,
             reason=request.reason,
             approve_for_run=request.approve_for_run,
         ),

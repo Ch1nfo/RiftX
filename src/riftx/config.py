@@ -8,10 +8,22 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from riftx.domain import ApprovalMode
+from riftx.domain import ApprovalMode, OperatorCapability, TrustProfile
 from riftx.executors import EnvironmentMode
+from riftx.security import (
+    DeploymentProfileError,
+    validate_runner_registration_credential,
+)
 from riftx.tools import ExecutionPolicy
 
 
@@ -119,10 +131,18 @@ class RunnerConfig(_ConfigModel):
     node_id: str = "local"
     state_path: Path = Path(".riftx/runner")
     credential_path: Path = Path(".riftx/secrets/runner-credentials.json")
-    registration_token: str | None = None
+    registration_token: str | None = Field(default=None, exclude=True, repr=False)
     command_lease_seconds: float = Field(default=30.0, gt=0)
     node_offline_after_seconds: float = Field(default=30.0, gt=0)
     node_lost_after_seconds: float = Field(default=300.0, gt=0)
+
+    @field_validator("registration_token")
+    @classmethod
+    def validate_registration_token(cls, value: str | None) -> str | None:
+        try:
+            return validate_runner_registration_credential(value)
+        except DeploymentProfileError as exc:
+            raise ValueError(str(exc)) from None
 
 
 class ExecutionConfig(_ConfigModel):
@@ -179,7 +199,12 @@ class ModelsRuntimeConfig(_ConfigModel):
 
 
 class SecurityConfig(_ConfigModel):
-    admin_token: str | None = None
+    trust_profile: TrustProfile | None = None
+    local_principal_path: Path = Path(".riftx/secrets/local-principal.json")
+    local_operator_capabilities: frozenset[OperatorCapability] = Field(
+        default_factory=lambda: frozenset(OperatorCapability)
+    )
+    admin_token: str | None = Field(default=None, exclude=True, repr=False)
     trust_proxy_auth: bool = False
 
 
@@ -273,6 +298,12 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_MODEL_SECRETS": ("models", "secrets_path"),
     "RIFTX_MODEL_PROFILE": ("models", "profile"),
     "RIFTX_ADMIN_TOKEN": ("security", "admin_token"),
+    "RIFTX_TRUST_PROFILE": ("security", "trust_profile"),
+    "RIFTX_LOCAL_PRINCIPAL_PATH": ("security", "local_principal_path"),
+    "RIFTX_LOCAL_OPERATOR_CAPABILITIES": (
+        "security",
+        "local_operator_capabilities",
+    ),
     "RIFTX_TRUST_PROXY_AUTH": ("security", "trust_proxy_auth"),
     "RIFTX_AGENT_MAX_HISTORY_ITEMS": ("agent", "max_history_items"),
     "RIFTX_AGENT_MAX_TURNS": ("agent", "max_turns"),
@@ -373,6 +404,8 @@ def _environment_layer(environment: Mapping[str, str]) -> dict[str, Any]:
             continue
         value: object = raw
         if name == "RIFTX_CORS_ORIGINS":
+            value = [item.strip() for item in raw.split(",") if item.strip()]
+        elif name == "RIFTX_LOCAL_OPERATOR_CAPABILITIES":
             value = [item.strip() for item in raw.split(",") if item.strip()]
         _set_nested(layer, path, value)
     return layer

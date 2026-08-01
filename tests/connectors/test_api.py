@@ -12,7 +12,7 @@ from riftx.connectors import (
     ConnectorSource,
     ConnectorSubmission,
 )
-from riftx.domain import Objective, Run, Scope
+from riftx.domain import Objective, Run, Scope, TrustProfile
 
 
 class FakeRuns:
@@ -71,6 +71,9 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
     runs = FakeRuns()
     connector = FakeConnector()
     settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "local-principal.json",
+        admin_token="test-only-local-operator-token-0001",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'unused.db'}",
         web_dist_path=tmp_path / "web",
         cors_origins=(),
@@ -90,7 +93,10 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         "response_status": 200,
     }
 
-    with TestClient(app) as client:
+    with TestClient(
+        app,
+        headers={"Authorization": "Bearer test-only-local-operator-token-0001"},
+    ) as client:
         existing = client.post(
             "/api/v1/connectors/submissions",
             json={"run_id": "run-1", "capture": capture},
