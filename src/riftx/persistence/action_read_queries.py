@@ -112,9 +112,10 @@ _LIST_EXECUTION_KEYS = _EXECUTION_SUMMARY_KEYS | frozenset(
         "execution_started_at",
         "execution_finished_at",
         "execution_physical_stop_confirmed_at",
+        "execution_node_id",
     }
 )
-_DETAIL_EXECUTION_KEYS = _LIST_EXECUTION_KEYS | frozenset({"execution_node_id"})
+_DETAIL_EXECUTION_KEYS = _LIST_EXECUTION_KEYS
 
 _ARTIFACT_KEYS = frozenset(
     {
@@ -427,9 +428,8 @@ def _execution_query(
         ExecutionRecord.finished_at.label("execution_finished_at"),
         ExecutionRecord.physical_stop_confirmed_at.label("execution_physical_stop_confirmed_at"),
         ExecutionRecord.updated_at.label("execution_updated_at"),
+        ExecutionRecord.node_id.label("execution_node_id"),
     )
-    if detail:
-        exact_columns += (ExecutionRecord.node_id.label("execution_node_id"),)
     exact_selected = (
         select(
             roots.c.action_id,
@@ -603,9 +603,8 @@ def _execution_query(
         bounded.c.execution_started_at,
         bounded.c.execution_finished_at,
         bounded.c.execution_physical_stop_confirmed_at,
+        bounded.c.execution_node_id,
     )
-    if detail:
-        columns += (bounded.c.execution_node_id,)
     return (
         select(*columns)
         .select_from(summary)

@@ -283,6 +283,7 @@ def _list_aggregate(aggregate: ActionAggregateRead) -> ActionListAggregateRead:
             ActionListExecutionRead(
                 execution_id=execution.execution_id,
                 attempt_group=execution.attempt_group,
+                node_id=execution.node_id,
                 status=execution.status,
                 created_at=execution.created_at,
                 started_at=execution.started_at,
@@ -516,6 +517,8 @@ async def test_action_list_contract_cannot_carry_detail_text() -> None:
     assert "error_summary" not in serialized
     assert '"events"' not in serialized
     assert view.items[0].attempts[0].attempt_group == "initial"
+    assert view.items[0].attempts[0].node_id == "local"
+    assert view.items[0].attempts[0].exit_code is None
     assert view.items[0].attempt_coverage.truncated is False
     assert view.items[0].artifact_ids == ("artifact-1",)
 

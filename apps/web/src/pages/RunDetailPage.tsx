@@ -27,9 +27,15 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
   api,
@@ -39,7 +45,6 @@ import {
 import type {
   Approval,
   Artifact,
-  Execution,
   Finding,
   FindingEvidence,
   Report,
@@ -56,17 +61,20 @@ import {
   useApprovals,
   useArtifactControl,
   useArtifacts,
-  useExecutions,
+  flattenRunActionPages,
   useFindingControl,
   useFindings,
   useReportControl,
   useReports,
   useRun,
+  useRunAction,
+  useRunActions,
   useRunControl,
   useRunEvents,
 } from "../hooks/queries";
 import { useEventStream } from "../hooks/useEventStream";
 import { useI18n, type Language } from "../i18n";
+import { ActionInspector, ActionTimeline } from "./RunActionTimeline";
 import {
   reduceRunEvents,
   type ConversationMessage,
@@ -76,7 +84,7 @@ import {
 type DetailTab =
   | "overview"
   | "agent"
-  | "tool-calls"
+  | "actions"
   | "timeline"
   | "raw-events"
   | "approvals"
@@ -97,6 +105,12 @@ type MessageDraft = {
 };
 
 type MessageSubmissionToken = MessageRetry & {
+  runId: string;
+};
+
+type ActionAuthorizationLatch = {
+  error: RiftXAPIError;
+  listDataUpdatedAt: number;
   runId: string;
 };
 
@@ -166,12 +180,32 @@ function messageDraftForRun(runId: string): MessageDraft {
   };
 }
 
+function actionAuthorizationFailure(...errors: unknown[]): RiftXAPIError | null {
+  for (const error of errors) {
+    if (error instanceof RiftXAPIError && [401, 403].includes(error.status)) {
+      return error;
+    }
+  }
+  return null;
+}
+
 export function RunDetailPage() {
   const { language, t } = useI18n();
   const { runId = "" } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const actionParam = searchParams.get("action") ?? "";
+  const [selectionRoute, setSelectionRoute] = useState(() => ({
+    actionId: actionParam,
+    runId,
+  }));
+  const selectedActionId =
+    selectionRoute.runId === runId && selectionRoute.actionId === actionParam
+      ? actionParam || null
+      : null;
   const run = useRun(runId);
   const events = useRunEvents(runId);
-  const executions = useExecutions(runId);
+  const actions = useRunActions(runId);
+  const selectedAction = useRunAction(runId, selectedActionId ?? "");
   const findings = useFindings(runId);
   const artifacts = useArtifacts(runId);
   const approvals = useApprovals(runId);
@@ -181,14 +215,75 @@ export function RunDetailPage() {
   const findingControls = useFindingControl(runId);
   const reportControls = useReportControl(runId);
   const controls = useRunControl(runId);
-  const [tab, setTab] = useState<DetailTab>("agent");
+  const eventStream = useEventStream(runId, events.isSuccess);
+  const [tab, setTab] = useState<DetailTab>(actionParam ? "actions" : "agent");
+  const [inspectorFocusKey, setInspectorFocusKey] = useState<string | null>(null);
+  const [actionAnnouncement, setActionAnnouncement] = useState("");
+  const [actionAuthorizationLatch, setActionAuthorizationLatch] =
+    useState<ActionAuthorizationLatch | null>(null);
   const [messageDraft, setMessageDraft] = useState<MessageDraft>(() =>
     messageDraftForRun(runId),
   );
   const currentRunIdRef = useRef(runId);
   const activeMessageSubmissionRef = useRef<MessageSubmissionToken | null>(null);
+  const actionTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const previousActionRouteRef = useRef({ actionId: actionParam, runId });
+  const actionRevisionRef = useRef({ revision: 0, runId });
+  const tabRefs = useRef(new Map<DetailTab, HTMLButtonElement>());
   currentRunIdRef.current = runId;
-  useEventStream(runId, events.isSuccess);
+
+  useEffect(() => {
+    const previous = previousActionRouteRef.current;
+    if (previous.runId === runId && previous.actionId && !actionParam) {
+      const trigger = actionTriggerRefs.current.get(previous.actionId);
+      const focusTarget = trigger?.isConnected
+        ? trigger
+        : tabRefs.current.get("actions");
+      window.setTimeout(() => focusTarget?.focus(), 0);
+    }
+    if (previous.runId !== runId) actionTriggerRefs.current.clear();
+    previousActionRouteRef.current = { actionId: actionParam, runId };
+    setSelectionRoute({ actionId: actionParam, runId });
+    if (actionParam) setTab("actions");
+  }, [actionParam, runId]);
+
+  const focusInspector =
+    selectedActionId !== null && inspectorFocusKey === `${runId}:${selectedActionId}`;
+  useEffect(() => {
+    if (focusInspector) setInspectorFocusKey(null);
+  }, [focusInspector]);
+
+  const actionRevision = eventStream?.actionUpdateRevision ?? 0;
+  useEffect(() => {
+    const previous = actionRevisionRef.current;
+    if (previous.runId !== runId) {
+      actionRevisionRef.current = { revision: actionRevision, runId };
+      setActionAnnouncement("");
+      return;
+    }
+    const count = actionRevision - previous.revision;
+    actionRevisionRef.current = { revision: actionRevision, runId };
+    if (count > 0) {
+      setActionAnnouncement(
+        t("Action data updated. Live revision {revision}.", {
+          revision: actionRevision,
+        }),
+      );
+    }
+  }, [actionRevision, runId, t]);
+
+  useEffect(() => {
+    if (!selectedActionId) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      setInspectorFocusKey(null);
+      setSelectionRoute({ actionId: "", runId });
+      setSearchParams({}, { replace: true });
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [runId, selectedActionId, setSearchParams]);
 
   useEffect(() => {
     setMessageDraft((current) =>
@@ -205,6 +300,49 @@ export function RunDetailPage() {
       : { runId, message: "", retry: null };
 
   const eventItems = events.data?.items ?? [];
+  const actionItems = flattenRunActionPages(actions.data?.pages);
+  const observedActionAuthorizationError = actionAuthorizationFailure(
+    eventStream?.error,
+    actions.error,
+    selectedAction.error,
+  );
+  useEffect(() => {
+    setActionAuthorizationLatch((current) => {
+      if (observedActionAuthorizationError) {
+        if (
+          current?.runId === runId &&
+          current.error === observedActionAuthorizationError
+        ) {
+          return current;
+        }
+        return {
+          error: observedActionAuthorizationError,
+          listDataUpdatedAt: actions.dataUpdatedAt,
+          runId,
+        };
+      }
+      if (!current) return current;
+      if (current.runId !== runId) return null;
+      if (
+        actions.isSuccess &&
+        actions.dataUpdatedAt > current.listDataUpdatedAt
+      ) {
+        return null;
+      }
+      return current;
+    });
+  }, [
+    actions.dataUpdatedAt,
+    actions.isSuccess,
+    observedActionAuthorizationError,
+    runId,
+  ]);
+  const actionAuthorizationError =
+    observedActionAuthorizationError ??
+    (actionAuthorizationLatch?.runId === runId
+      ? actionAuthorizationLatch.error
+      : null);
+  const visibleActionItems = actionAuthorizationError ? [] : actionItems;
   const eventProjection = reduceRunEvents(eventItems);
   const planEvent = [...eventItems]
     .reverse()
@@ -323,6 +461,53 @@ export function RunDetailPage() {
     controls.pause.isPending ||
     controls.resume.isPending ||
     controls.emergencyStop.isPending;
+  const detailTabs: Array<[DetailTab, string]> = [
+    ["overview", t("Overview")],
+    ["agent", t("Conversation")],
+    ["actions", `${t("Actions")} ${visibleActionItems.length}`],
+    ["timeline", `${t("Timeline")} ${eventProjection.highLevelTimeline.length}`],
+    ["raw-events", `${t("Raw events")} ${eventProjection.rawEvents.length}`],
+    ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
+    ["terminal", t("Terminal")],
+    ["artifacts", `${t("Artifacts")} ${artifacts.data?.items.length ?? 0}`],
+    ["findings", `${t("Findings")} ${findings.data?.items.length ?? 0}`],
+    ["report", `${t("Reports")} ${reports.data?.items.length ?? 0}`],
+  ];
+  const selectedActionData =
+    !actionAuthorizationError &&
+    selectedAction.data?.run_id === runId &&
+    selectedAction.data.action_id === selectedActionId
+      ? selectedAction.data
+      : undefined;
+
+  function selectAction(actionId: string, trigger: HTMLButtonElement) {
+    actionTriggerRefs.current.set(actionId, trigger);
+    setSelectionRoute({ actionId, runId });
+    setInspectorFocusKey(`${runId}:${actionId}`);
+    setTab("actions");
+    setSearchParams({ action: actionId });
+  }
+
+  function closeActionInspector() {
+    setInspectorFocusKey(null);
+    setSelectionRoute({ actionId: "", runId });
+    setSearchParams({}, { replace: true });
+  }
+
+  function moveTabFocus(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % detailTabs.length;
+    if (event.key === "ArrowLeft") {
+      nextIndex = (index - 1 + detailTabs.length) % detailTabs.length;
+    }
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = detailTabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = detailTabs[nextIndex]![0];
+    setTab(nextTab);
+    tabRefs.current.get(nextTab)?.focus();
+  }
 
   return (
     <div className="page-stack">
@@ -383,6 +568,28 @@ export function RunDetailPage() {
           }
         />
       ) : null}
+
+      {eventStream?.error ? <ErrorState error={eventStream.error} /> : null}
+      {actionAuthorizationError &&
+      actionAuthorizationError !== eventStream?.error &&
+      tab !== "actions" &&
+      !selectedActionId ? (
+        <ErrorState error={actionAuthorizationError} />
+      ) : null}
+      {eventStream?.stale ? (
+        <section className="stream-stale-alert" role="alert">
+          <AlertTriangle size={17} />
+          <span>{t("Live updates are stale while RiftX repairs the durable snapshots.")}</span>
+        </section>
+      ) : null}
+      <span
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {actionAnnouncement}
+      </span>
 
       {pendingApprovals.length ? (
         <button className="approval-alert" onClick={() => setTab("approvals")}>
@@ -453,34 +660,34 @@ export function RunDetailPage() {
 
       <div className="detail-layout">
         <section className="detail-main panel">
-          <div className="detail-tabs" role="tablist">
-            {(
-              [
-                ["overview", t("Overview")],
-                ["agent", t("Conversation")],
-                ["tool-calls", `${t("Tool Calls")} ${executions.data?.items.length ?? 0}`],
-                ["timeline", `${t("Timeline")} ${eventProjection.highLevelTimeline.length}`],
-                ["raw-events", `${t("Raw events")} ${eventProjection.rawEvents.length}`],
-                ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
-                ["terminal", t("Terminal")],
-                ["artifacts", `${t("Artifacts")} ${artifacts.data?.items.length ?? 0}`],
-                ["findings", `${t("Findings")} ${findings.data?.items.length ?? 0}`],
-                ["report", `${t("Reports")} ${reports.data?.items.length ?? 0}`],
-              ] as Array<[DetailTab, string]>
-            ).map(([value, label]) => (
+          <div className="detail-tabs" role="tablist" aria-label={t("Run detail views")}>
+            {detailTabs.map(([value, label], index) => (
               <button
                 key={value}
+                ref={(node) => {
+                  if (node) tabRefs.current.set(value, node);
+                  else tabRefs.current.delete(value);
+                }}
+                id={`run-detail-tab-${value}`}
                 className={tab === value ? "active" : ""}
                 onClick={() => setTab(value)}
+                onKeyDown={(event) => moveTabFocus(event, index)}
                 role="tab"
                 aria-selected={tab === value}
+                aria-controls="run-detail-panel"
+                tabIndex={tab === value ? 0 : -1}
               >
                 {label}
               </button>
             ))}
           </div>
 
-          <div className="detail-tab-content">
+          <div
+            className="detail-tab-content"
+            id="run-detail-panel"
+            role="tabpanel"
+            aria-labelledby={`run-detail-tab-${tab}`}
+          >
             {tab === "overview" ? (
               <RunOverview
                 successCriteria={run.data.success_criteria}
@@ -495,8 +702,21 @@ export function RunDetailPage() {
                 loading={events.isLoading}
               />
             ) : null}
-            {tab === "tool-calls" ? (
-              <ToolCalls executions={executions.data?.items ?? []} loading={executions.isLoading} />
+            {tab === "actions" ? (
+              <ActionTimeline
+                items={visibleActionItems}
+                loading={actions.isLoading}
+                error={
+                  actionAuthorizationError ??
+                  (actions.isFetchNextPageError ? null : actions.error)
+                }
+                paginationError={actions.isFetchNextPageError ? actions.error : null}
+                selectedActionId={selectedActionId}
+                hasMore={Boolean(actions.hasNextPage)}
+                loadingMore={actions.isFetchingNextPage}
+                onLoadMore={() => void actions.fetchNextPage()}
+                onSelect={selectAction}
+              />
             ) : null}
             {tab === "timeline" ? (
               <Timeline items={eventProjection.highLevelTimeline} loading={events.isLoading} />
@@ -587,6 +807,17 @@ export function RunDetailPage() {
         </section>
 
         <aside className="detail-sidebar">
+          {selectedActionId ? (
+            <ActionInspector
+              key={`${runId}:${selectedActionId}`}
+              actionId={selectedActionId}
+              action={selectedActionData}
+              loading={selectedAction.isLoading}
+              error={actionAuthorizationError ?? selectedAction.error}
+              focusOnOpen={focusInspector}
+              onClose={closeActionInspector}
+            />
+          ) : null}
           <article className="panel compact-panel">
             <div className="panel-header">
               <div>
@@ -760,76 +991,6 @@ function AgentConversation({
   );
 }
 
-function ToolCalls({ executions, loading }: { executions: Execution[]; loading: boolean }) {
-  const { t } = useI18n();
-  if (loading) return <LoadingState label="Loading tool calls" />;
-  if (!executions.length) {
-    return (
-      <EmptyState icon={Wrench} title="No tool calls yet">
-        {t("Host execution records will appear after the Agent invokes a registered tool.")}
-      </EmptyState>
-    );
-  }
-  return (
-    <div className="tool-table-wrap">
-      <table className="tool-table execution-table">
-        <thead>
-          <tr>
-            <th>{t("Tool / command")}</th>
-            <th>{t("Status")}</th>
-            <th>{t("Node")}</th>
-            <th>{t("Runtime")}</th>
-            <th>{t("Provenance")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {executions.map((execution) => (
-            <tr key={execution.id}>
-              <td>
-                <div className="tool-name-cell">
-                  <span><Wrench size={17} /></span>
-                  <div>
-                    <strong>{execution.tool_id ?? execution.executor_type}</strong>
-                    <small title={execution.command_text ?? execution.argv.join(" ")}>
-                      {execution.command_text ?? execution.argv.join(" ")}
-                    </small>
-                  </div>
-                </div>
-              </td>
-              <td>
-                <StatusBadge status={execution.status} />
-                {execution.exit_code !== null ? (
-                  <small className="tool-reason">{t("exit")} {execution.exit_code}</small>
-                ) : null}
-                {execution.physical_stop_confirmed_at ? (
-                  <small className="tool-reason execution-stop-proof confirmed">
-                    <CheckCircle2 size={13} /> {t("Stop confirmed")}
-                  </small>
-                ) : executionNeedsStopProof(execution) ? (
-                  <small className="tool-reason execution-stop-proof unconfirmed">
-                    <ShieldAlert size={13} /> {t("Stop unconfirmed")}
-                  </small>
-                ) : null}
-              </td>
-              <td>
-                <strong>{execution.node_id}</strong>
-                <small className="tool-reason">{execution.cwd}</small>
-              </td>
-              <td>{t(executionDuration(execution))}</td>
-              <td>
-                <strong>{execution.tool_version ?? t("unversioned")}</strong>
-                <small className="tool-reason">
-                  {execution.executable_path ?? execution.platform_system}
-                </small>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function Timeline({ items, loading }: { items: TimelineItem[]; loading: boolean }) {
   const { language, t } = useI18n();
   if (loading) return <LoadingState label="Loading event timeline" />;
@@ -903,10 +1064,13 @@ function RawEvents({ events, loading }: { events: RunEvent[]; loading: boolean }
   return (
     <div className="raw-events-view">
       <p className="muted-caption">
-        {t("Showing the latest {visible} of {total} durable events.", {
+        {t("Showing latest {visible} of {loaded} loaded durable events.", {
           visible: visible.length,
-          total: events.length,
+          loaded: events.length,
         })}
+        {events.length > visible.length
+          ? ` ${t("This Raw Events window is partial; older loaded events are hidden.")}`
+          : ""}
       </p>
       <Timeline items={items} loading={false} />
     </div>
@@ -1763,22 +1927,6 @@ function formatTimestamp(value: string, language: Language = "en") {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
-}
-
-function executionDuration(execution: Execution) {
-  if (!execution.started_at) return "Not started";
-  const started = new Date(execution.started_at).getTime();
-  const finished = execution.finished_at
-    ? new Date(execution.finished_at).getTime()
-    : Date.now();
-  const milliseconds = Math.max(0, finished - started);
-  if (milliseconds < 1000) return `${milliseconds}ms`;
-  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)}s`;
-  return `${(milliseconds / 60_000).toFixed(1)}m`;
-}
-
-function executionNeedsStopProof(execution: Execution) {
-  return ["completed", "exited", "cancelled", "hard_timeout"].includes(execution.status);
 }
 
 function formatBytes(value: number) {

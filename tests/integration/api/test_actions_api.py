@@ -665,6 +665,21 @@ async def test_action_api_redacts_raw_siblings_and_keeps_fixed_select_budgets(
             assert canary not in detailed.text
 
         list_item = list_payload["items"][0]
+        assert list_item["attempts"] == [
+            {
+                "execution_id": "execution-action-rich",
+                "attempt_group": "initial",
+                "node_id": "node-run-rich",
+                "status": "running",
+                "created_at": "2026-08-02T09:01:00Z",
+                "started_at": "2026-08-02T09:01:00Z",
+                "finished_at": None,
+                "exit_code": None,
+                "correlation_quality": "exact",
+                "physical_stop_confirmed_at": None,
+                "stop_confirmation": "not_applicable",
+            }
+        ]
         assert not {
             "arguments_summary",
             "approval",

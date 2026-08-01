@@ -42,7 +42,6 @@ _LIST_FORBIDDEN = {
     "arguments_json",
     "feedback",
     "decision_feedback",
-    "execution_node_id",
     "command_json",
     "command_text",
     "command_preview",
@@ -156,7 +155,17 @@ def test_bounded_query_final_projections_are_opaque_and_allowlisted() -> None:
         )
     ).lower()
     assert "json_each" in finding_sql
-    assert ".node_id" not in list_execution_sql
+    assert "executions.node_id as execution_node_id" in list_execution_sql
+    for forbidden_column in (
+        "executions.argv_json",
+        "executions.command_text",
+        "executions.executable_path",
+        "executions.cwd",
+        "executions.env_diff_json",
+        "executions.stdout_path",
+        "executions.stderr_path",
+    ):
+        assert forbidden_column not in list_execution_sql
     assert ".event_type" not in list_event_sql
     assert ".sequence" not in list_event_sql
 

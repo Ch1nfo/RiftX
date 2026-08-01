@@ -225,6 +225,7 @@ class ActionListExecutionRead:
 
     execution_id: str
     attempt_group: str | None
+    node_id: str
     status: ExecutionStatus | str | None
     created_at: datetime | None
     started_at: datetime | None
@@ -310,10 +311,12 @@ class ActionEventView(_ActionViewModel):
 class ActionListAttemptView(_ActionViewModel):
     execution_id: str
     attempt_group: str | None
+    node_id: str
     status: ExecutionStatus | None
     created_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
+    exit_code: int | None
     correlation_quality: ActionCorrelationQuality
     physical_stop_confirmed_at: datetime | None
     stop_confirmation: ActionStopConfirmation | None

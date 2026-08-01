@@ -1,26 +1,47 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { api, localOperatorHeaders } from "../api/client";
+import { api, localOperatorHeaders, RiftXAPIError } from "../api/client";
 import type { RunEvent, RunEventList } from "../api/types";
-import { queryKeys } from "./queries";
+import { mergeRunEventLists, queryKeys } from "./queries";
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
 
-export function useEventStream(runId: string, enabled = true) {
+export interface EventStreamState {
+  connected: boolean;
+  stale: boolean;
+  error: Error | null;
+  actionUpdateRevision: number;
+}
+
+export function useEventStream(runId: string, enabled = true): EventStreamState {
   const queryClient = useQueryClient();
   const lastSequence = useRef(0);
+  const [state, setState] = useState<EventStreamState>({
+    connected: false,
+    stale: false,
+    error: null,
+    actionUpdateRevision: 0,
+  });
 
   useEffect(() => {
+    setState({ connected: false, stale: false, error: null, actionUpdateRevision: 0 });
     if (!enabled || !runId || typeof fetch === "undefined") {
       return undefined;
     }
     const cached = queryClient.getQueryData<RunEventList>(queryKeys.events(runId));
-    lastSequence.current = Math.max(...(cached?.items.map((item) => item.sequence) ?? [0]));
-    const pendingEvents: RunEvent[] = [];
+    const normalizedCache = cached ? mergeRunEventLists(undefined, cached) : undefined;
+    if (normalizedCache && normalizedCache !== cached) {
+      queryClient.setQueryData(queryKeys.events(runId), normalizedCache);
+    }
+    lastSequence.current = contiguousEventCursor(normalizedCache, runId);
+    const pendingEvents = new Map<number, RunEvent>();
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
+    let fatal = false;
+    let connectedOnce = false;
+    let repairPromise: Promise<void> | null = null;
     let reconnectDelay = RECONNECT_MIN_MS;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let activeController: AbortController | null = null;
@@ -32,32 +53,78 @@ export function useEventStream(runId: string, enabled = true) {
     void connect();
 
     async function connect() {
-      if (disposed) return;
+      if (disposed || fatal) return;
       const controller = new AbortController();
       activeController = controller;
       let nextDelay = reconnectDelay;
       try {
+        if (connectedOnce) {
+          await reconcileSnapshots();
+        } else {
+          // The Events snapshot and Action list are fetched independently.
+          // Reset once before the first stream cursor is opened so a stale
+          // list response cannot land after an Action event already present
+          // in the Events snapshot and then wait forever for a replay.
+          await resetActionRoot();
+        }
+        if (disposed || fatal) return;
         const response = await fetch(api.eventStreamUrl(runId, lastSequence.current), {
           cache: "no-store",
           headers: { Accept: "text/event-stream", ...localOperatorHeaders() },
           signal: controller.signal,
         });
+        if (response.status === 401 || response.status === 403) {
+          fatal = true;
+          clearActionRoot();
+          setState((current) => ({
+            ...current,
+            connected: false,
+            stale: true,
+            error: new RiftXAPIError(
+              response.status,
+              "event_stream_authorization_failed",
+              "Run event stream access was denied",
+            ),
+          }));
+          return;
+        }
         if (!response.ok) {
           throw new Error(`Run event stream returned HTTP ${response.status}`);
         }
         if (!response.body) {
           throw new Error("Run event stream did not provide a response body");
         }
+        connectedOnce = true;
         reconnectDelay = RECONNECT_MIN_MS;
         nextDelay = reconnectDelay;
+        setState((current) => ({
+          ...current,
+          connected: true,
+          stale: hasEventGap(
+            queryClient.getQueryData<RunEventList>(queryKeys.events(runId)),
+            runId,
+          ),
+          error: null,
+        }));
         await consumeServerSentEvents(response.body, ingest, controller.signal);
       } catch (error) {
         if (disposed || controller.signal.aborted || isAbortError(error)) return;
+        if (isAuthorizationError(error)) {
+          fatal = true;
+          clearActionRoot();
+        }
+        setState((current) => ({
+          ...current,
+          connected: false,
+          stale: true,
+          error: error instanceof Error ? error : new Error("Run event stream failed"),
+        }));
         nextDelay = reconnectDelay;
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
       } finally {
         if (activeController === controller) activeController = null;
-        if (!disposed) {
+        if (!disposed && !fatal) {
+          setState((current) => ({ ...current, connected: false, stale: true }));
           reconnectTimer = setTimeout(() => void connect(), nextDelay);
         }
       }
@@ -70,11 +137,21 @@ export function useEventStream(runId: string, enabled = true) {
       } catch {
         return;
       }
+      if (
+        disposed ||
+        event.run_id !== runId ||
+        !Number.isSafeInteger(event.sequence) ||
+        event.sequence < 1
+      ) {
+        return;
+      }
       if (event.sequence <= lastSequence.current) {
         return;
       }
-      lastSequence.current = event.sequence;
-      pendingEvents.push(event);
+      if (!pendingEvents.has(event.sequence)) pendingEvents.set(event.sequence, event);
+      if (event.sequence > lastSequence.current + 1) {
+        setState((current) => ({ ...current, stale: true }));
+      }
       if (flushTimer === null) {
         // Providers may emit one persisted engine event per token. A short
         // batch keeps the live reply responsive without sorting and rendering
@@ -85,22 +162,21 @@ export function useEventStream(runId: string, enabled = true) {
 
     function flush() {
       flushTimer = null;
-      if (!pendingEvents.length) return;
-      const batch = pendingEvents.splice(0, pendingEvents.length);
-      queryClient.setQueryData<RunEventList>(queryKeys.events(runId), (current) => {
-        const currentItems = current?.items ?? [];
-        const currentLastSequence = currentItems.at(-1)?.sequence ?? 0;
-        return {
-          after_sequence: current?.after_sequence ?? 0,
-          // SSE sequences are strictly increasing. Filtering against the
-          // latest query snapshot also covers a refetch that races this batch,
-          // while appending preserves order without O(n log n) sorting.
-          items: [
-            ...currentItems,
-            ...batch.filter((event) => event.sequence > currentLastSequence),
-          ],
-        };
-      });
+      if (!pendingEvents.size) return;
+      const batch = [...pendingEvents.values()];
+      pendingEvents.clear();
+      const merged = queryClient.setQueryData<RunEventList>(
+        queryKeys.events(runId),
+        (current) =>
+          mergeRunEventLists(current, {
+            after_sequence: current?.after_sequence ?? 0,
+            items: batch,
+          }),
+      );
+      lastSequence.current = contiguousEventCursor(merged, runId);
+      const gap = hasEventGap(merged, runId);
+      setState((current) => ({ ...current, stale: gap }));
+      if (gap) void scheduleSnapshotRepair().catch(handleSnapshotError);
 
       const eventTypes = batch.map((event) => event.event_type);
       const runChanged = eventTypes.some((eventType) =>
@@ -141,6 +217,7 @@ export function useEventStream(runId: string, enabled = true) {
       )) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(runId) });
       }
+      invalidateActionSnapshots(batch);
       for (const event of batch) {
         if (event.event_type.startsWith("terminal.")) {
           const sessionId = event.payload.session_id;
@@ -151,14 +228,159 @@ export function useEventStream(runId: string, enabled = true) {
       }
     }
 
+    function invalidateActionSnapshots(batch: RunEvent[]) {
+      const relevant = batch.filter(isActionChangeEvent);
+      if (!relevant.length) return;
+      const actionIds = new Set<string>();
+      let ambiguous = false;
+      for (const event of relevant) {
+        const actionId = explicitActionId(event);
+        if (actionId) actionIds.add(actionId);
+        else ambiguous = true;
+      }
+      if (ambiguous) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.actionRoot(runId),
+          exact: false,
+        });
+      } else {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.actions(runId),
+          exact: true,
+        });
+        for (const actionId of actionIds) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.action(runId, actionId),
+            exact: true,
+          });
+        }
+      }
+      setState((current) => ({
+        ...current,
+        actionUpdateRevision: current.actionUpdateRevision + 1,
+      }));
+    }
+
+    function scheduleSnapshotRepair(): Promise<void> {
+      if (!repairPromise) {
+        repairPromise = reconcileSnapshots().finally(() => {
+          repairPromise = null;
+        });
+      }
+      return repairPromise;
+    }
+
+    function handleSnapshotError(error: unknown) {
+      if (disposed) return;
+      if (isAuthorizationError(error)) {
+        fatal = true;
+        clearActionRoot();
+      }
+      // A repair failure means this stream's cursor can no longer be trusted.
+      // Abort even for retryable errors so connect() reaches its normal
+      // backoff/reconnect path, reruns both snapshot reconciliations, and only
+      // clears the surfaced error after a new stream is established.
+      activeController?.abort();
+      setState((current) => ({
+        ...current,
+        connected: false,
+        stale: true,
+        error: error instanceof Error ? error : new Error("Run snapshot repair failed"),
+      }));
+    }
+
+    async function reconcileSnapshots() {
+      await Promise.all([repairEventGap(), resetActionRoot()]);
+    }
+
+    async function resetActionRoot() {
+      if (disposed) return;
+      await queryClient.resetQueries({
+        queryKey: queryKeys.actionRoot(runId),
+        exact: false,
+      });
+    }
+
+    function clearActionRoot() {
+      queryClient.removeQueries({
+        queryKey: queryKeys.actionRoot(runId),
+        exact: false,
+      });
+    }
+
+    async function repairEventGap() {
+      let cursor = lastSequence.current;
+      while (!disposed) {
+        const snapshot = await api.listEvents(runId, cursor);
+        if (disposed) return;
+        const merged = queryClient.setQueryData<RunEventList>(
+          queryKeys.events(runId),
+          (current) => mergeRunEventLists(current, snapshot),
+        );
+        const nextCursor = contiguousEventCursor(merged, runId);
+        lastSequence.current = nextCursor;
+        const gap = hasEventGap(merged, runId);
+        setState((current) => ({ ...current, stale: gap }));
+        if (snapshot.items.length < 1_000 || nextCursor <= cursor) return;
+        cursor = nextCursor;
+      }
+    }
+
     return () => {
       disposed = true;
       activeController?.abort();
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
       if (flushTimer !== null) clearTimeout(flushTimer);
-      flush();
+      pendingEvents.clear();
     };
   }, [enabled, queryClient, runId]);
+
+  return state;
+}
+
+function contiguousEventCursor(
+  value: RunEventList | undefined,
+  runId: string,
+): number {
+  let cursor = value?.after_sequence ?? 0;
+  for (const event of value?.items ?? []) {
+    if (event.run_id !== runId || event.sequence <= cursor) continue;
+    if (event.sequence !== cursor + 1) break;
+    cursor = event.sequence;
+  }
+  return cursor;
+}
+
+function hasEventGap(value: RunEventList | undefined, runId: string): boolean {
+  const contiguous = contiguousEventCursor(value, runId);
+  return (value?.items ?? []).some(
+    (event) => event.run_id === runId && event.sequence > contiguous,
+  );
+}
+
+function isActionChangeEvent(event: RunEvent): boolean {
+  return (
+    event.event_type.startsWith("agent.tool_") ||
+    event.event_type.startsWith("action.") ||
+    event.event_type.startsWith("tool.") ||
+    event.event_type.startsWith("execution.") ||
+    event.event_type.startsWith("target_http.") ||
+    event.event_type === "artifact.registered" ||
+    event.event_type === "finding.created" ||
+    event.event_type === "finding.updated"
+  );
+}
+
+function explicitActionId(event: RunEvent): string | null {
+  for (const key of ["action_id", "tool_call_intent_id"] as const) {
+    const value = event.payload[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return null;
+}
+
+function isAuthorizationError(error: unknown): boolean {
+  return error instanceof RiftXAPIError && [401, 403].includes(error.status);
 }
 
 export async function consumeServerSentEvents(

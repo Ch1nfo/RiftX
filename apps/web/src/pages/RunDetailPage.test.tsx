@@ -1,10 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useLayoutEffect } from "react";
-import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import {
+  Link,
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, RiftXAPIError } from "../api/client";
+import type { RunAction, RunActionListItem } from "../api/types";
 import { LanguageProvider, languageStorageKey } from "../i18n";
 import { RunDetailPage } from "./RunDetailPage";
 
@@ -23,11 +31,36 @@ const mocks = vi.hoisted(() => ({
   runEvents: [] as Array<Record<string, unknown>>,
   executionStatus: "exited",
   physicalStopConfirmedAt: "2026-07-29T00:00:03Z" as string | null,
+  actionItems: [] as RunActionListItem[],
+  actionItemsByRun: new Map<string, RunActionListItem[]>(),
+  actionDetails: new Map<string, RunAction>(),
+  actionListError: null as Error | null,
+  actionDetailError: null as Error | null,
+  actionListLoading: false,
+  actionListIsSuccess: true,
+  actionListDataUpdatedAt: 1,
+  actionDetailLoading: false,
+  actionFetchNextPageError: false,
+  actionHasNextPage: false,
+  actionFetchingNextPage: false,
+  fetchNextActionPage: vi.fn(),
+  eventStreamError: null as Error | null,
+  eventStreamStale: false,
+  actionUpdateRevision: 0,
 }));
 
-vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
+vi.mock("../hooks/useEventStream", () => ({
+  useEventStream: () => ({
+    connected: true,
+    stale: mocks.eventStreamStale,
+    error: mocks.eventStreamError,
+    actionUpdateRevision: mocks.actionUpdateRevision,
+  }),
+}));
 vi.mock("../components/TerminalPanel", () => ({ TerminalPanel: () => null }));
 vi.mock("../hooks/queries", () => ({
+  flattenRunActionPages: (pages: Array<{ items: RunActionListItem[] }> | undefined) =>
+    pages?.flatMap((page) => page.items) ?? [],
   useRun: () => ({
     isLoading: false,
     error: null,
@@ -64,6 +97,24 @@ vi.mock("../hooks/queries", () => ({
             },
           ],
     },
+  }),
+  useRunActions: (runId: string) => ({
+    isLoading: mocks.actionListLoading,
+    isSuccess: mocks.actionListIsSuccess,
+    dataUpdatedAt: mocks.actionListDataUpdatedAt,
+    error: mocks.actionListError,
+    data: {
+      pages: [{ items: mocks.actionItemsByRun.get(runId) ?? mocks.actionItems }],
+    },
+    hasNextPage: mocks.actionHasNextPage,
+    isFetchingNextPage: mocks.actionFetchingNextPage,
+    isFetchNextPageError: mocks.actionFetchNextPageError,
+    fetchNextPage: mocks.fetchNextActionPage,
+  }),
+  useRunAction: (runId: string, actionId: string) => ({
+    isLoading: mocks.actionDetailLoading,
+    error: actionId ? mocks.actionDetailError : null,
+    data: mocks.actionDetails.get(`${runId}:${actionId}`),
   }),
   useExecutions: () => ({
     isLoading: false,
@@ -277,6 +328,165 @@ function RunNavigationHarness({ autoSubmitPath }: { autoSubmitPath?: string }) {
   );
 }
 
+function ActionHistoryHarness() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Current location">{`${location.pathname}${location.search}`}</output>
+      <button type="button" onClick={() => navigate(-1)}>History back</button>
+      <button type="button" onClick={() => navigate(1)}>History forward</button>
+      <Routes>
+        <Route path="/runs/:runId" element={<RunDetailPage />} />
+      </Routes>
+    </>
+  );
+}
+
+function actionListItem(
+  actionId = "action-1",
+  runId = "run-1",
+  overrides: Partial<RunActionListItem> = {},
+): RunActionListItem {
+  return {
+    action_id: actionId,
+    run_id: runId,
+    session_id: `session-${runId}`,
+    cycle_id: "cycle-shared",
+    step_id: `step-${actionId}`,
+    engine_call_id: "provider-call-shared",
+    tool_id: "nmap",
+    skill_id: null,
+    reason: `Public reason for ${actionId}`,
+    target_summary: `target-${actionId}.test:443`,
+    approval_level: "sensitive",
+    approval_id: `approval-${actionId}`,
+    approval_status: "approved",
+    approval_actor: "local-principal:v1:operator",
+    approval_decided_at: "2026-08-02T09:00:01Z",
+    approval_correlation_quality: "exact",
+    execution_count: 1,
+    attempts: [
+      {
+        execution_id: `execution-${actionId}`,
+        attempt_group: "initial",
+        node_id: "runner-1",
+        status: "exited",
+        created_at: "2026-08-02T09:00:02Z",
+        started_at: "2026-08-02T09:00:03Z",
+        finished_at: "2026-08-02T09:00:04Z",
+        exit_code: 0,
+        correlation_quality: "exact",
+        physical_stop_confirmed_at: "2026-08-02T09:00:04Z",
+        stop_confirmation: "confirmed",
+      },
+    ],
+    attempt_coverage: { scanned: 1, limit: 100, truncated: false },
+    latest_execution_id: `execution-${actionId}`,
+    latest_execution_status: "exited",
+    current_execution_id: `execution-${actionId}`,
+    current_execution_status: "exited",
+    latest_stop_confirmation: "confirmed",
+    current_stop_confirmation: "confirmed",
+    attempt_order_quality: "exact",
+    artifact_ids: [`artifact-${actionId}`],
+    artifact_count: 1,
+    artifacts_truncated: false,
+    output_size: 0,
+    output_available: false,
+    finding_count: 1,
+    event_count: 1,
+    finding_coverage: { scanned: 1, limit: 100, truncated: false },
+    event_coverage: { scanned: 1, limit: 200, truncated: false },
+    lifecycle: "succeeded",
+    lifecycle_sources: ["execution.status"],
+    correlation_quality: "exact",
+    partial_reasons: [],
+    created_at: "2026-08-02T09:00:00Z",
+    updated_at: "2026-08-02T09:00:04Z",
+    version: `version-${actionId}`,
+    ...overrides,
+  };
+}
+
+function actionDetail(item: RunActionListItem, overrides: Partial<RunAction> = {}): RunAction {
+  return {
+    action_id: item.action_id,
+    run_id: item.run_id,
+    session_id: item.session_id,
+    cycle_id: item.cycle_id,
+    step_id: item.step_id,
+    engine_call_id: item.engine_call_id,
+    tool_id: item.tool_id,
+    skill_id: item.skill_id,
+    reason: item.reason,
+    target_summary: item.target_summary,
+    approval_level: item.approval_level,
+    arguments_summary: { target: item.target_summary, secret: "[REDACTED]" },
+    approval: {
+      approval_id: item.approval_id!,
+      status: item.approval_status,
+      actor: item.approval_actor,
+      decided_at: item.approval_decided_at,
+      feedback_summary: "Approved within scope",
+      correlation_quality: "exact",
+    },
+    executions: item.attempts.map((attempt) => ({ ...attempt, error_summary: null })),
+    execution_count: item.execution_count,
+    attempt_coverage: item.attempt_coverage,
+    latest_execution_id: item.latest_execution_id,
+    current_execution_id: item.current_execution_id,
+    latest_stop_confirmation: item.latest_stop_confirmation,
+    current_stop_confirmation: item.current_stop_confirmation,
+    attempt_order_quality: item.attempt_order_quality,
+    result: {
+      truncated: item.artifacts_truncated,
+      artifact_ids: item.artifact_ids,
+      artifact_count: item.artifact_count,
+      output_size: item.output_size,
+      output_available: item.output_available,
+    },
+    evidence: {
+      finding_ids: [`finding-${item.action_id}`],
+      artifact_ids: item.artifact_ids,
+      events: [],
+      finding_count: item.finding_count,
+      event_count: item.event_count,
+      finding_coverage: item.finding_coverage,
+      event_coverage: item.event_coverage,
+    },
+    lifecycle: item.lifecycle,
+    lifecycle_sources: item.lifecycle_sources,
+    correlation_quality: item.correlation_quality,
+    partial_reasons: item.partial_reasons,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+    version: item.version,
+    ...overrides,
+  };
+}
+
+function renderActionRoute(
+  initialEntry: string,
+  { history = false, language = false } = {},
+) {
+  const queryClient = new QueryClient();
+  const routed = (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        {history ? (
+          <ActionHistoryHarness />
+        ) : (
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        )}
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  return render(language ? <LanguageProvider>{routed}</LanguageProvider> : routed);
+}
+
 describe("RunDetailPage approvals", () => {
   beforeEach(() => {
     cleanup();
@@ -289,6 +499,21 @@ describe("RunDetailPage approvals", () => {
     mocks.runEvents = [];
     mocks.executionStatus = "exited";
     mocks.physicalStopConfirmedAt = "2026-07-29T00:00:03Z";
+    mocks.actionItems = [];
+    mocks.actionItemsByRun.clear();
+    mocks.actionDetails.clear();
+    mocks.actionListError = null;
+    mocks.actionDetailError = null;
+    mocks.actionListLoading = false;
+    mocks.actionListIsSuccess = true;
+    mocks.actionListDataUpdatedAt = 1;
+    mocks.actionDetailLoading = false;
+    mocks.actionFetchNextPageError = false;
+    mocks.actionHasNextPage = false;
+    mocks.actionFetchingNextPage = false;
+    mocks.eventStreamError = null;
+    mocks.eventStreamStale = false;
+    mocks.actionUpdateRevision = 0;
     mocks.messageError = null;
     mocks.messageRunIds.length = 0;
     mocks.messageMutateAsync.mockResolvedValue(undefined);
@@ -872,7 +1097,8 @@ describe("RunDetailPage approvals", () => {
     expect(alert).not.toHaveTextContent("unlocalized transport message");
   });
 
-  it("keeps plan updates out of Conversation and separates host tool-call provenance", async () => {
+  it("keeps plan updates out of Conversation and uses Actions instead of host execution provenance", async () => {
+    mocks.actionItems = [actionListItem()];
     const queryClient = new QueryClient();
     render(
       <QueryClientProvider client={queryClient}>
@@ -890,16 +1116,32 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByText("Inspect the service and verify evidence.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /timeline 1/i }));
     expect(await screen.findByText("Inspect the service and verify evidence.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: /tool calls 1/i }));
-    expect(await screen.findByText("nmap -sV 127.0.0.1")).toBeInTheDocument();
-    expect(screen.getByText("7.95")).toBeInTheDocument();
-    expect(screen.getByText("/usr/bin/nmap")).toBeInTheDocument();
-    expect(screen.getByText("Stop confirmed")).toHaveClass("confirmed");
+    fireEvent.click(screen.getByRole("tab", { name: /actions 1/i }));
+    expect(await screen.findByText("Public reason for action-1")).toBeInTheDocument();
+    expect(screen.getByText("runner-1")).toBeInTheDocument();
+    expect(screen.getByText("Stop confirmed")).toBeInTheDocument();
+    expect(screen.queryByText("nmap -sV 127.0.0.1")).not.toBeInTheDocument();
+    expect(screen.queryByText("/usr/bin/nmap")).not.toBeInTheDocument();
   });
 
   it("makes a terminal execution without durable stop proof visibly unsafe", async () => {
-    mocks.executionStatus = "cancelled";
-    mocks.physicalStopConfirmedAt = null;
+    mocks.actionItems = [
+      actionListItem("action-unsafe", "run-1", {
+        lifecycle: "cancelled",
+        current_execution_status: "cancelled",
+        latest_execution_status: "cancelled",
+        current_stop_confirmation: "unconfirmed",
+        latest_stop_confirmation: "unconfirmed",
+        attempts: [
+          {
+            ...actionListItem().attempts[0]!,
+            status: "cancelled",
+            physical_stop_confirmed_at: null,
+            stop_confirmation: "unconfirmed",
+          },
+        ],
+      }),
+    ];
     const queryClient = new QueryClient();
     render(
       <QueryClientProvider client={queryClient}>
@@ -911,8 +1153,12 @@ describe("RunDetailPage approvals", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: /tool calls 1/i }));
-    expect(await screen.findByText("Stop unconfirmed")).toHaveClass("unconfirmed");
+    fireEvent.click(screen.getByRole("tab", { name: /actions 1/i }));
+    expect(
+      (await screen.findAllByText("Stop unconfirmed")).some((node) =>
+        node.classList.contains("stop-unconfirmed"),
+      ),
+    ).toBe(true);
   });
 
   it("links evidence to artifacts and saves user edits", async () => {
@@ -1088,9 +1334,28 @@ describe("RunDetailPage approvals", () => {
     expect(screen.queryByText(/partial result/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /raw events 7/i }));
-    expect(await screen.findByText("Showing the latest 7 of 7 durable events.")).toBeInTheDocument();
+    expect(await screen.findByText("Showing latest 7 of 7 loaded durable events.")).toBeInTheDocument();
     expect(screen.getAllByText(/assistant_delta/)).toHaveLength(3);
     expect(screen.getByText(/partial result/)).toBeInTheDocument();
+  });
+
+  it("labels the bounded Raw Events window as partial without implying a global total", async () => {
+    mocks.runEvents = Array.from({ length: 201 }, (_, index) => ({
+      id: `raw-window-${index + 1}`,
+      run_id: "run-1",
+      sequence: index + 1,
+      event_type: "run.status_changed",
+      payload: { ordinal: index + 1 },
+      created_at: "2026-07-31T02:35:27Z",
+    }));
+    renderActionRoute("/runs/run-1");
+
+    fireEvent.click(screen.getByRole("tab", { name: /raw events 201/i }));
+    expect(
+      await screen.findByText(/Showing latest 200 of 201 loaded durable events\./),
+    ).toHaveTextContent(
+      "This Raw Events window is partial; older loaded events are hidden.",
+    );
   });
 
   it("opens in conversation and waits for a specific first instruction", async () => {
@@ -1127,6 +1392,341 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getByText("Not started")).toBeInTheDocument();
     expect(screen.queryByText("workflow-run-1")).not.toBeInTheDocument();
     expect(screen.queryByText("Timeline is empty")).not.toBeInTheDocument();
+  });
+
+  it("opens a URL Action deep link without stealing focus and closes to the Actions tab", async () => {
+    const item = actionListItem();
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:action-1", actionDetail(item));
+    renderActionRoute("/runs/run-1?action=action-1", { history: true });
+
+    expect(screen.getByRole("tab", { name: /actions 1/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(await screen.findByText("Approved within scope")).toBeInTheDocument();
+    const close = screen.getByRole("button", { name: "Close Context Inspector" });
+    expect(close).not.toHaveFocus();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      "/runs/run-1?action=action-1",
+    );
+    expect(window.sessionStorage.length).toBe(0);
+
+    fireEvent.click(close);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent("/runs/run-1"),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /actions 1/i })).toHaveFocus(),
+    );
+  });
+
+  it("tracks Action history and restores the trigger for the current historical selection", async () => {
+    const first = actionListItem("action-1");
+    const second = actionListItem("action-2", "run-1", { tool_id: "curl" });
+    mocks.actionItems = [first, second];
+    mocks.actionDetails.set("run-1:action-1", actionDetail(first));
+    mocks.actionDetails.set("run-1:action-2", actionDetail(second));
+    renderActionRoute("/runs/run-1", { history: true });
+
+    fireEvent.click(screen.getByRole("tab", { name: /actions 2/i }));
+    const firstTrigger = screen.getByRole("button", { name: "Inspect action nmap" });
+    fireEvent.click(firstTrigger);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(
+        "/runs/run-1?action=action-1",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Inspect action curl" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(
+        "/runs/run-1?action=action-2",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(
+        "/runs/run-1?action=action-1",
+      ),
+    );
+    screen.getByRole("tab", { name: "Overview" }).focus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent("/runs/run-1"),
+    );
+    await waitFor(() => expect(firstTrigger).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "History forward" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(
+        "/runs/run-1?action=action-2",
+      ),
+    );
+    expect(await screen.findByText("step-action-2")).toBeInTheDocument();
+  });
+
+  it.each([
+    [401, "Action authentication failed"],
+    [403, "Action forbidden"],
+    [404, "Action not found"],
+    [500, "Action service failed"],
+  ])("fails closed for Action detail HTTP %s", async (status, message) => {
+    const item = actionListItem();
+    const stale = actionDetail(item, {
+      reason: "CACHED DETAIL SECRET",
+      approval: {
+        ...actionDetail(item).approval!,
+        actor: "CACHED SECRET ACTOR",
+      },
+    });
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:action-1", stale);
+    mocks.actionDetailError = new RiftXAPIError(status, "action_detail_failed", message);
+    renderActionRoute("/runs/run-1?action=action-1");
+
+    expect(await screen.findAllByText(message)).not.toHaveLength(0);
+    expect(screen.queryByText("CACHED DETAIL SECRET")).not.toBeInTheDocument();
+    expect(screen.queryByText("CACHED SECRET ACTOR")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("[REDACTED]");
+  });
+
+  it.each([
+    [401, "button"],
+    [401, "Escape"],
+    [403, "button"],
+    [403, "Escape"],
+  ] as const)(
+    "keeps cached Actions hidden after detail HTTP %s and Inspector close via %s",
+    async (status, closeMethod) => {
+      const item = actionListItem("action-secret", "run-1", {
+        reason: "DETAIL AUTH CACHED LIST SECRET",
+      });
+      mocks.actionItems = [item];
+      mocks.actionDetails.set("run-1:action-secret", actionDetail(item));
+      mocks.actionDetailError = new RiftXAPIError(
+        status,
+        "action_detail_authorization_failed",
+        "Action detail authorization failed",
+      );
+      renderActionRoute("/runs/run-1?action=action-secret");
+
+      expect(
+        await screen.findAllByText("Action detail authorization failed"),
+      ).not.toHaveLength(0);
+      expect(screen.getByRole("tab", { name: /actions 0/i })).toBeInTheDocument();
+      expect(screen.queryByText("DETAIL AUTH CACHED LIST SECRET")).not.toBeInTheDocument();
+
+      if (closeMethod === "button") {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Close Context Inspector" }),
+        );
+      } else {
+        fireEvent.keyDown(document, { key: "Escape" });
+      }
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("region", { name: "Context Inspector" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(screen.getByRole("tab", { name: /actions 0/i })).toBeInTheDocument();
+      expect(screen.queryByText("DETAIL AUTH CACHED LIST SECRET")).not.toBeInTheDocument();
+
+      mocks.actionListDataUpdatedAt += 1;
+      fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+      await waitFor(() =>
+        expect(screen.getByRole("tab", { name: /actions 1/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("tab", { name: /actions 1/i }));
+      expect(screen.getByText("DETAIL AUTH CACHED LIST SECRET")).toBeInTheDocument();
+    },
+  );
+
+  it("hides cached Action list and Inspector data after fatal SSE authorization loss", async () => {
+    const item = actionListItem("action-secret", "run-1", {
+      reason: "SSE CACHED LIST SECRET",
+    });
+    mocks.actionItems = [item];
+    mocks.actionDetails.set(
+      "run-1:action-secret",
+      actionDetail(item, {
+        approval: { ...actionDetail(item).approval!, actor: "SSE CACHED ACTOR SECRET" },
+      }),
+    );
+    mocks.eventStreamError = new RiftXAPIError(
+      403,
+      "event_stream_authorization_failed",
+      "Run event stream access was denied",
+    );
+    renderActionRoute("/runs/run-1?action=action-secret");
+
+    expect(await screen.findAllByText("Run event stream access was denied")).not.toHaveLength(0);
+    expect(screen.queryByText("SSE CACHED LIST SECRET")).not.toBeInTheDocument();
+    expect(screen.queryByText("SSE CACHED ACTOR SECRET")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("[REDACTED]");
+  });
+
+  it("hides cached list and Inspector data when next-page authorization is revoked", async () => {
+    const item = actionListItem("action-page-secret", "run-1", {
+      reason: "PAGINATION CACHED LIST SECRET",
+    });
+    mocks.actionItems = [item];
+    mocks.actionDetails.set(
+      "run-1:action-page-secret",
+      actionDetail(item, {
+        approval: {
+          ...actionDetail(item).approval!,
+          actor: "PAGINATION CACHED ACTOR SECRET",
+        },
+      }),
+    );
+    mocks.actionFetchNextPageError = true;
+    mocks.actionListError = new RiftXAPIError(
+      403,
+      "local_operator_capability_denied",
+      "Action pagination forbidden",
+    );
+    renderActionRoute("/runs/run-1?action=action-page-secret");
+
+    expect(await screen.findAllByText("Action pagination forbidden")).not.toHaveLength(0);
+    expect(screen.getByRole("tab", { name: /actions 0/i })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /actions 1/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("PAGINATION CACHED LIST SECRET")).not.toBeInTheDocument();
+    expect(screen.queryByText("PAGINATION CACHED ACTOR SECRET")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("[REDACTED]");
+  });
+
+  it("keeps cards only for a next-page failure and hides them for a root authorization error", () => {
+    const item = actionListItem();
+    mocks.actionItems = [item];
+    mocks.actionHasNextPage = true;
+    mocks.actionFetchNextPageError = true;
+    mocks.actionListError = new RiftXAPIError(500, "next_page_failed", "Next page failed");
+    const rendered = renderActionRoute("/runs/run-1");
+    fireEvent.click(screen.getByRole("tab", { name: /actions 1/i }));
+
+    expect(screen.getByText(item.reason)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Next page failed");
+    expect(screen.getByRole("button", { name: "Load more actions" })).toBeEnabled();
+
+    mocks.actionFetchNextPageError = false;
+    mocks.actionListError = new RiftXAPIError(403, "actions_forbidden", "Actions forbidden");
+    rendered.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("tab", { name: /actions 0/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Actions forbidden");
+    expect(screen.queryByText(item.reason)).not.toBeInTheDocument();
+  });
+
+  it("clears a selected Action immediately when switching Runs", async () => {
+    const item = actionListItem();
+    mocks.actionItemsByRun.set("run-1", [item]);
+    mocks.actionItemsByRun.set("run-2", []);
+    mocks.actionDetails.set(
+      "run-1:action-1",
+      actionDetail(item, { reason: "OLD RUN DETAIL SECRET" }),
+    );
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/runs/run-1?action=action-1"]}>
+          <RunNavigationHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("OLD RUN DETAIL SECRET")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "Open Run 2" }));
+    expect(screen.queryByText("OLD RUN DETAIL SECRET")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Context Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("implements roving tabs whose controls always reference the live tabpanel", () => {
+    renderActionRoute("/runs/run-1");
+    const tabs = screen.getAllByRole("tab");
+    for (const candidate of tabs) {
+      expect(document.getElementById(candidate.getAttribute("aria-controls")!)).not.toBeNull();
+    }
+    const conversation = screen.getByRole("tab", { name: "Conversation" });
+    conversation.focus();
+    fireEvent.keyDown(conversation, { key: "ArrowRight" });
+    const actionsTab = screen.getByRole("tab", { name: /actions 0/i });
+    expect(actionsTab).toHaveFocus();
+    expect(actionsTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute(
+      "aria-labelledby",
+      actionsTab.id,
+    );
+    fireEvent.keyDown(actionsTab, { key: "Home" });
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Overview" }), { key: "End" });
+    expect(screen.getByRole("tab", { name: /reports 1/i })).toHaveFocus();
+  });
+
+  it("renders the Action deep-link main path and terminal failure semantics in Chinese", async () => {
+    window.localStorage.setItem(languageStorageKey, "zh-CN");
+    const item = actionListItem("action-zh", "run-1", {
+      lifecycle: "failed",
+      attempts: [
+        {
+          ...actionListItem().attempts[0]!,
+          execution_id: "execution-zh-timeout",
+          status: "hard_timeout",
+        },
+      ],
+      current_execution_id: "execution-zh-timeout",
+      latest_execution_id: "execution-zh-timeout",
+      current_execution_status: "hard_timeout",
+      latest_execution_status: "hard_timeout",
+    });
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:action-zh", actionDetail(item));
+    renderActionRoute("/runs/run-1?action=action-zh", { language: true });
+
+    expect(screen.getByRole("tab", { name: /操作 1/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(await screen.findByRole("region", { name: "上下文检查器" })).toBeInTheDocument();
+    expect(screen.getAllByText("失败").length).toBeGreaterThan(0);
+    expect(screen.getByText("强制超时")).toBeInTheDocument();
+    expect(screen.getByText("会话")).toBeInTheDocument();
+    expect(screen.getByText("轮次")).toBeInTheDocument();
+    expect(screen.getByText("步骤")).toBeInTheDocument();
+  });
+
+  it("mutates the mounted live-region text for every Action revision batch", async () => {
+    renderActionRoute("/runs/run-1");
+    expect(screen.getByRole("status")).toHaveTextContent("");
+
+    mocks.actionUpdateRevision = 1;
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    const firstAnnouncement = await screen.findByRole("status");
+    await waitFor(() =>
+      expect(firstAnnouncement).toHaveTextContent(
+        "Action data updated. Live revision 1.",
+      ),
+    );
+    expect(firstAnnouncement).toHaveAttribute("aria-atomic", "true");
+
+    mocks.actionUpdateRevision = 2;
+    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    const secondAnnouncement = await screen.findByRole("status");
+    expect(secondAnnouncement).toHaveTextContent(
+      "Action data updated. Live revision 2.",
+    );
+    expect(secondAnnouncement).toBe(firstAnnouncement);
   });
 
 });

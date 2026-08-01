@@ -261,6 +261,199 @@ export interface ExecutionList {
   offset: number;
 }
 
+export type ActionLifecycle =
+  | "proposed"
+  | "awaiting_approval"
+  | "ready"
+  | "executing"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "partial";
+
+export type ActionCorrelationQuality = "exact" | "legacy" | "partial";
+export type ActionAttemptOrderQuality = "exact" | "ambiguous" | "unknown";
+export type ActionStopConfirmation =
+  | "not_applicable"
+  | "confirmed"
+  | "unconfirmed";
+export type ActionApprovalLevel = "never" | "sensitive" | "always";
+
+export type ActionPartialReason =
+  | "intent_scope_mismatch"
+  | "intent_status_unknown"
+  | "intent_approval_level_unknown"
+  | "approval_runtime_missing"
+  | "approval_public_missing"
+  | "approval_shared_id_mismatch"
+  | "approval_scope_mismatch"
+  | "approval_status_unknown"
+  | "approval_status_mismatch"
+  | "approval_intent_status_mismatch"
+  | "approval_execution_status_mismatch"
+  | "approval_actor_untrusted"
+  | "approval_decision_time_mismatch"
+  | "execution_scope_mismatch"
+  | "execution_session_mismatch"
+  | "execution_status_unknown"
+  | "execution_attempt_order_unknown"
+  | "execution_attempt_order_ambiguous"
+  | "execution_attempts_truncated"
+  | "execution_current_ambiguous"
+  | "execution_current_correlation_partial"
+  | "execution_missing_for_intent_status"
+  | "execution_stop_unconfirmed"
+  | "execution_stop_proof_invalid"
+  | "intent_execution_status_mismatch"
+  | "artifact_scope_mismatch"
+  | "finding_evidence_unresolved"
+  | "event_correlation_partial"
+  | "repository_partial_reason_invalid";
+
+export interface ActionCoverage {
+  scanned: number;
+  limit: number;
+  truncated: boolean;
+}
+
+export interface RunActionListAttempt {
+  execution_id: string;
+  attempt_group: string | null;
+  node_id: string;
+  status: Execution["status"] | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  exit_code: number | null;
+  correlation_quality: ActionCorrelationQuality;
+  physical_stop_confirmed_at: string | null;
+  stop_confirmation: ActionStopConfirmation | null;
+}
+
+export interface RunActionListItem {
+  action_id: string;
+  run_id: string;
+  session_id: string;
+  cycle_id: string;
+  step_id: string;
+  engine_call_id: string | null;
+  tool_id: string | null;
+  skill_id: string | null;
+  reason: string;
+  target_summary: string | null;
+  approval_level: ActionApprovalLevel | null;
+  approval_id: string | null;
+  approval_status: ApprovalStatus | null;
+  approval_actor: string | null;
+  approval_decided_at: string | null;
+  approval_correlation_quality: ActionCorrelationQuality | null;
+  execution_count: number;
+  attempts: RunActionListAttempt[];
+  attempt_coverage: ActionCoverage;
+  latest_execution_id: string | null;
+  latest_execution_status: Execution["status"] | null;
+  current_execution_id: string | null;
+  current_execution_status: Execution["status"] | null;
+  latest_stop_confirmation: ActionStopConfirmation | null;
+  current_stop_confirmation: ActionStopConfirmation | null;
+  attempt_order_quality: ActionAttemptOrderQuality;
+  artifact_ids: string[];
+  artifact_count: number;
+  artifacts_truncated: boolean;
+  output_size: number;
+  output_available: boolean;
+  finding_count: number;
+  event_count: number;
+  finding_coverage: ActionCoverage;
+  event_coverage: ActionCoverage;
+  lifecycle: ActionLifecycle;
+  lifecycle_sources: string[];
+  correlation_quality: ActionCorrelationQuality;
+  partial_reasons: ActionPartialReason[];
+  created_at: string;
+  updated_at: string;
+  version: string;
+}
+
+export interface RunActionList {
+  items: RunActionListItem[];
+  limit: number;
+  sort: "created_at_desc";
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface RunActionApproval {
+  approval_id: string;
+  status: ApprovalStatus | null;
+  actor: string | null;
+  decided_at: string | null;
+  feedback_summary: string | null;
+  correlation_quality: ActionCorrelationQuality;
+}
+
+export interface RunActionExecution extends RunActionListAttempt {
+  error_summary: string | null;
+}
+
+export interface RunActionEvent {
+  event_id: string;
+  sequence: number;
+  event_type: string;
+  created_at: string;
+}
+
+export interface RunActionResult {
+  truncated: boolean;
+  artifact_ids: string[];
+  artifact_count: number;
+  output_size: number;
+  output_available: boolean;
+}
+
+export interface RunActionEvidence {
+  finding_ids: string[];
+  artifact_ids: string[];
+  events: RunActionEvent[];
+  finding_count: number;
+  event_count: number;
+  finding_coverage: ActionCoverage;
+  event_coverage: ActionCoverage;
+}
+
+export interface RunAction {
+  action_id: string;
+  run_id: string;
+  session_id: string;
+  cycle_id: string;
+  step_id: string;
+  engine_call_id: string | null;
+  tool_id: string | null;
+  skill_id: string | null;
+  reason: string;
+  target_summary: string | null;
+  approval_level: ActionApprovalLevel | null;
+  arguments_summary: Record<string, unknown>;
+  approval: RunActionApproval | null;
+  executions: RunActionExecution[];
+  execution_count: number;
+  attempt_coverage: ActionCoverage;
+  latest_execution_id: string | null;
+  current_execution_id: string | null;
+  latest_stop_confirmation: ActionStopConfirmation | null;
+  current_stop_confirmation: ActionStopConfirmation | null;
+  attempt_order_quality: ActionAttemptOrderQuality;
+  result: RunActionResult;
+  evidence: RunActionEvidence;
+  lifecycle: ActionLifecycle;
+  lifecycle_sources: string[];
+  correlation_quality: ActionCorrelationQuality;
+  partial_reasons: ActionPartialReason[];
+  created_at: string;
+  updated_at: string;
+  version: string;
+}
+
 export type ToolAvailability =
   | "available"
   | "unavailable"

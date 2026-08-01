@@ -331,7 +331,7 @@ describe("reduceRunEvents", () => {
     expect(projection.conversationMessages[0]?.content).toBe("final");
   });
 
-  it("hides tool argument and result deltas from projections but retains raw audit", () => {
+  it("keeps all provider tool records out of user-facing projections", () => {
     const projection = reduceRunEvents([
       engineEvent(8, "tool_call_argument_delta", {
         call_id: "call-1",
@@ -346,11 +346,43 @@ describe("reduceRunEvents", () => {
     ]);
 
     expect(projection.conversationMessages).toEqual([]);
-    expect(projection.highLevelTimeline).toHaveLength(1);
-    expect(projection.highLevelTimeline[0]).toMatchObject({
-      kind: "event",
-      event: { sequence: 10 },
-    });
+    expect(projection.highLevelTimeline).toEqual([]);
     expect(projection.rawEvents.map((event) => event.sequence)).toEqual([8, 9, 10]);
+  });
+
+  it("routes Action-family payloads only to Raw Events", () => {
+    const canary = "ACTION_EVENT_SECRET_CANARY";
+    const projection = reduceRunEvents([
+      runEvent(1, "agent.tool_started", {
+        tool_call_intent_id: "action-1",
+        command: canary,
+      }),
+      runEvent(2, "tool.approval_required", {
+        tool_call_intent_id: "action-1",
+        env_diff: { TOKEN: canary },
+      }),
+      runEvent(3, "execution.submitted", {
+        execution_id: "execution-1",
+        output: canary,
+      }),
+      runEvent(4, "target_http.request_started", {
+        request_id: "request-1",
+        url: `https://example.test/?signature=${canary}`,
+      }),
+      runEvent(5, "action.updated", {
+        action_id: "action-1",
+        summary: canary,
+      }),
+      runEvent(6, "run.status_changed", { from: "running", to: "waiting_tool" }),
+    ]);
+
+    expect(projection.highLevelTimeline).toEqual([
+      expect.objectContaining({
+        kind: "event",
+        event: expect.objectContaining({ event_type: "run.status_changed" }),
+      }),
+    ]);
+    expect(JSON.stringify(projection.highLevelTimeline)).not.toContain(canary);
+    expect(projection.rawEvents.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 });

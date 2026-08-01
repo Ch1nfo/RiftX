@@ -340,10 +340,12 @@ class ActionApplicationService:
                 ActionListAttemptView(
                     execution_id=item.execution_id,
                     attempt_group=item.attempt_group,
+                    node_id=item.node_id,
                     status=item.status,
                     created_at=item.created_at,
                     started_at=item.started_at,
                     finished_at=item.finished_at,
+                    exit_code=item.exit_code,
                     correlation_quality=item.correlation_quality,
                     physical_stop_confirmed_at=item.physical_stop_confirmed_at,
                     stop_confirmation=item.stop_confirmation,
@@ -758,6 +760,7 @@ def _action_metadata_version(
                 for key in (
                     "execution_id",
                     "attempt_group",
+                    "node_id",
                     "status",
                     "created_at",
                     "started_at",
@@ -938,7 +941,7 @@ def _list_execution_to_detail(execution: ActionListExecutionRead) -> ActionExecu
     return ActionExecutionRead(
         execution_id=execution.execution_id,
         attempt_group=execution.attempt_group,
-        node_id="",
+        node_id=execution.node_id,
         status=execution.status,
         created_at=execution.created_at,
         started_at=execution.started_at,

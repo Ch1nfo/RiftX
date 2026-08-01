@@ -1,6 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
-import { api } from "../api/client";
+import { api, RiftXAPIError } from "../api/client";
 import type {
   ApprovalDecisionPayload,
   CreateRunPayload,
@@ -8,6 +13,8 @@ import type {
   RegisterArtifactPayload,
   GenerateReportsPayload,
   NodeStatus,
+  RunActionList,
+  RunActionListItem,
   RunEventList,
   UpdateFindingPayload,
   UpdateToolPayload,
@@ -23,11 +30,25 @@ export const queryKeys = {
   artifacts: (runId: string) => ["run-artifacts", runId] as const,
   reports: (runId: string) => ["run-reports", runId] as const,
   approvals: (runId: string) => ["run-approvals", runId] as const,
+  actionRoot: (runId: string) => ["run-actions", runId] as const,
+  actions: (runId: string) => ["run-actions", runId, "list"] as const,
+  action: (runId: string, actionId: string) =>
+    ["run-actions", runId, "detail", actionId] as const,
   terminal: (sessionId: string) => ["terminal", sessionId] as const,
   nodes: (status?: NodeStatus) => ["nodes", status ?? "all"] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
   modelProfiles: ["model-profiles"] as const,
 };
+
+const ACTION_PAGE_SIZE = 50;
+const ACTION_QUERY_RETRY_LIMIT = 1;
+
+function retryActionQuery(failureCount: number, error: Error): boolean {
+  if (error instanceof RiftXAPIError && [401, 403].includes(error.status)) {
+    return false;
+  }
+  return failureCount < ACTION_QUERY_RETRY_LIMIT;
+}
 
 export function useNodes(status?: NodeStatus) {
   return useQuery({
@@ -95,50 +116,157 @@ export function useRunEvents(runId: string) {
   });
 }
 
+export function useRunActions(runId: string) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.actions(runId),
+    queryFn: ({ pageParam }) =>
+      api.listRunActions(runId, pageParam ?? undefined, ACTION_PAGE_SIZE),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: RunActionList) =>
+      lastPage.has_more ? lastPage.next_cursor : null,
+    enabled: Boolean(runId),
+    retry: retryActionQuery,
+  });
+}
+
+export function useRunAction(runId: string, actionId: string) {
+  return useQuery({
+    queryKey: queryKeys.action(runId, actionId),
+    queryFn: () => api.getRunAction(runId, actionId),
+    enabled: Boolean(runId && actionId),
+    retry: retryActionQuery,
+  });
+}
+
+export function flattenRunActionPages(
+  pages: readonly RunActionList[] | undefined,
+): RunActionListItem[] {
+  const seen = new Set<string>();
+  const items: RunActionListItem[] = [];
+  for (const page of pages ?? []) {
+    for (const item of page.items) {
+      const key = `${item.run_id}:${item.action_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(item);
+    }
+  }
+  return items;
+}
+
 export function mergeRunEventLists(
   previous: RunEventList | undefined,
   incoming: RunEventList,
 ): RunEventList {
-  if (!previous?.items.length) return incoming;
+  if (!previous?.items.length) {
+    const normalized = normalizeRunEvents(incoming.items);
+    return normalized === incoming.items
+      ? incoming
+      : { ...incoming, items: normalized };
+  }
+  const afterSequence = previous
+    ? Math.min(previous.after_sequence, incoming.after_sequence)
+    : incoming.after_sequence;
   if (
+    afterSequence === incoming.after_sequence &&
     incoming.items.length >= previous.items.length &&
-    previous.items.every(
-      (event, index) => runEventKey(event) === runEventKey(incoming.items[index]),
-    )
+    isOrderedUniqueRunEvents(incoming.items) &&
+    previous.items.every((event, index) => event === incoming.items[index])
   ) {
-    // This is the hot SSE path: setQueryData passes current + batch.
+    // HTTP/SSE structural sharing may already hand us the complete ordered
+    // snapshot. Preserve it without rebuilding the high-cardinality history.
     return incoming;
   }
-  const items = [] as RunEventList["items"];
+
+  const previousItems = isOrderedUniqueRunEvents(previous.items)
+    ? previous.items
+    : normalizeRunEvents(previous.items);
+  const incomingItems = normalizeRunEvents(incoming.items);
+  if (!incomingItems.length) {
+    return afterSequence === previous.after_sequence && previousItems === previous.items
+      ? previous
+      : { after_sequence: afterSequence, items: previousItems };
+  }
+  if (
+    previousItems.length &&
+    compareRunEvents(previousItems[previousItems.length - 1]!, incomingItems[0]!) < 0
+  ) {
+    return {
+      after_sequence: afterSequence,
+      // The live path is normally append-only: O(history + batch allocation),
+      // no Map and no full-history sort every 32 ms.
+      items: [...previousItems, ...incomingItems],
+    };
+  }
+
+  const items: RunEventList["items"] = [];
   let previousIndex = 0;
   let incomingIndex = 0;
-  while (previousIndex < previous.items.length || incomingIndex < incoming.items.length) {
-    const previousEvent = previous.items[previousIndex];
-    const incomingEvent = incoming.items[incomingIndex];
+  while (previousIndex < previousItems.length || incomingIndex < incomingItems.length) {
+    const previousEvent = previousItems[previousIndex];
+    const incomingEvent = incomingItems[incomingIndex];
     if (!previousEvent) {
-      items.push(incomingEvent);
+      items.push(incomingEvent!);
       incomingIndex += 1;
-    } else if (!incomingEvent) {
+      continue;
+    }
+    if (!incomingEvent) {
       items.push(previousEvent);
       previousIndex += 1;
-    } else if (previousEvent.sequence < incomingEvent.sequence) {
+      continue;
+    }
+    const order = compareRunEvents(previousEvent, incomingEvent);
+    if (order < 0) {
       items.push(previousEvent);
       previousIndex += 1;
-    } else if (incomingEvent.sequence < previousEvent.sequence) {
+    } else if (order > 0) {
       items.push(incomingEvent);
       incomingIndex += 1;
     } else {
-      // Durable event sequences are immutable within a Run. Preserve the old
-      // object for React structural sharing when both snapshots contain it.
+      // Run Event sequences are immutable. Preserve the cached object if a
+      // reconnect or late HTTP response repeats the same durable record.
       items.push(previousEvent);
       previousIndex += 1;
       incomingIndex += 1;
     }
   }
+  if (
+    afterSequence === incoming.after_sequence &&
+    items.length === incoming.items.length &&
+    items.every((event, index) => event === incoming.items[index])
+  ) {
+    return incoming;
+  }
   return {
-    after_sequence: Math.min(previous.after_sequence, incoming.after_sequence),
+    after_sequence: afterSequence,
     items,
   };
+}
+
+function normalizeRunEvents(
+  source: RunEventList["items"],
+): RunEventList["items"] {
+  if (isOrderedUniqueRunEvents(source)) return source;
+  const ordered = [...source].sort(compareRunEvents);
+  const unique: RunEventList["items"] = [];
+  for (const event of ordered) {
+    if (runEventKey(unique[unique.length - 1]) !== runEventKey(event)) unique.push(event);
+  }
+  return unique;
+}
+
+function isOrderedUniqueRunEvents(source: RunEventList["items"]): boolean {
+  for (let index = 1; index < source.length; index += 1) {
+    if (compareRunEvents(source[index - 1]!, source[index]!) >= 0) return false;
+  }
+  return true;
+}
+
+function compareRunEvents(
+  left: RunEventList["items"][number],
+  right: RunEventList["items"][number],
+): number {
+  return left.run_id.localeCompare(right.run_id) || left.sequence - right.sequence;
 }
 
 function runEventKey(event: RunEventList["items"][number] | undefined): string {
@@ -175,6 +303,7 @@ export function useFindingControl(runId: string) {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.findings(runId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.actionRoot(runId) });
       },
     }),
   };
@@ -197,6 +326,7 @@ export function useArtifactControl(runId: string) {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(runId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.actionRoot(runId) });
       },
     }),
   };
@@ -239,6 +369,7 @@ export function useApprovalControl(runId: string) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(runId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.events(runId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.actionRoot(runId) });
     void queryClient.invalidateQueries({ queryKey: ["runs"] });
   };
   return {

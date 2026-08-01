@@ -309,7 +309,6 @@ async def test_nonempty_list_and_detail_service_flows_use_exactly_seven_selects(
         for forbidden in (
             ".arguments_json",
             ".feedback",
-            ".node_id",
             ".command_json",
             ".command_text",
             ".command_preview",
@@ -322,6 +321,7 @@ async def test_nonempty_list_and_detail_service_flows_use_exactly_seven_selects(
             ".size",
         ):
             assert forbidden not in list_sql
+        assert "executions.node_id as execution_node_id" in list_sql
 
         detail_sql = "\n".join(detail_selects).lower()
         for forbidden in (
@@ -478,6 +478,14 @@ async def test_high_cardinality_hydration_bounds_materialized_rows_without_losin
         item = listed.items[0]  # type: ignore[union-attr]
         assert item.execution_count == detailed.execution_count == 105  # type: ignore[union-attr]
         assert len(item.attempts) == len(detailed.executions) == 100  # type: ignore[union-attr]
+        assert [attempt.node_id for attempt in item.attempts] == [  # type: ignore[union-attr]
+            execution.node_id
+            for execution in detailed.executions  # type: ignore[union-attr]
+        ]
+        assert [attempt.exit_code for attempt in item.attempts] == [  # type: ignore[union-attr]
+            execution.exit_code
+            for execution in detailed.executions  # type: ignore[union-attr]
+        ]
         assert item.attempt_coverage.scanned == detailed.attempt_coverage.scanned == 100  # type: ignore[union-attr]
         assert item.attempt_coverage.limit == detailed.attempt_coverage.limit == 100  # type: ignore[union-attr]
         assert item.attempt_coverage.truncated is detailed.attempt_coverage.truncated is True  # type: ignore[union-attr]

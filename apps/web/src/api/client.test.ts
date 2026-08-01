@@ -23,6 +23,40 @@ afterEach(() => {
 });
 
 describe("RiftX API client", () => {
+  it("uses the typed cursor Action list and parent-scoped detail endpoints", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [],
+            limit: 25,
+            sort: "created_at_desc",
+            has_more: false,
+            next_cursor: null,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ action_id: "action/1", run_id: "run/1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    globalThis.fetch = fetchMock;
+
+    await api.listRunActions("run/1", "cursor+/=", 25);
+    await api.getRunAction("run/1", "action/1");
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/v1/runs/run%2F1/actions?limit=25&sort=created_at_desc&cursor=cursor%2B%2F%3D",
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "/api/v1/runs/run%2F1/actions/action%2F1",
+    );
+  });
+
   it("keeps the local token in memory and sends it on REST requests", async () => {
     const localStorageWrite = vi.spyOn(Storage.prototype, "setItem");
     const fetchMock = vi.fn().mockResolvedValue(

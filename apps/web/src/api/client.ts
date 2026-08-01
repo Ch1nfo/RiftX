@@ -20,6 +20,8 @@ import type {
   NodeStatus,
   ReportList,
   Run,
+  RunAction,
+  RunActionList,
   RunEventList,
   RunList,
   RunStatus,
@@ -226,6 +228,27 @@ export const api = {
   listEvents(runId: string, afterSequence = 0): Promise<RunEventList> {
     return request(
       `/api/v1/runs/${encodeURIComponent(runId)}/events?after_sequence=${afterSequence}&limit=1000`,
+    );
+  },
+
+  listRunActions(
+    runId: string,
+    cursor?: string,
+    limit = 50,
+  ): Promise<RunActionList> {
+    const query = new URLSearchParams({
+      limit: String(limit),
+      sort: "created_at_desc",
+    });
+    if (cursor) query.set("cursor", cursor);
+    return request(
+      `/api/v1/runs/${encodeURIComponent(runId)}/actions?${query.toString()}`,
+    );
+  },
+
+  getRunAction(runId: string, actionId: string): Promise<RunAction> {
+    return request(
+      `/api/v1/runs/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionId)}`,
     );
   },
 

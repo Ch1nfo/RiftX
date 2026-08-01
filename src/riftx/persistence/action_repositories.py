@@ -704,6 +704,7 @@ def _list_execution(state: _ActionState, row: _ExecutionRow) -> ActionListExecut
     return ActionListExecutionRead(
         execution_id=row.execution_id,
         attempt_group=row.attempt_group,
+        node_id=row.node_id or "",
         status=_enum_or_raw(row.status, ExecutionStatus),
         created_at=row.created_at,
         started_at=row.started_at,
@@ -953,7 +954,7 @@ def _execution_from_mapping(
         started_at=_optional_datetime(row["execution_started_at"]),
         finished_at=_optional_datetime(row["execution_finished_at"]),
         physical_stop_confirmed_at=_optional_datetime(row["execution_physical_stop_confirmed_at"]),
-        node_id=_optional_str(row["execution_node_id"]) if detail else None,
+        node_id=_optional_str(row["execution_node_id"]),
     )
 
 

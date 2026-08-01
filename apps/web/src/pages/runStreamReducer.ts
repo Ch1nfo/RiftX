@@ -56,12 +56,6 @@ interface AssistantStreamState {
   finalized: boolean;
 }
 
-const HIDDEN_TOOL_DELTA_TYPES = new Set([
-  "tool_call_argument_delta",
-  "tool_result_delta",
-  "tool_call_result_delta",
-]);
-
 const FINAL_ASSISTANT_EVENT_TYPES = new Set([
   "agent.message",
   "agent.assistant_message",
@@ -97,7 +91,10 @@ export function reduceRunEvents(events: RunEvent[]): RunStreamProjection {
       }
       continue;
     }
-    if (engineEvent && HIDDEN_TOOL_DELTA_TYPES.has(engineEvent.eventType)) {
+    if (engineEvent && isProviderToolEvent(engineEvent.eventType)) {
+      continue;
+    }
+    if (isActionFamilyEvent(event.event_type)) {
       continue;
     }
 
@@ -119,6 +116,20 @@ export function reduceRunEvents(events: RunEvent[]): RunStreamProjection {
   }
 
   return { conversationMessages, highLevelTimeline, rawEvents };
+}
+
+function isProviderToolEvent(eventType: string): boolean {
+  return eventType.startsWith("tool_call") || eventType.startsWith("tool_result");
+}
+
+function isActionFamilyEvent(eventType: string): boolean {
+  return (
+    eventType.startsWith("agent.tool_") ||
+    eventType.startsWith("action.") ||
+    eventType.startsWith("tool.") ||
+    eventType.startsWith("execution.") ||
+    eventType.startsWith("target_http.")
+  );
 }
 
 export function dedupeRunEvents(events: RunEvent[]): RunEvent[] {
