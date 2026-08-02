@@ -160,6 +160,20 @@ def test_run_kind_is_required_strict_and_immutable() -> None:
         run.kind = RunKind.GENERAL
 
 
+def test_run_model_profile_matches_its_database_bound() -> None:
+    required = {
+        "kind": RunKind.CODE_AUDIT,
+        "engagement_id": "engagement-1",
+        "node_id": "node-1",
+        "objective": Objective(description="Bind the model profile"),
+        "workspace_path": "/tmp/riftx/run-model-profile",
+    }
+
+    assert len(Run(model_profile="m" * 255, **required).model_profile or "") == 255
+    with pytest.raises(ValidationError, match="at most 255"):
+        Run(model_profile="m" * 256, **required)
+
+
 def test_tool_rejects_empty_command() -> None:
     with pytest.raises(ValidationError, match="tool command"):
         Tool(id="broken", name="Broken", command=[])

@@ -26,15 +26,15 @@
 ## Current Wave
 
 - Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-102 — ORM and repositories`
-- Next dependency: `AUD-101` is complete; `AUD-102` is unblocked.
+- Current task: `AUD-103 — AuditApplicationService`
+- Next dependency: `AUD-102` is complete; `AUD-103` is unblocked.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 and AUD-101 complete; AUD-102 is the current unblocked task |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-102 complete; AUD-103 is the current unblocked task |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -61,7 +61,7 @@
 | --- | --- |
 | AUD-100 RunKind | completed |
 | AUD-101 Audit domain | completed |
-| AUD-102 ORM and repositories | pending |
+| AUD-102 ORM and repositories | completed |
 | AUD-103 AuditApplicationService | pending |
 | AUD-104 API skeleton and policy | pending |
 | AUD-105 Artifact access foundation | pending |
@@ -548,7 +548,7 @@
     RiftX specification.
   - Production Code Audit Agent instructions: not applicable; AUD-101 contains no
     prompt, provider, Agent workflow, or external scanner implementation.
-- Commit: Introducing commit; hash will be backfilled by the AUD-102 ledger update.
+- Commit: `9b5f435f` (`feat(domain): define Code Audit contracts`).
 - Known limitations / next contracts:
   - AUD-102 must persist every canonical/redundant field and reject corrupt rows;
     AUD-103 must verify actual Start consent, reviewed contract digest, and live
@@ -559,18 +559,141 @@
     implements the initial publication and failed-publication retry projection.
 - Next unblocked task: AUD-102.
 
+### AUD-102 — ORM and Repositories
+
+- Status: completed.
+- Outcome:
+  - Added the eight minimum Code Audit tables, strict domain records/mappers,
+    versioned Repository Ports, SQLAlchemy repositories, and caller-owned
+    transaction primitives required to recover an Audit after restart.
+  - Added immutable SourceSnapshot identity/seal validation, canonical Contract
+    byte/digest revalidation, Project/Engagement and Audit/Run/Node/Snapshot owner
+    binding, bounded pagination, stable ordering, natural-key replay envelopes,
+    monotonic CAS, lease/reclaim rules, terminal protection, and the temporary
+    AUD-506 publication fence.
+  - Added atomic Contract+Scan creation plus session-bound Project, StartIntent,
+    Contract, Scan, and Run-convergence primitives for AUD-103/state-projector UoWs;
+    the auto-commit Audit Repository cannot claim terminal Run convergence.
+  - Treats the database as untrusted on every read. Orphan/corrupt rows, hostile IDs,
+    mismatched redundant fields, cross-owner references, missing/cross-Run Phase
+    outputs, and invalid Coverage Plan bindings fail closed with redacted errors.
+  - Serialized SQLite candidate writes with `BEGIN IMMEDIATE`; unique-key recovery
+    leaves the driver exception handler before re-querying so canonical Contract,
+    source path, or storage-locator SQL parameters cannot survive in the public
+    exception chain.
+  - Added a loss-preventing migration downgrade: PostgreSQL obtains fixed-order
+    `ACCESS EXCLUSIVE` locks and SQLite obtains the database writer lock before the
+    all-table emptiness proof; offline/unknown-dialect downgrade fails closed.
+- Files changed:
+  - Architecture/spec/progress:
+    `docs/architecture/decisions/0002-riftx-code-audit-persistence-contract.md`,
+    `docs/riftx-3-code-audit-development-spec.md`, and this ledger.
+  - Domain/application:
+    `src/riftx/domain/{__init__,audit,audit_records,run}.py`,
+    `src/riftx/application/errors.py`, and
+    `src/riftx/application/ports/{__init__,audits}.py`.
+  - Persistence/migration:
+    `src/riftx/persistence/{__init__,orm,repositories,audit_mappers,audit_repositories,transactions}.py`
+    and `migrations/versions/3b7f1d9e5a02_add_code_audit_persistence.py`.
+  - Tests:
+    `tests/unit/domain/{test_audit_domain,test_audit_persistence_domain,test_models}.py`,
+    `tests/unit/persistence/{test_audit_mappers,test_audit_schema,test_schema}.py`, and
+    `tests/integration/persistence/{test_audit_migration,test_audit_repositories}.py`.
+- Schema/migration impact:
+  - Adds Alembic revision `3b7f1d9e5a02` after `0d3a8b7c4e21` with
+    `audit_projects`, `source_snapshots`, `audit_contracts`, `audit_scans`,
+    `audit_start_intents`, `audit_phase_runs`, `audit_scope_units`, and
+    `audit_work_items`.
+  - Adds the Run candidate indexes `(id, engagement_id, kind)`,
+    `(id, engagement_id, kind, node_id)`, and `(id, status)` used by composite Audit
+    FKs. Existing rows are not rewritten during upgrade.
+  - `AuditContract`/`AuditScan` and `Run` freeze `model_profile` at 255 characters so
+    the domain and length-enforcing database columns cannot diverge.
+- Security boundary impact:
+  - This task does not read Git, create CAS bytes, start Temporal, expose API/UI/CLI,
+    run a Detector/Agent, execute target code, or enable the feature flag.
+  - Contract creation cannot leave an orphan row; Snapshot/Project/Scan/Intent/Phase/
+    Scope/Work creation validates the persisted candidate by its own authorization
+    owner before comparing the request envelope. Legitimate cross-Audit collisions
+    are opaque conflicts; corrupted persisted ownership is an integrity failure.
+  - Phase outputs are empty while queued/running. Terminal output Artifacts are
+    locked and validated as existing on the same Run; raw deletion/rebinding makes
+    create replay, get, list, CAS, and restart reads fail closed.
+  - Distribution revision facts remain rejected until AUD-506 installs their owning
+    table, composite FK, and atomic Publisher.
+- Tests run:
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/domain/test_audit_domain.py tests/unit/domain/test_audit_persistence_domain.py tests/unit/persistence/test_audit_mappers.py tests/unit/persistence/test_audit_schema.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_audit_migration.py tests/integration/persistence/test_audit_repositories.py`
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/persistence tests/integration/persistence`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent mypy src/riftx/domain/audit.py src/riftx/domain/audit_records.py src/riftx/domain/run.py src/riftx/application/ports/audits.py src/riftx/persistence/orm.py src/riftx/persistence/audit_mappers.py src/riftx/persistence/audit_repositories.py src/riftx/persistence/transactions.py migrations/versions/3b7f1d9e5a02_add_code_audit_persistence.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - The seven-file Audit suite passed: `840 passed`.
+  - The complete unit/integration persistence suite passed: `280 passed`.
+  - Repository Ruff and targeted Mypy passed.
+  - The complete Python suite passed: `3549 passed, 5 skipped`.
+  - The independence boundary reported `ready=true`: 9 dependency manifests,
+    454 production files, 0 explicit artifacts, and 0 violations.
+  - The executable release gate reported `ready=true`; all 16 gates passed.
+  - `git diff --check` passed. Ten Python 3.12 `aiosqlite` default datetime-adapter
+    deprecations plus one existing Pydantic `UnsupportedFieldAttributeWarning` were
+    non-blocking warnings.
+- Manual verification:
+  - Independent reviewers reproduced and then reverified sensitive `IntegrityError`
+    chains, cross-Audit Contract/Work ID collisions, cross-Run Phase Artifacts,
+    Run-terminal convergence rollback, SQLite downgrade writer serialization, and
+    hostile orphan-ID redaction.
+  - Final independent review reports P0=0, P1=0, and P2=0.
+- Provenance:
+  - Requirements source: authoritative specification sections 8.3, 8.4, 13.2,
+    13.5, 13.7, and section 22 / AUD-102; accepted ADR-0002.
+  - Implementation, migration, and synthetic test author: Codex task `/root`; Git
+    author: Ch1nfo. ADR requirements author: Codex task `m0_docs_map`.
+  - Requirements/adversarial review: Codex task `aud102_adversarial_design`.
+    Independent Repository and security reviews: Codex tasks
+    `aud102_repository_review` and `aud102_final_security`; independent verification:
+    Codex task `aud102_full_verify`; final review: Codex task `/root`.
+  - Review result: approved only after Phase Artifact ownership, SQL-parameter
+    exception-chain leakage, Contract replay ambiguity, cross-Audit collision error
+    classification, and model-profile length findings were closed and regression
+    tested.
+  - Third-party expressive material: none. Domain names, schemas, migration,
+    repositories, fixtures, and tests are RiftX-owned; no Codex Security Provider,
+    code, Prompt, Schema, Skill, runtime, endpoint, or dependency was used.
+- Commit: Introducing commit; hash will be backfilled by the AUD-103 ledger update.
+- Known limitations:
+  - PostgreSQL DDL, composite FK, offline SQL, and downgrade lock ordering are
+    contract-tested; RiftX does not claim PostgreSQL runtime support before a real
+    database CI matrix validates lock and concurrency behavior.
+  - Phase output IDs are a bounded JSON projection rather than normalized FK rows.
+    The Repository locks them during CAS and fails closed after deletion/rebinding;
+    normalized immutable output-reference rows may be added with the owning Artifact
+    ledger if prevention, rather than detection, becomes required.
+  - SnapshotStore/CAS bytes, Git preflight, aggregate creation/client-request UoW,
+    API, Temporal delivery, Inventory, Detector/Agent, and Closure remain intentionally
+    outside AUD-102.
+- Next unblocked task: AUD-103.
+
 ## Design Deviations and ADRs
 
 - `ADR-0001`: RiftX Code Audit is an independent reimplementation and does not claim
   a strict clean-room process. M0 proves the scanner contract and records local bundle
   evidence; the complete candidate build/SBOM matrix remains an M10 release gate.
+- `ADR-0002`: freezes the minimum Code Audit persistence, ownership, canonical digest,
+  replay, CAS, terminal convergence, publication-fence, and lossless-downgrade
+  contract implemented by AUD-102.
 
 ## Current Risks
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- Audit admission and execution are intentionally unavailable until the remaining
-  M1-M3 tasks add durable Audit state, signed preflight, immutable snapshots, and the
-  deterministic slice.
+- Audit admission and execution are intentionally unavailable until AUD-103 onward
+  adds the aggregate creation service, API policy, signed preflight, SnapshotStore,
+  Inventory, and the deterministic slice.
+- PostgreSQL remains a contract-tested future runtime, not a supported deployment;
+  the current persistence concurrency evidence is authoritative for SQLite only.
 - AUD-106 must install the kind-aware mutation inventory, Workflow router, and
   reconciliation boundary before any `code_audit` Run can execute.

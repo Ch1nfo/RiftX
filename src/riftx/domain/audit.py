@@ -72,6 +72,10 @@ type AuditId = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=128, pattern=_ID_PATTERN),
 ]
+type AuditNodeId = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=64, pattern=_ID_PATTERN),
+]
 type AuditToken = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=256, pattern=_TOKEN_PATTERN),
@@ -853,11 +857,11 @@ class AuditExecutionSelection(AuditStrictModel):
     schema_version: Literal["riftx.audit-execution-selection/v1"] = (
         AUDIT_EXECUTION_SELECTION_SCHEMA_VERSION
     )
-    source_node_id: AuditId
+    source_node_id: AuditNodeId
     source_ingest_backend_id: AuditToken
     source_ingest_backend_digest: Sha256Digest
     source_prepare_proof_digest: Sha256Digest
-    selected_node_id: AuditId
+    selected_node_id: AuditNodeId
     required_backend_id: AuditToken
     analysis_backend_digest: Sha256Digest
     analysis_prepare_proof_digest: Sha256Digest
@@ -942,7 +946,11 @@ class AuditContract(AuditStrictModel):
     detectors: tuple[VersionedComponentRef, ...] = Field(min_length=1, max_length=256)
     rulepacks: tuple[VersionedComponentRef, ...] = Field(default_factory=tuple, max_length=128)
     parsers: tuple[VersionedComponentRef, ...] = Field(default_factory=tuple, max_length=128)
-    model_profile: AuditToken | None = None
+    # The selected profile is copied onto the authoritative Run, whose stable
+    # persistence contract is VARCHAR(255).  Keep this narrower than a generic
+    # 256-character AuditToken so a domain-valid Audit cannot fail at that FK
+    # binding boundary on length-enforcing databases.
+    model_profile: AuditToken | None = Field(default=None, max_length=255)
     model_profile_digest: Sha256Digest | None = None
     model_data_egress_policy: ModelDataEgressPolicy
     validation_policy: ValidationPolicy
@@ -1257,10 +1265,10 @@ class AuditContractRecord(AuditStrictModel):
     )
     contract_digest: Sha256Digest
     source_target_digest: Sha256Digest
-    source_node_id: AuditId
+    source_node_id: AuditNodeId
     source_ingest_backend_digest: Sha256Digest
     source_prepare_proof_digest: Sha256Digest
-    selected_node_id: AuditId
+    selected_node_id: AuditNodeId
     required_backend_id: AuditToken
     snapshot_hydration_policy_digest: Sha256Digest
     created_at: AwareDatetime = Field(default_factory=utc_now)
@@ -1604,14 +1612,16 @@ class AuditScan(AuditStrictModel):
     core_seal_root: Sha256Digest | None = None
     initial_distribution_revision_id: AuditId | None = None
     latest_distribution_revision_id: AuditId | None = None
-    model_profile: AuditToken | None = None
-    selected_node_id: AuditId
+    model_profile: AuditToken | None = Field(default=None, max_length=255)
+    selected_node_id: AuditNodeId
     required_backend_id: AuditToken
     policy_digest: Sha256Digest
     budget_digest: Sha256Digest
     config_digest: Sha256Digest
     contract_digest: Sha256Digest
-    temporal_workflow_id: AuditId
+    # Temporal's deterministic ``riftx-code-audit-{audit_id}`` identifier can
+    # exceed the 128-character Audit ID bound, so it uses the wider token type.
+    temporal_workflow_id: AuditToken
     created_at: AwareDatetime = Field(default_factory=utc_now)
     started_at: AwareDatetime | None = None
     analysis_finished_at: AwareDatetime | None = None
@@ -1620,6 +1630,8 @@ class AuditScan(AuditStrictModel):
 
     @model_validator(mode="after")
     def validate_scan(self) -> AuditScan:
+        if self.temporal_workflow_id != f"riftx-code-audit-{self.id}":
+            raise ValueError("Audit temporal_workflow_id must be deterministic")
         if self.purpose is AuditPurpose.PRIMARY:
             if self.parent_audit_id is not None:
                 raise ValueError("primary Audit cannot have a parent_audit_id")

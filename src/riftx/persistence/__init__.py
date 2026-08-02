@@ -1,6 +1,21 @@
 """RiftX persistence infrastructure."""
 
 from .action_repositories import SQLAlchemyActionReadRepository
+from .audit_repositories import (
+    SQLAlchemyAuditContractRepository,
+    SQLAlchemyAuditPhaseRepository,
+    SQLAlchemyAuditProjectRepository,
+    SQLAlchemyAuditRepository,
+    SQLAlchemyAuditScopeRepository,
+    SQLAlchemyAuditStartIntentRepository,
+    SQLAlchemyAuditWorkRepository,
+    SQLAlchemySnapshotRepository,
+    compare_and_set_audit_contract,
+    compare_and_set_audit_scan,
+    create_audit_project,
+    create_audit_start_intent,
+    create_scan_contract_pair,
+)
 from .browser_repositories import SQLAlchemyBrowserRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
@@ -36,6 +51,13 @@ from .transcript_repositories import SQLAlchemyTranscriptRepository
 
 __all__ = [
     "SQLAlchemyActionReadRepository",
+    "SQLAlchemyAuditContractRepository",
+    "SQLAlchemyAuditPhaseRepository",
+    "SQLAlchemyAuditProjectRepository",
+    "SQLAlchemyAuditRepository",
+    "SQLAlchemyAuditScopeRepository",
+    "SQLAlchemyAuditStartIntentRepository",
+    "SQLAlchemyAuditWorkRepository",
     "SQLAlchemyAgentCycleRepository",
     "SQLAlchemyAgentSessionRepository",
     "SQLAlchemyAgentStepRepository",
@@ -65,4 +87,10 @@ __all__ = [
     "SQLAlchemyUserInputRequestRepository",
     "SQLAlchemyTranscriptRepository",
     "SQLAlchemyTrafficMetadataReadRepository",
+    "SQLAlchemySnapshotRepository",
+    "compare_and_set_audit_contract",
+    "compare_and_set_audit_scan",
+    "create_audit_project",
+    "create_audit_start_intent",
+    "create_scan_contract_pair",
 ]

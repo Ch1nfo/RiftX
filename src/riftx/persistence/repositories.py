@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import and_, case, func, or_, select, text, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -116,43 +115,15 @@ from .orm import (
     TerminalSessionRecord,
     ToolCallRecord,
 )
+from .transactions import serialized_write
+
+# Backward-compatible injection point used by the Run repository's concurrency
+# tests and by runtime repositories.  The implementation now lives in the
+# shared transaction module so Code Audit repositories can reuse it without a
+# circular import.
+_serialized_run_write = serialized_write
 
 SessionFactory = async_sessionmaker[AsyncSession]
-
-
-@asynccontextmanager
-async def _serialized_run_write(
-    session_factory: SessionFactory,
-) -> AsyncIterator[AsyncSession]:
-    """Start a transaction that serializes a Run read-before-write on SQLite.
-
-    ``SELECT ... FOR UPDATE`` provides the row-level lock used by the Run
-    repositories on server databases, but SQLite ignores that clause.  Worse,
-    pysqlite defers ``BEGIN`` until the first write, so a nominal SQLAlchemy
-    transaction can read the Run and its events without holding any database
-    lock.  A competing writer may then commit between that read and our first
-    write, allowing both sides of a lifecycle fence to win.
-
-    ``BEGIN IMMEDIATE`` obtains SQLite's RESERVED writer lock before the first
-    read.  Competing writers wait and then re-read committed state, making the
-    whole read/decision/write unit linearizable.  Other dialects retain the
-    normal SQLAlchemy transaction and their row lock semantics.
-    """
-
-    async with session_factory() as session:
-        if session.get_bind().dialect.name == "sqlite":
-            await session.execute(text("BEGIN IMMEDIATE"))
-            try:
-                yield session
-            except BaseException:
-                await session.rollback()
-                raise
-            else:
-                await session.commit()
-            return
-
-        async with session.begin():
-            yield session
 
 
 class SQLAlchemyArtifactRepository:
@@ -324,7 +295,7 @@ class SQLAlchemyRunnerCredentialRepository:
         """Atomically advance a node epoch and persist its new owner credential."""
 
         try:
-            async with _serialized_run_write(self._session_factory) as session:
+            async with serialized_write(self._session_factory) as session:
                 node = await session.scalar(
                     select(NodeRecord).where(NodeRecord.id == node_id).with_for_update()
                 )
@@ -810,7 +781,7 @@ class SQLAlchemyRunRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -868,7 +839,7 @@ class SQLAlchemyRunRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -906,7 +877,7 @@ class SQLAlchemyRunRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -966,7 +937,7 @@ class SQLAlchemyRunRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -1276,7 +1247,7 @@ class SQLAlchemyRunEventRepository:
         followed by Terminal and Execution.  Terminal CAS writes never hold an
         Execution or Run lock, so this order cannot form a lock cycle with
         ``SQLAlchemyTerminalRepository.save_if_status``.  SQLite uses
-        ``BEGIN IMMEDIATE`` through ``_serialized_run_write``; server databases
+        ``BEGIN IMMEDIATE`` through ``serialized_write``; server databases
         use the row locks below.  In both cases, either the lower-state event
         commits before a higher Terminal transition, or it observes that
         transition/status update and is explicitly skipped.
@@ -1287,7 +1258,7 @@ class SQLAlchemyRunEventRepository:
         for attempt in range(10):
             resolved_payload: dict[str, object] | None = None
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     run_record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -1411,7 +1382,7 @@ class SQLAlchemyRunEventRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     run_record = await session.scalar(
                         select(RunRecord).where(RunRecord.id == run_id).with_for_update()
                     )
@@ -1543,7 +1514,7 @@ class SQLAlchemyFindingRepository:
 
     async def create(self, finding: Finding) -> Finding:
         try:
-            async with _serialized_run_write(self._session_factory) as session:
+            async with serialized_write(self._session_factory) as session:
                 run_exists = await session.scalar(
                     select(RunRecord.id).where(RunRecord.id == finding.run_id).with_for_update()
                 )
@@ -1579,7 +1550,7 @@ class SQLAlchemyFindingRepository:
         *,
         expected_updated_at: datetime,
     ) -> tuple[Finding, bool]:
-        async with _serialized_run_write(self._session_factory) as session:
+        async with serialized_write(self._session_factory) as session:
             record = await session.scalar(
                 select(FindingRecord).where(FindingRecord.id == finding.id).with_for_update()
             )
@@ -1742,7 +1713,7 @@ class SQLAlchemyApprovalRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     record = await session.scalar(
                         select(ApprovalRecord)
                         .where(ApprovalRecord.id == approval_id)
@@ -1798,7 +1769,7 @@ class SQLAlchemyApprovalRepository:
         last_conflict: IntegrityError | OperationalError | None = None
         for attempt in range(10):
             try:
-                async with _serialized_run_write(self._session_factory) as session:
+                async with serialized_write(self._session_factory) as session:
                     # Approval.run_id is immutable. This first lookup only discovers
                     # which Run row must be locked before the mutable aggregate rows.
                     run_id = await session.scalar(
@@ -2100,7 +2071,7 @@ class SQLAlchemyTerminalRepository:
         return terminal_from_record(record) if record is not None else None
 
     async def save(self, terminal: TerminalSession) -> TerminalSession:
-        async with _serialized_run_write(self._session_factory) as session:
+        async with serialized_write(self._session_factory) as session:
             record = await session.scalar(
                 select(TerminalSessionRecord)
                 .where(TerminalSessionRecord.id == terminal.id)
@@ -2124,7 +2095,7 @@ class SQLAlchemyTerminalRepository:
         expected_statuses = set(expected)
         if not expected_statuses:
             raise ValueError("expected terminal statuses cannot be empty")
-        async with _serialized_run_write(self._session_factory) as session:
+        async with serialized_write(self._session_factory) as session:
             record = await session.scalar(
                 select(TerminalSessionRecord)
                 .where(TerminalSessionRecord.id == terminal.id)
@@ -2434,7 +2405,7 @@ class SQLAlchemyExecutionRepository:
 
     async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]:
         try:
-            async with _serialized_run_write(self._session_factory) as session:
+            async with serialized_write(self._session_factory) as session:
                 existing = await session.scalar(
                     select(ExecutionRecord)
                     .where(ExecutionRecord.execution_key == execution.execution_key)
@@ -2487,7 +2458,7 @@ class SQLAlchemyExecutionRepository:
         return None
 
     async def save(self, execution: Execution) -> Execution:
-        async with _serialized_run_write(self._session_factory) as session:
+        async with serialized_write(self._session_factory) as session:
             record = await session.scalar(
                 select(ExecutionRecord).where(ExecutionRecord.id == execution.id).with_for_update()
             )
@@ -2529,7 +2500,7 @@ class SQLAlchemyExecutionRepository:
         expected_statuses = set(expected)
         if not expected_statuses:
             raise ValueError("expected execution statuses cannot be empty")
-        async with _serialized_run_write(self._session_factory) as session:
+        async with serialized_write(self._session_factory) as session:
             record = await session.scalar(
                 select(ExecutionRecord).where(ExecutionRecord.id == execution.id).with_for_update()
             )

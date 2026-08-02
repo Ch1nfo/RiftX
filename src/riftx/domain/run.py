@@ -170,7 +170,7 @@ class Scope(DomainModel):
 class Run(DomainModel):
     id: str = Field(default_factory=new_id)
     engagement_id: str
-    node_id: str
+    node_id: str = Field(min_length=1, max_length=64)
     objective: Objective
     success_criteria: list[SuccessCriterion] = Field(default_factory=list)
     entry_points: list[EntryPoint] = Field(default_factory=list)
@@ -178,7 +178,7 @@ class Run(DomainModel):
     kind: RunKind = Field(frozen=True)
     status: RunStatus = RunStatus.CREATED
     approval_mode: ApprovalMode = ApprovalMode.BALANCED
-    model_profile: str | None = Field(default=None, min_length=1)
+    model_profile: str | None = Field(default=None, min_length=1, max_length=255)
     workspace_path: str
     temporal_workflow_id: str | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)

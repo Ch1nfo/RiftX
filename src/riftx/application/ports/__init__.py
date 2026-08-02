@@ -1,5 +1,16 @@
 """Interfaces implemented by RiftX infrastructure adapters."""
 
+from .audits import (
+    AuditContractRepository,
+    AuditPhaseRepository,
+    AuditProjectRepository,
+    AuditRepository,
+    AuditScopeRepository,
+    AuditStartIntentRepository,
+    AuditWorkRepository,
+    SnapshotRepository,
+    StoredAuditEntity,
+)
 from .repositories import (
     ActionReadRepository,
     ApprovalRepository,
@@ -21,6 +32,13 @@ from .repositories import (
 
 __all__ = [
     "ActionReadRepository",
+    "AuditContractRepository",
+    "AuditPhaseRepository",
+    "AuditProjectRepository",
+    "AuditRepository",
+    "AuditScopeRepository",
+    "AuditStartIntentRepository",
+    "AuditWorkRepository",
     "ApprovalRepository",
     "ArtifactRepository",
     "EngagementRepository",
@@ -33,6 +51,8 @@ __all__ = [
     "RunnerCredentialRepository",
     "RunEventRepository",
     "RunRepository",
+    "SnapshotRepository",
+    "StoredAuditEntity",
     "TerminalRepository",
     "ToolCallIntentExecutionClaim",
     "ToolCallIntentRepository",

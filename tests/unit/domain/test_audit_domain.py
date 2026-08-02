@@ -443,7 +443,7 @@ def _scan(
         budget_digest=contract.budget.digest,
         config_digest=contract.config_digest,
         contract_digest=contract.contract_digest,
-        temporal_workflow_id="audit-workflow-1",
+        temporal_workflow_id=f"riftx-code-audit-{contract.audit_id}",
         created_at=NOW,
     )
 
@@ -775,6 +775,28 @@ def test_deterministic_and_hybrid_model_contracts_fail_closed() -> None:
         AuditContract.model_validate(payload)
 
 
+def test_model_profile_matches_the_authoritative_run_storage_bound() -> None:
+    payload = _payload(_contract(profile=AnalysisProfile.HYBRID))
+    payload["model_profile"] = "m" * 255
+    bounded = AuditContract.model_validate(payload)
+    assert len(bounded.model_profile or "") == 255
+
+    record = AuditContractRecord.from_contract(bounded, created_at=NOW)
+    scan = _scan(bounded, record)
+    assert len(scan.model_profile or "") == 255
+
+    payload["model_profile"] = "m" * 256
+    with pytest.raises(ValidationError, match="at most 255"):
+        AuditContract.model_validate(payload)
+    with pytest.raises(ValidationError, match="at most 255"):
+        AuditScan.model_validate(
+            {
+                **scan.model_dump(mode="python"),
+                "model_profile": "m" * 256,
+            }
+        )
+
+
 def test_remote_egress_requires_canonical_origin_and_redaction() -> None:
     origins = ("https://model.example",)
     valid = ModelDataEgressPolicy(
@@ -1008,6 +1030,14 @@ def test_capabilities_must_bind_frozen_execution_and_component_selection() -> No
     )
     with pytest.raises(ValidationError, match="isolated_test.*analysis backend"):
         AuditContract.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ("source_node_id", "selected_node_id"))
+def test_audit_execution_node_ids_fit_the_run_persistence_contract(field: str) -> None:
+    payload = _payload(_execution_selection())
+    payload[field] = "n" * 65
+    with pytest.raises(ValidationError):
+        AuditExecutionSelection.model_validate(payload)
 
 
 def test_scoped_capability_cannot_downgrade_a_global_requirement() -> None:
@@ -1306,6 +1336,30 @@ def test_audit_scan_initial_projection_and_contract_binding() -> None:
     mismatched = AuditScan.model_validate(payload)
     with pytest.raises(ValueError, match="contract_id"):
         mismatched.validate_contract_record(record)
+
+
+def test_audit_scan_accepts_deterministic_workflow_id_for_maximum_length_audit_id() -> None:
+    scan = _scan()
+    audit_id = "a" * 128
+    workflow_id = f"riftx-code-audit-{audit_id}"
+
+    persisted = AuditScan.model_validate(
+        {
+            **scan.model_dump(mode="python"),
+            "id": audit_id,
+            "temporal_workflow_id": workflow_id,
+        }
+    )
+
+    assert persisted.temporal_workflow_id == workflow_id
+
+    with pytest.raises(ValidationError, match="must be deterministic"):
+        AuditScan.model_validate(
+            {
+                **scan.model_dump(mode="python"),
+                "temporal_workflow_id": "riftx-code-audit-wrong",
+            }
+        )
 
 
 def test_contract_binding_revalidates_model_constructed_record() -> None:

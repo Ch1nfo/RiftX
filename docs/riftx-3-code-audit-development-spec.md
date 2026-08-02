@@ -679,19 +679,36 @@ manifest_digest
 file_count
 total_bytes
 created_at
+sealed_at
 ~~~
 
 其中：
 
 ~~~text
-snapshot_digest = H(
-  tree_digest
-  || capture_policy_digest
-  || materializer_schema_version
+snapshot_identity_json = canonical_json({
+  "capture_policy_digest": capture_policy_digest,
+  "materializer_schema_version": materializer_schema_version,
+  "tree_digest": tree_digest
+})
+
+snapshot_digest = SHA256(
+  UTF8("riftx.source-snapshot/v1")
+  || 0x00
+  || UTF8(snapshot_identity_json)
 )
 ~~~
 
-`tree_digest` 只表示源树内容；`capture_policy_digest` 冻结 include/exclude、untracked、submodule、LFS、generated/vendor、symlink、解码和大小上限等所有会改变 Manifest 决议的输入。Snapshot 只能按 `project_id + snapshot_digest` 去重，绝不能只按 `project_id + tree_digest` 复用不同策略的 Manifest。
+identity JSON 固定为上述三个 key，使用 UTF-8、按 key 排序、无多余空白的 canonical
+encoding；digest 使用小写十六进制。`tree_digest` 只表示源树内容；
+`capture_policy_digest` 冻结 include/exclude、untracked、submodule、LFS、
+generated/vendor、symlink、解码和大小上限等所有会改变 Manifest 决议的输入。Snapshot
+只能按 `project_id + snapshot_digest` 去重，绝不能只按 `project_id + tree_digest` 复用
+不同策略的 Manifest。
+
+`source_snapshots` 采用 **insert-is-seal**：staging、Manifest 和全部 included blob 的独立
+可读性验证完成后才插入数据库；每行 `sealed_at` 非空且不早于 `created_at`，Repository 不提供
+update/save。`parent_snapshot_id`、`base_tree_digest`、`patch_digest` 必须 all-or-none，三者同时
+为空表示普通 Snapshot，同时非空表示 Retest 派生 Snapshot。完整持久化决策见 ADR-0002。
 
 实现要求：
 
@@ -749,7 +766,7 @@ node-local bytes 也有独立生命周期。Backend 二选一且写入 capabilit
 
 ### 8.4 Code Scope Ledger
 
-ScopeUnit 类型：
+`AuditScopeKind` v1 类型：
 
 - file
 - symbol
@@ -759,6 +776,10 @@ ScopeUnit 类型：
 - configuration
 - trust_boundary
 
+`AuditRiskTier` v1 为 `low | medium | high | critical`；`AuditScopeStatus` v1 为
+`included | analyzed | excluded | deferred | failed`。`closure_code` 是有界
+`AuditToken`，不得用未设上限的自由文本代替。
+
 字段至少包括：
 
 ~~~text
@@ -766,6 +787,7 @@ id
 audit_id
 snapshot_id
 kind
+stable_key
 relative_path
 blob_digest
 symbol_anchor
@@ -777,7 +799,13 @@ closure_reason
 receipt_count
 created_at
 updated_at
+state_version
 ~~~
+
+`stable_key` 是 64 位小写十六进制 SHA-256，由版本化 Scope identity schema 生成；唯一约束为
+`(audit_id, snapshot_id, kind, stable_key)`。相同键只有在所有 identity/input 字段恒等时才是
+幂等重试，同键异内容必须冲突。`state_version` 从 1 开始，是唯一 CAS token；禁止用时间戳或
+status 代替。
 
 风险排序只决定调度顺序，不能让低风险对象静默消失。
 
@@ -1304,13 +1332,27 @@ repository_identity_digest
 default_branch（可选）
 created_at
 updated_at
+state_version
 ~~~
 
-repository_identity_digest 由规范化 Git identity 与操作员确认信息生成。每个 CodeProject 关联一个 Engagement，以满足 Run 强制 FK 与授权事实；创建 Project 时在同一 UoW 创建或验证 Operator 指定的 Engagement，authorization_reference 保存 source authorization/policy digest 而非绝对路径。原始本地绝对路径是敏感服务端配置，不进入指纹、不进入 Event、不默认返回 UI。
+`AuditVcsKind` v1 只有 `git`。`repository_identity_digest` 由规范化 Git identity 与操作员
+确认信息生成，并在当前单实例部署边界内全局唯一；它不是跨 RiftX 实例的 registry，也不得
+成为未授权的 repository-existence oracle。命中已有 digest 时，只有同一 Project/Engagement
+授权域且 immutable identity 完全一致的请求才能幂等复用，否则返回不泄漏对象存在性的冲突。
+每个 CodeProject 关联一个 Engagement，以满足 Run 强制 FK 与授权事实；创建 Project 时在
+同一 UoW 创建或验证 Operator 指定的 Engagement，authorization_reference 保存 source
+authorization/policy digest 而非绝对路径。原始本地绝对路径是敏感服务端配置，不进入指纹、
+不进入 Event、不默认返回 UI。`state_version` 从 1 开始，用于 Project metadata CAS。
 
 #### SourceSnapshot
 
-字段见第 8 节。Snapshot 一经 sealed 不允许修改。SnapshotStore 中的 Manifest 必须与 `manifest_digest`、`tree_digest`、`capture_policy_digest` 和 `snapshot_digest` 相互校验；Repository 复用前必须同时命中 `project_id + snapshot_digest`。Run-scoped Manifest Artifact 只是投影，不能作为 SourceSnapshot FK 或生命周期 owner。
+字段见第 8 节。SourceSnapshot 插入即 sealed，`sealed_at` 非空，且不提供 update/save；
+Retest 的 `parent_snapshot_id + base_tree_digest + patch_digest` 必须 all-or-none。SnapshotStore
+中的 Manifest 必须与 `manifest_digest`、`tree_digest`、`capture_policy_digest` 和按
+`riftx.source-snapshot/v1` domain-separated canonical identity JSON 重算的
+`snapshot_digest` 相互校验；Repository 复用前必须同时命中
+`project_id + snapshot_digest` 并逐字段恒等。Run-scoped Manifest Artifact 只是投影，不能
+作为 SourceSnapshot FK 或生命周期 owner。
 
 #### AuditContractRecord
 
@@ -1339,6 +1381,7 @@ required_backend_id
 snapshot_hydration_policy_digest
 created_at
 sealed_at
+state_version
 ~~~
 
 canonical contract 中的 `AuditExecutionSelection` 至少冻结：
@@ -1362,7 +1405,16 @@ CapabilityMatrix 的 SourceIngest/AnalysisBackend rows 是这些字段的交叉�
 互相冲突的 backend 身份。AuditContractRecord 的冗余查询列只是索引/快速校验；canonical
 contract 始终是完整恢复源，每个冗余值都必须与其重新解析结果恒等。
 
-Worker 重启只从该记录恢复，不读取当前配置来“补全”旧合同。AuditScan 保存 `contract_id + contract_digest` FK；两者不匹配必须 fail-closed。Preflight plan 的 token hash、expiry、reserved/consumed audit、content digest 与 `client_request_id` 使用独立列和唯一约束，不得只存在内存。
+Worker 重启只从该记录恢复，不读取当前配置来“补全”旧合同。
+`canonical_contract_json` 必须用 Text 原样保存，不能由 JSON column 重新编码。为避免循环 FK，
+v1 只建立 Scan→Contract 单向复合 FK：`audit_contracts` 保留 `audit_id UNIQUE` 但不反向引用
+Scan，并提供 `(contract_id, audit_id, contract_digest)` 唯一候选键；
+`audit_scans(contract_id, id, contract_digest)` 指向该键。Contract 不允许独立 create，只能由
+session-bound aggregate pair primitive 与 Scan 同事务创建；任何一行失败都回滚。两者或
+canonical/冗余字段不匹配必须 fail-closed。`state_version` 从 1 开始，canonical 字段创建后
+不可替换，只有 seal 等显式 mutation 使用 CAS。Preflight plan 的 token hash、expiry、
+reserved/consumed audit、content digest 与 `client_request_id` 使用独立列和唯一约束，不得只
+存在内存。
 
 #### AuditScan
 
@@ -1370,8 +1422,10 @@ Worker 重启只从该记录恢复，不读取当前配置来“补全”旧合�
 id
 run_id
 project_id
+engagement_id
+run_kind: code_audit
 contract_id
-snapshot_id（Snapshot sealed 前可空）
+snapshot_id（sealed Snapshot 创建/绑定前可空）
 base_snapshot_id（Diff 可选）
 baseline_audit_id（可选）
 purpose: primary | validation_followup | retest
@@ -1401,19 +1455,37 @@ started_at
 analysis_finished_at
 publication_finished_at
 sealed_at
+state_version
 ~~~
 
 约束：
 
 - run_id 唯一；
-- run.kind 必须为 code_audit；
-- `draft/queued/preflighting/snapshotting` 允许 snapshot_id 为空；Snapshot seal 与 FK 更新原子提交，running/finalizing 以及 outcome=complete/partial 要求 snapshot_id 非空；Start 前或 Snapshot 失败后的 failed/cancelled partial-facts seal 是明确例外，可以没有 Snapshot；
+- `run_kind` 只能是 `code_audit`；`runs(id, engagement_id, kind)`、
+  `runs(id, engagement_id, kind, node_id)`、`runs(id, status)` 与
+  `audit_projects(id, engagement_id)` 提供复合唯一候选键，Scan 分别以
+  `(run_id, engagement_id, run_kind, selected_node_id)`、`(run_id, run_terminal_status)` 和
+  `(project_id, engagement_id)` 复合 FK 绑定，禁止给已有 general Run 追加 AuditScan，也禁止
+  跨 Engagement/Node 组合 Run/Project；Audit source/analysis Node ID 与现有 Run/Node 持久化统一
+  为最多 64 字符；
+- `draft/queued/preflighting/snapshotting` 允许 snapshot_id 为空；insert-is-seal Snapshot 行创建与
+  Scan FK 更新原子提交，running/finalizing 以及 outcome=complete/partial 要求 snapshot_id
+  非空；Start 前或 Snapshot 失败后的 failed/cancelled partial-facts seal 是明确例外，可以没有
+  Snapshot；
 - Diff 只由 `AuditMode.DIFF` 表示，head/base Snapshot 必须原子绑定、同时存在且不同；非 Diff 禁止 base_snapshot_id；
 - `current_phase=map_scope..validate_closure` 时，即使 lifecycle 已进入 failing/cancelling，也必须有 started_at 和 sealed Snapshot，Diff 还必须有 base Snapshot；只有 authorize_and_freeze/Snapshot 失败等真正早期路径可无 Snapshot；
 - cleanup_proof_digest 与 run_terminal_status 必须原子出现，并按 terminal_outcome 映射为 complete/partial→Run completed、failed→Run failed、cancelled→Run cancelled；两者未记录时禁止产生 Closure 或进入 sealing_core，一经记录不可替换；
+- 上述 cleanup/Run convergence 只能在 `AuditRunStateProjector` 的 caller-owned 单事务内完成：
+  锁定并终结 Run、受限 Scan CAS、Event 必须同成同败；普通 auto-commit Audit Repository 不得
+  单独写 convergence。读取时 Run 已终态但 Scan 未记录、或两者 status 不同，一律视为 integrity
+  conflict；
 - publication_status 只能由 AuditRunStateProjector/Publisher 更新；reporting 以后要求 core_seal_root，published 要求同 Audit 的 latest revision FK，revision 只能前进不能覆盖；
+- `audit_distribution_revisions` 与同 Audit FK 在 AUD-506 落地前，Repository 必须拒绝
+  `publication_status=published` 以及任何非空 distribution revision/publication-finished
+  facts；不得用裸字符串或 placeholder 模拟已发布事实；
 - project、snapshot、base 和 baseline 必须同一对象授权域；
 - sealed 后只允许追加 Triage、Alias、Validation Supplement 和 Retest 关系，不允许改写扫描结论。
+- `state_version` 从 1 开始，是 Scan mutation 的唯一 CAS token；状态和时间戳不能充当 token。
 
 #### AuditPhaseRun
 
@@ -1432,9 +1504,13 @@ error_code
 error_summary
 started_at
 finished_at
+state_version
 ~~~
 
-唯一约束：audit_id、phase、idempotency_key。错误摘要必须脱敏，完整诊断作为受限 Artifact。
+`AuditPhaseRunStatus` v1 为
+`queued | running | completed | failed | deferred | cancelled | not_applicable`。
+唯一约束：audit_id、phase、idempotency_key。错误摘要必须有界、脱敏，完整诊断作为受限
+Artifact。`state_version` 从 1 开始，claim/finish/terminal protection 全部使用 CAS。
 
 #### AuditWorkItem
 
@@ -1457,9 +1533,17 @@ required_coverage_plan_digest
 receipt_id
 created_at
 updated_at
+state_version
 ~~~
 
-唯一约束：audit_id、phase、epoch、stable_key。Activity 重试先查询已有 terminal WorkItem；模型/外部效果按第 14.3 节的可判定幂等或 `outcome_unknown` 规则处理，不虚假承诺网络模型调用 exactly-once。
+`AuditWorkStatus` v1 为
+`queued | leased | running | completed | failed | deferred | cancelled | outcome_unknown`；
+`AuditRiskTier` 与 ScopeUnit 相同，`strategy` 为有界 `AuditToken`。`stable_key` 是 64 位小写
+十六进制 SHA-256，唯一约束为 `(audit_id, phase, epoch, stable_key)`；相同键仅在 identity、
+input 和 coverage-plan digest 恒等时幂等复用。`state_version` 从 1 开始，lease/claim/renew/
+finish 使用 CAS。Activity 重试先查询已有 terminal WorkItem；`outcome_unknown` 禁止自动重新
+执行，只能进入显式 reconciliation。模型/外部效果按第 14.3 节的可判定幂等或
+`outcome_unknown` 规则处理，不虚假承诺网络模型调用 exactly-once。
 
 ### 13.3 建议新增表
 
@@ -1469,14 +1553,14 @@ updated_at
 | audit_preflight_plans | 短期冻结创建计划 | token_hash 唯一；expires/status 索引 |
 | audit_contracts | 可恢复的 canonical 冻结合同 | audit_id 唯一；contract_digest 校验 |
 | audit_start_intents | DB→Temporal 可靠启动投递 | audit_id 唯一；start_request_id 唯一；status/next_attempt 索引 |
-| source_snapshots | 不可变源码目标 | project_id + snapshot_digest 唯一；tree/policy/schema 可校验 |
+| source_snapshots | insert-is-seal 不可变源码目标 | project_id + snapshot_digest 唯一；sealed_at 非空；tree/policy/schema 可校验 |
 | snapshot_references | Audit/Baseline/Evidence 对 CAS Snapshot 的生命周期引用 | audit/snapshot/role 唯一；GC 外键保护 |
 | snapshot_hydration_leases | 跨 Node CAS 对象授权与活跃传输 | lease nonce 唯一；audit/snapshot/target/expiry/status 索引 |
 | snapshot_hydration_objects | Node-local daemon CAS 对象（共享 backend） | node/blob digest 唯一；integrity/GC 状态 |
 | snapshot_hydration_pins | Audit/Execution 私有 mount/ref 授权 | node/object/audit/execution 唯一；revoked/expiry 索引 |
 | audit_scans | 审计聚合 | run_id 唯一；project/status/created 索引 |
 | audit_phase_runs | 阶段执行 | audit/phase/idempotency 唯一 |
-| audit_scope_units | Coverage 工作单元 | audit/kind/status/risk 索引 |
+| audit_scope_units | Coverage 工作单元 | audit/snapshot/kind/stable_key 唯一；audit/kind/status/risk 索引 |
 | audit_work_items | 可恢复 Agent/Detector 工作 | audit/phase/epoch/stable_key 唯一 |
 | audit_work_item_scopes | WorkItem 的 primary/support 有界范围 | work_item/scope 唯一；role/reason edge 可追溯 |
 | audit_read_receipts | 每次 Snapshot reader 实际返回范围 | audit/work_item/sequence 唯一；tool_call_id 唯一；append-only |
@@ -1532,6 +1616,8 @@ updated_at
 - AuditRepository
 - AuditProjectRepository
 - SnapshotRepository
+- AuditContractRepository（只读/seal；不得独立 create）
+- AuditStartIntentRepository
 - AuditPhaseRepository
 - AuditScopeRepository
 - AuditWorkRepository
@@ -1543,17 +1629,48 @@ updated_at
 
 实现放在 persistence/audit_repositories.py，映射放在 persistence/audit_mappers.py。不要继续扩大现有 repositories.py 和 mappers.py 的单文件体积。
 
-当前 Repository 通常各自管理 session。Run + Audit 的创建不能通过两个独立 auto-commit Repository 顺序调用；必须新增 aggregate create Port 与 `AuditCreationUnitOfWork`（或等价单 session 持久化实现），禁止从 Service 顺序调用现有 auto-commit Engagement/Run Repository 和新 AuditRepository。draft 事务一次创建/验证 Engagement、创建/复用 Project、Run、RunEvent、AuditScan、AuditContract、AuditEvent、client-request/preflight reservation；start 事务一次更新 Run/Audit、消费 token、追加 Event 与 AuditStartIntent。任何一步失败都完整回滚。
+AUD-102 的 persistence primitives 必须支持复用同一 `AsyncSession`，并提供
+`create_scan_contract_pair`：先写无反向 FK 的 Contract，再写以本地
+`(contract_id, id, contract_digest)` 指向 Contract
+`(contract_id, audit_id, contract_digest)` 候选键的 Scan，同事务提交或回滚。不得公开可
+auto-commit 的 Contract create。完整 aggregate create Port 与 `AuditCreationUnitOfWork` 是
+AUD-103 的 Application Service 交付物；AUD-102 不提前实现该 Service，但不得把 Repository
+设计成下一任务无法组合的独立提交黑盒。
+
+AUD-103 的 draft UoW 一次创建/验证 Engagement、创建/复用 Project、Run、RunEvent、
+AuditScan、AuditContract、AuditEvent、client-request/preflight reservation；start UoW 一次
+更新 Run/Audit、消费 token、追加 Event 与 AuditStartIntent。禁止从 Service 顺序调用现有
+auto-commit Engagement/Run Repository 和新 AuditRepository；任何一步失败都完整回滚。
+
+所有可变行持久化 `state_version >= 1`。Domain model 不混入 persistence metadata，Port 通过
+统一 `Versioned[T]`（或语义等价的只读 wrapper）返回 value 与 state_version。CAS SQL 条件至少
+包含主键和 `expected_state_version`，成功后原子加 1；rowcount=0 必须区分 not-found 与
+version conflict。禁止用 timestamp、status 或二者组合作为 CAS token，也禁止
+read-then-unconditional-save。SourceSnapshot 插入即 sealed、无 update，因此不带
+state_version。
 
 每个 Repository 必须具备：
 
 - 同 Scope 对象校验；
 - 明确分页与稳定排序；
-- compare-and-set 状态更新；
+- 可变聚合的 state_version compare-and-set 更新；
 - idempotent create；
 - terminal 状态保护；
 - SQLite 并发冲突测试；
 - 重启后重建投影测试。
+
+Create 重放按自然键的业务 creation envelope 判定，不按后来变化的 lifecycle/lease 或生成型
+row ID/时间判定；但所有冻结 identity/input/materialized 字段必须相同，surrogate ID 与自然键
+分别命中两行时 fail closed。Snapshot 重放除 row ID 与 created/sealed time 外逐项校验；Scan
+请求 `snapshot_id=None` 可重用后来已绑定 Snapshot 的同 Audit，显式 Snapshot 必须精确匹配；
+Scope 已提升 risk 可以满足原较低 floor，create 不做提升。任何重放都返回当前持久值/version，
+不得用 requested 初始对象覆盖进展。API 的 `client_request_id` payload 幂等仍由 AUD-103 独立实现。
+
+StartIntent 的 `pending/claimed/started/retryable/outcome_unknown/cancelled` claim、过期 lease
+reclaim、成功、失败与取消均使用 state_version CAS；`outcome_unknown` 只能 reconcile，不能
+直接再次发送 Start RPC。Scope risk 只能按 `low < medium < high < critical` 单调提升。
+SQLite candidate claim 使用条件 UPDATE/rowcount，并在需要 read-decision-write 序列化时使用
+`BEGIN IMMEDIATE`；不能依赖 SQLite 忽略的 `SELECT FOR UPDATE`。
 
 ### 13.6 通用 Finding 投影
 
@@ -1576,6 +1693,9 @@ updated_at
 4. tests/integration/persistence/test_migrations.py 必须从最早支持版本升级到 head。
 5. 迁移中不读取源码、不创建 Snapshot、不回填虚假的 Finding 身份。
 6. 3.0 Alpha 前允许调整尚未发布的 Audit 表；发布后只能通过新迁移演进。
+7. AUD-102 的 online downgrade 在任何 DDL 前证明八张最小 Audit 表全部为空；任一非空即
+   fail closed 并保留 revision/data。offline downgrade 无法证明为空，也必须 fail closed，
+   不允许通过 cascade/drop 完成有损降级。
 
 ## 14. Temporal 编排
 
@@ -1599,11 +1719,12 @@ next_attempt_at
 last_error_code
 created_at
 started_at
+state_version
 ~~~
 
 Start Application Service 在一个 `AuditCreationUnitOfWork`/aggregate transaction 中校验 draft 与合同、转为 queued、消费 Preflight token、写 Run/Audit Event 与 StartIntent。提交后由 API background dispatcher 或独立 reconciler claim intent，并使用确定性 `workflow_id = riftx-code-audit-{audit_id}` 启动 Workflow；Temporal 的 Workflow ID reuse/conflict policy 必须使重复投递返回同一个执行而不是第二个扫描。成功后 CAS 标记 started。
 
-Control Plane 在启动及周期性 reconciliation 时扫描 pending、租约过期和 queued-without-started-intent 状态，并同时查询 Temporal/数据库修复投影。进程在 DB commit 后、Temporal RPC 前后任意崩溃都必须通过集成故障注入证明：最终只存在一个 Workflow，或保留明确可重试/`outcome_unknown` 状态；绝不能永久停在 queued。Cancel 若先于投递到达，原子取消 Intent，dispatcher 不得再启动。
+Control Plane 在启动及周期性 reconciliation 时扫描 pending、租约过期和 queued-without-started-intent 状态，并同时查询 Temporal/数据库修复投影。所有 claim/reclaim/started/retryable/outcome_unknown/cancelled 变更都以从 1 开始的 `state_version` CAS；不得使用 status 或时间戳充当 token。`outcome_unknown` 只能先查询 Temporal/数据库恢复投影，禁止直接再次发送 Start RPC。进程在 DB commit 后、Temporal RPC 前后任意崩溃都必须通过集成故障注入证明：最终只存在一个 Workflow，或保留明确可重试/`outcome_unknown` 状态；绝不能永久停在 queued。Cancel 若先于投递到达，原子取消 Intent，dispatcher 不得再启动。
 
 新增 RiftXCodeAuditWorkflow。输入只包含：
 
@@ -2885,6 +3006,47 @@ Run API/TypeScript type 返回 kind；list 增加显式 kind filter。现有 Web
 - audit_work_items。
 
 实现 Ports、mappers 和 SQLAlchemy Repository。增加 unique/index/CAS/跨 Scope 测试。
+
+本任务遵守 ADR-0002，并冻结以下验收契约：
+
+- `audit_projects` 是 CodeProject 持久化；`AuditVcsKind=git`，
+  `repository_identity_digest` 在当前单实例边界全局唯一；
+- SourceSnapshot 插入即 sealed，带非空 `sealed_at`，使用
+  `riftx.source-snapshot/v1` domain-separated canonical identity JSON 摘要，Retest
+  parent/base-tree/patch all-or-none；
+- StartIntent、PhaseRun、ScopeKind、RiskTier、ScopeStatus、WorkStatus 使用第 8、13、14 节的
+  封闭枚举和 DB CHECK；`strategy`、`closure_code` 为 bounded AuditToken；
+- Scope/Work `stable_key` 为 SHA-256；Scope 唯一键为
+  `(audit_id, snapshot_id, kind, stable_key)`，Work 唯一键为
+  `(audit_id, phase, epoch, stable_key)`；
+- 所有可变行使用从 1 开始、由 `Versioned[T]` Port wrapper 暴露的 state_version CAS；禁止
+  timestamp/status CAS；
+- canonical contract 用 Text 保存；Scan 以
+  `(contract_id, id, contract_digest)` 单向复合 FK 指向 Contract，且只能由同 session 的
+  aggregate pair primitive 创建，不建 Contract→Scan 反向 FK；
+- Scan 冗余 `engagement_id + run_kind=code_audit + selected_node_id`，以复合 FK 同时约束 Run
+  kind、Run/Project Engagement、实际 analysis Node，并用 nullable Run/status FK 约束 cleanup
+  convergence；Repository 在 FK-off/raw corruption 下仍重复验证；
+- Contract/Scan 的 `model_profile` 最大 255 字符并与 Run domain/column 一致；PhaseRun 在
+  queued/running 时不得携带 output/count，terminal output Artifact 必须存在且属于同 Run，
+  create/get/list/CAS/reopen 均重复验证；
+- create candidate 先按自身 owner/binding 重验；合法跨 Audit ID 碰撞统一为不泄漏归属的
+  conflict，持久绑定损坏才是 integrity failure；Contract generated ID 若已被另一 Audit 使用也
+  必须作为 ambiguous collision 拒绝；
+- 数据库 `IntegrityError` recovery 必须退出 driver exception handler 后在新事务执行，公开异常
+  cause/context、traceback 和日志不得携带 canonical contract、绝对路径或 storage locator 参数；
+- AUD-506 的 DistributionRevision 表/FK 落地前，Repository 对 published/distribution facts
+  fail closed；
+- mapper 必须重算 digest、重解析 strict domain model 并拒绝冗余列 mismatch/损坏行；迁移
+  upgrade 保留旧数据，online 非空 downgrade 与 offline downgrade fail closed；
+- 测试至少覆盖 exact idempotent retry 与同键异内容、两个连接 CAS 恰一胜、lease/cancel race、
+  terminal protection、跨 Engagement/Project/Audit/Snapshot/Scope 反例、同时间戳稳定排序、
+  dispose/reopen 恢复、SQLite FK/check 和 Alembic 最早版本到 head。
+
+AUD-102 不读取 Git、不写 SnapshotStore/CAS bytes、不实现 API/UI、Temporal/dispatcher、真实
+Scope/Work planning、Detector/Agent/Receipt/Evidence/Finding/Closure，也不实现完整
+`AuditCreationUnitOfWork` Application Service；后者由 AUD-103 负责。本任务只提供可供该 UoW
+在同一 AsyncSession 中组合的 persistence primitives。
 
 #### AUD-103：AuditApplicationService
 
