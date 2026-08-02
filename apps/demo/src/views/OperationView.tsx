@@ -1,13 +1,12 @@
 import {
   useState,
-  type CSSProperties,
   type Dispatch,
   type FormEvent,
 } from "react";
 
 import { PixelIcon, type PixelIconName } from "../components/PixelIcon";
 import { DemoStamp, PanelHeading, StatusPill } from "../components/Ui";
-import { getDemoData, type GraphNodeRecord } from "../data/demo";
+import { getDemoData } from "../data/demo";
 import type {
   DemoAction,
   DemoState,
@@ -440,17 +439,6 @@ const graphEdges = [
   ["g-evidence-2", "g-finding"],
 ] as const;
 
-function edgeStyle(from: GraphNodeRecord, to: GraphNodeRecord): CSSProperties {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  return {
-    left: `${from.x}%`,
-    top: `${from.y}%`,
-    width: `${Math.hypot(dx, dy)}%`,
-    transform: `rotate(${Math.atan2(dy, dx)}rad)`,
-  };
-}
-
 function GraphWorkspace({
   state,
   dispatch,
@@ -490,11 +478,29 @@ function GraphWorkspace({
           <div className="graph-grid-label">
             {viewLabel(view).toUpperCase()} {t("PROJECTION / SNAPSHOT", "投影 / 快照")} DEMO-42
           </div>
-          {graphEdges.map(([fromId, toId]) => {
-            const from = graphNodes.find((node) => node.id === fromId)!;
-            const to = graphNodes.find((node) => node.id === toId)!;
-            return <span key={`${fromId}-${toId}`} className="graph-edge" style={edgeStyle(from, to)} aria-hidden="true" />;
-          })}
+          <svg
+            className="graph-edges"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {graphEdges.map(([fromId, toId]) => {
+              const from = graphNodes.find((node) => node.id === fromId)!;
+              const to = graphNodes.find((node) => node.id === toId)!;
+              return (
+                <line
+                  key={`${fromId}-${toId}`}
+                  className="graph-edge"
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  vectorEffect="non-scaling-stroke"
+                />
+              );
+            })}
+          </svg>
           {graphNodes.map((node) => (
             <button
               key={node.id}

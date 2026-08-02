@@ -112,6 +112,31 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("draws relationship edges in an aspect-ratio-independent SVG layer", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(primaryNavigation().getByRole("button", { name: "Operation Workspace" }));
+    await user.click(screen.getByRole("button", { name: "Relationship Graph" }));
+
+    const edgeLayer = document.querySelector(".graph-edges");
+    expect(edgeLayer).toBeInstanceOf(SVGSVGElement);
+    expect(edgeLayer).toHaveAttribute("viewBox", "0 0 100 100");
+    expect(edgeLayer).toHaveAttribute("preserveAspectRatio", "none");
+    expect(edgeLayer).toHaveAttribute("aria-hidden", "true");
+
+    const edges = edgeLayer?.querySelectorAll("line.graph-edge");
+    expect(edges).toHaveLength(8);
+    expect(edges?.item(0)).toHaveAttribute("x1", "8");
+    expect(edges?.item(0)).toHaveAttribute("y1", "42");
+    expect(edges?.item(0)).toHaveAttribute("x2", "28");
+    expect(edges?.item(0)).toHaveAttribute("y2", "21");
+    expect(edges?.item(7)).toHaveAttribute("x1", "72");
+    expect(edges?.item(7)).toHaveAttribute("y1", "60");
+    expect(edges?.item(7)).toHaveAttribute("x2", "89");
+    expect(edges?.item(7)).toHaveAttribute("y2", "39");
+  });
+
   it("persists the theme choice locally without remote work", async () => {
     const user = userEvent.setup();
     render(<App />);
