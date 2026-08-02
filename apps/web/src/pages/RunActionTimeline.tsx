@@ -186,7 +186,7 @@ export function ActionTimeline({
                       <dt>{t("Started")}</dt>
                       <dd>
                         {attempt?.started_at
-                          ? formatActionTime(attempt.started_at, language)
+                          ? formatActionTime(attempt.started_at, language, t)
                           : t("Not started")}
                       </dd>
                     </div>
@@ -389,8 +389,8 @@ export function ActionInspector({
             <dl className="inspector-facts">
               <div><dt>{t("Tool")}</dt><dd>{displayedAction.tool_id ?? displayedAction.skill_id ?? t("Unknown tool")}</dd></div>
               <div><dt>{t("Target")}</dt><dd>{displayedAction.target_summary ?? t("No target summary")}</dd></div>
-              <div><dt>{t("Created")}</dt><dd>{formatActionTime(displayedAction.created_at, language)}</dd></div>
-              <div><dt>{t("Updated")}</dt><dd>{formatActionTime(displayedAction.updated_at, language)}</dd></div>
+              <div><dt>{t("Created")}</dt><dd>{formatActionTime(displayedAction.created_at, language, t)}</dd></div>
+              <div><dt>{t("Updated")}</dt><dd>{formatActionTime(displayedAction.updated_at, language, t)}</dd></div>
             </dl>
             <div className="inspector-subsection">
               <strong>{t("Redacted arguments")}</strong>
@@ -403,7 +403,7 @@ export function ActionInspector({
               <dl className="inspector-facts">
                 <div><dt>{t("Status")}</dt><dd>{displayedAction.approval.status ? t(displayedAction.approval.status) : t("Unknown")}</dd></div>
                 <div><dt>{t("Decided by")}</dt><dd>{displayedAction.approval.actor ?? t("Unknown")}</dd></div>
-                <div><dt>{t("Decision time")}</dt><dd>{formatActionTime(displayedAction.approval.decided_at, language)}</dd></div>
+                <div><dt>{t("Decision time")}</dt><dd>{formatActionTime(displayedAction.approval.decided_at, language, t)}</dd></div>
                 <div><dt>{t("Feedback")}</dt><dd>{displayedAction.approval.feedback_summary ?? t("None")}</dd></div>
               </dl>
             ) : <p>{t("No approval record")}</p>}
@@ -642,10 +642,14 @@ function formatActionDuration(
   return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`;
 }
 
-function formatActionTime(value: string | null | undefined, language: string): string {
-  if (!value) return "—";
+function formatActionTime(
+  value: string | null | undefined,
+  language: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (!value) return t("Unavailable");
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  if (Number.isNaN(date.getTime())) return t("Unavailable");
   return new Intl.DateTimeFormat(language === "zh-CN" ? "zh-CN" : "en", {
     dateStyle: "short",
     timeStyle: "medium",

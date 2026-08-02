@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-02T07:48:47Z",
+  "title": "Design System: RiftX Web Control Plane",
+  "extensions": {
+    "colorMeta": {
+      "space-ink": { "role": "neutral", "displayName": "Space Ink", "canonical": "#030611", "tonalRamp": ["#030611", "#060b1c", "#071632", "#09142c", "#0d1d3c", "#102753", "#123063", "#d8eaff"] },
+      "canvas-night": { "role": "neutral", "displayName": "Canvas Night", "canonical": "#060b1c", "tonalRamp": ["#030611", "#060b1c", "#071632", "#09142c", "#0d1d3c", "#102753", "#123063", "#d8eaff"] },
+      "panel-night": { "role": "neutral", "displayName": "Tactical Panel", "canonical": "#0d1d3c", "tonalRamp": ["#030611", "#060b1c", "#071632", "#09142c", "#0d1d3c", "#102753", "#123063", "#d8eaff"] },
+      "panel-raised": { "role": "neutral", "displayName": "Raised Command Panel", "canonical": "#123063", "tonalRamp": ["#030611", "#060b1c", "#071632", "#09142c", "#0d1d3c", "#102753", "#123063", "#d8eaff"] },
+      "panel-deep": { "role": "neutral", "displayName": "Deep Panel", "canonical": "#071632", "tonalRamp": ["#030611", "#060b1c", "#071632", "#09142c", "#0d1d3c", "#102753", "#123063", "#d8eaff"] },
+      "border-cobalt": { "role": "primary", "displayName": "Cobalt Frame", "canonical": "#245dc7", "tonalRamp": ["#06152f", "#0b2555", "#123a82", "#174da9", "#245dc7", "#3478f6", "#78a8ff", "#d8eaff"] },
+      "command-blue": { "role": "primary", "displayName": "Command Blue", "canonical": "#3478f6", "tonalRamp": ["#06152f", "#0b2555", "#123a82", "#174da9", "#245dc7", "#3478f6", "#78a8ff", "#d8eaff"] },
+      "telemetry-cyan": { "role": "primary", "displayName": "Telemetry Cyan", "canonical": "#55d9ff", "tonalRamp": ["#041b28", "#06364b", "#07576f", "#007c9f", "#007fa8", "#55d9ff", "#a8edff", "#e5faff"] },
+      "telemetry-cyan-high": { "role": "primary", "displayName": "Telemetry Cyan High", "canonical": "#a8edff", "tonalRamp": ["#041b28", "#06364b", "#07576f", "#007c9f", "#007fa8", "#55d9ff", "#a8edff", "#e5faff"] },
+      "signal-text": { "role": "neutral", "displayName": "Signal Text", "canonical": "#eff8ff", "tonalRamp": ["#071632", "#173e70", "#365879", "#587493", "#7fa4d1", "#a9c5e8", "#d8eaff", "#eff8ff"] },
+      "muted-data": { "role": "neutral", "displayName": "Muted Data", "canonical": "#a9c5e8", "tonalRamp": ["#071632", "#173e70", "#365879", "#587493", "#7fa4d1", "#a9c5e8", "#d8eaff", "#eff8ff"] },
+      "dim-coordinate": { "role": "neutral", "displayName": "Dim Coordinate", "canonical": "#7fa4d1", "tonalRamp": ["#071632", "#173e70", "#365879", "#587493", "#7fa4d1", "#a9c5e8", "#d8eaff", "#eff8ff"] },
+      "approval-gold": { "role": "secondary", "displayName": "Approval Gold", "canonical": "#ffd45a", "tonalRamp": ["#241600", "#4f3100", "#704600", "#8a5700", "#9b6500", "#c48b1c", "#ffd45a", "#fff4c2"] },
+      "caution-orange": { "role": "tertiary", "displayName": "Caution Orange", "canonical": "#ff9f3f", "tonalRamp": ["#2d1000", "#622400", "#8b3900", "#a44300", "#a84e00", "#d8731d", "#ff9f3f", "#ffe1bd"] },
+      "confirmed-green": { "role": "secondary", "displayName": "Confirmed Green", "canonical": "#62e2ae", "tonalRamp": ["#041c15", "#063c2c", "#076748", "#08734f", "#179669", "#35bd8a", "#62e2ae", "#d5fced"] },
+      "danger-red": { "role": "tertiary", "displayName": "Danger Red", "canonical": "#ff5578", "tonalRamp": ["#280714", "#42142b", "#6d0826", "#8e1033", "#ad173d", "#b42145", "#ff5578", "#ffd6df"] },
+      "danger-well": { "role": "tertiary", "displayName": "Danger Well", "canonical": "#42142b", "tonalRamp": ["#280714", "#42142b", "#6d0826", "#8e1033", "#ad173d", "#b42145", "#ff5578", "#ffd6df"] },
+      "command-button": { "role": "primary", "displayName": "Command Button", "canonical": "#0e2a5a", "tonalRamp": ["#030611", "#071632", "#0e2a5a", "#17448d", "#245dc7", "#3478f6", "#78a8ff", "#d8eaff"] },
+      "input-well": { "role": "neutral", "displayName": "Input Well", "canonical": "#06142f", "tonalRamp": ["#030611", "#06142f", "#071632", "#0d1d3c", "#102753", "#365879", "#a9c5e8", "#eff8ff"] },
+      "hard-shadow": { "role": "neutral", "displayName": "Hard Shadow Ink", "canonical": "#01030a", "tonalRamp": ["#01030a", "#030611", "#060b1c", "#071632", "#0d1d3c", "#365879", "#a9c5e8", "#eff8ff"] },
+      "canvas-day": { "role": "neutral", "displayName": "Canvas Day", "canonical": "#dce9f7", "tonalRamp": ["#07152d", "#365879", "#587493", "#8aa7c9", "#c7d9ec", "#dce9f7", "#eef6ff", "#f7fbff"] },
+      "panel-day": { "role": "neutral", "displayName": "Day Panel", "canonical": "#f7fbff", "tonalRamp": ["#07152d", "#365879", "#587493", "#8aa7c9", "#c7d9ec", "#dce9f7", "#eef6ff", "#f7fbff"] },
+      "text-day": { "role": "neutral", "displayName": "Day Text", "canonical": "#071b36", "tonalRamp": ["#071b36", "#173e70", "#365879", "#587493", "#7fa4d1", "#a9c5e8", "#d8eaff", "#eff8ff"] },
+      "command-blue-day": { "role": "primary", "displayName": "Day Command Blue", "canonical": "#155dbd", "tonalRamp": ["#06152f", "#0b2555", "#123a82", "#155dbd", "#245dc7", "#3478f6", "#78a8ff", "#d8eaff"] },
+      "telemetry-cyan-day": { "role": "primary", "displayName": "Day Telemetry Cyan", "canonical": "#007fa8", "tonalRamp": ["#041b28", "#06364b", "#07576f", "#007c9f", "#007fa8", "#55d9ff", "#a8edff", "#e5faff"] },
+      "approval-gold-day": { "role": "secondary", "displayName": "Day Approval Gold", "canonical": "#9b6500", "tonalRamp": ["#241600", "#4f3100", "#704600", "#8a5700", "#9b6500", "#c48b1c", "#ffd45a", "#fff4c2"] },
+      "confirmed-green-day": { "role": "secondary", "displayName": "Day Confirmed Green", "canonical": "#08734f", "tonalRamp": ["#041c15", "#063c2c", "#076748", "#08734f", "#179669", "#35bd8a", "#62e2ae", "#d5fced"] },
+      "danger-red-day": { "role": "tertiary", "displayName": "Day Danger Red", "canonical": "#b42145", "tonalRamp": ["#280714", "#42142b", "#6d0826", "#8e1033", "#ad173d", "#b42145", "#ff5578", "#ffd6df"] },
+      "input-day": { "role": "neutral", "displayName": "Day Input", "canonical": "#ffffff", "tonalRamp": ["#07152d", "#365879", "#587493", "#8aa7c9", "#c7d9ec", "#dce9f7", "#f7fbff", "#ffffff"] },
+      "hard-shadow-day": { "role": "neutral", "displayName": "Day Hard Shadow", "canonical": "#8aa7c9", "tonalRamp": ["#07152d", "#244b7a", "#466991", "#6d98d3", "#8aa7c9", "#c7d9ec", "#e4f0ff", "#f7fbff"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Major Dashboard, New Run, and operation headings." },
+      "headline": { "displayName": "Headline", "purpose": "Shell and workspace titles." },
+      "title": { "displayName": "Compact Title", "purpose": "Panel and section headings." },
+      "body": { "displayName": "Body", "purpose": "Explanatory and conversational copy." },
+      "label": { "displayName": "Tactical Label", "purpose": "Commands, tabs, badges, kickers, and compact metadata." },
+      "data": { "displayName": "Operational Data", "purpose": "Identifiers, code, tables, traffic metadata, evidence, and dispositions." }
+    },
+    "shadows": [
+      { "name": "panel-hard-edge", "value": "inset 2px 2px 0 var(--pc-inset-hi), inset -2px -2px 0 color-mix(in srgb, var(--pc-space) 70%, transparent), 4px 4px 0 var(--pc-shadow)", "purpose": "Structural depth for panels, cards, loading, and error surfaces." },
+      { "name": "control-hard-edge", "value": "inset -2px -2px 0 color-mix(in srgb, var(--pc-space) 66%, transparent), 3px 3px 0 var(--pc-shadow)", "purpose": "At-rest depth for command controls." },
+      { "name": "control-hover-edge", "value": "4px 4px 0 var(--pc-shadow)", "purpose": "One-pixel lift on interactive hover." },
+      { "name": "terminal-inset", "value": "inset 2px 2px 0 rgba(168, 237, 255, 0.08)", "purpose": "Hard containment for terminal output without glow." }
+    ],
+    "motion": [
+      { "name": "state-step-core", "value": "90ms steps(2, end)", "purpose": "Core navigation and control state changes." },
+      { "name": "state-step-dense", "value": "100ms steps(2, end)", "purpose": "Dense operation-workspace controls and action cards." },
+      { "name": "status-fill", "value": "180ms steps(6, end)", "purpose": "Measured status-map fill changes." },
+      { "name": "pixel-signal", "value": "1.2s steps(2, end) infinite", "purpose": "Live and waiting signal indicators only." },
+      { "name": "pixel-spin", "value": "800ms steps(8, end) infinite", "purpose": "Loading spinner rotation; disabled under reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "compact-control", "value": "420px" },
+      { "name": "dense-stack", "value": "560px" },
+      { "name": "bottom-navigation", "value": "720px" },
+      { "name": "workspace-collapse", "value": "900px" },
+      { "name": "wide-collapse", "value": "1180px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Highest-priority core command action with hard pixel depth.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">CREATE RUN</button>",
+      "css": ".ds-btn-primary { min-height: 44px; border: 2px solid var(--pc-blue); border-top-color: var(--pc-cyan); border-left-color: var(--pc-cyan); border-radius: 0; color: var(--pc-cyan-hi); background: var(--pc-button); box-shadow: inset -2px -2px 0 color-mix(in srgb, var(--pc-space) 66%, transparent), 3px 3px 0 var(--pc-shadow); padding: 0 14px; font-family: var(--pixel-heading); font-size: 10px; font-weight: 400; line-height: 1.3; clip-path: var(--pixel-cut); cursor: pointer; transition: transform 90ms steps(2, end), background-color 90ms steps(2, end); } .ds-btn-primary:hover { border-color: var(--pc-cyan); background: var(--pc-button-hover); transform: translate(-1px, -1px); } .ds-btn-primary:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; } .ds-btn-primary:active { box-shadow: inset 2px 2px 0 color-mix(in srgb, var(--pc-space) 70%, transparent); transform: translate(2px, 2px); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Lower-priority inspection, cancellation, and navigation action.",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">INSPECT REGISTRY</button>",
+      "css": ".ds-btn-secondary { min-height: 44px; border: 2px solid var(--pc-line); border-top-color: var(--pc-blue); border-left-color: var(--pc-blue); border-radius: 0; color: var(--pc-muted); background: var(--pc-deep-blue); box-shadow: inset -2px -2px 0 color-mix(in srgb, var(--pc-space) 66%, transparent), 3px 3px 0 var(--pc-shadow); padding: 0 14px; font-family: var(--pixel-heading); font-size: 10px; line-height: 1.3; clip-path: var(--pixel-cut); cursor: pointer; transition: transform 90ms steps(2, end), background-color 90ms steps(2, end); } .ds-btn-secondary:hover { border-color: var(--pc-cyan); color: var(--pc-cyan-hi); background: var(--pc-button-hover); transform: translate(-1px, -1px); } .ds-btn-secondary:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; } .ds-btn-secondary:active { box-shadow: none; transform: translate(3px, 3px); }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Explicit emergency-stop or cleanup action; never a generic destructive accent.",
+      "html": "<button class=\"ds-btn-danger\" type=\"button\">EMERGENCY STOP</button>",
+      "css": ".ds-btn-danger { min-height: 44px; border: 2px solid var(--pc-red); border-top-color: #ff9eb2; border-left-color: #ff9eb2; border-radius: 0; color: var(--danger-strong); background: var(--pc-red-deep); box-shadow: inset -2px -2px 0 color-mix(in srgb, var(--pc-red) 35%, var(--pc-space)), 3px 3px 0 var(--pc-shadow); padding: 0 14px; font-family: var(--pixel-heading); font-size: 10px; line-height: 1.3; clip-path: var(--pixel-cut); cursor: pointer; transition: transform 90ms steps(2, end), background-color 90ms steps(2, end); } .ds-btn-danger:hover { border-color: #ff9eb2; color: #ffffff; background: color-mix(in srgb, var(--pc-red-deep) 75%, var(--pc-red)); transform: translate(-1px, -1px); } .ds-btn-danger:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; } .ds-btn-danger:active { box-shadow: none; transform: translate(3px, 3px); }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Square operational input with an inset cyan focus marker.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">OBJECTIVE</span><input class=\"ds-field-input\" value=\"Review the authorized boundary\" /></label>",
+      "css": ".ds-field { display: grid; gap: 7px; color: var(--pc-text); } .ds-field-label { color: var(--pc-cyan); font-family: var(--pixel-heading); font-size: 9px; line-height: 1.4; } .ds-field-input { min-height: 44px; border: 2px solid var(--pc-line); border-radius: 0; outline: none; color: var(--pc-text); background: var(--pc-input); box-shadow: inset 2px 2px 0 color-mix(in srgb, var(--pc-space) 46%, transparent); padding: 10px 11px; font-family: var(--pixel-mono); font-size: 11px; line-height: 1.55; transition: border-color 90ms steps(2, end), box-shadow 90ms steps(2, end); } .ds-field-input:hover { border-color: var(--pc-blue); } .ds-field-input:focus { border-color: var(--pc-cyan); box-shadow: inset 4px 0 0 var(--pc-cyan), inset 2px 2px 0 color-mix(in srgb, var(--pc-space) 46%, transparent); } .ds-field-input:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; }"
+    },
+    {
+      "name": "Active Navigation Item",
+      "kind": "nav",
+      "refersTo": "nav-active",
+      "description": "Selected command-rail destination with pixel glyph and gold corner markers.",
+      "html": "<a class=\"ds-nav-active\" href=\"#\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path fill=\"currentColor\" d=\"M3 7h2v5H3zm4 0h2v13H7zm4-3h2v16h-2zm4 0h2v13h-2zM3 5h6v2H3zm4 15h6v2H7zm4-18h6v2h-6zm4 15h6v2h-6zm4-5h2v5h-2zm0-2h4v2h-4zM1 12h4v2H1z\"/></svg><span>RUNS</span></a>",
+      "css": ".ds-nav-active { position: relative; display: grid; width: 58px; min-height: 54px; place-items: center; align-content: center; gap: 4px; border: 2px solid var(--pc-cyan); border-radius: 0; color: var(--pc-cyan-hi); background: var(--pc-panel-blue); box-shadow: inset 2px 2px 0 rgba(168, 237, 255, 0.2), 3px 3px 0 var(--pc-shadow); padding: 4px 2px; font-family: var(--pixel-heading); font-size: 8px; line-height: 1.15; text-decoration: none; } .ds-nav-active svg { width: 20px; height: 20px; image-rendering: pixelated; } .ds-nav-active::before, .ds-nav-active::after { position: absolute; width: 4px; height: 4px; background: var(--pc-gold); content: \"\"; } .ds-nav-active::before { top: -2px; left: -2px; } .ds-nav-active::after { right: -2px; bottom: -2px; } .ds-nav-active:hover { background: var(--pc-panel-hi); } .ds-nav-active:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; } .ds-nav-active:active { box-shadow: none; transform: translate(3px, 3px); }"
+    },
+    {
+      "name": "Waiting Approval Badge",
+      "kind": "chip",
+      "refersTo": "status-badge",
+      "description": "Gold, textual waiting state with a non-circular pixel indicator.",
+      "html": "<span class=\"ds-status-approval\"><span class=\"ds-status-dot\" aria-hidden=\"true\"></span>WAITING APPROVAL</span>",
+      "css": ".ds-status-approval { display: inline-flex; min-height: 28px; align-items: center; gap: 7px; border: 2px solid var(--pc-gold); border-radius: 0; color: var(--pc-gold); background: color-mix(in srgb, var(--pc-gold) 11%, var(--pc-panel)); padding: 0 8px; font-family: var(--pixel-heading); font-size: 9px; line-height: 1.25; text-transform: uppercase; clip-path: var(--pixel-cut); } .ds-status-dot { width: 6px; height: 6px; border-radius: 0; background: currentcolor; box-shadow: 0 0 0 2px color-mix(in srgb, currentcolor 34%, transparent); animation: ds-pixel-signal 1.2s steps(2, end) infinite; } @keyframes ds-pixel-signal { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0.35; } } @media (prefers-reduced-motion: reduce) { .ds-status-dot { animation: none; } }"
+    },
+    {
+      "name": "Tactical Panel",
+      "kind": "card",
+      "refersTo": "tactical-panel",
+      "description": "Canonical framed container for durable operational data.",
+      "html": "<article class=\"ds-panel\"><header class=\"ds-panel-header\"><strong>RUN FACTS</strong><span>LIFECYCLE</span></header><div class=\"ds-panel-body\">Persisted state remains the source of truth.</div></article>",
+      "css": ".ds-panel { overflow: hidden; border: 2px solid var(--pc-line); border-radius: 0; color: var(--pc-text); background: var(--pc-panel); box-shadow: inset 2px 2px 0 var(--pc-inset-hi), inset -2px -2px 0 color-mix(in srgb, var(--pc-space) 70%, transparent), 4px 4px 0 var(--pc-shadow); clip-path: var(--pixel-cut); } .ds-panel-header { display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 2px solid var(--pc-blue); color: var(--pc-cyan-hi); background: var(--pc-panel-hi); padding: 10px 13px; } .ds-panel-header strong { font-family: var(--pixel-heading); font-size: 10px; line-height: 1.3; } .ds-panel-header span { color: var(--pc-dim); font-family: var(--pixel-heading); font-size: 7px; } .ds-panel-body { padding: 14px; color: var(--pc-muted); font-family: var(--pixel-mono); font-size: 11px; line-height: 1.55; }"
+    },
+    {
+      "name": "Approval Alert",
+      "kind": "custom",
+      "refersTo": "approval-alert",
+      "description": "Signature durable-state alert that routes the operator to exact approval context.",
+      "html": "<button class=\"ds-approval-alert\" type=\"button\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path fill=\"currentColor\" d=\"M2 2h20v2H2zm0 2h2v10H2zm18 0h2v10h-2zM4 14h2v2H4zm2 2h2v2H6zm4 4h4v2h-4zm10-6h-2v2h2zm-2 2h-2v2h2zm-2 2h-2v2h2zm-6 0H8v2h2z\"/></svg><span><strong>1 TOOL CALL AWAITING APPROVAL</strong><small>Review exact command, target, and environment.</small></span><b aria-hidden=\"true\">&gt;</b></button>",
+      "css": ".ds-approval-alert { display: grid; width: 100%; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 2px solid var(--pc-gold); border-radius: 0; color: var(--pc-gold); background: color-mix(in srgb, var(--pc-gold) 11%, var(--pc-panel)); box-shadow: inset 2px 2px 0 color-mix(in srgb, var(--pc-gold) 22%, transparent), 3px 3px 0 var(--pc-shadow); padding: 12px 14px; text-align: left; cursor: pointer; transition: transform 90ms steps(2, end), background-color 90ms steps(2, end); } .ds-approval-alert svg { width: 20px; height: 20px; } .ds-approval-alert span { display: grid; gap: 4px; } .ds-approval-alert strong { font-family: var(--pixel-heading); font-size: 9px; line-height: 1.35; } .ds-approval-alert small { color: var(--pc-muted); font-family: var(--pixel-mono); font-size: 10px; line-height: 1.45; } .ds-approval-alert b { font-family: var(--pixel-heading); } .ds-approval-alert:hover { background: color-mix(in srgb, var(--pc-gold) 16%, var(--pc-panel)); transform: translate(-1px, -1px); } .ds-approval-alert:focus-visible { outline: 3px solid var(--pc-cyan-hi); outline-offset: 3px; } .ds-approval-alert:active { box-shadow: none; transform: translate(3px, 3px); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Blue Team Cartridge / 蓝队战术卡带",
+    "overview": "RiftX is a blue 16-bit tactical operator terminal: cobalt command frames, cyan telemetry, pixel glyphs, hard-edged map tiles, and compact data panels make an authorized red-team operation feel like a serious cartridge-era control surface. The calibrated expression is Variance 7 / Motion 3 / Density 8—distinctive and dense, but never visually noisy enough to obscure scope, evidence, approval, or stop proof.\n\nThe WebUI is a projection of durable state, not the owner of the work. Visual emphasis therefore follows operational truth: authorization boundaries precede action, pause and emergency stop fence new effects first, and terminal state is not visually claimed until Execution, Browser session, and Target HTTP request dispositions are explicit. Dark and light themes, English and Chinese, keyboard operation, and non-color status language preserve the same tactical grammar.",
+    "keyCharacteristics": [
+      "Blue 16-bit tactical-console world with restrained micro-pixel craft.",
+      "Dense, scan-first information hierarchy anchored by durable state.",
+      "Square 2px frames, stepped cuts, and hard 3–4px pixel shadows.",
+      "Cyan command/telemetry, gold approval, green confirmation, and red danger semantics.",
+      "Persistent bilingual light/dark operation with visible focus and reduced-motion support."
+    ],
+    "rules": [
+      { "name": "The Semantic Signal Rule", "body": "Cyan means command or telemetry, gold means approval or waiting, green means affirmative confirmation, and red means danger, failure, or unconfirmed stop; always pair color with explicit text, iconography, or disposition.", "section": "colors" },
+      { "name": "The Silkscreen Restraint Rule", "body": "Use the pixel face for commands, labels, compact headings, and identity; use system monospace for sentences, evidence, bilingual content, and long data.", "section": "typography" },
+      { "name": "The Durable View Rule", "body": "The first viewport prioritizes location, Run status, authorized objective, node/model/mode, outstanding approvals, and real controls—not decorative metrics, XP, or score.", "section": "layout" },
+      { "name": "The Hard Depth Rule", "body": "Every elevation cue must read as a pixel offset or inset frame; never soften it into ambient blur or purple glow.", "section": "elevation" },
+      { "name": "The Cartridge Geometry Rule", "body": "Keep corners square, borders two pixels, and cuts stepped; do not introduce rounded SaaS cards or pill controls.", "section": "shapes" },
+      { "name": "The Safety State Rule", "body": "Requested, persisted, synchronized, and physically confirmed are different states; components must name the current state and must never optimistically collapse them.", "section": "components" }
+    ],
+    "dos": [
+      "**Do** preserve the Blue Team Cartridge world across Dashboard, New Run, Run Detail, administration, gate, dark/light, and English/Chinese surfaces.",
+      "**Do** keep authorization scope, exclusions, approval context, durable evidence, and stop disposition visible at the decision boundary.",
+      "**Do** use real persisted state and explicit loading, empty, stale, error, disabled, and unconfirmed-stop language.",
+      "**Do** preserve keyboard tab behavior, focus restoration, ARIA semantics, 3px focus-visible outlines, 44px mobile targets, and reduced-motion handling.",
+      "**Do** reveal only the minimum safe metadata needed by the local operator."
+    ],
+    "donts": [
+      "**Don't** use Matrix rain, purple glow, skulls, XP, score, fake terminal theater, or generic hacker clichés.",
+      "**Don't** imply that closing the browser stops a Run or that a requested pause/emergency stop proves every effect has stopped.",
+      "**Don't** expose secrets, credentials, full sensitive URLs, Runner-local paths, request/response bodies, headers, cookies, or authentication material.",
+      "**Don't** fabricate customers, metrics, benchmarks, CVSS scores, public-deployment claims, or real engagement data.",
+      "**Don't** encode approval risk, failure, or unconfirmed stop with color or animation alone."
+    ]
+  }
+}

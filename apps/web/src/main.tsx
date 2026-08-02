@@ -7,6 +7,8 @@ import { App } from "./App";
 import { LanguageProvider } from "./i18n";
 import { initializeTheme, ThemeProvider } from "./theme";
 import "./styles.css";
+import "./pixel-theme.css";
+import "./pixel-dense.css";
 
 const initialTheme = initializeTheme();
 

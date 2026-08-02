@@ -1,42 +1,41 @@
 import {
   Activity,
-  ArrowRight,
   CheckCircle2,
   Clock3,
-  Plus,
   ShieldAlert,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
+import type { CSSProperties } from "react";
 import { Link } from "react-router-dom";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import type { Run, RunStatus } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { MetricCard } from "../components/MetricCard";
+import { PixelIcon } from "../components/PixelIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRuns, useTools } from "../hooks/queries";
 import { useI18n } from "../i18n";
 
 const statusColors: Record<RunStatus, string> = {
-  created: "#6796ff",
-  initializing: "#6796ff",
-  ready: "#70a8ff",
-  preparing: "#70a8ff",
-  running: "#45d6a4",
-  waiting_tool: "#f2b95d",
-  waiting_approval: "#f2b95d",
-  waiting_user: "#cfadff",
-  pausing: "#e4a853",
-  paused: "#e4a853",
-  compacting: "#70a8ff",
-  completing: "#6ee7b7",
-  completed: "#6ee7b7",
-  failed: "#ff6f74",
-  cancelling: "#8b9290",
-  cancelled: "#8b9290",
+  created: "#4c78ff",
+  initializing: "#4c78ff",
+  ready: "#40c7e8",
+  preparing: "#40c7e8",
+  running: "#35c996",
+  waiting_tool: "#d9a83e",
+  waiting_approval: "#d9a83e",
+  waiting_user: "#31a6df",
+  pausing: "#d9a83e",
+  paused: "#d9a83e",
+  compacting: "#40c7e8",
+  completing: "#35c996",
+  completed: "#35c996",
+  failed: "#e34e62",
+  cancelling: "#7d899e",
+  cancelled: "#7d899e",
 };
 
 export function DashboardPage() {
@@ -69,15 +68,18 @@ export function DashboardPage() {
   return (
     <div className="page-stack">
       <section className="hero-strip">
-        <div>
-          <span className="kicker">{t("Durable execution fabric")}</span>
+        <div className="hero-command-copy">
+          <div className="mission-path">
+            <PixelIcon name="target" />
+            <span>RIFTX / {t("Durable execution fabric")}</span>
+          </div>
           <h2>{t("Keep every agent run observable, recoverable, and under control.")}</h2>
           <p>
             {t("The browser is a view into persisted state. Closing this page never stops a workflow or its host-native execution.")}
           </p>
         </div>
         <Link className="primary-button" to="/runs/new">
-          <Plus size={17} />
+          <PixelIcon name="run" />
           {t("New run")}
         </Link>
       </section>
@@ -107,7 +109,9 @@ export function DashboardPage() {
         <MetricCard
           label="Available tools"
           value={availableTools}
-          note={t("Local registry generation {generation}", { generation: tools.data?.generation ?? "—" })}
+          note={t("Local registry generation {generation}", {
+            generation: tools.data?.generation ?? t("Unavailable"),
+          })}
           icon={Wrench}
         />
       </section>
@@ -115,12 +119,15 @@ export function DashboardPage() {
       <section className="dashboard-grid">
         <article className="panel run-list-panel">
           <div className="panel-header">
-            <div>
-              <span className="panel-kicker">{t("Live operations")}</span>
-              <h3>{t("Active run queue")}</h3>
+            <div className="panel-heading">
+              <div className="panel-title-line">
+                <PixelIcon name="run" />
+                <h3>{t("Active run queue")}</h3>
+              </div>
+              <span className="panel-coordinate">{t("Live operations")}</span>
             </div>
             <Link className="text-link" to="/runs/new">
-              {t("Configure run")} <ArrowRight size={15} />
+              {t("Configure run")} <PixelIcon name="chevron" />
             </Link>
           </div>
           {active.length ? (
@@ -138,55 +145,41 @@ export function DashboardPage() {
 
         <article className="panel status-panel">
           <div className="panel-header">
-            <div>
-              <span className="panel-kicker">{t("Portfolio signal")}</span>
-              <h3>{t("Run status mix")}</h3>
+            <div className="panel-heading">
+              <div className="panel-title-line">
+                <PixelIcon name="graph" />
+                <h3>{t("Run status mix")}</h3>
+              </div>
+              <span className="panel-coordinate">{t("Portfolio signal")}</span>
             </div>
             <span className="muted-caption">{t("{count} total", { count: items.length })}</span>
           </div>
           {chartData.length ? (
-            <>
-              <div className="status-chart" aria-label={t("Run status chart")}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={chartData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={56}
-                      outerRadius={79}
-                      paddingAngle={3}
-                      stroke="transparent"
-                    >
-                      {chartData.map((entry) => (
-                        <Cell key={entry.name} fill={statusColors[entry.name]} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{
-                        background: "var(--surface-raised)",
-                        border: "1px solid var(--line)",
-                        borderRadius: "10px",
-                        color: "var(--text)",
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="chart-center">
-                  <strong>{items.length}</strong>
-                  <span>{t("runs")}</span>
-                </div>
-              </div>
-              <div className="chart-legend">
-                {chartData.map((entry) => (
-                  <div key={entry.name}>
-                    <span style={{ backgroundColor: statusColors[entry.name] }} />
-                    <p>{t(entry.name.replaceAll("_", " "))}</p>
-                    <strong>{entry.value}</strong>
+            <div className="status-map" aria-label={t("Run status chart")}>
+              {chartData.map((entry) => {
+                const share = items.length ? Math.max(8, (entry.value / items.length) * 100) : 0;
+                const style = {
+                  "--status-color": statusColors[entry.name],
+                  "--status-share": `${share}%`,
+                } as CSSProperties;
+                return (
+                  <div className="status-map-row" key={entry.name} style={style}>
+                    <div className="status-map-label">
+                      <span aria-hidden="true" />
+                      <p>{t(entry.name.replaceAll("_", " "))}</p>
+                      <strong>{entry.value}</strong>
+                    </div>
+                    <div className="status-map-track" aria-hidden="true">
+                      <span className="status-map-fill" />
+                    </div>
                   </div>
-                ))}
+                );
+              })}
+              <div className="status-map-total">
+                <strong>{items.length}</strong>
+                <span>{t("runs")}</span>
               </div>
-            </>
+            </div>
           ) : (
             <EmptyState icon={Clock3} title="No status history">
               {t("Status distribution appears after the first run is created.")}
@@ -197,8 +190,11 @@ export function DashboardPage() {
 
       <section className="panel tool-health-strip">
         <div>
-          <span className="panel-kicker">{t("Execution node")}</span>
-          <h3>{t("Local tool health")}</h3>
+          <div className="panel-title-line">
+            <PixelIcon name="terminal" />
+            <h3>{t("Local tool health")}</h3>
+          </div>
+          <span className="panel-coordinate">{t("Execution node")}</span>
           <p>
             {tools.isError
               ? t("Registry health could not be loaded.")
@@ -211,7 +207,7 @@ export function DashboardPage() {
         <div className="tool-health-actions">
           <span className="mono-chip">node / local</span>
           <Link className="secondary-button" to="/tools">
-            {t("Inspect registry")} <ArrowRight size={15} />
+            {t("Inspect registry")} <PixelIcon name="chevron" />
           </Link>
         </div>
       </section>
@@ -224,7 +220,7 @@ function RunRow({ run }: { run: Run }) {
   return (
     <Link className="run-row" to={`/runs/${run.id}`}>
       <div className="run-row-icon">
-        <TerminalSquare size={18} />
+        <PixelIcon name="terminal" />
       </div>
       <div className="run-row-main">
         <strong>{run.objective.description}</strong>
@@ -233,7 +229,7 @@ function RunRow({ run }: { run: Run }) {
         </span>
       </div>
       <StatusBadge status={run.status} />
-      <ArrowRight className="row-arrow" size={16} />
+      <PixelIcon name="chevron" className="row-arrow" />
     </Link>
   );
 }

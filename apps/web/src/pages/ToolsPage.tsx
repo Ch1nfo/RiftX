@@ -227,7 +227,7 @@ export function ToolsPage() {
                     <td>
                       <code>{tool.state.resolved_command ?? tool.definition.command[0]}</code>
                     </td>
-                    <td>{tool.state.version ?? "—"}</td>
+                    <td>{tool.state.version ?? t("Unavailable")}</td>
                     <td>
                       <div className="capability-list">
                         {tool.definition.capabilities.map((capability) => (

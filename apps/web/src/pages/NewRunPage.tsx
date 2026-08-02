@@ -1,9 +1,10 @@
-import { ArrowLeft, ArrowRight, Crosshair, Loader2, Plus, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, Plus } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import type { ApprovalMode, CreateRunPayload, EntryPoint } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
+import { PixelIcon } from "../components/PixelIcon";
 import { useCreateRun, useModelProfiles, useNodes } from "../hooks/queries";
 import { useI18n } from "../i18n";
 
@@ -89,21 +90,24 @@ export function NewRunPage() {
         <Link className="back-link" to="/">
           <ArrowLeft size={15} /> {t("Dashboard")}
         </Link>
-        <span className="kicker">{t("New guided operation")}</span>
+        <div className="mission-path">
+          <PixelIcon name="run" />
+          <span>RIFTX / {t("New guided operation")}</span>
+        </div>
         <h2>{t("Define the objective and boundary, then continue in conversation.")}</h2>
         <p>
           {t("RiftX stores this context and opens a durable conversation. No model or tool action starts until you send the first specific instruction.")}
         </p>
         <div className="form-principles">
           <div>
-            <Crosshair size={18} />
+            <PixelIcon name="target" />
             <span>
               <strong>{t("Explicit scope")}</strong>
               {t("Define entry points and exclusions before execution.")}
             </span>
           </div>
           <div>
-            <ShieldCheck size={18} />
+            <PixelIcon name="shield" />
             <span>
               <strong>{t("Approval-aware")}</strong>
               {t("Choose how sensitive actions cross the human boundary.")}

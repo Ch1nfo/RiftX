@@ -798,12 +798,33 @@ describe("RunDetailPage approvals", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Emergency stop — cancel the entire Run",
+        name: "Emergency stop: cancel the entire Run",
       }),
     );
 
+    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
     expect(mocks.emergencyStop).toHaveBeenCalledOnce();
     expect(screen.queryByText("Cancel execution")).not.toBeInTheDocument();
+  });
+
+  it("enables resume only when the Run is paused", () => {
+    mocks.runStatus = "paused";
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/runs/run-1"]}>
+          <Routes>
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Emergency stop: cancel the entire Run" }),
+    ).toBeEnabled();
   });
 
   it("keeps emergency cleanup available after a Run reaches a terminal status", () => {
@@ -819,7 +840,7 @@ describe("RunDetailPage approvals", () => {
     );
 
     const emergencyStop = screen.getByRole("button", {
-      name: "Emergency stop — cancel the entire Run",
+      name: "Emergency stop: cancel the entire Run",
     });
     expect(emergencyStop).toBeEnabled();
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
@@ -1416,7 +1437,7 @@ describe("RunDetailPage approvals", () => {
     expect(screen.getAllByText("主代理。我现在开始按照")).toHaveLength(1);
     fireEvent.click(screen.getByRole("tab", { name: /timeline 2/i }));
     expect(await screen.findByText("主代理。我现在开始按照")).toBeInTheDocument();
-    expect(screen.getByText("#19–#25")).toBeInTheDocument();
+    expect(screen.getByText("#19 - #25")).toBeInTheDocument();
     expect(screen.getByText("Agent response")).toBeInTheDocument();
     expect(screen.queryByText(/assistant_delta/)).not.toBeInTheDocument();
     expect(screen.queryByText(/tool_call_argument_delta/)).not.toBeInTheDocument();
