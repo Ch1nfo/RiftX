@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-02T09:46:56Z",
+  "title": "Design System: RiftX Demo — Blue Team Cartridge",
+  "extensions": {
+    "colorMeta": {
+      "telemetry-cyan": {
+        "role": "primary",
+        "displayName": "Telemetry Cyan",
+        "canonical": "#55d9ff",
+        "tonalRamp": ["oklch(15% 0.133 218.3)", "oklch(26% 0.133 218.3)", "oklch(37% 0.133 218.3)", "oklch(48% 0.133 218.3)", "oklch(60% 0.133 218.3)", "oklch(72% 0.133 218.3)", "oklch(84% 0.133 218.3)", "oklch(95% 0.133 218.3)"]
+      },
+      "approval-gold": {
+        "role": "tertiary",
+        "displayName": "Approval Gold",
+        "canonical": "#ffd45a",
+        "tonalRamp": ["oklch(15% 0.142 91.2)", "oklch(26% 0.142 91.2)", "oklch(37% 0.142 91.2)", "oklch(48% 0.142 91.2)", "oklch(60% 0.142 91.2)", "oklch(72% 0.142 91.2)", "oklch(84% 0.142 91.2)", "oklch(95% 0.142 91.2)"]
+      },
+      "confirmation-green": {
+        "role": "tertiary",
+        "displayName": "Confirmation Green",
+        "canonical": "#62e2ae",
+        "tonalRamp": ["oklch(15% 0.126 159.2)", "oklch(26% 0.126 159.2)", "oklch(37% 0.126 159.2)", "oklch(48% 0.126 159.2)", "oklch(60% 0.126 159.2)", "oklch(72% 0.126 159.2)", "oklch(84% 0.126 159.2)", "oklch(95% 0.126 159.2)"]
+      },
+      "danger-red": {
+        "role": "tertiary",
+        "displayName": "Danger Red",
+        "canonical": "#ff5578",
+        "tonalRamp": ["oklch(15% 0.206 13.7)", "oklch(26% 0.206 13.7)", "oklch(37% 0.206 13.7)", "oklch(48% 0.206 13.7)", "oklch(60% 0.206 13.7)", "oklch(72% 0.206 13.7)", "oklch(84% 0.206 13.7)", "oklch(95% 0.206 13.7)"]
+      },
+      "cartridge-panel": {
+        "role": "neutral",
+        "displayName": "Cartridge Panel",
+        "canonical": "#0d1d3c",
+        "tonalRamp": ["oklch(15% 0.055 259.0)", "oklch(26% 0.055 259.0)", "oklch(37% 0.055 259.0)", "oklch(48% 0.055 259.0)", "oklch(60% 0.055 259.0)", "oklch(72% 0.055 259.0)", "oklch(84% 0.055 259.0)", "oklch(95% 0.055 259.0)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "First-viewport thesis copy only." },
+      "headline": { "displayName": "Headline", "purpose": "Screen and operation titles." },
+      "title": { "displayName": "Title", "purpose": "Panel headings." },
+      "body": { "displayName": "Body / Data", "purpose": "Chinese-first explanation, conversation, and evidence." },
+      "label": { "displayName": "Pixel Label", "purpose": "Commands, navigation, stages, and named states." }
+    },
+    "shadows": [
+      { "name": "panel-cartridge", "value": "inset 2px 2px 0 var(--inset-highlight), inset -2px -2px 0 rgb(1 3 10 / 58%), 4px 4px 0 var(--shadow)", "purpose": "Hard structural depth on primary panels." },
+      { "name": "control-cartridge", "value": "inset -2px -2px 0 rgb(1 3 10 / 60%), 3px 3px 0 var(--shadow)", "purpose": "Tactile depth for controls." },
+      { "name": "compact-lift", "value": "3px 3px 0 var(--shadow)", "purpose": "Tabs, inspectors, and status blocks." },
+      { "name": "pressed", "value": "none", "purpose": "Pressed controls move three pixels down-right and lose their cast shadow." }
+    ],
+    "motion": [
+      { "name": "control-step", "value": "transform 90ms steps(2, end), background-color 90ms linear, box-shadow 90ms linear", "purpose": "Short physical hover and press feedback." },
+      { "name": "state-pulse", "value": "1.8s steps(2, end) infinite", "purpose": "Marks running state." },
+      { "name": "route-active", "value": "1.6s steps(2, end) infinite", "purpose": "Marks the active mission gate." },
+      { "name": "reduced-motion", "value": "0.01ms", "purpose": "Collapses motion when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "wide-tighten", "value": "1180px" },
+      { "name": "split-stack", "value": "1020px" },
+      { "name": "grid-reduce", "value": "900px" },
+      { "name": "mobile-shell", "value": "720px" },
+      { "name": "narrow-stack", "value": "520px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The direct operation action: bright, square, and physically pressable.",
+      "html": "<button class=\"ds-btn-primary\">进入行动空间</button>",
+      "css": ".ds-btn-primary{min-height:42px;padding:0 14px;border:2px solid var(--cyan,#55d9ff);border-radius:0;color:#03142a;background:var(--cyan-high,#a8edff);box-shadow:3px 3px 0 var(--shadow,#01030a);font:700 9px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace;clip-path:polygon(4px 0,calc(100% - 4px) 0,100% 4px,100% calc(100% - 4px),calc(100% - 4px) 100%,4px 100%,0 calc(100% - 4px),0 4px);transition:transform 90ms steps(2,end),background-color 90ms linear,box-shadow 90ms linear}.ds-btn-primary:hover{background:#d7f7ff;transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--shadow,#01030a)}.ds-btn-primary:focus-visible{outline:3px solid var(--cyan-high,#a8edff);outline-offset:3px}.ds-btn-primary:active{transform:translate(3px,3px);box-shadow:none}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A cobalt cartridge for secondary operations.",
+      "html": "<button class=\"ds-btn-secondary\">新建演示 RUN</button>",
+      "css": ".ds-btn-secondary{min-height:42px;padding:0 14px;border:2px solid var(--line,#245dc7);border-radius:0;color:var(--cyan-high,#a8edff);background:var(--button,#0e2a5a);box-shadow:3px 3px 0 var(--shadow,#01030a);font:700 9px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace;transition:transform 90ms steps(2,end),background-color 90ms linear}.ds-btn-secondary:hover{border-color:var(--cyan,#55d9ff);background:var(--button-hover,#17448d);transform:translate(-1px,-1px)}.ds-btn-secondary:focus-visible{outline:3px solid var(--cyan-high,#a8edff);outline-offset:3px}.ds-btn-secondary:active{transform:translate(3px,3px);box-shadow:none}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "The explicit reject or emergency-stop control.",
+      "html": "<button class=\"ds-btn-danger\">拒绝</button>",
+      "css": ".ds-btn-danger{min-height:42px;padding:0 14px;border:2px solid var(--red,#ff5578);border-radius:0;color:var(--red-soft,#ff9eb2);background:var(--red-deep,#42142b);box-shadow:3px 3px 0 var(--shadow,#01030a);font:700 9px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace;transition:transform 90ms steps(2,end)}.ds-btn-danger:hover{color:#fff0f4;transform:translate(-1px,-1px)}.ds-btn-danger:focus-visible{outline:3px solid var(--cyan-high,#a8edff);outline-offset:3px}.ds-btn-danger:active{transform:translate(3px,3px);box-shadow:none}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "text-field",
+      "description": "A square 44px field for targets, commands, and messages.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">授权目标</span><input class=\"ds-field-input\" value=\"staging.example.test\"></label>",
+      "css": ".ds-field{display:grid;gap:7px;color:var(--text,#eff8ff);font-family:ui-monospace,monospace}.ds-field-label{font:700 9px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-field-input{min-height:44px;padding:10px 11px;border:2px solid var(--line,#245dc7);border-radius:0;color:var(--text,#eff8ff);background:var(--input,#06142f);box-shadow:inset 2px 2px 0 rgb(1 3 10 / 36%)}.ds-field-input:hover{border-color:var(--blue,#3478f6)}.ds-field-input:focus-visible{outline:3px solid var(--cyan-high,#a8edff);outline-offset:3px}"
+    },
+    {
+      "name": "Waiting Approval Status",
+      "kind": "chip",
+      "refersTo": "status-approval",
+      "description": "A named non-color state label for the human authorization gate.",
+      "html": "<span class=\"ds-status-approval\"><span class=\"ds-status-pip\" aria-hidden=\"true\"></span>等待批准</span>",
+      "css": ".ds-status-approval{display:inline-flex;min-height:25px;align-items:center;gap:6px;padding:0 8px;border:1px solid var(--gold,#ffd45a);color:var(--gold,#ffd45a);background:var(--panel-deep,#071632);font:700 8px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-status-pip{width:7px;height:7px;border:1px solid currentColor;background:currentColor}@media(max-width:720px){.ds-status-approval{min-height:30px;font-size:10px}}"
+    },
+    {
+      "name": "Command Rail Item",
+      "kind": "nav",
+      "refersTo": "command-nav",
+      "description": "The active desktop navigation cartridge with text and edge marker.",
+      "html": "<nav class=\"ds-command-nav\" aria-label=\"演示导航\"><button class=\"ds-rail-item\" aria-current=\"page\">行动</button></nav>",
+      "css": ".ds-command-nav{width:84px;padding:12px 8px;background:var(--space,#030611)}.ds-rail-item{position:relative;width:68px;min-height:58px;border:2px solid var(--cyan,#55d9ff);color:var(--cyan-high,#a8edff);background:var(--panel-blue,#102753);box-shadow:3px 3px 0 #000;font:400 8px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-rail-item:after{position:absolute;right:-9px;top:15px;width:4px;height:24px;background:var(--cyan,#55d9ff);content:\"\"}.ds-rail-item:hover{background:var(--panel-deep,#071632)}.ds-rail-item:focus-visible{outline:3px solid var(--cyan-high,#a8edff);outline-offset:3px}"
+    },
+    {
+      "name": "Pixel Panel",
+      "kind": "card",
+      "refersTo": "pixel-panel",
+      "description": "The canonical two-pixel framed cartridge surface with hard depth.",
+      "html": "<section class=\"ds-pixel-panel\"><small class=\"ds-panel-kicker\">ACTIVE CARTRIDGE</small><strong class=\"ds-panel-title\">Q3 STAGING VALIDATION</strong><p class=\"ds-panel-copy\">授权、执行、证据和停止证明保持在同一链路。</p></section>",
+      "css": ".ds-pixel-panel{display:grid;gap:8px;padding:16px;border:2px solid var(--line,#245dc7);border-radius:0;color:var(--text,#eff8ff);background:var(--panel,#0d1d3c);box-shadow:inset 2px 2px 0 rgb(168 237 255 / 13%),4px 4px 0 var(--shadow,#01030a);font-family:ui-monospace,monospace}.ds-pixel-panel:hover{border-color:var(--cyan,#55d9ff)}.ds-panel-kicker{color:var(--dim,#7fa4d1);font:400 8px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-panel-title{color:var(--cyan-high,#a8edff);font:700 11px/1.35 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-panel-copy{margin:0;color:var(--muted,#a9c5e8);font-size:11px;line-height:1.55}"
+    },
+    {
+      "name": "Demo Safety Cartridge",
+      "kind": "custom",
+      "refersTo": "demo-stamp",
+      "description": "Persistent sanitized and local-only identity, fixed to two lines on narrow screens.",
+      "html": "<span class=\"ds-demo-stamp\"><span class=\"ds-demo-main\">DEMO / SANITIZED</span><small class=\"ds-demo-local\">LOCAL ONLY</small></span>",
+      "css": ".ds-demo-stamp{display:inline-flex;min-height:28px;align-items:center;gap:6px;padding:0 8px;border:2px solid var(--cyan,#55d9ff);color:var(--cyan-high,#a8edff);background:var(--panel-deep,#071632);font:400 8px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace}.ds-demo-local{display:none;color:var(--green,#62e2ae);font-size:9px}@media(max-width:720px){.ds-demo-stamp{display:grid;min-height:40px;gap:1px;padding:4px 7px;font-size:9px}.ds-demo-local{display:block}}"
+    },
+    {
+      "name": "Mission Stage Route",
+      "kind": "custom",
+      "refersTo": "mission-stage-route",
+      "description": "A five-stage evidence route with completed, active, and future states named in text.",
+      "html": "<ol class=\"ds-stage-route\"><li class=\"ds-stage-complete\"><span class=\"ds-stage-node\">1</span>授权边界</li><li class=\"ds-stage-complete\"><span class=\"ds-stage-node\">2</span>低影响发现</li><li class=\"ds-stage-active\"><span class=\"ds-stage-node\">3</span>主动验证</li><li class=\"ds-stage-future\"><span class=\"ds-stage-node\">4</span>证据固化</li><li class=\"ds-stage-future\"><span class=\"ds-stage-node\">5</span>报告交付</li></ol>",
+      "css": ".ds-stage-route{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:0;padding:0;color:var(--dim,#7fa4d1);list-style:none}.ds-stage-route li{display:grid;place-items:center;gap:5px;font:400 7px/1.2 \"RiftX Silkscreen\",ui-monospace,monospace;text-align:center}.ds-stage-node{display:grid;width:24px;height:24px;place-items:center;border:2px solid var(--line,#245dc7);background:var(--panel-deep,#071632)}.ds-stage-complete,.ds-stage-complete .ds-stage-node{color:var(--green,#62e2ae);border-color:var(--green,#62e2ae)}.ds-stage-active,.ds-stage-active .ds-stage-node{color:var(--gold,#ffd45a);border-color:var(--gold,#ffd45a)}.ds-stage-active .ds-stage-node{animation:ds-pulse 1.6s steps(2,end) infinite}@keyframes ds-pulse{50%{opacity:.38}}@media(max-width:520px){.ds-stage-route li{font-size:9px}.ds-stage-node{width:22px;height:22px}}@media(prefers-reduced-motion:reduce){.ds-stage-active .ds-stage-node{animation-duration:.01ms;animation-iteration-count:1}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Blue Team Cartridge",
+    "overview": "Blue Team Cartridge is a conversation-led operation theater: a navy tactical field where every authorization, action, evidence edge, ownership change, and stop proof reads like a durable control record. The visual world is dense but deliberate—cobalt two-pixel frames establish structure, cyan carries telemetry, and hard cartridge depth makes controls feel physical without drifting into decorative arcade nostalgia.\n\nThe system refuses the generic dashboard tour. Its signature composition is a split tactical deck that pairs the active sanitized mission with a scope lock, stage route, proof states, and a direct operation action; the broader product unfolds from that same evidence-led grammar. Light mode preserves the hierarchy and state roles as a daylight field rather than becoming a different brand.",
+    "keyCharacteristics": [
+      "Navy map fields and compact operational density.",
+      "Cobalt two-pixel structure with square or four-pixel cut corners.",
+      "Cyan telemetry, gold approval, green confirmation, and red danger semantics.",
+      "Pixel display labels paired with a legible monospace data face.",
+      "Hard cartridge shadows and restrained step-based motion.",
+      "Persistent `DEMO / SANITIZED` and local-only identity."
+    ],
+    "rules": [
+      { "name": "The State Has a Name Rule", "body": "Color always arrives with visible text, an icon or pip, and a structural treatment; no operational state is communicated by hue alone.", "section": "colors" },
+      { "name": "The Human Gold Rule", "body": "Gold means approval, scope lock, or human ownership—not generic emphasis.", "section": "colors" },
+      { "name": "The Narrow State Scale Rule", "body": "At 720px and below, state labels, risk labels, HTTP states, and credential states use a 10px label and a 30px minimum height; never shrink them to recover space.", "section": "typography" },
+      { "name": "The Split Deck Rule", "body": "The thesis and the active cartridge are peers: desktop places them side by side, compact layouts stack them without removing scope, route, or proof context.", "section": "layout" },
+      { "name": "The Safety Cartridge Rule", "body": "`DEMO / SANITIZED` plus local-only identity remains persistently visible at every breakpoint.", "section": "layout" },
+      { "name": "The Hard Depth Rule", "body": "Never use blur, glass, or floating-card haze; depth must read as a crisp cartridge edge.", "section": "elevation" },
+      { "name": "The Restrained Step Rule", "body": "Animate only state change, selection, and physical press feedback; keep motion short, stepped, and optional.", "section": "elevation" },
+      { "name": "The No Soft Corners Rule", "body": "Do not introduce pills, rounded cards, circular icon buttons, or soft container radii into the cartridge world.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do keep the split tactical deck, active sanitized mission, scope lock, stage route, and proof states legible in the first experience.",
+      "Do keep `DEMO / SANITIZED` and `LOCAL ONLY` persistently visible, including the fixed two-line mobile safety cartridge.",
+      "Do pair every operational color with explicit state text and structural or icon cues.",
+      "Do preserve square controls, two-pixel cobalt frames, cut-corner cartridges, hard pixel shadows, and visible keyboard focus.",
+      "Do keep narrow-screen state labels at the implemented readable scale and let dense data scroll or reflow.",
+      "Do honor reduced-motion preferences and reserve stepped motion for active state or tactile feedback."
+    ],
+    "donts": [
+      "Don't turn the experience into a generic metric-card dashboard or hide the operation behind a tour.",
+      "Don't use rounded pills, soft cards, blurred shadows, glass effects, gradients without structural purpose, or decorative glow.",
+      "Don't use gold as generic emphasis, green as decoration, or red for anything other than danger and negative state.",
+      "Don't communicate running, waiting, verified, blocked, or stopped states by color alone.",
+      "Don't remove scope, evidence lineage, human approval, ownership, or stop proof to simplify a responsive layout.",
+      "Don't compress or hide the mobile safety cartridge to make room for navigation labels."
+    ]
+  }
+}
