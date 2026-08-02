@@ -14,6 +14,17 @@ from .artifacts import (
     RegisterArtifact,
     RegisterArtifactContent,
 )
+from .audits import (
+    AuditApplicationService,
+    AuditContractBlueprint,
+    AuditControlAction,
+    AuditControlDisposition,
+    AuditControlEffect,
+    AuditControlPlan,
+    AuditDraftResult,
+    AuditRunStateMappingPolicy,
+    CreateAuditDraft,
+)
 from .events import EventApplicationService
 from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
@@ -54,7 +65,16 @@ __all__ = [
     "ApprovalWorkflowClient",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
+    "AuditApplicationService",
+    "AuditContractBlueprint",
+    "AuditControlAction",
+    "AuditControlDisposition",
+    "AuditControlEffect",
+    "AuditControlPlan",
+    "AuditDraftResult",
+    "AuditRunStateMappingPolicy",
     "CreateEngagement",
+    "CreateAuditDraft",
     "CreateRun",
     "DecideApproval",
     "EventApplicationService",

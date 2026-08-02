@@ -464,7 +464,7 @@ Start 重新验证 proof/digest；模式定义能力已缺失时返回 `audit_ca
 
 ### 6.6 Audit ↔ Run 状态映射
 
-`AuditRunStateProjector` 是唯一可写双状态的服务；同一事务/CAS 更新 Audit、Run 和 Event，Workflow/UI 不自行推断：
+`AuditRunStateProjector` 是唯一可写双状态的服务；同一事务/CAS 更新 Audit、Run 和 Event，Workflow/UI 不自行推断。create、完整 aggregate read、create replay、控制计划和 Projector 必须复用同一个纯 `AuditRunStateMappingPolicy`，不得各自复制状态 switch：
 
 | Audit lifecycle | Run status | 规则 |
 | --- | --- | --- |
@@ -491,7 +491,7 @@ Closure/core-sealed facts。complete outcome 的发布失败投影为 completed_
 首次 distribution revision 必须与 published 状态、initial/latest revision 和
 publication_finished_at 原子出现，不能在活跃 publication state 预填。
 
-code_audit 不使用 Run `waiting_user/ready/compacting`。Run 进入 terminal 后永不为重建报告而重开；Audit 的 `analysis_finished_at`、`publication_finished_at` 与 Run `finished_at` 分开。任何映射不在表内返回 `audit_run_state_conflict` 并由 reconciler 保持较安全状态，不能单边推进。
+code_audit 不使用 Run `waiting_user/ready/compacting`。Run 进入 terminal 后永不为重建报告而重开；Audit 的 `analysis_finished_at`、`publication_finished_at` 与 Run `finished_at` 分开。mapping policy 同时读取 cleanup convergence、terminal outcome 与 publication facts；任何映射不在策略内返回 `audit_run_state_conflict` 并由 reconciler 保持较安全状态，不能单边推进或把损坏 aggregate 返回给调用方。AUD-103 的 read/control 路径只验证该策略，不执行修复；完整应用层决策见 ADR-0003。
 
 ## 7. 扫描模式
 
@@ -1637,10 +1637,21 @@ auto-commit 的 Contract create。完整 aggregate create Port 与 `AuditCreatio
 AUD-103 的 Application Service 交付物；AUD-102 不提前实现该 Service，但不得把 Repository
 设计成下一任务无法组合的独立提交黑盒。
 
-AUD-103 的 draft UoW 一次创建/验证 Engagement、创建/复用 Project、Run、RunEvent、
-AuditScan、AuditContract、AuditEvent、client-request/preflight reservation；start UoW 一次
-更新 Run/Audit、消费 token、追加 Event 与 AuditStartIntent。禁止从 Service 顺序调用现有
-auto-commit Engagement/Run Repository 和新 AuditRepository；任何一步失败都完整回滚。
+AUD-103 遵守 ADR-0003。它新增不可变 `audit_client_requests`，只保存
+`client_request_id`、`operation=create_draft`、版本化 domain-separated
+`request_digest`、Audit/Run/Project/Engagement/Contract/digest/Workflow 绑定和创建时间；
+不得保存 request payload、source path、preflight token 或 canonical contract。exact replay
+返回当前完整 aggregate/current version，同 key 异 payload fail closed。
+
+draft UoW 在一个 serialized transaction 中依次检查 client-request、解析权威
+Project/Engagement、调用纯 AggregateFactory、写 Run、`run.created` sequence 1、
+Contract+Scan、`audit.created` sequence 2 和 request row，最后且只 commit 一次。Audit
+事件使用同一 Run 的 RunEvent，不存在独立 AuditEvent 表。禁止从 Service 顺序调用现有
+auto-commit Engagement/Run/Event/Audit Repository；任何一步失败都完整回滚。
+
+AUD-103 不做 preflight reservation。M2/AUD-201 在不改变 client-request 和单提交原则的前提下，
+把 reservation 扩展进同一个 UoW；start UoW 才负责更新 Run/Audit、消费 token、追加 Event 与
+AuditStartIntent。
 
 所有可变行持久化 `state_version >= 1`。Domain model 不混入 persistence metadata，Port 通过
 统一 `Versioned[T]`（或语义等价的只读 wrapper）返回 value 与 state_version。CAS SQL 条件至少
@@ -2099,9 +2110,9 @@ Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 
 }
 ~~~
 
-preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。创建 draft 时 token 原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。Start 时重新检查目标；若工作树内容已经变化，返回 snapshot_changed，并把 draft 标为需要重新 Preflight，不得扫描与预检不同的输入。只有 Start 事务成功写入 `AuditStartIntent` 时 token 才进入 `consumed`。
+preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。本段 token 行为由 M2/AUD-201 接入：创建 draft 时 token 在同一个 creation UoW 中原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。Start 时重新检查目标；若工作树内容已经变化，返回 snapshot_changed，并把 draft 标为需要重新 Preflight，不得扫描与预检不同的输入。只有 Start 事务成功写入 `AuditStartIntent` 时 token 才进入 `consumed`。AUD-103/M1 不接受、保存、hash 或预留 token，也不读取 Git；AUD-104 的 draft-only test path 不得伪造已完成 Preflight。
 
-client_request_id 是幂等键。HTTP 响应丢失后用相同 ID 重试必须返回同一 Audit。
+client_request_id 是请求级幂等键。服务端按 `riftx.audit-create-draft-request/v1` 对 canonical caller payload 计算 domain-separated SHA-256；同一 key/digest 返回同一 Audit 的当前 lifecycle/version，同 key 异 payload 返回 `audit_idempotency_conflict`。HTTP 响应丢失后 exact retry 不新增 Event，也不把已推进 Audit 改回 draft。`audit.enabled=false` 的 create admission fence 优先于 exact replay。
 
 `engagement_id` 可引用已授权的现有 Engagement；为空时 UoW 为新 CodeProject 创建 Engagement。复用时必须验证 authorization_reference/source policy 与 Project 对象域，不允许借任意 Engagement 绕过 source authorization。
 
@@ -2169,6 +2180,9 @@ UI/CLI 必须直接显示 `publication_status`：仍在 sealing/reporting/packag
 - audit_budget_invalid
 - audit_budget_infeasible
 - audit_already_sealed
+- audit_idempotency_conflict
+- audit_not_pauseable
+- audit_not_resumable
 - audit_not_controllable
 - audit_workflow_unavailable
 - audit_run_state_conflict
@@ -2205,7 +2219,9 @@ LocalObjectAuthorizer 必须验证 Audit、Run、Project、Finding、Artifact、
 
 ### 17.1 Event
 
-使用关联 Run 的 RunEventRepository，事件命名：
+使用关联 Run 的 RunEventRepository，不建立独立 AuditEvent 表。首次 draft 创建在同一
+aggregate transaction 中先写 `run.created`（sequence 1），再写
+`audit.created`（sequence 2）；exact create replay 不追加 Event。其余事件命名：
 
 ~~~text
 audit.created
@@ -2812,10 +2828,12 @@ detectors:
 
 当关闭时：
 
-- Preflight、创建和所有会启动新执行的 Audit 端点返回 feature_disabled；
+- Preflight、创建和所有会启动新执行的 Audit 端点返回 feature_disabled；`create_draft`
+  在查询 client-request 前 flag-first 拒绝，已存在 exact replay 也不例外；
 - GET 列表、详情、Finding、Artifact 与报告仍可只读访问已有 Audit；
+- pause 与 cancel 继续可用；resume 返回 feature_disabled；
 - UI 隐藏 Code Audit 一级导航；
-- 不再注册可创建新 Capsule/Execution 的 Activity，但 stop、destroy、cancel callback、StartIntent reconciler 和安全清理 Activity 必须始终注册；Feature Flag 不能移除停止能力；
+- AuditApplicationService 始终注册，只在方法级做 admission fence；不再注册可创建新 Capsule/Execution 的 Activity，但 stop、destroy、cancel callback、StartIntent reconciler 和安全清理 Activity 必须始终注册；Feature Flag 不能移除停止能力；
 - 已存在非终态 Audit 先持久围栏新效果并进入 `paused`（`pause_reason=feature_disabled`）或安全 cancel/cleanup；cancel 与 stop endpoint 始终可用，完成物理停止后才只读；
 - 关闭是 admission fence，不得把运行中的效果留成不可控制状态，也不得把 pending StartIntent 继续投递。
 
@@ -3050,19 +3068,186 @@ Scope/Work planning、Detector/Agent/Receipt/Evidence/Finding/Closure，也不�
 
 #### AUD-103：AuditApplicationService
 
-实现：
+本任务以 ADR-0003 为可执行契约。目标不是只建立一个 Service 空壳，而是交付“可原子创建、
+可严格重放、可完整恢复、控制无副作用”的数据库应用层。实现按以下顺序进行。
 
-- create_draft；
-- get；
-- list；
-- pause/resume/cancel 的状态门禁接口；
-- feature flag；
-- aggregate create Port/AuditCreationUnitOfWork，一次提交/验证 Engagement、Project、Run、RunEvent、Audit、Contract、AuditEvent 与 client-request；M2 再把 preflight reservation 纳入同一事务；
-- client_request_id 幂等。
+1. **Domain 与 Port**
 
-使用 AuditCreationUnitOfWork；不得用两个独立提交的现有 Repository 模拟原子性。
+   - 在 Audit-owned domain 中增加不可变 `AuditClientRequest`：
+     `client_request_id`、`operation=create_draft`、
+     `request_schema_version=riftx.audit-create-draft-request/v1`、
+     `request_digest`、Audit/Run/Project/Engagement/Contract/digest/Workflow 绑定和
+     `created_at`；
+   - 增加 `AuditAggregate`、`AuditDraftCreationEnvelope`、
+     `AuditDraftAggregateFactory`、`AuditCreationUnitOfWork` 与
+     `AuditAggregateReadRepository` Port；
+   - Port 不暴露 SQLAlchemy `AsyncSession`，Service 只能调用 one-shot
+     `create_draft` 和 complete aggregate read；
+   - factory 是纯内存构造器，最终 build 必须接收 UoW 已解析的权威
+     Project/Engagement，不能在事务外用候选 Project ID 冻结 Contract。
 
-此阶段不启动 Temporal，不读取 Git。
+2. **Request digest 与持久化**
+
+   - 服务端按
+     `SHA256(UTF8("riftx.audit-create-draft-request/v1") || 0x00 || canonical_payload)`
+     计算摘要；canonical payload 覆盖所有 caller-owned、会改变初始 aggregate 的字段，排除
+     client_request_id、generated ID/time/state_version；AUD-103 的 request surface 不含
+     preflight token，M2 纳入 reservation 前必须版本化摘要 schema 或绑定稳定 plan digest，
+     不得静默排除新增 caller-owned input；
+   - 摘要比较使用 constant-time primitive；客户端提供的 digest 不可信；
+   - 新增 `audit_client_requests` migration、ORM 和 strict mapper；
+     `client_request_id` 与 `audit_id` 唯一，operation/schema 用 CHECK，
+     可用 FK 均 RESTRICT；
+   - request row 不保存 payload、source/repository path、preflight token/hash、
+     canonical contract、Prompt、源代码或模型内容；
+   - request row 不可变且不带 `state_version`；online downgrade 在 DDL 前证明表为空，
+     非空 fail closed，offline downgrade fail closed；从旧 revision upgrade 时先锁定并证明
+     `audit_scans` 为空，既有 Audit 因缺少可证明的 caller digest 必须在任何 DDL 前拒绝，
+     不得伪造 request 回填，PostgreSQL offline SQL 包含等价执行时 guard。
+
+3. **原子 creation UoW**
+
+   使用一个 serialized transaction，固定顺序为：
+
+   ~~~text
+   client-request replay/conflict check
+     -> authoritative Project/Engagement resolution
+     -> pure factory builds facts bound to authoritative IDs
+     -> missing Engagement/Project session-bound create
+     -> Run(kind=code_audit, status=created)
+     -> RunEvent(run.created, sequence=1)
+     -> Contract + Scan session-bound pair
+     -> RunEvent(audit.created, sequence=2)
+     -> audit_client_requests
+     -> one commit
+   ~~~
+
+   Run 的 Engagement、node、model profile、deterministic workflow ID 必须与
+   Project/Contract/Scan/request 一致。workspace 只保存 RiftX 管理的输出路径字符串，不得等于
+   source repository；本任务不创建该目录。
+
+   Project 先按全局 `repository_identity_digest` 解析。复用时重新验证实际 Engagement
+   root、VCS、repository identity 与 authorization；显式 Engagement 不匹配时返回不泄漏对象
+   存在性的 conflict。并发 natural-key 竞争后，失败方不能继续使用事务外 surrogate ID。
+
+   只能组合 AUD-102 的 session-bound primitives。禁止依次调用会自行 commit 的现有
+   Engagement/Run/RunEvent/Audit Repository，禁止通用 `RunApplicationService.create_run`，
+   禁止 compensating delete 或 background Event 补写。
+
+   `IntegrityError` 恢复必须先离开 driver exception handler 并丢弃原异常，再在新
+   transaction/session 中查询 request key、Project natural identity 和 aggregate。公开
+   exception/log/traceback 不得保留 SQL parameters、canonical contract 或绝对路径。
+   Database engine 必须启用 parameter hiding；其他 `SQLAlchemyError` 同样在离开 handler 后
+   转为脱敏 unavailable error，不得携带 driver cause/context，也不得误入幂等 recovery。
+
+4. **幂等结果**
+
+   - 无 request row：按上述事务首次创建；
+   - 同 key、相同 schema/operation/digest：不写数据库，返回当前完整 aggregate 和
+     `replayed=true`；
+   - 同 key、不同 payload/digest：`audit_idempotency_conflict`；
+   - request row 的任一 owner/binding 缺失或跨域：integrity failure，不得重新创建；
+   - exact replay 不比较新生成 ID，不追加 Event，不改写 Contract，不把 queued/running/terminal
+     Audit 降回 draft，并返回当前 Audit lifecycle/state_version。
+
+5. **完整读取**
+
+   `get/list` 和 exact replay 使用同一个 aggregate loader。在一个 session/一致读取中加载
+   Scan、Contract、Project、Engagement、Run 和 request binding，重新验证：
+
+   - Scan↔Contract 的 ID、audit ID、digest 与 canonical redundant fields；
+   - Scan↔Project↔Engagement 的 owner root；
+   - Scan↔Run 的 kind=code_audit、Engagement、node、model profile、workflow 和 terminal facts；
+   - client-request↔Audit/Run/Project/Engagement/Contract/digest/workflow；
+   - 第 6.6 节集中 `AuditRunStateMappingPolicy`。
+
+   非法状态组合统一为 `audit_run_state_conflict`。list 使用有界分页、稳定排序与同 session
+   eager/batched load；页内任一损坏 aggregate 使整次请求 fail closed，不得静默过滤。
+
+6. **只读控制计划**
+
+   `pause/resume/cancel` 在 AUD-103 只返回
+   `AuditControlPlan(operation, disposition, current/target Audit+Run state,
+   required_effect, expected_audit_state_version)`：
+
+   | 操作 | 当前状态 | 结果 |
+   | --- | --- | --- |
+   | pause | running / waiting_approval | transition plan → pausing |
+   | pause | pausing | reconcile plan → paused |
+   | pause | paused | already_satisfied |
+   | resume | paused 且 Feature 开启 | transition plan → running |
+   | cancel | cleanup convergence 前的普通活跃状态 | transition plan → cancelling |
+   | cancel | cancelling / 未 convergence 的 cleaning | reconcile stop plan |
+   | cancel | cleanup 已 convergence、publication lifecycle 或 terminal | safety_only stop-sweep plan |
+
+   其他 pause/resume 状态分别返回 `audit_not_pauseable` /
+   `audit_not_resumable`。cleanup convergence 必须由
+   `cleanup_proof_digest + run_terminal_status` 证明。safety_only 不改写已完成或发布状态，
+   但保留后续幂等 stopper/destroy sweep 能力。
+
+   这些方法不得写 Scan/Run、执行 CAS、追加 Event、signal Temporal、调用 stopper 或产生文件
+   副作用。真正 mutation 属于后续
+   `AuditRunStateProjector`/`RunWorkflowControlRouter`。
+
+7. **Feature Flag admission order**
+
+   - `audit.enabled=false` 时，`create_draft` 在调用 UoW/查询 request row 前返回
+     `feature_disabled`，包括 exact replay；
+   - get/list/pause/cancel 始终可用；
+   - resume 在 Feature 关闭时返回 `feature_disabled`；
+   - Service 必须始终在 composition root 注册；Feature Flag 不得移除 cancel/stop/cleanup
+     capability。
+
+8. **实现位置与接线**
+
+   优先保持以下边界，若当前仓库结构要求等价拆分，必须在 ADR 中先更新：
+
+   ~~~text
+   src/riftx/domain/audit_records.py
+   src/riftx/application/ports/audits.py
+   src/riftx/application/services/audits.py
+   src/riftx/persistence/orm.py
+   src/riftx/persistence/audit_mappers.py
+   src/riftx/persistence/audit_uow.py
+   migrations/versions/<revision>.py
+   tests/unit/application/test_audit_service.py
+   tests/integration/persistence/test_audit_uow.py
+   ~~~
+
+   composition root 只注入 Service/UoW/read adapter，不注册 Audit Workflow 或 source adapter。
+   `ControlPlane.audit_service` 是非可选字段，开关两种状态都必须构造；AUD-103 使用
+   `audit.temp_root` 作为只持久化字符串、不执行 provision 的 Audit workspace policy root。
+   生产 `Database.create_schema()` metadata bootstrap 也必须执行与 migration 等价的 legacy
+   Audit 锁定/空表证明；带 `alembic_version` 且 metadata 有缺表时必须在任何 DDL 前要求先跑
+   Alembic，禁止绕过 fail-closed upgrade guard 或制造 revision/schema 分叉。
+   AUD-104 再增加 HTTP schema/routes/policy。
+
+9. **验收与测试**
+
+   - 成功创建后恰有正确的 owner aggregate、一个 Run、一个 Contract、一个 Scan、一个 request
+     row 和 sequence 1/2 两个 RunEvent；
+   - 每个写阶段 failpoint 全回滚；没有 mkdir、Git、Temporal 或 stopper 调用；
+   - exact/different replay、响应丢失重试、已推进状态重放；
+   - 两连接同 key 并发恰一创建；不同 key 同 repository digest 共用权威 Project；
+   - cross-Engagement/Project/Run/Contract/request 反例和 raw corruption fail closed；
+   - Audit↔Run 映射冲突、全 lifecycle 控制计划和 Feature Flag flag-first；
+   - request/Event/exception/log 均无 path、token、canonical contract 或 SQL parameters；
+   - Operational/Statement/DataError canary 证明完整回滚、parameter hiding 和脱敏 unavailable；
+   - dispose/reopen aggregate recovery、migration full-chain、非空/offline downgrade 拒绝；
+   - 非空 legacy Audit 的 runtime metadata bootstrap 在任何 request-table DDL 前同样 fail
+     closed，Alembic 管理的空旧 schema 也必须拒绝 metadata 补表；
+   - Feature Flag 开/关两种 composition 均始终注册 Service，且启动不创建 Audit workspace；
+   - general Run API/service/control 回归完全不变。
+
+   Agent 相关测试与运行按仓库规则使用：
+
+   ~~~shell
+   conda run --no-capture-output -n agent pytest <AUD-103 test targets>
+   ~~~
+
+本任务明确不做 preflight reservation、Git/source read、Temporal、StartIntent、`mkdir`、
+filesystem write、HTTP/UI/CLI 或控制 mutation。M2/AUD-201 只能扩展同一个 UoW 纳入
+preflight reservation，不能引入第二个提交链。
 
 #### AUD-104：API Skeleton 与 Policy
 

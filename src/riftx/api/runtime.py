@@ -20,6 +20,7 @@ from riftx.application.services import (
     ActionApplicationService,
     ApprovalApplicationService,
     ArtifactApplicationService,
+    AuditApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -56,6 +57,8 @@ from riftx.persistence import (
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -264,11 +267,26 @@ def _create_temporal_connector(settings: APISettings) -> Callable[[], Awaitable[
     return connector
 
 
+def _create_audit_service(
+    settings: APISettings,
+    database: Database,
+) -> AuditApplicationService:
+    """Assemble the always-present, database-only Code Audit application edge."""
+
+    return AuditApplicationService(
+        creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
+        aggregate_repository=SQLAlchemyAuditAggregateReadRepository(database.session_factory),
+        feature_enabled=settings.audit.enabled,
+        workspace_root=settings.audit.temp_root,
+    )
+
+
 @dataclass(slots=True)
 class ControlPlane:
     settings: APISettings
     database: Database
     run_service: RunApplicationService
+    audit_service: AuditApplicationService
     action_service: ActionApplicationService
     event_service: EventApplicationService
     execution_service: ExecutionApplicationService
@@ -600,6 +618,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         settings=settings,
         database=database,
         run_service=run_service,
+        audit_service=_create_audit_service(settings, database),
         action_service=ActionApplicationService(
             action_read_repository,
             authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
@@ -696,9 +715,7 @@ def _validate_audit_settings_path_isolation(settings: APISettings) -> None:
             database_url=settings.database_url,
             temporal_tls_server_root_ca_path=settings.temporal_tls_server_root_ca_path,
             temporal_tls_client_cert_path=settings.temporal_tls_client_cert_path,
-            temporal_tls_client_private_key_path=(
-                settings.temporal_tls_client_private_key_path
-            ),
+            temporal_tls_client_private_key_path=(settings.temporal_tls_client_private_key_path),
         )
     except ValueError as exc:
         raise RiftXConfigError(f"invalid Audit path isolation: {exc}") from None

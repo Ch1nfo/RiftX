@@ -13,6 +13,8 @@ from typing import Protocol
 from riftx.application.errors import RepositoryIntegrityError
 from riftx.domain import (
     AnalysisProfile,
+    AuditClientRequest,
+    AuditClientRequestOperation,
     AuditClosureStatus,
     AuditLifecycleStatus,
     AuditMode,
@@ -43,9 +45,7 @@ from riftx.domain import (
 )
 
 from .orm import (
-    AuditContractRecord as AuditContractORMRecord,
-)
-from .orm import (
+    AuditClientRequestRecord,
     AuditPhaseRunRecord,
     AuditProjectRecord,
     AuditScanRecord,
@@ -53,6 +53,9 @@ from .orm import (
     AuditStartIntentRecord,
     AuditWorkItemRecord,
     SourceSnapshotRecord,
+)
+from .orm import (
+    AuditContractRecord as AuditContractORMRecord,
 )
 
 _INVALID_PERSISTED_STATE = "invalid_persisted_state"
@@ -170,6 +173,52 @@ def audit_project_from_record(record: AuditProjectRecord) -> AuditProject:
     )
 
 
+def audit_client_request_to_record(
+    request: AuditClientRequest,
+) -> AuditClientRequestRecord:
+    request = AuditClientRequest.model_validate(request)
+    return AuditClientRequestRecord(
+        client_request_id=request.client_request_id,
+        operation=request.operation.value,
+        request_schema_version=request.request_schema_version,
+        request_digest=request.request_digest,
+        audit_id=request.audit_id,
+        run_id=request.run_id,
+        project_id=request.project_id,
+        engagement_id=request.engagement_id,
+        contract_id=request.contract_id,
+        contract_digest=request.contract_digest,
+        temporal_workflow_id=request.temporal_workflow_id,
+        created_at=request.created_at,
+    )
+
+
+def audit_client_request_from_record(
+    record: AuditClientRequestRecord,
+) -> AuditClientRequest:
+    entity_id = _opaque_id(record, "client_request_id")
+    return _read_strict(
+        entity="AuditClientRequest",
+        entity_id=entity_id,
+        build=lambda: AuditClientRequest.model_validate(
+            {
+                "client_request_id": record.client_request_id,
+                "operation": AuditClientRequestOperation(record.operation),
+                "request_schema_version": record.request_schema_version,
+                "request_digest": record.request_digest,
+                "audit_id": record.audit_id,
+                "run_id": record.run_id,
+                "project_id": record.project_id,
+                "engagement_id": record.engagement_id,
+                "contract_id": record.contract_id,
+                "contract_digest": record.contract_digest,
+                "temporal_workflow_id": record.temporal_workflow_id,
+                "created_at": record.created_at,
+            }
+        ),
+    )
+
+
 def source_snapshot_to_record(snapshot: SourceSnapshot) -> SourceSnapshotRecord:
     snapshot = SourceSnapshot.model_validate(snapshot)
     return SourceSnapshotRecord(
@@ -276,9 +325,7 @@ def audit_contract_from_record(
                 "source_prepare_proof_digest": record.source_prepare_proof_digest,
                 "selected_node_id": record.selected_node_id,
                 "required_backend_id": record.required_backend_id,
-                "snapshot_hydration_policy_digest": (
-                    record.snapshot_hydration_policy_digest
-                ),
+                "snapshot_hydration_policy_digest": (record.snapshot_hydration_policy_digest),
                 "created_at": record.created_at,
                 "sealed_at": record.sealed_at,
             }
@@ -312,9 +359,7 @@ def audit_scan_to_record(
         current_phase=scan.current_phase.value,
         terminal_outcome=(scan.terminal_outcome.value if scan.terminal_outcome else None),
         cleanup_proof_digest=scan.cleanup_proof_digest,
-        run_terminal_status=(
-            scan.run_terminal_status.value if scan.run_terminal_status else None
-        ),
+        run_terminal_status=(scan.run_terminal_status.value if scan.run_terminal_status else None),
         closure_status=scan.closure_status.value if scan.closure_status else None,
         publication_status=scan.publication_status.value,
         core_seal_root=scan.core_seal_root,
@@ -416,9 +461,7 @@ def audit_scan_from_record(
                 ),
                 "publication_status": AuditPublicationStatus(record.publication_status),
                 "core_seal_root": record.core_seal_root,
-                "initial_distribution_revision_id": (
-                    record.initial_distribution_revision_id
-                ),
+                "initial_distribution_revision_id": (record.initial_distribution_revision_id),
                 "latest_distribution_revision_id": record.latest_distribution_revision_id,
                 "model_profile": record.model_profile,
                 "selected_node_id": record.selected_node_id,
@@ -521,9 +564,7 @@ def audit_phase_run_to_record(
         config_digest=phase_run.config_digest,
         status=phase_run.status.value,
         output_artifact_ids_json=list(phase_run.output_artifact_ids),
-        summary_counts_json=[
-            count.model_dump(mode="json") for count in phase_run.summary_counts
-        ],
+        summary_counts_json=[count.model_dump(mode="json") for count in phase_run.summary_counts],
         error_code=phase_run.error_code,
         error_summary=phase_run.error_summary,
         state_version=_validate_write_state_version(state_version),
@@ -630,9 +671,7 @@ def audit_scope_unit_from_record(
         )
 
     reason = (
-        _OWNER_BINDING_MISMATCH
-        if record.project_id != project_id
-        else _INVALID_PERSISTED_STATE
+        _OWNER_BINDING_MISMATCH if record.project_id != project_id else _INVALID_PERSISTED_STATE
     )
     return _read_strict(
         entity="AuditScopeUnit",
@@ -662,9 +701,7 @@ def audit_work_item_to_record(
         lease_expires_at=work_item.lease_expires_at,
         attempt=work_item.attempt,
         input_digest=work_item.input_digest,
-        required_coverage_plan_artifact_id=(
-            work_item.required_coverage_plan_artifact_id
-        ),
+        required_coverage_plan_artifact_id=(work_item.required_coverage_plan_artifact_id),
         required_coverage_plan_digest=work_item.required_coverage_plan_digest,
         receipt_id=work_item.receipt_id,
         state_version=_validate_write_state_version(state_version),
@@ -694,9 +731,7 @@ def audit_work_item_from_record(record: AuditWorkItemRecord) -> AuditWorkItem:
                 "lease_expires_at": record.lease_expires_at,
                 "attempt": record.attempt,
                 "input_digest": record.input_digest,
-                "required_coverage_plan_artifact_id": (
-                    record.required_coverage_plan_artifact_id
-                ),
+                "required_coverage_plan_artifact_id": (record.required_coverage_plan_artifact_id),
                 "required_coverage_plan_digest": record.required_coverage_plan_digest,
                 "receipt_id": record.receipt_id,
                 "created_at": record.created_at,
@@ -707,6 +742,8 @@ def audit_work_item_from_record(record: AuditWorkItemRecord) -> AuditWorkItem:
 
 
 __all__ = [
+    "audit_client_request_from_record",
+    "audit_client_request_to_record",
     "audit_contract_from_record",
     "audit_contract_to_record",
     "audit_phase_run_from_record",

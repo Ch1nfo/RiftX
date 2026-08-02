@@ -375,7 +375,11 @@ async def _create_audit(
     mode: AuditMode = AuditMode.STANDARD,
     queued: bool = False,
 ) -> tuple[AuditContract, AuditContractRecord, AuditScan]:
-    await _create_run(database, run_id)
+    await _create_run(
+        database,
+        run_id,
+        temporal_workflow_id=f"riftx-code-audit-{audit_id}",
+    )
     contract = _contract(
         audit_id,
         project_id=project_id,
@@ -881,7 +885,11 @@ async def test_scan_and_contract_pair_roll_back_as_one_transaction(tmp_path: Pat
     await _create_engagement(database, "engagement-1")
     await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
     await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    await _create_run(database, "run-1")
+    await _create_run(
+        database,
+        "run-1",
+        temporal_workflow_id="riftx-code-audit-audit-1",
+    )
     contract = _contract()
     record = _contract_record(contract)
     scan = _scan(contract, record, run_id="run-1", snapshot_id="snapshot-1")

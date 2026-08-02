@@ -50,6 +50,7 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ApprovalRequestRecorder,
     ArtifactApplicationService,
+    AuditApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -521,6 +522,7 @@ tools:
                 execution_cancel_timeout_seconds=0.2,
                 execution_cancel_poll_seconds=0.01,
             ),
+            audit_service=object(),  # type: ignore[arg-type]
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),
                 authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
@@ -1730,6 +1732,7 @@ models:
     )
 
     runtime = await build_control_plane(settings)
+    assert isinstance(runtime.audit_service, AuditApplicationService)
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True

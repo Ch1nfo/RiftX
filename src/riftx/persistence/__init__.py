@@ -15,6 +15,12 @@ from .audit_repositories import (
     create_audit_project,
     create_audit_start_intent,
     create_scan_contract_pair,
+    load_validated_audit_scan,
+)
+from .audit_uow import (
+    AuditCreationFailpoint,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditCreationUnitOfWork,
 )
 from .browser_repositories import SQLAlchemyBrowserRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
@@ -52,6 +58,8 @@ from .transcript_repositories import SQLAlchemyTranscriptRepository
 __all__ = [
     "SQLAlchemyActionReadRepository",
     "SQLAlchemyAuditContractRepository",
+    "SQLAlchemyAuditAggregateReadRepository",
+    "SQLAlchemyAuditCreationUnitOfWork",
     "SQLAlchemyAuditPhaseRepository",
     "SQLAlchemyAuditProjectRepository",
     "SQLAlchemyAuditRepository",
@@ -88,9 +96,11 @@ __all__ = [
     "SQLAlchemyTranscriptRepository",
     "SQLAlchemyTrafficMetadataReadRepository",
     "SQLAlchemySnapshotRepository",
+    "AuditCreationFailpoint",
     "compare_and_set_audit_contract",
     "compare_and_set_audit_scan",
     "create_audit_project",
     "create_audit_start_intent",
     "create_scan_contract_pair",
+    "load_validated_audit_scan",
 ]

@@ -12,6 +12,7 @@ import json
 import unicodedata
 from enum import StrEnum
 from typing import Annotated, Self
+from uuid import UUID
 
 from pydantic import AwareDatetime, Field, StringConstraints, field_validator, model_validator
 
@@ -28,6 +29,7 @@ from .base import new_id, utc_now
 from .errors import InvalidStateTransitionError
 
 SOURCE_SNAPSHOT_DIGEST_DOMAIN = "riftx.source-snapshot/v1"
+AUDIT_CLIENT_REQUEST_SCHEMA_VERSION = "riftx.audit-create-draft-request/v1"
 _MAX_COUNTER = 2**63 - 1
 _GIT_OBJECT_ID_PATTERN = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
 
@@ -44,6 +46,10 @@ type GitObjectId = Annotated[
 
 class AuditVcsKind(StrEnum):
     GIT = "git"
+
+
+class AuditClientRequestOperation(StrEnum):
+    CREATE_DRAFT = "create_draft"
 
 
 class AuditStartIntentStatus(StrEnum):
@@ -101,9 +107,7 @@ class AuditWorkStatus(StrEnum):
     OUTCOME_UNKNOWN = "outcome_unknown"
 
 
-_START_INTENT_TRANSITIONS: dict[
-    AuditStartIntentStatus, frozenset[AuditStartIntentStatus]
-] = {
+_START_INTENT_TRANSITIONS: dict[AuditStartIntentStatus, frozenset[AuditStartIntentStatus]] = {
     AuditStartIntentStatus.PENDING: frozenset(
         {AuditStartIntentStatus.CLAIMED, AuditStartIntentStatus.CANCELLED}
     ),
@@ -323,6 +327,51 @@ class AuditProject(AuditStrictModel):
         return self
 
 
+class AuditClientRequest(AuditStrictModel):
+    """Immutable request-level idempotency fact for one Audit draft.
+
+    Only a domain-separated request digest and authoritative aggregate bindings are
+    durable.  The normalized request payload can contain a sensitive source path and
+    therefore must never be stored in this record.
+    """
+
+    client_request_id: str = Field(min_length=36, max_length=36)
+    operation: AuditClientRequestOperation = AuditClientRequestOperation.CREATE_DRAFT
+    request_schema_version: str = Field(
+        default=AUDIT_CLIENT_REQUEST_SCHEMA_VERSION,
+        min_length=1,
+        max_length=128,
+    )
+    request_digest: Sha256Digest
+    audit_id: AuditId
+    run_id: AuditId
+    project_id: AuditId
+    engagement_id: AuditId
+    contract_id: AuditId
+    contract_digest: Sha256Digest
+    temporal_workflow_id: AuditToken
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def validate_client_request_id(cls, value: str) -> str:
+        try:
+            parsed = UUID(value)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("client_request_id must be a canonical UUID") from exc
+        if parsed.int == 0 or str(parsed) != value:
+            raise ValueError("client_request_id must be a non-zero canonical UUID")
+        return value
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> AuditClientRequest:
+        if self.request_schema_version != AUDIT_CLIENT_REQUEST_SCHEMA_VERSION:
+            raise ValueError("Audit client request uses an unsupported schema version")
+        if self.temporal_workflow_id != f"riftx-code-audit-{self.audit_id}":
+            raise ValueError("Audit client request workflow binding is not deterministic")
+        return self
+
+
 class SourceSnapshot(AuditStrictModel):
     """An immutable, already-sealed source tree stored outside the source repository."""
 
@@ -438,22 +487,30 @@ class AuditStartIntent(AuditStrictModel):
         if self.status is AuditStartIntentStatus.RETRYABLE:
             if self.next_attempt_at is None:
                 raise ValueError("retryable Start Intent requires next_attempt_at")
-        elif self.status not in {
-            AuditStartIntentStatus.PENDING,
-            AuditStartIntentStatus.OUTCOME_UNKNOWN,
-        } and self.next_attempt_at is not None:
+        elif (
+            self.status
+            not in {
+                AuditStartIntentStatus.PENDING,
+                AuditStartIntentStatus.OUTCOME_UNKNOWN,
+            }
+            and self.next_attempt_at is not None
+        ):
             raise ValueError("Start Intent status cannot carry next_attempt_at")
         if self.status is AuditStartIntentStatus.STARTED:
             if self.started_at is None:
                 raise ValueError("started Start Intent requires started_at")
         elif self.started_at is not None:
             raise ValueError("only a started Start Intent may carry started_at")
-        if self.status in {
-            AuditStartIntentStatus.CLAIMED,
-            AuditStartIntentStatus.STARTED,
-            AuditStartIntentStatus.RETRYABLE,
-            AuditStartIntentStatus.OUTCOME_UNKNOWN,
-        } and self.attempt < 1:
+        if (
+            self.status
+            in {
+                AuditStartIntentStatus.CLAIMED,
+                AuditStartIntentStatus.STARTED,
+                AuditStartIntentStatus.RETRYABLE,
+                AuditStartIntentStatus.OUTCOME_UNKNOWN,
+            }
+            and self.attempt < 1
+        ):
             raise ValueError("attempted Start Intent status requires a positive attempt")
         if self.updated_at < self.created_at:
             raise ValueError("Start Intent updated_at must not precede created_at")
@@ -575,17 +632,25 @@ class AuditPhaseRun(AuditStrictModel):
             raise ValueError("terminal Phase Run requires finished_at")
         if self.status is AuditPhaseRunStatus.COMPLETED and self.started_at is None:
             raise ValueError("completed Phase Run requires started_at")
-        if self.status in {
-            AuditPhaseRunStatus.FAILED,
-            AuditPhaseRunStatus.DEFERRED,
-            AuditPhaseRunStatus.NOT_APPLICABLE,
-        } and not has_error_code:
+        if (
+            self.status
+            in {
+                AuditPhaseRunStatus.FAILED,
+                AuditPhaseRunStatus.DEFERRED,
+                AuditPhaseRunStatus.NOT_APPLICABLE,
+            }
+            and not has_error_code
+        ):
             raise ValueError("failed, deferred, or not-applicable Phase Run requires a reason")
-        if self.status in {
-            AuditPhaseRunStatus.QUEUED,
-            AuditPhaseRunStatus.RUNNING,
-            AuditPhaseRunStatus.COMPLETED,
-        } and has_error_code:
+        if (
+            self.status
+            in {
+                AuditPhaseRunStatus.QUEUED,
+                AuditPhaseRunStatus.RUNNING,
+                AuditPhaseRunStatus.COMPLETED,
+            }
+            and has_error_code
+        ):
             raise ValueError("non-error Phase Run status cannot carry an error")
         if (
             self.started_at is not None
@@ -786,13 +851,17 @@ class AuditWorkItem(AuditStrictModel):
                 raise ValueError("leased or running Work Item requires a lease")
         elif has_lease_owner:
             raise ValueError("Work Item status cannot carry an active lease")
-        if self.status in {
-            AuditWorkStatus.LEASED,
-            AuditWorkStatus.RUNNING,
-            AuditWorkStatus.COMPLETED,
-            AuditWorkStatus.FAILED,
-            AuditWorkStatus.OUTCOME_UNKNOWN,
-        } and self.attempt < 1:
+        if (
+            self.status
+            in {
+                AuditWorkStatus.LEASED,
+                AuditWorkStatus.RUNNING,
+                AuditWorkStatus.COMPLETED,
+                AuditWorkStatus.FAILED,
+                AuditWorkStatus.OUTCOME_UNKNOWN,
+            }
+            and self.attempt < 1
+        ):
             raise ValueError("attempted Work Item status requires a positive attempt")
         if self.status is AuditWorkStatus.COMPLETED:
             if self.receipt_id is None:

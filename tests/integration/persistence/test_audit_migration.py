@@ -312,6 +312,7 @@ def test_audit_migration_upgrades_sqlite_and_enforces_integrity(
     run_alembic(database_path, "head")
 
     assert AUDIT_TABLES <= sqlite_tables(database_path)
+    assert "audit_client_requests" in sqlite_tables(database_path)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -909,9 +910,14 @@ def test_audit_migration_rejects_nonempty_downgrade_before_ddl(
         'SELECT 1 FROM "audit_work_items" LIMIT 1'
     )
     assert serialization_index < first_check_index
-    assert not any(
-        statement.upper().startswith(("DROP TABLE", "DROP INDEX"))
+    destructive_statements = [
+        statement
         for statement in audit_statements
+        if statement.upper().startswith(("DROP TABLE", "DROP INDEX"))
+    ]
+    assert destructive_statements
+    assert all(
+        "audit_client_requests" in statement for statement in destructive_statements
     )
 
 

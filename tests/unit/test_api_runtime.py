@@ -2,11 +2,52 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from riftx.api.runtime import APISettings, ControlPlane
+from riftx.api.runtime import APISettings, ControlPlane, _create_audit_service
+from riftx.application.services import AuditApplicationService
+from riftx.config import AuditConfig
 from riftx.domain import RunStatus
+from riftx.persistence import (
+    Database,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditCreationUnitOfWork,
+)
+
+
+async def test_audit_service_is_assembled_for_both_feature_flag_states(
+    tmp_path: Path,
+) -> None:
+    for enabled in (False, True):
+        audit = AuditConfig(
+            enabled=enabled,
+            snapshot_root=tmp_path / f"snapshots-{enabled}",
+            temp_root=tmp_path / f"audit-workspaces-{enabled}",
+            fix_root=tmp_path / f"fixes-{enabled}",
+        )
+        settings = APISettings(audit=audit)
+        database = Database("sqlite+aiosqlite:///:memory:")
+        try:
+            service = _create_audit_service(settings, database)
+
+            assert isinstance(service, AuditApplicationService)
+            assert isinstance(
+                service._creation_uow,
+                SQLAlchemyAuditCreationUnitOfWork,
+            )
+            assert isinstance(
+                service._aggregate_repository,
+                SQLAlchemyAuditAggregateReadRepository,
+            )
+            assert service._creation_uow._session_factory is database.session_factory
+            assert service._aggregate_repository._session_factory is database.session_factory
+            assert service._feature_enabled is enabled
+            assert service._workspace_root == audit.temp_root
+            assert not audit.temp_root.exists()
+        finally:
+            await database.dispose()
 
 
 class RecordingCleanupRunService:
@@ -108,6 +149,7 @@ async def test_control_plane_owner_reconciler_covers_every_fence_and_stops_clean
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        audit_service=placeholder,  # type: ignore[arg-type]
         action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]
@@ -156,6 +198,7 @@ async def test_control_plane_owner_reconciler_recovers_after_list_failure() -> N
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        audit_service=placeholder,  # type: ignore[arg-type]
         action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]
@@ -201,6 +244,7 @@ async def test_control_plane_owner_reconciler_keyset_scan_does_not_skip_mutated_
         settings=APISettings(),
         database=database,
         run_service=runs,  # type: ignore[arg-type]
+        audit_service=placeholder,  # type: ignore[arg-type]
         action_service=placeholder,  # type: ignore[arg-type]
         event_service=placeholder,  # type: ignore[arg-type]
         execution_service=placeholder,  # type: ignore[arg-type]

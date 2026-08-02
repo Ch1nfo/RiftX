@@ -215,9 +215,7 @@ _RISK_RANK = {
 def _same_scan_creation(existing: AuditScan, requested: AuditScan) -> bool:
     if not _same_fields(existing, requested, _SCAN_CREATION_FIELDS):
         return False
-    return (
-        requested.snapshot_id is None or existing.snapshot_id == requested.snapshot_id
-    ) and (
+    return (requested.snapshot_id is None or existing.snapshot_id == requested.snapshot_id) and (
         requested.base_snapshot_id is None
         or existing.base_snapshot_id == requested.base_snapshot_id
     )
@@ -231,9 +229,10 @@ def _same_snapshot_creation(
 
 
 def _same_scope_creation(existing: AuditScopeUnit, requested: AuditScopeUnit) -> bool:
-    return _same_fields(existing, requested, _SCOPE_CREATION_FIELDS) and _RISK_RANK[
-        existing.risk_tier
-    ] >= _RISK_RANK[requested.risk_tier]
+    return (
+        _same_fields(existing, requested, _SCOPE_CREATION_FIELDS)
+        and _RISK_RANK[existing.risk_tier] >= _RISK_RANK[requested.risk_tier]
+    )
 
 
 async def _single_create_candidate[T](
@@ -393,6 +392,69 @@ async def _validated_snapshot(
     return record, snapshot
 
 
+def validate_audit_scan_record_bundle(
+    scan_record: AuditScanRecord,
+    contract_record: AuditContractORMRecord,
+    project_record: AuditProjectRecord,
+    run_record: RunRecord,
+    *,
+    allow_unrecorded_run_terminal: bool = False,
+) -> AuditScan:
+    """Strictly reconstruct the query-independent core of an Audit aggregate."""
+
+    audit_id = scan_record.id
+    scan = audit_scan_from_record(
+        scan_record,
+        contract_record,
+        run_engagement_id=run_record.engagement_id,
+        run_kind=run_record.kind,
+        project_engagement_id=project_record.engagement_id,
+    )
+    try:
+        run_status = RunStatus(run_record.status)
+    except ValueError:
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            audit_id,
+            reason_code="run_binding_mismatch",
+        ) from None
+    if (
+        run_record.node_id != scan.selected_node_id
+        or run_record.model_profile != scan.model_profile
+        or run_record.temporal_workflow_id != scan.temporal_workflow_id
+    ):
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            audit_id,
+            reason_code="run_binding_mismatch",
+        )
+    terminal_run_statuses = {
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+    if scan.run_terminal_status is None:
+        if run_status in terminal_run_statuses and not allow_unrecorded_run_terminal:
+            raise RepositoryIntegrityError(
+                "AuditScan",
+                audit_id,
+                reason_code="run_terminal_binding_mismatch",
+            )
+    elif scan.run_terminal_status is not run_status:
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            audit_id,
+            reason_code="run_terminal_binding_mismatch",
+        )
+    if (run_status in terminal_run_statuses) != (run_record.finished_at is not None):
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            audit_id,
+            reason_code="run_terminal_binding_mismatch",
+        )
+    return scan
+
+
 async def _validated_scan(
     session: AsyncSession,
     audit_id: str,
@@ -401,13 +463,16 @@ async def _validated_scan(
     expected_state_version: int | None = None,
     for_update: bool = False,
     allow_unrecorded_run_terminal: bool = False,
-) -> tuple[
-    AuditScanRecord,
-    AuditContractORMRecord,
-    AuditProjectRecord,
-    RunRecord,
-    AuditScan,
-] | None:
+) -> (
+    tuple[
+        AuditScanRecord,
+        AuditContractORMRecord,
+        AuditProjectRecord,
+        RunRecord,
+        AuditScan,
+    ]
+    | None
+):
     statement = select(AuditScanRecord).where(AuditScanRecord.id == audit_id)
     if project_id is not None:
         statement = statement.where(AuditScanRecord.project_id == project_id)
@@ -441,9 +506,7 @@ async def _validated_scan(
     project_record = await session.scalar(
         select(AuditProjectRecord).where(AuditProjectRecord.id == scan_record.project_id)
     )
-    run_record = await session.scalar(
-        select(RunRecord).where(RunRecord.id == scan_record.run_id)
-    )
+    run_record = await session.scalar(select(RunRecord).where(RunRecord.id == scan_record.run_id))
     if contract_record is None or project_record is None or run_record is None:
         raise RepositoryIntegrityError(
             "AuditScan",
@@ -451,58 +514,13 @@ async def _validated_scan(
             reason_code="owner_binding_mismatch",
         )
     await _validated_project(session, project_record.id)
-    scan = audit_scan_from_record(
+    scan = validate_audit_scan_record_bundle(
         scan_record,
         contract_record,
-        run_engagement_id=run_record.engagement_id,
-        run_kind=run_record.kind,
-        project_engagement_id=project_record.engagement_id,
+        project_record,
+        run_record,
+        allow_unrecorded_run_terminal=allow_unrecorded_run_terminal,
     )
-    try:
-        run_status = RunStatus(run_record.status)
-    except ValueError as exc:
-        raise RepositoryIntegrityError(
-            "AuditScan",
-            audit_id,
-            reason_code="run_binding_mismatch",
-        ) from exc
-    if (
-        run_record.node_id != scan.selected_node_id
-        or run_record.model_profile != scan.model_profile
-        or (
-            run_record.temporal_workflow_id is not None
-            and run_record.temporal_workflow_id != scan.temporal_workflow_id
-        )
-    ):
-        raise RepositoryIntegrityError(
-            "AuditScan",
-            audit_id,
-            reason_code="run_binding_mismatch",
-        )
-    terminal_run_statuses = {
-        RunStatus.COMPLETED,
-        RunStatus.FAILED,
-        RunStatus.CANCELLED,
-    }
-    if scan.run_terminal_status is None:
-        if run_status in terminal_run_statuses and not allow_unrecorded_run_terminal:
-            raise RepositoryIntegrityError(
-                "AuditScan",
-                audit_id,
-                reason_code="run_terminal_binding_mismatch",
-            )
-    elif scan.run_terminal_status is not run_status:
-        raise RepositoryIntegrityError(
-            "AuditScan",
-            audit_id,
-            reason_code="run_terminal_binding_mismatch",
-        )
-    if (run_status in terminal_run_statuses) != (run_record.finished_at is not None):
-        raise RepositoryIntegrityError(
-            "AuditScan",
-            audit_id,
-            reason_code="run_terminal_binding_mismatch",
-        )
     for snapshot_id in (scan.snapshot_id, scan.base_snapshot_id):
         if snapshot_id is None:
             continue
@@ -533,6 +551,33 @@ async def _validated_scan(
     return scan_record, contract_record, project_record, run_record, scan
 
 
+async def load_validated_audit_scan(
+    session: AsyncSession,
+    audit_id: str,
+    *,
+    for_update: bool = False,
+) -> (
+    tuple[
+        AuditScanRecord,
+        AuditContractORMRecord,
+        AuditProjectRecord,
+        RunRecord,
+        AuditScan,
+    ]
+    | None
+):
+    """Load the authoritative Scan bundle inside a caller-owned session.
+
+    Aggregate application adapters use this public session-bound primitive rather
+    than depending on a repository object's auto-commit boundary.
+    """
+
+    bundle = await _validated_scan(session, audit_id, for_update=for_update)
+    if bundle is None:
+        return None
+    return bundle
+
+
 async def _validated_scope(
     session: AsyncSession,
     audit_id: str,
@@ -546,9 +591,7 @@ async def _validated_scope(
         AuditScopeUnitRecord.audit_id == audit_id,
     )
     if expected_state_version is not None:
-        statement = statement.where(
-            AuditScopeUnitRecord.state_version == expected_state_version
-        )
+        statement = statement.where(AuditScopeUnitRecord.state_version == expected_state_version)
     if for_update:
         statement = statement.with_for_update()
     record = await session.scalar(statement)
@@ -581,14 +624,10 @@ async def _phase_outputs_belong_to_run(
 ) -> bool:
     if not phase_run.output_artifact_ids:
         return True
-    statement = select(ArtifactRecord).where(
-        ArtifactRecord.id.in_(phase_run.output_artifact_ids)
-    )
+    statement = select(ArtifactRecord).where(ArtifactRecord.id.in_(phase_run.output_artifact_ids))
     if for_update:
         statement = statement.with_for_update()
-    records = (
-        await session.scalars(statement)
-    ).all()
+    records = (await session.scalars(statement)).all()
     return len(records) == len(phase_run.output_artifact_ids) and all(
         record.run_id == run_id for record in records
     )
@@ -607,9 +646,7 @@ async def _validated_phase(
         AuditPhaseRunRecord.audit_id == audit_id,
     )
     if expected_state_version is not None:
-        statement = statement.where(
-            AuditPhaseRunRecord.state_version == expected_state_version
-        )
+        statement = statement.where(AuditPhaseRunRecord.state_version == expected_state_version)
     if for_update:
         statement = statement.with_for_update()
     record = await session.scalar(statement)
@@ -664,6 +701,8 @@ async def create_scan_contract_pair(
     session: AsyncSession,
     scan: AuditScan,
     contract: AuditContractRecord,
+    *,
+    flush_failpoint: Callable[[str], None] | None = None,
 ) -> tuple[StoredAuditEntity[AuditScan], bool]:
     """Create Contract then Scan in one caller-owned transaction.
 
@@ -726,10 +765,7 @@ async def create_scan_contract_pair(
         or run_record.model_profile != scan.model_profile
         or run_record.status != RunStatus.CREATED.value
         or run_record.finished_at is not None
-        or (
-            run_record.temporal_workflow_id is not None
-            and run_record.temporal_workflow_id != scan.temporal_workflow_id
-        )
+        or run_record.temporal_workflow_id != scan.temporal_workflow_id
     ):
         _conflict("AuditScan", scan.id, "is outside the Run/Project authorization domain")
 
@@ -755,6 +791,8 @@ async def create_scan_contract_pair(
 
     session.add(audit_contract_to_record(contract, state_version=1))
     await session.flush()
+    if flush_failpoint is not None:
+        flush_failpoint("after_contract")
     session.add(
         audit_scan_to_record(
             scan,
@@ -763,6 +801,8 @@ async def create_scan_contract_pair(
         )
     )
     await session.flush()
+    if flush_failpoint is not None:
+        flush_failpoint("after_scan")
     return StoredAuditEntity(scan, 1), True
 
 
@@ -775,8 +815,7 @@ async def _find_audit_project_create_candidate(
         select(AuditProjectRecord).where(
             or_(
                 AuditProjectRecord.id == project.id,
-                AuditProjectRecord.repository_identity_digest
-                == project.repository_identity_digest,
+                AuditProjectRecord.repository_identity_digest == project.repository_identity_digest,
             )
         ),
         entity="AuditProject",
@@ -852,8 +891,7 @@ class SQLAlchemyAuditProjectRepository:
         async with self._session_factory() as session:
             record = await session.scalar(
                 select(AuditProjectRecord).where(
-                    AuditProjectRecord.repository_identity_digest
-                    == repository_identity_digest,
+                    AuditProjectRecord.repository_identity_digest == repository_identity_digest,
                     AuditProjectRecord.engagement_id == engagement_id,
                 )
             )
@@ -873,10 +911,14 @@ class SQLAlchemyAuditProjectRepository:
         statement = select(AuditProjectRecord)
         if engagement_id is not None:
             statement = statement.where(AuditProjectRecord.engagement_id == engagement_id)
-        statement = statement.order_by(
-            AuditProjectRecord.created_at,
-            AuditProjectRecord.id,
-        ).limit(limit).offset(offset)
+        statement = (
+            statement.order_by(
+                AuditProjectRecord.created_at,
+                AuditProjectRecord.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
             results: list[StoredAuditEntity[AuditProject]] = []
@@ -1136,12 +1178,9 @@ def _validate_scan_replacement(current: AuditScan, replacement: AuditScan) -> No
             )
         )
     replacement_snapshot_id = replacement.snapshot_id
-    if (
-        replacement_snapshot_id is not None
-        and (
-            replacement_snapshot_id != current.snapshot_id
-            or replacement.base_snapshot_id != current.base_snapshot_id
-        )
+    if replacement_snapshot_id is not None and (
+        replacement_snapshot_id != current.snapshot_id
+        or replacement.base_snapshot_id != current.base_snapshot_id
     ):
         admit(
             lambda: current.bind_snapshots(
@@ -1180,11 +1219,7 @@ def _validate_scan_replacement(current: AuditScan, replacement: AuditScan) -> No
         )
     admit(current.begin_publication_retry)
     if replacement.publication_status is not current.publication_status:
-        admit(
-            lambda: current.transition_terminal_publication_to(
-                replacement.publication_status
-            )
-        )
+        admit(lambda: current.transition_terminal_publication_to(replacement.publication_status))
         admit(lambda: current.record_publication_failure(replacement.publication_status))
 
     if replacement not in allowed:
@@ -1329,13 +1364,10 @@ class SQLAlchemyAuditRepository:
                     audit_id=scan.id,
                 )
                 persisted_contract = audit_contract_from_record(contract_record)
-                if (
-                    _same_scan_creation(persisted_scan, scan)
-                    and _same_fields(
-                        persisted_contract,
-                        contract,
-                        _CONTRACT_CREATION_FIELDS,
-                    )
+                if _same_scan_creation(persisted_scan, scan) and _same_fields(
+                    persisted_contract,
+                    contract,
+                    _CONTRACT_CREATION_FIELDS,
                 ):
                     return StoredAuditEntity(
                         persisted_scan,
@@ -1386,13 +1418,15 @@ class SQLAlchemyAuditRepository:
         if project_id is not None:
             statement = statement.where(AuditScanRecord.project_id == project_id)
         if lifecycle_status is not None:
-            statement = statement.where(
-                AuditScanRecord.lifecycle_status == lifecycle_status.value
+            statement = statement.where(AuditScanRecord.lifecycle_status == lifecycle_status.value)
+        statement = (
+            statement.order_by(
+                AuditScanRecord.created_at,
+                AuditScanRecord.id,
             )
-        statement = statement.order_by(
-            AuditScanRecord.created_at,
-            AuditScanRecord.id,
-        ).limit(limit).offset(offset)
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             if project_id is None:
                 # Recovery/list operations without an authorization scope must
@@ -1756,9 +1790,7 @@ class SQLAlchemyAuditStartIntentRepository:
     ) -> StoredAuditEntity[AuditStartIntent] | None:
         async with self._session_factory() as session:
             record = await session.scalar(
-                select(AuditStartIntentRecord).where(
-                    AuditStartIntentRecord.audit_id == audit_id
-                )
+                select(AuditStartIntentRecord).where(AuditStartIntentRecord.audit_id == audit_id)
             )
         return await self.get(audit_id, record.intent_id) if record is not None else None
 
@@ -1773,16 +1805,13 @@ class SQLAlchemyAuditStartIntentRepository:
             select(AuditStartIntentRecord)
             .where(
                 or_(
-                    AuditStartIntentRecord.status
-                    == AuditStartIntentStatus.PENDING.value,
+                    AuditStartIntentRecord.status == AuditStartIntentStatus.PENDING.value,
                     and_(
-                        AuditStartIntentRecord.status
-                        == AuditStartIntentStatus.RETRYABLE.value,
+                        AuditStartIntentRecord.status == AuditStartIntentStatus.RETRYABLE.value,
                         AuditStartIntentRecord.next_attempt_at <= now,
                     ),
                     and_(
-                        AuditStartIntentRecord.status
-                        == AuditStartIntentStatus.CLAIMED.value,
+                        AuditStartIntentRecord.status == AuditStartIntentStatus.CLAIMED.value,
                         AuditStartIntentRecord.lease_expires_at <= now,
                     ),
                 )
@@ -1875,9 +1904,7 @@ class SQLAlchemyAuditStartIntentRepository:
                     AuditStartIntentRecord.intent_id == current.value.id,
                     AuditStartIntentRecord.state_version == current.state_version,
                 )
-                .values(
-                    **_record_values(candidate, excluding=frozenset({"intent_id"}))
-                )
+                .values(**_record_values(candidate, excluding=frozenset({"intent_id"})))
             )
             if result.rowcount != 1:  # type: ignore[attr-defined]
                 _conflict("AuditStartIntent", current.value.id)
@@ -2019,17 +2046,19 @@ class SQLAlchemyAuditPhaseRepository:
         offset: int = 0,
     ) -> Sequence[StoredAuditEntity[AuditPhaseRun]]:
         _validate_page(limit=limit, offset=offset)
-        statement = select(AuditPhaseRunRecord).where(
-            AuditPhaseRunRecord.audit_id == audit_id
-        )
+        statement = select(AuditPhaseRunRecord).where(AuditPhaseRunRecord.audit_id == audit_id)
         if phase is not None:
             statement = statement.where(AuditPhaseRunRecord.phase == phase.value)
         if status is not None:
             statement = statement.where(AuditPhaseRunRecord.status == status.value)
-        statement = statement.order_by(
-            AuditPhaseRunRecord.created_at,
-            AuditPhaseRunRecord.id,
-        ).limit(limit).offset(offset)
+        statement = (
+            statement.order_by(
+                AuditPhaseRunRecord.created_at,
+                AuditPhaseRunRecord.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
             results: list[StoredAuditEntity[AuditPhaseRun]] = []
@@ -2263,17 +2292,19 @@ class SQLAlchemyAuditScopeRepository:
         offset: int = 0,
     ) -> Sequence[StoredAuditEntity[AuditScopeUnit]]:
         _validate_page(limit=limit, offset=offset)
-        statement = select(AuditScopeUnitRecord).where(
-            AuditScopeUnitRecord.audit_id == audit_id
-        )
+        statement = select(AuditScopeUnitRecord).where(AuditScopeUnitRecord.audit_id == audit_id)
         if kind is not None:
             statement = statement.where(AuditScopeUnitRecord.kind == kind.value)
         if status is not None:
             statement = statement.where(AuditScopeUnitRecord.status == status.value)
-        statement = statement.order_by(
-            AuditScopeUnitRecord.created_at,
-            AuditScopeUnitRecord.id,
-        ).limit(limit).offset(offset)
+        statement = (
+            statement.order_by(
+                AuditScopeUnitRecord.created_at,
+                AuditScopeUnitRecord.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
             if not records:
@@ -2366,9 +2397,7 @@ async def _validated_work(
         AuditWorkItemRecord.audit_id == audit_id,
     )
     if expected_state_version is not None:
-        statement = statement.where(
-            AuditWorkItemRecord.state_version == expected_state_version
-        )
+        statement = statement.where(AuditWorkItemRecord.state_version == expected_state_version)
     if for_update:
         statement = statement.with_for_update()
     record = await session.scalar(statement)
@@ -2523,15 +2552,13 @@ class SQLAlchemyAuditWorkRepository:
                     raise EntityNotFoundError("AuditScan", work_item.audit_id)
                 coverage_plan = await session.scalar(
                     select(ArtifactRecord).where(
-                        ArtifactRecord.id
-                        == work_item.required_coverage_plan_artifact_id
+                        ArtifactRecord.id == work_item.required_coverage_plan_artifact_id
                     )
                 )
                 if (
                     coverage_plan is None
                     or coverage_plan.run_id != scan_bundle[-1].run_id
-                    or coverage_plan.sha256
-                    != work_item.required_coverage_plan_digest
+                    or coverage_plan.sha256 != work_item.required_coverage_plan_digest
                 ):
                     _conflict(
                         "AuditWorkItem",
@@ -2605,17 +2632,19 @@ class SQLAlchemyAuditWorkRepository:
         offset: int = 0,
     ) -> Sequence[StoredAuditEntity[AuditWorkItem]]:
         _validate_page(limit=limit, offset=offset)
-        statement = select(AuditWorkItemRecord).where(
-            AuditWorkItemRecord.audit_id == audit_id
-        )
+        statement = select(AuditWorkItemRecord).where(AuditWorkItemRecord.audit_id == audit_id)
         if phase is not None:
             statement = statement.where(AuditWorkItemRecord.phase == phase.value)
         if status is not None:
             statement = statement.where(AuditWorkItemRecord.status == status.value)
-        statement = statement.order_by(
-            AuditWorkItemRecord.created_at,
-            AuditWorkItemRecord.id,
-        ).limit(limit).offset(offset)
+        statement = (
+            statement.order_by(
+                AuditWorkItemRecord.created_at,
+                AuditWorkItemRecord.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
             results: list[StoredAuditEntity[AuditWorkItem]] = []
@@ -2691,4 +2720,6 @@ __all__ = [
     "create_audit_project",
     "create_audit_start_intent",
     "create_scan_contract_pair",
+    "load_validated_audit_scan",
+    "validate_audit_scan_record_bundle",
 ]

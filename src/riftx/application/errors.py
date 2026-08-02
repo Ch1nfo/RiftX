@@ -18,6 +18,14 @@ class RepositoryConflictError(RepositoryError):
     """Raised when a database constraint rejects an operation."""
 
 
+class RepositoryUnavailableError(RepositoryError):
+    """A persistence operation failed without exposing driver diagnostics."""
+
+
+class AuditIdempotencyConflictError(RepositoryConflictError):
+    """A Code Audit client request key is bound to a different payload."""
+
+
 class RepositoryIntegrityError(RepositoryError):
     """A persisted row cannot be reconstructed into its authoritative domain fact.
 
@@ -34,9 +42,7 @@ class RepositoryIntegrityError(RepositoryError):
         *,
         reason_code: str = "invalid_persisted_state",
     ) -> None:
-        allowed = frozenset(
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:@+~-"
-        )
+        allowed = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:@+~-")
         opaque_id = (
             entity_id
             if isinstance(entity_id, str)

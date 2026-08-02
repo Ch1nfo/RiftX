@@ -1,7 +1,12 @@
 """Interfaces implemented by RiftX infrastructure adapters."""
 
 from .audits import (
+    AuditAggregate,
+    AuditAggregateReadRepository,
     AuditContractRepository,
+    AuditCreationUnitOfWork,
+    AuditDraftAggregateFactory,
+    AuditDraftCreationEnvelope,
     AuditPhaseRepository,
     AuditProjectRepository,
     AuditRepository,
@@ -32,7 +37,12 @@ from .repositories import (
 
 __all__ = [
     "ActionReadRepository",
+    "AuditAggregate",
+    "AuditAggregateReadRepository",
+    "AuditCreationUnitOfWork",
     "AuditContractRepository",
+    "AuditDraftAggregateFactory",
+    "AuditDraftCreationEnvelope",
     "AuditPhaseRepository",
     "AuditProjectRepository",
     "AuditRepository",

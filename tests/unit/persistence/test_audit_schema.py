@@ -3,6 +3,7 @@ from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Text, UniqueConstr
 from riftx.persistence.orm import Base
 
 AUDIT_TABLES = {
+    "audit_client_requests",
     "audit_projects",
     "source_snapshots",
     "audit_contracts",
@@ -59,6 +60,59 @@ def _indexes(table_name: str) -> dict[str | None, tuple[str, ...]]:
 
 def test_metadata_contains_code_audit_foundation_tables() -> None:
     assert AUDIT_TABLES <= set(Base.metadata.tables)
+
+
+def test_client_request_schema_binds_the_complete_creation_aggregate() -> None:
+    table = Base.metadata.tables["audit_client_requests"]
+    assert set(table.c) == {
+        table.c.client_request_id,
+        table.c.operation,
+        table.c.request_schema_version,
+        table.c.request_digest,
+        table.c.audit_id,
+        table.c.run_id,
+        table.c.project_id,
+        table.c.engagement_id,
+        table.c.contract_id,
+        table.c.contract_digest,
+        table.c.temporal_workflow_id,
+        table.c.created_at,
+    }
+    assert {
+        ("audit_id",),
+        ("run_id",),
+        ("contract_id",),
+    } <= _unique_columns("audit_client_requests")
+    foreign_keys = _foreign_keys("audit_client_requests")
+    assert foreign_keys[("audit_id", "run_id", "contract_digest", "temporal_workflow_id")] == (
+        "audit_scans.id",
+        "audit_scans.run_id",
+        "audit_scans.contract_digest",
+        "audit_scans.temporal_workflow_id",
+    )
+    assert foreign_keys[("audit_id", "project_id")] == (
+        "audit_scans.id",
+        "audit_scans.project_id",
+    )
+    assert foreign_keys[("project_id", "engagement_id")] == (
+        "audit_projects.id",
+        "audit_projects.engagement_id",
+    )
+    assert foreign_keys[("contract_id", "audit_id", "contract_digest")] == (
+        "audit_contracts.contract_id",
+        "audit_contracts.audit_id",
+        "audit_contracts.contract_digest",
+    )
+    checks = _check_names("audit_client_requests")
+    assert {
+        "ck_audit_client_requests_canonical_id",
+        "ck_audit_client_requests_operation",
+        "ck_audit_client_requests_schema",
+        "ck_audit_client_requests_request_digest",
+        "ck_audit_client_requests_contract_digest",
+    } <= checks
+    column_names = set(table.c.keys())
+    assert not {"payload", "request_json", "repository_path", "preflight_token"} & column_names
 
 
 def test_audit_project_and_snapshot_keys_preserve_authorization_domains() -> None:

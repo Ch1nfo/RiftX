@@ -38,3 +38,32 @@ async def serialized_write(
 
         async with session.begin():
             yield session
+
+
+@asynccontextmanager
+async def consistent_read(
+    session_factory: SessionFactory,
+) -> AsyncIterator[AsyncSession]:
+    """Read a multi-query aggregate from one database snapshot.
+
+    PostgreSQL's default READ COMMITTED isolation can otherwise observe a newer
+    Run after reading an older AuditScan in the same session. SQLite keeps one
+    snapshot after an explicit read transaction begins.
+    """
+
+    async with session_factory() as session:
+        dialect_name = session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        elif dialect_name == "sqlite":
+            await session.execute(text("BEGIN"))
+        else:
+            raise RuntimeError(
+                "RiftX aggregate reads do not define snapshot isolation for "
+                f"database dialect {dialect_name!r}"
+            )
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()

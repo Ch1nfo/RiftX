@@ -13,6 +13,7 @@ from tests.unit.domain.test_audit_domain import (
 
 from riftx.application.errors import RepositoryIntegrityError
 from riftx.domain import (
+    AuditClientRequest,
     AuditClosureStatus,
     AuditLifecycleStatus,
     AuditPhase,
@@ -37,6 +38,8 @@ from riftx.domain import (
     SourceTargetKind,
 )
 from riftx.persistence.audit_mappers import (
+    audit_client_request_from_record,
+    audit_client_request_to_record,
     audit_contract_from_record,
     audit_contract_to_record,
     audit_phase_run_from_record,
@@ -73,6 +76,32 @@ def _project() -> AuditProject:
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+def _client_request() -> AuditClientRequest:
+    return AuditClientRequest(
+        client_request_id="6ed6232a-3fb3-4f93-868f-0be291142f31",
+        request_digest=_digest("request"),
+        audit_id="audit-1",
+        run_id="run-1",
+        project_id="project-1",
+        engagement_id="engagement-1",
+        contract_id="contract-1",
+        contract_digest=_digest("contract"),
+        temporal_workflow_id="riftx-code-audit-audit-1",
+        created_at=NOW,
+    )
+
+
+def test_client_request_mapper_round_trip_and_redacted_corruption() -> None:
+    request = _client_request()
+    record = audit_client_request_to_record(request)
+
+    assert audit_client_request_from_record(record) == request
+    record.request_digest = "/private/operator/source/repository"
+    with pytest.raises(RepositoryIntegrityError) as captured:
+        audit_client_request_from_record(record)
+    assert "/private/operator/source" not in str(captured.value)
 
 
 def _snapshot() -> SourceSnapshot:

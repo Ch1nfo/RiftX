@@ -26,15 +26,15 @@
 ## Current Wave
 
 - Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-103 — AuditApplicationService`
-- Next dependency: `AUD-102` is complete; `AUD-103` is unblocked.
+- Current task: `AUD-104 — API Skeleton and Policy`
+- Next dependency: `AUD-103` is complete; `AUD-104` is unblocked.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-102 complete; AUD-103 is the current unblocked task |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-103 complete; AUD-104 is the current unblocked task |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -62,7 +62,7 @@
 | AUD-100 RunKind | completed |
 | AUD-101 Audit domain | completed |
 | AUD-102 ORM and repositories | completed |
-| AUD-103 AuditApplicationService | pending |
+| AUD-103 AuditApplicationService | completed |
 | AUD-104 API skeleton and policy | pending |
 | AUD-105 Artifact access foundation | pending |
 | AUD-106 RunKind workflow router | pending |
@@ -663,7 +663,7 @@
   - Third-party expressive material: none. Domain names, schemas, migration,
     repositories, fixtures, and tests are RiftX-owned; no Codex Security Provider,
     code, Prompt, Schema, Skill, runtime, endpoint, or dependency was used.
-- Commit: Introducing commit; hash will be backfilled by the AUD-103 ledger update.
+- Commit: `0b48b957` (`feat(persistence): persist Code Audit aggregates`).
 - Known limitations:
   - PostgreSQL DDL, composite FK, offline SQL, and downgrade lock ordering are
     contract-tested; RiftX does not claim PostgreSQL runtime support before a real
@@ -677,6 +677,127 @@
     outside AUD-102.
 - Next unblocked task: AUD-103.
 
+### AUD-103 — AuditApplicationService
+
+- Status: completed.
+- Outcome:
+  - Accepted ADR-0003 and implemented the RiftX-owned `AuditApplicationService`,
+    immutable `AuditClientRequest`, complete `AuditAggregate` read contract, pure
+    draft aggregate factory, creation UoW Port, and SQLAlchemy adapters.
+  - Draft creation now resolves the authoritative Project/Engagement and atomically
+    writes the Code Audit Run, `run.created`, Contract+Scan, `audit.created`, and
+    client-request binding in a fixed order with exactly one commit.
+  - Exact client-request replay returns the current complete aggregate without
+    appending Events, replacing generated identities, or lowering lifecycle/version;
+    same-key/different-payload requests fail closed.
+  - Added one centralized `AuditRunStateMappingPolicy` used by create, replay,
+    get/list, and control planning. Pause/resume/cancel are read-only plans in this
+    task and perform no database, Temporal, Runner, or filesystem effect.
+  - Registered the Service as a non-optional `ControlPlane` dependency in both
+    Feature Flag states. The flag gates only admission: reads, pause, cancel, and
+    later safety cleanup remain reachable when creation/resume are disabled.
+- Files changed:
+  - Architecture/spec/progress:
+    `docs/architecture/decisions/0003-riftx-code-audit-application-contract.md`,
+    `docs/riftx-3-code-audit-development-spec.md`, and this ledger.
+  - Domain/application:
+    `src/riftx/domain/{__init__,audit_records,audit_run_state}.py`,
+    `src/riftx/application/{__init__,errors}.py`,
+    `src/riftx/application/ports/{__init__,audits}.py`, and
+    `src/riftx/application/services/{__init__,audits}.py`.
+  - Persistence/runtime/migration:
+    `src/riftx/persistence/{__init__,audit_mappers,audit_repositories,audit_uow,database,orm,transactions}.py`,
+    `src/riftx/api/runtime.py`, and
+    `migrations/versions/7c4e1a9b2d06_add_audit_creation_requests.py`.
+  - Tests:
+    `tests/unit/application/test_audits.py`,
+    `tests/integration/application/test_audit_application_service.py`,
+    `tests/integration/persistence/test_audit_creation_migration.py`, plus the
+    affected Audit domain, mapper, schema, repository, migration, database,
+    composition-root, and general control-plane regression tests.
+- Schema/migration impact:
+  - Adds Alembic revision `7c4e1a9b2d06` after `3b7f1d9e5a02` and the immutable
+    `audit_client_requests` table. The row stores only the versioned request digest,
+    operation, aggregate ownership/workflow bindings, and creation time; it stores no
+    caller payload, source path, preflight token, canonical Contract, or model data.
+  - The idempotency key and Audit binding are unique; operation/schema CHECKs and
+    RESTRICT FKs are revalidated by strict mappers and the complete aggregate loader.
+  - Upgrade refuses to invent caller digests for a non-empty legacy Audit schema.
+    Alembic-managed old schemas cannot be silently repaired by metadata `create_all`.
+    PostgreSQL offline upgrade emits an `ACCESS EXCLUSIVE` lock before its legacy-row
+    guard; non-empty and offline downgrades fail before destructive DDL.
+- Security boundary impact:
+  - This task does not read Git/source content, reserve preflight, create a workspace,
+    expose HTTP/UI/CLI, start Temporal, register a Scanner/source adapter, or execute
+    target code. The injected workspace root is used only to construct a managed
+    locator string.
+  - Request digests are server-computed, domain-separated canonical hashes and are
+    compared in constant time. Exact-key and natural-Project duplicate rowsets fail
+    closed instead of choosing an arbitrary owner.
+  - Every aggregate load revalidates Scan, Contract, Project, Engagement, Run,
+    request, workflow, lifecycle, and redundant ownership bindings in one consistent
+    read. A corrupt item makes the entire page fail closed; bounded eager/batched
+    reads prevent page-size-dependent query growth.
+  - Database engines hide parameters. SQLAlchemy driver failures leave their handler
+    before conversion to stable application errors; public persistence-unavailable
+    failures retain no driver cause/context, SQL parameters, canonical Contract, or
+    absolute source path.
+  - Project natural-key races roll back temporary Engagements and re-resolve the
+    winning authoritative owner before rebuilding final facts. Stateful or dishonest
+    factories cannot substitute workspace/source identities between validation and
+    write.
+- Tests run:
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/application/test_audits.py tests/integration/application/test_audit_application_service.py tests/integration/persistence/test_audit_creation_migration.py tests/unit/test_api_runtime.py`
+  - Repeated adversarial targeted runs over the preceding files plus affected Audit
+    domain/mapper/schema/repository/migration/database/control-plane selectors.
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/persistence tests/integration/persistence`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent mypy src/riftx/api/runtime.py src/riftx/application/errors.py src/riftx/application/ports/audits.py src/riftx/application/services/audits.py src/riftx/domain/audit_records.py src/riftx/domain/audit_run_state.py src/riftx/persistence/audit_mappers.py src/riftx/persistence/audit_repositories.py src/riftx/persistence/audit_uow.py src/riftx/persistence/database.py src/riftx/persistence/orm.py src/riftx/persistence/transactions.py migrations/versions/7c4e1a9b2d06_add_audit_creation_requests.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Successive targeted security/application matrices passed at `154 passed` and
+    `157 passed`; the wider AUD-103 regression matrix passed `392 passed`.
+  - Complete unit/integration persistence passed: `290 passed, 10 warnings`.
+  - The complete Python suite passed on a worktree-stable rerun:
+    `3710 passed, 5 skipped, 10 warnings in 261.17s`.
+  - Repository Ruff passed. Targeted Mypy passed for all 13 selected production and
+    migration files. `git diff --check` passed.
+  - The independence boundary reported `ready=true`: 9 dependency manifests,
+    458 production files, 0 explicit artifacts, and 0 violations.
+  - The executable release gate reported `ready=true`; all 16 gates passed. Ten
+    Python 3.12 `aiosqlite` datetime-adapter deprecations are non-blocking.
+- Manual verification:
+  - Independent reviewers covered exact and conflicting replay, all creation
+    failpoints, Event order, Project races, transaction rollback, corrupt duplicate
+    rows, liar/stateful factories, constant-query list loading, feature-off control,
+    migration/bootstrap guards, driver diagnostic redaction, and restart recovery.
+  - Final independent review reports P0=0, P1=0, and P2=0; status: approved.
+- Provenance:
+  - Requirements source: authoritative specification sections 6.6, 13.7, 15, 17.1,
+    20, and section 22 / AUD-103; accepted ADR-0003.
+  - Implementation, migration, and primary test author: Codex task `/root`; Git
+    author: Ch1nfo. Adversarial tests/reviews: Codex tasks
+    `aud103_contract_review`, `aud103_test_arch`, and
+    `aud103_independent_review`.
+  - Third-party expressive material: none. No Codex Security Provider, code, Prompt,
+    Schema, Skill, runtime, endpoint, dependency, or generated artifact was used.
+  - Production Code Audit Agent instructions: not applicable; AUD-103 contains no
+    production Agent prompt or model call.
+- Commit: Introducing commit; hash will be backfilled by the AUD-104 ledger update.
+- Known limitations:
+  - The Project natural-key gap race is covered by code reasoning and SQLite
+    concurrency tests, but has not yet been reproduced with a real PostgreSQL barrier.
+    A real PostgreSQL race/lock job is mandatory before claiming that runtime in
+    release CI; SQLite evidence must not be represented as PostgreSQL proof.
+  - Pause/resume/cancel return plans only. AUD-106 and later Projector/Workflow work
+    own mutation, signaling, reconciliation, stopping, and cleanup effects.
+  - Preflight reservation, Snapshot/source ingest, StartIntent, API policy, Workflow,
+    Detector/Agent analysis, findings, reports, and UI remain deliberately deferred.
+- Next unblocked task: AUD-104.
+
 ## Design Deviations and ADRs
 
 - `ADR-0001`: RiftX Code Audit is an independent reimplementation and does not claim
@@ -685,15 +806,21 @@
 - `ADR-0002`: freezes the minimum Code Audit persistence, ownership, canonical digest,
   replay, CAS, terminal convergence, publication-fence, and lossless-downgrade
   contract implemented by AUD-102.
+- `ADR-0003`: freezes the always-registered Audit Application Service, immutable
+  request-level idempotency record, single-commit draft creation order, complete
+  aggregate loader, centralized Audit↔Run state mapping, read-only control plans,
+  Feature Flag admission order, and driver-error redaction implemented by AUD-103.
 
 ## Current Risks
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- Audit admission and execution are intentionally unavailable until AUD-103 onward
-  adds the aggregate creation service, API policy, signed preflight, SnapshotStore,
-  Inventory, and the deterministic slice.
+- Atomic draft creation now exists only behind the internal Application Service.
+  External Audit admission and execution remain unavailable until AUD-104 onward
+  adds API policy, signed preflight, SnapshotStore, Inventory, and the deterministic
+  slice.
 - PostgreSQL remains a contract-tested future runtime, not a supported deployment;
-  the current persistence concurrency evidence is authoritative for SQLite only.
+  the current persistence concurrency evidence is authoritative for SQLite only, and
+  the Project natural-key gap race still requires a real PostgreSQL barrier test.
 - AUD-106 must install the kind-aware mutation inventory, Workflow router, and
   reconciliation boundary before any `code_audit` Run can execute.

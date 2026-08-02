@@ -11,6 +11,7 @@ EXPECTED_TABLES = {
     "approval_grants",
     "artifacts",
     "audit_contracts",
+    "audit_client_requests",
     "audit_phase_runs",
     "audit_projects",
     "audit_scans",

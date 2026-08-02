@@ -38,6 +38,9 @@ from .audit import (
     VersionedComponentRef,
 )
 from .audit_records import (
+    AUDIT_CLIENT_REQUEST_SCHEMA_VERSION,
+    AuditClientRequest,
+    AuditClientRequestOperation,
     AuditPhaseRun,
     AuditPhaseRunStatus,
     AuditProject,
@@ -53,6 +56,7 @@ from .audit_records import (
     AuditWorkStatus,
     SourceSnapshot,
 )
+from .audit_run_state import AuditRunStateMappingPolicy
 from .browser import (
     BrowserAction,
     BrowserObservation,
@@ -116,6 +120,7 @@ from .skill import Skill
 from .tool import Tool, ToolState
 
 __all__ = [
+    "AUDIT_CLIENT_REQUEST_SCHEMA_VERSION",
     "AgentCheckpoint",
     "AgentMessage",
     "AgentStep",
@@ -132,6 +137,8 @@ __all__ = [
     "AuditCapabilityMatrix",
     "AuditCapabilityRequirement",
     "AuditCapabilityVersion",
+    "AuditClientRequest",
+    "AuditClientRequestOperation",
     "AuditClosureStatus",
     "AuditContract",
     "AuditContractRecord",
@@ -148,6 +155,7 @@ __all__ = [
     "AuditPublicationStatus",
     "AuditPurpose",
     "AuditRiskTier",
+    "AuditRunStateMappingPolicy",
     "AuditRuntimeMissingOutcome",
     "AuditScan",
     "AuditScopeKind",

@@ -9,6 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from riftx.domain import (
+    AUDIT_CLIENT_REQUEST_SCHEMA_VERSION,
+    AuditClientRequest,
     AuditPhase,
     AuditPhaseRun,
     AuditPhaseRunStatus,
@@ -33,6 +35,54 @@ NOW = datetime(2026, 8, 3, 8, tzinfo=UTC)
 
 def _digest(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _client_request(**updates: object) -> AuditClientRequest:
+    payload: dict[str, object] = {
+        "client_request_id": "6ed6232a-3fb3-4f93-868f-0be291142f31",
+        "request_digest": _digest("request"),
+        "audit_id": "audit-1",
+        "run_id": "run-1",
+        "project_id": "project-1",
+        "engagement_id": "engagement-1",
+        "contract_id": "contract-1",
+        "contract_digest": _digest("contract"),
+        "temporal_workflow_id": "riftx-code-audit-audit-1",
+        "created_at": NOW,
+    }
+    payload.update(updates)
+    return AuditClientRequest.model_validate(payload)
+
+
+def test_client_request_freezes_only_digest_and_authoritative_bindings() -> None:
+    request = _client_request()
+
+    assert request.request_schema_version == AUDIT_CLIENT_REQUEST_SCHEMA_VERSION
+    assert request.operation.value == "create_draft"
+    assert "payload" not in AuditClientRequest.model_fields
+    assert "repository_path" not in AuditClientRequest.model_fields
+
+
+@pytest.mark.parametrize(
+    "client_request_id",
+    [
+        "not-a-uuid",
+        "00000000-0000-0000-0000-000000000000",
+        "6ED6232A-3FB3-4F93-868F-0BE291142F31",
+    ],
+)
+def test_client_request_rejects_noncanonical_or_zero_uuid(client_request_id: str) -> None:
+    with pytest.raises(ValidationError):
+        _client_request(client_request_id=client_request_id)
+
+
+def test_client_request_rejects_schema_digest_and_workflow_confusion() -> None:
+    with pytest.raises(ValidationError, match="unsupported schema"):
+        _client_request(request_schema_version="riftx.audit-create-draft-request/v2")
+    with pytest.raises(ValidationError):
+        _client_request(request_digest="not-a-digest")
+    with pytest.raises(ValidationError, match="workflow binding"):
+        _client_request(temporal_workflow_id="riftx-code-audit-other")
 
 
 def _snapshot(**updates: object) -> SourceSnapshot:

@@ -47,13 +47,25 @@ def _git_object_id_check(column: str) -> str:
     remainder = column
     for character in "0123456789abcdef":
         remainder = f"replace({remainder}, '{character}', '')"
-    return (
-        f"length({column}) IN (40, 64) AND length({remainder}) = 0"
-    )
+    return f"length({column}) IN (40, 64) AND length({remainder}) = 0"
 
 
 def _optional_git_object_id_check(column: str) -> str:
     return f"{column} IS NULL OR ({_git_object_id_check(column)})"
+
+
+def _canonical_uuid_check(column: str) -> str:
+    remainder = column
+    for character in "0123456789abcdef-":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return (
+        f"length({column}) = 36 AND substr({column}, 9, 1) = '-' "
+        f"AND substr({column}, 14, 1) = '-' AND substr({column}, 19, 1) = '-' "
+        f"AND substr({column}, 24, 1) = '-' "
+        f"AND length(replace({column}, '-', '')) = 32 "
+        f"AND length({remainder}) = 0 "
+        f"AND {column} <> '00000000-0000-0000-0000-000000000000'"
+    )
 
 
 class Base(DeclarativeBase):
@@ -644,12 +656,8 @@ class AuditScanRecord(Base):
     closure_status: Mapped[str | None] = mapped_column(String(64))
     publication_status: Mapped[str] = mapped_column(String(32), nullable=False)
     core_seal_root: Mapped[str | None] = mapped_column(String(64))
-    initial_distribution_revision_id: Mapped[str | None] = mapped_column(
-        String(AUDIT_ID_LENGTH)
-    )
-    latest_distribution_revision_id: Mapped[str | None] = mapped_column(
-        String(AUDIT_ID_LENGTH)
-    )
+    initial_distribution_revision_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    latest_distribution_revision_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
     model_profile: Mapped[str | None] = mapped_column(String(255))
     selected_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     required_backend_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
@@ -657,15 +665,94 @@ class AuditScanRecord(Base):
     budget_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     config_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    temporal_workflow_id: Mapped[str] = mapped_column(
-        String(AUDIT_TOKEN_LENGTH), nullable=False
-    )
+    temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     analysis_finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     publication_finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     sealed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditClientRequestRecord(Base):
+    __tablename__ = "audit_client_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "run_id", "contract_digest", "temporal_workflow_id"],
+            [
+                "audit_scans.id",
+                "audit_scans.run_id",
+                "audit_scans.contract_digest",
+                "audit_scans.temporal_workflow_id",
+            ],
+            name="fk_audit_client_requests_scan_start_binding",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_audit_client_requests_scan_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "engagement_id"],
+            ["audit_projects.id", "audit_projects.engagement_id"],
+            name="fk_audit_client_requests_project_owner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["contract_id", "audit_id", "contract_digest"],
+            [
+                "audit_contracts.contract_id",
+                "audit_contracts.audit_id",
+                "audit_contracts.contract_digest",
+            ],
+            name="fk_audit_client_requests_contract_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            _canonical_uuid_check("client_request_id"),
+            name="ck_audit_client_requests_canonical_id",
+        ),
+        CheckConstraint(
+            "operation = 'create_draft'",
+            name="ck_audit_client_requests_operation",
+        ),
+        CheckConstraint(
+            "request_schema_version = 'riftx.audit-create-draft-request/v1'",
+            name="ck_audit_client_requests_schema",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("request_digest"),
+            name="ck_audit_client_requests_request_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("contract_digest"),
+            name="ck_audit_client_requests_contract_digest",
+        ),
+        UniqueConstraint("audit_id", name="uq_audit_client_requests_audit"),
+        UniqueConstraint("run_id", name="uq_audit_client_requests_run"),
+        UniqueConstraint("contract_id", name="uq_audit_client_requests_contract"),
+        Index(
+            "ix_audit_client_requests_project_created_id",
+            "project_id",
+            "created_at",
+            "client_request_id",
+        ),
+    )
+
+    client_request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    engagement_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    contract_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class AuditStartIntentRecord(Base):
@@ -718,8 +805,7 @@ class AuditStartIntentRecord(Base):
             name="ck_audit_start_intents_contract_digest",
         ),
         CheckConstraint(
-            "status NOT IN ('claimed', 'started', 'retryable', 'outcome_unknown') "
-            "OR attempt >= 1",
+            "status NOT IN ('claimed', 'started', 'retryable', 'outcome_unknown') OR attempt >= 1",
             name="ck_audit_start_intents_attempted_status",
         ),
         CheckConstraint(
@@ -735,8 +821,7 @@ class AuditStartIntentRecord(Base):
             name="ck_audit_start_intents_retry_order",
         ),
         CheckConstraint(
-            "started_at IS NULL OR "
-            "(started_at >= created_at AND started_at <= updated_at)",
+            "started_at IS NULL OR (started_at >= created_at AND started_at <= updated_at)",
             name="ck_audit_start_intents_started_order",
         ),
         UniqueConstraint("audit_id", name="uq_audit_start_intents_audit"),
@@ -806,13 +891,11 @@ class AuditPhaseRunRecord(Base):
             name="ck_audit_phase_runs_timestamp_order",
         ),
         CheckConstraint(
-            "started_at IS NULL OR "
-            "(started_at >= created_at AND started_at <= updated_at)",
+            "started_at IS NULL OR (started_at >= created_at AND started_at <= updated_at)",
             name="ck_audit_phase_runs_started_order",
         ),
         CheckConstraint(
-            "finished_at IS NULL OR "
-            "(finished_at >= created_at AND finished_at <= updated_at)",
+            "finished_at IS NULL OR (finished_at >= created_at AND finished_at <= updated_at)",
             name="ck_audit_phase_runs_finished_order",
         ),
         CheckConstraint(
@@ -880,9 +963,7 @@ class AuditPhaseRunRecord(Base):
     input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     config_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    output_artifact_ids_json: Mapped[list[str]] = mapped_column(
-        JSON, nullable=False, default=list
-    )
+    output_artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     summary_counts_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list
     )
@@ -1004,9 +1085,7 @@ class AuditScopeUnitRecord(Base):
     blob_digest: Mapped[str | None] = mapped_column(String(64))
     symbol_anchor: Mapped[str | None] = mapped_column(String(2048))
     risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)
-    required_analyses_json: Mapped[list[str]] = mapped_column(
-        JSON, nullable=False, default=list
-    )
+    required_analyses_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     closure_code: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
     closure_reason: Mapped[str | None] = mapped_column(Text)
@@ -1107,9 +1186,7 @@ class AuditWorkItemRecord(Base):
     audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
     phase: Mapped[str] = mapped_column(String(32), nullable=False)
     epoch: Mapped[int] = mapped_column(Integer, nullable=False)
-    primary_scope_unit_id: Mapped[str] = mapped_column(
-        String(AUDIT_ID_LENGTH), nullable=False
-    )
+    primary_scope_unit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
     strategy: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
     stable_key: Mapped[str] = mapped_column(String(64), nullable=False)
     risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1121,9 +1198,7 @@ class AuditWorkItemRecord(Base):
     required_coverage_plan_artifact_id: Mapped[str] = mapped_column(
         String(AUDIT_ID_LENGTH), nullable=False
     )
-    required_coverage_plan_digest: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )
+    required_coverage_plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     receipt_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
