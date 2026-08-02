@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -432,6 +433,8 @@ async def _seed(
 async def _capture_selects(
     database: Database,
     operation: Awaitable[object],
+    *,
+    parameters: list[object] | None = None,
 ) -> tuple[object, tuple[str, ...]]:
     statements: list[str] = []
 
@@ -445,6 +448,8 @@ async def _capture_selects(
     ) -> None:
         if statement.lstrip().upper().startswith(("SELECT", "WITH")):
             statements.append(statement)
+            if parameters is not None:
+                parameters.append(_parameters)
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
@@ -452,6 +457,57 @@ async def _capture_selects(
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     return result, tuple(statements)
+
+
+def _assert_artifact_select_projection_is_metadata_only(statements: tuple[str, ...]) -> None:
+    rendered = "\n".join(statements).lower()
+    selects = tuple(
+        re.finditer(
+            r"\bselect\b(.*?)\bfrom\b\s+([a-z0-9_\"`.]+)",
+            rendered,
+            flags=re.DOTALL,
+        )
+    )
+    assert selects
+    for selection in selects:
+        projection = selection.group(1)
+        from_target = selection.group(2).rsplit(".", 1)[-1].strip('"`')
+        if from_target == "artifacts":
+            assert (
+                re.search(
+                    r"(?:^|,)\s*(?:distinct\s+)?\*(?:\s|,|$)",
+                    projection,
+                    flags=re.DOTALL,
+                )
+                is None
+            )
+        assert re.search(r"\bartifacts\s*\.\s*\*", projection) is None
+        for forbidden_column in (
+            "artifacts.path",
+            "artifacts.name",
+            "artifacts.description",
+            "artifacts.mime_type",
+            "artifacts.sha256",
+            "artifacts.size",
+            "artifacts.content",
+        ):
+            assert forbidden_column not in projection
+    assert "artifacts.name like" in rendered
+    assert "artifacts.description =" in rendered
+
+
+@pytest.mark.parametrize(
+    "unsafe_projection",
+    ["*", "DISTINCT *", "artifacts .*"],
+)
+def test_artifact_projection_gate_rejects_wildcards(unsafe_projection: str) -> None:
+    statement = (
+        f"SELECT {unsafe_projection} FROM artifacts "
+        "WHERE artifacts.name LIKE ? AND artifacts.description = ?"
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_artifact_select_projection_is_metadata_only((statement,))
 
 
 async def test_resolve_scope_is_server_derived_and_unknown_runs_are_indistinguishable(
@@ -492,9 +548,11 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         repository = SQLAlchemyGraphReadRepository(database.session_factory)
         scope = GraphScope(run_id="run-graph", engagement_id="engagement-graph")
 
+        query_parameters: list[object] = []
         loaded, statements = await _capture_selects(
             database,
             repository.load(scope, GraphViewKind.TASK),
+            parameters=query_parameters,
         )
         source = loaded
 
@@ -528,12 +586,17 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         for canary in SECRET_CANARIES:
             assert canary not in rendered_source
             assert canary not in rendered_sql
+            assert canary not in repr(query_parameters)
+        _assert_artifact_select_projection_is_metadata_only(statements)
         for forbidden_sql_fragment in (
             "arguments_json",
             "command_preview",
             "execution_spec_json",
             "artifacts.path",
-            "artifacts.description",
+            "artifacts.content",
+            "target_http_requests.url",
+            "target_http_requests.request_json",
+            "target_http_requests.result_json",
             "executions.argv_json",
             "executions.command_text",
             "executions.cwd",
@@ -560,13 +623,16 @@ async def test_evidence_and_operation_sources_are_explicit_same_run_metadata_onl
         repository = SQLAlchemyGraphReadRepository(database.session_factory)
         scope = GraphScope(run_id="run-graph", engagement_id="engagement-graph")
 
+        query_parameters: list[object] = []
         evidence, evidence_statements = await _capture_selects(
             database,
             repository.load(scope, GraphViewKind.EVIDENCE),
+            parameters=query_parameters,
         )
         operation, operation_statements = await _capture_selects(
             database,
             repository.load(scope, GraphViewKind.OPERATION),
+            parameters=query_parameters,
         )
 
         assert len(evidence_statements) == 15
@@ -708,9 +774,14 @@ async def test_evidence_and_operation_sources_are_explicit_same_run_metadata_onl
         for canary in SECRET_CANARIES:
             assert canary not in rendered
             assert canary not in rendered_sql
+            assert canary not in repr(query_parameters)
+        _assert_artifact_select_projection_is_metadata_only(evidence_statements)
         for forbidden_sql_fragment in (
             "artifacts.path",
-            "artifacts.description",
+            "artifacts.content",
+            "target_http_requests.url",
+            "target_http_requests.request_json",
+            "target_http_requests.result_json",
             "executions.argv_json",
             "executions.command_text",
             "executions.cwd",

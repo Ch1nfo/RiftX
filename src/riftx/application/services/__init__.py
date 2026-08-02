@@ -44,6 +44,7 @@ from .runner_control import (
 from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflowClient
 from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
+from .traffic import TrafficMetadataApplicationService
 
 __all__ = [
     "ActionApplicationService",
@@ -93,4 +94,5 @@ __all__ = [
     "CreateTerminal",
     "TerminalApplicationService",
     "TerminalView",
+    "TrafficMetadataApplicationService",
 ]

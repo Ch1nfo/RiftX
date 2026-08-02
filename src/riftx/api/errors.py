@@ -26,6 +26,11 @@ from riftx.application.graphs import (
     StaleGraphCursorError,
     UnsupportedGraphViewError,
 )
+from riftx.application.traffic import (
+    InvalidTrafficCursorError,
+    StaleTrafficCursorError,
+    TrafficSourceContractError,
+)
 from riftx.domain import InvalidStateTransitionError
 
 from .schemas import ErrorDetail, ErrorResponse
@@ -63,6 +68,9 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(InvalidGraphCursorError, _handle_invalid_graph_cursor)
     app.add_exception_handler(StaleGraphCursorError, _handle_stale_graph_cursor)
     app.add_exception_handler(UnsupportedGraphViewError, _handle_unsupported_graph_view)
+    app.add_exception_handler(InvalidTrafficCursorError, _handle_invalid_traffic_cursor)
+    app.add_exception_handler(StaleTrafficCursorError, _handle_stale_traffic_cursor)
+    app.add_exception_handler(TrafficSourceContractError, _handle_traffic_source_contract)
     app.add_exception_handler(RequestValidationError, _handle_validation)
     app.add_exception_handler(HTTPException, _handle_http_exception)
     app.add_exception_handler(Exception, _handle_unexpected)
@@ -137,6 +145,25 @@ async def _handle_unsupported_graph_view(_: Request, exc: Exception) -> JSONResp
     return _response(422, "unsupported_graph_view", "The Graph view is unavailable")
 
 
+async def _handle_invalid_traffic_cursor(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, InvalidTrafficCursorError)
+    return _response(422, "invalid_traffic_cursor", "The Traffic cursor is invalid")
+
+
+async def _handle_stale_traffic_cursor(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, StaleTrafficCursorError)
+    return _response(409, "stale_traffic_cursor", "The Traffic cursor is stale")
+
+
+async def _handle_traffic_source_contract(_: Request, exc: Exception) -> JSONResponse:
+    _expect(exc, TrafficSourceContractError)
+    return _response(
+        500,
+        "traffic_source_contract_error",
+        "Traffic metadata is temporarily unavailable",
+    )
+
+
 async def _handle_validation(_: Request, exc: Exception) -> JSONResponse:
     error = _expect(exc, RequestValidationError)
     sensitive_values = _sensitive_values(error.body)
@@ -199,9 +226,15 @@ def _redact_validation_errors(
         copied = dict(item)
         copied.pop("ctx", None)
         location = copied.get("loc")
-        if isinstance(location, (list, tuple)) and any(
+        external_value = (
+            isinstance(location, (list, tuple))
+            and bool(location)
+            and location[0] in {"path", "query"}
+        )
+        sensitive_field = isinstance(location, (list, tuple)) and any(
             _redact_validation_field(part) for part in location if isinstance(part, str)
-        ):
+        )
+        if external_value or sensitive_field:
             copied["input"] = "[redacted]"
         else:
             copied["input"] = _redact_sensitive_mapping(copied.get("input"))
@@ -274,4 +307,8 @@ def _redact_validation_field(name: str) -> bool:
         "edge_type",
         "focus",
         "search",
+        "method",
+        "status_class",
+        "cursor",
+        "exchange_id",
     }

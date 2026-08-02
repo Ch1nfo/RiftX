@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import platform
+import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -62,6 +63,7 @@ from riftx.persistence import (
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyTrafficMetadataReadRepository,
 )
 from riftx.persistence.browser_repositories import SQLAlchemyBrowserRepository
 from riftx.persistence.connector_repositories import (
@@ -271,6 +273,7 @@ class ControlPlane:
     terminal_service: TerminalApplicationService
     terminal_supervisor: TerminalSupervisor
     graph_repository: SQLAlchemyGraphReadRepository
+    traffic_repository: SQLAlchemyTrafficMetadataReadRepository
     browser_service: BrowserApplicationService | None = None
     connector_service: ConnectorApplicationService | None = None
     browser_manager: RunnerBrowserManager | None = None
@@ -396,6 +399,11 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     action_read_repository = SQLAlchemyActionReadRepository(database.session_factory)
     graph_repository = SQLAlchemyGraphReadRepository(database.session_factory)
+    traffic_repository = SQLAlchemyTrafficMetadataReadRepository(
+        database.session_factory,
+        digest_key=secrets.token_bytes(32),
+        artifact_reference_key=secrets.token_bytes(32),
+    )
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -586,6 +594,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         event_service=EventApplicationService(
             run_repository=run_repository,
             event_repository=event_repository,
+            artifact_associations=artifact_repository,
         ),
         execution_service=ExecutionApplicationService(
             run_repository=run_repository,
@@ -641,6 +650,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         terminal_supervisor=terminal_supervisor,
         graph_repository=graph_repository,
+        traffic_repository=traffic_repository,
         browser_manager=browser_manager,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,

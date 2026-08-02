@@ -12,7 +12,7 @@ import stat
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -27,6 +27,7 @@ from openai.types.responses import (
     ResponseOutputMessage,
     ResponseOutputText,
 )
+from sqlalchemy import delete, update
 from temporalio.client import Client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from temporalio.testing import WorkflowEnvironment
@@ -63,6 +64,7 @@ from riftx.application.services import (
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.browser.service import BrowserApplicationService
 from riftx.context import ContextApplicationService
 from riftx.domain import (
@@ -112,8 +114,10 @@ from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.observability_repository import (
     SQLAlchemyRuntimeObservabilityRepository,
 )
+from riftx.persistence.orm import ArtifactRecord, TargetHttpRequestRecord
 from riftx.persistence.target_http_repositories import (
     SQLAlchemyTargetHttpRequestRepository,
+    SQLAlchemyTrafficMetadataReadRepository,
 )
 from riftx.runner import (
     ExecutionLaunchRequest,
@@ -134,6 +138,11 @@ from riftx.runtime import (
 )
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
+from riftx.target_http.models import (
+    TargetHttpRequest,
+    TargetHttpResult,
+    TargetHttpSubmission,
+)
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
 from riftx.temporal.activities import RiftXActivities
@@ -516,6 +525,7 @@ tools:
             event_service=EventApplicationService(
                 run_repository=run_repository,
                 event_repository=event_repository,
+                artifact_associations=artifact_repository,
             ),
             execution_service=ExecutionApplicationService(
                 run_repository=run_repository,
@@ -564,6 +574,11 @@ tools:
             ),
             terminal_supervisor=terminal_supervisor,
             graph_repository=SQLAlchemyGraphReadRepository(database.session_factory),
+            traffic_repository=SQLAlchemyTrafficMetadataReadRepository(
+                database.session_factory,
+                digest_key=b"test-traffic-digest-key-0000000001",
+                artifact_reference_key=b"test-traffic-artifact-key-000000001",
+            ),
             browser_service=browser_service,
             browser_manager=browser_manager,
             process_supervisor=process_supervisor,
@@ -2653,6 +2668,385 @@ async def test_artifact_registration_snapshots_and_recovers_content(tmp_path: Pa
             assert listed.json()["items"][0]["id"] == artifact_id
     finally:
         await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_target_http_event_artifacts_are_redacted_in_rest_sse_and_reports(
+    tmp_path: Path,
+) -> None:
+    canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_TARGET_HTTP_EVENT_API"
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            owner_run = await _create_run(client)
+            foreign_run = await _create_run(client)
+            owner_run_id = str(owner_run["id"])
+            foreign_run_id = str(foreign_run["id"])
+            workspace = Path(str(owner_run["workspace_path"]))
+
+            sensitive_source = workspace / "legacy-sensitive.bin"
+            sensitive_source.write_bytes(canary.encode())
+            sensitive_response = await client.post(
+                f"/api/v1/runs/{owner_run_id}/artifacts",
+                json={
+                    "source_path": str(sensitive_source),
+                    "name": f"legacy-generic-{canary}.bin",
+                    "mime_type": f"application/x-{canary.lower()}",
+                },
+            )
+            assert sensitive_response.status_code == 201, sensitive_response.text
+            sensitive_id = str(sensitive_response.json()["id"])
+
+            ordinary_source = workspace / "ordinary.txt"
+            ordinary_source.write_text("ordinary evidence")
+            ordinary_response = await client.post(
+                f"/api/v1/runs/{owner_run_id}/artifacts",
+                json={"source_path": str(ordinary_source), "name": "ordinary.txt"},
+            )
+            assert ordinary_response.status_code == 201, ordinary_response.text
+            ordinary_id = str(ordinary_response.json()["id"])
+
+            marker_id = "artifact-authoritative-marker"
+            async with runtime.control_plane.database.session_factory() as session, session.begin():
+                session.add(
+                    ArtifactRecord(
+                        id=marker_id,
+                        run_id=owner_run_id,
+                        execution_id=None,
+                        name="target-http-orphan-request.json",
+                        path=f"/restricted/{canary}",
+                        mime_type="application/json",
+                        sha256="f" * 64,
+                        size=42,
+                        description="Immutable Target HTTP request",
+                        created_at=datetime.now(tz=UTC),
+                    )
+                )
+                session.add(
+                    TargetHttpRequestRecord(
+                        id="exchange-cross-run-event",
+                        execution_key=f"execution:v1:{'e' * 64}",
+                        run_id=foreign_run_id,
+                        session_id="session-cross-run-event",
+                        tool_call_id="intent-cross-run-event",
+                        node_id="node-cross-run-event",
+                        method="GET",
+                        url=f"https://{canary}:password@target.example/?secret={canary}",
+                        request_json={"authorization": canary},
+                        result_json={"body_excerpt": canary},
+                        request_artifact_id=sensitive_id,
+                        response_artifact_id=None,
+                        created_at=datetime.now(tz=UTC),
+                    )
+                )
+
+            event_repository = SQLAlchemyRunEventRepository(
+                runtime.control_plane.database.session_factory
+            )
+            await event_repository.append(
+                owner_run_id,
+                "artifact.registered",
+                {
+                    "artifact_id": marker_id,
+                    "name": f"tampered-{canary}.bin",
+                    "mime_type": f"application/x-{canary.lower()}",
+                    "sha256": canary,
+                    "size": 42,
+                },
+            )
+            legacy_payload = {
+                "execution_key": f"execution:v1:{canary}",
+                "request_id": canary,
+                "method": f"GET-{canary}",
+                "url": f"https://{canary}:password@target.example/private?token={canary}",
+                "status_code": canary,
+                "runner_reason": canary,
+                "reason": canary,
+            }
+            for event_type in (
+                "target_http.request_started",
+                "target_http.request_failed",
+                "target_http.response_received",
+                "target_http.request_cancelled",
+                "target_http.future_event",
+            ):
+                await event_repository.append(owner_run_id, event_type, legacy_payload)
+
+            events_response = await client.get(
+                f"/api/v1/runs/{owner_run_id}/events",
+                params={"limit": 1000},
+            )
+            sse_response = await client.get(
+                f"/api/v1/runs/{owner_run_id}/events/stream",
+                params={"follow": "false"},
+            )
+            assert events_response.status_code == sse_response.status_code == 200
+            assert canary not in events_response.text
+            assert canary not in sse_response.text
+
+            events = events_response.json()["items"]
+            registered = [item for item in events if item["event_type"] == "artifact.registered"]
+            restricted_payload = {
+                "artifact_class": "target_http_sensitive",
+                "content_restricted": True,
+            }
+            assert sum(item["payload"] == restricted_payload for item in registered) == 2
+            ordinary_event = next(
+                item for item in registered if item["payload"].get("artifact_id") == ordinary_id
+            )
+            assert ordinary_event["payload"]["name"] == "ordinary.txt"
+
+            sse_items = [
+                json.loads(line.removeprefix("data: "))
+                for line in sse_response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert [item["payload"] for item in sse_items] == [item["payload"] for item in events]
+
+            source = await runtime.control_plane.report_service.build_source(owner_run_id)
+            serialized_source = source.model_dump_json()
+            assert canary not in serialized_source
+            assert [item.id for item in source.artifacts] == [ordinary_id]
+            restricted_report_events = [
+                item
+                for item in source.key_events
+                if item.event_type == "artifact.registered"
+                and item.payload.get("content_restricted") is True
+            ]
+            assert len(restricted_report_events) == 2
+
+            listed = await client.get(f"/api/v1/runs/{owner_run_id}/artifacts")
+            assert [item["id"] for item in listed.json()["items"]] == [ordinary_id]
+            for restricted_id in (sensitive_id, marker_id):
+                fetched = await client.get(f"/api/v1/artifacts/{restricted_id}")
+                content = await client.get(f"/api/v1/artifacts/{restricted_id}/content")
+                assert fetched.status_code == content.status_code == 404
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_real_target_http_metadata_routes_filter_page_and_never_reveal_secrets(
+    tmp_path: Path,
+) -> None:
+    canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_TRAFFIC_REAL_API"
+    request_artifact_id = f"artifact-request-{canary}"
+    response_artifact_id = f"artifact-response-{canary}"
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            owner = await _create_run(client)
+            other = await _create_run(client)
+            owner_run_id = str(owner["id"])
+            other_run_id = str(other["id"])
+            now = datetime.now(tz=UTC)
+            async with runtime.control_plane.database.session_factory() as session, session.begin():
+                session.add_all(
+                    [
+                        ArtifactRecord(
+                            id=request_artifact_id,
+                            run_id=owner_run_id,
+                            execution_id=None,
+                            name=f"request-{canary}.json",
+                            path=f"/restricted/{canary}/request.json",
+                            mime_type="application/json",
+                            sha256="a" * 64,
+                            size=100,
+                            description=canary,
+                            created_at=now,
+                        ),
+                        ArtifactRecord(
+                            id=response_artifact_id,
+                            run_id=owner_run_id,
+                            execution_id=None,
+                            name=f"response-{canary}.bin",
+                            path=f"/restricted/{canary}/response.bin",
+                            mime_type="application/octet-stream",
+                            sha256="b" * 64,
+                            size=200,
+                            description=canary,
+                            created_at=now,
+                        ),
+                    ]
+                )
+
+            writer = SQLAlchemyTargetHttpRequestRepository(
+                runtime.control_plane.database.session_factory
+            )
+            seeded: list[tuple[str, str, int]] = []
+            for index, (method, status_code) in enumerate(
+                (("GET", 200), ("POST", 404), ("GET", 500))
+            ):
+                exchange_id = f"exchange-real-api-{index}"
+                request = TargetHttpRequest(
+                    execution_key=f"execution-key-real-api-{index}",
+                    method=method,
+                    url=(
+                        f"https://{canary}:password@target.example/private/{canary}"
+                        f"?signature={canary}#{canary}"
+                    ),
+                    headers={"Authorization": f"Bearer {canary}"},
+                    cookies={"session": canary},
+                    body=canary if method == "POST" else None,
+                    proxy=f"http://{canary}.invalid",
+                    client_cert_ref=canary,
+                )
+                submission = TargetHttpSubmission(
+                    run_id=owner_run_id,
+                    session_id=f"session-real-api-{index}",
+                    tool_call_id=f"intent-real-api-{index}",
+                    node_id=f"node-real-api-{index}",
+                    request=request,
+                )
+                result = TargetHttpResult(
+                    request_id=exchange_id,
+                    execution_key=request.execution_key,
+                    request_hash=request.fingerprint,
+                    status_code=status_code,
+                    response_headers={"set-cookie": canary},
+                    elapsed_ms=index + 1,
+                    content_type=f"text/plain; secret={canary}",
+                    content_length=200,
+                    body_excerpt=canary,
+                    request_artifact_id=request_artifact_id,
+                    response_artifact_id=response_artifact_id,
+                    tls_summary={"verified": True, "client_certificate_used": False},
+                    final_url=f"https://target.example/final?signature={canary}",
+                    redirect_chain=[f"https://redirect.example/?secret={canary}"],
+                    truncated=False,
+                )
+                await writer.create(submission, result)
+                seeded.append((exchange_id, method, status_code))
+
+            history = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"limit": 1},
+            )
+            assert history.status_code == 200, history.text
+            history_model = TrafficExchangePage.model_validate(history.json())
+            assert len(history_model.items) == 1
+            assert history_model.has_more is True
+            assert history_model.next_cursor is not None
+            assert canary not in history.text
+            assert request_artifact_id not in history.text
+            assert response_artifact_id not in history.text
+            assert request_artifact_id not in {
+                history_model.items[0].artifacts.request.opaque_ref,
+                history_model.items[0].artifacts.response.opaque_ref,
+            }
+
+            cursor = history_model.next_cursor
+            assert cursor is not None
+            inserted_exchange_id = "exchange-real-api-newer-than-snapshot"
+            inserted_request = TargetHttpRequest(
+                execution_key="execution-key-real-api-newer",
+                method="PUT",
+                url="https://target.example/newer",
+            )
+            inserted_submission = TargetHttpSubmission(
+                run_id=owner_run_id,
+                session_id="session-real-api-newer",
+                tool_call_id="intent-real-api-newer",
+                node_id="node-real-api-newer",
+                request=inserted_request,
+            )
+            await writer.create(
+                inserted_submission,
+                TargetHttpResult(
+                    request_id=inserted_exchange_id,
+                    execution_key=inserted_request.execution_key,
+                    request_hash=inserted_request.fingerprint,
+                    status_code=302,
+                    elapsed_ms=1,
+                    content_type="application/json",
+                    content_length=0,
+                    final_url=inserted_request.url,
+                ),
+            )
+            assert history_model.snapshot.created_through is not None
+            async with runtime.control_plane.database.session_factory() as session, session.begin():
+                await session.execute(
+                    update(TargetHttpRequestRecord)
+                    .where(TargetHttpRequestRecord.id == inserted_exchange_id)
+                    .values(
+                        created_at=history_model.snapshot.created_through + timedelta(seconds=1)
+                    )
+                )
+
+            continued = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"limit": 1, "cursor": cursor},
+            )
+            assert continued.status_code == 200, continued.text
+            assert inserted_exchange_id not in {
+                item["exchange_id"] for item in continued.json()["items"]
+            }
+            fresh = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"limit": 1},
+            )
+            assert fresh.status_code == 200, fresh.text
+            assert fresh.json()["items"][0]["exchange_id"] == inserted_exchange_id
+
+            post_only = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"method": "POST"},
+            )
+            server_errors = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"status_class": "server_error"},
+            )
+            assert [item["method"] for item in post_only.json()["items"]] == ["POST"]
+            assert [item["response"]["status_code"] for item in server_errors.json()["items"]] == [
+                500
+            ]
+
+            detail = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges/{seeded[0][0]}"
+            )
+            assert detail.status_code == 200, detail.text
+            TrafficExchangeDetail.model_validate(detail.json())
+            assert canary not in detail.text
+            assert request_artifact_id not in detail.text
+            assert response_artifact_id not in detail.text
+
+            inaccessible = []
+            for run_id, exchange_id in (
+                (owner_run_id, "exchange-missing"),
+                (other_run_id, seeded[0][0]),
+                ("run-missing", seeded[0][0]),
+            ):
+                response = await client.get(
+                    f"/api/v1/runs/{run_id}/target-http/exchanges/{exchange_id}"
+                )
+                assert response.status_code == 404
+                inaccessible.append(response.json())
+            assert inaccessible[0] == inaccessible[1] == inaccessible[2]
+
+            tampered_cursor = f"{cursor[:-1]}{'A' if cursor[-1] != 'A' else 'B'}"
+            tampered = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"limit": 1, "cursor": tampered_cursor},
+            )
+            assert tampered.status_code == 422
+            assert tampered.json()["error"]["code"] == "invalid_traffic_cursor"
+            assert tampered_cursor not in tampered.text
+
+            async with runtime.control_plane.database.session_factory() as session, session.begin():
+                await session.execute(
+                    delete(TargetHttpRequestRecord).where(
+                        TargetHttpRequestRecord.id == seeded[0][0]
+                    )
+                )
+            stale = await client.get(
+                f"/api/v1/runs/{owner_run_id}/target-http/exchanges",
+                params={"limit": 1, "cursor": cursor},
+            )
+            assert stale.status_code == 409
+            assert stale.json()["error"]["code"] == "stale_traffic_cursor"
+            assert cursor not in stale.text
+    finally:
+        await runtime.control_plane.close()
 
 
 @pytest.mark.asyncio

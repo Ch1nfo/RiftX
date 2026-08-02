@@ -20,6 +20,7 @@ from .runs import router as runs_router
 from .security import router as security_router
 from .terminals import router as terminals_router
 from .tools import router as tools_router
+from .traffic import router as traffic_router
 
 __all__ = [
     "actions_router",
@@ -42,4 +43,5 @@ __all__ = [
     "security_router",
     "terminals_router",
     "tools_router",
+    "traffic_router",
 ]

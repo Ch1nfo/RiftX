@@ -26,7 +26,13 @@ from riftx.application.graphs import (
 )
 from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
 from riftx.persistence import Database, GraphReadLimits, SQLAlchemyGraphReadRepository
-from riftx.persistence.orm import EngagementRecord, RunRecord, WorkingMemoryRecord
+from riftx.persistence.orm import (
+    ArtifactRecord,
+    EngagementRecord,
+    RunRecord,
+    TargetHttpRequestRecord,
+    WorkingMemoryRecord,
+)
 
 LOCAL_TOKEN = "test-only-graph-api-local-operator-token-0001"
 NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
@@ -401,5 +407,100 @@ async def test_real_graph_service_wiring_authenticates_authorizes_and_reports_so
         assert app.state.graph_service._repository is repository
         assert app.state.graph_service._authorizer is app.state.graph_object_authorizer
         assert app.state.graph_object_authorizer.delegate is app.state.local_object_authorizer
+    finally:
+        await database.dispose()
+
+
+async def test_evidence_graph_excludes_target_http_artifacts_without_hiding_ordinary_artifacts(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'graph-artifact-visibility.db'}")
+    await database.create_schema()
+    marker_canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_GRAPH_MARKER_ARTIFACT_ID"
+    associated_canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_GRAPH_ASSOCIATED_ARTIFACT_ID"
+    try:
+        await _seed_truncated_task_graph(database)
+        async with database.session_factory() as session, session.begin():
+            session.add_all(
+                [
+                    ArtifactRecord(
+                        id="artifact-graph-ordinary",
+                        run_id="run-graph",
+                        execution_id=None,
+                        name="ordinary.txt",
+                        path="/evidence/ordinary.txt",
+                        mime_type="text/plain",
+                        sha256="a" * 64,
+                        size=8,
+                        description="Ordinary evidence",
+                        created_at=NOW,
+                    ),
+                    ArtifactRecord(
+                        id=marker_canary,
+                        run_id="run-graph",
+                        execution_id=None,
+                        name="target-http-orphan-response.bin",
+                        path="/restricted/marker.bin",
+                        mime_type="application/octet-stream",
+                        sha256="b" * 64,
+                        size=9,
+                        description="Immutable Target HTTP response body",
+                        created_at=NOW,
+                    ),
+                    ArtifactRecord(
+                        id=associated_canary,
+                        run_id="run-graph",
+                        execution_id=None,
+                        name="legacy-arbitrary.bin",
+                        path="/restricted/associated.bin",
+                        mime_type="application/octet-stream",
+                        sha256="c" * 64,
+                        size=10,
+                        description="Legacy arbitrary name",
+                        created_at=NOW,
+                    ),
+                ]
+            )
+            session.add(
+                TargetHttpRequestRecord(
+                    id="exchange-graph-associated",
+                    execution_key=f"execution:v1:{'a' * 64}",
+                    run_id="run-graph",
+                    session_id="session-graph-associated",
+                    tool_call_id="intent-graph-associated",
+                    node_id="node-graph",
+                    method="GET",
+                    url="https://target.example/",
+                    request_json={},
+                    result_json={},
+                    request_artifact_id=associated_canary,
+                    response_artifact_id=None,
+                    created_at=NOW,
+                )
+            )
+
+        repository = SQLAlchemyGraphReadRepository(database.session_factory)
+        settings = _settings(tmp_path, name="graph-artifact-visibility")
+        app = create_app(
+            control_plane=SimpleNamespace(settings=settings, graph_repository=repository)  # type: ignore[arg-type]
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": f"Bearer {LOCAL_TOKEN}"},
+            ) as client:
+                response = await client.get(
+                    "/api/v1/runs/run-graph/graph",
+                    params={"view": "evidence"},
+                )
+
+        assert response.status_code == 200, response.text
+        assert marker_canary not in response.text
+        assert associated_canary not in response.text
+        artifact_ids = {
+            node["domain_id"] for node in response.json()["nodes"] if node["type"] == "artifact"
+        }
+        assert artifact_ids == {"artifact-graph-ordinary"}
     finally:
         await database.dispose()

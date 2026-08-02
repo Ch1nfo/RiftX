@@ -542,6 +542,13 @@ class ArtifactRepository(Protocol):
         offset: int = 0,
     ) -> Sequence[Artifact]: ...
 
+    async def target_http_sensitive_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]:
+        """Classify IDs by global Target HTTP association without materializing Artifacts."""
+        ...
+
 
 class FindingRepository(Protocol):
     async def create(self, finding: Finding) -> Finding:

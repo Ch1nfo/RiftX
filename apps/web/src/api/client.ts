@@ -14,6 +14,7 @@ import type {
   RegisterArtifactPayload,
   GenerateReportsPayload,
   GraphViewPage,
+  ListRunTargetHttpExchangesOptions,
   ListRunGraphOptions,
   ModelProfile,
   ModelProfileList,
@@ -268,6 +269,33 @@ export const api = {
     if (options.cursor) query.set("cursor", options.cursor);
     return request(
       `/api/v1/runs/${encodeURIComponent(runId)}/graph?${query.toString()}`,
+      { signal },
+    );
+  },
+
+  listRunTargetHttpExchanges(
+    runId: string,
+    options: ListRunTargetHttpExchangesOptions = {},
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const query = new URLSearchParams();
+    if (options.method) query.set("method", options.method);
+    if (options.statusClass) query.set("status_class", options.statusClass);
+    query.set("limit", String(options.limit ?? 50));
+    if (options.cursor) query.set("cursor", options.cursor);
+    return request(
+      `/api/v1/runs/${encodeURIComponent(runId)}/target-http/exchanges?${query.toString()}`,
+      { signal },
+    );
+  },
+
+  getRunTargetHttpExchange(
+    runId: string,
+    exchangeId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return request(
+      `/api/v1/runs/${encodeURIComponent(runId)}/target-http/exchanges/${encodeURIComponent(exchangeId)}`,
       { signal },
     );
   },

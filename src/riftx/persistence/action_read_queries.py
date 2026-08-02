@@ -27,6 +27,7 @@ from sqlalchemy.sql.selectable import CTE
 
 from riftx.application.actions import ActionPageKey
 
+from .artifact_visibility import artifact_is_not_target_http_sensitive
 from .orm import (
     ApprovalRecord,
     ArtifactRecord,
@@ -650,7 +651,10 @@ def build_action_artifact_query(
         .select_from(roots)
         .join(exact_executions, exact_executions.c.action_id == roots.c.action_id)
         .join(ArtifactRecord, ArtifactRecord.execution_id == exact_executions.c.execution_id)
-        .where(ArtifactRecord.run_id == roots.c.run_id)
+        .where(
+            ArtifactRecord.run_id == roots.c.run_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         .cte("artifact_exact_selected")
     )
     mismatched_artifacts = (
@@ -661,7 +665,10 @@ def build_action_artifact_query(
         .select_from(roots)
         .join(exact_executions, exact_executions.c.action_id == roots.c.action_id)
         .join(ArtifactRecord, ArtifactRecord.execution_id == exact_executions.c.execution_id)
-        .where(ArtifactRecord.run_id != roots.c.run_id)
+        .where(
+            ArtifactRecord.run_id != roots.c.run_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         .cte("artifact_mismatched_selected")
     )
     exact_summary = (
@@ -751,6 +758,7 @@ def _global_artifact_ownership(
             execution_candidates,
             execution_candidates.c.execution_id == ArtifactRecord.execution_id,
         )
+        .where(artifact_is_not_target_http_sensitive())
         .cte(f"{prefix}_artifact_candidate_rows")
     )
     candidates = (
@@ -769,7 +777,10 @@ def _global_artifact_ownership(
             execution_exact.c.execution_id == ArtifactRecord.execution_id,
         )
         .join(ToolCallIntentRecord, ToolCallIntentRecord.id == execution_exact.c.action_id)
-        .where(ArtifactRecord.run_id == ToolCallIntentRecord.run_id)
+        .where(
+            ArtifactRecord.run_id == ToolCallIntentRecord.run_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         .cte(f"{prefix}_artifact_exact")
     )
     return candidates, exact

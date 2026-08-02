@@ -30,6 +30,7 @@ from riftx.persistence.orm import (
     RunEventRecord,
     RunRecord,
     RuntimeApprovalRequestRecord,
+    TargetHttpRequestRecord,
     ToolCallIntentRecord,
     ToolCallRecord,
 )
@@ -730,6 +731,76 @@ async def test_action_api_redacts_raw_siblings_and_keeps_fixed_select_budgets(
             "description",
             "location",
         } & _all_keys(detail_payload)
+
+
+@pytest.mark.asyncio
+async def test_action_artifacts_exclude_target_http_marker_and_association(
+    tmp_path: Path,
+) -> None:
+    marker_canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_ACTION_MARKER_ARTIFACT_ID"
+    associated_canary = "RIFTX_TEST_SECRET_DO_NOT_LEAK_ACTION_ASSOCIATED_ARTIFACT_ID"
+    async with _action_api(tmp_path, name="actions-artifact-visibility") as (harness, client):
+        await _seed_foundation(harness.database, "run-artifact-visibility")
+        records, _ = _rich_action_records(
+            "run-artifact-visibility",
+            principal_id=harness.principal_id,
+        )
+        execution_id = "execution-action-rich"
+        await _insert(
+            harness.database,
+            (
+                *records,
+                ArtifactRecord(
+                    id=marker_canary,
+                    run_id="run-artifact-visibility",
+                    execution_id=execution_id,
+                    name="target-http-orphan-request.json",
+                    path="/restricted/marker.json",
+                    mime_type="application/json",
+                    sha256="b" * 64,
+                    size=9,
+                    description="Immutable Target HTTP request",
+                    created_at=NOW + timedelta(minutes=2),
+                ),
+                ArtifactRecord(
+                    id=associated_canary,
+                    run_id="run-artifact-visibility",
+                    execution_id=execution_id,
+                    name="legacy-arbitrary.bin",
+                    path="/restricted/associated.bin",
+                    mime_type="application/octet-stream",
+                    sha256="c" * 64,
+                    size=10,
+                    description="Legacy arbitrary name",
+                    created_at=NOW + timedelta(minutes=3),
+                ),
+                TargetHttpRequestRecord(
+                    id="exchange-action-associated",
+                    execution_key=f"execution:v1:{'d' * 64}",
+                    run_id="run-artifact-visibility",
+                    session_id="session-run-artifact-visibility",
+                    tool_call_id="action-rich",
+                    node_id="node-run-artifact-visibility",
+                    method="GET",
+                    url="https://target.example/",
+                    request_json={},
+                    result_json={},
+                    request_artifact_id=associated_canary,
+                    response_artifact_id=None,
+                    created_at=NOW + timedelta(minutes=4),
+                ),
+            ),
+        )
+
+        listed = await client.get("/api/v1/runs/run-artifact-visibility/actions")
+        detailed = await client.get("/api/v1/runs/run-artifact-visibility/actions/action-rich")
+
+        assert listed.status_code == detailed.status_code == 200
+        assert marker_canary not in listed.text
+        assert marker_canary not in detailed.text
+        assert associated_canary not in listed.text
+        assert associated_canary not in detailed.text
+        assert detailed.json()["result"]["artifact_ids"] == ["artifact-action-rich"]
 
 
 @pytest.mark.asyncio

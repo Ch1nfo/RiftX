@@ -53,6 +53,7 @@ import type {
   Report,
   Run,
   RunEvent,
+  TrafficViewKind,
 } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
@@ -85,12 +86,14 @@ import {
 } from "./runStreamReducer";
 
 const RunGraphWorkspace = lazy(() => import("./RunGraphWorkspace"));
+const RunTrafficWorkspace = lazy(() => import("./RunTrafficWorkspace"));
 
 type DetailTab =
   | "overview"
   | "agent"
   | "actions"
   | "graph"
+  | "traffic"
   | "timeline"
   | "raw-events"
   | "approvals"
@@ -203,10 +206,15 @@ export function RunDetailPage() {
   const graphViewParam = parseGraphView(searchParams.get("graph_view"));
   const graphFocusParam = searchParams.get("graph_focus") ?? "";
   const graphRouteActive = Boolean(graphViewParam || graphFocusParam);
+  const trafficViewParam = parseTrafficView(searchParams.get("traffic_view"));
+  const trafficExchangeParam = searchParams.get("traffic_exchange") ?? "";
+  const trafficRouteActive = Boolean(trafficViewParam || trafficExchangeParam);
   const routeDefaultTab = detailTabForRoute(
     actionParam,
     graphViewParam,
     graphFocusParam,
+    trafficViewParam,
+    trafficExchangeParam,
   );
   const [selectionRoute, setSelectionRoute] = useState(() => ({
     actionId: actionParam,
@@ -251,6 +259,7 @@ export function RunDetailPage() {
   const previousActionRouteRef = useRef({
     actionId: actionParam,
     graphActive: graphRouteActive,
+    trafficActive: trafficRouteActive,
     runId,
   });
   const actionRevisionRef = useRef({ revision: 0, runId });
@@ -262,8 +271,10 @@ export function RunDetailPage() {
     let focusTimer: number | null = null;
     if (previous.runId === runId && previous.actionId && !actionParam) {
       const trigger = actionTriggerRefs.current.get(previous.actionId);
-      const focusTarget = graphRouteActive
-        ? tabRefs.current.get("graph")
+      const focusTarget = trafficRouteActive
+        ? tabRefs.current.get("traffic")
+        : graphRouteActive
+          ? tabRefs.current.get("graph")
         : trigger?.isConnected
           ? trigger
           : tabRefs.current.get("actions");
@@ -272,7 +283,8 @@ export function RunDetailPage() {
         if (
           current.runId === runId &&
           current.actionId === actionParam &&
-          current.graphActive === graphRouteActive
+          current.graphActive === graphRouteActive &&
+          current.trafficActive === trafficRouteActive
         ) {
           focusTarget?.focus();
         }
@@ -280,7 +292,7 @@ export function RunDetailPage() {
     }
     if (
       previous.runId === runId &&
-      previous.graphActive &&
+      (previous.graphActive || previous.trafficActive) &&
       actionParam
     ) {
       setInspectorFocusKey(`${runId}:${actionParam}`);
@@ -289,16 +301,34 @@ export function RunDetailPage() {
     previousActionRouteRef.current = {
       actionId: actionParam,
       graphActive: graphRouteActive,
+      trafficActive: trafficRouteActive,
       runId,
     };
     setSelectionRoute({ actionId: actionParam, runId });
-    if (graphViewParam || graphFocusParam) setTab("graph");
+    if (trafficViewParam || trafficExchangeParam) setTab("traffic");
+    else if (graphViewParam || graphFocusParam) setTab("graph");
     else if (actionParam) setTab("actions");
+    else if (previous.runId === runId && previous.trafficActive) {
+      setTabSelection((current) =>
+        current.runId === runId && current.value === "traffic"
+          ? { runId, value: "agent" }
+          : current,
+      );
+    }
     else if (previous.runId !== runId) setTab("agent");
     return () => {
       if (focusTimer !== null) window.clearTimeout(focusTimer);
     };
-  }, [actionParam, graphFocusParam, graphRouteActive, graphViewParam, runId]);
+  }, [
+    actionParam,
+    graphFocusParam,
+    graphRouteActive,
+    graphViewParam,
+    runId,
+    trafficExchangeParam,
+    trafficRouteActive,
+    trafficViewParam,
+  ]);
 
   const focusInspector =
     selectedActionId !== null && inspectorFocusKey === `${runId}:${selectedActionId}`;
@@ -519,6 +549,7 @@ export function RunDetailPage() {
     ["agent", t("Conversation")],
     ["actions", `${t("Actions")} ${visibleActionItems.length}`],
     ["graph", t("Graph")],
+    ["traffic", t("Traffic")],
     ["timeline", `${t("Timeline")} ${eventProjection.highLevelTimeline.length}`],
     ["raw-events", `${t("Raw events")} ${eventProjection.rawEvents.length}`],
     ["approvals", `${t("Approvals")} ${pendingApprovals.length}`],
@@ -550,16 +581,41 @@ export function RunDetailPage() {
       setSearchParams((current) => {
         const next = new URLSearchParams(current);
         next.delete("action");
+        next.delete("traffic_view");
+        next.delete("traffic_exchange");
         next.set("graph_view", graphViewParam ?? "task");
         return next;
       });
       return;
     }
-    if (tab === "graph" || graphViewParam || graphFocusParam) {
+    if (nextTab === "traffic") {
+      setSelectionRoute({ actionId: "", runId });
+      setInspectorFocusKey(null);
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("action");
+        next.delete("graph_view");
+        next.delete("graph_focus");
+        next.set("traffic_view", trafficViewParam ?? "history");
+        if (!trafficExchangeParam) next.delete("traffic_exchange");
+        return next;
+      });
+      return;
+    }
+    if (
+      tab === "graph" ||
+      graphViewParam ||
+      graphFocusParam ||
+      tab === "traffic" ||
+      trafficViewParam ||
+      trafficExchangeParam
+    ) {
       setSearchParams((current) => {
         const next = new URLSearchParams(current);
         next.delete("graph_view");
         next.delete("graph_focus");
+        next.delete("traffic_view");
+        next.delete("traffic_exchange");
         return next;
       });
     }
@@ -570,6 +626,8 @@ export function RunDetailPage() {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete("action");
+      next.delete("traffic_view");
+      next.delete("traffic_exchange");
       if (nextView !== graphViewParam) next.delete("graph_focus");
       next.set("graph_view", nextView);
       return next;
@@ -580,6 +638,8 @@ export function RunDetailPage() {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete("action");
+      next.delete("traffic_view");
+      next.delete("traffic_exchange");
       next.set("graph_view", graphViewParam ?? "task");
       if (focusId) next.set("graph_focus", focusId);
       else next.delete("graph_focus");
@@ -601,6 +661,37 @@ export function RunDetailPage() {
     setSearchParams({
       graph_view: "task",
       graph_focus: nodeId,
+    });
+  }
+
+  function changeTrafficView(nextView: TrafficViewKind) {
+    setSelectionRoute({ actionId: "", runId });
+    setInspectorFocusKey(null);
+    setTab("traffic");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("action");
+      next.delete("graph_view");
+      next.delete("graph_focus");
+      next.set("traffic_view", nextView);
+      if (nextView === "history") next.delete("traffic_exchange");
+      return next;
+    });
+  }
+
+  function changeTrafficExchange(exchangeId: string) {
+    setSelectionRoute({ actionId: "", runId });
+    setInspectorFocusKey(null);
+    setTab("traffic");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("action");
+      next.delete("graph_view");
+      next.delete("graph_focus");
+      next.set("traffic_view", exchangeId ? "inspector" : "history");
+      if (exchangeId) next.set("traffic_exchange", exchangeId);
+      else next.delete("traffic_exchange");
+      return next;
     });
   }
 
@@ -844,6 +935,18 @@ export function RunDetailPage() {
                   onViewChange={changeGraphView}
                   onFocusChange={changeGraphFocus}
                   onOpenAction={openGraphAction}
+                />
+              </Suspense>
+            ) : null}
+            {tab === "traffic" ? (
+              <Suspense fallback={<LoadingState label="Loading Traffic workspace" />}>
+                <RunTrafficWorkspace
+                  runId={runId}
+                  expectedEngagementId={run.data.engagement_id}
+                  view={trafficViewParam ?? "history"}
+                  exchangeId={trafficExchangeParam}
+                  onViewChange={changeTrafficView}
+                  onExchangeChange={changeTrafficExchange}
                 />
               </Suspense>
             ) : null}
@@ -2017,11 +2120,18 @@ function parseGraphView(value: string | null): GraphViewKind | null {
     : null;
 }
 
+function parseTrafficView(value: string | null): TrafficViewKind | null {
+  return value === "history" || value === "inspector" ? value : null;
+}
+
 function detailTabForRoute(
   actionId: string,
   graphView: GraphViewKind | null,
   graphFocus: string,
+  trafficView: TrafficViewKind | null,
+  trafficExchange: string,
 ): DetailTab {
+  if (trafficView || trafficExchange) return "traffic";
   if (graphView || graphFocus) return "graph";
   if (actionId) return "actions";
   return "agent";

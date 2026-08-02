@@ -31,6 +31,7 @@ from .runtime_repositories import (
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyUserInputRequestRepository,
 )
+from .target_http_repositories import SQLAlchemyTrafficMetadataReadRepository
 from .transcript_repositories import SQLAlchemyTranscriptRepository
 
 __all__ = [
@@ -63,4 +64,5 @@ __all__ = [
     "SQLAlchemyToolCallIntentRepository",
     "SQLAlchemyUserInputRequestRepository",
     "SQLAlchemyTranscriptRepository",
+    "SQLAlchemyTrafficMetadataReadRepository",
 ]

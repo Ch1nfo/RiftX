@@ -111,6 +111,52 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("reads only Run-scoped Target HTTP metadata endpoints", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], has_more: false, next_cursor: null }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ exchange_id: "exchange/1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    globalThis.fetch = fetchMock;
+    const controller = new AbortController();
+
+    await api.listRunTargetHttpExchanges(
+      "run/1",
+      {
+        method: "GET",
+        statusClass: "success",
+        limit: 25,
+        cursor: "cursor+/=",
+      },
+      controller.signal,
+    );
+    await api.getRunTargetHttpExchange("run/1", "exchange/1", controller.signal);
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/v1/runs/run%2F1/target-http/exchanges?method=GET&status_class=success&limit=25&cursor=cursor%2B%2F%3D",
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "/api/v1/runs/run%2F1/target-http/exchanges/exchange%2F1",
+    );
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toEqual(expect.objectContaining({ signal: controller.signal }));
+      expect(init).not.toHaveProperty("method", "POST");
+      expect(init).not.toHaveProperty("body");
+    }
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).join("\n")).not.toMatch(
+      /(?:body|reveal|replay|artifact)/i,
+    );
+  });
+
   it("keeps the local token in memory and sends it on REST requests", async () => {
     const localStorageWrite = vi.spyOn(Storage.prototype, "setItem");
     const fetchMock = vi.fn().mockResolvedValue(

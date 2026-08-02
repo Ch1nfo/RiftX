@@ -91,6 +91,20 @@ def test_http_validation_redaction_recognizes_camel_case_sensitive_fields(field:
     assert redacted[0]["input"] == "[redacted]"
 
 
+@pytest.mark.parametrize("location", [["query", "unknown"], ["path", "exchange_id"]])
+def test_http_validation_redaction_never_echoes_query_or_path_values(
+    location: list[str],
+) -> None:
+    secret = "RIFTX_TEST_SECRET_DO_NOT_LEAK_VALIDATION_INPUT"
+
+    redacted = _redact_validation_errors(
+        [{"loc": location, "msg": "invalid value", "input": secret}]
+    )
+
+    assert secret not in str(redacted)
+    assert redacted[0]["input"] == "[redacted]"
+
+
 def test_execution_response_exposes_durable_physical_stop_proof() -> None:
     confirmed_at = datetime(2026, 8, 1, tzinfo=UTC)
     execution = Execution(

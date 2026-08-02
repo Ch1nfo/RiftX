@@ -213,6 +213,21 @@ export interface ListRunGraphOptions {
   cursor?: string;
 }
 
+export type TrafficViewKind = "history" | "inspector";
+export type TrafficStatusClass =
+  | "informational"
+  | "success"
+  | "redirect"
+  | "client_error"
+  | "server_error";
+
+export interface ListRunTargetHttpExchangesOptions {
+  method?: string;
+  statusClass?: TrafficStatusClass;
+  limit?: number;
+  cursor?: string;
+}
+
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 
 export interface Approval {

@@ -457,6 +457,19 @@ async def test_service_requires_scope_and_ready_intent_then_saves_artifacts(
             "target_http.request_started",
             "target_http.response_received",
         ]
+        assert events.types[0][2] == {
+            "url_summary": {
+                "scheme": "https",
+                "origin": "https://target.internal",
+                "path_shape": "/…",
+                "path_segment_count": 1,
+            },
+            "url_redacted": True,
+        }
+        assert events.types[1][2] == {
+            "response_recorded": True,
+            "status_code": 200,
+        }
     finally:
         await database.dispose()
 

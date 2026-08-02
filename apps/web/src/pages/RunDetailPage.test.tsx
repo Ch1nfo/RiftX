@@ -12,6 +12,7 @@ import {
 } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import trafficMetadataListFixture from "../../../../tests/fixtures/traffic_metadata_list.json";
 import { api, RiftXAPIError } from "../api/client";
 import type { GraphViewPage, RunAction, RunActionListItem } from "../api/types";
 import { LanguageProvider, languageStorageKey } from "../i18n";
@@ -48,7 +49,13 @@ const mocks = vi.hoisted(() => ({
   eventStreamError: null as Error | null,
   eventStreamStale: false,
   actionUpdateRevision: 0,
+  trafficWorkspaceModuleLoads: 0,
 }));
+
+vi.mock("./RunTrafficWorkspace", async (importOriginal) => {
+  mocks.trafficWorkspaceModuleLoads += 1;
+  return importOriginal<typeof import("./RunTrafficWorkspace")>();
+});
 
 vi.mock("../hooks/useEventStream", () => ({
   useEventStream: () => ({
@@ -521,6 +528,30 @@ function graphPageForAction(
     truncated: false,
     has_more: false,
     next_cursor: null,
+  };
+}
+
+function trafficContracts(
+  runId = "run-1",
+  engagementId = "engagement-1",
+  exchangeId = "exchange-1",
+  origin = "https://run-one.example.test",
+) {
+  const page = structuredClone(trafficMetadataListFixture);
+  const item = page.items[0]!;
+  page.scope.run_id = runId;
+  page.scope.engagement_id = engagementId;
+  item.exchange_id = exchangeId;
+  item.request_id = exchangeId;
+  item.execution_key = `execution:${exchangeId}`;
+  item.lineage.run_id = runId;
+  item.url_summary.origin = origin;
+  return {
+    detail: {
+      scope: structuredClone(page.scope),
+      item: structuredClone(item),
+    },
+    page,
   };
 }
 
@@ -1708,6 +1739,141 @@ describe("RunDetailPage approvals", () => {
     fireEvent.click(screen.getByRole("link", { name: "Open Run 2" }));
     expect(screen.queryByText("OLD RUN DETAIL SECRET")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Context Inspector" })).not.toBeInTheDocument();
+  });
+
+  it("does not load or request the lazy Traffic workspace before its tab is active", () => {
+    const contracts = trafficContracts();
+    const list = vi
+      .spyOn(api, "listRunTargetHttpExchanges")
+      .mockResolvedValue(contracts.page);
+    const get = vi
+      .spyOn(api, "getRunTargetHttpExchange")
+      .mockResolvedValue(contracts.detail);
+
+    renderActionRoute("/runs/run-1");
+
+    expect(mocks.trafficWorkspaceModuleLoads).toBe(0);
+    expect(list).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Target HTTP traffic" })).not.toBeInTheDocument();
+  });
+
+  it("opens a direct Traffic Inspector URL and requests the exact Run-scoped Exchange", async () => {
+    const contracts = trafficContracts();
+    const list = vi
+      .spyOn(api, "listRunTargetHttpExchanges")
+      .mockResolvedValue(contracts.page);
+    const get = vi
+      .spyOn(api, "getRunTargetHttpExchange")
+      .mockResolvedValue(contracts.detail);
+
+    renderActionRoute(
+      "/runs/run-1?traffic_view=inspector&traffic_exchange=exchange-1",
+      { history: true },
+    );
+
+    expect(screen.getByRole("tab", { name: "Traffic" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    const inspector = await screen.findByRole("article", {
+      name: "Selected Exchange metadata",
+    });
+    expect(within(inspector).getByText("https://run-one.example.test /…")).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith(
+      "run-1",
+      { cursor: undefined, limit: 50 },
+      expect.any(AbortSignal),
+    );
+    expect(get).toHaveBeenCalledWith(
+      "run-1",
+      "exchange-1",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("does not issue a detail request for an invalid Traffic Exchange URL identity", async () => {
+    const contracts = trafficContracts();
+    const list = vi
+      .spyOn(api, "listRunTargetHttpExchanges")
+      .mockResolvedValue(contracts.page);
+    const get = vi
+      .spyOn(api, "getRunTargetHttpExchange")
+      .mockResolvedValue(contracts.detail);
+
+    renderActionRoute(
+      "/runs/run-1?traffic_view=inspector&traffic_exchange=%20bad%0Aidentity%20",
+    );
+
+    expect(await screen.findByText("Invalid Exchange identity")).toBeInTheDocument();
+    expect(list).toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("roundtrips Action to Traffic with Back/Forward focus on the active surface", async () => {
+    const item = actionListItem("action-traffic");
+    mocks.actionItems = [item];
+    mocks.actionDetails.set("run-1:action-traffic", actionDetail(item));
+    const contracts = trafficContracts();
+    vi.spyOn(api, "listRunTargetHttpExchanges").mockResolvedValue(contracts.page);
+    vi.spyOn(api, "getRunTargetHttpExchange").mockResolvedValue(contracts.detail);
+    renderActionRoute("/runs/run-1?action=action-traffic", { history: true });
+
+    expect(await screen.findByRole("region", { name: "Context Inspector" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Traffic" }));
+
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(
+      "/runs/run-1?traffic_view=history",
+    );
+    expect(await screen.findByRole("heading", { name: "Target HTTP traffic" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Traffic" })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "History back" }));
+
+    expect(await screen.findByRole("region", { name: "Context Inspector" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Close Context Inspector" })).toHaveFocus(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "History forward" }));
+
+    expect(await screen.findByRole("heading", { name: "Target HTTP traffic" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Traffic" })).toHaveFocus());
+  });
+
+  it("drops Traffic immediately on a plain Run switch and never requests the new Run", async () => {
+    const runOne = trafficContracts(
+      "run-1",
+      "engagement-1",
+      "exchange-run-1",
+      "https://run-one-only.example.test",
+    );
+    const list = vi
+      .spyOn(api, "listRunTargetHttpExchanges")
+      .mockResolvedValue(runOne.page);
+    const get = vi
+      .spyOn(api, "getRunTargetHttpExchange")
+      .mockResolvedValue(runOne.detail);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/runs/run-1?traffic_view=history"]}>
+          <RunNavigationHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("https://run-one-only.example.test /…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Open Run 2" }));
+
+    expect(screen.queryByText("https://run-one-only.example.test /…")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(list.mock.calls.some(([candidateRunId]) => candidateRunId === "run-2")).toBe(false);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("loads and requests the Graph workspace only after its Run detail tab is activated", async () => {

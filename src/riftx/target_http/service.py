@@ -35,6 +35,7 @@ from .models import (
     TargetHttpRunnerStopOutcome,
     TargetHttpSubmission,
 )
+from .redaction import safe_url_metadata
 
 EffectGuard = Callable[[], Awaitable[None]]
 
@@ -204,7 +205,10 @@ class TargetHttpApplicationService:
                     await self._event(
                         submission.run_id,
                         "target_http.request_started",
-                        {"execution_key": request.execution_key, "url": request.url},
+                        {
+                            "url_summary": safe_url_metadata(request.url),
+                            "url_redacted": True,
+                        },
                     )
                     exchange = await self._runner.execute(
                         TargetHttpRunnerRequest(
@@ -245,7 +249,7 @@ class TargetHttpApplicationService:
                         exc.stop_outcome,
                     )
                     raise
-                except Exception as exc:
+                except Exception:
                     _, failed = await self._tool_calls.compare_and_set_status(
                         intent.id,
                         expected={ToolCallStatus.EXECUTING},
@@ -255,10 +259,7 @@ class TargetHttpApplicationService:
                         await self._event(
                             submission.run_id,
                             "target_http.request_failed",
-                            {
-                                "execution_key": request.execution_key,
-                                "error_type": type(exc).__name__,
-                            },
+                            {"failure_recorded": True, "category": "request_failed"},
                         )
                     raise
                 current, completed = await self._tool_calls.compare_and_set_status(
@@ -280,8 +281,7 @@ class TargetHttpApplicationService:
                     submission.run_id,
                     "target_http.response_received",
                     {
-                        "execution_key": request.execution_key,
-                        "request_id": result.request_id,
+                        "response_recorded": True,
                         "status_code": result.status_code,
                     },
                 )
@@ -485,7 +485,7 @@ class TargetHttpApplicationService:
     ) -> None:
         if outcome.tool_call_id != submission.tool_call_id or not outcome.confirmed:
             return
-        current, cancelled = await self._tool_calls.compare_and_set_status(
+        _, cancelled = await self._tool_calls.compare_and_set_status(
             submission.tool_call_id,
             expected={ToolCallStatus.EXECUTING},
             target=ToolCallStatus.CANCELLED,
@@ -495,9 +495,8 @@ class TargetHttpApplicationService:
                 submission.run_id,
                 "target_http.request_cancelled",
                 {
-                    "execution_key": submission.request.execution_key,
-                    "intent_status": current.status.value,
-                    "runner_reason": outcome.reason,
+                    "cancellation_confirmed": True,
+                    "category": "runner_confirmed",
                 },
             )
 

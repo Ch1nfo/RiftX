@@ -125,6 +125,7 @@ async def test_control_plane_owner_reconciler_covers_every_fence_and_stops_clean
         terminal_service=placeholder,  # type: ignore[arg-type]
         terminal_supervisor=terminal_supervisor,
         graph_repository=placeholder,  # type: ignore[arg-type]
+        traffic_repository=placeholder,  # type: ignore[arg-type]
     )
 
     runtime.start_cleanup_reconciler()
@@ -172,6 +173,7 @@ async def test_control_plane_owner_reconciler_recovers_after_list_failure() -> N
         terminal_service=placeholder,  # type: ignore[arg-type]
         terminal_supervisor=terminal_supervisor,
         graph_repository=placeholder,  # type: ignore[arg-type]
+        traffic_repository=placeholder,  # type: ignore[arg-type]
     )
 
     runtime.start_cleanup_reconciler()
@@ -216,6 +218,7 @@ async def test_control_plane_owner_reconciler_keyset_scan_does_not_skip_mutated_
         terminal_service=placeholder,  # type: ignore[arg-type]
         terminal_supervisor=terminal_supervisor,
         graph_repository=placeholder,  # type: ignore[arg-type]
+        traffic_repository=placeholder,  # type: ignore[arg-type]
     )
 
     runtime.start_cleanup_reconciler()

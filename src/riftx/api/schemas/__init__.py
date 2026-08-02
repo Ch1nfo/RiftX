@@ -86,6 +86,11 @@ from .tools import (
     ToolRegistrySummaryResponse,
     ToolUpdateRequest,
 )
+from .traffic import (
+    TrafficExchangeDetail,
+    TrafficExchangeListQuery,
+    TrafficExchangePage,
+)
 
 __all__ = [
     "ApprovalDecisionRequest",
@@ -165,4 +170,7 @@ __all__ = [
     "UpdateMemoryRequest",
     "TerminalCreateRequest",
     "TerminalResponse",
+    "TrafficExchangeDetail",
+    "TrafficExchangeListQuery",
+    "TrafficExchangePage",
 ]

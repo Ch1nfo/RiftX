@@ -58,6 +58,7 @@ from riftx.domain import (
 )
 from riftx.domain.base import utc_now
 
+from .artifact_visibility import artifact_is_not_target_http_sensitive
 from .mappers import (
     apply_approval_to_record,
     apply_execution_to_record,
@@ -110,6 +111,7 @@ from .orm import (
     RunnerCredentialRecord,
     RunRecord,
     RuntimeApprovalRequestRecord,
+    TargetHttpRequestRecord,
     TerminalSessionRecord,
     ToolCallRecord,
 )
@@ -166,8 +168,12 @@ class SQLAlchemyArtifactRepository:
         return artifact
 
     async def get(self, artifact_id: str) -> Artifact | None:
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.id == artifact_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         async with self._session_factory() as session:
-            record = await session.get(ArtifactRecord, artifact_id)
+            record = await session.scalar(statement)
         return artifact_from_record(record) if record is not None else None
 
     async def list(
@@ -183,7 +189,10 @@ class SQLAlchemyArtifactRepository:
         if offset < 0:
             raise ValueError("offset must not be negative")
 
-        statement = select(ArtifactRecord).where(ArtifactRecord.run_id == run_id)
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.run_id == run_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         if execution_id is not None:
             statement = statement.where(ArtifactRecord.execution_id == execution_id)
         statement = (
@@ -194,6 +203,46 @@ class SQLAlchemyArtifactRepository:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [artifact_from_record(record) for record in records]
+
+    async def target_http_sensitive_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]:
+        """Classify Artifact IDs by durable Target HTTP ownership.
+
+        Association is intentionally global rather than Run-scoped. Historical
+        rows did not enforce same-Run ownership, so constraining this lookup by
+        the Event's Run would turn a cross-Run reference into a disclosure.
+        """
+
+        candidates = frozenset(artifact_ids)
+        if not candidates:
+            return frozenset()
+        sensitive: set[str] = set()
+        ordered = tuple(candidates)
+        async with self._session_factory() as session:
+            for start in range(0, len(ordered), 400):
+                batch = ordered[start : start + 400]
+                authoritative = select(ArtifactRecord.id).where(
+                    ArtifactRecord.id.in_(batch),
+                    ~artifact_is_not_target_http_sensitive(),
+                )
+                sensitive.update(await session.scalars(authoritative))
+                statement = select(
+                    TargetHttpRequestRecord.request_artifact_id,
+                    TargetHttpRequestRecord.response_artifact_id,
+                ).where(
+                    or_(
+                        TargetHttpRequestRecord.request_artifact_id.in_(batch),
+                        TargetHttpRequestRecord.response_artifact_id.in_(batch),
+                    )
+                )
+                for request_id, response_id in await session.execute(statement):
+                    if request_id in candidates:
+                        sensitive.add(request_id)
+                    if response_id in candidates:
+                        sensitive.add(response_id)
+        return frozenset(sensitive)
 
 
 class SQLAlchemyEngagementRepository:

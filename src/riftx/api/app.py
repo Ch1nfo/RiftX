@@ -38,6 +38,7 @@ from .routes import (
     security_router,
     terminals_router,
     tools_router,
+    traffic_router,
 )
 from .runtime import APISettings, ControlPlane, build_control_plane
 
@@ -93,6 +94,7 @@ def create_app(
     app.state.local_operator_security = local_operator_security
     app.state.local_object_authorizer = LocalObjectAuthorizer(local_operator_security)
     app.state.graph_cursor_signing_key = secrets.token_bytes(32)
+    app.state.traffic_cursor_signing_key = secrets.token_bytes(32)
     install_error_handlers(app)
     if configured_settings.cors_origins:
         app.add_middleware(
@@ -111,6 +113,7 @@ def create_app(
     app.include_router(executions_router, prefix="/api/v1")
     app.include_router(findings_router, prefix="/api/v1")
     app.include_router(graphs_router, prefix="/api/v1")
+    app.include_router(traffic_router, prefix="/api/v1")
     app.include_router(memories_router, prefix="/api/v1")
     app.include_router(models_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")

@@ -33,6 +33,7 @@ from riftx.application.graphs import (
     GraphViewKind,
 )
 
+from .artifact_visibility import artifact_is_not_target_http_sensitive
 from .orm import (
     AgentSessionRecord,
     ArtifactRecord,
@@ -610,7 +611,10 @@ async def _load_artifacts(
             ArtifactRecord.id.label("artifact_id"),
             ArtifactRecord.execution_id,
         )
-        .where(ArtifactRecord.run_id == scope.run_id)
+        .where(
+            ArtifactRecord.run_id == scope.run_id,
+            artifact_is_not_target_http_sensitive(),
+        )
         .order_by(ArtifactRecord.id)
     )
     bounded = await _bounded_rows(session, statement, limit)

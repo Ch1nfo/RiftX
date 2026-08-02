@@ -4762,6 +4762,417 @@ button:disabled {
     animation: none;
   }
 }
+
+/* Metadata-only Target HTTP workspace. Sensitive body/header capabilities are
+   intentionally absent; every visible value is from the 04A read contract. */
+.run-traffic-workspace {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.traffic-workspace-heading,
+.traffic-panel-heading,
+.traffic-stale-alert,
+.traffic-quality-alert,
+.traffic-integrity-alert,
+.traffic-pagination-alert,
+.traffic-detail-alert {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.traffic-workspace-heading h3,
+.traffic-panel-heading h4 {
+  margin: 4px 0 0;
+  color: var(--text-strong);
+}
+
+.traffic-workspace-heading h3 {
+  font-size: 16px;
+}
+
+.traffic-panel-heading h4 {
+  font-size: 13px;
+}
+
+.traffic-panel-heading > span {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.traffic-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--subtle-fill);
+}
+
+.traffic-view-tabs button {
+  min-height: 40px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.traffic-view-tabs button:last-child {
+  border-right: 0;
+}
+
+.traffic-view-tabs button.active {
+  color: var(--mint-bright);
+  background: var(--mint-soft);
+  box-shadow: inset 0 -2px var(--mint-bright);
+}
+
+.traffic-view-tabs button:focus-visible,
+.traffic-history-list button:focus-visible,
+.traffic-inspector-panel button:focus-visible {
+  outline: 3px solid var(--mint-bright);
+  outline-offset: 2px;
+}
+
+.traffic-boundary-note,
+.traffic-no-sensitive-actions {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid rgba(69, 214, 164, 0.38);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  background: var(--mint-soft);
+  padding: 9px 10px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.traffic-boundary-note svg,
+.traffic-no-sensitive-actions svg,
+.traffic-stale-alert > svg,
+.traffic-quality-alert > svg,
+.traffic-integrity-alert > svg,
+.traffic-pagination-alert > svg,
+.traffic-detail-alert > svg,
+.traffic-item-partial > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.traffic-stale-alert,
+.traffic-quality-alert,
+.traffic-integrity-alert,
+.traffic-pagination-alert,
+.traffic-detail-alert,
+.traffic-item-partial {
+  border: 1px dashed rgba(242, 185, 93, 0.58);
+  border-left-width: 4px;
+  border-radius: 9px;
+  color: var(--warning-text);
+  background: var(--amber-soft);
+  padding: 10px 11px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.traffic-stale-alert > div,
+.traffic-quality-alert > div,
+.traffic-integrity-alert > div,
+.traffic-pagination-alert > div,
+.traffic-detail-alert > div,
+.traffic-item-partial > div {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 3px;
+}
+
+.traffic-quality-alert ul,
+.traffic-integrity-alert ul,
+.traffic-item-partial ul {
+  margin: 3px 0 0;
+  padding-left: 18px;
+}
+
+.traffic-content-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.traffic-history-panel,
+.traffic-inspector-panel {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-bg-soft);
+  padding: 12px;
+}
+
+.traffic-history-list,
+.traffic-redirect-list {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.traffic-history-list {
+  max-height: 620px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.traffic-history-list button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--soft-border);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  background: var(--subtle-fill);
+  padding: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.traffic-history-list button:hover,
+.traffic-history-list button.selected {
+  border-color: rgba(69, 214, 164, 0.55);
+  background: var(--mint-soft);
+}
+
+.traffic-history-summary {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.traffic-history-summary strong,
+.traffic-history-summary small,
+.traffic-history-summary code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.traffic-history-summary strong {
+  color: var(--text-strong);
+  font-size: 10px;
+}
+
+.traffic-history-summary small,
+.traffic-history-summary code {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.traffic-method,
+.traffic-quality {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid var(--soft-border);
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.traffic-method {
+  color: var(--mint-bright);
+  background: var(--mint-soft);
+}
+
+.traffic-quality {
+  color: var(--text-subtle);
+}
+
+.traffic-quality.partial {
+  border-color: rgba(242, 185, 93, 0.55);
+  color: var(--warning-text);
+  background: var(--amber-soft);
+}
+
+.traffic-load-more {
+  width: min(320px, 100%);
+  justify-self: center;
+}
+
+.traffic-inspector {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.traffic-inspector > header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.traffic-inspector > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.traffic-inspector > header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-size: 11px;
+}
+
+.traffic-inspector section {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.traffic-inspector h5 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 11px;
+}
+
+.traffic-fact-list {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+}
+
+.traffic-fact-list > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(110px, 0.55fr) minmax(0, 1fr);
+  gap: 10px;
+  border-top: 1px solid var(--soft-border);
+  padding: 7px 2px;
+}
+
+.traffic-fact-list dt,
+.traffic-fact-list dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.traffic-fact-list dd {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.traffic-fact-list code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.traffic-item-partial {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.traffic-redirect-list li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--soft-border);
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--text-secondary);
+}
+
+.traffic-redirect-list span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  font-size: 9px;
+}
+
+.traffic-redirect-list code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1080px) {
+  .traffic-content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .run-traffic-workspace.view-inspector .traffic-history-panel {
+    order: 2;
+  }
+
+  .run-traffic-workspace.view-inspector .traffic-inspector-panel {
+    order: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .traffic-workspace-heading,
+  .traffic-stale-alert,
+  .traffic-quality-alert,
+  .traffic-integrity-alert,
+  .traffic-pagination-alert {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .traffic-refresh-button,
+  .traffic-stale-alert > .secondary-button,
+  .traffic-integrity-alert > .secondary-button,
+  .traffic-pagination-alert > .secondary-button {
+    width: 100%;
+  }
+
+  .traffic-history-list button {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .traffic-history-list .traffic-quality {
+    display: none;
+  }
+
+  .traffic-fact-list > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .traffic-fact-list dd {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-traffic-workspace .spin {
+    animation: none;
+  }
+}
 /* The local profile keeps its credential in memory and gates all API-backed UI. */
 .local-operator-gate {
   min-height: 100vh;

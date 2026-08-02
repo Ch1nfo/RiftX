@@ -11,6 +11,10 @@ from typing import Protocol
 from pydantic import AwareDatetime, BaseModel, Field
 
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.event_projection import (
+    redact_sensitive_event,
+    target_http_artifact_candidates,
+)
 from riftx.application.ports import (
     ArtifactRepository,
     FindingRepository,
@@ -36,7 +40,16 @@ _REPORT_EVENT_FIELDS: Mapping[str, frozenset[str]] = {
     "finding.created": frozenset({"finding_id", "agent_step_id", "severity", "status"}),
     "finding.updated": frozenset({"finding_id", "severity", "status"}),
     "artifact.registered": frozenset(
-        {"artifact_id", "execution_id", "name", "mime_type", "sha256", "size"}
+        {
+            "artifact_id",
+            "execution_id",
+            "name",
+            "mime_type",
+            "sha256",
+            "size",
+            "artifact_class",
+            "content_restricted",
+        }
     ),
     "tool.approval_required": frozenset(
         {"approval_id", "tool_call_id", "tool_name", "agent_step_id"}
@@ -265,7 +278,17 @@ class ReportApplicationService:
         report_artifact_ids = {item.artifact_id for item in reports}
         all_artifacts = list(await self._artifact_repository.list(target.id, limit=1000))
         artifacts = [item for item in all_artifacts if item.id not in report_artifact_ids]
-        events = await self._all_events(target.id)
+        raw_events = await self._all_events(target.id)
+        sensitive_artifact_ids = await self._artifact_repository.target_http_sensitive_ids(
+            target_http_artifact_candidates(raw_events)
+        )
+        events = [
+            redact_sensitive_event(
+                event,
+                sensitive_artifact_ids=sensitive_artifact_ids,
+            )
+            for event in raw_events
+        ]
         artifact_ids = {item.id for item in all_artifacts}
         report_findings = [
             _finding_for_report(item, artifact_ids=artifact_ids) for item in findings

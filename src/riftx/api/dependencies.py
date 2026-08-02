@@ -21,8 +21,10 @@ from riftx.application.services import (
     RunnerControlService,
     TerminalApplicationService,
     ToolApplicationService,
+    TrafficMetadataApplicationService,
 )
 from riftx.application.services.graphs import GraphApplicationService
+from riftx.application.traffic import TrafficMetadataCapability
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
@@ -82,6 +84,43 @@ class _GraphObjectAuthorizer:
             )
 
 
+class _TrafficObjectAuthorizer:
+    """Map the typed traffic capability onto Profile A's server READ grant."""
+
+    def __init__(self, delegate: LocalObjectAuthorizer) -> None:
+        self.delegate = delegate
+
+    def require_traffic_metadata(
+        self,
+        principal: LocalPrincipal,
+        *,
+        parent_run_id: str,
+        resource_run_id: str | None,
+        parent_engagement_id: str,
+        resource_engagement_id: str | None,
+        capability: TrafficMetadataCapability,
+    ) -> None:
+        if capability is not TrafficMetadataCapability.READ:
+            raise ResourceNotAccessibleError(
+                "resource_not_accessible",
+                "The requested resource was not found",
+            )
+        self.delegate.require_child_run(
+            principal,
+            parent_run_id=parent_run_id,
+            resource_run_id=resource_run_id,
+            capability=OperatorCapability.READ,
+        )
+        if resource_engagement_id is None or not secrets.compare_digest(
+            parent_engagement_id,
+            resource_engagement_id,
+        ):
+            raise ResourceNotAccessibleError(
+                "resource_not_accessible",
+                "The requested resource was not found",
+            )
+
+
 def get_control_plane(request: Request) -> object:
     return request.app.state.control_plane
 
@@ -110,6 +149,22 @@ def get_graph_service(request: Request) -> GraphApplicationService:
         )
         request.app.state.graph_object_authorizer = authorizer
         request.app.state.graph_service = service
+    return service
+
+
+def get_traffic_metadata_service(request: Request) -> TrafficMetadataApplicationService:
+    """Build the read service without injecting Runner or Artifact body services."""
+
+    service = getattr(request.app.state, "traffic_metadata_service", None)
+    if service is None:
+        authorizer = _TrafficObjectAuthorizer(request.app.state.local_object_authorizer)
+        service = TrafficMetadataApplicationService(
+            request.app.state.control_plane.traffic_repository,
+            authorizer=authorizer,
+            cursor_signing_key=request.app.state.traffic_cursor_signing_key,
+        )
+        request.app.state.traffic_object_authorizer = authorizer
+        request.app.state.traffic_metadata_service = service
     return service
 
 
@@ -187,6 +242,10 @@ def authorize_admin(
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 ActionServiceDependency = Annotated[ActionApplicationService, Depends(get_action_service)]
 GraphServiceDependency = Annotated[GraphApplicationService, Depends(get_graph_service)]
+TrafficMetadataServiceDependency = Annotated[
+    TrafficMetadataApplicationService,
+    Depends(get_traffic_metadata_service),
+]
 EventServiceDependency = Annotated[EventApplicationService, Depends(get_event_service)]
 ExecutionServiceDependency = Annotated[ExecutionApplicationService, Depends(get_execution_service)]
 FindingServiceDependency = Annotated[FindingApplicationService, Depends(get_finding_service)]
