@@ -55,7 +55,11 @@ export function ErrorState({ error }: { error: Error }) {
                               row.observedStatus ? ` (${row.observedStatus})` : ""
                             }`}
                       </td>
-                      <td>{row.confirmed ? "—" : (row.failure ?? "—")}</td>
+                      <td>
+                        {row.confirmed
+                          ? t("Not applicable")
+                          : (row.failure ?? t("Reason unavailable"))}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

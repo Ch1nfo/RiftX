@@ -12,8 +12,8 @@ export type Theme = "dark" | "light";
 
 const STORAGE_KEY = "riftx.theme";
 const THEME_COLORS: Record<Theme, string> = {
-  dark: "#07110f",
-  light: "#f4f8f6",
+  dark: "#060b1c",
+  light: "#eaf3ff",
 };
 
 function readStoredTheme(): Theme {

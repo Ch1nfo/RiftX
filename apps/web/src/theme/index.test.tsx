@@ -57,7 +57,7 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.style.colorScheme).toBe("dark");
     expect(document.querySelector('meta[name="theme-color"]')).toHaveAttribute(
       "content",
-      "#07110f",
+      "#060b1c",
     );
   });
 
@@ -76,7 +76,7 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.style.colorScheme).toBe("light");
     expect(document.querySelector('meta[name="theme-color"]')).toHaveAttribute(
       "content",
-      "#f4f8f6",
+      "#eaf3ff",
     );
   });
 

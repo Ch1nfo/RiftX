@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { LanguageProvider } from "../i18n";
 import { ThemeProvider, themeStorageKey } from "../theme";
@@ -29,6 +29,8 @@ describe("Layout theme control", () => {
     installLocalStorage();
   });
 
+  afterEach(cleanup);
+
   it("switches between dark and light modes from the top bar", () => {
     render(
       <ThemeProvider initialTheme="dark">
@@ -50,5 +52,25 @@ describe("Layout theme control", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(window.localStorage.getItem(themeStorageKey)).toBe("light");
     expect(screen.getByRole("button", { name: "Switch to dark mode" })).toBeInTheDocument();
+  });
+
+  it("translates the current workspace accessibility label", () => {
+    render(
+      <ThemeProvider initialTheme="dark">
+        <LanguageProvider>
+          <MemoryRouter>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route index element={<div>Dashboard content</div>} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </LanguageProvider>
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch language" }));
+
+    expect(screen.getByLabelText("当前工作区")).toBeInTheDocument();
   });
 });

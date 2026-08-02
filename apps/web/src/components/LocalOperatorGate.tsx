@@ -7,6 +7,7 @@ import {
   setLocalOperatorToken,
 } from "../api/client";
 import { useI18n } from "../i18n";
+import { PixelIcon } from "./PixelIcon";
 
 export function LocalOperatorGate({ children }: { children: ReactNode }) {
   const { t } = useI18n();
@@ -43,7 +44,13 @@ export function LocalOperatorGate({ children }: { children: ReactNode }) {
   return (
     <main className="local-operator-gate">
       <form className="local-operator-card" onSubmit={(event) => void submit(event)}>
-        <p className="eyebrow">{t("Local trust profile")}</p>
+        <div className="gate-emblem" aria-hidden="true">
+          <span>R</span><span>X</span>
+        </div>
+        <div className="mission-path gate-path">
+          <PixelIcon name="lock" />
+          <span>RIFTX / {t("Local trust profile")}</span>
+        </div>
         <h1>{t("Unlock RiftX")}</h1>
         <p>
           {t("Enter RIFTX_ADMIN_TOKEN. It stays in this page's memory and is never stored in the browser.")}

@@ -540,6 +540,15 @@ export function RunDetailPage() {
   if (!run.data) return null;
 
   const isFinal = ["completed", "failed", "cancelled"].includes(run.data.status);
+  const canPause = ![
+    "paused",
+    "cancelling",
+    "completing",
+    "completed",
+    "failed",
+    "cancelled",
+  ].includes(run.data.status);
+  const canResume = ["pausing", "paused"].includes(run.data.status);
   const anyControlPending =
     controls.pause.isPending ||
     controls.resume.isPending ||
@@ -737,15 +746,29 @@ export function RunDetailPage() {
         <div className="control-cluster">
           <button
             className="secondary-button"
-            disabled={isFinal || anyControlPending}
+            disabled={!canPause || anyControlPending}
             onClick={() => controls.pause.mutate()}
+            title={
+              canPause
+                ? undefined
+                : t("Pause is unavailable while the Run is {status}.", {
+                    status: run.data.status,
+                  })
+            }
           >
             <CirclePause size={16} /> {t("Pause")}
           </button>
           <button
             className="secondary-button"
-            disabled={isFinal || anyControlPending}
+            disabled={!canResume || anyControlPending}
             onClick={() => controls.resume.mutate()}
+            title={
+              canResume
+                ? undefined
+                : t("Resume is unavailable while the Run is {status}.", {
+                    status: run.data.status,
+                  })
+            }
           >
             <Play size={16} /> {t("Resume")}
           </button>
@@ -753,8 +776,12 @@ export function RunDetailPage() {
             className="danger-button"
             disabled={anyControlPending}
             onClick={() => controls.emergencyStop.mutate()}
-            title={t("Emergency stop — cancel the entire Run")}
-            aria-label={t("Emergency stop — cancel the entire Run")}
+            title={
+              isFinal
+                ? t("Emergency cleanup: stop any remaining effects for this terminal Run.")
+                : t("Emergency stop: cancel the entire Run")
+            }
+            aria-label={t("Emergency stop: cancel the entire Run")}
           >
             <Ban size={16} /> {t("Emergency stop")}
           </button>
@@ -1921,11 +1948,11 @@ function Approvals({
               </div>
               <div>
                 <dt>{t("Working directory")}</dt>
-                <dd><code>{approval.cwd || "—"}</code></dd>
+                <dd><code>{approval.cwd || t("Unavailable")}</code></dd>
               </div>
               <div>
                 <dt>{t("Target")}</dt>
-                <dd>{approval.target_summary || "—"}</dd>
+                <dd>{approval.target_summary || t("Unavailable")}</dd>
               </div>
               <div>
                 <dt>{t("Environment changes")}</dt>
@@ -2172,7 +2199,7 @@ function eventTitle(eventType: string) {
 }
 
 function formatSequenceRange(start: number, end: number) {
-  return start === end ? `#${start}` : `#${start}–#${end}`;
+  return start === end ? `#${start}` : `#${start} - #${end}`;
 }
 
 function formatTimestamp(value: string, language: Language = "en") {
