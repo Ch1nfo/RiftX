@@ -1,7 +1,3 @@
-<div align="right">
-  <a href="./README.md">English</a> · <strong>简体中文</strong>
-</div>
-
 <div align="center">
 
 # RiftX
@@ -27,6 +23,10 @@ RiftX 将操作员定义的目标、范围、审批、执行、证据与停止�
   <img alt="TypeScript 7" src="https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white">
   <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white">
   <img alt="pnpm 10" src="https://img.shields.io/badge/pnpm-10-F69220?style=flat-square&logo=pnpm&logoColor=white">
+</p>
+
+<p>
+  <a href="./README.md">English</a> · <strong>中文</strong>
 </p>
 
 </div>

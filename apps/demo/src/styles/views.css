@@ -1278,20 +1278,28 @@
   font-size: 7px;
 }
 
-.graph-edge {
+.graph-edges {
   position: absolute;
+  inset: 0;
   z-index: 1;
-  height: 2px;
-  transform-origin: left center;
-  background: var(--line);
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.graph-edge {
+  stroke: var(--line);
+  stroke-width: 2px;
+  stroke-linecap: butt;
+  shape-rendering: geometricPrecision;
 }
 
 .graph-view-evidence .graph-edge {
-  background: color-mix(in srgb, var(--cyan) 70%, var(--line));
+  stroke: color-mix(in srgb, var(--cyan) 70%, var(--line));
 }
 
 .graph-view-operation .graph-edge {
-  background: color-mix(in srgb, var(--gold) 68%, var(--line));
+  stroke: color-mix(in srgb, var(--gold) 68%, var(--line));
 }
 
 .graph-node {
@@ -2689,7 +2697,7 @@
     padding: 42px 10px 10px;
   }
 
-  .graph-edge {
+  .graph-edges {
     display: none;
   }
 

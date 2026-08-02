@@ -1,7 +1,3 @@
-<div align="right">
-  <strong>English</strong> · <a href="./README_ZH.md">简体中文</a>
-</div>
-
 <div align="center">
 
 # RiftX
@@ -27,6 +23,10 @@ decisions into one observable and recoverable control protocol.
   <img alt="TypeScript 7" src="https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white">
   <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white">
   <img alt="pnpm 10" src="https://img.shields.io/badge/pnpm-10-F69220?style=flat-square&logo=pnpm&logoColor=white">
+</p>
+
+<p>
+  <strong>English</strong> · <a href="./README_ZH.md">中文</a>
 </p>
 
 </div>
