@@ -361,6 +361,14 @@ running -> pausing -> paused -> running
 
 Audit 生命周期是产品投影；Run 仍是底层控制状态。映射必须由一个服务集中维护，不能由 UI 推断。即使错误发生在早期，进入 `failed/cancelled` 前也必须执行第 14.6 节 cleanup/stop audit，并对已产生事实走 partial terminal core seal/报告/manifest；若停止证明不完整则保持 `failing/cancelling/cleaning` 可控制非终态，不能直达失败终态。
 
+`AuditScan.terminal_outcome` 是独立于 lifecycle/publication 的持久判定，固定为
+`complete | partial | failed | cancelled`。正常分析只能在 `validate_closure ->
+finalizing` 时选择 complete/partial；进入 cancelling/failing 分别原子冻结
+cancelled/failed。该值在 cleaning、core seal、报告失败与发布重试期间保持不变，恢复时不得
+依据当前 lifecycle 重新猜测。Closure 只能在 `cleaning/cleanup` 中、所有效果停止证明肯定后
+记录；一经记录不可改写。停止证明前发生的 integrity/security 失败可把尚未记录 Closure 的
+complete/partial 单调升级为 failed，cancelled 不得降级成 failed。
+
 ### 6.2 Audit Phase
 
 ~~~text
@@ -421,7 +429,8 @@ new -> normalized -> validating
 
 ### 6.5 AuditCapabilityMatrix
 
-Preflight 生成、Start 冻结版本化 capability matrix，避免各 Phase 按当前环境自由降级：
+Preflight 生成、Start 冻结版本化 capability matrix，避免各 Phase 按当前环境自由降级。
+v1 schema 为 `riftx.audit-capability-matrix/v1`，最多 512 entries：
 
 ~~~text
 phase
@@ -431,19 +440,24 @@ scope/language_tier
 provider/node/backend
 min_version_and_digest
 proof_kind
-missing_outcome
+missing_outcome.start: reject_start | continue_without_claim | not_applicable
+missing_outcome.runtime: partial_capability | failed | continue_without_claim | not_applicable
 reason_code
 matrix_schema_version
 ~~~
 
 规范规则：
 
-- SourceIngest/SnapshotStore/Closure/CoreSeal 是所有 Audit required；
+- SourceIngest/AnalysisBackend/SnapshotStore/Closure/CoreSeal 是所有 Audit required；
 - applicable deterministic Detector/parser 由语言 tier、Scope 和 rulepack 冻结，unsupported 文件按声明的 Tier C/Unsupported 处理，不能运行中假装 not_applicable；
 - hybrid 的 model adapter、typed output、ModelDataEgress/local transport、Threat/Hunt/Skeptic/Proof required；deterministic profile 中这些才是 not_applicable；
 - Deep 还要求 hybrid、Child Workflow、minimum visits/Epoch/budget；缺一项直接拒绝 Start，不降 Standard；
 - Diff 要求 sealed base/head、Diff mapper/Comparator 和成对 Closure；缺一项拒绝 Start；
 - dynamic policy 选中的 Sandbox/Approval/Egress capability required；`static_only` 时 Build/Test/PoC not_applicable；
+- required 在 Start 缺失必须 reject_start，运行中缺失只能按合同选择 partial_capability 或 failed；optional 的两个时点都只能 continue_without_claim，not_applicable 的两个时点都必须 not_applicable；
+- SourceIngest row 必须绑定冻结的 source node、ingest backend digest 和 prepare proof；AnalysisBackend row 必须绑定 selected analysis node、backend ID、backend digest 和 analysis prepare proof；Detector/parser、hybrid execution 与选中的 dynamic validation row 必须绑定同一 selected analysis node/backend 及各自组件 version/digest；
+- mode/profile/policy 声明为 not_applicable 的 capability 不能被 scoped row 重新启用；全局 required 的 scoped row 不能降级，也不能替换 provider/node/backend、version/digest、proof 或 missing outcome；
+- 每个已知 capability（包括 Detector/parser scoped row）只能出现在规定 Phase，不能依赖 specificity resolver 改换执行身份；
 - `optional` 只能表示合同明确不作能力声明的增强项，不能用于隐藏 GA required；所有 Policy exclusion 在 Review 可见。
 
 Start 重新验证 proof/digest；模式定义能力已缺失时返回 `audit_capability_unavailable`。运行中 required capability 暂时丢失按 Closure Policy 为 partial_capability，identity/integrity mismatch 为 failed；不得选择另一个 parser/model/backend 静默继续。Matrix、实际 proof、deviation Decision 和 missing reason 进入 core seal、Coverage、API/UI 报告。
@@ -468,6 +482,14 @@ Start 重新验证 proof/digest；模式定义能力已缺失时返回 `audit_ca
 | completed / completed_partial | completed | report_failed 也不重开 Run |
 | failed | failed | 仅可重试 seal/report/package |
 | cancelled | cancelled | 仅可读/导出或重试发布链 |
+
+进入 terminal lifecycle 前，publication_status 必须已是 `published` 或明确的
+`seal_failed/report_failed/package_failed`；活跃 sealing/reporting/packaging 不能提前投影终态。
+终态发布重试不重开 Run 或分析 lifecycle：failure status 只切回对应 publication phase，复用同一
+Closure/core-sealed facts。complete outcome 的发布失败投影为 completed_partial，重试成功后才可
+投影回 completed；partial/failed/cancelled outcome 即使发布成功也保持各自原 terminal lifecycle。
+首次 distribution revision 必须与 published 状态、initial/latest revision 和
+publication_finished_at 原子出现，不能在活跃 publication state 预填。
 
 code_audit 不使用 Run `waiting_user/ready/compacting`。Run 进入 terminal 后永不为重建报告而重开；Audit 的 `analysis_finished_at`、`publication_finished_at` 与 Run `finished_at` 分开。任何映射不在表内返回 `audit_run_state_conflict` 并由 reconciler 保持较安全状态，不能单边推进。
 
@@ -974,12 +996,35 @@ provider_display_name
 execution_locality
 retention/training_disclosure
 allowed_scope_classes
+allowed_remote_origins
 max_bytes_per_call
 max_bytes_per_audit
 redaction_policy_version
+redaction_policy_digest
+operator_consent_requirement_digest
 operator_consent_at
 policy_digest
 ~~~
+
+`retention/training_disclosure` 不是自由文本或任意 canonical document；v1 使用专用 strict
+schema `riftx.model-retention-training-disclosure/v1`：
+
+~~~text
+data_residency_regions: 1..32 个 canonical region token，禁止 unknown/undisclosed/unspecified
+retention_days: 0..3650
+training_usage: not_used_for_training | may_be_used_for_training
+provider_terms_version
+provider_terms_digest
+~~~
+
+Model egress v1 wire schema 为 `riftx.model-data-egress/v1`。endpoint origin 集使用
+canonical HTTPS origin 并计算独立 domain digest；policy_digest 覆盖上述全部冻结字段。
+`operator_consent_requirement_digest` 由除 consent 时间、该 digest 自身和 policy_digest 以外的
+所有 egress 风险字段，以 `riftx.model-egress-consent-requirement/v1` domain-separated SHA-256
+确定性计算；调用方提供的值必须恒等。`operator_consent_at` 记录 Review 披露确认；AUD-103
+仍需把实际 `start_request_id + reviewed_contract_digest` 同意保存为独立 Start 事实，不能在
+Start 后回写合同形成循环 digest。任意 schema、未知驻留/保留/训练披露或 consent digest
+mismatch 都必须 fail-closed。
 
 默认 profile 为 deterministic；`local_only` 只允许服务端标记并验证为本地受控 origin 的模型。远程 profile 必须在 Review 明示 provider、base origin、数据驻留/保留/训练披露、最大外发字节和风险，由 Operator 对该 contract digest 显式同意；未知披露、origin 变化或 proxy 重定向一律阻止 Start。RiftX 不因 Provider 宣称“零保留”而跳过技术控制。
 
@@ -1271,6 +1316,14 @@ repository_identity_digest 由规范化 Git identity 与操作员确认信息生
 
 Audit 开始后不能只剩几个 digest。`audit_contracts` 必须保存有大小上限、版本化 canonical JSON 及其 digest，至少冻结规范化 source target（绝对路径作为敏感字段，不进 Event/API）、base/head、Scope/capture policy、analysis profile、Detector/rulepack/parser 集、模型 profile 与 ModelDataEgressPolicy、ValidationPolicy、预算、选定 node/backend、环境能力要求和所有 schema version：
 
+v1 使用 `riftx.audit-contract/v1`，canonical UTF-8 JSON 上限 256 KiB；内嵌
+versioned policy document 使用 `riftx.versioned-policy-document/v1`、单文档上限 64 KiB，
+ValidationPolicy document 还必须使用 `riftx.validation-policy/v1` 并显式携带与枚举一致的
+`validation_policy`。canonical parser 拒绝 duplicate key、非 canonical encoding、未知字段，
+并限制 depth 64、总节点 10,000、单 key 1 KiB UTF-8、单 string 64 KiB UTF-8。
+Contract、SourceTarget、Budget、CapabilityMatrix、Policy document、ModelDataEgressPolicy
+分别使用带 schema/domain separator 的 SHA-256，禁止跨对象类型复用裸 payload digest。
+
 ~~~text
 contract_id
 audit_id
@@ -1287,6 +1340,27 @@ snapshot_hydration_policy_digest
 created_at
 sealed_at
 ~~~
+
+canonical contract 中的 `AuditExecutionSelection` 至少冻结：
+
+~~~text
+source_node_id
+source_ingest_backend_id/digest
+source_prepare_proof_digest
+selected_node_id
+required_backend_id
+analysis_backend_digest
+analysis_prepare_proof_digest
+analysis_image_digest
+analysis_policy_digest
+snapshot_hydration_policy_digest
+selection_policy_version
+eligible_candidates_digest
+~~~
+
+CapabilityMatrix 的 SourceIngest/AnalysisBackend rows 是这些字段的交叉证明，不允许形成两套
+互相冲突的 backend 身份。AuditContractRecord 的冗余查询列只是索引/快速校验；canonical
+contract 始终是完整恢复源，每个冗余值都必须与其重新解析结果恒等。
 
 Worker 重启只从该记录恢复，不读取当前配置来“补全”旧合同。AuditScan 保存 `contract_id + contract_digest` FK；两者不匹配必须 fail-closed。Preflight plan 的 token hash、expiry、reserved/consumed audit、content digest 与 `client_request_id` 使用独立列和唯一约束，不得只存在内存。
 
@@ -1306,6 +1380,9 @@ mode
 analysis_profile: deterministic | hybrid
 lifecycle_status
 current_phase
+terminal_outcome: complete | partial | failed | cancelled（分析期间可空）
+cleanup_proof_digest（cleanup convergence 后可填）
+run_terminal_status: completed | failed | cancelled（与 cleanup proof 原子记录）
 closure_status（可选）
 publication_status: not_started | sealing_core | report_pending | reporting | packaging | published | seal_failed | report_failed | package_failed
 core_seal_root（可选）
@@ -1330,7 +1407,10 @@ sealed_at
 
 - run_id 唯一；
 - run.kind 必须为 code_audit；
-- `draft/queued/preflighting/snapshotting` 允许 snapshot_id 为空；Snapshot seal 与 FK 更新原子提交，`running` 及后续生命周期 DB CHECK 要求 snapshot_id 非空；
+- `draft/queued/preflighting/snapshotting` 允许 snapshot_id 为空；Snapshot seal 与 FK 更新原子提交，running/finalizing 以及 outcome=complete/partial 要求 snapshot_id 非空；Start 前或 Snapshot 失败后的 failed/cancelled partial-facts seal 是明确例外，可以没有 Snapshot；
+- Diff 只由 `AuditMode.DIFF` 表示，head/base Snapshot 必须原子绑定、同时存在且不同；非 Diff 禁止 base_snapshot_id；
+- `current_phase=map_scope..validate_closure` 时，即使 lifecycle 已进入 failing/cancelling，也必须有 started_at 和 sealed Snapshot，Diff 还必须有 base Snapshot；只有 authorize_and_freeze/Snapshot 失败等真正早期路径可无 Snapshot；
+- cleanup_proof_digest 与 run_terminal_status 必须原子出现，并按 terminal_outcome 映射为 complete/partial→Run completed、failed→Run failed、cancelled→Run cancelled；两者未记录时禁止产生 Closure 或进入 sealing_core，一经记录不可替换；
 - publication_status 只能由 AuditRunStateProjector/Publisher 更新；reporting 以后要求 core_seal_root，published 要求同 Audit 的 latest revision FK，revision 只能前进不能覆盖；
 - project、snapshot、base 和 baseline 必须同一对象授权域；
 - sealed 后只允许追加 Triage、Alias、Validation Supplement 和 Retest 关系，不允许改写扫描结论。
@@ -1854,6 +1934,13 @@ Fix 同样只产生新 plan/patch Artifact；Retest 对 patched bytes 创建第 
   "mode": "standard"
 }
 ~~~
+
+`SourceTargetKind` v1 只包含 `revision | working_tree`；Diff 不增加第三种 target kind，
+只由 `AuditMode.DIFF` 表示。Diff 必须同时冻结不同的 base/head revision，非 Diff 禁止
+base_revision；revision target 禁止 include_untracked。repository_path 必须是 node-local
+绝对 canonical path：POSIX 禁止 dot segment、重复 separator 和非 root 尾 `/`；Windows v1
+只接受大写 drive + `/`，或 lowercase server 的 `//server/share/...` UNC 形式，不接受反斜线、
+重复 separator、尾 separator 或 home expansion。原路径仍是敏感合同字段，不进入 Event/API。
 
 绝对路径是 node-local，不能在未选 Node 时解释。Operator 必须指定 `source_execution_target`，或先调用服务端确定性 eligible-node selection 并把结果放入请求。Control Plane 根据 operator-approved Node/source-root inventory 授权；Source Runner 在打开前再次 realpath/dirfd 校验自己的 allowed roots，双方任一拒绝即失败。禁止仅信 Runner 自报 capability。
 
@@ -2627,6 +2714,27 @@ AuditBudget 至少控制：
 - Candidate/Signal 数；
 -动态验证次数；
 - Artifact 输出字节。
+
+`riftx.audit-budget/v1` 的 AUD-101 hard caps 是 wire contract，不是可由部署配置放大的软默认：
+
+| 字段 | v1 范围 |
+| --- | --- |
+| max_wall_seconds | 1..7,200 |
+| max_detector_jobs | 1..4,096 |
+| max_worker_jobs | 1..64 |
+| max_epochs | 1..8 |
+| max_model_calls | 0..100 |
+| max_input_tokens | 0..2,000,000 |
+| max_output_tokens | 0..200,000 |
+| max_read_bytes | 1..2,147,483,648 |
+| max_candidates | 1..1,000 |
+| max_signals | 1..16,000 |
+| max_dynamic_validations | 0..1,000 |
+| max_artifact_output_bytes | 1..268,435,456 |
+
+deterministic profile 的 model calls/input/output token 必须为 0；hybrid 三者都必须非 0。
+static_only 的 dynamic validations 必须为 0，任一 isolated validation policy 必须非 0。
+改变任一预算维度都必须改变 budget digest。
 
 Preflight/Scope Planner 必须先计算 `MinimumFeasibleBudget`，不能接受结构上不可能满足 Coverage 的默认值：
 

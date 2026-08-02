@@ -26,15 +26,15 @@
 ## Current Wave
 
 - Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-101 — Audit domain`
-- Next dependency: `AUD-100` is complete; `AUD-101` is unblocked.
+- Current task: `AUD-102 — ORM and repositories`
+- Next dependency: `AUD-101` is complete; `AUD-102` is unblocked.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 complete; AUD-101 is the current unblocked task |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 and AUD-101 complete; AUD-102 is the current unblocked task |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -60,7 +60,7 @@
 | Task | Status |
 | --- | --- |
 | AUD-100 RunKind | completed |
-| AUD-101 Audit domain | pending |
+| AUD-101 Audit domain | completed |
 | AUD-102 ORM and repositories | pending |
 | AUD-103 AuditApplicationService | pending |
 | AUD-104 API skeleton and policy | pending |
@@ -446,7 +446,7 @@
   - Third-party expressive material: none; the implementation and fixtures are
     RiftX-owned and use SQLAlchemy, Alembic, FastAPI, SQLite, and TypeScript contracts.
   - Production Code Audit Agent instructions: not applicable for AUD-100.
-- Commit: Introducing commit; hash will be backfilled by the AUD-101 ledger update.
+- Commit: `2b052fc7` (`feat(domain): add immutable Run kinds`).
 - Known limitations:
   - `code_audit` Run creation remains internal-only until AUD-101-AUD-103 add the
     Audit domain, persistence UoW, and admission service.
@@ -455,7 +455,109 @@
   - SQLite batch migration requires a maintenance window and old/new API writers must
     not overlap. PostgreSQL offline SQL is compile-checked, but RiftX does not claim
     PostgreSQL runtime support without a real database CI matrix and lock analysis.
-- Next unblocked task: AUD-101.
+- Next unblocked task: AUD-102.
+
+### AUD-101 — Audit Domain
+
+- Status: completed.
+- Scope delivered:
+  - Added `src/riftx/domain/audit.py` with strict, frozen, infrastructure-independent
+    Code Audit value objects and the `AuditScan` aggregate.
+  - Added `src/riftx/domain/code_finding.py` with only the §6.3 Candidate wire enum
+    and pure transition allowlist; Finding identity, occurrence, evidence, reducer,
+    triage, and baseline semantics remain deferred to M5.
+  - Exported the new public domain contract from `src/riftx/domain/__init__.py`.
+  - Added the exhaustive AUD-101 test matrix in
+    `tests/unit/domain/test_audit_domain.py`.
+  - Updated the authoritative specification with the v1 wire schemas, hard bounds,
+    lifecycle/cleanup proof, capability binding, egress disclosure, and early
+    no-Snapshot decisions frozen by this task.
+- Frozen v1 contract decisions:
+  - SourceTargetKind is `revision | working_tree`; Diff exists only as AuditMode and
+    atomically binds distinct base/head identities. POSIX, Windows drive, and UNC
+    paths use one fail-closed canonical syntax.
+  - AuditContract is `riftx.audit-contract/v1`, bounded to 256 KiB canonical UTF-8
+    JSON. Policy documents are bounded to 64 KiB; CapabilityMatrix is bounded to
+    512 rows. Duplicate keys, non-canonical bytes, excessive depth/node/key/string
+    shapes, unknown fields, and redundant-column/digest mismatch are rejected.
+  - AuditBudget v1 freezes twelve bounded dimensions. Static/dynamic and
+    deterministic/hybrid policy-budget combinations are cross-validated.
+  - Capability missing outcomes are separate Start/runtime enums. Global required
+    and scoped rows cannot downgrade or replace execution bindings. Source and
+    analysis backend prepare proofs, Detector/parser components, hybrid execution,
+    and selected dynamic validation all bind the frozen execution selection.
+  - Model egress uses strict local/remote locality, canonical origin digests, typed
+    `riftx.model-retention-training-disclosure/v1`, bounded scope/byte policy, and a
+    deterministic consent-requirement digest. Arbitrary or unknown disclosure
+    schemas fail closed.
+  - `terminal_outcome` survives cleanup and publication. Analysis-phase failure or
+    cancellation still requires Start/Snapshot facts. Closure/core seal require an
+    immutable cleanup proof plus a matching terminal Run status. Early pre-analysis
+    failed/cancelled partial-facts publication may intentionally have no Snapshot.
+  - Terminal publication retry changes only seal/report/package state; it never
+    reopens analysis or Run lifecycle, rewrites Closure/core facts, or pre-fills a
+    distribution revision before atomic publication.
+- Schema/migration impact:
+  - None. AUD-101 defines the canonical domain/wire contract only. AUD-102 owns the
+    ORM, migration, mapper, CAS, repository, and corrupt-row recovery implementation.
+- Security boundary impact:
+  - Models use strict Pydantic input, `extra=forbid`, timezone-aware timestamps,
+    immutable tuples/models, and reject the unvalidated `model_copy(update=...)`
+    escape hatch. The deprecated Pydantic `copy()` API is disabled entirely because
+    its update/include/exclude paths bypass model validation.
+  - Aggregate binding boundaries revalidate even already-typed instances, so a caller
+    cannot use Pydantic `model_construct()` to inject a forged AuditScan lifecycle or
+    replace canonical contract JSON while retaining the original digests.
+  - Contract, SourceTarget, Budget, CapabilityMatrix, versioned policy, model-egress
+    policy, and consent requirement use distinct SHA-256 domain separators.
+  - Lifecycle and phase are cross-validated on deserialization as well as command
+    transitions; publication cannot project terminal before a success/failure fact.
+  - Absolute source paths remain sensitive (`repr=False`) and are not exposed by
+    validation errors. Runtime authorization/realpath remains a SourceIngest duty.
+- Tests run:
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/domain/test_audit_domain.py`
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/domain`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent ruff check .`
+  - `conda run --no-capture-output -n agent mypy src/riftx/domain/audit.py src/riftx/domain/code_finding.py tests/unit/domain/test_audit_domain.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - AUD-101 targeted: `517 passed`; complete domain suite: `565 passed`.
+  - Full Python suite: `3241 passed, 5 skipped`.
+  - Repository Ruff and targeted Mypy passed.
+  - Independence boundary passed policy
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`:
+    9 dependency manifests, 448 production files, 0 explicit artifacts, and 0
+    violations.
+  - Executable release gate reported `ready=true`; all 16 gates passed.
+  - `git diff --check` passed.
+- Provenance:
+  - Requirements source: authoritative specification sections 6.1-6.6, 10.5,
+    13.2, 16.2-16.3, 21.1, and section 22 / AUD-101.
+  - Implementation and test author: Codex task `/root`; Git author: Ch1nfo.
+  - Independent specification/security review: Codex task `m0_docs_map`; final
+    result: approved after cleanup proof, analysis backend proof, analysis-phase
+    Snapshot, typed disclosure, and consent-binding findings were closed.
+  - Independent final adversarial review: Codex task `m0_ci_map`; final result:
+    approved with no remaining P0/P1/P2 after deprecated `copy()` and forged
+    `model_construct()` paths were closed and regression-tested.
+  - Third-party expressive material: none. The implementation is RiftX-owned and
+    uses only project Pydantic/domain conventions and the independently defined
+    RiftX specification.
+  - Production Code Audit Agent instructions: not applicable; AUD-101 contains no
+    prompt, provider, Agent workflow, or external scanner implementation.
+- Commit: Introducing commit; hash will be backfilled by the AUD-102 ledger update.
+- Known limitations / next contracts:
+  - AUD-102 must persist every canonical/redundant field and reject corrupt rows;
+    AUD-103 must verify actual Start consent, reviewed contract digest, and live
+    prepare/capability proofs.
+  - Detector/parser per-Scope applicability completeness is enforced later by
+    Inventory and Closure over the frozen matrix/scope policy.
+  - Published N+1 DistributionRevision intent/rebuild belongs to AUD-506; AUD-101
+    implements the initial publication and failed-publication retry projection.
+- Next unblocked task: AUD-102.
 
 ## Design Deviations and ADRs
 
