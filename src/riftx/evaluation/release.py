@@ -1,4 +1,4 @@
-"""Executable release qualification gates for the Post-V2 system."""
+"""Executable release qualification gates for the current RiftX system."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from riftx.domain.base import DomainModel, utc_now
 
 
 class ReleaseGate(StrEnum):
+    CODE_AUDIT_INDEPENDENCE_BOUNDARY = "code_audit_independence_boundary"
     MODEL_CALLS_USE_CONTEXT_COMPILER = "model_calls_use_context_compiler"
     TOOL_CALL_PERSISTED_BEFORE_EXECUTION = "tool_call_persisted_before_execution"
     EXECUTION_HAS_IDEMPOTENCY_KEY = "execution_has_idempotency_key"
@@ -42,7 +43,7 @@ class ReleaseGateReport(DomainModel):
     @model_validator(mode="after")
     def require_every_gate(self) -> ReleaseGateReport:
         if set(self.gates) != set(ReleaseGate):
-            raise ValueError("release report must contain all fifteen gates")
+            raise ValueError("release report must contain every declared gate")
         if self.ready != all(item.passed for item in self.gates.values()):
             raise ValueError("release readiness must match the individual gates")
         return self
@@ -70,6 +71,38 @@ def release_gate_manifest() -> dict[ReleaseGate, tuple[str, tuple[str, ...]]]:
     """Map every release claim to executable pytest evidence."""
 
     return {
+        ReleaseGate.CODE_AUDIT_INDEPENDENCE_BOUNDARY: (
+            (
+                "Repository production inputs and the synthetic artifact scanner contract "
+                "pass the independence boundary."
+            ),
+            (
+                "tests/evaluation/test_independence_gate.py::test_repository_production_inputs_pass_independence_boundary",
+                "tests/evaluation/test_independence_gate.py::test_clean_explicit_bundle_passes_boundary",
+                "tests/evaluation/test_independence_gate.py::test_forbidden_dependency_identity_is_rejected",
+                "tests/evaluation/test_independence_gate.py::test_combined_dependency_source_and_archive_canary_is_rejected",
+                "tests/evaluation/test_independence_gate.py::test_artifact_scanner_fail_closed_qualification_contract",
+                "tests/evaluation/test_independence_gate.py::test_invalid_repository_root_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_existing_empty_repository_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_sparse_repository_missing_fixed_marker_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_required_component_input_deletion_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_repository_marker_type_is_checked",
+                "tests/evaluation/test_independence_gate.py::test_bounded_encoding_variants_are_rejected",
+                "tests/evaluation/test_independence_gate.py::test_utf16_bom_bundle_content_is_rejected",
+                "tests/evaluation/test_independence_gate.py::test_production_source_symlink_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_dependency_manifest_tree_symlink_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_dependency_walk_error_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_production_walk_error_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_artifact_walk_error_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_fifo_artifact_is_rejected_before_read",
+                "tests/evaluation/test_independence_gate.py::test_explicit_artifact_symlink_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_supported_compressed_tar_scans_forbidden_members",
+                "tests/evaluation/test_independence_gate.py::test_compressed_tar_scans_link_target_metadata",
+                "tests/evaluation/test_independence_gate.py::test_compressed_tar_scans_pax_metadata_and_allows_safe_link",
+                "tests/evaluation/test_independence_gate.py::test_unsupported_archive_compression_fails_closed",
+                "tests/evaluation/test_independence_gate.py::test_tar_sidecar_signature_is_not_misclassified_and_content_is_scanned",
+            ),
+        ),
         ReleaseGate.MODEL_CALLS_USE_CONTEXT_COMPILER: (
             "Agent cycles compile bounded context before invoking the configured model.",
             (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the fifteen executable Post-V2 release qualification gates."""
+"""Run the executable RiftX release qualification gates."""
 
 from __future__ import annotations
 
