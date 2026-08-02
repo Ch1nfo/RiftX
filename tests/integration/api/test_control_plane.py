@@ -74,6 +74,9 @@ from riftx.domain import (
     ExecutorType,
     Finding,
     FindingSeverity,
+    Objective,
+    Run,
+    RunKind,
     RunnerCommandKind,
     RunnerPrincipal,
     RunStatus,
@@ -634,11 +637,28 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
         async for client in _client(runtime.control_plane):
             created = await _create_run(client)
             run_id = str(created["id"])
+            assert created["kind"] == "general"
             assert created["node_id"] == "local"
             assert created["status"] == "waiting_user"
             assert created["model_profile"] == "fast"
             assert created["temporal_workflow_id"] == f"test-workflow-{run_id}"
             assert runtime.workflow.calls == []
+
+            injected_kind = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Bypass Audit admission", "kind": "code_audit"},
+            )
+            assert injected_kind.status_code == 422
+
+            audit_run = Run(
+                kind=RunKind.CODE_AUDIT,
+                id="audit-run-filter-canary",
+                engagement_id=str(created["engagement_id"]),
+                node_id="local",
+                objective=Objective(description="Audit filter canary"),
+                workspace_path=str(tmp_path / "audit-run-filter-canary"),
+            )
+            await runtime.run_repository.create(audit_run)
 
             initial_events = await client.get(f"/api/v1/runs/{run_id}/events")
             assert initial_events.status_code == 200
@@ -679,9 +699,34 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             listed = await client.get("/api/v1/runs")
             assert listed.status_code == 200
             assert [item["id"] for item in listed.json()["items"]] == [run_id]
+            assert listed.json()["items"][0]["kind"] == "general"
+
+            listed_audits = await client.get(
+                "/api/v1/runs",
+                params={"kind": "code_audit"},
+            )
+            assert listed_audits.status_code == 200
+            assert [item["id"] for item in listed_audits.json()["items"]] == [
+                audit_run.id
+            ]
+            assert listed_audits.json()["items"][0]["kind"] == "code_audit"
+
+            combined_filter = await client.get(
+                "/api/v1/runs",
+                params={"kind": "code_audit", "status": "waiting_user"},
+            )
+            assert combined_filter.status_code == 200
+            assert combined_filter.json()["items"] == []
+
+            invalid_kind = await client.get(
+                "/api/v1/runs",
+                params={"kind": "unknown"},
+            )
+            assert invalid_kind.status_code == 422
 
             shown = await client.get(f"/api/v1/runs/{run_id}")
             assert shown.status_code == 200
+            assert shown.json()["kind"] == "general"
             assert shown.json()["objective"]["description"] == "Inspect the local service"
 
             metrics = await client.get(f"/api/v1/runs/{run_id}/metrics")

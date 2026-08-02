@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from .base import DomainModel, new_id, utc_now
-from .enums import ApprovalMode, EntryPointKind, RunStatus
+from .enums import ApprovalMode, EntryPointKind, RunKind, RunStatus
 from .errors import InvalidStateTransitionError
 
 _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = {
@@ -175,6 +175,7 @@ class Run(DomainModel):
     success_criteria: list[SuccessCriterion] = Field(default_factory=list)
     entry_points: list[EntryPoint] = Field(default_factory=list)
     scope: Scope = Field(default_factory=Scope)
+    kind: RunKind = Field(frozen=True)
     status: RunStatus = RunStatus.CREATED
     approval_mode: ApprovalMode = ApprovalMode.BALANCED
     model_profile: str | None = Field(default=None, min_length=1)

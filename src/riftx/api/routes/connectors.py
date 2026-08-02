@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import RedirectResponse
 
 from riftx.application.errors import ServiceUnavailableError
-from riftx.domain import RunStatus, Scope
+from riftx.domain import RunKind, RunStatus, Scope
 
 from ..dependencies import (
     ConnectorServiceDependency,
@@ -76,7 +76,12 @@ async def list_connector_runs(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
-    items = await runs.list_runs(status=run_status, limit=limit, offset=offset)
+    items = await runs.list_runs(
+        status=run_status,
+        kind=RunKind.GENERAL,
+        limit=limit,
+        offset=offset,
+    )
     return RunListResponse(
         items=[RunResponse.from_domain(item) for item in items],
         limit=limit,

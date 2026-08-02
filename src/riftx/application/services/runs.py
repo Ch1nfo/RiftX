@@ -36,6 +36,7 @@ from riftx.domain import (
     InvalidStateTransitionError,
     Objective,
     Run,
+    RunKind,
     RunStatus,
     Scope,
     SuccessCriterion,
@@ -169,6 +170,7 @@ class RunApplicationService:
         run = Run(
             engagement_id=engagement.id,
             node_id=command.node_id,
+            kind=RunKind.GENERAL,
             objective=Objective(description=command.objective),
             success_criteria=command.success_criteria,
             entry_points=command.entry_points,
@@ -223,10 +225,18 @@ class RunApplicationService:
         self,
         *,
         status: RunStatus | None = None,
+        kind: RunKind = RunKind.GENERAL,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Run]:
-        return list(await self._run_repository.list(status=status, limit=limit, offset=offset))
+        return list(
+            await self._run_repository.list(
+                status=status,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
+        )
 
     async def list_runs_for_reconciliation(
         self,

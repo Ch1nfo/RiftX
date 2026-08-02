@@ -455,6 +455,45 @@ def test_run_create_builds_api_payload() -> None:
     ]
 
 
+def test_run_list_forwards_status_and_kind_filters() -> None:
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "list",
+            "--status",
+            "running",
+            "--kind",
+            "code_audit",
+            "--limit",
+            "25",
+            "--offset",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "list_runs",
+            {
+                "status": "running",
+                "kind": "code_audit",
+                "limit": 25,
+                "offset": 5,
+            },
+        )
+    ]
+
+
+def test_run_list_rejects_unknown_kind_before_contacting_api() -> None:
+    result = runner.invoke(cli_module.app, ["run", "list", "--kind", "audit"])
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert FakeAPIClient.instances == []
+
+
 def test_api_error_produces_nonzero_exit() -> None:
     FakeAPIClient.fail = True
     result = runner.invoke(cli_module.app, ["run", "list"])

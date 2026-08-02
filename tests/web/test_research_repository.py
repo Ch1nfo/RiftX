@@ -37,6 +37,7 @@ async def test_search_note_and_packet_round_trip(tmp_path: Path) -> None:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

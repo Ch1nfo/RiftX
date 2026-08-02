@@ -61,6 +61,7 @@ async def context_harness(tmp_path: Path) -> AsyncIterator[ContextHarness]:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

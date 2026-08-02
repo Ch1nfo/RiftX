@@ -148,6 +148,7 @@ async def _runtime(
     run_repository = SQLAlchemyRunRepository(database.session_factory)
     await run_repository.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

@@ -33,6 +33,7 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     RunnerCommand,
     RunnerCommandStatus,
     RunnerCredential,
@@ -219,6 +220,7 @@ class RunRepository(Protocol):
         self,
         *,
         status: RunStatus | None = None,
+        kind: RunKind | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Run]: ...

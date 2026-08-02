@@ -14,6 +14,7 @@ from riftx.domain import Objective, Run, Scope
 class FakeRuns:
     def __init__(self) -> None:
         self.run = Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

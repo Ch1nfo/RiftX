@@ -36,6 +36,7 @@ async def test_browser_repository_round_trip_preserves_versions_and_idempotency(
     await engagements.create(Engagement(id="engagement-1", name="Browser test"))
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

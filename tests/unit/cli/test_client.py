@@ -49,6 +49,32 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     assert json.loads(requests[2].content) == {"max_history_items": 25}
 
 
+def test_api_client_combines_run_status_and_kind_filters() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"items": [], "limit": 25, "offset": 5})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.list_runs(
+            status="running",
+            kind="code_audit",
+            limit=25,
+            offset=5,
+        )
+
+    assert dict(requests[0].url.params) == {
+        "limit": "25",
+        "offset": "5",
+        "status": "running",
+        "kind": "code_audit",
+    }
+
+
 def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
     requests: list[tuple[str, str, object, str | None]] = []
 

@@ -46,6 +46,7 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
     RunnerCommandStatus,
@@ -639,6 +640,7 @@ class SQLAlchemyRunRepository:
         self,
         *,
         status: RunStatus | None = None,
+        kind: RunKind | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Run]:
@@ -650,6 +652,8 @@ class SQLAlchemyRunRepository:
         statement = select(RunRecord).order_by(RunRecord.created_at.desc())
         if status is not None:
             statement = statement.where(RunRecord.status == status.value)
+        if kind is not None:
+            statement = statement.where(RunRecord.kind == kind.value)
         statement = statement.limit(limit).offset(offset)
 
         async with self._session_factory() as session:

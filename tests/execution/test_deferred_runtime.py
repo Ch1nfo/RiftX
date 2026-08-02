@@ -162,6 +162,7 @@ async def durable_dispatcher(tmp_path: Path) -> AsyncIterator[DurableDispatcherF
     runs = SQLAlchemyRunRepository(database.session_factory)
     run = await runs.create(
         Run(
+            kind="general",
             id="run-durable",
             engagement_id="engagement-durable",
             node_id="local",
@@ -662,6 +663,7 @@ async def test_runtime_retry_yields_same_deferred_execution_without_relaunch(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

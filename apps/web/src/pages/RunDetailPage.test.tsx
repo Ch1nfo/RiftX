@@ -77,6 +77,7 @@ vi.mock("../hooks/queries", () => ({
       engagement_id: runId === "run-1" ? "engagement-1" : "engagement-2",
       objective: { description: "Inspect local service" },
       node_id: "local",
+      kind: "general",
       approval_mode: "balanced",
       model_profile: null,
       status: mocks.runStatus,

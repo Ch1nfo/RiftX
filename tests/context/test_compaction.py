@@ -71,6 +71,7 @@ async def test_compaction_preserves_resume_state_and_repairs_crash_retry(
     )
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

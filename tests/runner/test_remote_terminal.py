@@ -175,6 +175,7 @@ async def _central_terminal_runtime(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -319,6 +320,7 @@ async def test_remote_terminal_projection_create_failure_persists_predispatch_st
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -368,6 +370,7 @@ async def test_remote_terminal_projection_post_commit_failure_closes_without_dis
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -421,6 +424,7 @@ async def test_remote_terminal_exact_retry_closes_legacy_starting_without_projec
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -816,6 +820,7 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -943,6 +948,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
         Engagement(id="engagement-projection-race", name="Projection race")
     )
     run = Run(
+        kind="general",
         id="run-projection-race",
         engagement_id="engagement-projection-race",
         node_id="windows-a",
@@ -1084,6 +1090,7 @@ async def test_remote_terminal_legacy_replay_binds_explicit_identity_pair(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",

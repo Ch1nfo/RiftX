@@ -27,6 +27,7 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
     RunnerCommandStatus,
@@ -266,6 +267,7 @@ def run_to_record(run: Run) -> RunRecord:
     return RunRecord(
         id=run.id,
         engagement_id=run.engagement_id,
+        kind=run.kind.value,
         node_id=run.node_id,
         objective=run.objective.description,
         success_criteria_json=[item.model_dump(mode="json") for item in run.success_criteria],
@@ -285,6 +287,8 @@ def run_to_record(run: Run) -> RunRecord:
 def apply_run_to_record(run: Run, record: RunRecord) -> None:
     """Copy mutable run state onto an already-persisted record."""
 
+    if record.kind != run.kind.value:
+        raise ValueError("Run kind is immutable")
     record.node_id = run.node_id
     record.objective = run.objective.description
     record.success_criteria_json = [item.model_dump(mode="json") for item in run.success_criteria]
@@ -303,6 +307,7 @@ def run_from_record(record: RunRecord) -> Run:
     return Run(
         id=record.id,
         engagement_id=record.engagement_id,
+        kind=RunKind(record.kind),
         node_id=record.node_id,
         objective=Objective(description=record.objective),
         success_criteria=[

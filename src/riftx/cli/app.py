@@ -21,7 +21,7 @@ from rich.console import Console
 
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
-from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
+from riftx.domain import ApprovalMode, EntryPointKind, RunKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
     MAX_MODEL_TIMEOUT_SECONDS,
@@ -804,6 +804,10 @@ def list_runs(
         RunStatus | None,
         typer.Option("--status", case_sensitive=False, help="Filter by Run status."),
     ] = None,
+    run_kind: Annotated[
+        RunKind | None,
+        typer.Option("--kind", case_sensitive=False, help="Filter by Run kind."),
+    ] = None,
     limit: Annotated[int, typer.Option(min=1, max=1000)] = 100,
     offset: Annotated[int, typer.Option(min=0)] = 0,
 ) -> None:
@@ -812,6 +816,7 @@ def list_runs(
     def operation(client: APIClient) -> None:
         payload = client.list_runs(
             status=run_status.value if run_status else None,
+            kind=run_kind.value if run_kind else None,
             limit=limit,
             offset=offset,
         )

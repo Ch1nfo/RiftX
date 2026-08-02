@@ -153,6 +153,7 @@ async def test_browser_service_persists_artifacts_actions_and_takeover_ownership
     await engagements.create(Engagement(id="engagement-1", name="Browser"))
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -248,6 +249,7 @@ async def test_two_browser_manager_instances_converge_on_owner_close_ack(
     )
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

@@ -16,6 +16,8 @@ export type RunStatus =
   | "cancelling"
   | "cancelled";
 
+export type RunKind = "general" | "code_audit";
+
 export type ApprovalMode = "auto" | "balanced" | "manual";
 
 export interface Objective {
@@ -52,6 +54,7 @@ export interface Run {
   success_criteria: SuccessCriterion[];
   entry_points: EntryPoint[];
   scope: RunScope;
+  kind: RunKind;
   status: RunStatus;
   approval_mode: ApprovalMode;
   model_profile: string | null;

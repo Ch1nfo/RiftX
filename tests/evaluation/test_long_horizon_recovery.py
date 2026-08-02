@@ -221,6 +221,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
 
     await engagements.create(Engagement(id="qa-engagement", name="QA-01"))
     run = Run(
+        kind="general",
         id="qa-run",
         engagement_id="qa-engagement",
         node_id="local",

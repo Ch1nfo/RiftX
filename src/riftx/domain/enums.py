@@ -3,6 +3,11 @@
 from enum import StrEnum
 
 
+class RunKind(StrEnum):
+    GENERAL = "general"
+    CODE_AUDIT = "code_audit"
+
+
 class RunStatus(StrEnum):
     CREATED = "created"
     INITIALIZING = "initializing"

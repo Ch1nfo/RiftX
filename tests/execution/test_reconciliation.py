@@ -83,6 +83,7 @@ async def build_database(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

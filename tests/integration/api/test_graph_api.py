@@ -123,6 +123,7 @@ async def _seed_truncated_task_graph(database: Database) -> None:
         await session.flush()
         session.add(
             RunRecord(
+                kind="general",
                 id="run-graph",
                 engagement_id="engagement-graph",
                 node_id="node-graph",

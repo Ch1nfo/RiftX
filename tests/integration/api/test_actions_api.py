@@ -138,6 +138,7 @@ async def _seed_foundation(database: Database, *run_ids: str) -> None:
         )
         session.add_all(
             RunRecord(
+                kind="general",
                 id=run_id,
                 engagement_id="engagement-action-api",
                 node_id=f"node-{run_id}",

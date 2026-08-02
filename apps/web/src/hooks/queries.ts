@@ -16,13 +16,18 @@ import type {
   RunActionList,
   RunActionListItem,
   RunEventList,
+  RunKind,
   UpdateFindingPayload,
   UpdateToolPayload,
   RunStatus,
 } from "../api/types";
 
 export const queryKeys = {
-  runs: (status?: RunStatus) => ["runs", status ?? "all"] as const,
+  runs: (status?: RunStatus, kind?: RunKind) => [
+    "runs",
+    status ?? "all",
+    kind ?? "all",
+  ] as const,
   run: (runId: string) => ["run", runId] as const,
   events: (runId: string) => ["run-events", runId] as const,
   executions: (runId: string) => ["run-executions", runId] as const,
@@ -59,10 +64,10 @@ export function useNodes(status?: NodeStatus) {
 }
 
 
-export function useRuns(status?: RunStatus) {
+export function useRuns(status?: RunStatus, kind?: RunKind) {
   return useQuery({
-    queryKey: queryKeys.runs(status),
-    queryFn: () => api.listRuns(status),
+    queryKey: queryKeys.runs(status, kind),
+    queryFn: () => api.listRuns(status, kind),
     refetchInterval: 10_000,
   });
 }

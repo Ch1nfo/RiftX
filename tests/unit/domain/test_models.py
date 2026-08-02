@@ -26,6 +26,7 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     Scope,
     Skill,
     SuccessCriterion,
@@ -38,6 +39,7 @@ from riftx.domain import (
 
 def representative_models() -> list[object]:
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",
@@ -133,6 +135,29 @@ def test_scope_rejects_inverted_time_range() -> None:
     starts_at = datetime(2026, 1, 2, tzinfo=UTC)
     with pytest.raises(ValidationError, match="starts_at must be earlier"):
         Scope(starts_at=starts_at, ends_at=starts_at - timedelta(seconds=1))
+
+
+def test_run_kind_is_required_strict_and_immutable() -> None:
+    required = {
+        "engagement_id": "engagement-1",
+        "node_id": "node-1",
+        "objective": Objective(description="Classify the run"),
+        "workspace_path": "/tmp/riftx/run-kind",
+    }
+
+    with pytest.raises(ValidationError, match="kind"):
+        Run(**required)
+
+    for invalid in ("agent", "audit", "unknown", " general "):
+        with pytest.raises(ValidationError, match="kind"):
+            Run(kind=invalid, **required)
+
+    run = Run(kind=RunKind.CODE_AUDIT, **required)
+
+    assert run.kind is RunKind.CODE_AUDIT
+    assert json.loads(run.model_dump_json())["kind"] == "code_audit"
+    with pytest.raises(ValidationError, match="frozen"):
+        run.kind = RunKind.GENERAL
 
 
 def test_tool_rejects_empty_command() -> None:

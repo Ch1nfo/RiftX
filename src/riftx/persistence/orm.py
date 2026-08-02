@@ -44,11 +44,18 @@ class EngagementRecord(Base):
 
 class RunRecord(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('general', 'code_audit')",
+            name="ck_runs_kind",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     engagement_id: Mapped[str] = mapped_column(
         ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    kind: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     success_criteria_json: Mapped[list[dict[str, Any]]] = mapped_column(

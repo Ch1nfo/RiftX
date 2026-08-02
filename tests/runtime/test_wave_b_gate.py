@@ -163,6 +163,7 @@ async def test_wave_b_dynamic_discovery_deferred_execution_and_continuation(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

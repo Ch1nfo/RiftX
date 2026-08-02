@@ -312,6 +312,7 @@ async def test_worker_session_initializer_reloads_effective_default_profile(
         runs = SQLAlchemyRunRepository(runtime.database.session_factory)
         await runs.create(
             Run(
+                kind="general",
                 id="run-default",
                 engagement_id="engagement-default",
                 node_id="worker-local",
@@ -554,6 +555,7 @@ async def test_worker_reconciler_terminalizes_durable_finalization_intent(
     events = SQLAlchemyRunEventRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-finalization",
             engagement_id="engagement-1",
             node_id="worker-local",
@@ -630,6 +632,7 @@ async def test_user_input_resolver_moves_event_content_to_transcript_once(
         runs = SQLAlchemyRunRepository(runtime.database.session_factory)
         await runs.create(
             Run(
+                kind="general",
                 id="run-1",
                 engagement_id="engagement-1",
                 node_id="worker-local",

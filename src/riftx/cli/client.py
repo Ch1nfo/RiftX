@@ -80,12 +80,15 @@ class APIClient:
         self,
         *,
         status: str | None = None,
+        kind: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
         params: dict[str, object] = {"limit": limit, "offset": offset}
         if status:
             params["status"] = status
+        if kind:
+            params["kind"] = kind
         return self._json("GET", "/api/v1/runs", params=params)
 
     def get_run(self, run_id: str) -> dict[str, Any]:

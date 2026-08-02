@@ -313,6 +313,7 @@ def _exchange(
 
 def _run(status: RunStatus = RunStatus.RUNNING) -> Run:
     return Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="local",

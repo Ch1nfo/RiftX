@@ -26,6 +26,7 @@ import type {
   RunAction,
   RunActionList,
   RunEventList,
+  RunKind,
   RunList,
   RunStatus,
   SecurityProfile,
@@ -130,8 +131,15 @@ export const api = {
     return request<SecurityProfile>("/api/v1/security/profile");
   },
 
-  listRuns(status?: RunStatus): Promise<RunList> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  listRuns(status?: RunStatus, kind?: RunKind): Promise<RunList> {
+    const params = new URLSearchParams();
+    if (status) {
+      params.set("status", status);
+    }
+    if (kind) {
+      params.set("kind", kind);
+    }
+    const query = params.size ? `?${params.toString()}` : "";
     return request<RunList>(`/api/v1/runs${query}`);
   },
 

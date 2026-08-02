@@ -58,6 +58,7 @@ async def test_registry_resolver_builds_trusted_process_spec(tmp_path: Path) -> 
     registry = ToolRegistry(config, node_id="node-1")
     await registry.refresh()
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",
@@ -106,6 +107,7 @@ async def test_registry_resolver_rejects_workspace_escape(tmp_path: Path) -> Non
     registry = ToolRegistry(config, node_id="node-1")
     await registry.refresh()
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",
@@ -149,6 +151,7 @@ async def test_registry_resolver_enforces_subagent_tool_allowlist(tmp_path: Path
     registry = ToolRegistry(config, node_id="node-1")
     await registry.refresh()
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",
@@ -208,6 +211,7 @@ async def test_registered_tool_must_be_selected_and_raw_spec_cannot_override_reg
     registry = ToolRegistry(config, node_id="node-1")
     await registry.refresh()
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",

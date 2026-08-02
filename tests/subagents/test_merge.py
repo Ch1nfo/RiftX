@@ -47,6 +47,7 @@ async def test_parallel_results_merge_through_primary_working_memory_reducer(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

@@ -26,15 +26,15 @@
 ## Current Wave
 
 - Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-100 — RunKind`
-- Next dependency: `M0` is complete; `AUD-100` is unblocked.
+- Current task: `AUD-101 — Audit domain`
+- Next dependency: `AUD-100` is complete; `AUD-101` is unblocked.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 is the current unblocked task |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 complete; AUD-101 is the current unblocked task |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -59,7 +59,7 @@
 
 | Task | Status |
 | --- | --- |
-| AUD-100 RunKind | pending |
+| AUD-100 RunKind | completed |
 | AUD-101 Audit domain | pending |
 | AUD-102 ORM and repositories | pending |
 | AUD-103 AuditApplicationService | pending |
@@ -333,7 +333,7 @@
   - Third-party expressive material: none; implementation uses RiftX-owned models,
     validators, fixtures, and runtime boundaries.
   - Production Code Audit Agent instructions: not applicable for AUD-002.
-- Commit: Introducing commit; hash will be backfilled by the AUD-100 ledger update.
+- Commit: `be65b408` (`feat(config): define Code Audit safety policy`).
 - Known limitations:
   - The flag remains admission-only. Audit domain objects, API admission, source
     preflight, signed authorization, snapshots, and deterministic analysis begin in
@@ -341,6 +341,121 @@
   - Startup isolation is one defense layer; descriptor-safe snapshot traversal and
     per-run source authorization remain mandatory in M2.
 - Next unblocked task: AUD-100.
+
+### AUD-100 — RunKind
+
+- Outcome:
+  - Added the stable `RunKind` values `general` and `code_audit`, exported them
+    through the Domain API, and made `Run.kind` a required, field-frozen identity.
+  - Updated every production and existing test `Run`/`RunRecord` construction point
+    to set kind explicitly. Generic Run creation always writes `general`; the generic
+    request schema continues to reject a client-supplied kind.
+  - Added strict ORM/mapper persistence, a named database CHECK, an index, combined
+    status/kind filtering, unknown-value rejection, and an immutable-kind guard on
+    mutable Run updates.
+  - Added Alembic revision `0d3a8b7c4e21`: legacy rows are backfilled through a
+    migration-only `general` server default, the default is removed immediately, and
+    SQLite batch rebuilds suspend FK enforcement only inside a verified autocommit
+    boundary before running `foreign_key_check` and restoring enforcement.
+  - Made no-kind Run lists default to `general`; generic Connector lists are pinned to
+    `general`. Run responses and CLI/Web clients support explicit kind filtering, the
+    Dashboard requests only `general`, and React Query caches include kind.
+  - Preserved the existing Temporal Run Workflow input, workflow ID, signals, replay,
+    and history contracts without adding a RunKind branch.
+- Files changed:
+  - Domain/persistence: `src/riftx/domain/{__init__,enums,run}.py`,
+    `src/riftx/persistence/{orm,mappers,repositories}.py`,
+    `src/riftx/application/ports/repositories.py`, and
+    `src/riftx/application/services/runs.py`.
+  - API/CLI: `src/riftx/api/routes/{runs,connectors}.py`,
+    `src/riftx/api/schemas/runs.py`, and `src/riftx/cli/{app,client}.py`.
+  - Migration: `migrations/versions/0d3a8b7c4e21_add_run_kind.py`.
+  - Web: `apps/web/src/api/{types,client}.ts`,
+    `apps/web/src/hooks/queries.ts`, `apps/web/src/pages/DashboardPage.tsx`, and
+    their Run client/Dashboard/Run-detail tests.
+  - Primary Python regressions: `tests/unit/domain/test_models.py`,
+    `tests/unit/persistence/{test_mappers,test_schema}.py`,
+    `tests/integration/persistence/{test_migrations,test_run_kind_migration,test_repositories}.py`,
+    `tests/integration/api/test_control_plane.py`, `tests/connectors/test_api.py`,
+    and `tests/unit/cli/{test_app,test_client}.py`.
+  - Existing Run fixtures across browser, connector, context, evaluation, execution,
+    facts, hooks, Agent, API, application, persistence, Runner, Runtime, Subagent,
+    Target HTTP, Temporal, and web tests were mechanically updated to declare
+    `kind="general"`. The final AST inventory contains 93 `Run(...)` and 7
+    `RunRecord(...)` calls; only the intentional required-field negative test omits
+    kind.
+  - Progress ledger: `docs/implementation/POST_V3_CODE_AUDIT_PROGRESS.md`.
+- Schema/migration impact:
+  - Adds `runs.kind VARCHAR(32) NOT NULL`, `ck_runs_kind`, and `ix_runs_kind` at the
+    single Alembic head `0d3a8b7c4e21`; the final column has no database or Python
+    default.
+  - Existing rows upgrade to `general`. General-only downgrade preserves the Run FK
+    graph; any `code_audit` or unknown kind makes downgrade fail before DDL. Offline
+    SQLite batch migration and offline downgrade fail closed.
+- Security boundary impact:
+  - Run kind becomes a mandatory immutable security identity. Missing, whitespace,
+    legacy `agent`/`audit`, and unknown values fail validation; persisted unknowns do
+    not fall back to `general`.
+  - Generic `POST /runs` cannot mint a `code_audit` Run. Existing list consumers see
+    only `general` unless they explicitly request `code_audit`, preventing Audit IDs
+    from entering the generic Dashboard or Connector UI.
+  - The migration protects referenced Run children during SQLite parent-table rebuild
+    and refuses a lossy downgrade that would erase the Audit classification.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/domain/test_models.py tests/unit/persistence/test_mappers.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_repositories.py::test_repository_lists_and_filters_runs tests/connectors/test_api.py tests/unit/cli/test_app.py::test_run_list_forwards_status_and_kind_filters tests/unit/cli/test_client.py::test_api_client_combines_run_status_and_kind_filters`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_migrations.py::test_run_kind_migration_backfills_without_default_and_preserves_fk_graph tests/integration/persistence/test_migrations.py::test_run_kind_migration_rejects_lossy_code_audit_downgrade_before_ddl tests/integration/persistence/test_migrations.py::test_run_kind_offline_downgrade_fails_closed`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_repositories.py tests/integration/persistence/test_migrations.py tests/unit/persistence/test_mappers.py tests/unit/persistence/test_schema.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/api/test_control_plane.py::test_run_crud_control_and_message_timeline tests/connectors/test_api.py tests/unit/cli/test_app.py tests/unit/cli/test_client.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/temporal/test_runtime_client.py tests/unit/temporal/test_workflow.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_run_kind_migration.py`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web test`
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/domain/enums.py src/riftx/domain/run.py src/riftx/persistence/orm.py src/riftx/persistence/mappers.py src/riftx/application/ports/repositories.py src/riftx/application/services/runs.py src/riftx/api/schemas/runs.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Core Domain/mapper/schema/filter tests passed: `45 passed`; the extended
+    persistence and migration matrix passed: `66 passed`.
+  - API/Connector/CLI matrix passed: `72 passed`; unchanged Temporal client/workflow
+    replay matrix passed: `39 passed`.
+  - PostgreSQL offline upgrade SQL and SQLite offline rejection tests passed; Alembic
+    reports one head, `0d3a8b7c4e21`.
+  - Web TypeScript typecheck passed; the complete Web test suite passed in 20 files.
+  - Targeted Mypy passed with no issues in the seven selected files. Repository,
+    route, and CLI modules retain unrelated pre-existing full-module Mypy baseline
+    errors and were covered by Ruff plus runtime tests.
+  - The full Python suite passed on the clean rerun. An initial run hit the existing
+    POSIX process-group marker timing flake; its unchanged selector then passed three
+    consecutive reruns before the clean full rerun.
+  - Repository Ruff, independence boundary, executable release gate, and
+    `git diff --check` passed. The boundary used policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`:
+    9 dependency manifests, 446 production files, 0 explicit artifacts, and 0
+    violations.
+- Provenance:
+  - Requirements source: authoritative specification sections 4.3, 13.1, and
+    section 22 / AUD-100.
+  - Implementation, migration, and test author: Codex task `/root`; Git author:
+    Ch1nfo.
+  - Security and specification review: Codex tasks `m0_ci_map`, `m0_docs_map`, and
+    `aud100_test_design`; final result: approved after the SQLite FK/data-loss P0 and
+    immutable-kind/lossy-downgrade P1 findings were closed.
+  - Third-party expressive material: none; the implementation and fixtures are
+    RiftX-owned and use SQLAlchemy, Alembic, FastAPI, SQLite, and TypeScript contracts.
+  - Production Code Audit Agent instructions: not applicable for AUD-100.
+- Commit: Introducing commit; hash will be backfilled by the AUD-101 ledger update.
+- Known limitations:
+  - `code_audit` Run creation remains internal-only until AUD-101-AUD-103 add the
+    Audit domain, persistence UoW, and admission service.
+  - Mutation/effect policy, Run Workflow routing, and kind-aware reconciliation are
+    intentionally deferred to AUD-106; no Audit Run may enter the generic Workflow.
+  - SQLite batch migration requires a maintenance window and old/new API writers must
+    not overlap. PostgreSQL offline SQL is compile-checked, but RiftX does not claim
+    PostgreSQL runtime support without a real database CI matrix and lock analysis.
+- Next unblocked task: AUD-101.
 
 ## Design Deviations and ADRs
 
@@ -352,6 +467,8 @@
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- Audit admission and execution are intentionally unavailable until M1-M3 add durable
-  domain state, signed preflight, immutable snapshots, and the deterministic slice.
-- All M1-M10 runtime and product capabilities remain pending.
+- Audit admission and execution are intentionally unavailable until the remaining
+  M1-M3 tasks add durable Audit state, signed preflight, immutable snapshots, and the
+  deterministic slice.
+- AUD-106 must install the kind-aware mutation inventory, Workflow router, and
+  reconciliation boundary before any `code_audit` Run can execute.

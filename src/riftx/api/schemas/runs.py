@@ -14,6 +14,7 @@ from riftx.domain import (
     EntryPointKind,
     Objective,
     Run,
+    RunKind,
     RunStatus,
     Scope,
     SuccessCriterion,
@@ -114,6 +115,7 @@ class RunResponse(BaseModel):
     success_criteria: list[SuccessCriterion]
     entry_points: list[EntryPoint]
     scope: Scope
+    kind: RunKind
     status: RunStatus
     approval_mode: ApprovalMode
     model_profile: str | None

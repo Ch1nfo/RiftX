@@ -41,6 +41,7 @@ async def build_manager(
     )
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

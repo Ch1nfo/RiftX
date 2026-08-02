@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from riftx.domain import RunStatus
+from riftx.domain import RunKind, RunStatus
 
 from ..dependencies import RunServiceDependency, ToolServiceDependency
 from ..schemas import (
@@ -47,10 +47,16 @@ async def create_run(
 async def list_runs(
     run_service: RunServiceDependency,
     run_status: Annotated[RunStatus | None, Query(alias="status")] = None,
+    run_kind: Annotated[RunKind, Query(alias="kind")] = RunKind.GENERAL,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
-    runs = await run_service.list_runs(status=run_status, limit=limit, offset=offset)
+    runs = await run_service.list_runs(
+        status=run_status,
+        kind=run_kind,
+        limit=limit,
+        offset=offset,
+    )
     return RunListResponse(
         items=[RunResponse.from_domain(run) for run in runs],
         limit=limit,

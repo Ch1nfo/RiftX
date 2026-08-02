@@ -23,6 +23,7 @@ async def test_source_registry_round_trip_and_cache_scope(tmp_path: Path) -> Non
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

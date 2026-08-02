@@ -116,6 +116,7 @@ async def _seed(
         )
         session.add(
             RunRecord(
+                kind="general",
                 id="run-graph",
                 engagement_id="engagement-graph",
                 node_id="node-graph",
@@ -871,6 +872,7 @@ async def test_cross_run_session_references_are_not_projected(
         async with database.session_factory() as session, session.begin():
             session.add(
                 RunRecord(
+                    kind="general",
                     id="run-foreign",
                     engagement_id="engagement-graph",
                     node_id="node-graph",

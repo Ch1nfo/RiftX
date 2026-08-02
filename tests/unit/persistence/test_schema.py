@@ -55,9 +55,12 @@ def test_metadata_contains_v2_business_tables() -> None:
 
 
 def test_run_table_matches_design_contract() -> None:
-    assert set(Base.metadata.tables["runs"].columns.keys()) == {
+    runs = Base.metadata.tables["runs"]
+
+    assert set(runs.columns.keys()) == {
         "id",
         "engagement_id",
+        "kind",
         "node_id",
         "objective",
         "success_criteria_json",
@@ -72,6 +75,16 @@ def test_run_table_matches_design_contract() -> None:
         "started_at",
         "finished_at",
     }
+    assert runs.c.kind.nullable is False
+    assert runs.c.kind.default is None
+    assert runs.c.kind.server_default is None
+    assert {index.name for index in runs.indexes} >= {"ix_runs_kind"}
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in runs.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert checks["ck_runs_kind"] == "kind IN ('general', 'code_audit')"
 
 
 def test_event_sequence_is_unique_per_run() -> None:

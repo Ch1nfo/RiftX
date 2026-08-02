@@ -193,6 +193,7 @@ async def test_materialized_terminal_launch_is_built_once_and_reused(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -252,6 +253,7 @@ async def test_run_stop_wins_pre_registration_race_and_delayed_terminal_never_st
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -313,6 +315,7 @@ async def test_completing_fence_blocks_new_terminal_and_existing_terminal_input(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -352,6 +355,7 @@ async def test_cancel_after_pty_claim_blocks_hook_and_native_admission(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -483,6 +487,7 @@ async def test_runtime_opens_one_durable_pty_and_yields_terminal_open(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

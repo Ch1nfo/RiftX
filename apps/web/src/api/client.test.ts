@@ -494,6 +494,23 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("filters Run lists by status and kind", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 100, offset: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.listRuns("running", "code_audit");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs?status=running&kind=code_audit",
+      expect.any(Object),
+    );
+  });
+
   it("emergency-stops the entire Run through the Run cancellation route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

@@ -1297,6 +1297,7 @@ async def test_pre_patch_cleanup_exhaustion_keeps_intent_for_worker_recovery(
     run_id = "run-legacy-cleanup-exhaustion"
     await runs.create(
         Run(
+            kind="general",
             id=run_id,
             engagement_id="engagement-1",
             node_id="worker-local",

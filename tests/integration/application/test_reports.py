@@ -42,6 +42,7 @@ async def test_report_service_generates_safe_linked_immutable_outputs(tmp_path: 
     await engagement_repository.create(Engagement(id="engagement-1", name="Report test"))
     await run_repository.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

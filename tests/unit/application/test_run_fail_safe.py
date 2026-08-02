@@ -307,6 +307,7 @@ class ForeignResourceStopper:
 
 def make_run(tmp_path: Path, status: RunStatus = RunStatus.RUNNING) -> Run:
     run = Run(
+        kind="general",
         id=f"run-{status.value}",
         engagement_id="engagement-1",
         node_id="local",
@@ -354,6 +355,7 @@ def make_execution(tmp_path: Path, run_id: str, execution_id: str) -> Execution:
 
 def make_initially_waiting_run(tmp_path: Path) -> Run:
     run = Run(
+        kind="general",
         id="run-initially-waiting",
         engagement_id="engagement-1",
         node_id="local",

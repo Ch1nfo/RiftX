@@ -4,11 +4,25 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
+import { queryKeys } from "../hooks/queries";
 import { DashboardPage } from "./DashboardPage";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("DashboardPage", () => {
+  it("isolates general and Code Audit Run caches", () => {
+    expect(queryKeys.runs(undefined, "general")).toEqual([
+      "runs",
+      "all",
+      "general",
+    ]);
+    expect(queryKeys.runs(undefined, "code_audit")).toEqual([
+      "runs",
+      "all",
+      "code_audit",
+    ]);
+  });
+
   it("hydrates dashboard metrics from the control-plane API", async () => {
     vi.spyOn(api, "listRuns").mockResolvedValue({
       items: [],
@@ -38,5 +52,6 @@ describe("DashboardPage", () => {
     expect(screen.getByText("No active runs")).toBeInTheDocument();
     expect(screen.getByText("Local tool health")).toBeInTheDocument();
     expect(screen.getByText("generation 3", { exact: false })).toBeInTheDocument();
+    expect(api.listRuns).toHaveBeenCalledWith(undefined, "general");
   });
 });

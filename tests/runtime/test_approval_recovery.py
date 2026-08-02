@@ -163,6 +163,7 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
