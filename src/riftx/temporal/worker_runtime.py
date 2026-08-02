@@ -31,7 +31,7 @@ from riftx.application.services import (
     stop_resources_payload,
 )
 from riftx.browser.service import BrowserApplicationService
-from riftx.config import RiftXConfig
+from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
     ContextApplicationService,
     ContextCompiler,
@@ -1003,12 +1003,29 @@ async def build_temporal_worker(
 
 
 def _prepare_local_paths(config: RiftXConfig) -> None:
+    _validate_audit_config_path_isolation(config)
     config.workspace.root.expanduser().mkdir(parents=True, exist_ok=True)
     config.runner.state_path.expanduser().mkdir(parents=True, exist_ok=True)
     if config.database.url.startswith("sqlite+aiosqlite:///"):
         raw_path = config.database.url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
             Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    _validate_audit_config_path_isolation(config)
+
+
+def _validate_audit_config_path_isolation(config: RiftXConfig) -> None:
+    validate_audit_storage_isolation(
+        audit=config.audit,
+        workspace_root=config.workspace.root,
+        runner_state_path=config.runner.state_path,
+        runner_credential_path=config.runner.credential_path,
+        models_secrets_path=config.models.secrets_path,
+        local_principal_path=config.security.local_principal_path,
+        database_url=config.database.url,
+        temporal_tls_server_root_ca_path=config.temporal.tls_server_root_ca_path,
+        temporal_tls_client_cert_path=config.temporal.tls_client_cert_path,
+        temporal_tls_client_private_key_path=config.temporal.tls_client_private_key_path,
+    )
 
 
 async def _signal_execution_completion(

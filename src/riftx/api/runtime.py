@@ -34,7 +34,13 @@ from riftx.application.services import (
     ToolApplicationService,
 )
 from riftx.browser.service import BrowserApplicationService
-from riftx.config import RiftXConfig, load_riftx_config
+from riftx.config import (
+    AuditConfig,
+    RiftXConfig,
+    RiftXConfigError,
+    load_riftx_config,
+    validate_audit_storage_isolation,
+)
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
 from riftx.domain import OperatorCapability, RunStatus, TrustProfile
@@ -123,6 +129,10 @@ class APISettings:
     node_id: str = "local"
     workspace_root: Path = Path(".riftx/workspaces")
     runner_state_path: Path = Path(".riftx/runner")
+    runner_credential_path: Path = field(
+        default=Path(".riftx/secrets/runner-credentials.json"),
+        repr=False,
+    )
     web_dist_path: Path = Path("apps/web/dist")
     temporal_address: str = "127.0.0.1:7233"
     temporal_namespace: str = "default"
@@ -148,6 +158,7 @@ class APISettings:
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     )
+    audit: AuditConfig = field(default_factory=AuditConfig, repr=False)
 
     @classmethod
     def from_config(cls, config: RiftXConfig) -> APISettings:
@@ -166,6 +177,7 @@ class APISettings:
             node_id=config.runner.node_id,
             workspace_root=config.workspace.root.expanduser(),
             runner_state_path=config.runner.state_path.expanduser(),
+            runner_credential_path=config.runner.credential_path.expanduser(),
             web_dist_path=config.web.dist_path.expanduser(),
             temporal_address=config.temporal.target,
             temporal_namespace=config.temporal.namespace,
@@ -188,6 +200,7 @@ class APISettings:
             payload_gid=config.execution.payload_gid,
             admin_token=config.security.admin_token,
             cors_origins=tuple(config.server.cors_origins),
+            audit=config.audit.model_copy(deep=True),
         )
         settings.validate_api_security_boundary()
         return settings
@@ -661,9 +674,31 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
 
 
 def _prepare_local_paths(settings: APISettings) -> None:
+    _validate_audit_settings_path_isolation(settings)
     settings.workspace_root.mkdir(parents=True, exist_ok=True)
     settings.runner_state_path.mkdir(parents=True, exist_ok=True)
     if settings.database_url.startswith("sqlite+aiosqlite:///"):
         raw_path = settings.database_url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
             Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    _validate_audit_settings_path_isolation(settings)
+
+
+def _validate_audit_settings_path_isolation(settings: APISettings) -> None:
+    try:
+        validate_audit_storage_isolation(
+            audit=settings.audit,
+            workspace_root=settings.workspace_root,
+            runner_state_path=settings.runner_state_path,
+            runner_credential_path=settings.runner_credential_path,
+            models_secrets_path=settings.model_secrets_path,
+            local_principal_path=settings.local_principal_path,
+            database_url=settings.database_url,
+            temporal_tls_server_root_ca_path=settings.temporal_tls_server_root_ca_path,
+            temporal_tls_client_cert_path=settings.temporal_tls_client_cert_path,
+            temporal_tls_client_private_key_path=(
+                settings.temporal_tls_client_private_key_path
+            ),
+        )
+    except ValueError as exc:
+        raise RiftXConfigError(f"invalid Audit path isolation: {exc}") from None

@@ -95,6 +95,7 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert settings.workspace_root == Path("runs")
     assert settings.runner_state_path == Path("state")
     assert config.runner.credential_path == Path("private/runner-credentials.json")
+    assert settings.runner_credential_path == Path("private/runner-credentials.json")
     assert settings.temporal_address == "temporal.test:7233"
     assert settings.temporal_tls_enabled is True
     assert settings.temporal_tls_server_root_ca_path == Path("tls/server-ca.pem")

@@ -25,16 +25,16 @@
 
 ## Current Wave
 
-- Milestone: `M0 — Contract and development guardrails`
-- Current task: `AUD-002 — Configuration and feature flag`
-- Next dependency: `AUD-001` is complete; `AUD-002` is unblocked.
+- Milestone: `M1 — Run kind, domain, and persistence`
+- Current task: `AUD-100 — RunKind`
+- Next dependency: `M0` is complete; `AUD-100` is unblocked.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
-| M0 Contract and development guardrails | in_progress | Pending AUD-001/AUD-002 and M0 gate |
-| M1 Run kind, domain, and persistence | pending | Not started |
+| M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 is the current unblocked task |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -53,7 +53,7 @@
 | --- | --- |
 | AUD-000 Implementation progress ledger | completed |
 | AUD-001 Independent implementation and naming boundary | completed |
-| AUD-002 Configuration and feature flag | pending |
+| AUD-002 Configuration and feature flag | completed |
 
 ### M1
 
@@ -246,7 +246,7 @@
   - Third-party expressive material: none. Public methodology was previously studied,
     so this is not represented as a strict clean-room process.
   - Production Code Audit Agent instructions: not applicable for AUD-001.
-- Commit: Introducing commit; hash will be backfilled by the AUD-002 ledger update.
+- Commit: `65298283` (`feat(qa): enforce Code Audit independence boundary`).
 - Known limitations:
   - The scanner proves only that the versioned, bounded policy found no known forbidden
     identities in the inspected inputs; it is not a copyright or clean-room proof.
@@ -258,6 +258,90 @@
     a release-pipeline concern.
 - Next unblocked task: AUD-002.
 
+### AUD-002 — Configuration and Feature Flag
+
+- Outcome:
+  - Added frozen `AuditConfig` deployment policy models with a default-disabled
+    feature flag and explicit deny-all empty `source_roots` behavior.
+  - Added complete `RIFTX_AUDIT_*` leaf mappings, strict scalar and JSON-list
+    parsing, bounded numeric and enum validation, cross-field rules, normalized
+    remote-model origins, and rejection of request/CLI Audit policy overrides.
+  - Added a versioned Audit configuration digest that applies keyed HMAC to
+    sensitive absolute paths before hashing the canonical policy document.
+  - Enforced two-way realpath isolation between authorized source roots and Audit,
+    workspace, Runner, credential, model-secret, principal, SQLite, and Temporal TLS
+    storage. API and Worker startup revalidate before and after directory creation;
+    Runner CLI post-load storage overrides are rejected when source roots are set.
+  - Kept Audit-disabled startup side-effect free and documented the safe deployment
+    defaults in the example configuration.
+- Files changed:
+  - `configs/riftx.example.yaml`
+  - `docs/architecture/decisions/0001-riftx-code-audit-independent-reimplementation.md`
+  - `docs/implementation/POST_V3_CODE_AUDIT_PROGRESS.md`
+  - `src/riftx/api/runtime.py`
+  - `src/riftx/cli/app.py`
+  - `src/riftx/config.py`
+  - `src/riftx/temporal/worker_runtime.py`
+  - `tests/unit/cli/test_app.py`
+  - `tests/unit/test_audit_config.py`
+  - `tests/unit/test_runtime_config.py`
+- Schema/migration impact: None.
+- Security boundary impact:
+  - Adds deployment-time authorization and storage-isolation policy only; it does
+    not register Audit endpoints, read source content, execute target code, create
+    snapshots, or invoke a model.
+  - Empty source roots deny every repository. Enabling Audit requires sandboxed
+    validation, and Deep mode requires the hybrid analysis profile.
+  - Remote model origins are HTTPS origin-only values with strict DNS/IP parsing;
+    unknown Audit environment keys, ambiguous values, broken symlinks, path aliases,
+    and source/storage overlap fail closed without disclosing source paths.
+  - Each shared startup check re-resolves source and storage paths. Pre/post-create
+    validation closes the tested source-root and storage-root symlink replacement
+    races at application assembly boundaries.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/test_audit_config.py tests/unit/test_runtime_config.py tests/unit/cli/test_app.py tests/unit/temporal/test_worker_runtime.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx/config.py src/riftx/api/runtime.py src/riftx/temporal/worker_runtime.py src/riftx/cli/app.py tests/unit/test_audit_config.py tests/unit/test_runtime_config.py tests/unit/cli/test_app.py tests/unit/temporal/test_worker_runtime.py`
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/config.py src/riftx/api/runtime.py src/riftx/cli/app.py tests/unit/test_audit_config.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Targeted Pytest passed: `204 passed`.
+  - Targeted Ruff and repository Ruff passed with `All checks passed!`.
+  - Targeted Mypy passed with no issues in the four selected files. The existing
+    unrelated `worker_runtime.py` Mypy baseline was intentionally outside this
+    targeted invocation.
+  - The full Pytest suite passed; five platform/containment tests were skipped and
+    one existing Pydantic warning was reported.
+  - The independence boundary passed under policy
+    `riftx.code-audit-independence/v1`, digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`:
+    9 dependency manifests, 445 production files, 0 explicit artifacts, and 0
+    violations.
+  - The executable release gate reported every gate passed; `git diff --check`
+    passed with no output.
+- Provenance:
+  - Requirements source: authoritative specification section 20 and section 22 /
+    AUD-002.
+  - Implementation and test author: Codex task `/root`; Git author: Ch1nfo.
+  - Security review: Codex tasks `m0_ci_map` and `m0_docs_map`; result: approved
+    after origin/TLS coverage, immutable policy, API/Worker/Runner override,
+    nearest-parent, and source-root replacement findings were closed. The original
+    adversarial canary matrix ended with `ALL_ORIGINAL_CANARIES_REJECTED`.
+  - Third-party expressive material: none; implementation uses RiftX-owned models,
+    validators, fixtures, and runtime boundaries.
+  - Production Code Audit Agent instructions: not applicable for AUD-002.
+- Commit: Introducing commit; hash will be backfilled by the AUD-100 ledger update.
+- Known limitations:
+  - The flag remains admission-only. Audit domain objects, API admission, source
+    preflight, signed authorization, snapshots, and deterministic analysis begin in
+    M1-M3.
+  - Startup isolation is one defense layer; descriptor-safe snapshot traversal and
+    per-run source authorization remain mandatory in M2.
+- Next unblocked task: AUD-100.
+
 ## Design Deviations and ADRs
 
 - `ADR-0001`: RiftX Code Audit is an independent reimplementation and does not claim
@@ -266,7 +350,8 @@
 
 ## Current Risks
 
-- M0 Audit configuration and the default-disabled feature flag are not implemented yet.
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- All M1-M10 product capabilities remain pending.
+- Audit admission and execution are intentionally unavailable until M1-M3 add durable
+  domain state, signed preflight, immutable snapshots, and the deterministic slice.
+- All M1-M10 runtime and product capabilities remain pending.

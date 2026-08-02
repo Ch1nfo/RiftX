@@ -236,6 +236,11 @@ def runner_daemon(
     """Start the outbound Runner daemon using the shared RiftX configuration."""
 
     config = _state(context).config
+    if config.audit.source_roots and (state_path is not None or credential_path is not None):
+        raise typer.BadParameter(
+            "Runner storage paths are deployment-owned when Audit source roots are configured",
+            param_hint="--state-path/--credential-path",
+        )
     resolved_node_id = node_id or config.runner.node_id
     logging.basicConfig(level=logging.INFO)
     asyncio.run(

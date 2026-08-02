@@ -281,7 +281,7 @@ review_sources:
   - AUD-001 implementation, executable gate, release wiring, and tests
   - final 80-test boundary matrix and three explicit local bundle scans
 review_result: approved
-commit: pending_backfill
+commit: 65298283 (feat(qa): enforce Code Audit independence boundary)
 notes: Public Code Security methodology was previously studied; solution B is applied; no strict clean-room claim is made.
 ```
 
@@ -320,7 +320,7 @@ review_sources:
   - repository and explicit local bundle gate reports under policy digest bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8
   - conda agent tar-metadata blocker probe and release-selector re-review (approved)
 review_result: approved
-commit: pending_backfill
+commit: 65298283 (feat(qa): enforce Code Audit independence boundary)
 notes: Contract, implementation, executable script, and release-selector wiring are one review unit.
 ```
 
@@ -352,7 +352,7 @@ review_sources:
   - conda agent targeted pytest result (80 passed)
   - conda agent focused tar-metadata review result (6 passed; safe-link control ready=true)
 review_result: approved
-commit: pending_backfill
+commit: 65298283 (feat(qa): enforce Code Audit independence boundary)
 notes: Forbidden-name sentinels are synthetic test data, not copied third-party fixtures.
 ```
 
@@ -380,10 +380,10 @@ review_sources:
   - authoritative specification section 22 / AUD-001
   - final implementation and fixture provenance inventory
 review_result: approved
-commit: pending_backfill
+commit: 65298283 (feat(qa): enforce Code Audit independence boundary)
 notes: Non-applicability is explicit; later Agent instructions require their own version and digest.
 ```
 
-上述记录已依据方案 B、最终实现、手工三类 bundle 证据和独立复核批准。Commit 在创建前保持
-`pending_backfill`，由下一任务首次账本更新回填准确 SHA；该机制不得被解释为 strict
-clean-room、外部 CI 签名或最终候选制品证明。
+上述记录已依据方案 B、最终实现、手工三类 bundle 证据和独立复核批准，并由 AUD-002
+首次账本更新回填 introducing commit `65298283`；该记录不得被解释为 strict clean-room、
+外部 CI 签名或最终候选制品证明。
