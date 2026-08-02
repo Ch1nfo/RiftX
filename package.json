@@ -6,6 +6,9 @@
     "web:dev": "pnpm --filter @riftx/web dev",
     "web:build": "pnpm --filter @riftx/web build",
     "web:test": "pnpm --filter @riftx/web test",
+    "demo:dev": "pnpm --filter @riftx/demo dev",
+    "demo:build": "pnpm --filter @riftx/demo build",
+    "demo:test": "pnpm --filter @riftx/demo test",
     "browser-extension:build": "pnpm --filter @riftx/browser-extension build",
     "browser-extension:test": "pnpm --filter @riftx/browser-extension test"
   }
