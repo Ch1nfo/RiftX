@@ -1,0 +1,94 @@
+version: 1
+execution_policy: registered_only
+
+shells:
+  default:
+    linux: /bin/bash
+    macos: /bin/zsh
+    windows: pwsh.exe
+
+tools:
+  nmap:
+    enabled: true
+    short_description: Discover ports, services, and operating systems
+    description: Run authorized Nmap discovery and service fingerprinting through the RiftX Runner.
+    command:
+      - nmap
+    executor: process
+    capabilities:
+      - port_scan
+      - service_detection
+      - os_detection
+    version_probe:
+      command:
+        - nmap
+        - --version
+    approval: never
+    timeout: 1800
+    output:
+      preferred: xml
+
+  nuclei:
+    enabled: true
+    short_description: Scan targets with versioned vulnerability templates
+    description: Run authorized Nuclei template scans and emit structured JSONL findings.
+    command:
+      - nuclei
+    executor: process
+    capabilities:
+      - vulnerability_scan
+      - template_scan
+    version_probe:
+      command:
+        - nuclei
+        - -version
+    approval: never
+    timeout: 3600
+    output:
+      preferred: jsonl
+
+  masscan:
+    enabled: true
+    short_description: Perform high-speed TCP port discovery
+    description: Run authorized Masscan discovery through the RiftX Runner.
+    command:
+      - masscan
+    executor: process
+    capabilities:
+      - port_scan
+    version_probe:
+      command:
+        - masscan
+        - --version
+    approval: never
+    timeout: 1800
+    output:
+      preferred: json
+
+  msfconsole:
+    enabled: true
+    short_description: Search and operate Metasploit modules in a managed terminal
+    description: Start an approval-gated Metasploit PTY through the RiftX Runner.
+    command:
+      - msfconsole
+      - -q
+    executor: pty
+    capabilities:
+      - exploit_search
+      - exploit_execute
+      - session_management
+    approval: sensitive
+
+  custom_poc:
+    enabled: false
+    short_description: Execute an operator-provided proof of concept
+    description: Run a registered custom verifier after normal policy and approval checks.
+    command:
+      - python3
+      - /opt/redteam/pocs/custom.py
+    executor: process
+    capabilities:
+      - custom_verification
+    approval: sensitive
+    environment:
+      PYTHONUNBUFFERED: "1"

@@ -1,5 +1,0 @@
----
-source: tui/src/cwd_prompt.rs
-expression: rendered
----
-Failed to save working directory preference.

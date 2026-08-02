@@ -1,0 +1,13 @@
+"""Canonical Runtime event names."""
+
+LEASE_ACQUIRED = "runtime.lease_acquired"
+SESSION_ACTIVATED = "runtime.session_activated"
+CYCLE_CREATED = "runtime.cycle_created"
+CYCLE_STARTED = "runtime.cycle_started"
+CONTEXT_COMPILED = "runtime.context_compiled"
+ENGINE_EVENT = "runtime.engine_event"
+STEP_STARTED = "runtime.step_started"
+STEP_COMPLETED = "runtime.step_completed"
+CYCLE_YIELDED = "runtime.cycle_yielded"
+CYCLE_FAILED = "runtime.cycle_failed"
+LEASE_RELEASED = "runtime.lease_released"

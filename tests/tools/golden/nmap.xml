@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -oX - -sV 192.0.2.10">
+  <host>
+    <status state="up" reason="syn-ack" />
+    <address addr="192.0.2.10" addrtype="ipv4" />
+    <hostnames><hostname name="web.example.test" type="user" /></hostnames>
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open" /><service name="ssh" product="OpenSSH" version="9.6" /></port>
+      <port protocol="tcp" portid="80"><state state="open" /><service name="http" product="nginx" version="1.25" /></port>
+      <port protocol="tcp" portid="443"><state state="closed" /><service name="https" /></port>
+    </ports>
+  </host>
+</nmaprun>

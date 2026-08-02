@@ -1,0 +1,32 @@
+default_profile: primary
+
+models:
+  primary:
+    provider: openai_compatible
+    model: gpt-5.6
+    api: chat_completions
+    base_url: "${RIFTX_MODEL_BASE_URL}"
+    api_key_env: RIFTX_MODEL_API_KEY
+    requires_api_key: true
+    timeout_seconds: 120
+    max_retries: 2
+
+  fast:
+    provider: openai_compatible
+    model: fast-model
+    api: chat_completions
+    base_url: "${RIFTX_MODEL_BASE_URL}"
+    api_key_env: RIFTX_MODEL_API_KEY
+    requires_api_key: true
+    timeout_seconds: 60
+    max_retries: 2
+
+  report:
+    provider: openai_compatible
+    model: report-model
+    api: chat_completions
+    base_url: "${RIFTX_MODEL_BASE_URL}"
+    api_key_env: RIFTX_MODEL_API_KEY
+    requires_api_key: true
+    timeout_seconds: 180
+    max_retries: 1

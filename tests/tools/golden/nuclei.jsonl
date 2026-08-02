@@ -1,0 +1,2 @@
+{"template-id":"http-missing-security-headers","info":{"name":"HTTP Missing Security Headers","severity":"info","classification":{"cve-id":[]}},"type":"http","host":"https://example.test","matched-at":"https://example.test/","matcher-name":"content-security-policy"}
+{"template-id":"CVE-2025-0001","info":{"name":"Example vulnerability","severity":"high","classification":{"cve-id":["CVE-2025-0001"]}},"type":"http","host":"https://example.test","matched-at":"https://example.test/admin"}

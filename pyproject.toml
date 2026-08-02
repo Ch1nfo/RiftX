@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riftx"
+version = "2.0.0a0"
+description = "Host-native durable agent execution platform"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+authors = [
+  { name = "RiftX contributors" },
+]
+dependencies = [
+  "aiosqlite>=0.20,<1",
+  "alembic>=1.14,<2",
+  "fastapi>=0.136,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "prompt-toolkit>=3.0.53,<4",
+  "pypdf>=5.9,<7",
+  "PyYAML>=6,<7",
+  "rich>=14,<15",
+  "openai>=2.50,<3",
+  "openai-agents>=0.19,<1",
+  "playwright>=1.52,<2",
+  "sqlalchemy[asyncio]>=2.0.36,<3",
+  "temporalio>=1.30,<2",
+  "typer>=0.26,<1",
+  "uvicorn>=0.51,<1",
+  "websockets>=16,<17",
+  "pywinpty>=2.0,<3; platform_system == 'Windows'",
+]
+
+[project.scripts]
+riftx = "riftx.cli.app:app"
+riftx-runner = "riftx.runner.daemon:app"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
