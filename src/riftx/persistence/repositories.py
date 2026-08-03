@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
+from json import JSONDecodeError
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import and_, case, func, or_, select, update
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
     RepositoryDecisionConflictError,
+    RepositoryIntegrityError,
+    RepositoryUnavailableError,
 )
 from riftx.application.finalization import (
     FINALIZATION_INTENT_EVENT_TYPE,
@@ -26,12 +29,14 @@ from riftx.application.finalization import (
     resolve_finalization_intent,
 )
 from riftx.application.ports import ExecutionAdmissionIdentity
+from riftx.application.ports.repositories import ArtifactOwnerBinding
 from riftx.domain import (
     Approval,
     ApprovalDecision,
     ApprovalGrant,
     ApprovalStatus,
     Artifact,
+    ArtifactAccessClass,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -58,7 +63,13 @@ from riftx.domain import (
 )
 from riftx.domain.base import utc_now
 
-from .artifact_visibility import artifact_is_not_target_http_sensitive
+from .artifact_visibility import (
+    artifact_has_consistent_audit_owner,
+    artifact_has_consistent_execution_owner,
+    artifact_has_valid_owner,
+    artifact_is_not_target_http_sensitive,
+    artifact_is_publicly_visible,
+)
 from .mappers import (
     apply_approval_to_record,
     apply_execution_to_record,
@@ -101,6 +112,7 @@ from .orm import (
     ApprovalGrantRecord,
     ApprovalRecord,
     ArtifactRecord,
+    AuditScanRecord,
     EngagementRecord,
     ExecutionRecord,
     FindingRecord,
@@ -133,27 +145,153 @@ class SQLAlchemyArtifactRepository:
     async def create(self, artifact: Artifact) -> Artifact:
         try:
             async with self._session_factory() as session, session.begin():
+                owner = (
+                    await session.execute(
+                        select(
+                            RunRecord.kind,
+                            AuditScanRecord.run_id.label("audit_run_id"),
+                            ExecutionRecord.run_id.label("execution_run_id"),
+                        )
+                        .select_from(RunRecord)
+                        .outerjoin(
+                            AuditScanRecord,
+                            AuditScanRecord.id == artifact.audit_id,
+                        )
+                        .outerjoin(
+                            ExecutionRecord,
+                            ExecutionRecord.id == artifact.execution_id,
+                        )
+                        .where(RunRecord.id == artifact.run_id)
+                    )
+                ).one_or_none()
+                if owner is None or not _artifact_create_owner_is_valid(
+                    artifact,
+                    run_kind=owner.kind,
+                    audit_run_id=owner.audit_run_id,
+                    execution_run_id=owner.execution_run_id,
+                ):
+                    raise RepositoryConflictError(
+                        f"could not create artifact {artifact.id!r} with invalid owner"
+                    )
                 session.add(artifact_to_record(artifact))
                 await session.flush()
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not create artifact {artifact.id!r}") from exc
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
         return artifact
 
     async def get_run_id(self, artifact_id: str) -> str | None:
         statement = select(ArtifactRecord.run_id).where(
             ArtifactRecord.id == artifact_id,
-            artifact_is_not_target_http_sensitive(),
+            artifact_is_publicly_visible(),
         )
-        async with self._session_factory() as session:
-            return await session.scalar(statement)
+        try:
+            async with self._session_factory() as session:
+                return await session.scalar(statement)
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
 
     async def get(self, artifact_id: str) -> Artifact | None:
         statement = select(ArtifactRecord).where(
             ArtifactRecord.id == artifact_id,
-            artifact_is_not_target_http_sensitive(),
+            artifact_is_publicly_visible(),
         )
-        async with self._session_factory() as session:
-            record = await session.scalar(statement)
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(statement)
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return artifact_from_record(record) if record is not None else None
+
+    async def get_for_reconciliation(self, artifact_id: str) -> Artifact | None:
+        statement = select(ArtifactRecord).where(ArtifactRecord.id == artifact_id)
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(statement)
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return artifact_from_record(record) if record is not None else None
+
+    async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding | None:
+        """Resolve only the bounded owner tuple needed before authorization."""
+
+        statement = (
+            select(
+                ArtifactRecord.id,
+                ArtifactRecord.run_id,
+                ArtifactRecord.audit_id,
+                ArtifactRecord.access_class,
+                RunRecord.kind.label("run_kind"),
+                AuditScanRecord.run_id.label("audit_run_id"),
+            )
+            .outerjoin(
+                RunRecord,
+                RunRecord.id == ArtifactRecord.run_id,
+            )
+            .outerjoin(
+                AuditScanRecord,
+                AuditScanRecord.id == ArtifactRecord.audit_id,
+            )
+            .where(ArtifactRecord.id == artifact_id)
+        )
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(statement)).one_or_none()
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        if row is None:
+            return None
+        try:
+            if (
+                not isinstance(row.id, str)
+                or not row.id
+                or not isinstance(row.run_id, str)
+                or not row.run_id
+                or (row.audit_id is not None and not isinstance(row.audit_id, str))
+            ):
+                raise ValueError("invalid Artifact owner binding")
+            access_class = ArtifactAccessClass(row.access_class)
+            run_kind = RunKind(row.run_kind)
+            if row.audit_id is None and access_class is not ArtifactAccessClass.PUBLIC_EXPORT:
+                raise ValueError("invalid Artifact owner/access binding")
+            if row.audit_run_id is not None and not isinstance(row.audit_run_id, str):
+                raise ValueError("invalid Artifact Audit binding")
+            return ArtifactOwnerBinding(
+                artifact_id=row.id,
+                run_id=row.run_id,
+                audit_id=row.audit_id,
+                access_class=access_class,
+                run_kind=run_kind,
+                audit_run_id=row.audit_run_id,
+            )
+        except (AttributeError, TypeError, ValueError):
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+
+    async def get_for_audit(
+        self,
+        artifact_id: str,
+        audit_id: str,
+        run_id: str,
+    ) -> Artifact | None:
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.id == artifact_id,
+            ArtifactRecord.audit_id == audit_id,
+            ArtifactRecord.run_id == run_id,
+            artifact_has_consistent_audit_owner(),
+            artifact_has_consistent_execution_owner(),
+        )
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(statement)
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
         return artifact_from_record(record) if record is not None else None
 
     async def list(
@@ -171,7 +309,7 @@ class SQLAlchemyArtifactRepository:
 
         statement = select(ArtifactRecord).where(
             ArtifactRecord.run_id == run_id,
-            artifact_is_not_target_http_sensitive(),
+            artifact_is_publicly_visible(),
         )
         if execution_id is not None:
             statement = statement.where(ArtifactRecord.execution_id == execution_id)
@@ -180,8 +318,49 @@ class SQLAlchemyArtifactRepository:
             .limit(limit)
             .offset(offset)
         )
-        async with self._session_factory() as session:
-            records = (await session.scalars(statement)).all()
+        try:
+            async with self._session_factory() as session:
+                records = (await session.scalars(statement)).all()
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", "invalid-id") from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return [artifact_from_record(record) for record in records]
+
+    async def list_for_audit(
+        self,
+        audit_id: str,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.audit_id == audit_id,
+            ArtifactRecord.run_id == run_id,
+            artifact_has_consistent_audit_owner(),
+            artifact_has_consistent_execution_owner(),
+        )
+        if execution_id is not None:
+            statement = statement.where(ArtifactRecord.execution_id == execution_id)
+        statement = (
+            statement.order_by(ArtifactRecord.created_at, ArtifactRecord.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        try:
+            async with self._session_factory() as session:
+                records = (await session.scalars(statement)).all()
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", "invalid-id") from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
         return [artifact_from_record(record) for record in records]
 
     async def target_http_sensitive_ids(
@@ -200,29 +379,85 @@ class SQLAlchemyArtifactRepository:
             return frozenset()
         sensitive: set[str] = set()
         ordered = tuple(candidates)
-        async with self._session_factory() as session:
-            for start in range(0, len(ordered), 400):
-                batch = ordered[start : start + 400]
-                authoritative = select(ArtifactRecord.id).where(
-                    ArtifactRecord.id.in_(batch),
-                    ~artifact_is_not_target_http_sensitive(),
-                )
-                sensitive.update(await session.scalars(authoritative))
-                statement = select(
-                    TargetHttpRequestRecord.request_artifact_id,
-                    TargetHttpRequestRecord.response_artifact_id,
-                ).where(
-                    or_(
-                        TargetHttpRequestRecord.request_artifact_id.in_(batch),
-                        TargetHttpRequestRecord.response_artifact_id.in_(batch),
+        try:
+            async with self._session_factory() as session:
+                for start in range(0, len(ordered), 400):
+                    batch = ordered[start : start + 400]
+                    authoritative = select(ArtifactRecord.id).where(
+                        ArtifactRecord.id.in_(batch),
+                        ~artifact_is_not_target_http_sensitive(),
                     )
-                )
-                for request_id, response_id in await session.execute(statement):
-                    if request_id in candidates:
-                        sensitive.add(request_id)
-                    if response_id in candidates:
-                        sensitive.add(response_id)
+                    sensitive.update(await session.scalars(authoritative))
+                    statement = select(
+                        TargetHttpRequestRecord.request_artifact_id,
+                        TargetHttpRequestRecord.response_artifact_id,
+                    ).where(
+                        or_(
+                            TargetHttpRequestRecord.request_artifact_id.in_(batch),
+                            TargetHttpRequestRecord.response_artifact_id.in_(batch),
+                        )
+                    )
+                    for request_id, response_id in await session.execute(statement):
+                        if request_id in candidates:
+                            sensitive.add(request_id)
+                        if response_id in candidates:
+                            sensitive.add(response_id)
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
         return frozenset(sensitive)
+
+    async def restricted_artifact_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]:
+        """Classify IDs whose generic Event metadata must remain hidden."""
+
+        candidates = frozenset(artifact_ids)
+        if not candidates:
+            return frozenset()
+        metadata_safe: set[str] = set()
+        ordered = tuple(candidates)
+        try:
+            async with self._session_factory() as session:
+                for start in range(0, len(ordered), 400):
+                    batch = ordered[start : start + 400]
+                    statement = select(ArtifactRecord.id).where(
+                        ArtifactRecord.id.in_(batch),
+                        ArtifactRecord.access_class == ArtifactAccessClass.PUBLIC_EXPORT.value,
+                        artifact_has_valid_owner(),
+                        artifact_has_consistent_execution_owner(),
+                    )
+                    metadata_safe.update(await session.scalars(statement))
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return candidates.difference(metadata_safe)
+
+
+def _artifact_create_owner_is_valid(
+    artifact: Artifact,
+    *,
+    run_kind: object,
+    audit_run_id: object,
+    execution_run_id: object,
+) -> bool:
+    execution_owner_is_valid = (
+        artifact.execution_id is None
+        and execution_run_id is None
+        or artifact.execution_id is not None
+        and isinstance(execution_run_id, str)
+        and execution_run_id == artifact.run_id
+    )
+    if not execution_owner_is_valid:
+        return False
+    if run_kind == RunKind.GENERAL.value:
+        return artifact.audit_id is None and audit_run_id is None
+    if run_kind == RunKind.CODE_AUDIT.value:
+        return (
+            artifact.audit_id is not None
+            and isinstance(audit_run_id, str)
+            and audit_run_id == artifact.run_id
+        )
+    return False
 
 
 class SQLAlchemyEngagementRepository:
@@ -612,9 +847,7 @@ class SQLAlchemyRunRepository:
 
     async def get_kind(self, run_id: str) -> RunKind | None:
         async with self._session_factory() as session:
-            value = await session.scalar(
-                select(RunRecord.kind).where(RunRecord.id == run_id)
-            )
+            value = await session.scalar(select(RunRecord.kind).where(RunRecord.id == run_id))
         return RunKind(value) if value is not None else None
 
     async def get(self, run_id: str) -> Run | None:
@@ -2087,9 +2320,7 @@ class SQLAlchemyTerminalRepository:
     async def get_run_id(self, session_id: str) -> str | None:
         async with self._session_factory() as session:
             return await session.scalar(
-                select(TerminalSessionRecord.run_id).where(
-                    TerminalSessionRecord.id == session_id
-                )
+                select(TerminalSessionRecord.run_id).where(TerminalSessionRecord.id == session_id)
             )
 
     async def get(self, session_id: str) -> TerminalSession | None:

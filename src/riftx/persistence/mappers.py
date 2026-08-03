@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from riftx.application.errors import RepositoryIntegrityError
 from riftx.domain import (
     Approval,
     ApprovalDecision,
@@ -11,6 +12,9 @@ from riftx.domain import (
     ApprovalMode,
     ApprovalStatus,
     Artifact,
+    ArtifactAccessClass,
+    ArtifactContentTrust,
+    ArtifactIngestProvenance,
     Engagement,
     EntryPoint,
     Execution,
@@ -121,8 +125,13 @@ def artifact_to_record(artifact: Artifact) -> ArtifactRecord:
         id=artifact.id,
         run_id=artifact.run_id,
         execution_id=artifact.execution_id,
+        audit_id=artifact.audit_id,
+        access_class=artifact.access_class.value,
+        content_trust=artifact.content_trust.value,
         name=artifact.name,
         path=artifact.path,
+        storage_key=artifact.storage_key,
+        ingest_provenance_json=artifact.ingest_provenance.model_dump(mode="json"),
         mime_type=artifact.mime_type,
         sha256=artifact.sha256,
         size=artifact.size,
@@ -132,18 +141,33 @@ def artifact_to_record(artifact: Artifact) -> ArtifactRecord:
 
 
 def artifact_from_record(record: ArtifactRecord) -> Artifact:
-    return Artifact(
-        id=record.id,
-        run_id=record.run_id,
-        execution_id=record.execution_id,
-        name=record.name,
-        path=record.path,
-        mime_type=record.mime_type,
-        sha256=record.sha256,
-        size=record.size,
-        description=record.description,
-        created_at=record.created_at,
-    )
+    try:
+        return Artifact(
+            id=record.id,
+            run_id=record.run_id,
+            execution_id=record.execution_id,
+            audit_id=record.audit_id,
+            access_class=ArtifactAccessClass(record.access_class),
+            content_trust=ArtifactContentTrust(record.content_trust),
+            name=record.name,
+            path=record.path,
+            storage_key=record.storage_key,
+            ingest_provenance=ArtifactIngestProvenance.model_validate(
+                record.ingest_provenance_json
+            ),
+            mime_type=record.mime_type,
+            sha256=record.sha256,
+            size=record.size,
+            description=record.description,
+            created_at=record.created_at,
+        )
+    except RepositoryIntegrityError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        raise RepositoryIntegrityError(
+            "Artifact",
+            getattr(record, "id", "invalid-id"),
+        ) from None
 
 
 def engagement_to_record(engagement: Engagement) -> EngagementRecord:

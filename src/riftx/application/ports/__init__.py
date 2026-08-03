@@ -23,6 +23,7 @@ from .audits import (
 from .repositories import (
     ActionReadRepository,
     ApprovalRepository,
+    ArtifactOwnerBinding,
     ArtifactRepository,
     EngagementRepository,
     ExecutionAdmissionIdentity,
@@ -58,6 +59,7 @@ __all__ = [
     "AuditStartIntentRepository",
     "AuditWorkRepository",
     "ApprovalRepository",
+    "ArtifactOwnerBinding",
     "ArtifactRepository",
     "EngagementRepository",
     "ExecutionAdmissionIdentity",

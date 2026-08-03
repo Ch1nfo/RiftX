@@ -202,9 +202,13 @@ async def test_report_service_generates_safe_linked_immutable_outputs(tmp_path: 
     contents: dict[ReportFormat, str] = {}
     for report in reports:
         artifact = artifacts[report.artifact_id]
-        _, content_path = await artifact_service.content_path(artifact.id)
-        contents[report.format] = content_path.read_text()
-        assert content_path.stat().st_mode & 0o222 == 0
+        content = await artifact_service.read_content_slice(
+            artifact.id,
+            expected_run_id="run-1",
+            max_bytes=max(1, artifact.size),
+        )
+        assert content.eof is True
+        contents[report.format] = content.data.decode("utf-8")
 
     evidence_url = "/api/v1/artifacts/artifact-proof/content"
     assert evidence_url in contents[ReportFormat.MARKDOWN]

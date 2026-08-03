@@ -9,7 +9,7 @@ from riftx.application.errors import ApplicationConflictError, EntityNotFoundErr
 from riftx.application.services import ArtifactApplicationService, RunApplicationService
 from riftx.application.services.artifacts import RegisterArtifactContent
 from riftx.application.services.runs import require_general_run_operation
-from riftx.domain import Run
+from riftx.domain import ArtifactContentTrust, Run
 from riftx.scope import ScopeGuard, ScopeTargetKind
 
 from .models import (
@@ -64,6 +64,7 @@ class ConnectorApplicationService:
                         name=f"connector-{capture.source.value}-{capture.capture_id}-request.http",
                         mime_type="message/http",
                         description="Complete HTTP request imported by external connector",
+                        content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                     ),
                 )
                 response_artifact = None
@@ -78,6 +79,7 @@ class ConnectorApplicationService:
                             ),
                             mime_type="message/http",
                             description="Complete HTTP response imported by external connector",
+                            content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                         ),
                     )
                 summary = capture.safe_summary()
@@ -101,6 +103,7 @@ class ConnectorApplicationService:
                         ),
                         mime_type="application/json",
                         description="Sanitized connector capture manifest",
+                        content_trust=ArtifactContentTrust.GENERATED,
                     ),
                 )
                 submission = await self._submissions.create(

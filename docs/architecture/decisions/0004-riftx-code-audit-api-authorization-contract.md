@@ -66,12 +66,25 @@
 严格禁止执行宿主效果；也不能在 `DURABLE_WRITE` handler 内顺手执行 Preflight、Start 或
 Workflow signal。
 
-OpenAPI 在 AUD-104 只能出现上述三个 Audit operation。以下路由仍不存在：
+OpenAPI 在 AUD-104 提交时只能出现上述三个 Audit operation。AUD-105 按 ADR-0005 增加的纯读取
+Artifact list/detail/content route 是这个边界的显式后继，不表示 AUD-104 当时已经公开它们，
+也不允许增加 Artifact write/upload。以下效果路由在 AUD-104 仍不存在：
 
 - `/api/v1/audits/preflight`；
 - `/api/v1/audits/{audit_id}/start`；
 - Audit pause、resume、cancel；
 - Audit Finding、Evidence、Report、Fix、Retest 等后续领域端点。
+
+AUD-105 唯一扩展的 Audit route family 为：
+
+~~~text
+GET /api/v1/audits/{audit_id}/artifacts
+GET /api/v1/audits/{audit_id}/artifacts/{artifact_id}
+GET /api/v1/audits/{audit_id}/artifacts/{artifact_id}/content
+~~~
+
+它们全部是 Audit-root-authorized `READ_ONLY`，并受 ADR-0005 的 access class、single-fd 和
+zero-I/O-before-authorization 契约约束。
 
 这些端点只能由后续任务按各自的 `HOST_EXECUTION`、`WORKFLOW_CONTROL` 或 `HOST_CONTROL`
 边界引入，不能把 AUD-104 的 `DURABLE_WRITE` 当作授权先例。
@@ -644,7 +657,7 @@ conda run --no-capture-output -n agent pytest <AUD-104 test targets>
 ### 11.2 明确延后
 
 - Preflight、signed token、source authorization proof：AUD-200/AUD-201；
-- restricted Artifact access class、bounded ingest/download：AUD-105；
+- restricted Artifact access class、bounded ingest/download 已由 AUD-105 / ADR-0005 完成；
 - machine-readable mutation inventory、Audit Workflow router、包含不可变 execution identity 的
   完整 RunnerCommand ownership、
   Approval/Execution callback alternative：AUD-106；
@@ -667,8 +680,8 @@ conda run --no-capture-output -n agent pytest <AUD-104 test targets>
 - 临时 blanket bridge 会拒绝未来合法的 Audit-owned效果，必须由 AUD-106 的 typed origin/policy
   有序替换，不能长期堆叠例外；
 - offset pagination 只用于 M1，小规模授权读取；最终大规模 API 仍需 signed cursor；
-- Artifact root authorization 尚不等于 restricted content download 完成，AUD-105 是 M1 exit 的
-  必要后续任务；
+- Artifact root authorization 已由 AUD-105 / ADR-0005 扩展为显式 Audit Artifact route、access
+  class 和 descriptor-safe content contract；
 - RunnerCommand ownership 未完成前，Code Audit 不具备 Runner 执行资格。
 
 ## 12. 本 ADR 的 provenance 记录
@@ -699,12 +712,12 @@ public_standard_versions:
 third_party_expressive_material: none
 third_party_dependency_decisions:
   - not_applicable
-reviewer: Codex task /root (final implementation/security review pending)
+reviewer: Codex tasks /root, /root/audit105_security_review
 review_sources:
   - this ADR
   - authoritative specification sections listed above
   - AUD-104 API, authorization, RunKind bridge, Runner callback, Feature Flag, and regression diff/tests
-review_result: pending
-commit: pending_backfill
+review_result: approved; AUD-104 completed with no accepted P0/P1/P2 findings
+commit: 671735bedd0ab7b4fac01348144e0cd028e0fadf (feat(api): expose authorized Code Audit drafts)
 notes: AUD-104 exposes draft-only persistence and safe reads. The M1 synthetic-field, principal-scoped request identity, GA/M1 projection, opaque-error, and child-read clarifications are part of the same acceptance contract. RunnerCommand ownership and the final machine-readable RunKind effect/router contract remain explicitly blocked on AUD-106.
 ~~~

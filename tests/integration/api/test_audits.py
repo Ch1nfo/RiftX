@@ -452,7 +452,7 @@ async def test_audit_routes_require_the_declared_read_and_write_capabilities(
         assert (await _counts(database))["audit_scans"] == 0
 
 
-async def test_openapi_exposes_only_the_aud104_surface_with_strict_safe_schemas(
+async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
     tmp_path: Path,
 ) -> None:
     async with _audit_api(tmp_path, name="audit-openapi") as (
@@ -469,9 +469,33 @@ async def test_openapi_exposes_only_the_aud104_surface_with_strict_safe_schemas(
             if path.startswith("/api/v1/audits")
         }
 
-        assert set(paths) == {"/api/v1/audits", "/api/v1/audits/{audit_id}"}
+        assert set(paths) == {
+            "/api/v1/audits",
+            "/api/v1/audits/{audit_id}",
+            "/api/v1/audits/{audit_id}/artifacts",
+            "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
+            "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
+        }
         assert set(paths["/api/v1/audits"]) == {"get", "post"}
         assert set(paths["/api/v1/audits/{audit_id}"]) == {"get"}
+        assert set(paths["/api/v1/audits/{audit_id}/artifacts"]) == {"get"}
+        assert set(paths["/api/v1/audits/{audit_id}/artifacts/{artifact_id}"]) == {
+            "get"
+        }
+        assert set(
+            paths[
+                "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content"
+            ]
+        ) == {"get"}
+        for artifact_path in (
+            "/api/v1/audits/{audit_id}/artifacts",
+            "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
+            "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
+        ):
+            responses = paths[artifact_path]["get"]["responses"]
+            assert {"200", "401", "403", "404", "409", "422", "503"} <= set(
+                responses
+            )
         assert "preflight" not in str(paths)
         assert "/start" not in str(paths)
         serialized = str(paths)
@@ -481,5 +505,13 @@ async def test_openapi_exposes_only_the_aud104_surface_with_strict_safe_schemas(
             "request_digest",
             "workspace_path",
             "temporal_workflow_id",
+            "storage_key",
+            "ingest_provenance",
         ):
             assert forbidden not in serialized
+        artifact_properties = openapi["components"]["schemas"]["ArtifactResponse"][
+            "properties"
+        ]
+        assert {"path", "storage_key", "ingest_provenance"}.isdisjoint(
+            artifact_properties
+        )

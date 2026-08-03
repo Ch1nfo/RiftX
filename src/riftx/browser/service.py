@@ -31,6 +31,7 @@ from riftx.browser.models import (
     BrowserSessionCommand,
 )
 from riftx.domain import (
+    ArtifactContentTrust,
     BrowserAction,
     BrowserActionStatus,
     BrowserActionType,
@@ -608,6 +609,7 @@ class BrowserApplicationService:
                     ),
                     mime_type="application/json",
                     description="Managed browser network activity summary",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             observation = observation.model_copy(
@@ -621,6 +623,7 @@ class BrowserApplicationService:
                     name=result.attachment.name,
                     mime_type=result.attachment.mime_type,
                     description=result.attachment.description,
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             if result.attachment.kind == "screenshot" and observation is not None:

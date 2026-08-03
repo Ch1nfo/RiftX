@@ -447,7 +447,7 @@ class _ReadServiceSpy:
             raise AssertionError("Finding evidence loaded before authorization")
         return SimpleNamespace(run_id=FOREIGN_RUN_ID)
 
-    async def content_path(self, *_: object, **__: object) -> object:
+    async def open_public_content(self, *_: object, **__: object) -> object:
         self.io_calls += 1
         if self.disappeared:
             raise EntityNotFoundError("SensitiveArtifact", "canary-artifact-id")

@@ -18,7 +18,7 @@ from riftx.application.services.artifacts import (
     RegisterArtifactContent,
 )
 from riftx.application.services.runs import require_general_run_operation
-from riftx.domain import Run, RunStatus
+from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.execution import build_execution_key
 from riftx.persistence.repositories import SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import SQLAlchemyToolCallIntentRepository
@@ -563,6 +563,7 @@ class TargetHttpApplicationService:
                     name=f"target-http-{result.request_id}-request.json",
                     mime_type="application/json",
                     description="Immutable Target HTTP request",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                 ),
             )
             request_artifact_id = artifact.id
@@ -574,6 +575,7 @@ class TargetHttpApplicationService:
                     name=f"target-http-{result.request_id}-response.bin",
                     mime_type=result.content_type or "application/octet-stream",
                     description="Immutable Target HTTP response body",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                 ),
             )
             response_artifact_id = artifact.id

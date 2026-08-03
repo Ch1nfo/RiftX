@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import shlex
 from collections import Counter
-from pathlib import Path
+from collections.abc import Callable
+from functools import partial
 
 from riftx.config import ExecutionOutputConfig
 from riftx.domain import Execution, ExecutorType
+from riftx.runner import OpenedArtifactContent
 from riftx.tools import (
     ToolDefinition,
     ToolOutputParseError,
@@ -19,7 +22,7 @@ from riftx.tools import (
 )
 
 from .artifacts import ExecutionArtifactStore, SpilledArtifact
-from .models import OutputStream, ProcessedToolResult, StreamPreview
+from .models import OutputStream, ProcessedToolResult, RawArtifactReference, StreamPreview
 
 _MAX_STRUCTURED_PARSE_BYTES = 8 * 1024 * 1024
 _ERROR_TERMS = ("error", "failed", "failure", "denied", "timeout", "fatal", "exception")
@@ -43,28 +46,42 @@ class ToolResultProcessor:
         execution: Execution,
         tool: ToolDefinition,
     ) -> ProcessedToolResult:
-        spilled = [
-            await self._artifacts.spill(execution, OutputStream.STDOUT),
-            await self._artifacts.spill(execution, OutputStream.STDERR),
-        ]
+        spilled: list[SpilledArtifact] = []
+        try:
+            for stream in (OutputStream.STDOUT, OutputStream.STDERR):
+                spilled.append(await self._artifacts.spill(execution, stream))
+            return await self._process_spilled(execution, tool, spilled)
+        finally:
+            for item in spilled:
+                if item.content_lease is not None:
+                    item.content_lease.close()
+
+    async def _process_spilled(
+        self,
+        execution: Execution,
+        tool: ToolDefinition,
+        spilled: list[SpilledArtifact],
+    ) -> ProcessedToolResult:
         previews = await self._build_previews(spilled)
         artifact_errors = [
             f"{item.reference.stream.value} artifact unavailable: {item.reference.error}"
             for item in spilled
             if not item.reference.available
         ]
-        parser_name = _select_parser(tool, spilled)
+        parser_name = _select_parser(tool, previews)
         parser_error: str | None = None
         try:
-            structured = await asyncio.to_thread(
-                _parse_structured,
-                parser_name,
-                execution,
-                spilled,
+            structured = await _complete_blocking_operation(
+                lambda: _parse_structured(
+                    parser_name,
+                    execution,
+                    spilled,
+                    previews,
+                )
             )
         except (OSError, ToolOutputParseError, UnicodeError, ValueError) as exc:
             parser_error = f"{parser_name} parser failed: {exc}"
-            parser_name = _fallback_parser(spilled)
+            parser_name = _fallback_parser(previews)
             structured = _generic_structure(parser_name, execution, spilled, previews)
 
         observations = _observations(parser_name, structured, spilled)
@@ -121,18 +138,46 @@ class ToolResultProcessor:
             allowance = min(remaining, desired, item.reference.size)
             remaining -= allowance
             previews.append(
-                await asyncio.to_thread(
-                    _preview,
-                    item,
-                    allowance,
-                    self._config.preview_head_bytes,
-                    self._config.preview_tail_bytes,
+                await _complete_blocking_operation(
+                    partial(
+                        _preview,
+                        item,
+                        allowance,
+                        self._config.preview_head_bytes,
+                        self._config.preview_tail_bytes,
+                    )
                 )
             )
         return previews
 
 
-def _select_parser(tool: ToolDefinition, spilled: list[SpilledArtifact]) -> str:
+async def _complete_blocking_operation[T](operation: Callable[[], T]) -> T:
+    """Keep lease ownership until a preview or parser worker has stopped using it."""
+
+    worker = asyncio.create_task(asyncio.to_thread(operation))
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            # The processor consumes the outcome after the worker settles.
+            pass
+    try:
+        result = worker.result()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        if cancelled:
+            raise asyncio.CancelledError() from None
+        raise
+    if cancelled:
+        raise asyncio.CancelledError()
+    return result
+
+
+def _select_parser(tool: ToolDefinition, previews: list[StreamPreview]) -> str:
     preferred = (tool.output.preferred or "").strip().lower()
     tool_id = tool.id.lower()
     if tool.executor is ExecutorType.SHELL or tool_id in {"run_shell", "shell"}:
@@ -145,23 +190,19 @@ def _select_parser(tool: ToolDefinition, spilled: list[SpilledArtifact]) -> str:
         return "masscan_json"
     if preferred == "json":
         return "generic_json"
-    stdout = spilled[0]
-    if stdout.reference.available and stdout.content_path is not None:
-        prefix = _read_prefix(stdout.content_path, 256).lstrip()
-        if prefix.startswith((b"{", b"[")):
-            return "generic_json"
-    return _fallback_parser(spilled)
+    stdout = next(
+        (preview for preview in previews if preview.stream is OutputStream.STDOUT),
+        None,
+    )
+    if stdout is not None and not stdout.binary and stdout.text.lstrip().startswith(("{", "[")):
+        return "generic_json"
+    return _fallback_parser(previews)
 
 
-def _fallback_parser(spilled: list[SpilledArtifact]) -> str:
+def _fallback_parser(previews: list[StreamPreview]) -> str:
     return (
         "generic_binary"
-        if any(
-            item.reference.available
-            and item.reference.mime_type == "application/octet-stream"
-            and item.reference.size > 0
-            for item in spilled
-        )
+        if any(preview.binary and preview.size > 0 for preview in previews)
         else "generic_text"
     )
 
@@ -170,17 +211,16 @@ def _parse_structured(
     parser_name: str,
     execution: Execution,
     spilled: list[SpilledArtifact],
+    previews: list[StreamPreview],
 ) -> dict[str, object]:
     if parser_name in {"generic_text", "generic_binary", "shell_result"}:
-        return _generic_structure(parser_name, execution, spilled, [])
+        return _generic_structure(parser_name, execution, spilled, previews)
     stdout = spilled[0]
-    if not stdout.reference.available or stdout.content_path is None:
+    if not stdout.reference.available or stdout.content_lease is None:
         raise ToolOutputParseError("stdout artifact is unavailable")
     if stdout.reference.size > _MAX_STRUCTURED_PARSE_BYTES:
-        raise ToolOutputParseError(
-            f"structured input exceeds {_MAX_STRUCTURED_PARSE_BYTES} bytes"
-        )
-    content = stdout.content_path.read_bytes()
+        raise ToolOutputParseError(f"structured input exceeds {_MAX_STRUCTURED_PARSE_BYTES} bytes")
+    content = _read_all(stdout)
     if parser_name == "generic_json":
         return parse_generic_json(content)
     if parser_name == "nmap_xml":
@@ -205,10 +245,7 @@ def _generic_structure(
         "stdout_bytes": spilled[0].reference.size,
         "stderr_bytes": spilled[1].reference.size,
         "binary_streams": [
-            item.reference.stream.value
-            for item in spilled
-            if item.reference.mime_type == "application/octet-stream"
-            and item.reference.size > 0
+            preview.stream.value for preview in previews if preview.binary and preview.size > 0
         ],
     }
     if previews:
@@ -225,8 +262,8 @@ def _preview(
     configured_tail: int,
 ) -> StreamPreview:
     reference = artifact.reference
-    binary = reference.mime_type == "application/octet-stream" and reference.size > 0
-    if not reference.available or artifact.content_path is None or allowance <= 0 or binary:
+    binary = _is_binary_content(artifact)
+    if not reference.available or artifact.content_lease is None or allowance <= 0 or binary:
         return StreamPreview(
             stream=reference.stream,
             size=reference.size,
@@ -237,7 +274,7 @@ def _preview(
     head_bytes = min(configured_head, allowance)
     tail_bytes = min(configured_tail, max(0, allowance - head_bytes))
     data, truncated = _read_head_tail(
-        artifact.content_path,
+        artifact.content_lease,
         reference.size,
         head_bytes=head_bytes,
         tail_bytes=tail_bytes,
@@ -251,8 +288,24 @@ def _preview(
     )
 
 
+def _is_binary_content(artifact: SpilledArtifact) -> bool:
+    reference = artifact.reference
+    lease = artifact.content_lease
+    if not reference.available or lease is None or reference.size == 0:
+        return False
+    sample = _read_prefix(lease, min(reference.size, 4096))
+    if b"\x00" in sample:
+        return True
+    try:
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        decoder.decode(sample, final=False)
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
 def _read_head_tail(
-    path: Path,
+    lease: OpenedArtifactContent,
     size: int,
     *,
     head_bytes: int,
@@ -260,21 +313,49 @@ def _read_head_tail(
 ) -> tuple[bytes, bool]:
     budget = head_bytes + tail_bytes
     if size <= budget:
-        return path.read_bytes(), False
-    with path.open("rb") as stream:
-        head = stream.read(head_bytes)
-        tail = b""
-        if tail_bytes:
-            stream.seek(max(0, size - tail_bytes))
-            tail = stream.read(tail_bytes)
+        lease.seek(0)
+        content = _read_lease_bytes(lease, size)
+        lease.verify_unchanged()
+        return content, False
+    lease.seek(0)
+    head = _read_lease_bytes(lease, head_bytes)
+    tail = b""
+    if tail_bytes:
+        lease.seek(max(0, size - tail_bytes))
+        tail = _read_lease_bytes(lease, tail_bytes)
+    lease.verify_unchanged()
     omitted = size - len(head) - len(tail)
     marker = f"\n... <{omitted} bytes omitted> ...\n".encode()
     return head + marker + tail, True
 
 
-def _read_prefix(path: Path, size: int) -> bytes:
-    with path.open("rb") as stream:
-        return stream.read(size)
+def _read_prefix(lease: OpenedArtifactContent, size: int) -> bytes:
+    lease.seek(0)
+    content = _read_lease_bytes(lease, size)
+    lease.verify_unchanged()
+    return content
+
+
+def _read_all(artifact: SpilledArtifact) -> bytes:
+    lease = artifact.content_lease
+    if lease is None:
+        raise ToolOutputParseError("Artifact content is unavailable")
+    lease.seek(0)
+    content = _read_lease_bytes(lease, artifact.reference.size)
+    lease.verify_unchanged()
+    return content
+
+
+def _read_lease_bytes(lease: OpenedArtifactContent, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = lease.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def _observations(
@@ -288,23 +369,26 @@ def _observations(
             f"Nmap parsed {structured.get('host_count', 0)} hosts and "
             f"{structured.get('open_port_count', 0)} open ports."
         )
+        raw_hosts = structured.get("hosts")
+        hosts = raw_hosts if isinstance(raw_hosts, list) else []
         open_ports = sorted(
             {
-                port.get("port")
-                for host in structured.get("hosts", [])
+                str(port.get("port"))
+                for host in hosts
                 if isinstance(host, dict)
                 for port in host.get("ports", [])
-                if isinstance(port, dict) and port.get("state") == "open"
+                if isinstance(port, dict)
+                and port.get("state") == "open"
+                and port.get("port") is not None
             }
         )
         if open_ports:
-            observations.append(f"Open ports: {', '.join(map(str, open_ports[:100]))}.")
+            observations.append(f"Open ports: {', '.join(open_ports[:100])}.")
     elif parser_name == "nuclei_jsonl":
-        findings = structured.get("findings", [])
+        raw_findings = structured.get("findings")
+        findings = raw_findings if isinstance(raw_findings, list) else []
         severities = Counter(
-            str(item.get("severity") or "unknown")
-            for item in findings
-            if isinstance(item, dict)
+            str(item.get("severity") or "unknown") for item in findings if isinstance(item, dict)
         )
         observations.append(f"Nuclei parsed {structured.get('finding_count', 0)} findings.")
         if severities:
@@ -332,12 +416,8 @@ def _observations(
             f"{spilled[1].reference.size} stderr bytes."
         )
     elif parser_name == "generic_binary":
-        binary = [
-            item.reference.stream.value
-            for item in spilled
-            if item.reference.mime_type == "application/octet-stream"
-            and item.reference.size > 0
-        ]
+        raw_binary = structured.get("binary_streams")
+        binary = [str(item) for item in raw_binary] if isinstance(raw_binary, list) else []
         observations.append(
             f"Binary output detected in {', '.join(binary)}; content remains artifact-only."
         )
@@ -398,7 +478,7 @@ def _context_summary(
     observations: list[str],
     errors: list[str],
     previews: list[StreamPreview],
-    artifacts: list[object],
+    artifacts: list[RawArtifactReference],
     max_characters: int,
 ) -> str:
     command = execution.command_text or (shlex.join(execution.argv) if execution.argv else "")

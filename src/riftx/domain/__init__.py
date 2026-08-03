@@ -1,7 +1,15 @@
 """Infrastructure-independent RiftX domain models."""
 
 from .approval import Approval, ApprovalGrant, requires_approval
-from .artifact import Artifact
+from .artifact import (
+    ARTIFACT_INGEST_PROVENANCE_SCHEMA_VERSION,
+    Artifact,
+    ArtifactAccessClass,
+    ArtifactContentTrust,
+    ArtifactIngestMethod,
+    ArtifactIngestProvenance,
+    canonical_artifact_storage_key,
+)
 from .audit import (
     AnalysisProfile,
     AuditBudget,
@@ -120,6 +128,7 @@ from .skill import Skill
 from .tool import Tool, ToolState
 
 __all__ = [
+    "ARTIFACT_INGEST_PROVENANCE_SCHEMA_VERSION",
     "AUDIT_CLIENT_REQUEST_SCHEMA_VERSION",
     "AgentCheckpoint",
     "AgentMessage",
@@ -133,6 +142,10 @@ __all__ = [
     "ApprovalMode",
     "ApprovalStatus",
     "Artifact",
+    "ArtifactAccessClass",
+    "ArtifactContentTrust",
+    "ArtifactIngestMethod",
+    "ArtifactIngestProvenance",
     "AuditBudget",
     "AuditCapabilityMatrix",
     "AuditCapabilityRequirement",
@@ -243,6 +256,7 @@ __all__ = [
     "VersionedCanonicalPolicy",
     "VersionedComponentRef",
     "candidate_can_transition_to",
+    "canonical_artifact_storage_key",
     "requires_approval",
     "validate_candidate_transition",
 ]

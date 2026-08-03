@@ -16,6 +16,7 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import RunEventRepository, RunRepository
 from riftx.domain import (
+    ArtifactContentTrust,
     DomainError,
     Execution,
     Run,
@@ -356,6 +357,7 @@ class TerminalApplicationService:
                     name=(f"terminal-{terminal.id}-takeover-{started_cursor}-{ended_cursor}.log"),
                     mime_type="application/octet-stream",
                     description="Immutable terminal character stream captured during takeover.",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             summary = TerminalTakeoverSummary(

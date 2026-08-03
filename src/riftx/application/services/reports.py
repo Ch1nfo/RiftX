@@ -26,7 +26,15 @@ from riftx.application.ports import (
     RunEventRepository,
     RunRepository,
 )
-from riftx.domain import Finding, Report, ReportFormat, Run, RunEvent, RunStatus
+from riftx.domain import (
+    ArtifactContentTrust,
+    Finding,
+    Report,
+    ReportFormat,
+    Run,
+    RunEvent,
+    RunStatus,
+)
 from riftx.domain.base import utc_now
 
 from .artifacts import ArtifactApplicationService, RegisterArtifactContent
@@ -231,6 +239,7 @@ class ReportApplicationService:
                     name=name,
                     mime_type=mime_type,
                     description=f"Generated {report_format.value} report for Run {run_id}",
+                    content_trust=ArtifactContentTrust.GENERATED,
                 ),
             )
             report = Report(
@@ -294,10 +303,14 @@ class ReportApplicationService:
         sensitive_artifact_ids = await self._artifact_repository.target_http_sensitive_ids(
             target_http_artifact_candidates(raw_events)
         )
+        restricted_artifact_ids = await self._artifact_repository.restricted_artifact_ids(
+            target_http_artifact_candidates(raw_events)
+        )
         events = [
             redact_sensitive_event(
                 event,
                 sensitive_artifact_ids=sensitive_artifact_ids,
+                restricted_artifact_ids=restricted_artifact_ids,
             )
             for event in raw_events
         ]

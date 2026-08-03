@@ -697,6 +697,22 @@ async def test_agent_base_tools_manage_artifacts_and_terminal_sessions(tmp_path:
     )
     assert artifact_payload["sha256"]
     assert artifact_payload["size"] == len("durable evidence")
+    assert set(artifact_payload) == {
+        "access_class",
+        "content_trust",
+        "created_at",
+        "description",
+        "execution_id",
+        "id",
+        "mime_type",
+        "name",
+        "run_id",
+        "sha256",
+        "size",
+    }
+    assert "path" not in artifact_payload
+    assert "storage_key" not in artifact_payload
+    assert "ingest_provenance" not in artifact_payload
     assert closed["status"] == "closed"
     await supervisor.close()
     await database.dispose()

@@ -17,6 +17,10 @@ from riftx.application.errors import RepositoryConflictError, RepositoryIntegrit
 from riftx.application.ports import StoredAuditEntity
 from riftx.domain import (
     Artifact,
+    ArtifactAccessClass,
+    ArtifactContentTrust,
+    ArtifactIngestMethod,
+    ArtifactIngestProvenance,
     AuditClosureStatus,
     AuditContract,
     AuditContractRecord,
@@ -63,6 +67,7 @@ from riftx.persistence import (
     compare_and_set_audit_scan,
     create_scan_contract_pair,
 )
+from riftx.persistence.mappers import artifact_to_record
 
 NOW = datetime(2026, 8, 3, 9, tzinfo=UTC)
 
@@ -290,8 +295,14 @@ def _coverage_plan(work: AuditWorkItem, *, run_id: str) -> Artifact:
     return Artifact(
         id=work.required_coverage_plan_artifact_id,
         run_id=run_id,
+        audit_id=work.audit_id,
+        access_class=ArtifactAccessClass.AUDIT_INTERNAL,
+        content_trust=ArtifactContentTrust.GENERATED,
         name=f"Coverage plan for {work.id}",
         path=f"/audit/{work.audit_id}/{work.id}.coverage.json",
+        ingest_provenance=ArtifactIngestProvenance(
+            method=ArtifactIngestMethod.CONTROL_PLANE_BYTES,
+        ),
         mime_type="application/json",
         sha256=work.required_coverage_plan_digest,
         size=128,
@@ -309,8 +320,14 @@ def _phase_output(
     return Artifact(
         id=artifact_id,
         run_id=run_id,
+        audit_id=phase_run.audit_id,
+        access_class=ArtifactAccessClass.AUDIT_INTERNAL,
+        content_trust=ArtifactContentTrust.GENERATED,
         name=f"Phase output {artifact_id}",
         path=f"/audit/{phase_run.audit_id}/{artifact_id}.json",
+        ingest_provenance=ArtifactIngestProvenance(
+            method=ArtifactIngestMethod.CONTROL_PLANE_BYTES,
+        ),
         mime_type="application/json",
         sha256=_digest(f"phase-output:{artifact_id}"),
         size=128,
@@ -328,6 +345,14 @@ async def _create_coverage_plan(
     artifact = _coverage_plan(work, run_id=run_id)
     await SQLAlchemyArtifactRepository(database.session_factory).create(artifact)
     return artifact
+
+
+async def _insert_corrupt_artifact_owner(database: Database, artifact: Artifact) -> None:
+    """Bypass the Artifact repository to model a pre-existing corrupt row."""
+
+    async with database.session_factory() as session, session.begin():
+        session.add(artifact_to_record(artifact))
+        await session.flush()
 
 
 async def _create_engagement(database: Database, engagement_id: str) -> None:
@@ -1662,13 +1687,18 @@ async def test_phase_terminal_outputs_require_same_run_artifacts(
             artifact_run_id = "run-other"
             await _create_run(database, artifact_run_id)
         output_ids = ("phase-output",)
-        await SQLAlchemyArtifactRepository(database.session_factory).create(
-            _phase_output(
-                phase,
-                artifact_id=output_ids[0],
-                run_id=artifact_run_id,
-            )
+        artifact = _phase_output(
+            phase,
+            artifact_id=output_ids[0],
+            run_id=artifact_run_id,
         )
+        artifacts = SQLAlchemyArtifactRepository(database.session_factory)
+        if binding == "cross_run":
+            with pytest.raises(RepositoryConflictError):
+                await artifacts.create(artifact)
+            await _insert_corrupt_artifact_owner(database, artifact)
+        else:
+            await artifacts.create(artifact)
     completed = running.transition_to(
         AuditPhaseRunStatus.COMPLETED,
         at=NOW + timedelta(seconds=2),
@@ -1724,7 +1754,11 @@ async def test_raw_phase_output_binding_tamper_fails_all_reads_and_recovery(
         statement = "DELETE FROM artifacts WHERE id=:artifact_id"
     else:
         await _create_run(database, "run-other")
-        statement = "UPDATE artifacts SET run_id='run-other' WHERE id=:artifact_id"
+        statement = (
+            "UPDATE artifacts SET run_id='run-other', "
+            "storage_key='runs/run-other/artifacts/phase-output/Phase output phase-output' "
+            "WHERE id=:artifact_id"
+        )
     async with database.engine.begin() as connection:
         await connection.execute(text(statement), {"artifact_id": artifact.id})
 
@@ -1840,7 +1874,13 @@ async def test_work_creation_requires_a_same_run_digest_bound_coverage_plan(
         artifact = _coverage_plan(work, run_id=artifact_run_id)
         if failure == "digest":
             artifact = _replace(artifact, sha256=_digest("wrong-coverage-plan"))
-        await SQLAlchemyArtifactRepository(database.session_factory).create(artifact)
+        artifacts = SQLAlchemyArtifactRepository(database.session_factory)
+        if failure == "cross_run":
+            with pytest.raises(RepositoryConflictError):
+                await artifacts.create(artifact)
+            await _insert_corrupt_artifact_owner(database, artifact)
+        else:
+            await artifacts.create(artifact)
 
     with pytest.raises(RepositoryConflictError):
         await SQLAlchemyAuditWorkRepository(database.session_factory).create(work)
@@ -1870,7 +1910,11 @@ async def test_raw_coverage_plan_tampering_fails_work_get_list_and_reopen(
         parameters: dict[str, object] = {"artifact_id": artifact.id}
     elif tamper == "cross_run":
         await _create_run(database, "run-other")
-        statement = "UPDATE artifacts SET run_id='run-other' WHERE id=:artifact_id"
+        statement = (
+            "UPDATE artifacts SET run_id='run-other', "
+            "storage_key='runs/run-other/artifacts/coverage-work-1/"
+            "Coverage plan for work-1' WHERE id=:artifact_id"
+        )
         parameters = {"artifact_id": artifact.id}
     else:
         statement = "UPDATE artifacts SET sha256=:digest WHERE id=:artifact_id"

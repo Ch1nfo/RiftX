@@ -46,6 +46,13 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.DURABLE_WRITE
     assert ROUTE_POLICIES["list_audits"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["get_audit"].effect is RouteEffect.READ_ONLY
+    for route_name in (
+        "list_audit_artifacts",
+        "get_audit_artifact",
+        "download_audit_artifact",
+    ):
+        assert ROUTE_POLICIES[route_name].authorization is RouteAuthorization.LOCAL_OPERATOR
+        assert ROUTE_POLICIES[route_name].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["observe_browser"].effect is RouteEffect.HOST_CONTROL
     assert ROUTE_POLICIES["terminal_websocket"].authorization is RouteAuthorization.LOCAL_OPERATOR
     assert ROUTE_POLICIES["upsert_model_profile"].authorization is RouteAuthorization.ADMIN_TOKEN
@@ -68,6 +75,14 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
         openapi["paths"]["/api/v1/audits/{audit_id}"]["get"]["x-riftx-effect"]
         == "read_only"
     )
+    for path in (
+        "/api/v1/audits/{audit_id}/artifacts",
+        "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
+        "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
+    ):
+        operation = openapi["paths"][path]["get"]
+        assert operation["x-riftx-authorization"] == "local_operator"
+        assert operation["x-riftx-effect"] == "read_only"
 
     register_parameters = {
         (parameter["in"], parameter["name"]): parameter

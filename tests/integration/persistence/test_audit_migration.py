@@ -917,7 +917,8 @@ def test_audit_migration_rejects_nonempty_downgrade_before_ddl(
     ]
     assert destructive_statements
     assert all(
-        "audit_client_requests" in statement for statement in destructive_statements
+        "audit_client_requests" in statement or "artifacts" in statement
+        for statement in destructive_statements
     )
 
 

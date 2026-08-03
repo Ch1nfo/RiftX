@@ -319,7 +319,23 @@ def build_agent_tools(services: AgentRuntimeServices) -> list[FunctionTool]:
                 execution_id=execution_id,
             ),
         )
-        return artifact.model_dump_json()
+        return json.dumps(
+            {
+                "id": artifact.id,
+                "run_id": artifact.run_id,
+                "execution_id": artifact.execution_id,
+                "name": artifact.name,
+                "mime_type": artifact.mime_type,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+                "description": artifact.description,
+                "access_class": artifact.access_class.value,
+                "content_trust": artifact.content_trust.value,
+                "created_at": artifact.created_at.isoformat(),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
 
     @function_tool
     async def update_plan(ctx: ToolContext[RiftXAgentContext], plan_summary: str) -> str:

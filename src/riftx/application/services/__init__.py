@@ -11,6 +11,7 @@ from .approvals import (
 )
 from .artifacts import (
     ArtifactApplicationService,
+    ArtifactContentSlice,
     RegisterArtifact,
     RegisterArtifactContent,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "ApprovalWorkflowClient",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
+    "ArtifactContentSlice",
     "AuditApplicationService",
     "AuditContractBlueprint",
     "AuditControlAction",

@@ -2320,8 +2320,10 @@ bounded child owner columns
 授权拒绝前不得 hydrate Finding Evidence、Artifact 文件、Runner output、Browser observation、
 Context Manifest 或 Memory content。Code Audit Execution 必须使用单独的安全投影，禁止返回
 `argv`、`command_text`、`executable_path`、`cwd`、`env_diff`、stdout/stderr path、PID/process
-group、containment ID 或 host platform fingerprint。Artifact metadata 继续排除 storage path；
-restricted content 的 fd/hash/access-class 契约由 AUD-105 完成。M1 的 generic Code Audit read 是
+group、containment ID 或 host platform fingerprint。Artifact metadata 继续排除 storage path。
+AUD-105 / ADR-0005 已固定 Artifact 契约：generic list/detail/content 只解析 `public_export`，
+`audit_internal` 与 `restricted_sensitive` 只能通过显式 Audit-root route 读取，并在授权和 exact
+owner 复验后使用同一 fd 完成 hash 与 bounded stream。M1 的 generic Code Audit read 是
 显式白名单：只允许 Run、Event、Execution 与 Artifact；Finding、Report、Approval、Action、Graph、
 Run metrics、Target HTTP/Traffic、Terminal、Browser、Context、Memory 与 Connector facade 全部在
 Audit 根授权之后、任何 full object/content getter 之前返回 `run_kind_operation_unsupported`。全局
@@ -2395,6 +2397,28 @@ Event payload 只允许 ID、枚举、计数、digest 摘要和安全状态。�
 - retest.json
 
 扩展 Artifact 领域字段：`audit_id`（可选 FK）、`access_class: public_export | audit_internal | restricted_sensitive`、`content_trust: generated | untrusted_source | untrusted_tool_output`、ingest provenance 与 immutable storage key。大型中间 Artifact 默认 `restricted_sensitive`；通用 list/download 必须按 access class 和 Audit ownership 服务端过滤，restricted 只能从显式 Audit 对象授权路由访问，不能仅在 UI 隐藏。401/403 后客户端全局清除所有 Audit snippet、Evidence 与 Artifact 缓存。
+
+AUD-105 的 fail-closed 访问矩阵进一步固定为：通用 Run/Artifact list、detail 和 download 只返回
+`public_export`；`audit_internal` 与 `restricted_sensitive` 都要求显式
+`/audits/{audit_id}/artifacts/...` 路由和 Audit 根对象授权。`audit_internal` 与
+`restricted_sensitive` 的差别是领域用途、后续发布/缓存策略和默认敏感度，不是允许绕过显式
+Audit owner contract。三种 class 都不表示匿名访问。generic SQL visibility predicate 必须位于
+排序和分页之前；显式 Audit list/detail/content 则同时以 `audit_id + run_id` 过滤和复验。
+
+Artifact 的 immutable owner contract 同时验证 `RunKind`、Audit↔Run 与 Execution↔Run；Code Audit
+Artifact 即使是 `public_export` 也必须持久 `audit_id`。`storage_key` 是唯一权威 locator，格式固定为
+`runs/{run_id}/artifacts/{artifact_id}/{name}`。key 组件使用 printable ASCII 安全边界，源文件路径
+仍可为 Unicode；二者不得混为一个限制。损坏的已确认 Artifact row 在 list/detail/content 统一映射
+为脱敏 `503 artifact_persistence_unavailable`，不能降级成公开对象或泄露 path/key/driver cause。
+
+本地摄取与下载都必须从受信 root dirfd 逐组件 no-follow 打开，并在同一 fd 上完成 fingerprint、
+bounded copy/hash、最终复验与流式读取；任何 symlink、hardlink、special file、增长/缩短、目录项
+替换、size/digest mismatch 或取消都必须关闭 lease 并清理 staging。私有 Artifact root 及其子目录
+必须由当前服务 UID 拥有且禁止 group/world write；敌对执行进程不得共享该存储权限边界。
+
+Artifact Domain 可以完整 round-trip locator，但任何 HTTP、Agent、Event、Report 或模型边界都必须
+使用显式白名单投影。Event metadata 对非公开、缺失或损坏 Artifact fail closed；Agent
+`add_artifact` 不能返回 `path`、`storage_key` 或 ingest provenance。
 
 敌对 Scanner/parser 输出不得沿用“先 resolve path、稍后再次 open/copy”的注册方式。Runner 优先通过认证的 bounded chunk/fd stream 上传：服务端写私有 staging、边读边执行总量/单文件限制与 SHA-256、完成后 fsync + 原子 rename。若本地 backend 必须摄取文件，使用受信 output-dir 的 dirfd/openat2 或等价 `O_NOFOLLOW` 打开并始终持有同一 fd，fstat 校验 regular file、dev/inode/link/size，复制后再 fstat；路径替换、symlink/hardlink、增长文件或超限立即失败并清理 staging。任何来源都不能让 Control Plane 按 Runner 提供的任意绝对路径重新打开文件。
 
@@ -3437,12 +3461,54 @@ preflight reservation，不能引入第二个提交链。
 
 #### AUD-105：Artifact Access Foundation
 
-在任何 Scanner/模型原始输出进入系统前，扩展 Artifact 的
-`audit_id/access_class/content_trust/ingest provenance`，让通用 list/download 服务端过滤
-restricted Artifact；实现单次 no-follow open 后基于同一 fd 的 bounded stream/hash/ingest，消除
-path reopen TOCTOU、symlink/hardlink 与输出增长问题。下载在 Audit root auth 后再次检查 access
-class、digest 和 immutable owner；denied/owner mismatch 前不得 open/hash。为 metadata、restricted
-download、oversize、concurrent replacement 和 partial ingest 增加零泄漏/失败清理测试。
+本任务以 ADR-0005 为完整验收契约，不得只增加 Artifact 字段或三条 route。交付范围固定如下：
+
+1. **领域、持久化与迁移**
+
+   - Artifact 增加 `audit_id/access_class/content_trust`、版本化 typed ingest provenance 与 canonical
+     immutable `storage_key`；Domain、Mapper 和数据库共同验证 class、trust、digest、key 与 owner；
+   - Repository create/read 同时验证 RunKind、Audit↔Run 与 Execution↔Run，Code Audit Artifact 不得
+     省略 `audit_id`；通用 SQL visibility 必须位于分页前；
+   - SQLite upgrade 在同一 `BEGIN EXCLUSIVE` 中执行 legacy 检查、backfill、batch DDL、FK check 与
+     故障回滚；Execution FK 使用 `ON DELETE RESTRICT`；非法 Code Audit legacy row 和有损 downgrade
+     都 fail closed；
+   - corrupt enum/provenance/key/owner/digest 统一正规化，公开边界只返回脱敏
+     `artifact_persistence_unavailable`。
+
+2. **读取、授权与安全投影**
+
+   - generic Run/Artifact list/detail/content 只返回 `public_export`；Audit-owned
+     `audit_internal/restricted_sensitive` 只能经显式 Audit Artifact list/detail/content route；
+   - detail/content 顺序固定为 bounded owner → Audit root authorization → exact owner full load →
+     access/storage revalidation → fd open/hash/stream；denied 或 owner mismatch 前 open/hash/iterator
+     调用为零；
+   - HTTP DTO、Event metadata、Report source 和 Agent `add_artifact` 使用字段白名单；不得泄露
+     `path`、`storage_key`、ingest provenance 或 restricted Artifact metadata；
+   - Feature Flag 关闭时已授权历史读取仍可用，所有 Artifact route 保持 `READ_ONLY`，不得生成
+     Event、Workflow、Runner 或其他副作用。
+
+3. **descriptor-safe 摄取、存储与下载**
+
+   - 受信 root 使用 dirfd/no-follow 逐组件遍历，最终对象必须是单链接 regular file；从同一 fd
+     完成 fingerprint、bounded copy/hash、目录项复验、fsync、只读权限和 atomic rename；
+   - bytes ingest 使用同一 staging/finalizer；失败、DB conflict、重复取消和 worker cancellation
+     都必须释放 fd lease 并清理 partial/unreferenced bytes；
+   - 下载授权后只打开一次，并从该 fd 完成 digest/size 复验与 bounded StreamingResponse；禁止
+     `FileResponse`、path reopen、header injection 和未界定读取；
+   - Artifact root/子目录收紧到私有权限，祖先必须由当前 UID 拥有且不能 group/world writable；
+     verified-fingerprint cache 有界，single-flight lock 有界，不能因重复请求无限增长。
+
+4. **必须通过的验证**
+
+   - Domain/mapper/schema、migration/restart/downgrade、Repository owner/visibility、Audit API/OpenAPI、
+     Event/Agent projection、descriptor store 与 General Run/Report/Context/Runtime/Target HTTP 回归；
+   - symlink、parent symlink、hardlink、FIFO/special、oversize、growth/shrink、concurrent replacement、
+     digest/size/key mismatch、read/write/fsync/rename/DB failure、取消和 fd close 反例；
+   - 全量 Python、Ruff、目标 Mypy、independence boundary gate、release gate 与 `git diff --check`。
+
+本任务明确不增加 Audit Artifact write/upload endpoint，不实现认证 Runner chunk stream、原子
+Audit 总 Artifact 配额或 RunnerCommand ownership，也不得放松 AUD-104 的临时 RunKind effect
+bridge；这些边界分别由 AUD-106 及后续执行阶段任务负责。
 
 #### AUD-106：RunKind Workflow Router
 

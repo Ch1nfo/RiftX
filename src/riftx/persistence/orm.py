@@ -18,8 +18,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    column,
 )
+from sqlalchemy.exc import CompileError
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.sql.functions import FunctionElement
 
 from .types import UTCDateTime
 
@@ -65,6 +69,155 @@ def _canonical_uuid_check(column: str) -> str:
         f"AND length(replace({column}, '-', '')) = 32 "
         f"AND length({remainder}) = 0 "
         f"AND {column} <> '00000000-0000-0000-0000-000000000000'"
+    )
+
+
+def _default_artifact_storage_key(context: Any) -> str:
+    values = context.get_current_parameters()
+    return (
+        f"runs/{values['run_id']}/artifacts/{values['id']}/{values['name']}"
+    )
+
+
+def _default_artifact_access_class(context: Any) -> str:
+    if context.get_current_parameters().get("audit_id") is not None:
+        raise ValueError("Audit-owned Artifacts require an explicit access class")
+    return "public_export"
+
+
+def _default_artifact_ingest_provenance(context: Any) -> dict[str, Any]:
+    if context.get_current_parameters().get("audit_id") is not None:
+        raise ValueError("Audit-owned Artifacts require explicit ingest provenance")
+    return {
+        "schema_version": "riftx.artifact-ingest-provenance/v1",
+        "method": "legacy_migrated",
+        "producer_node_id": None,
+        "producer_execution_id": None,
+    }
+
+
+class _ArtifactStorageComponentsAreSafe(FunctionElement):
+    """Dialect-portable storage component predicate used by Artifact DDL."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+class _ArtifactMimeTypeIsSafe(FunctionElement):
+    """Dialect-portable printable-ASCII HTTP media type predicate."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+def _compiled_artifact_columns(
+    element: _ArtifactStorageComponentsAreSafe | _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> tuple[str, ...]:
+    return tuple(compiler.process(clause, **kwargs) for clause in element.clauses)
+
+
+@compiles(_ArtifactStorageComponentsAreSafe, "sqlite")
+def _compile_safe_artifact_components_sqlite(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    def safe(component: str, max_length: int) -> str:
+        return (
+            f"length({component}) BETWEEN 1 AND {max_length} "
+            f"AND {component} NOT IN ('.', '..') "
+            f"AND instr({component}, '/') = 0 AND instr({component}, '\\') = 0 "
+            f"AND instr({component}, char(0)) = 0 "
+            f"AND {component} NOT GLOB '*[^ -~]*'"
+        )
+
+    return " AND ".join(
+        f"({safe(component, max_length)})"
+        for component, max_length in zip(
+            _compiled_artifact_columns(element, compiler, **kwargs),
+            (64, 64, 255),
+            strict=True,
+        )
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe, "sqlite")
+def _compile_safe_artifact_mime_type_sqlite(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    (mime_type,) = _compiled_artifact_columns(element, compiler, **kwargs)
+    return (
+        f"length({mime_type}) BETWEEN 1 AND 255 "
+        f"AND {mime_type} = trim({mime_type}) "
+        f"AND instr({mime_type}, char(0)) = 0 "
+        f"AND {mime_type} NOT GLOB '*[^ -~]*'"
+    )
+
+
+@compiles(_ArtifactStorageComponentsAreSafe, "postgresql")
+def _compile_safe_artifact_components_postgresql(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    def safe(component: str, max_length: int) -> str:
+        return (
+            f"length({component}) BETWEEN 1 AND {max_length} "
+            f"AND {component} NOT IN ('.', '..') "
+            f"AND position('/' in {component}) = 0 "
+            f"AND position(chr(92) in {component}) = 0 "
+            f"AND {component} !~ '[^ -~]'"
+        )
+
+    return " AND ".join(
+        f"({safe(component, max_length)})"
+        for component, max_length in zip(
+            _compiled_artifact_columns(element, compiler, **kwargs),
+            (64, 64, 255),
+            strict=True,
+        )
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe, "postgresql")
+def _compile_safe_artifact_mime_type_postgresql(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    (mime_type,) = _compiled_artifact_columns(element, compiler, **kwargs)
+    return (
+        f"length({mime_type}) BETWEEN 1 AND 255 "
+        f"AND {mime_type} = btrim({mime_type}) "
+        f"AND {mime_type} !~ '[^ -~]'"
+    )
+
+
+@compiles(_ArtifactStorageComponentsAreSafe)
+def _compile_safe_artifact_components_default(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    del element, compiler, kwargs
+    raise CompileError(
+        "Artifact storage safety checks are unsupported for this database dialect"
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe)
+def _compile_safe_artifact_mime_type_default(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    del element, compiler, kwargs
+    raise CompileError(
+        "Artifact MIME safety checks are unsupported for this database dialect"
     )
 
 
@@ -1403,16 +1556,101 @@ class RunEventRecord(Base):
 
 class ArtifactRecord(Base):
     __tablename__ = "artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "access_class IN ('public_export', 'audit_internal', "
+            "'restricted_sensitive')",
+            name="ck_artifacts_access_class",
+        ),
+        CheckConstraint(
+            "content_trust IN ('generated', 'untrusted_source', "
+            "'untrusted_tool_output')",
+            name="ck_artifacts_content_trust",
+        ),
+        CheckConstraint(
+            "audit_id IS NOT NULL OR access_class = 'public_export'",
+            name="ck_artifacts_owner_access",
+        ),
+        CheckConstraint(
+            "storage_key = 'runs/' || run_id || '/artifacts/' || id || '/' || name",
+            name="ck_artifacts_canonical_storage_key",
+        ),
+        CheckConstraint(
+            _ArtifactStorageComponentsAreSafe(
+                column("run_id"),
+                column("id"),
+                column("name"),
+            ),
+            name="ck_artifacts_safe_storage_components",
+        ),
+        CheckConstraint(
+            _ArtifactMimeTypeIsSafe(column("mime_type")),
+            name="ck_artifacts_safe_mime_type",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("sha256"),
+            name="ck_artifacts_sha256",
+        ),
+        CheckConstraint("size >= 0", name="ck_artifacts_nonnegative_size"),
+        Index(
+            "ix_artifacts_public_run_created_id",
+            "run_id",
+            "access_class",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_artifacts_audit_run_execution_created_id",
+            "audit_id",
+            "run_id",
+            "execution_id",
+            "created_at",
+            "id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     execution_id: Mapped[str | None] = mapped_column(
-        ForeignKey("executions.id", ondelete="SET NULL"), index=True
+        ForeignKey(
+            "executions.id",
+            name="fk_artifacts_execution",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey(
+            "audit_scans.id",
+            name="fk_artifacts_audit",
+            ondelete="RESTRICT",
+        ),
+    )
+    access_class: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=_default_artifact_access_class,
+    )
+    content_trust: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="untrusted_tool_output",
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_key: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=_default_artifact_storage_key,
+    )
+    ingest_provenance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=_default_artifact_ingest_provenance,
+    )
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)

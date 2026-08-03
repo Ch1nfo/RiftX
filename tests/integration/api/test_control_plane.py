@@ -3136,7 +3136,7 @@ async def test_artifact_registration_rejects_escaped_and_invalid_sources(tmp_pat
                 json={"source_path": str(symlink)},
             )
             assert linked.status_code == 409
-            assert linked.json()["error"]["code"] == "artifact_source_outside_run"
+            assert linked.json()["error"]["code"] == "artifact_source_unavailable"
 
             missing = await client.post(
                 f"/api/v1/runs/{run_id}/artifacts",

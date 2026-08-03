@@ -841,8 +841,14 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
 
     traced_artifact_ids: list[str] = []
     for artifact_id in artifact_ids:
-        artifact, path = await artifact_service.content_path(artifact_id)
-        assert path.is_file()
+        artifact = await artifact_service.get(artifact_id)
+        content = await artifact_service.read_content_slice(
+            artifact_id,
+            expected_run_id=run.id,
+            max_bytes=max(1, artifact.size),
+        )
+        assert content.artifact.id == artifact.id
+        assert content.eof is True
         traced_artifact_ids.append(artifact.id)
 
     await runs.update_status(run.id, RunStatus.RUNNING)

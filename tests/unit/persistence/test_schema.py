@@ -180,6 +180,51 @@ def test_target_http_schema_preserves_execution_identity_and_artifacts() -> None
     } <= set(Base.metadata.tables["target_http_requests"].columns.keys())
 
 
+def test_artifact_schema_persists_access_owner_and_ingest_integrity_facts() -> None:
+    artifacts = Base.metadata.tables["artifacts"]
+
+    assert {
+        "audit_id",
+        "access_class",
+        "content_trust",
+        "storage_key",
+        "ingest_provenance_json",
+    } <= set(artifacts.columns.keys())
+    for column_name in (
+        "access_class",
+        "content_trust",
+        "storage_key",
+        "ingest_provenance_json",
+    ):
+        assert artifacts.c[column_name].nullable is False
+        assert artifacts.c[column_name].server_default is None
+    assert artifacts.c.audit_id.nullable is True
+    assert {
+        foreign_key.target_fullname for foreign_key in artifacts.c.audit_id.foreign_keys
+    } == {"audit_scans.id"}
+    [execution_foreign_key] = artifacts.c.execution_id.foreign_keys
+    assert execution_foreign_key.target_fullname == "executions.id"
+    assert execution_foreign_key.ondelete == "RESTRICT"
+    assert {index.name for index in artifacts.indexes} >= {
+        "ix_artifacts_public_run_created_id",
+        "ix_artifacts_audit_run_execution_created_id",
+    }
+    assert {
+        constraint.name
+        for constraint in artifacts.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    } >= {
+        "ck_artifacts_access_class",
+        "ck_artifacts_content_trust",
+        "ck_artifacts_owner_access",
+        "ck_artifacts_canonical_storage_key",
+        "ck_artifacts_safe_storage_components",
+        "ck_artifacts_safe_mime_type",
+        "ck_artifacts_sha256",
+        "ck_artifacts_nonnegative_size",
+    }
+
+
 def test_browser_schema_preserves_bounded_observations_and_ownership() -> None:
     assert {
         "run_id",

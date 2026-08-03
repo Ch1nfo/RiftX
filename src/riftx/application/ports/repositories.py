@@ -20,6 +20,7 @@ from riftx.domain import (
     ApprovalGrant,
     ApprovalStatus,
     Artifact,
+    ArtifactAccessClass,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -536,6 +537,18 @@ class TerminalRepository(Protocol):
     async def list_active(self) -> Sequence[TerminalSession]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactOwnerBinding:
+    """Bounded owner fact loaded before explicit Artifact authorization."""
+
+    artifact_id: str
+    run_id: str
+    audit_id: str | None
+    access_class: ArtifactAccessClass
+    run_kind: RunKind
+    audit_run_id: str | None
+
+
 class ArtifactRepository(Protocol):
     async def create(self, artifact: Artifact) -> Artifact: ...
 
@@ -543,8 +556,37 @@ class ArtifactRepository(Protocol):
 
     async def get(self, artifact_id: str) -> Artifact | None: ...
 
+    async def get_for_reconciliation(self, artifact_id: str) -> Artifact | None:
+        """Load one exact row without generic visibility filtering.
+
+        This method exists only to reconcile an ambiguous create outcome before
+        deciding whether newly published bytes may be discarded.
+        """
+        ...
+
+    async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding | None:
+        """Load only bounded owner/access columns for explicit authorization."""
+        ...
+
+    async def get_for_audit(
+        self,
+        artifact_id: str,
+        audit_id: str,
+        run_id: str,
+    ) -> Artifact | None: ...
+
     async def list(
         self,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]: ...
+
+    async def list_for_audit(
+        self,
+        audit_id: str,
         run_id: str,
         *,
         execution_id: str | None = None,
@@ -557,6 +599,13 @@ class ArtifactRepository(Protocol):
         artifact_ids: Collection[str],
     ) -> frozenset[str]:
         """Classify IDs by global Target HTTP association without materializing Artifacts."""
+        ...
+
+    async def restricted_artifact_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]:
+        """Classify IDs whose generic metadata is not publicly visible."""
         ...
 
 

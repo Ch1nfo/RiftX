@@ -728,6 +728,7 @@ async def build_temporal_worker(
             artifact_repository=artifact_repository,
             event_repository=event_repository,
             paths=paths,
+            max_artifact_bytes=config.audit.max_artifact_bytes,
         )
         browser_manager = RunnerBrowserManager(
             node_id=config.runner.node_id,

@@ -32,6 +32,7 @@ from riftx.persistence import Database
 from riftx.persistence.orm import Base
 
 REQUEST_REVISION = "7c4e1a9b2d06"
+HEAD_REVISION = "91e6f4a2c8b7"
 REQUEST_TABLE = "audit_client_requests"
 
 
@@ -172,7 +173,7 @@ def test_schema_bootstrap_requires_alembic_for_empty_migration_managed_schema(
     assert REQUEST_TABLE in sqlite_tables(database_path)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            REQUEST_REVISION,
+            HEAD_REVISION,
         )
 
 
