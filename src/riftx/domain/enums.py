@@ -114,6 +114,44 @@ class RunnerCommandStatus(StrEnum):
     FAILED = "failed"
 
 
+class RunnerCommandOwnershipState(StrEnum):
+    """Durable admission state for one Runner command ownership binding."""
+
+    VERIFIED = "verified"
+    QUARANTINED = "quarantined"
+
+
+class RunnerCommandOrigin(StrEnum):
+    """Effect producers allowed to create durable Runner commands."""
+
+    APPLICATION_SERVICE = "application_service"
+    TEMPORAL_WORKER = "temporal_worker"
+    CONTROL_PLANE_RECONCILER = "control_plane_reconciler"
+    WORKER_RECONCILER = "worker_reconciler"
+    SAFETY_RECONCILER = "safety_reconciler"
+
+
+class RunnerOperationFamily(StrEnum):
+    """Typed effect families carried by Runner ownership envelopes."""
+
+    EXECUTION = "execution"
+    TERMINAL = "terminal"
+    BROWSER = "browser"
+    TARGET_HTTP = "target_http"
+    CONNECTOR = "connector"
+    SAFETY_STOP = "safety_stop"
+
+
+class RunnerResourceKind(StrEnum):
+    """Authoritative resource roots a Runner command may bind."""
+
+    EXECUTION = "execution"
+    TERMINAL_SESSION = "terminal_session"
+    BROWSER_SESSION = "browser_session"
+    TARGET_HTTP_INTENT = "target_http_intent"
+    CONNECTOR_SESSION = "connector_session"
+
+
 class BrowserMode(StrEnum):
     MANAGED_EPHEMERAL = "managed_ephemeral"
     MANAGED_PERSISTENT = "managed_persistent"

@@ -52,6 +52,25 @@ def require_terminal_start_replay_matches(
         ("cwd", _canonical_path(execution.cwd), _canonical_path(request.cwd)),
         ("env", execution.env_diff, request.env),
     )
+    if request.runner_command_id is not None:
+        execution_fields += (
+            ("runner_command_id", execution.runner_command_id, request.runner_command_id),
+            (
+                "runner_effect_binding_id",
+                execution.runner_effect_binding_id,
+                request.runner_effect_binding_id,
+            ),
+            (
+                "runner_binding_digest",
+                execution.runner_binding_digest,
+                request.runner_binding_digest,
+            ),
+            (
+                "runner_envelope_digest",
+                execution.runner_envelope_digest,
+                request.runner_envelope_digest,
+            ),
+        )
     terminal_fields: tuple[tuple[str, object, object], ...] = (
         ("terminal_session_id", terminal.id, request.session_id),
         ("terminal_execution_id", terminal.execution_id, request.execution_id),

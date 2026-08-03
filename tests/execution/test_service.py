@@ -25,6 +25,7 @@ from riftx.domain import (
     ExecutorType,
     Objective,
     Run,
+    RunKind,
     RunStatus,
 )
 from riftx.execution import (
@@ -66,6 +67,9 @@ class RecordingRunner:
     def __init__(self, repository: SQLAlchemyExecutionRepository) -> None:
         self.repository = repository
         self.launches = 0
+        self.waits = 0
+        self.cancellations = 0
+        self.output_reads = 0
 
     async def start(self, request: ExecutionLaunchRequest, *, effect_guard=None) -> Execution:
         if effect_guard is not None:
@@ -102,6 +106,7 @@ class RecordingRunner:
         return execution
 
     async def wait(self, execution_id: str) -> Execution:
+        self.waits += 1
         execution = await self.get(execution_id)
         if execution.status is ExecutionStatus.RUNNING:
             execution.transition_to(ExecutionStatus.COMPLETED, exit_code=0)
@@ -109,6 +114,7 @@ class RecordingRunner:
         return execution
 
     async def cancel(self, execution_id: str) -> Execution:
+        self.cancellations += 1
         execution = await self.get(execution_id)
         if execution.status is ExecutionStatus.RUNNING:
             execution.transition_to(ExecutionStatus.CANCELLED)
@@ -123,6 +129,7 @@ class RecordingRunner:
         stderr_cursor: int = 0,
         max_bytes: int = 64 * 1024,
     ) -> ExecutionOutput:
+        self.output_reads += 1
         return ExecutionOutput(
             stdout=OutputSlice(data=b"", cursor=stdout_cursor, next_cursor=stdout_cursor, eof=True),
             stderr=OutputSlice(data=b"", cursor=stderr_cursor, next_cursor=stderr_cursor, eof=True),
@@ -363,6 +370,8 @@ class RecordingEvents:
 
 async def build_service(
     tmp_path: Path,
+    *,
+    run_kind: RunKind = RunKind.GENERAL,
 ) -> tuple[Database, ExecutionService, RecordingRunner, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution.db'}")
     await database.create_schema()
@@ -372,7 +381,7 @@ async def build_service(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
-            kind="general",
+            kind=run_kind,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -560,6 +569,129 @@ def test_execution_components_depend_on_tool_call_intent_port() -> None:
         get_type_hints(DeferredExecutionDispatcher.__init__)["tool_call_repository"]
         is ToolCallIntentRepository
     )
+
+
+async def test_code_audit_submit_is_denied_before_claim_runner_and_event(
+    tmp_path: Path,
+) -> None:
+    database, _, runner, repos = await build_service(tmp_path, run_kind=RunKind.CODE_AUDIT)
+    executions = repos["executions"]
+    runs = repos["runs"]
+    sessions = repos["sessions"]
+    tool_calls = repos["tool_calls"]
+    assert isinstance(executions, SQLAlchemyExecutionRepository)
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    assert isinstance(tool_calls, SQLAlchemyToolCallIntentRepository)
+    events = RecordingEvents()
+    service = ExecutionService(
+        execution_repository=executions,
+        session_repository=sessions,
+        tool_call_repository=tool_calls,
+        runner=runner,
+        event_repository=events,  # type: ignore[arg-type]
+        run_repository=runs,
+    )
+    submission = request(tmp_path)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.submit(submission)
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    intent = await tool_calls.get("tool-call-1")
+    assert intent is not None and intent.status is ToolCallStatus.READY
+    assert not await tool_calls.execution_claim_is_current(
+        intent.id,
+        execution_key=submission.execution_key,
+        attempt_group=submission.attempt_group,
+    )
+    assert await executions.get_by_key(submission.execution_key) is None
+    assert runner.launches == 0
+    assert events.rows == []
+    await database.dispose()
+
+
+async def test_code_audit_submit_preserves_cross_owner_session_error_precedence(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, repos = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    runs = repos["runs"]
+    sessions = repos["sessions"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    await runs.create(
+        Run(
+            kind=RunKind.GENERAL,
+            id="run-foreign",
+            engagement_id="engagement-1",
+            node_id="node-1",
+            objective=Objective(description="Foreign owner"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    await sessions.create(
+        AgentSession(
+            id="session-foreign",
+            run_id="run-foreign",
+            model_profile="fake-model",
+        )
+    )
+
+    with pytest.raises(EntityNotFoundError) as captured:
+        await service.submit(request(tmp_path).model_copy(update={"session_id": "session-foreign"}))
+
+    assert captured.value.entity == "AgentSession"
+    assert runner.launches == 0
+    await database.dispose()
+
+
+async def test_code_audit_execution_mutations_are_denied_before_runner_and_events(
+    tmp_path: Path,
+) -> None:
+    database, _, runner, repos = await build_service(tmp_path, run_kind=RunKind.CODE_AUDIT)
+    executions = repos["executions"]
+    runs = repos["runs"]
+    sessions = repos["sessions"]
+    tool_calls = repos["tool_calls"]
+    assert isinstance(executions, SQLAlchemyExecutionRepository)
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    assert isinstance(tool_calls, SQLAlchemyToolCallIntentRepository)
+    execution = execution_with_status(tmp_path, ExecutionStatus.RUNNING)
+    assert (await executions.create_if_absent(execution))[1] is True
+    intent = await tool_calls.get("tool-call-1")
+    assert intent is not None
+    events = RecordingEvents()
+    service = ExecutionService(
+        execution_repository=executions,
+        session_repository=sessions,
+        tool_call_repository=tool_calls,
+        runner=runner,
+        event_repository=events,  # type: ignore[arg-type]
+        run_repository=runs,
+    )
+
+    for operation in (
+        service.sync_intent_execution(intent, execution),
+        service.wait(execution.id, timeout_seconds=0.01),
+        service.cancel(execution.id),
+    ):
+        with pytest.raises(ApplicationConflictError) as captured:
+            await operation
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    durable_intent = await tool_calls.get(intent.id)
+    durable_execution = await executions.get(execution.id)
+    assert durable_intent is not None and durable_intent.status is ToolCallStatus.READY
+    assert durable_execution is not None and durable_execution.status is ExecutionStatus.RUNNING
+    assert runner.waits == 0
+    assert runner.cancellations == 0
+    assert runner.output_reads == 0
+    assert events.rows == []
+    await database.dispose()
 
 
 async def test_submit_uses_one_frozen_launch_snapshot_across_runner_await(

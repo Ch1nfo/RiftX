@@ -366,6 +366,6 @@ review_sources:
   - AUD-105 Artifact domain, migration, repository, API, event projection, Agent projection, and descriptor-store diff
   - targeted 506-test matrix, independent 175-test security matrix, full Python suite, Ruff, targeted Mypy, boundary gate, and release gate
 review_result: approved; no P0/P1/P2 findings accepted as deferred AUD-105 work
-commit: pending_backfill
+commit: ee9adaa99df08f043a3c2a813da3728aeb81a6b6
 notes: AUD-105 owns access classification and descriptor-safe local content handling. It does not open an Audit write/upload endpoint, atomic Audit total-byte transaction, authenticated Runner upload, or PostgreSQL production proof, and it does not weaken the AUD-104 RunKind effect bridge.
 ~~~

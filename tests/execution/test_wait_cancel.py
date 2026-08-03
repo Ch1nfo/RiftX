@@ -42,7 +42,8 @@ async def build_service(
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Authorized")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             kind="general",
             id="run-1",
@@ -88,6 +89,7 @@ async def build_service(
         session_repository=sessions,
         tool_call_repository=tool_calls,
         runner=supervisor,
+        run_repository=runs,
     )
     return database, service, supervisor
 

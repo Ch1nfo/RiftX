@@ -18,6 +18,15 @@ from .models import (
 
 
 class RuntimeCycleRunner(Protocol):
+    async def _require_agent_cycle_admission(
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        allow_missing_session: bool = False,
+        activity: bool = False,
+    ) -> object: ...
+
     async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult: ...
 
 
@@ -65,6 +74,12 @@ class RuntimeCycleActivities:
         self,
         input: RunAgentCycleActivityInput,
     ) -> RunAgentCycleActivityResult:
+        await self._coordinator._require_agent_cycle_admission(
+            input.run_id,
+            input.session_id,
+            allow_missing_session=True,
+            activity=True,
+        )
         if self._session_initializer is not None:
             await self._session_initializer.ensure_primary_session(
                 input.run_id,

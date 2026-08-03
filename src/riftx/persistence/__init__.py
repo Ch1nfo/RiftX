@@ -1,6 +1,7 @@
 """RiftX persistence infrastructure."""
 
 from .action_repositories import SQLAlchemyActionReadRepository
+from .audit_control_uow import SQLAlchemyAuditControlUnitOfWork
 from .audit_repositories import (
     SQLAlchemyAuditContractRepository,
     SQLAlchemyAuditPhaseRepository,
@@ -54,10 +55,12 @@ from .runtime_repositories import (
 )
 from .target_http_repositories import SQLAlchemyTrafficMetadataReadRepository
 from .transcript_repositories import SQLAlchemyTranscriptRepository
+from .workflow_signals import SQLAlchemyWorkflowSignalIntentRepository
 
 __all__ = [
     "SQLAlchemyActionReadRepository",
     "SQLAlchemyAuditContractRepository",
+    "SQLAlchemyAuditControlUnitOfWork",
     "SQLAlchemyAuditAggregateReadRepository",
     "SQLAlchemyAuditCreationUnitOfWork",
     "SQLAlchemyAuditPhaseRepository",
@@ -95,6 +98,7 @@ __all__ = [
     "SQLAlchemyUserInputRequestRepository",
     "SQLAlchemyTranscriptRepository",
     "SQLAlchemyTrafficMetadataReadRepository",
+    "SQLAlchemyWorkflowSignalIntentRepository",
     "SQLAlchemySnapshotRepository",
     "AuditCreationFailpoint",
     "compare_and_set_audit_contract",

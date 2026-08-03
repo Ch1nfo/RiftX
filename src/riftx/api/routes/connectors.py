@@ -17,6 +17,7 @@ from riftx.domain import RunKind, RunStatus, Scope
 from ..dependencies import (
     AuthorizedRunReadDependency,
     ConnectorServiceDependency,
+    LocalPrincipalDependency,
     RunServiceDependency,
     ToolServiceDependency,
 )
@@ -48,6 +49,7 @@ async def submit_http_capture(
     connector: ConnectorServiceDependency,
     runs: RunServiceDependency,
     tools: ToolServiceDependency,
+    principal: LocalPrincipalDependency,
 ) -> ConnectorReceiptResponse:
     created = False
     run_id = payload.run_id
@@ -58,7 +60,10 @@ async def submit_http_capture(
                 command, scope=_scope_for_url(payload.capture.url, command.scope)
             )
         try:
-            run = await runs.create_run(command)
+            run = await runs.create_run(
+                command,
+                principal=principal,
+            )
         except ServiceUnavailableError as exc:
             saved_run_id = exc.details.get("run_id")
             if not isinstance(saved_run_id, str) or not saved_run_id:

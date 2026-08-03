@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import platform
+import secrets
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -19,6 +20,9 @@ from riftx.application.errors import RepositoryConflictError
 from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
+    AuditApplicationService,
+    AuditControlApplicationService,
+    AuditRunStateProjector,
     FindingApplicationService,
     NodeApplicationService,
     NodeHeartbeat,
@@ -27,9 +31,15 @@ from riftx.application.services import (
     RunnerControlService,
     RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
+    SafetyStopResult,
     TerminalApplicationService,
     stop_resources_payload,
 )
+from riftx.application.services.workflow_signals import (
+    WorkflowSignalDispatcher,
+    WorkflowSignalReconciler,
+)
+from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
@@ -73,6 +83,9 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditControlUnitOfWork,
+    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
@@ -96,6 +109,9 @@ from riftx.persistence.checkpoint_repositories import (
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
+from riftx.persistence.workflow_signals import (
+    SQLAlchemyWorkflowSignalIntentRepository,
+)
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
 from riftx.runner import (
     NodeBrowserRouter,
@@ -131,6 +147,10 @@ from .activities import RiftXActivities
 from .connection import TemporalConnectionSettings, connect_temporal
 from .runtime import TemporalRunClient, TemporalRuntimeConfig, create_worker
 from .runtime_activity import RuntimeCycleActivities
+from .workflow_signal_transport import (
+    RoutedWorkflowSignalTransport,
+    TemporalWorkflowSignalOutcomeProbe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -354,8 +374,14 @@ class TemporalWorkerRuntime:
     run_repository: SQLAlchemyRunRepository | None = None
     event_repository: SQLAlchemyRunEventRepository | None = None
     safety_stopper: RunSafetyStopService | None = None
+    audit_cleanup_reconciler: AuditControlApplicationService | None = None
+    workflow_signal_dispatcher: WorkflowSignalDispatcher | None = None
+    workflow_signal_reconciler: WorkflowSignalReconciler | None = None
+    runner_control_service: RunnerControlService | None = None
     _heartbeat_task: asyncio.Task[None] | None = None
     _safety_reconciler_task: asyncio.Task[None] | None = None
+    _workflow_signal_task: asyncio.Task[None] | None = None
+    _runner_reconciliation_task: asyncio.Task[None] | None = None
     _safety_failures: set[str] = field(default_factory=set)
     _closed: bool = False
 
@@ -369,10 +395,62 @@ class TemporalWorkerRuntime:
                 self._safety_reconciler_loop(),
                 name=f"riftx-worker-safety-reconciler-{self.node_id}",
             )
+        if (
+            self.workflow_signal_dispatcher is not None
+            and self.workflow_signal_reconciler is not None
+        ):
+            self._workflow_signal_task = asyncio.create_task(
+                self._workflow_signal_loop(),
+                name=f"riftx-worker-workflow-signal-reconciler-{self.node_id}",
+            )
+        if self.runner_control_service is not None:
+            self._runner_reconciliation_task = asyncio.create_task(
+                self._runner_reconciliation_loop(),
+                name=f"riftx-worker-runner-reconciler-{self.node_id}",
+            )
         try:
             await self.worker.run()
         finally:
             await self.close()
+
+    async def _workflow_signal_loop(self) -> None:
+        assert self.workflow_signal_dispatcher is not None
+        assert self.workflow_signal_reconciler is not None
+        unavailable = False
+        while True:
+            try:
+                await self.workflow_signal_dispatcher.dispatch_batch()
+                await self.workflow_signal_reconciler.reconcile_batch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not unavailable:
+                    logger.exception("Worker Workflow signal reconciliation failed; retrying")
+                unavailable = True
+            else:
+                if unavailable:
+                    logger.info("Worker Workflow signal reconciliation recovered")
+                unavailable = False
+            await asyncio.sleep(0.1)
+
+    async def _runner_reconciliation_loop(self) -> None:
+        assert self.runner_control_service is not None
+        unavailable = False
+        while True:
+            try:
+                await self.runner_control_service.reconcile_stop_receipts()
+                await self.runner_control_service.reconcile_quarantined_commands()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not unavailable:
+                    logger.exception("Worker Runner reconciliation failed; retrying")
+                unavailable = True
+            else:
+                if unavailable:
+                    logger.info("Worker Runner reconciliation recovered")
+                unavailable = False
+            await asyncio.sleep(0.1)
 
     async def _safety_reconciler_loop(self) -> None:
         assert self.run_repository is not None
@@ -400,9 +478,25 @@ class TemporalWorkerRuntime:
                         )
                         for run in runs:
                             try:
-                                result = await self.safety_stopper.stop_run(run.id, drain=True)
-                                if result.succeeded and status is RunStatus.COMPLETING:
-                                    await self._reconcile_finalization(run.id, result)
+                                if run.kind is RunKind.GENERAL:
+                                    result = await self.safety_stopper.stop_run(
+                                        run.id,
+                                        drain=True,
+                                    )
+                                    if result.succeeded and status is RunStatus.COMPLETING:
+                                        await self._reconcile_finalization(run.id, result)
+                                elif run.kind is RunKind.CODE_AUDIT:
+                                    if self.audit_cleanup_reconciler is None:
+                                        raise RepositoryConflictError(
+                                            "Code Audit cleanup reconciler is unavailable"
+                                        )
+                                    result = await self.audit_cleanup_reconciler.reconcile_run(
+                                        run.id
+                                    )
+                                else:
+                                    raise RepositoryConflictError(
+                                        f"unsupported RunKind for cleanup: {run.kind!r}"
+                                    )
                             except asyncio.CancelledError:
                                 raise
                             except Exception:
@@ -438,7 +532,15 @@ class TemporalWorkerRuntime:
                 scan_unavailable = False
             await asyncio.sleep(0.1)
 
-    async def _reconcile_finalization(self, run_id: str, stop_result: object) -> None:
+    async def _reconcile_finalization(
+        self,
+        run_id: str,
+        stop_result: SafetyStopResult,
+    ) -> None:
+        if self.run_repository is None:
+            raise RepositoryConflictError(
+                f"run {run_id!r} cannot reconcile finalization without a Run repository"
+            )
         if self.event_repository is None:
             raise RepositoryConflictError(
                 f"run {run_id!r} cannot reconcile finalization without an event repository"
@@ -450,6 +552,10 @@ class TemporalWorkerRuntime:
         current = await self.run_repository.get(run_id)
         if current is None:
             return
+        if current.kind is not RunKind.GENERAL:
+            raise RepositoryConflictError(
+                "General finalization reconciler cannot operate on a Code Audit Run"
+            )
         if current.status in {RunStatus.COMPLETING, intent.target}:
             try:
                 current = await self.run_repository.commit_finalization(
@@ -514,6 +620,22 @@ class TemporalWorkerRuntime:
         self._heartbeat_task = None
         safety_task = self._safety_reconciler_task
         self._safety_reconciler_task = None
+        workflow_signal_task = self._workflow_signal_task
+        self._workflow_signal_task = None
+        runner_reconciliation_task = self._runner_reconciliation_task
+        self._runner_reconciliation_task = None
+        if runner_reconciliation_task is not None:
+            runner_reconciliation_task.cancel()
+            try:
+                await runner_reconciliation_task
+            except asyncio.CancelledError:
+                pass
+        if workflow_signal_task is not None:
+            workflow_signal_task.cancel()
+            try:
+                await workflow_signal_task
+            except asyncio.CancelledError:
+                pass
         if safety_task is not None:
             safety_task.cancel()
             try:
@@ -567,8 +689,15 @@ async def build_temporal_worker(
         workflow_client = TemporalRunClient(client, worker_config)
 
         run_repository = SQLAlchemyRunRepository(database.session_factory)
+        audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(
+            database.session_factory
+        )
         event_repository = SQLAlchemyRunEventRepository(database.session_factory)
         execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+        workflow_execution_repository = SQLAlchemyExecutionRepository(
+            database.session_factory,
+            emit_workflow_signal_intents=True,
+        )
         finding_repository = SQLAlchemyFindingRepository(database.session_factory)
         artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
         report_repository = SQLAlchemyReportRepository(database.session_factory)
@@ -644,11 +773,14 @@ async def build_temporal_worker(
             credentials=runner_credential_repository,
             commands=runner_command_repository,
             nodes=node_service,
-            executions=execution_repository,
+            executions=workflow_execution_repository,
+            stop_projection_executions=execution_repository,
             runs=run_repository,
             paths=paths,
             registration_token=config.runner.registration_token,
             terminals=terminal_repository,
+            browser_sessions=browser_repository,
+            tool_call_intents=tool_call_intent_repository,
             events=event_repository,
             lease_duration=timedelta(seconds=config.runner.command_lease_seconds),
         )
@@ -667,15 +799,9 @@ async def build_temporal_worker(
             defer_activation=True,
         )
         process_supervisor = ProcessSupervisor(
-            execution_repository,
+            workflow_execution_repository,
             paths,
             process_executor=process_executor,
-            on_completed=lambda execution: _signal_execution_completion(
-                workflow_client,
-                run_repository,
-                run_id=execution.run_id,
-                execution_id=execution.id,
-            ),
         )
         await process_supervisor.recover()
         remote_supervisor = RemoteExecutionSupervisor(
@@ -686,18 +812,12 @@ async def build_temporal_worker(
         )
         terminal_supervisor = TerminalSupervisor(
             terminal_repository=terminal_repository,
-            execution_repository=execution_repository,
+            execution_repository=workflow_execution_repository,
             event_repository=event_repository,
             paths=paths,
             containment_manager=process_executor.containment_manager,
             autodetect_containment=False,
             require_containment=config.execution.require_containment,
-            on_completed=lambda execution: _signal_execution_completion(
-                workflow_client,
-                run_repository,
-                run_id=execution.run_id,
-                execution_id=execution.id,
-            ),
         )
         await terminal_supervisor.recover(node_id=config.runner.node_id)
         execution_runner = NodeExecutionRouter(
@@ -768,6 +888,47 @@ async def build_temporal_worker(
                 "browser_sessions": browser_service,
                 "target_http_requests": target_http_service,
             },
+        )
+        audit_service = AuditApplicationService(
+            creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
+            aggregate_repository=audit_aggregate_repository,
+            feature_enabled=config.audit.enabled,
+            workspace_root=config.audit.temp_root,
+        )
+        workflow_router = RunWorkflowControlRouter(
+            runs=run_repository,
+            audits=audit_aggregate_repository,
+            general=workflow_client,
+        )
+        audit_cleanup_reconciler = AuditControlApplicationService(
+            audits=audit_service,
+            projector=AuditRunStateProjector(
+                SQLAlchemyAuditControlUnitOfWork(database.session_factory)
+            ),
+            safety_stopper=safety_stopper,
+            events=event_repository,
+        )
+        workflow_signal_repository = SQLAlchemyWorkflowSignalIntentRepository(
+            database.session_factory
+        )
+        workflow_signal_transport = RoutedWorkflowSignalTransport(
+            workflow_router,
+            runs=run_repository,
+            sources=workflow_signal_repository,
+        )
+
+        async def workflow_signal_client_provider() -> Client:
+            return client
+
+        workflow_signal_dispatcher = WorkflowSignalDispatcher(
+            repository=workflow_signal_repository,
+            transport=workflow_signal_transport,
+            lease_owner=f"worker:{config.runner.node_id}:{secrets.token_hex(16)}",
+        )
+        workflow_signal_reconciler = WorkflowSignalReconciler(
+            repository=workflow_signal_repository,
+            probe=TemporalWorkflowSignalOutcomeProbe(workflow_signal_client_provider),
+            lease_owner=f"worker-probe:{config.runner.node_id}:{secrets.token_hex(16)}",
         )
         tool_result_processor = ToolResultProcessor(
             ExecutionArtifactStore(artifact_service),
@@ -988,6 +1149,10 @@ async def build_temporal_worker(
             run_repository=run_repository,
             event_repository=event_repository,
             safety_stopper=safety_stopper,
+            audit_cleanup_reconciler=audit_cleanup_reconciler,
+            workflow_signal_dispatcher=workflow_signal_dispatcher,
+            workflow_signal_reconciler=workflow_signal_reconciler,
+            runner_control_service=runner_control,
             model_provider=model_provider,
             node_service=node_service,
             node_id=config.runner.node_id,
@@ -1034,26 +1199,3 @@ def _validate_audit_config_path_isolation(config: RiftXConfig) -> None:
         temporal_tls_client_cert_path=config.temporal.tls_client_cert_path,
         temporal_tls_client_private_key_path=config.temporal.tls_client_private_key_path,
     )
-
-
-async def _signal_execution_completion(
-    workflow_client: TemporalRunClient,
-    run_repository: SQLAlchemyRunRepository,
-    *,
-    run_id: str,
-    execution_id: str,
-) -> None:
-    run = await run_repository.get(run_id)
-    if run is None or run.kind is not RunKind.GENERAL:
-        # Audit execution completion requires the kind-aware workflow router
-        # introduced by AUD-106. Physical cleanup remains complete; only the
-        # unsafe generic Temporal signal is suppressed here.
-        return
-    for attempt in range(3):
-        try:
-            await workflow_client.execution_completed(run_id, execution_id)
-            return
-        except Exception:
-            if attempt == 2:
-                raise
-            await asyncio.sleep(2**attempt)

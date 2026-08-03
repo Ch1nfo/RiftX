@@ -10,13 +10,18 @@ from riftx.application.ports import ExecutionRepository
 from riftx.application.services.nodes import NodeApplicationService
 from riftx.application.services.runner_control import RunnerControlService
 from riftx.domain import (
+    RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     Execution,
     ExecutionStatus,
     ExecutorType,
     NodeStatus,
     RunnerCommandKind,
+    RunnerCommandOrigin,
     RunnerCommandStatus,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
 )
 from riftx.domain.base import new_id, utc_now
 
@@ -126,6 +131,17 @@ class RemoteExecutionSupervisor:
                 kind=RunnerCommandKind.EXECUTE,
                 idempotency_key=f"execute:{request.execution_key}",
                 target=owner,
+                run_id=request.run_id,
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.EXECUTION,
+                resource_kind=RunnerResourceKind.EXECUTION,
+                resource_id=execution.id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    max_output_bytes=100_000_000,
+                    allowed_streams=("stderr", "stdout"),
+                    result_schema="riftx.runner-result/execution-start/v1",
+                ),
                 payload={
                     "execution_id": execution.id,
                     "request": request.model_copy(
@@ -136,6 +152,10 @@ class RemoteExecutionSupervisor:
                     ).model_dump(mode="json"),
                 },
             )
+            # Enqueue atomically binds the central Execution to the exact
+            # launch command/effect envelope.  Never return or later save the
+            # stale pre-enqueue object, which would omit those callback facts.
+            execution = await self.get(execution.id)
         except Exception:
             await self._mark_start_lost(execution.id)
             raise
@@ -210,6 +230,16 @@ class RemoteExecutionSupervisor:
             # journal, so do not permanently reuse a failed command row.
             idempotency_key=f"cancel:{execution.id}:{new_id()}",
             target=owner,
+            run_id=execution.run_id,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.SAFETY_STOP,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=execution.id,
+            execution_id=execution.id,
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1",
+                stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+            ),
             payload={
                 "execution_id": execution.id,
                 "execution_key": execution.execution_key,

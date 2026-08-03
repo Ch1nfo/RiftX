@@ -144,7 +144,6 @@ async def test_code_audit_approval_decisions_reject_before_grant_event_or_workfl
         approval_repository=approvals,  # type: ignore[arg-type]
         run_repository=_Runs(run),  # type: ignore[arg-type]
         event_repository=events,  # type: ignore[arg-type]
-        workflow_client=workflow,
     )
 
     for operation in (

@@ -8,8 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
-from riftx.application.errors import ApplicationConflictError, ServiceUnavailableError
+from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
     ApprovalApplicationService,
     DecideApproval,
@@ -42,6 +43,7 @@ from riftx.persistence import (
     SQLAlchemyUserInputRequestRepository,
 )
 from riftx.persistence.orm import ApprovalRecord
+from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 from riftx.runner import ProcessSupervisor, RunnerPaths
 from riftx.runtime.coordinator import RuntimeCoordinator
 from riftx.runtime.engine import (
@@ -123,29 +125,6 @@ class BlockingSuspendEngine(RestartableEngine):
         return self.run
 
 
-class RecordingWorkflow:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
-
-    async def approve(self, run_id: str, approval_id: str) -> None:
-        self.calls.append(("approve", run_id, approval_id))
-
-    async def reject(self, run_id: str, approval_id: str) -> None:
-        self.calls.append(("reject", run_id, approval_id))
-
-
-class FailOnceWorkflow(RecordingWorkflow):
-    def __init__(self) -> None:
-        super().__init__()
-        self._failed = False
-
-    async def approve(self, run_id: str, approval_id: str) -> None:
-        self.calls.append(("approve", run_id, approval_id))
-        if not self._failed:
-            self._failed = True
-            raise RuntimeError("injected workflow signal failure")
-
-
 def engine_event(
     sequence: int,
     event_type: AgentEngineEventType,
@@ -169,6 +148,7 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
             node_id="local",
             objective=Objective(description="Run an approved command"),
             workspace_path=str(tmp_path),
+            temporal_workflow_id="riftx-run-run-1",
         )
     )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
@@ -187,8 +167,8 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
         tool_call_repository=intents,
         runner=supervisor,
         event_repository=events,
+        run_repository=runs,
     )
-    workflow = RecordingWorkflow()
     return {
         "database": database,
         "runs": runs,
@@ -206,8 +186,45 @@ async def build_fixture(tmp_path: Path) -> dict[str, object]:
         "user_inputs": user_inputs,
         "supervisor": supervisor,
         "execution_service": execution_service,
-        "workflow": workflow,
     }
+
+
+async def workflow_signal_records(
+    fixture: dict[str, object],
+) -> list[WorkflowSignalIntentRecord]:
+    database = fixture["database"]
+    assert isinstance(database, Database)
+    async with database.session_factory() as session:
+        return list(
+            await session.scalars(
+                select(WorkflowSignalIntentRecord).order_by(
+                    WorkflowSignalIntentRecord.created_at,
+                    WorkflowSignalIntentRecord.id,
+                )
+            )
+        )
+
+
+async def assert_single_approval_signal(
+    fixture: dict[str, object],
+    *,
+    approval_id: str,
+    signal_kind: str,
+) -> None:
+    records = await workflow_signal_records(fixture)
+    assert len(records) == 1
+    record = records[0]
+    assert record.owner_kind == "general_run"
+    assert record.run_id == "run-1"
+    assert record.workflow_id == "riftx-run-run-1"
+    assert record.signal_kind == signal_kind
+    assert record.source_event_kind == "approval_decision"
+    assert record.payload_json == json.dumps(
+        {"approval_id": approval_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert record.delivery_state == "pending"
 
 
 def build_coordinator(
@@ -323,14 +340,19 @@ def approval_service(fixture: dict[str, object]) -> ApprovalApplicationService:
         approval_repository=fixture["approvals"],
         run_repository=fixture["runs"],
         event_repository=fixture["events"],
-        workflow_client=fixture["workflow"],
         runtime_approval_repository=fixture["runtime_approvals"],
     )
 
 
 @pytest.mark.parametrize(
     "fail_stage",
-    ["after_public", "after_runtime", "after_grant", "after_event"],
+    [
+        "after_public",
+        "after_runtime",
+        "after_grant",
+        "after_event",
+        "after_signal_intent",
+    ],
 )
 async def test_runtime_approval_uow_failpoints_roll_back_every_effect(
     tmp_path: Path,
@@ -366,7 +388,6 @@ async def test_runtime_approval_uow_failpoints_roll_back_every_effect(
             approval_repository=failing_approvals,
             run_repository=fixture["runs"],
             event_repository=fixture["events"],
-            workflow_client=fixture["workflow"],
             runtime_approval_repository=fixture["runtime_approvals"],
         )
         with pytest.raises(RuntimeError, match=fail_stage):
@@ -391,13 +412,13 @@ async def test_runtime_approval_uow_failpoints_roll_back_every_effect(
         assert not [
             event for event in events if event.event_type in {"tool.approved", "tool.rejected"}
         ]
-        assert fixture["workflow"].calls == []
+        assert await workflow_signal_records(fixture) == []
     finally:
         await fixture["supervisor"].close()
         await fixture["database"].dispose()
 
 
-async def test_committed_runtime_decision_retries_signal_without_duplicate_effects(
+async def test_committed_runtime_decision_creates_one_durable_signal_intent(
     tmp_path: Path,
 ) -> None:
     fixture = await build_fixture(tmp_path)
@@ -415,12 +436,10 @@ async def test_committed_runtime_decision_retries_signal_without_duplicate_effec
         )
         approval_id = proposed.waiting_object_id
         assert approval_id is not None
-        workflow = FailOnceWorkflow()
         service = ApprovalApplicationService(
             approval_repository=fixture["approvals"],
             run_repository=fixture["runs"],
             event_repository=fixture["events"],
-            workflow_client=workflow,
             runtime_approval_repository=fixture["runtime_approvals"],
         )
         command = DecideApproval(
@@ -429,9 +448,7 @@ async def test_committed_runtime_decision_retries_signal_without_duplicate_effec
             approve_for_run=True,
         )
 
-        with pytest.raises(ServiceUnavailableError) as captured:
-            await service.approve(approval_id, command)
-        assert captured.value.details["approval_saved"] is True
+        await service.approve(approval_id, command)
         await service.approve(approval_id, command)
 
         public = await fixture["approvals"].get(approval_id)
@@ -446,10 +463,11 @@ async def test_committed_runtime_decision_retries_signal_without_duplicate_effec
         decision_events = [event for event in events if event.event_type == "tool.approved"]
         assert len(decision_events) == 1
         assert decision_events[0].payload["approve_for_run"] is True
-        assert workflow.calls == [
-            ("approve", "run-1", approval_id),
-            ("approve", "run-1", approval_id),
-        ]
+        await assert_single_approval_signal(
+            fixture,
+            approval_id=approval_id,
+            signal_kind="approve",
+        )
     finally:
         await fixture["supervisor"].close()
         await fixture["database"].dispose()
@@ -499,9 +517,11 @@ async def test_approve_executes_original_snapshot_after_worker_restart(tmp_path:
     assert saved_runtime_request.decided_by == "operator"
     assert saved_runtime_request.feedback is None
     assert not await fixture["approvals"].is_granted("run-1", "python")
-    assert fixture["workflow"].calls == [
-        ("approve", "run-1", runtime_request.id),
-    ]
+    await assert_single_approval_signal(
+        fixture,
+        approval_id=runtime_request.id,
+        signal_kind="approve",
+    )
 
     restarted_engine = RestartableEngine([])
     restarted = build_coordinator(fixture, restarted_engine)
@@ -623,7 +643,11 @@ async def test_signal_retry_recovers_split_public_and_runtime_decision(
     assert recovered.decided_by == "original-operator"
     assert recovered.feedback == expected_feedback
     assert recovered.decided_at == persisted.decided_at
-    assert fixture["workflow"].calls == [(workflow_action, "run-1", approval_id)]
+    await assert_single_approval_signal(
+        fixture,
+        approval_id=approval_id,
+        signal_kind=workflow_action,
+    )
     assert not await fixture["approvals"].is_granted("run-1", "python")
 
     await fixture["supervisor"].close()
@@ -682,7 +706,11 @@ async def test_split_once_retry_does_not_infer_scope_from_a_later_run_grant(
     assert recovered_runtime is not None
     assert recovered_runtime.decision is ApprovalDecision.APPROVE_ONCE
     assert await fixture["approvals"].is_granted("run-1", "python")
-    assert fixture["workflow"].calls == [("approve", "run-1", approval_id)]
+    await assert_single_approval_signal(
+        fixture,
+        approval_id=approval_id,
+        signal_kind="approve",
+    )
     events = await fixture["events"].list_after("run-1")
     decision_events = [event for event in events if event.event_type == "tool.approved"]
     assert len(decision_events) == 1
@@ -809,7 +837,7 @@ async def test_runtime_approval_conflicting_terminal_tuple_is_stable_conflict(
 
     assert captured.value.code == "runtime_approval_decision_conflict"
     assert await fixture["runtime_approvals"].get(approval_id) == seeded
-    assert fixture["workflow"].calls == []
+    assert await workflow_signal_records(fixture) == []
     events = await fixture["events"].list_after("run-1")
     assert not [event for event in events if event.event_type in {"tool.approved", "tool.rejected"}]
     await fixture["supervisor"].close()

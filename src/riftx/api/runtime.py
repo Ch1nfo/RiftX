@@ -21,6 +21,8 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     AuditApplicationService,
+    AuditControlApplicationService,
+    AuditRunStateProjector,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -30,10 +32,15 @@ from riftx.application.services import (
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
-    RunWorkflowClient,
+    RunSafetyStopService,
     TerminalApplicationService,
     ToolApplicationService,
 )
+from riftx.application.services.workflow_signals import (
+    WorkflowSignalDispatcher,
+    WorkflowSignalReconciler,
+)
+from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import (
     AuditConfig,
@@ -44,7 +51,7 @@ from riftx.config import (
 )
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
-from riftx.domain import OperatorCapability, RunStatus, TrustProfile
+from riftx.domain import OperatorCapability, RunKind, RunStatus, TrustProfile
 from riftx.domain.base import utc_now
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
@@ -58,6 +65,7 @@ from riftx.persistence import (
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
     SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditControlUnitOfWork,
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
@@ -86,6 +94,9 @@ from riftx.persistence.observability_repository import (
 from riftx.persistence.target_http_repositories import (
     SQLAlchemyTargetHttpRequestRepository,
 )
+from riftx.persistence.workflow_signals import (
+    SQLAlchemyWorkflowSignalIntentRepository,
+)
 from riftx.runner import (
     ExecutionRunner,
     NodeBrowserRouter,
@@ -109,6 +120,10 @@ from riftx.security import (
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal.connection import TemporalConnectionSettings, connect_temporal
 from riftx.temporal.runtime import LazyTemporalRunClient, TemporalRuntimeConfig
+from riftx.temporal.workflow_signal_transport import (
+    RoutedWorkflowSignalTransport,
+    TemporalWorkflowSignalOutcomeProbe,
+)
 from riftx.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -270,12 +285,17 @@ def _create_temporal_connector(settings: APISettings) -> Callable[[], Awaitable[
 def _create_audit_service(
     settings: APISettings,
     database: Database,
+    *,
+    aggregate_repository: SQLAlchemyAuditAggregateReadRepository | None = None,
 ) -> AuditApplicationService:
     """Assemble the always-present, database-only Code Audit application edge."""
 
     return AuditApplicationService(
         creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-        aggregate_repository=SQLAlchemyAuditAggregateReadRepository(database.session_factory),
+        aggregate_repository=(
+            aggregate_repository
+            or SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+        ),
         feature_enabled=settings.audit.enabled,
         workspace_root=settings.audit.temp_root,
     )
@@ -305,6 +325,9 @@ class ControlPlane:
     terminal_supervisor: TerminalSupervisor
     graph_repository: SQLAlchemyGraphReadRepository
     traffic_repository: SQLAlchemyTrafficMetadataReadRepository
+    audit_control_service: AuditControlApplicationService | None = None
+    workflow_signal_dispatcher: WorkflowSignalDispatcher | None = None
+    workflow_signal_reconciler: WorkflowSignalReconciler | None = None
     browser_service: BrowserApplicationService | None = None
     connector_service: ConnectorApplicationService | None = None
     browser_manager: RunnerBrowserManager | None = None
@@ -312,6 +335,8 @@ class ControlPlane:
     execution_runner: ExecutionRunner | None = None
     target_http_service: TargetHttpApplicationService | None = None
     _cleanup_reconciler_task: asyncio.Task[None] | None = None
+    _workflow_signal_task: asyncio.Task[None] | None = None
+    _runner_reconciliation_task: asyncio.Task[None] | None = None
     _cleanup_failures: set[str] = field(default_factory=set)
 
     def start_cleanup_reconciler(self) -> None:
@@ -323,6 +348,60 @@ class ControlPlane:
             self._reconcile_completing_runs(),
             name="riftx-control-plane-cleanup-reconciler",
         )
+        if (
+            self._workflow_signal_task is None
+            and self.workflow_signal_dispatcher is not None
+            and self.workflow_signal_reconciler is not None
+        ):
+            self._workflow_signal_task = asyncio.create_task(
+                self._reconcile_workflow_signals(),
+                name="riftx-control-plane-workflow-signal-reconciler",
+            )
+        if self._runner_reconciliation_task is None:
+            self._runner_reconciliation_task = asyncio.create_task(
+                self._reconcile_runner_state(),
+                name="riftx-control-plane-runner-reconciler",
+            )
+
+    async def _reconcile_runner_state(self) -> None:
+        unavailable = False
+        while True:
+            try:
+                await self.runner_control_service.reconcile_stop_receipts()
+                await self.runner_control_service.reconcile_quarantined_commands()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not unavailable:
+                    logger.exception("Control Plane Runner reconciliation failed; retrying")
+                unavailable = True
+            else:
+                if unavailable:
+                    logger.info("Control Plane Runner reconciliation recovered")
+                unavailable = False
+            await asyncio.sleep(0.1)
+
+    async def _reconcile_workflow_signals(self) -> None:
+        assert self.workflow_signal_dispatcher is not None
+        assert self.workflow_signal_reconciler is not None
+        unavailable = False
+        while True:
+            try:
+                await self.workflow_signal_dispatcher.dispatch_batch()
+                await self.workflow_signal_reconciler.reconcile_batch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not unavailable:
+                    logger.exception(
+                        "Control Plane Workflow signal reconciliation failed; retrying"
+                    )
+                unavailable = True
+            else:
+                if unavailable:
+                    logger.info("Control Plane Workflow signal reconciliation recovered")
+                unavailable = False
+            await asyncio.sleep(0.1)
 
     async def _reconcile_completing_runs(self) -> None:
         scan_unavailable = False
@@ -346,7 +425,20 @@ class ControlPlane:
                         )
                         for run in runs:
                             try:
-                                result = await self.run_service.stop_resources_for_cleanup(run.id)
+                                if run.kind is RunKind.GENERAL:
+                                    result = await self.run_service.stop_resources_for_cleanup(
+                                        run.id
+                                    )
+                                elif run.kind is RunKind.CODE_AUDIT:
+                                    if self.audit_control_service is None:
+                                        raise RuntimeError(
+                                            "Code Audit cleanup service is not assembled"
+                                        )
+                                    result = await self.audit_control_service.reconcile_run(run.id)
+                                else:
+                                    raise RuntimeError(
+                                        f"unsupported RunKind for cleanup: {run.kind!r}"
+                                    )
                             except asyncio.CancelledError:
                                 raise
                             except Exception:
@@ -383,6 +475,22 @@ class ControlPlane:
             await asyncio.sleep(0.1)
 
     async def close(self) -> None:
+        runner_reconciliation_task = self._runner_reconciliation_task
+        self._runner_reconciliation_task = None
+        if runner_reconciliation_task is not None:
+            runner_reconciliation_task.cancel()
+            try:
+                await runner_reconciliation_task
+            except asyncio.CancelledError:
+                pass
+        workflow_signal_task = self._workflow_signal_task
+        self._workflow_signal_task = None
+        if workflow_signal_task is not None:
+            workflow_signal_task.cancel()
+            try:
+                await workflow_signal_task
+            except asyncio.CancelledError:
+                pass
         cleanup_task = self._cleanup_reconciler_task
         self._cleanup_reconciler_task = None
         if cleanup_task is not None:
@@ -421,13 +529,17 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     # Do not make read/write Control Plane availability depend on Temporal at
     # startup. Creating a Run only records its conversation context; the first
     # message connects and starts/signals the durable Workflow atomically.
-    workflow_client: RunWorkflowClient = LazyTemporalRunClient(
-        _create_temporal_connector(settings),
+    temporal_connector = _create_temporal_connector(settings)
+    workflow_client = LazyTemporalRunClient(
+        temporal_connector,
         temporal_config,
     )
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
+    audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(
+        database.session_factory
+    )
     action_read_repository = SQLAlchemyActionReadRepository(database.session_factory)
     graph_repository = SQLAlchemyGraphReadRepository(database.session_factory)
     traffic_repository = SQLAlchemyTrafficMetadataReadRepository(
@@ -443,6 +555,10 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    workflow_execution_repository = SQLAlchemyExecutionRepository(
+        database.session_factory,
+        emit_workflow_signal_intents=True,
+    )
     tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     agent_session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
@@ -492,11 +608,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         credentials=runner_credential_repository,
         commands=runner_command_repository,
         nodes=node_service,
-        executions=execution_repository,
+        executions=workflow_execution_repository,
+        stop_projection_executions=execution_repository,
         runs=run_repository,
         paths=runner_paths,
         registration_token=settings.runner_registration_token,
         terminals=terminal_repository,
+        browser_sessions=browser_repository,
+        tool_call_intents=tool_call_intent_repository,
         events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
     )
@@ -514,7 +633,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     )
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
-        execution_repository=execution_repository,
+        execution_repository=workflow_execution_repository,
         event_repository=event_repository,
         paths=runner_paths,
         containment_manager=process_executor.containment_manager,
@@ -523,7 +642,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     )
     await terminal_supervisor.recover(node_id=settings.node_id)
     process_supervisor = ProcessSupervisor(
-        execution_repository,
+        workflow_execution_repository,
         runner_paths,
         process_executor=process_executor,
     )
@@ -601,26 +720,67 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         hooks=hooks,
         events=event_repository,
     )
-    run_service = RunApplicationService(
-        engagement_repository=engagement_repository,
-        run_repository=run_repository,
-        event_repository=event_repository,
-        workflow_client=workflow_client,
+    audit_service = _create_audit_service(
+        settings,
+        database,
+        aggregate_repository=audit_aggregate_repository,
+    )
+    workflow_router = RunWorkflowControlRouter(
+        runs=run_repository,
+        audits=audit_aggregate_repository,
+        general=workflow_client,
+    )
+    safety_stopper = RunSafetyStopService(
         execution_repository=execution_repository,
         execution_runner=execution_runner,
-        workspace_root=settings.workspace_root,
-        model_profiles=model_profile_service,
         resource_stoppers={
             "browser_sessions": browser_service,
             "target_http_requests": target_http_service,
         },
+    )
+    run_service = RunApplicationService(
+        engagement_repository=engagement_repository,
+        run_repository=run_repository,
+        event_repository=event_repository,
+        workflow_client=workflow_router,
+        execution_repository=execution_repository,
+        execution_runner=execution_runner,
+        workspace_root=settings.workspace_root,
+        model_profiles=model_profile_service,
+        safety_stopper=safety_stopper,
+    )
+    audit_control_service = AuditControlApplicationService(
+        audits=audit_service,
+        projector=AuditRunStateProjector(
+            SQLAlchemyAuditControlUnitOfWork(database.session_factory)
+        ),
+        safety_stopper=safety_stopper,
+        events=event_repository,
+    )
+    workflow_signal_repository = SQLAlchemyWorkflowSignalIntentRepository(
+        database.session_factory
+    )
+    workflow_signal_transport = RoutedWorkflowSignalTransport(
+        workflow_router,
+        runs=run_repository,
+        sources=workflow_signal_repository,
+    )
+    workflow_signal_dispatcher = WorkflowSignalDispatcher(
+        repository=workflow_signal_repository,
+        transport=workflow_signal_transport,
+        lease_owner=f"control-plane:{settings.node_id}:{secrets.token_hex(16)}",
+    )
+    workflow_signal_reconciler = WorkflowSignalReconciler(
+        repository=workflow_signal_repository,
+        probe=TemporalWorkflowSignalOutcomeProbe(temporal_connector),
+        lease_owner=f"control-plane-probe:{settings.node_id}:{secrets.token_hex(16)}",
     )
 
     control_plane = ControlPlane(
         settings=settings,
         database=database,
         run_service=run_service,
-        audit_service=_create_audit_service(settings, database),
+        audit_service=audit_service,
         action_service=ActionApplicationService(
             action_read_repository,
             authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
@@ -660,7 +820,6 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             approval_repository=approval_repository,
             run_repository=run_repository,
             event_repository=event_repository,
-            workflow_client=workflow_client,
             runtime_approval_repository=runtime_approval_repository,
         ),
         artifact_service=artifact_service,
@@ -688,6 +847,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         terminal_supervisor=terminal_supervisor,
         graph_repository=graph_repository,
         traffic_repository=traffic_repository,
+        audit_control_service=audit_control_service,
+        workflow_signal_dispatcher=workflow_signal_dispatcher,
+        workflow_signal_reconciler=workflow_signal_reconciler,
         browser_manager=browser_manager,
         process_supervisor=process_supervisor,
         execution_runner=execution_runner,

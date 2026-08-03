@@ -5,7 +5,6 @@ from .approvals import (
     ApprovalApplicationService,
     ApprovalInterruption,
     ApprovalRequestRecorder,
-    ApprovalWorkflowClient,
     DecideApproval,
     RuntimeApprovalRequestRecorder,
 )
@@ -15,6 +14,7 @@ from .artifacts import (
     RegisterArtifact,
     RegisterArtifactContent,
 )
+from .audit_controls import AuditControlApplicationService, AuditRunStateProjector
 from .audits import (
     AuditApplicationService,
     AuditContractBlueprint,
@@ -57,17 +57,31 @@ from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflo
 from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
 from .traffic import TrafficMetadataApplicationService
+from .workflow_signals import (
+    WorkflowSignalBatchResult,
+    WorkflowSignalDefinitelyNotDelivered,
+    WorkflowSignalDispatcher,
+    WorkflowSignalObservation,
+    WorkflowSignalObservationState,
+    WorkflowSignalOutboxApplicationService,
+    WorkflowSignalOutcomeProbe,
+    WorkflowSignalOutcomeUnknown,
+    WorkflowSignalReconciler,
+    WorkflowSignalTerminallyRejected,
+    WorkflowSignalTransport,
+    WorkflowSignalTransportReceipt,
+)
 
 __all__ = [
     "ActionApplicationService",
     "ApprovalApplicationService",
     "ApprovalInterruption",
     "ApprovalRequestRecorder",
-    "ApprovalWorkflowClient",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
     "ArtifactContentSlice",
     "AuditApplicationService",
+    "AuditControlApplicationService",
     "AuditContractBlueprint",
     "AuditControlAction",
     "AuditControlDisposition",
@@ -75,6 +89,7 @@ __all__ = [
     "AuditControlPlan",
     "AuditDraftResult",
     "AuditRunStateMappingPolicy",
+    "AuditRunStateProjector",
     "CreateEngagement",
     "CreateAuditDraft",
     "CreateRun",
@@ -117,4 +132,16 @@ __all__ = [
     "TerminalApplicationService",
     "TerminalView",
     "TrafficMetadataApplicationService",
+    "WorkflowSignalBatchResult",
+    "WorkflowSignalDefinitelyNotDelivered",
+    "WorkflowSignalDispatcher",
+    "WorkflowSignalObservation",
+    "WorkflowSignalObservationState",
+    "WorkflowSignalOutcomeProbe",
+    "WorkflowSignalOutcomeUnknown",
+    "WorkflowSignalOutboxApplicationService",
+    "WorkflowSignalReconciler",
+    "WorkflowSignalTerminallyRejected",
+    "WorkflowSignalTransport",
+    "WorkflowSignalTransportReceipt",
 ]

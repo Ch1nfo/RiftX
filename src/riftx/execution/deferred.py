@@ -22,7 +22,7 @@ from riftx.application.ports import (
     ToolCallIntentExecutionClaim,
     ToolCallIntentRepository,
 )
-from riftx.domain import ApprovalLevel, Execution, ExecutorType
+from riftx.domain import ApprovalLevel, Execution, ExecutorType, Run
 from riftx.executors import EnvironmentMode, ShellKind
 from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
@@ -86,6 +86,11 @@ class RegistryDeferredExecutionResolver:
         run = await self._runs.get(session.run_id)
         if run is None:
             raise EntityNotFoundError("Run", session.run_id)
+        _require_deferred_effect_policy(
+            run,
+            operation="service.deferred_execution.prepare",
+            effect="durable_write",
+        )
         if self._tool_context is not None:
             authorization_check = (
                 self._tool_context.assert_allowed
@@ -154,6 +159,7 @@ class DeferredExecutionDispatcher:
         self._tool_calls = tool_call_repository
         self._executions = execution_service
         self._resolver = resolver
+        self._runs = execution_service.run_repository
 
     async def dispatch(
         self,
@@ -186,6 +192,13 @@ class DeferredExecutionDispatcher:
         status: ToolCallStatus = ToolCallStatus.READY,
     ) -> ToolCallIntent:
         """Resolve and persist the immutable execution snapshot without launching it."""
+        _require_deferred_parent_owners(session, cycle, step)
+        run = await self._require_run(session.run_id)
+        _require_deferred_effect_policy(
+            run,
+            operation="service.deferred_execution.prepare",
+            effect="durable_write",
+        )
         call_id = _required_string(event.data, "call_id")
         tool_id = _tool_id(event.data)
         raw_spec = event.data.get("execution")
@@ -215,29 +228,34 @@ class DeferredExecutionDispatcher:
 
     async def execute_intent(self, intent: ToolCallIntent) -> Execution:
         """Launch exactly the execution snapshot stored with an approved intent."""
-        if intent.execution_spec is None:
+        authoritative = await self._require_intent_effect(
+            intent,
+            operation="service.deferred_execution.dispatch",
+            effect="host_execution",
+        )
+        if authoritative.execution_spec is None:
             raise ApplicationConflictError(
                 "deferred_execution_missing",
-                f"Tool Call {intent.id!r} has no persisted execution data",
+                f"Tool Call {authoritative.id!r} has no persisted execution data",
             )
-        if intent.tool_id is None:
+        if authoritative.tool_id is None:
             raise ApplicationConflictError(
                 "invalid_tool_call_intent",
-                f"Tool Call {intent.id!r} has no tool ID",
+                f"Tool Call {authoritative.id!r} has no tool ID",
             )
-        spec = DeferredExecutionSpec.model_validate(intent.execution_spec)
+        spec = DeferredExecutionSpec.model_validate(authoritative.execution_spec)
         return await self._executions.submit(
             SubmitExecutionRequest(
-                run_id=intent.run_id,
-                session_id=intent.session_id,
-                tool_call_id=intent.id,
+                run_id=authoritative.run_id,
+                session_id=authoritative.session_id,
+                tool_call_id=authoritative.id,
                 attempt_group=spec.attempt_group,
                 node_id=spec.node_id,
                 executor_type=spec.executor_type,
                 cwd=spec.cwd,
                 argv=spec.argv,
                 command_text=spec.command_text,
-                tool_id=intent.tool_id,
+                tool_id=authoritative.tool_id,
                 tool_version=spec.tool_version,
                 shell=spec.shell,
                 shell_path=spec.shell_path,
@@ -249,6 +267,11 @@ class DeferredExecutionDispatcher:
 
     async def execute_approved_intent(self, intent_id: str) -> Execution:
         """Approve and execute a persisted snapshot without consulting the model again."""
+        await self._require_intent_id_effect(
+            intent_id,
+            operation="service.deferred_execution.dispatch",
+            effect="host_execution",
+        )
         intent = await self.approve_intent(intent_id)
         return await self.execute_intent(intent)
 
@@ -261,8 +284,13 @@ class DeferredExecutionDispatcher:
     ) -> ToolCallIntentExecutionClaim:
         """Acquire the exact durable claim used by a non-generic execution path."""
 
+        authoritative = await self._require_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
         claim = await self._tool_calls.claim_execution(
-            intent.id,
+            authoritative.id,
             execution_key=execution_key,
             attempt_group=attempt_group,
         )
@@ -298,6 +326,13 @@ class DeferredExecutionDispatcher:
         *,
         admission: ExecutionAdmissionIdentity,
     ) -> tuple[ToolCallIntent, bool]:
+        authoritative = await self._require_durable_intent(claim.intent)
+        _require_claim_admission_owners(authoritative, claim, admission)
+        await self._require_resolved_intent_effect(
+            authoritative,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
         return await self._tool_calls.rollback_execution_claim(
             claim,
             admission=admission,
@@ -314,7 +349,14 @@ class DeferredExecutionDispatcher:
         intent: ToolCallIntent,
         execution: Execution,
     ) -> ToolCallIntent:
-        return await self._executions.sync_intent_execution(intent, execution)
+        authoritative = await self._require_durable_intent(intent)
+        _require_intent_execution_owners(authoritative, execution)
+        await self._require_resolved_intent_effect(
+            authoritative,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
+        return await self._executions.sync_intent_execution(authoritative, execution)
 
     async def settle_failed_intent_execution_start(
         self,
@@ -324,17 +366,23 @@ class DeferredExecutionDispatcher:
     ) -> ToolCallIntent:
         """Keep any durable admission claimed; roll back only a row-less start."""
 
+        authoritative = await self._require_durable_intent(claim.intent)
         if launch_request.execution_id is None or launch_request.session_id is None:
             raise ValueError("terminal settlement requires explicit session and execution IDs")
         execution_key = launch_request.execution_key or f"terminal:{launch_request.session_id}"
         if (
             execution_key != claim.execution_key
-            or launch_request.run_id != claim.intent.run_id
-            or launch_request.agent_session_id != claim.intent.session_id
-            or launch_request.tool_call_id != claim.intent.id
+            or launch_request.run_id != authoritative.run_id
+            or launch_request.agent_session_id != authoritative.session_id
+            or launch_request.tool_call_id != authoritative.id
             or launch_request.attempt_group != claim.attempt_group
         ):
             raise ValueError("terminal launch request does not match the claimed Tool Call")
+        await self._require_resolved_intent_effect(
+            authoritative,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
         admission = ExecutionAdmissionIdentity(
             execution_id=launch_request.execution_id,
             execution_key=execution_key,
@@ -354,9 +402,9 @@ class DeferredExecutionDispatcher:
         )
         admitted = await self.find_execution_admission(admission)
         if admitted is not None:
-            return await self.sync_intent_execution(claim.intent, admitted)
+            return await self.sync_intent_execution(authoritative, admitted)
         if not claim.newly_acquired:
-            return claim.intent
+            return authoritative
         authoritative, _ = await self.rollback_intent_execution_claim(
             claim,
             admission=admission,
@@ -370,6 +418,11 @@ class DeferredExecutionDispatcher:
 
     async def approve_intent(self, intent_id: str) -> ToolCallIntent:
         """Move an approved persisted intent to READY without launching it."""
+        await self._require_intent_id_effect(
+            intent_id,
+            operation="service.deferred_execution.approve",
+            effect="workflow_control",
+        )
         intent, _ = await self._tool_calls.compare_and_set_status(
             intent_id,
             expected={
@@ -391,6 +444,11 @@ class DeferredExecutionDispatcher:
         return intent
 
     async def reject_intent(self, intent_id: str) -> ToolCallIntent:
+        await self._require_intent_id_effect(
+            intent_id,
+            operation="service.deferred_execution.reject",
+            effect="workflow_control",
+        )
         intent, _ = await self._tool_calls.compare_and_set_status(
             intent_id,
             expected={
@@ -407,8 +465,13 @@ class DeferredExecutionDispatcher:
         )
 
     async def mark_intent_executing(self, intent: ToolCallIntent) -> ToolCallIntent:
+        authoritative = await self._require_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
         authoritative, _ = await self._tool_calls.compare_and_set_status(
-            intent.id,
+            authoritative.id,
             expected={
                 ToolCallStatus.READY,
                 ToolCallStatus.EXECUTING,
@@ -420,6 +483,71 @@ class DeferredExecutionDispatcher:
         raise ApplicationConflictError(
             "tool_call_not_ready",
             f"Tool Call {authoritative.id!r} cannot execute from {authoritative.status.value!r}",
+        )
+
+    async def _require_run(self, run_id: str) -> Run:
+        if self._runs is None:
+            raise ApplicationConflictError(
+                "run_kind_effect_policy_denied",
+                "Deferred execution effects require an authoritative Run repository",
+            )
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        return run
+
+    async def _require_durable_intent(self, intent: ToolCallIntent) -> ToolCallIntent:
+        authoritative = await self._tool_calls.get(intent.id)
+        if authoritative is None:
+            raise EntityNotFoundError("ToolCallIntent", intent.id)
+        _require_intent_owner_matches(authoritative, intent)
+        return authoritative
+
+    async def _require_intent_id_effect(
+        self,
+        intent_id: str,
+        *,
+        operation: str,
+        effect: str,
+    ) -> ToolCallIntent:
+        intent = await self._tool_calls.get(intent_id)
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", intent_id)
+        await self._require_resolved_intent_effect(
+            intent,
+            operation=operation,
+            effect=effect,
+        )
+        return intent
+
+    async def _require_intent_effect(
+        self,
+        intent: ToolCallIntent,
+        *,
+        operation: str,
+        effect: str,
+    ) -> ToolCallIntent:
+        authoritative = await self._require_durable_intent(intent)
+        await self._require_resolved_intent_effect(
+            authoritative,
+            operation=operation,
+            effect=effect,
+        )
+        return authoritative
+
+    async def _require_resolved_intent_effect(
+        self,
+        intent: ToolCallIntent,
+        *,
+        operation: str,
+        effect: str,
+    ) -> None:
+        run = await self._require_run(intent.run_id)
+        _require_deferred_effect_policy(
+            run,
+            operation=operation,
+            effect=effect,
+            intent_id=intent.id,
         )
 
     async def _persist_intent(
@@ -631,3 +759,132 @@ def _validate_existing_intent(
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _require_deferred_parent_owners(
+    session: AgentSession,
+    cycle: AgentCycle,
+    step: AgentStep,
+) -> None:
+    mismatched: list[str] = []
+    if cycle.run_id != session.run_id:
+        mismatched.append("cycle.run_id")
+    if cycle.session_id != session.id:
+        mismatched.append("cycle.session_id")
+    if step.cycle_id != cycle.id:
+        mismatched.append("step.cycle_id")
+    if mismatched:
+        raise ApplicationConflictError(
+            "deferred_execution_identity_mismatch",
+            "Session, Cycle, and Step do not share the same durable owner",
+            details={"mismatched_fields": mismatched},
+        )
+
+
+def _require_intent_owner_matches(
+    authoritative: ToolCallIntent,
+    provided: ToolCallIntent,
+) -> None:
+    mismatched = [
+        field_name
+        for field_name in ("run_id", "session_id", "cycle_id", "step_id")
+        if getattr(authoritative, field_name) != getattr(provided, field_name)
+    ]
+    if mismatched:
+        raise ApplicationConflictError(
+            "tool_call_identity_mismatch",
+            "Tool Call intent does not match its durable owner",
+            details={"mismatched_fields": mismatched},
+        )
+
+
+def _require_intent_execution_owners(
+    intent: ToolCallIntent,
+    execution: Execution,
+) -> None:
+    mismatched: list[str] = []
+    if execution.run_id != intent.run_id:
+        mismatched.append("execution.run_id")
+    if execution.session_id != intent.session_id:
+        mismatched.append("execution.session_id")
+    if execution.tool_call_id != intent.id:
+        mismatched.append("execution.tool_call_id")
+    if mismatched:
+        raise ApplicationConflictError(
+            "execution_identity_mismatch",
+            "Execution and Tool Call intent do not share the same durable owner",
+            details={"mismatched_fields": mismatched},
+        )
+
+
+def _require_claim_admission_owners(
+    intent: ToolCallIntent,
+    claim: ToolCallIntentExecutionClaim,
+    admission: ExecutionAdmissionIdentity,
+) -> None:
+    mismatched: list[str] = []
+    if admission.run_id != intent.run_id:
+        mismatched.append("admission.run_id")
+    if admission.session_id != intent.session_id:
+        mismatched.append("admission.session_id")
+    if admission.tool_call_id != intent.id:
+        mismatched.append("admission.tool_call_id")
+    if admission.execution_key != claim.execution_key:
+        mismatched.append("admission.execution_key")
+    if admission.attempt_group != claim.attempt_group:
+        mismatched.append("admission.attempt_group")
+    if mismatched:
+        raise ApplicationConflictError(
+            "execution_identity_mismatch",
+            "Execution admission does not match the claimed Tool Call owner",
+            details={"mismatched_fields": mismatched},
+        )
+
+
+def _require_deferred_effect_policy(
+    run: Run,
+    *,
+    operation: str,
+    effect: str,
+    intent_id: str | None = None,
+) -> None:
+    """Apply the catalog after durable parent and Run ownership are proven."""
+
+    # Lazy imports avoid the catalog's managed-entrypoint validation cycle.
+    from riftx.application.run_kind_effects import (
+        EffectMode,
+        EffectOrigin,
+        PolicyDenialReason,
+        RunEffectOwnership,
+        RunKindEffectPolicyDenied,
+        require_run_kind_effect_policy,
+    )
+
+    try:
+        require_run_kind_effect_policy(
+            operation,
+            EffectOrigin.APPLICATION_SERVICE,
+            ownership=RunEffectOwnership(
+                run_id=run.id,
+                run_kind=run.kind,
+                resource_kind=("tool_call_intent" if intent_id is not None else None),
+                resource_id=intent_id,
+            ),
+            effect=effect,
+            mode=EffectMode.NORMAL,
+        )
+    except RunKindEffectPolicyDenied as exc:
+        code = (
+            "run_kind_operation_unsupported"
+            if exc.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED
+            else "run_kind_effect_policy_denied"
+        )
+        raise ApplicationConflictError(
+            code,
+            "The requested deferred Execution effect is not admitted for this Run owner",
+        ) from None
+    except (TypeError, ValueError):
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested deferred Execution effect is not admitted for this Run owner",
+        ) from None

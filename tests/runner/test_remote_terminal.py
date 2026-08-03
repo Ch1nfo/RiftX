@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from riftx.application.errors import ApplicationConflictError, AuthenticationError
+from riftx.application.services import NodeApplicationService, NodeRegistration
 from riftx.application.services.runner_control import (
     ExecutionStatusReport,
     RunnerControlService,
 )
 from riftx.domain import (
+    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -23,19 +25,40 @@ from riftx.domain import (
     Run,
     RunEvent,
     RunKind,
+    RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
+    RunnerCredential,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
     TerminalOwner,
     TerminalSession,
     TerminalStatus,
+    runner_payload_digest,
 )
 from riftx.persistence import (
     Database,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
+    SQLAlchemyNodeRepository,
     SQLAlchemyRunEventRepository,
+    SQLAlchemyRunnerCommandRepository,
+    SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTerminalRepository,
+)
+from riftx.persistence.orm import (
+    AuditContractRecord as AuditContractORMRecord,
+)
+from riftx.persistence.orm import (
+    AuditProjectRecord,
+    AuditScanRecord,
+    ExecutionRecord,
 )
 from riftx.runner import RunnerPaths, TerminalLaunchRequest, TerminalSupervisor
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
@@ -43,6 +66,8 @@ from riftx.runner.state import FileExecutionRepository, FileTerminalRepository
 from riftx.runner.terminal_manager import (
     NullRunEventRepository,
     OperationJournal,
+    OperationJournalConflict,
+    OperationJournalIdentity,
     RemoteTerminalManager,
 )
 
@@ -51,11 +76,331 @@ from ._containment_support import FakeKernelContainmentManager
 _OWNER = RunnerPrincipal(instance_id="runner-instance-windows-a", epoch=1)
 
 
-async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
+def _runner_credential(principal: RunnerPrincipal = _OWNER) -> RunnerCredential:
+    return RunnerCredential(
+        node_id="windows-a",
+        principal=principal,
+        token_hash="a" * 64,
+        token_prefix="runner",
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
+
+
+async def _seed_runner_authority(database: Database) -> RunnerCredential:
+    await NodeApplicationService(
+        SQLAlchemyNodeRepository(database.session_factory)
+    ).register(
+        NodeRegistration(
+            node_id="windows-a",
+            name="Windows A",
+            platform="windows",
+            architecture="x86_64",
+        )
+    )
+    credential = await SQLAlchemyRunnerCredentialRepository(
+        database.session_factory
+    ).issue(
+        "windows-a",
+        token_hash="a" * 64,
+        token_prefix="runner",
+        issued_at=datetime(2026, 8, 1, tzinfo=UTC),
+        instance_id=_OWNER.instance_id,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
+    assert credential.principal == _OWNER
+    return credential
+
+
+def _verified_runner_command(
+    *,
+    node_id: str,
+    kind: RunnerCommandKind,
+    idempotency_key: str,
+    payload: dict[str, object],
+    target: RunnerPrincipal,
+    run_id: str,
+    origin: RunnerCommandOrigin,
+    operation_family: RunnerOperationFamily,
+    resource_kind: RunnerResourceKind,
+    resource_id: str,
+    execution_id: str | None,
+    output_contract: RunnerOutputContract,
+    run_kind: RunKind = RunKind.GENERAL,
+    audit_id: str | None = None,
+    plan_digest: str | None = None,
+) -> RunnerCommand:
+    identity_digest = hashlib.sha256(
+        f"{node_id}\0{idempotency_key}".encode()
+    ).hexdigest()
+    command_id = f"test-command-{identity_digest[:48]}"
+    binding = RunnerEffectBinding(
+        id=f"test-binding-{identity_digest[:48]}",
+        run_id=run_id,
+        run_kind=run_kind,
+        node_id=node_id,
+        target=target,
+        origin=origin,
+        operation_family=operation_family,
+        execution_id=execution_id,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+        audit_id=audit_id,
+        plan_digest=plan_digest,
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract,
+    )
+    return RunnerCommand(
+        id=command_id,
+        node_id=node_id,
+        target=target,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        ownership=ownership,
+        ownership_state=RunnerCommandOwnershipState.VERIFIED,
+        quarantine_reason="",
+        payload=payload,
+    )
+
+
+def _execution_callback_fields(command: RunnerCommand) -> dict[str, str]:
+    assert command.ownership is not None
+    return {
+        "runner_command_id": command.id,
+        "runner_effect_binding_id": command.ownership.effect_binding.id,
+        "runner_binding_digest": command.ownership.effect_binding.binding_digest,
+        "runner_envelope_digest": command.ownership.envelope_digest,
+    }
+
+
+def _journal_identity(command: RunnerCommand) -> OperationJournalIdentity:
+    assert command.ownership is not None
+    return OperationJournalIdentity(
+        command_id=command.id,
+        binding_digest=command.ownership.effect_binding.binding_digest,
+        envelope_digest=command.ownership.envelope_digest,
+    )
+
+
+def _verified_terminal_operation(
+    kind: RunnerCommandKind,
+    payload: dict[str, object],
+    *,
+    idempotency_key: str,
+    run_id: str = "run-1",
+) -> RunnerCommand:
+    return _verified_runner_command(
+        node_id="windows-a",
+        kind=kind,
+        idempotency_key=idempotency_key,
+        payload=payload,
+        target=_OWNER,
+        run_id=run_id,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.TERMINAL,
+        resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+        resource_id=str(payload["session_id"]),
+        execution_id=str(payload["execution_id"]),
+        output_contract=RunnerOutputContract(
+            result_schema="riftx.runner-result/terminal-operation/v1",
+        ),
+    )
+
+
+def _service_callback_identity(command: RunnerCommand) -> dict[str, str]:
+    callback = _execution_callback_fields(command)
+    return {
+        "command_id": callback["runner_command_id"],
+        "effect_binding_id": callback["runner_effect_binding_id"],
+        "binding_digest": callback["runner_binding_digest"],
+        "envelope_digest": callback["runner_envelope_digest"],
+    }
+
+
+def _verified_terminal_start_payload(
+    request: TerminalLaunchRequest,
+) -> tuple[TerminalLaunchRequest, dict[str, object], RunnerCommand]:
+    session_id = request.session_id
+    execution_id = request.execution_id
+    assert session_id is not None and execution_id is not None
+    target = request.runner_principal or _OWNER
+    raw_request = request.model_copy(
+        update={
+            "runner_principal": target,
+            "runner_command_id": None,
+            "runner_effect_binding_id": None,
+            "runner_binding_digest": None,
+            "runner_envelope_digest": None,
+        }
+    )
+    raw_payload: dict[str, object] = {
+        "session_id": session_id,
+        "execution_id": execution_id,
+        "request": raw_request.model_dump(mode="json"),
+    }
+    command = _verified_runner_command(
+        node_id=request.node_id,
+        kind=RunnerCommandKind.TERMINAL_START,
+        idempotency_key=f"terminal-start:{session_id}",
+        payload=raw_payload,
+        target=target,
+        run_id=request.run_id,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.TERMINAL,
+        resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+        resource_id=session_id,
+        execution_id=execution_id,
+        output_contract=RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/terminal-start/v1",
+        ),
+    )
+    bound_request = raw_request.model_copy(update=_execution_callback_fields(command))
+    return (
+        bound_request,
+        {
+            **raw_payload,
+            "request": bound_request.model_dump(mode="json"),
+        },
+        command,
+    )
+
+
+async def _install_execution_callback_binding(
+    repository: SQLAlchemyExecutionRepository | FileExecutionRepository,
+    execution_id: str,
+    command: RunnerCommand,
+) -> None:
+    callback = _execution_callback_fields(command)
+    if isinstance(repository, SQLAlchemyExecutionRepository):
+        async with repository._session_factory() as session, session.begin():
+            record = await session.get(ExecutionRecord, execution_id, with_for_update=True)
+            assert record is not None
+            for field_name, value in callback.items():
+                setattr(record, field_name, value)
+            await session.flush()
+        return
+    async with repository._lock:
+        await asyncio.to_thread(
+            _install_file_execution_callback_binding,
+            repository,
+            execution_id,
+            callback,
+        )
+
+
+def _install_file_execution_callback_binding(
+    repository: FileExecutionRepository,
+    execution_id: str,
+    callback: dict[str, str],
+) -> None:
+    items = repository._read()
+    execution = items.get(execution_id)
+    assert execution is not None
+    items[execution_id] = execution.model_copy(update=callback)
+    repository._write(items)
+
+
+async def _seed_audit_owner(
+    database: Database,
+    *,
+    audit_id: str,
+    run: Run,
+) -> None:
+    created_at = datetime(2026, 8, 1, tzinfo=UTC)
+    project_id = f"project-{audit_id}"
+    contract_id = f"contract-{audit_id}"
+    contract_digest = "c" * 64
+    required_backend_id = "audit-test-backend"
+    async with database.session_factory() as session, session.begin():
+        session.add(
+            AuditProjectRecord(
+                id=project_id,
+                engagement_id=run.engagement_id,
+                display_name="Audit Runner callback owner",
+                vcs_kind="git",
+                repository_identity_digest="d" * 64,
+                default_branch="main",
+                state_version=1,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        session.add(
+            AuditContractORMRecord(
+                contract_id=contract_id,
+                audit_id=audit_id,
+                schema_version="riftx.audit-contract/v1",
+                canonical_contract_json="{}",
+                contract_digest=contract_digest,
+                source_target_digest="e" * 64,
+                source_node_id=run.node_id,
+                source_ingest_backend_digest="f" * 64,
+                source_prepare_proof_digest="1" * 64,
+                selected_node_id=run.node_id,
+                required_backend_id=required_backend_id,
+                snapshot_hydration_policy_digest="2" * 64,
+                state_version=1,
+                created_at=created_at,
+                sealed_at=None,
+            )
+        )
+        await session.flush()
+        session.add(
+            AuditScanRecord(
+                id=audit_id,
+                run_id=run.id,
+                engagement_id=run.engagement_id,
+                run_kind=RunKind.CODE_AUDIT.value,
+                project_id=project_id,
+                contract_id=contract_id,
+                snapshot_id=None,
+                base_snapshot_id=None,
+                baseline_audit_id=None,
+                purpose="primary",
+                parent_audit_id=None,
+                mode="standard",
+                analysis_profile="deterministic",
+                lifecycle_status="draft",
+                current_phase="authorize_and_freeze",
+                terminal_outcome=None,
+                cleanup_proof_digest=None,
+                run_terminal_status=None,
+                closure_status=None,
+                publication_status="not_started",
+                core_seal_root=None,
+                initial_distribution_revision_id=None,
+                latest_distribution_revision_id=None,
+                model_profile=run.model_profile,
+                selected_node_id=run.node_id,
+                required_backend_id=required_backend_id,
+                policy_digest="3" * 64,
+                budget_digest="4" * 64,
+                config_digest="5" * 64,
+                contract_digest=contract_digest,
+                temporal_workflow_id=f"riftx-code-audit-{audit_id}",
+                state_version=1,
+                created_at=created_at,
+                started_at=None,
+                analysis_finished_at=None,
+                publication_finished_at=None,
+                sealed_at=None,
+            )
+        )
+
+
+async def test_runner_rejects_unadmitted_audit_launch_callbacks_even_when_report_claims_stop_proof(
     tmp_path: Path,
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-runner-callback.db'}")
     await database.create_schema()
+    credential = await _seed_runner_authority(database)
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-audit", name="Audit Runner callback fence")
     )
@@ -67,17 +412,52 @@ async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
         node_id="windows-a",
         objective=Objective(description="Reject generic Runner callback"),
         workspace_path=str(tmp_path / "audit-output"),
+        temporal_workflow_id="riftx-code-audit-audit-owner",
     )
     await runs.create(run)
+    await _seed_audit_owner(database, audit_id="audit-owner", run=run)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
     stdout_path = tmp_path / "audit.stdout"
     stderr_path = tmp_path / "audit.stderr"
     stdout_path.write_bytes(b"baseline")
     stderr_path.write_bytes(b"")
+    audit_id = "audit-owner"
+    plan_digest = "b" * 64
+    launch_payload: dict[str, object] = {
+        "execution_id": "audit-execution",
+        "request": {
+            "run_id": run.id,
+            "node_id": "windows-a",
+            "execution_key": "audit-execution-key",
+        },
+    }
+    launch_command = _verified_runner_command(
+        node_id="windows-a",
+        kind=RunnerCommandKind.EXECUTE,
+        idempotency_key="audit-execution-start",
+        payload=launch_payload,
+        target=_OWNER,
+        run_id=run.id,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.EXECUTION,
+        resource_kind=RunnerResourceKind.EXECUTION,
+        resource_id="audit-execution",
+        execution_id="audit-execution",
+        output_contract=RunnerOutputContract(
+            max_output_bytes=1024,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/execution-start/v1",
+        ),
+        run_kind=RunKind.CODE_AUDIT,
+        audit_id=audit_id,
+        plan_digest=plan_digest,
+    )
     execution = Execution(
         id="audit-execution",
         execution_key="audit-execution-key",
         run_id=run.id,
+        audit_id=audit_id,
+        plan_digest=plan_digest,
         node_id="windows-a",
         owner=_OWNER,
         executor_type=ExecutorType.PROCESS,
@@ -87,17 +467,25 @@ async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
         stderr_path=str(stderr_path),
     )
     await executions.create_if_absent(execution)
+    commands = SQLAlchemyRunnerCommandRepository(database.session_factory)
+    await commands.enqueue(launch_command)
+    execution = await executions.get(execution.id)
+    assert execution is not None
     service = RunnerControlService(
         credentials=object(),  # type: ignore[arg-type]
-        commands=object(),  # type: ignore[arg-type]
+        commands=commands,
         nodes=object(),  # type: ignore[arg-type]
-        executions=executions,
+        executions=SQLAlchemyExecutionRepository(
+            database.session_factory,
+            emit_workflow_signal_intents=True,
+        ),
+        stop_projection_executions=executions,
         runs=runs,
         paths=RunnerPaths(tmp_path / "runner-state"),
         registration_token=None,
     )
     service.authenticate = AsyncMock(  # type: ignore[method-assign]
-        return_value=SimpleNamespace(principal=_OWNER)
+        return_value=credential
     )
 
     with pytest.raises(ApplicationConflictError) as status_error:
@@ -106,12 +494,14 @@ async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
             "runner-token",
             execution.id,
             ExecutionStatusReport(status=ExecutionStatus.RUNNING, pid=1234),
+            **_service_callback_identity(launch_command),
         )
     with pytest.raises(ApplicationConflictError) as output_error:
         await service.append_output(
             "windows-a",
             "runner-token",
             execution.id,
+            **_service_callback_identity(launch_command),
             stream="stdout",
             offset=len(b"baseline"),
             data=b"forbidden",
@@ -124,25 +514,32 @@ async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
         )
 
     assert status_error.value.code == output_error.value.code == (
-        "run_kind_operation_unsupported"
+        "code_audit_runner_admission_denied"
     )
     assert owner_error.value.code == "runner_execution_scope_mismatch"
     unchanged = await executions.get(execution.id)
     assert unchanged is not None and unchanged.status is ExecutionStatus.CREATED
     assert stdout_path.read_bytes() == b"baseline"
 
-    stopped = await service.report_execution(
-        "windows-a",
-        "runner-token",
-        execution.id,
-        ExecutionStatusReport(
-            status=ExecutionStatus.CANCELLED,
-            exit_code=130,
-            physical_stop_confirmed=True,
-        ),
-    )
-    assert stopped.status is ExecutionStatus.CANCELLED
-    assert stopped.physical_stop_confirmed_at is not None
+    # Valid stop ACKs use the family-specific safety command/receipt protocol;
+    # an unadmitted launch status cannot impersonate that typed stop proof.
+    with pytest.raises(ApplicationConflictError) as stop_error:
+        await service.report_execution(
+            "windows-a",
+            "runner-token",
+            execution.id,
+            ExecutionStatusReport(
+                status=ExecutionStatus.CANCELLED,
+                exit_code=130,
+                physical_stop_confirmed=True,
+            ),
+            **_service_callback_identity(launch_command),
+        )
+    assert stop_error.value.code == "code_audit_runner_admission_denied"
+    unchanged = await executions.get(execution.id)
+    assert unchanged is not None
+    assert unchanged.status is ExecutionStatus.CREATED
+    assert unchanged.physical_stop_confirmed_at is None
     await database.dispose()
 
 
@@ -174,8 +571,19 @@ def _foreign_terminal_start_replays(
 
 
 class FakeControlService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        executions: SQLAlchemyExecutionRepository | FileExecutionRepository,
+    ) -> None:
+        self._executions = executions
         self.enqueued: list[tuple[str, RunnerCommandKind, str, dict[str, object]]] = []
+        self.commands: dict[str, RunnerCommand] = {}
+        self._commands_by_idempotency: dict[tuple[str, str], RunnerCommand] = {}
+        self._durable_commands = (
+            SQLAlchemyRunnerCommandRepository(executions._session_factory)
+            if isinstance(executions, SQLAlchemyExecutionRepository)
+            else None
+        )
 
     async def current_principal(self, node_id: str) -> RunnerPrincipal:
         assert node_id == "windows-a"
@@ -188,11 +596,55 @@ class FakeControlService:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
         target: RunnerPrincipal | None = None,
-    ) -> tuple[object, bool]:
+    ) -> tuple[RunnerCommand, bool]:
         assert target == _OWNER
+        assert output_contract is not None
+        replay_key = (node_id, idempotency_key)
+        existing = self._commands_by_idempotency.get(replay_key)
+        if existing is not None:
+            return existing, False
+        command = _verified_runner_command(
+            node_id=node_id,
+            kind=kind,
+            idempotency_key=idempotency_key,
+            payload=payload,
+            target=target,
+            run_id=run_id,
+            origin=origin,
+            operation_family=operation_family,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            execution_id=execution_id,
+            output_contract=output_contract,
+        )
+        if self._durable_commands is not None:
+            command, created = await self._durable_commands.enqueue(command)
+            if not created:
+                self.commands[command.id] = command
+                self._commands_by_idempotency[replay_key] = command
+                return command, False
+        elif kind is RunnerCommandKind.TERMINAL_START:
+            assert execution_id is not None
+            await _install_execution_callback_binding(
+                self._executions,
+                execution_id,
+                command,
+            )
         self.enqueued.append((node_id, kind, idempotency_key, payload))
-        return object(), True
+        self.commands[command.id] = command
+        self._commands_by_idempotency[replay_key] = command
+        return command, True
+
+    async def get(self, command_id: str) -> RunnerCommand | None:
+        return self.commands.get(command_id)
 
 
 class FailOnceTerminalCreateRepository:
@@ -266,6 +718,7 @@ async def _central_terminal_runtime(
 ]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / database_name}")
     await database.create_schema()
+    await _seed_runner_authority(database)
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Remote admission")
     )
@@ -293,6 +746,7 @@ class FakeTerminalClient:
         self.statuses: list[tuple[str, ExecutionStatus]] = []
         self.status_details: list[tuple[str, ExecutionStatus, dict[str, object]]] = []
         self.output: dict[str, bytearray] = {}
+        self.output_details: list[tuple[str, dict[str, str]]] = []
 
     @property
     def principal(self) -> RunnerPrincipal:
@@ -311,11 +765,26 @@ class FakeTerminalClient:
         self,
         execution_id: str,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_binding_digest: str,
+        runner_envelope_digest: str,
         stream: str,
         offset: int,
         data: bytes,
     ) -> int:
         assert stream == "stdout"
+        self.output_details.append(
+            (
+                execution_id,
+                {
+                    "runner_command_id": runner_command_id,
+                    "runner_effect_binding_id": runner_effect_binding_id,
+                    "runner_binding_digest": runner_binding_digest,
+                    "runner_envelope_digest": runner_envelope_digest,
+                },
+            )
+        )
         target = self.output.setdefault(execution_id, bytearray())
         assert len(target) == offset
         target.extend(data)
@@ -428,7 +897,7 @@ async def test_remote_terminal_projection_create_failure_persists_predispatch_st
     )
     terminals = SQLAlchemyTerminalRepository(database.session_factory)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=FailOnceTerminalCreateRepository(terminals),  # type: ignore[arg-type]
         execution_repository=executions,
@@ -444,7 +913,6 @@ async def test_remote_terminal_projection_create_failure_persists_predispatch_st
         cwd=tmp_path,
         argv=["pwsh.exe"],
     )
-
     with pytest.raises(RuntimeError, match="projection create failure"):
         await remote.start(request)
 
@@ -478,7 +946,7 @@ async def test_remote_terminal_projection_post_commit_failure_closes_without_dis
     )
     terminals = SQLAlchemyTerminalRepository(database.session_factory)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=FailOnceTerminalCreateRepository(
             terminals,
@@ -558,7 +1026,7 @@ async def test_remote_terminal_exact_retry_closes_legacy_starting_without_projec
         stderr_path=str(tmp_path / "remote-legacy-orphan.log"),
     )
     await executions.create_if_absent(orphan)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -627,7 +1095,7 @@ async def test_remote_terminal_exact_retry_adopts_created_projection_and_dispatc
             rows=request.rows,
         )
     )
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -681,7 +1149,7 @@ async def test_remote_terminal_missing_projection_rejects_immutable_launch_misma
         stderr_path=str(tmp_path / "remote-missing-identity.log"),
     )
     await executions.create_if_absent(reserved)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -748,7 +1216,7 @@ async def test_remote_terminal_created_without_fingerprint_closes_without_dispat
             rows=request.rows,
         )
     )
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -779,7 +1247,7 @@ async def test_remote_terminal_concurrent_exact_admission_dispatches_once(
         "concurrent-central.db",
     )
     barrier = BarrierTerminalCreateRepository(terminals)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=barrier,  # type: ignore[arg-type]
         execution_repository=executions,
@@ -826,7 +1294,7 @@ async def test_remote_terminal_stop_wins_created_admission_cas_without_dispatch(
         "created-stop-central.db",
     )
     blocked_claim = BlockFirstExecutionSave(executions)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=blocked_claim,  # type: ignore[arg-type]
@@ -873,7 +1341,7 @@ async def test_remote_terminal_cancelled_claim_is_settled_before_propagation(
         "cancelled-claim-central.db",
     )
     blocked_claim = BlockFirstExecutionSave(executions)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=blocked_claim,  # type: ignore[arg-type]
@@ -913,6 +1381,7 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'central.db'}")
     await database.create_schema()
+    credential = await _seed_runner_authority(database)
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Remote terminal")
     )
@@ -930,7 +1399,7 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
     terminals = SQLAlchemyTerminalRepository(database.session_factory)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
     events = SQLAlchemyRunEventRepository(database.session_factory)
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -1003,9 +1472,13 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
 
     runner_control = RunnerControlService(
         credentials=object(),  # type: ignore[arg-type]
-        commands=object(),  # type: ignore[arg-type]
+        commands=control,  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
-        executions=executions,
+        executions=SQLAlchemyExecutionRepository(
+            database.session_factory,
+            emit_workflow_signal_intents=True,
+        ),
+        stop_projection_executions=executions,
         runs=runs,
         paths=RunnerPaths(tmp_path / "central-state"),
         registration_token=None,
@@ -1013,7 +1486,12 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
         events=events,
     )
     runner_control.authenticate = AsyncMock(  # type: ignore[method-assign]
-        return_value=SimpleNamespace(principal=persisted_execution.owner)
+        return_value=credential
+    )
+    start_command = next(
+        command
+        for command in control.commands.values()
+        if command.kind is RunnerCommandKind.TERMINAL_START
     )
     acknowledged = await runner_control.report_execution(
         "windows-a",
@@ -1024,6 +1502,7 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
             exit_code=130,
             physical_stop_confirmed=True,
         ),
+        **_service_callback_identity(start_command),
     )
 
     assert acknowledged.status is ExecutionStatus.CANCELLED
@@ -1044,6 +1523,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'projection-race.db'}")
     await database.create_schema()
+    credential = await _seed_runner_authority(database)
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-projection-race", name="Projection race")
     )
@@ -1083,6 +1563,34 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
             runner_id="windows-a",
         )
     )
+    control = FakeControlService(executions)
+    launch_command, created = await control.enqueue(
+        "windows-a",
+        kind=RunnerCommandKind.TERMINAL_START,
+        idempotency_key="terminal-start:terminal-projection-race",
+        payload={
+            "session_id": "terminal-projection-race",
+            "execution_id": execution.id,
+            "request": {
+                "run_id": run.id,
+                "node_id": "windows-a",
+                "runner_principal": _OWNER.model_dump(mode="json"),
+            },
+        },
+        target=_OWNER,
+        run_id=run.id,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.TERMINAL,
+        resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+        resource_id="terminal-projection-race",
+        execution_id=execution.id,
+        output_contract=RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/terminal-start/v1",
+        ),
+    )
+    assert created is True
 
     class _BlockOpenedProjection:
         def __init__(self) -> None:
@@ -1116,9 +1624,13 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
     projection_events = _BlockOpenedProjection()
     runner_control = RunnerControlService(
         credentials=object(),  # type: ignore[arg-type]
-        commands=object(),  # type: ignore[arg-type]
+        commands=control,  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
-        executions=executions,
+        executions=SQLAlchemyExecutionRepository(
+            database.session_factory,
+            emit_workflow_signal_intents=True,
+        ),
+        stop_projection_executions=executions,
         runs=runs,
         paths=RunnerPaths(tmp_path / "projection-race-state"),
         registration_token=None,
@@ -1126,7 +1638,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
         events=projection_events,  # type: ignore[arg-type]
     )
     runner_control.authenticate = AsyncMock(  # type: ignore[method-assign]
-        return_value=SimpleNamespace(principal=_OWNER)
+        return_value=credential
     )
 
     results: dict[str, Execution] = {}
@@ -1141,6 +1653,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
                 pid=4242,
                 process_group_id=4242,
             ),
+            **_service_callback_identity(launch_command),
         )
 
     async def cancel_after_opened_recheck() -> None:
@@ -1154,6 +1667,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
                     status=ExecutionStatus.CANCELLED,
                     physical_stop_confirmed=True,
                 ),
+                **_service_callback_identity(launch_command),
             )
         finally:
             projection_events.release_opened.set()
@@ -1243,7 +1757,7 @@ async def test_remote_terminal_legacy_replay_binds_explicit_identity_pair(
             rows=request.rows,
         )
     )
-    control = FakeControlService()
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -1287,45 +1801,32 @@ async def test_remote_terminal_legacy_replay_binds_explicit_identity_pair(
 async def test_remote_terminal_start_accepts_runner_winning_running_status_race(
     tmp_path: Path,
 ) -> None:
-    executions = FileExecutionRepository(tmp_path / "race-executions.json")
     terminals = FileTerminalRepository(tmp_path / "race-terminals.json")
 
-    class _RunnerWinsStartControl(FakeControlService):
-        async def enqueue(
-            self,
-            node_id: str,
-            *,
-            kind: RunnerCommandKind,
-            idempotency_key: str,
-            payload: dict[str, object],
-            target: RunnerPrincipal | None = None,
-        ) -> tuple[object, bool]:
-            result = await super().enqueue(
-                node_id,
-                kind=kind,
-                idempotency_key=idempotency_key,
-                payload=payload,
-                target=target,
-            )
-            if kind is RunnerCommandKind.TERMINAL_START:
-                execution_id = str(payload["execution_id"])
-                current = await executions.get(execution_id)
+    class _RunnerWinsStartRepository(FileExecutionRepository):
+        injected = False
+
+        async def save_if_status(self, execution, *, expected):  # type: ignore[no-untyped-def]
+            if execution.status is ExecutionStatus.RUNNING and not self.injected:
+                self.injected = True
+                current = await self.get(execution.id)
                 assert current is not None
                 current.pid = 4242
                 current.process_group_id = 4242
                 current.transition_to(ExecutionStatus.RUNNING)
-                _, saved = await executions.save_if_status(
+                _, saved = await super().save_if_status(
                     current,
                     expected={ExecutionStatus.STARTING},
                 )
                 assert saved is True
-                projected = await terminals.get(str(payload["session_id"]))
+                projected = await terminals.get_by_execution(execution.id)
                 assert projected is not None
                 projected.transition_to(TerminalStatus.OPEN)
                 await terminals.save(projected)
-            return result
+            return await super().save_if_status(execution, expected=expected)
 
-    control = _RunnerWinsStartControl()
+    executions = _RunnerWinsStartRepository(tmp_path / "race-executions.json")
+    control = FakeControlService(executions)
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -1377,36 +1878,6 @@ async def test_remote_terminal_start_does_not_emit_opened_after_closed_cas_wins(
 
     terminals = _CloseBeforeOpenRepository(tmp_path / "closed-race-terminals.json")
 
-    class _RunnerWinsExecutionControl(FakeControlService):
-        async def enqueue(
-            self,
-            node_id: str,
-            *,
-            kind: RunnerCommandKind,
-            idempotency_key: str,
-            payload: dict[str, object],
-            target: RunnerPrincipal | None = None,
-        ) -> tuple[object, bool]:
-            result = await super().enqueue(
-                node_id,
-                kind=kind,
-                idempotency_key=idempotency_key,
-                payload=payload,
-                target=target,
-            )
-            if kind is RunnerCommandKind.TERMINAL_START:
-                current = await executions.get(str(payload["execution_id"]))
-                assert current is not None
-                current.pid = 4343
-                current.process_group_id = 4343
-                current.transition_to(ExecutionStatus.RUNNING)
-                _, saved = await executions.save_if_status(
-                    current,
-                    expected={ExecutionStatus.STARTING},
-                )
-                assert saved is True
-            return result
-
     class _RecordingEvents(NullRunEventRepository):
         def __init__(self) -> None:
             self.event_types: list[str] = []
@@ -1415,7 +1886,7 @@ async def test_remote_terminal_start_does_not_emit_opened_after_closed_cas_wins(
             del run_id, payload
             self.event_types.append(event_type)
 
-    control = _RunnerWinsExecutionControl()
+    control = FakeControlService(executions)
     events = _RecordingEvents()
     remote = RemoteTerminalSupervisor(
         terminal_repository=terminals,
@@ -1454,7 +1925,7 @@ async def test_remote_terminal_close_cancels_running_execution_despite_closed_pr
 ) -> None:
     executions = FileExecutionRepository(tmp_path / "closed-executions.json")
     terminals = FileTerminalRepository(tmp_path / "closed-terminals.json")
-    control = FakeControlService()
+    control = FakeControlService(executions)
     execution = Execution(
         id="execution-closed-projection",
         execution_key="terminal:terminal-closed-projection",
@@ -1507,7 +1978,7 @@ async def test_remote_terminal_close_repairs_open_projection_with_durable_stop_p
 ) -> None:
     executions = FileExecutionRepository(tmp_path / "proof-executions.json")
     terminals = FileTerminalRepository(tmp_path / "proof-terminals.json")
-    control = FakeControlService()
+    control = FakeControlService(executions)
     execution = Execution(
         id="execution-proof-open",
         execution_key="terminal:terminal-proof-open",
@@ -1590,6 +2061,7 @@ async def test_remote_terminal_manager_propagates_guard_before_and_after_spawn(
         cwd=tmp_path,
         argv=["pwsh.exe"],
     )
+    request, payload, _ = _verified_terminal_start_payload(request)
     guard_calls = 0
 
     async def effect_guard() -> None:
@@ -1601,11 +2073,7 @@ async def test_remote_terminal_manager_propagates_guard_before_and_after_spawn(
     with pytest.raises(ApplicationConflictError, match="durable tombstone won"):
         await manager.handle(
             RunnerCommandKind.TERMINAL_START,
-            {
-                "session_id": request.session_id,
-                "execution_id": request.execution_id,
-                "request": request.model_dump(mode="json"),
-            },
+            payload,
             effect_guard=effect_guard,
         )
 
@@ -1659,15 +2127,14 @@ async def test_remote_terminal_manager_streams_and_deduplicates_commands(tmp_pat
         tool_id="terminal.exec",
         tool_version="1",
     )
-    payload = {
-        "session_id": "terminal-1",
-        "execution_id": "execution-1",
-        "request": request.model_dump(mode="json"),
-    }
+    request, payload, launch_command = _verified_terminal_start_payload(request)
     await manager.handle(RunnerCommandKind.TERMINAL_START, payload)
     duplicate = await manager.handle(RunnerCommandKind.TERMINAL_START, payload)
     assert duplicate["duplicate"] is True  # type: ignore[index]
     assert backend.starts == 1
+    assert _execution_callback_fields(launch_command).items() <= (
+        client.status_details[-1][2].items()
+    )
     reported_before_foreign_replays = list(client.status_details)
     monitor_spy = Mock(wraps=manager._start_monitor)
     manager._start_monitor = monitor_spy  # type: ignore[method-assign]
@@ -1698,30 +2165,73 @@ async def test_remote_terminal_manager_streams_and_deduplicates_commands(tmp_pat
         "operation_id": "write-1",
         "data": base64.b64encode(b"Get-Location\r\n").decode(),
     }
-    await manager.handle(RunnerCommandKind.TERMINAL_WRITE, write_payload)
-    replay = await manager.handle(RunnerCommandKind.TERMINAL_WRITE, write_payload)
+    write_command = _verified_terminal_operation(
+        RunnerCommandKind.TERMINAL_WRITE,
+        write_payload,
+        idempotency_key="write-1",
+    )
+    write_identity = _journal_identity(write_command)
+    await manager.handle(
+        RunnerCommandKind.TERMINAL_WRITE,
+        write_payload,
+        journal_identity=write_identity,
+    )
+    replay = await manager.handle(
+        RunnerCommandKind.TERMINAL_WRITE,
+        write_payload,
+        journal_identity=write_identity,
+    )
     assert replay["duplicate"] is True  # type: ignore[index]
+    assert replay["bytes_written"] == len(b"Get-Location\r\n")  # type: ignore[index]
     assert await OperationJournal(tmp_path / "operations.json").contains("write-1")
     assert backend.handle is not None
     assert backend.handle.writes == [b"Get-Location\r\n"]
 
+    divergent_write = _verified_terminal_operation(
+        RunnerCommandKind.TERMINAL_WRITE,
+        write_payload,
+        idempotency_key="write-1-copied-by-another-command",
+        run_id="foreign-run",
+    )
+    with pytest.raises(OperationJournalConflict):
+        await manager.handle(
+            RunnerCommandKind.TERMINAL_WRITE,
+            write_payload,
+            journal_identity=_journal_identity(divergent_write),
+        )
+    assert backend.handle.writes == [b"Get-Location\r\n"]
+
+    resize_payload: dict[str, object] = {
+        "session_id": "terminal-1",
+        "execution_id": "execution-1",
+        "operation_id": "resize-1",
+        "cols": 132,
+        "rows": 48,
+    }
+    resize_command = _verified_terminal_operation(
+        RunnerCommandKind.TERMINAL_RESIZE,
+        resize_payload,
+        idempotency_key="resize-1",
+    )
     await manager.handle(
         RunnerCommandKind.TERMINAL_RESIZE,
-        {
-            "session_id": "terminal-1",
-            "execution_id": "execution-1",
-            "operation_id": "resize-1",
-            "cols": 132,
-            "rows": 48,
-        },
+        resize_payload,
+        journal_identity=_journal_identity(resize_command),
+    )
+    interrupt_payload: dict[str, object] = {
+        "session_id": "terminal-1",
+        "execution_id": "execution-1",
+        "operation_id": "interrupt-1",
+    }
+    interrupt_command = _verified_terminal_operation(
+        RunnerCommandKind.TERMINAL_INTERRUPT,
+        interrupt_payload,
+        idempotency_key="interrupt-1",
     )
     await manager.handle(
         RunnerCommandKind.TERMINAL_INTERRUPT,
-        {
-            "session_id": "terminal-1",
-            "execution_id": "execution-1",
-            "operation_id": "interrupt-1",
-        },
+        interrupt_payload,
+        journal_identity=_journal_identity(interrupt_command),
     )
     assert backend.handle.sizes == [(132, 48)]
     assert backend.handle.interrupts == 1
@@ -1785,13 +2295,10 @@ async def test_remote_terminal_manager_cancels_execution_through_native_supervis
         cwd=tmp_path,
         argv=["pwsh.exe"],
     )
+    request, payload, _ = _verified_terminal_start_payload(request)
     await manager.handle(
         RunnerCommandKind.TERMINAL_START,
-        {
-            "session_id": request.session_id,
-            "execution_id": request.execution_id,
-            "request": request.model_dump(mode="json"),
-        },
+        payload,
     )
 
     cancelled = await manager.cancel_execution("execution-cancel")
@@ -1839,11 +2346,7 @@ async def test_pty_durable_stop_row_blocks_same_key_spawn_after_runner_restart(
         tool_id="terminal.exec",
         tool_version="1",
     )
-    payload = {
-        "session_id": request.session_id,
-        "execution_id": request.execution_id,
-        "request": request.model_dump(mode="json"),
-    }
+    request, payload, _ = _verified_terminal_start_payload(request)
     first_manager = RemoteTerminalManager(
         node_id="windows-a",
         supervisor=first_supervisor,
@@ -1939,6 +2442,7 @@ async def test_remote_terminal_manager_legacy_replay_checks_terminal_identity(
         cols=132,
         rows=48,
     )
+    request, payload, launch_command = _verified_terminal_start_payload(request)
     execution = Execution(
         id=str(request.execution_id),
         execution_key=str(request.execution_key),
@@ -1949,6 +2453,7 @@ async def test_remote_terminal_manager_legacy_replay_checks_terminal_identity(
         attempt_group=request.attempt_group,
         node_id=request.node_id,
         owner=request.runner_principal,
+        **_execution_callback_fields(launch_command),
         executor_type=ExecutorType.PTY,
         argv=request.argv,
         tool_id=request.tool_id,
@@ -1993,11 +2498,6 @@ async def test_remote_terminal_manager_legacy_replay_checks_terminal_identity(
         operation_journal=OperationJournal(tmp_path / "legacy-replay-operations.json"),
         output_poll_seconds=0.001,
     )
-    payload = {
-        "session_id": request.session_id,
-        "execution_id": request.execution_id,
-        "request": request.model_dump(mode="json"),
-    }
     try:
         replay = await manager.handle(RunnerCommandKind.TERMINAL_START, payload)
         assert replay["duplicate"] is True  # type: ignore[index]
@@ -2091,12 +2591,23 @@ async def test_remote_terminal_manager_marks_unattachable_sessions_lost(
     terminals = FileTerminalRepository(tmp_path / "terminals.json")
     transcript = tmp_path / "transcript.log"
     transcript.touch()
+    request = TerminalLaunchRequest(
+        session_id="terminal-lost",
+        execution_id="execution-lost",
+        run_id="run-1",
+        node_id="windows-a",
+        runner_principal=_OWNER,
+        cwd=tmp_path,
+        argv=["pwsh.exe"],
+    )
+    _, _, launch_command = _verified_terminal_start_payload(request)
     execution = Execution(
         id="execution-lost",
         execution_key="terminal:terminal-lost",
         run_id="run-1",
         node_id="windows-a",
         owner=_OWNER,
+        **_execution_callback_fields(launch_command),
         executor_type=ExecutorType.PTY,
         argv=["pwsh.exe"],
         cwd=str(tmp_path),
@@ -2159,6 +2670,7 @@ async def test_remote_terminal_manager_restart_closes_created_admission_without_
         cwd=tmp_path,
         argv=["pwsh.exe"],
     )
+    request, payload, launch_command = _verified_terminal_start_payload(request)
     execution = Execution(
         id=str(request.execution_id),
         execution_key=f"terminal:{request.session_id}",
@@ -2166,6 +2678,7 @@ async def test_remote_terminal_manager_restart_closes_created_admission_without_
         run_id=request.run_id,
         node_id=request.node_id,
         owner=_OWNER,
+        **_execution_callback_fields(launch_command),
         executor_type=ExecutorType.PTY,
         argv=request.argv,
         cwd=str(request.cwd),
@@ -2211,11 +2724,7 @@ async def test_remote_terminal_manager_restart_closes_created_admission_without_
     await manager.resume_active()
     duplicate = await manager.handle(
         RunnerCommandKind.TERMINAL_START,
-        {
-            "session_id": request.session_id,
-            "execution_id": request.execution_id,
-            "request": request.model_dump(mode="json"),
-        },
+        payload,
     )
 
     persisted_execution = await executions.get(execution.id)
@@ -2241,12 +2750,23 @@ async def test_remote_terminal_shutdown_attempts_every_owned_terminal_after_fail
     for index in (1, 2):
         transcript = tmp_path / f"shutdown-{index}.log"
         transcript.touch()
+        request = TerminalLaunchRequest(
+            session_id=f"shutdown-terminal-{index}",
+            execution_id=f"shutdown-execution-{index}",
+            run_id="run-1",
+            node_id="windows-a",
+            runner_principal=_OWNER,
+            cwd=tmp_path,
+            argv=["pwsh.exe"],
+        )
+        _, _, launch_command = _verified_terminal_start_payload(request)
         execution = Execution(
             id=f"shutdown-execution-{index}",
             execution_key=f"terminal:shutdown-terminal-{index}",
             run_id="run-1",
             node_id="windows-a",
             owner=_OWNER,
+            **_execution_callback_fields(launch_command),
             executor_type=ExecutorType.PTY,
             argv=["pwsh.exe"],
             cwd=str(tmp_path),

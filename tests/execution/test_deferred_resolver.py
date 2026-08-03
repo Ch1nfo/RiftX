@@ -23,6 +23,24 @@ class FakeRuns:
         return self.run if self.run.id == run_id else None
 
 
+@dataclass
+class FakeExecutionService:
+    run_repository: FakeRuns
+
+
+class ExplodingToolContext:
+    def __init__(self) -> None:
+        self.called = False
+
+    def assert_allowed(self, *args: object, **kwargs: object) -> None:
+        self.called = True
+        raise AssertionError("tool context must not run before RunKind admission")
+
+    def assert_selected(self, *args: object, **kwargs: object) -> None:
+        self.called = True
+        raise AssertionError("tool context must not run before RunKind admission")
+
+
 class FakeToolCalls:
     def __init__(self) -> None:
         self.item: ToolCallIntent | None = None
@@ -130,6 +148,47 @@ async def test_registry_resolver_rejects_workspace_escape(tmp_path: Path) -> Non
             ),
             tool_id="scanner",
         )
+
+
+async def test_code_audit_resolver_denies_before_tool_context_and_path_resolution(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "tools.yaml"
+    config.write_text(yaml.safe_dump({"version": 1, "tools": {}}))
+    run = Run(
+        kind="code_audit",
+        id="run-audit",
+        engagement_id="engagement-1",
+        node_id="node-1",
+        objective=Objective(description="test"),
+        workspace_path=str(workspace),
+    )
+    tool_context = ExplodingToolContext()
+    resolver = RegistryDeferredExecutionResolver(
+        runs=FakeRuns(run),
+        registry=ToolRegistry(config, node_id="node-1"),
+        tool_context=tool_context,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await resolver.resolve(
+            session=AgentSession(id="session-audit", run_id=run.id, model_profile="test"),
+            event=AgentEngineEvent(
+                sequence=1,
+                event_type=AgentEngineEventType.TOOL_CALL_READY,
+                data={
+                    "call_id": "call-audit",
+                    "tool_id": "unknown-tool",
+                    "arguments": {"cwd": "../outside"},
+                },
+            ),
+            tool_id="unknown-tool",
+        )
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert tool_context.called is False
 
 
 async def test_registry_resolver_enforces_subagent_tool_allowlist(tmp_path: Path) -> None:
@@ -253,7 +312,7 @@ async def test_registered_tool_must_be_selected_and_raw_spec_cannot_override_reg
     tool_calls = FakeToolCalls()
     dispatcher = DeferredExecutionDispatcher(
         tool_call_repository=tool_calls,  # type: ignore[arg-type]
-        execution_service=object(),  # type: ignore[arg-type]
+        execution_service=FakeExecutionService(FakeRuns(run)),  # type: ignore[arg-type]
         resolver=resolver,
     )
     intent = await dispatcher.prepare(
@@ -284,11 +343,19 @@ async def test_same_engine_call_id_in_distinct_cycles_creates_distinct_intents(
     tmp_path: Path,
 ) -> None:
     tool_calls = FakeToolCalls()
+    run = Run(
+        kind="general",
+        id="run-1",
+        engagement_id="engagement-1",
+        node_id="node-1",
+        objective=Objective(description="test"),
+        workspace_path=str(tmp_path),
+    )
     dispatcher = DeferredExecutionDispatcher(
         tool_call_repository=tool_calls,  # type: ignore[arg-type]
-        execution_service=object(),  # type: ignore[arg-type]
+        execution_service=FakeExecutionService(FakeRuns(run)),  # type: ignore[arg-type]
     )
-    session = AgentSession(id="session-1", run_id="run-1", model_profile="test")
+    session = AgentSession(id="session-1", run_id=run.id, model_profile="test")
     event = AgentEngineEvent(
         sequence=1,
         event_type=AgentEngineEventType.TOOL_CALL_READY,

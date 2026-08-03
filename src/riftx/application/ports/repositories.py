@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +39,7 @@ from riftx.domain import (
     RunnerCommandStatus,
     RunnerCredential,
     RunnerPrincipal,
+    RunnerStopReceipt,
     RunStatus,
     TerminalSession,
     TerminalStatus,
@@ -152,6 +153,7 @@ class RunnerCredentialRepository(Protocol):
         token_prefix: str,
         issued_at: datetime,
         instance_id: str | None = None,
+        protocol_capabilities: tuple[str, ...] = (),
     ) -> RunnerCredential: ...
 
     async def get(self, node_id: str) -> RunnerCredential | None: ...
@@ -178,6 +180,25 @@ class RunnerCommandRepository(Protocol):
 
     async def get(self, command_id: str) -> RunnerCommand | None: ...
 
+    async def list_quarantined(self, *, limit: int = 100) -> Sequence[RunnerCommand]: ...
+
+    async def quarantine(
+        self,
+        command_id: str,
+        *,
+        reason: str,
+        quarantined_at: datetime,
+        expected_state_version: int | None = None,
+    ) -> RunnerCommand: ...
+
+    async def mark_quarantine_reconciled(
+        self,
+        command_id: str,
+        *,
+        replacement_command_id: str | None,
+        reconciled_at: datetime,
+    ) -> None: ...
+
     async def lease_next(
         self,
         node_id: str,
@@ -186,6 +207,7 @@ class RunnerCommandRepository(Protocol):
         lease_id: str,
         leased_until: datetime,
         now: datetime,
+        validate_candidate: Callable[[RunnerCommand], Awaitable[str | None]],
         safety_only: bool = False,
     ) -> RunnerCommand | None: ...
 
@@ -195,6 +217,9 @@ class RunnerCommandRepository(Protocol):
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         leased_until: datetime,
         now: datetime,
     ) -> RunnerCommand: ...
@@ -205,11 +230,42 @@ class RunnerCommandRepository(Protocol):
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         status: RunnerCommandStatus,
         result: dict[str, object],
         error: str,
         completed_at: datetime,
+        stop_receipt: RunnerStopReceipt | None = None,
     ) -> RunnerCommand: ...
+
+    async def record_legacy_stop_ack(
+        self,
+        command_id: str,
+        *,
+        principal: RunnerPrincipal,
+        lease_id: str,
+        expected_state_version: int,
+        ack: dict[str, object],
+        received_at: datetime,
+    ) -> RunnerCommand: ...
+
+    async def get_stop_receipt(self, command_id: str) -> RunnerStopReceipt | None: ...
+
+    async def list_pending_stop_receipts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunnerStopReceipt]: ...
+
+    async def mark_stop_receipt_projected(
+        self,
+        receipt_id: str,
+        *,
+        projected_at: datetime,
+        expected_state_version: int,
+    ) -> bool: ...
 
 
 class RunRepository(Protocol):

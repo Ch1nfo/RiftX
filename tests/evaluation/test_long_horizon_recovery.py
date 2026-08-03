@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy import select
 
 from riftx.application.services import (
     ApprovalApplicationService,
@@ -97,6 +98,7 @@ from riftx.persistence.observability_repository import (
 )
 from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
 from riftx.persistence.web_research_repositories import SQLAlchemyWebResearchRepository
+from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 from riftx.persistence.working_memory_repositories import SQLAlchemyWorkingMemoryRepository
 from riftx.runner import RunnerBrowserManager, RunnerPaths
 from riftx.runtime.coordinator import RuntimeCoordinator
@@ -130,7 +132,6 @@ from .support import (
     EvaluationEngine,
     FaultingBrowserRunner,
     FaultingExecutionRunner,
-    RecordingWorkflow,
     digest_json,
 )
 
@@ -233,6 +234,7 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         ),
         model_profile="model-a",
         workspace_path=str(workspace),
+        temporal_workflow_id="riftx-run-qa-run",
     )
     await runs.create(run)
     session_manager = SessionManager(
@@ -343,12 +345,10 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         runtime_repository=runtime_approvals,
         event_repository=events,
     )
-    workflow = RecordingWorkflow()
     approval_service = ApprovalApplicationService(
         approval_repository=approvals,
         run_repository=runs,
         event_repository=events,
-        workflow_client=workflow,
         runtime_approval_repository=runtime_approvals,
     )
 
@@ -970,5 +970,22 @@ async def test_qa_01_long_horizon_and_recovery_gate(tmp_path: Path) -> None:
         "artifacts": 30,
         "max_temporal_payload_bytes": max(len(payload) for payload in temporal_payloads),
     }
-    assert workflow.signals == [("approve", run.id, approval_id) for approval_id in approval_ids]
+    async with database.session_factory() as session:
+        approval_signals = list(
+            await session.scalars(
+                select(WorkflowSignalIntentRecord)
+                .where(
+                    WorkflowSignalIntentRecord.source_event_kind
+                    == "approval_decision"
+                )
+                .order_by(WorkflowSignalIntentRecord.created_at)
+            )
+        )
+    assert len(approval_signals) == len(approval_ids)
+    assert {json.loads(record.payload_json)["approval_id"] for record in approval_signals} == set(
+        approval_ids
+    )
+    assert all(record.signal_kind == "approve" for record in approval_signals)
+    assert all(record.workflow_id == "riftx-run-qa-run" for record in approval_signals)
+    assert all(record.delivery_state == "pending" for record in approval_signals)
     await database.dispose()

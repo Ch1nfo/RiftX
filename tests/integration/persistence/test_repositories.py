@@ -8,7 +8,11 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 import riftx.persistence.repositories as repository_module
-from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.application.errors import (
+    EntityNotFoundError,
+    RepositoryConflictError,
+    RepositoryIntegrityError,
+)
 from riftx.application.finalization import cleanup_event_id, report_failure_event_id
 from riftx.domain import (
     Engagement,
@@ -202,6 +206,41 @@ async def test_terminal_status_is_monotonic_across_sql_repository_instances(
     assert (
         await SQLAlchemyTerminalRepository(database.session_factory).save(opened)
     ).status is TerminalStatus.CLOSED
+    await database.dispose()
+
+
+async def test_terminal_lookup_by_execution_rejects_ambiguous_resource_binding(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'terminal-duplicate.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Terminal duplicate binding")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(make_run())
+    execution = make_execution(execution_id="execution-terminal-duplicate")
+    execution.executor_type = ExecutorType.PTY
+    await SQLAlchemyExecutionRepository(database.session_factory).create_if_absent(execution)
+    repository = SQLAlchemyTerminalRepository(database.session_factory)
+    await repository.create(
+        TerminalSession(
+            id="terminal-duplicate-a",
+            run_id="run-1",
+            execution_id=execution.id,
+        )
+    )
+    await repository.create(
+        TerminalSession(
+            id="terminal-duplicate-b",
+            run_id="run-1",
+            execution_id=execution.id,
+        )
+    )
+
+    with pytest.raises(RepositoryIntegrityError) as captured:
+        await repository.get_by_execution(execution.id)
+
+    assert captured.value.reason_code == "duplicate_execution_binding"
     await database.dispose()
 
 

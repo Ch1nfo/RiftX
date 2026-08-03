@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +16,18 @@ import httpx
 from pydantic import ValidationError
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
-from riftx.domain import ExecutionStatus, RunnerCommandKind, RunnerPrincipal
+from riftx.domain import (
+    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+    RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
+    ExecutionStatus,
+    RunnerCommandKind,
+    RunnerCommandOwnership,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    runner_payload_digest,
+)
 
 
 class RunnerControlClientError(RuntimeError):
@@ -41,7 +54,34 @@ class OutputOffsetMismatch(RunnerControlClientError):
         return value
 
 
-@dataclass(frozen=True, slots=True)
+class OutputLimitExceeded(RunnerControlClientError):
+    """The immutable output contract rejected bytes beyond its exact cap."""
+
+    @property
+    def max_output_bytes(self) -> int:
+        value = self.details.get("max_output_bytes")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise RuntimeError("output limit response omitted max_output_bytes")
+        return value
+
+
+def _required_response_int(
+    payload: Mapping[str, object],
+    field_name: str,
+    *,
+    minimum: int = 0,
+) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise RunnerControlClientError(
+            500,
+            "runner_command_invalid_response",
+            f"Control Plane returned an invalid {field_name}",
+        )
+    return value
+
+
+@dataclass(slots=True)
 class LeasedRunnerCommand:
     id: str
     kind: RunnerCommandKind
@@ -49,6 +89,14 @@ class LeasedRunnerCommand:
     lease_id: str
     attempts: int
     target: RunnerPrincipal | None = None
+    ownership: RunnerCommandOwnership | None = None
+    ownership_schema_version: str = RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION
+    effect_binding_id: str = ""
+    binding_digest: str = ""
+    envelope_digest: str = ""
+    state_version: int = 0
+    operation_family: RunnerOperationFamily | None = None
+    output_contract: RunnerOutputContract | None = None
     lease_expires_at: datetime | None = None
     lease_duration_seconds: float | None = None
 
@@ -59,6 +107,7 @@ class StoredRunnerCredential:
 
     token: str
     principal: RunnerPrincipal
+    protocol_capabilities: tuple[str, ...] = ()
 
 
 class RunnerCredentialStore:
@@ -86,9 +135,25 @@ class RunnerCredentialStore:
             # principal here would let cloned execution state impersonate a
             # server-issued owner generation.
             return None
-        return StoredRunnerCredential(token=token, principal=principal)
+        raw_capabilities = payload.get("protocol_capabilities", [])
+        if not isinstance(raw_capabilities, list) or any(
+            not isinstance(item, str) or not item for item in raw_capabilities
+        ):
+            return None
+        return StoredRunnerCredential(
+            token=token,
+            principal=principal,
+            protocol_capabilities=tuple(sorted(set(raw_capabilities))),
+        )
 
-    def save(self, node_id: str, token: str, principal: RunnerPrincipal) -> None:
+    def save(
+        self,
+        node_id: str,
+        token: str,
+        principal: RunnerPrincipal,
+        *,
+        protocol_capabilities: tuple[str, ...] = (),
+    ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
         temporary.write_text(
@@ -97,6 +162,9 @@ class RunnerCredentialStore:
                     "node_id": node_id,
                     "runner_token": token,
                     "principal": principal.model_dump(mode="json"),
+                    "protocol_capabilities": list(
+                        sorted(set(protocol_capabilities))
+                    ),
                 }
             )
         )
@@ -130,8 +198,32 @@ class RunnerControlClient:
             base_url=server_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
         )
+        self._command_locks: dict[str, asyncio.Lock] = {}
 
     async def connect(self, registration: NodeRegistration) -> str:
+        capabilities = tuple(
+            sorted(
+                {
+                    *registration.capabilities,
+                    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+                }
+            )
+        )
+        registration = NodeRegistration(
+            node_id=registration.node_id,
+            name=registration.name,
+            platform=registration.platform,
+            architecture=registration.architecture,
+            runner_version=registration.runner_version,
+            capabilities=capabilities,
+            labels=registration.labels,
+        )
+        if (
+            self._credential is not None
+            and RUNNER_COMMAND_OWNERSHIP_CAPABILITY
+            not in self._credential.protocol_capabilities
+        ):
+            self.invalidate_credentials()
         if self._credential is not None:
             try:
                 await self.heartbeat()
@@ -173,8 +265,17 @@ class RunnerControlClient:
             code="runner_registration_invalid_response",
             message="Control Plane did not return a valid Runner principal",
         )
-        credential = StoredRunnerCredential(token=token, principal=principal)
-        self._credentials.save(self.node_id, token, principal)
+        credential = StoredRunnerCredential(
+            token=token,
+            principal=principal,
+            protocol_capabilities=capabilities,
+        )
+        self._credentials.save(
+            self.node_id,
+            token,
+            principal,
+            protocol_capabilities=capabilities,
+        )
         self._credential = credential
         return token
 
@@ -222,32 +323,97 @@ class RunnerControlClient:
             and raw_lease_duration > 0
             else None
         )
+        target = self._require_polled_target(raw.get("target"))
+        if raw.get("ownership_schema_version") != RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned an unsupported ownership envelope",
+            )
+        try:
+            kind = RunnerCommandKind(str(raw["kind"]))
+            command_payload = dict(raw.get("payload") or {})
+            ownership = RunnerCommandOwnership.model_validate(raw.get("ownership"))
+            effect_binding = RunnerEffectBinding.model_validate(raw.get("effect_binding"))
+            output_contract = RunnerOutputContract.model_validate(raw.get("output_contract"))
+            operation_family = RunnerOperationFamily(str(raw["operation_family"]))
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned invalid Runner ownership metadata",
+            ) from exc
+        if (
+            ownership.schema_version != raw.get("ownership_schema_version")
+            or ownership.command_id != raw.get("id")
+            or ownership.operation is not kind
+            or ownership.operation_family is not operation_family
+            or ownership.effect_binding != effect_binding
+            or ownership.output_contract != output_contract
+            or ownership.envelope_digest != raw.get("envelope_digest")
+            or ownership.effect_binding.target != target
+            or ownership.effect_binding.node_id != self.node_id
+            or runner_payload_digest(command_payload) != ownership.payload_digest
+        ):
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned inconsistent Runner ownership metadata",
+            )
         return LeasedRunnerCommand(
             id=str(raw["id"]),
-            kind=RunnerCommandKind(str(raw["kind"])),
-            payload=dict(raw.get("payload") or {}),
+            kind=kind,
+            payload=command_payload,
             lease_id=str(raw["lease_id"]),
             attempts=int(raw["attempts"]),
-            target=self._require_polled_target(raw.get("target")),
+            target=target,
+            ownership=ownership,
+            ownership_schema_version=RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
+            effect_binding_id=effect_binding.id,
+            binding_digest=effect_binding.binding_digest,
+            envelope_digest=str(raw["envelope_digest"]),
+            state_version=int(raw["state_version"]),
+            operation_family=operation_family,
+            output_contract=output_contract,
             lease_expires_at=datetime.fromisoformat(str(raw["lease_expires_at"])),
             lease_duration_seconds=lease_duration,
         )
 
-    async def renew(self, command: LeasedRunnerCommand) -> float:
-        payload = await self._request(
-            "POST",
-            f"/api/v1/runner/commands/{command.id}/lease",
-            expected_principal=_required_command_target(command),
-            json={"lease_id": command.lease_id},
-        )
-        value = payload.get("lease_duration_seconds")
-        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
-            raise RunnerControlClientError(
-                500,
-                "runner_command_invalid_response",
-                "Control Plane omitted the renewed command lease duration",
+    async def renew(self, command: LeasedRunnerCommand) -> LeasedRunnerCommand:
+        async with self._command_lock(command.id):
+            expected_principal = self._require_callback_principal(command)
+            payload = await self._request(
+                "POST",
+                f"/api/v1/runner/commands/{command.id}/lease",
+                expected_principal=expected_principal,
+                json=_command_callback_identity(command),
             )
-        return float(value)
+            value = payload.get("lease_duration_seconds")
+            if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+                raise RunnerControlClientError(
+                    500,
+                    "runner_command_invalid_response",
+                    "Control Plane omitted the renewed command lease duration",
+                )
+            if (
+                payload.get("envelope_digest") != command.envelope_digest
+                or payload.get("binding_digest") != command.binding_digest
+            ):
+                raise RunnerControlClientError(
+                    500,
+                    "runner_command_invalid_response",
+                    "Control Plane changed immutable command ownership during renewal",
+                )
+            command.state_version = _required_response_int(
+                payload,
+                "state_version",
+                minimum=1,
+            )
+            command.lease_expires_at = datetime.fromisoformat(
+                str(payload["lease_expires_at"])
+            )
+            command.lease_duration_seconds = float(value)
+            return command
 
     async def finish(
         self,
@@ -257,17 +423,19 @@ class RunnerControlClient:
         result: dict[str, object] | None = None,
         error: str = "",
     ) -> None:
-        await self._request(
-            "POST",
-            f"/api/v1/runner/commands/{command.id}/finish",
-            expected_principal=_required_command_target(command),
-            json={
-                "lease_id": command.lease_id,
-                "succeeded": succeeded,
-                "result": result or {},
-                "error": error,
-            },
-        )
+        async with self._command_lock(command.id):
+            expected_principal = self._require_callback_principal(command)
+            await self._request(
+                "POST",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
+                expected_principal=expected_principal,
+                json={
+                    **_command_callback_identity(command),
+                    "succeeded": succeeded,
+                    "result": result or {},
+                    "error": error,
+                },
+            )
 
     async def report_command_output(
         self,
@@ -277,16 +445,18 @@ class RunnerControlClient:
         data: bytes,
     ) -> int:
         try:
-            payload = await self._request(
-                "POST",
-                f"/api/v1/runner/commands/{command.id}/output",
-                expected_principal=_required_command_target(command),
-                json={
-                    "lease_id": command.lease_id,
-                    "offset": offset,
-                    "data": base64.b64encode(data).decode("ascii"),
-                },
-            )
+            async with self._command_lock(command.id):
+                expected_principal = self._require_callback_principal(command)
+                payload = await self._request(
+                    "POST",
+                    f"/api/v1/runner/commands/{command.id}/output",
+                    expected_principal=expected_principal,
+                    json={
+                        **_command_callback_identity(command),
+                        "offset": offset,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                )
         except RunnerControlClientError as exc:
             if exc.code == "runner_output_offset_mismatch":
                 raise OutputOffsetMismatch(
@@ -296,13 +466,17 @@ class RunnerControlClient:
                     details=exc.details,
                 ) from exc
             raise
-        return int(payload["next_offset"])
+        return _required_response_int(payload, "next_offset")
 
     async def report_status(
         self,
         execution_id: str,
         status: ExecutionStatus,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         pid: int | None = None,
         process_group_id: int | None = None,
         exit_code: int | None = None,
@@ -319,6 +493,12 @@ class RunnerControlClient:
             "POST",
             f"/api/v1/runner/executions/{execution_id}/status",
             json={
+                **_execution_callback_identity(
+                    command_id=runner_command_id,
+                    effect_binding_id=runner_effect_binding_id,
+                    envelope_digest=runner_envelope_digest,
+                    binding_digest=runner_binding_digest,
+                ),
                 "status": status.value,
                 "pid": pid,
                 "process_group_id": process_group_id,
@@ -338,6 +518,10 @@ class RunnerControlClient:
         self,
         execution_id: str,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         stream: str,
         offset: int,
         data: bytes,
@@ -347,6 +531,12 @@ class RunnerControlClient:
                 "POST",
                 f"/api/v1/runner/executions/{execution_id}/output",
                 json={
+                    **_execution_callback_identity(
+                        command_id=runner_command_id,
+                        effect_binding_id=runner_effect_binding_id,
+                        envelope_digest=runner_envelope_digest,
+                        binding_digest=runner_binding_digest,
+                    ),
                     "stream": stream,
                     "offset": offset,
                     "data": base64.b64encode(data).decode("ascii"),
@@ -360,8 +550,15 @@ class RunnerControlClient:
                     str(exc),
                     details=exc.details,
                 ) from exc
+            if exc.code == "runner_execution_output_too_large":
+                raise OutputLimitExceeded(
+                    exc.status_code,
+                    exc.code,
+                    str(exc),
+                    details=exc.details,
+                ) from exc
             raise
-        return int(payload["next_offset"])
+        return _required_response_int(payload, "next_offset")
 
     def invalidate_credentials(self) -> None:
         self._credential = None
@@ -375,6 +572,23 @@ class RunnerControlClient:
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    def _command_lock(self, command_id: str) -> asyncio.Lock:
+        return self._command_locks.setdefault(command_id, asyncio.Lock())
+
+    def _require_callback_principal(
+        self,
+        command: LeasedRunnerCommand,
+    ) -> RunnerPrincipal:
+        target = _required_command_target(command)
+        credential = self._credential
+        if credential is None or credential.principal != target:
+            raise RunnerControlClientError(
+                409,
+                "runner_command_principal_mismatch",
+                "Runner command belongs to a different owner generation",
+            )
+        return target
 
     async def _request(
         self,
@@ -434,6 +648,62 @@ def _required_command_target(command: LeasedRunnerCommand) -> RunnerPrincipal:
             "Runner command omitted its owner generation",
         )
     return command.target
+
+
+def _command_callback_identity(command: LeasedRunnerCommand) -> dict[str, object]:
+    if (
+        len(command.envelope_digest) != 64
+        or len(command.binding_digest) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in command.envelope_digest + command.binding_digest
+        )
+    ):
+        raise RunnerControlClientError(
+            409,
+            "runner_command_ownership_missing",
+            "Runner command omitted immutable ownership digests",
+        )
+    return {
+        "lease_id": command.lease_id,
+        "state_version": command.state_version,
+        "envelope_digest": command.envelope_digest,
+        "binding_digest": command.binding_digest,
+    }
+
+
+def _execution_callback_identity(
+    *,
+    command_id: str,
+    effect_binding_id: str,
+    envelope_digest: str,
+    binding_digest: str,
+) -> dict[str, str]:
+    if not command_id or not effect_binding_id:
+        raise RunnerControlClientError(
+            409,
+            "runner_execution_callback_binding_missing",
+            "Runner execution omitted its launch command binding",
+        )
+    if (
+        len(envelope_digest) != 64
+        or len(binding_digest) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in envelope_digest + binding_digest
+        )
+    ):
+        raise RunnerControlClientError(
+            409,
+            "runner_execution_callback_binding_missing",
+            "Runner execution omitted immutable launch ownership digests",
+        )
+    return {
+        "command_id": command_id,
+        "effect_binding_id": effect_binding_id,
+        "envelope_digest": envelope_digest,
+        "binding_digest": binding_digest,
+    }
 
 
 def _parse_runner_principal(

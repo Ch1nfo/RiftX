@@ -2263,7 +2263,7 @@ class AuditScan(AuditStrictModel):
             raise ValueError("AuditScan contract_id does not match AuditContractRecord")
         if not hmac.compare_digest(record.contract_digest, self.contract_digest):
             raise ValueError("AuditScan contract_digest does not match AuditContractRecord")
-        if self.lifecycle_status is not AuditLifecycleStatus.DRAFT and record.sealed_at is None:
+        if self.started_at is not None and record.sealed_at is None:
             raise ValueError("started Audit requires a sealed AuditContractRecord")
         if (
             self.started_at is not None

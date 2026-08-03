@@ -152,7 +152,9 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "pause_run",
+                "pause_audit",
                 "resume_run",
+                "resume_audit",
                 "cancel_run",
                 "compact_run",
                 "switch_run_model",
@@ -174,6 +176,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "close_terminal",
+                "cancel_audit",
                 "terminal_websocket",
                 "close_browser",
                 "act_browser",
@@ -220,6 +223,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
             {
                 "heartbeat_node",
                 "poll_runner_command",
+                "finish_legacy_runner_command",
                 "finish_runner_command",
                 "renew_runner_command_lease",
                 "report_runner_command_output",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 from collections.abc import Collection, Sequence
 from pathlib import Path
@@ -46,6 +47,10 @@ class FileExecutionRepository:
         async with self._lock:
             execution = await asyncio.to_thread(self._get, execution_id)
             return _copy(execution) if execution is not None else None
+
+    async def get_run_id(self, execution_id: str) -> str | None:
+        execution = await self.get(execution_id)
+        return execution.run_id if execution is not None else None
 
     async def get_by_key(self, execution_key: str) -> Execution | None:
         async with self._lock:
@@ -183,11 +188,11 @@ class FileExecutionRepository:
             self._write(items)
             return execution, True
 
-    def _list_active(self) -> list[Execution]:
+    def _list_active(self) -> builtins.list[Execution]:
         with locked_file(self.path):
             return [item for item in self._read().values() if item.status in _ACTIVE_STATUSES]
 
-    def _list_for_run(self, run_id: str) -> list[Execution]:
+    def _list_for_run(self, run_id: str) -> builtins.list[Execution]:
         with locked_file(self.path):
             return [item for item in self._read().values() if item.run_id == run_id]
 
@@ -233,6 +238,10 @@ class FileTerminalRepository:
         async with self._lock:
             terminal = await asyncio.to_thread(self._get, session_id)
             return _copy_terminal(terminal) if terminal is not None else None
+
+    async def get_run_id(self, session_id: str) -> str | None:
+        terminal = await self.get(session_id)
+        return terminal.run_id if terminal is not None else None
 
     async def get_by_execution(self, execution_id: str) -> TerminalSession | None:
         async with self._lock:
@@ -469,6 +478,10 @@ _EXECUTION_STRICT_ADMISSION_FIELDS = (
     "tool_call_id",
     "attempt_group",
     "node_id",
+    "runner_command_id",
+    "runner_effect_binding_id",
+    "runner_binding_digest",
+    "runner_envelope_digest",
     "executor_type",
     "command_text",
     "cwd",

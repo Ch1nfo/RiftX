@@ -17,8 +17,10 @@ from riftx.domain import (
     Engagement,
     Execution,
     ExecutionStatus,
+    ExecutorType,
     Objective,
     Run,
+    RunKind,
 )
 from riftx.execution import (
     DeferredExecutionDispatcher,
@@ -150,6 +152,83 @@ class DurableDispatcherFixture:
     cycles: dict[str, AgentCycle]
     steps: dict[str, AgentStep]
     workspace: Path
+
+
+@dataclass
+class CodeAuditDispatcherFixture:
+    database: Database
+    dispatcher: DeferredExecutionDispatcher
+    tool_calls: SQLAlchemyToolCallIntentRepository
+    runner: RecordingRunner
+    run: Run
+    session: AgentSession
+    cycle: AgentCycle
+    step: AgentStep
+    workspace: Path
+
+
+async def build_code_audit_dispatcher(tmp_path: Path) -> CodeAuditDispatcherFixture:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'code-audit-dispatch.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-audit", name="Authorized")
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    run = await runs.create(
+        Run(
+            kind=RunKind.CODE_AUDIT,
+            id="run-audit",
+            engagement_id="engagement-audit",
+            node_id="local",
+            objective=Objective(description="Reject generic deferred execution"),
+            workspace_path=str(tmp_path),
+        )
+    )
+    session = AgentSession(
+        id="session-audit",
+        run_id=run.id,
+        model_profile="fake-model",
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    await sessions.create(session)
+    cycle = AgentCycle(
+        id="cycle-audit",
+        run_id=run.id,
+        session_id=session.id,
+        sequence=1,
+    )
+    await SQLAlchemyAgentCycleRepository(database.session_factory).create(cycle)
+    step = AgentStep(
+        id="step-audit",
+        cycle_id=cycle.id,
+        sequence=1,
+        step_type=AgentStepType.TOOL_PROPOSAL,
+    )
+    await SQLAlchemyAgentStepRepository(database.session_factory).create(step)
+    tool_calls = SQLAlchemyToolCallIntentRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    runner = RecordingRunner(executions)
+    dispatcher = DeferredExecutionDispatcher(
+        tool_call_repository=tool_calls,
+        execution_service=ExecutionService(
+            execution_repository=executions,
+            session_repository=sessions,
+            tool_call_repository=tool_calls,
+            runner=runner,  # type: ignore[arg-type]
+            run_repository=runs,
+        ),
+    )
+    return CodeAuditDispatcherFixture(
+        database=database,
+        dispatcher=dispatcher,
+        tool_calls=tool_calls,
+        runner=runner,
+        run=run,
+        session=session,
+        cycle=cycle,
+        step=step,
+        workspace=tmp_path,
+    )
 
 
 @pytest.fixture
@@ -340,6 +419,107 @@ async def record_approval(
         context_compilation_id=context_compilation_id,
         working_memory_version=working_memory_version or cycle.sequence,
     )
+
+
+async def test_code_audit_prepare_denies_before_intent_persistence_and_runner(
+    tmp_path: Path,
+) -> None:
+    fixture = await build_code_audit_dispatcher(tmp_path)
+    event = deferred_event(fixture.workspace)
+    expected_id = build_tool_call_intent_id(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        cycle_id=fixture.cycle.id,
+        engine_call_id=str(event.data["call_id"]),
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await fixture.dispatcher.prepare(
+            session=fixture.session,
+            cycle=fixture.cycle,
+            step=fixture.step,
+            event=event,
+        )
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert await fixture.tool_calls.get(expected_id) is None
+    assert fixture.runner.launches == 0
+
+    with pytest.raises(ApplicationConflictError) as owner_error:
+        await fixture.dispatcher.prepare(
+            session=fixture.session,
+            cycle=fixture.cycle.model_copy(update={"session_id": "session-foreign"}),
+            step=fixture.step,
+            event=event,
+        )
+    assert owner_error.value.code == "deferred_execution_identity_mismatch"
+    assert await fixture.tool_calls.get(expected_id) is None
+    await fixture.database.dispose()
+
+
+async def test_code_audit_durable_intent_effects_deny_without_mutation(
+    tmp_path: Path,
+) -> None:
+    fixture = await build_code_audit_dispatcher(tmp_path)
+    spec = DeferredExecutionSpec(
+        node_id="local",
+        executor_type=ExecutorType.PROCESS,
+        cwd=fixture.workspace,
+        argv=[sys.executable, "--version"],
+    )
+    intent = await fixture.tool_calls.create(
+        ToolCallIntent(
+            id="tool-call-audit",
+            run_id=fixture.run.id,
+            session_id=fixture.session.id,
+            cycle_id=fixture.cycle.id,
+            step_id=fixture.step.id,
+            tool_id="scanner",
+            status=ToolCallStatus.WAITING_APPROVAL,
+            execution_spec=spec.model_dump(mode="json"),
+        )
+    )
+    execution = Execution(
+        id="execution-audit",
+        execution_key="execution-key-audit",
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        tool_call_id=intent.id,
+        attempt_group="initial",
+        node_id="local",
+        executor_type=ExecutorType.PROCESS,
+        cwd=str(fixture.workspace),
+        status=ExecutionStatus.RUNNING,
+        stdout_path=str(fixture.workspace / "stdout.log"),
+        stderr_path=str(fixture.workspace / "stderr.log"),
+    )
+
+    operations = (
+        fixture.dispatcher.execute_intent(intent),
+        fixture.dispatcher.claim_intent_execution(
+            intent,
+            execution_key=execution.execution_key,
+            attempt_group="initial",
+        ),
+        fixture.dispatcher.sync_intent_execution(intent, execution),
+        fixture.dispatcher.approve_intent(intent.id),
+        fixture.dispatcher.reject_intent(intent.id),
+        fixture.dispatcher.mark_intent_executing(intent),
+    )
+    for operation in operations:
+        with pytest.raises(ApplicationConflictError) as captured:
+            await operation
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    durable = await fixture.tool_calls.get(intent.id)
+    assert durable is not None and durable.status is ToolCallStatus.WAITING_APPROVAL
+    assert fixture.runner.launches == 0
+
+    forged = intent.model_copy(update={"run_id": "run-foreign"})
+    with pytest.raises(ApplicationConflictError) as owner_error:
+        await fixture.dispatcher.mark_intent_executing(forged)
+    assert owner_error.value.code == "tool_call_identity_mismatch"
+    await fixture.database.dispose()
 
 
 async def test_v2_exact_prepare_replay_reuses_one_immutable_intent(
@@ -681,6 +861,7 @@ async def test_runtime_retry_yields_same_deferred_execution_without_relaunch(
         session_repository=sessions,
         tool_call_repository=tool_calls,
         runner=supervisor,
+        run_repository=runs,
     )
     dispatcher = DeferredExecutionDispatcher(
         tool_call_repository=tool_calls,

@@ -188,6 +188,7 @@ async def test_wave_b_dynamic_discovery_deferred_execution_and_continuation(
         session_repository=sessions,
         tool_call_repository=tool_calls,
         runner=supervisor,
+        run_repository=runs,
     )
     dispatcher = DeferredExecutionDispatcher(
         tool_call_repository=tool_calls,

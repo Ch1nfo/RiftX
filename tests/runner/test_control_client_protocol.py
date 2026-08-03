@@ -9,9 +9,23 @@ import httpx
 import pytest
 
 from riftx.application.services import NodeRegistration
-from riftx.domain import ExecutionStatus, RunnerCommandKind, RunnerPrincipal
+from riftx.domain import (
+    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+    ExecutionStatus,
+    RunKind,
+    RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
+    runner_payload_digest,
+)
 from riftx.runner.control_client import (
     LeasedRunnerCommand,
+    OutputLimitExceeded,
     RunnerControlClient,
     RunnerControlClientError,
     RunnerCredentialStore,
@@ -19,6 +33,58 @@ from riftx.runner.control_client import (
 )
 
 _PRINCIPAL = RunnerPrincipal(instance_id="runner-instance-a", epoch=7)
+
+
+def _command_response(
+    *,
+    command_id: str = "command-1",
+    principal: RunnerPrincipal = _PRINCIPAL,
+) -> dict[str, object]:
+    payload = {"execution_id": "execution-1"}
+    binding = RunnerEffectBinding(
+        id="binding-1",
+        run_id="run-1",
+        run_kind=RunKind.GENERAL,
+        node_id="runner-a",
+        target=principal,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.EXECUTION,
+        execution_id="execution-1",
+        resource_kind=RunnerResourceKind.EXECUTION,
+        resource_id="execution-1",
+    )
+    contract = RunnerOutputContract(
+        max_output_bytes=1024,
+        allowed_streams=("stderr", "stdout"),
+        result_schema="riftx.runner-result/execution-start/v1",
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=RunnerCommandKind.EXECUTE,
+        operation_family=RunnerOperationFamily.EXECUTION,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=contract,
+    )
+    return {
+        "id": command_id,
+        "node_id": "runner-a",
+        "kind": "execute",
+        "payload": payload,
+        "status": "leased",
+        "lease_id": "lease-1",
+        "attempts": 1,
+        "target": principal.model_dump(mode="json"),
+        "ownership": ownership.model_dump(mode="json"),
+        "ownership_schema_version": ownership.schema_version,
+        "effect_binding": binding.model_dump(mode="json"),
+        "operation_family": ownership.operation_family.value,
+        "output_contract": contract.model_dump(mode="json"),
+        "envelope_digest": ownership.envelope_digest,
+        "state_version": 1,
+        "lease_expires_at": "2026-08-01T10:00:00+00:00",
+        "lease_duration_seconds": 30,
+    }
 
 
 def _registration() -> NodeRegistration:
@@ -39,17 +105,24 @@ def test_credential_store_round_trips_complete_principal_and_rejects_legacy_file
     path.write_text(json.dumps({"node_id": "runner-a", "runner_token": "legacy-token"}))
     assert store.load("runner-a") is None
 
-    store.save("runner-a", "scoped-token", _PRINCIPAL)
+    store.save(
+        "runner-a",
+        "scoped-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
 
     assert store.load("runner-a") == StoredRunnerCredential(
         token="scoped-token",
         principal=_PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
     )
     assert store.load("another-node") is None
     assert json.loads(path.read_text()) == {
         "node_id": "runner-a",
         "runner_token": "scoped-token",
         "principal": {"instance_id": "runner-instance-a", "epoch": 7},
+        "protocol_capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
     }
     if os.name == "posix":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -78,14 +151,7 @@ async def test_registration_persists_principal_and_sends_complete_auth_headers(
                 200,
                 json={
                     "command": {
-                        "id": "command-1",
-                        "kind": "execute",
-                        "payload": {"execution_id": "execution-1"},
-                        "lease_id": "lease-1",
-                        "attempts": 1,
-                        "target": _PRINCIPAL.model_dump(mode="json"),
-                        "lease_expires_at": "2026-08-01T10:00:00+00:00",
-                        "lease_duration_seconds": 30,
+                        **_command_response(),
                     }
                 },
             )
@@ -115,6 +181,7 @@ async def test_registration_persists_principal_and_sends_complete_auth_headers(
     assert store.load("runner-a") == StoredRunnerCredential(
         token="scoped-token",
         principal=_PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
     )
     assert requests[0].headers["Authorization"] == "Bearer bootstrap-token"
     assert requests[1].headers["Authorization"] == "Bearer scoped-token"
@@ -134,7 +201,12 @@ async def test_valid_stored_credential_reconnects_without_registration(tmp_path:
         return httpx.Response(200, json={"id": "runner-a"})
 
     store = RunnerCredentialStore(tmp_path / "credentials.json")
-    store.save("runner-a", "stored-token", _PRINCIPAL)
+    store.save(
+        "runner-a",
+        "stored-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
     http = httpx.AsyncClient(
         base_url="http://control.test",
         transport=httpx.MockTransport(handler),
@@ -162,7 +234,12 @@ async def test_status_report_sends_explicit_physical_stop_confirmation(tmp_path:
         return httpx.Response(200, json={"status": "exited"})
 
     store = RunnerCredentialStore(tmp_path / "credentials.json")
-    store.save("runner-a", "stored-token", _PRINCIPAL)
+    store.save(
+        "runner-a",
+        "stored-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
     http = httpx.AsyncClient(
         base_url="http://control.test",
         transport=httpx.MockTransport(handler),
@@ -177,12 +254,20 @@ async def test_status_report_sends_explicit_physical_stop_confirmation(tmp_path:
     await client.report_status(
         "execution-a",
         ExecutionStatus.EXITED,
+        runner_command_id="command-a",
+        runner_effect_binding_id="binding-a",
+        runner_envelope_digest="a" * 64,
+        runner_binding_digest="b" * 64,
         exit_code=0,
         physical_stop_confirmed=True,
     )
 
     assert len(requests) == 1
     assert json.loads(requests[0].content) == {
+        "command_id": "command-a",
+        "effect_binding_id": "binding-a",
+        "envelope_digest": "a" * 64,
+        "binding_digest": "b" * 64,
         "status": "exited",
         "pid": None,
         "process_group_id": None,
@@ -196,6 +281,56 @@ async def test_status_report_sends_explicit_physical_stop_confirmation(tmp_path:
         "process_created_at": None,
         "physical_stop_confirmed": True,
     }
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_execution_output_cap_error_is_typed_with_authoritative_limit(
+    tmp_path: Path,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "runner_execution_output_too_large",
+                    "message": "output exceeds immutable contract",
+                    "details": {"max_output_bytes": 5},
+                }
+            },
+        )
+
+    store = RunnerCredentialStore(tmp_path / "credentials.json")
+    store.save(
+        "runner-a",
+        "stored-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
+    http = httpx.AsyncClient(
+        base_url="http://control.test",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunnerControlClient(
+        server_url="http://control.test",
+        node_id="runner-a",
+        credentials=store,
+        client=http,
+    )
+
+    with pytest.raises(OutputLimitExceeded) as captured:
+        await client.report_output(
+            "execution-a",
+            runner_command_id="command-a",
+            runner_effect_binding_id="binding-a",
+            runner_envelope_digest="a" * 64,
+            runner_binding_digest="b" * 64,
+            stream="stdout",
+            offset=0,
+            data=b"abcdef",
+        )
+
+    assert captured.value.max_output_bytes == 5
     await http.aclose()
 
 
@@ -244,7 +379,12 @@ async def test_client_rejects_command_for_another_principal_before_effectful_cal
         return httpx.Response(200, json={"lease_duration_seconds": 30})
 
     store = RunnerCredentialStore(tmp_path / "credentials.json")
-    store.save("runner-a", "scoped-token", _PRINCIPAL)
+    store.save(
+        "runner-a",
+        "scoped-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
     http = httpx.AsyncClient(
         base_url="http://control.test",
         transport=httpx.MockTransport(handler),
@@ -296,7 +436,12 @@ async def test_client_rejects_poll_response_targeted_to_another_principal(
         )
 
     store = RunnerCredentialStore(tmp_path / "credentials.json")
-    store.save("runner-a", "scoped-token", _PRINCIPAL)
+    store.save(
+        "runner-a",
+        "scoped-token",
+        _PRINCIPAL,
+        protocol_capabilities=(RUNNER_COMMAND_OWNERSHIP_CAPABILITY,),
+    )
     http = httpx.AsyncClient(
         base_url="http://control.test",
         transport=httpx.MockTransport(handler),

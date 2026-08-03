@@ -16,9 +16,18 @@ from riftx.domain import (
     RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
     RunStatus,
     Scope,
+    runner_payload_digest,
 )
 from riftx.execution import build_execution_key
 from riftx.persistence import (
@@ -276,6 +285,65 @@ class EmptyRunResourceStopper:
         )
 
 
+_REMOTE_OWNER = RunnerPrincipal(instance_id="runner-target-http-service", epoch=1)
+
+
+def _verified_remote_command(
+    *,
+    command_id: str,
+    node_id: str,
+    kind: RunnerCommandKind,
+    idempotency_key: str,
+    payload: dict[str, object],
+    run_id: str,
+    origin: RunnerCommandOrigin,
+    operation_family: RunnerOperationFamily,
+    resource_kind: RunnerResourceKind,
+    resource_id: str,
+    execution_id: str | None,
+    output_contract: RunnerOutputContract | None,
+    target: RunnerPrincipal | None,
+    status: RunnerCommandStatus,
+    result: dict[str, object] | None = None,
+    error: str = "",
+) -> RunnerCommand:
+    resolved_target = target or _REMOTE_OWNER
+    binding = RunnerEffectBinding(
+        id=f"binding-{command_id}",
+        run_id=run_id,
+        run_kind=RunKind.GENERAL,
+        node_id=node_id,
+        target=resolved_target,
+        origin=origin,
+        operation_family=operation_family,
+        execution_id=execution_id,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract or RunnerOutputContract(),
+    )
+    return RunnerCommand(
+        id=command_id,
+        node_id=node_id,
+        target=resolved_target,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        ownership=ownership,
+        ownership_state=RunnerCommandOwnershipState.VERIFIED,
+        quarantine_reason="",
+        payload=payload,
+        status=status,
+        result=result or {},
+        error=error,
+    )
+
+
 class FailedDeliveryControl:
     def __init__(self, *, acknowledge_cancel: bool) -> None:
         self.acknowledge_cancel = acknowledge_cancel
@@ -290,27 +358,51 @@ class FailedDeliveryControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind))
         if kind is RunnerCommandKind.TARGET_HTTP:
-            command = RunnerCommand(
-                id="failed-delivery-command",
+            command = _verified_remote_command(
+                command_id="failed-delivery-command",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.FAILED,
                 error="delivery claim replay suppressed after a possible send",
             )
         else:
             self.cancel_commands += 1
             intent_id = str(payload["tool_call_ids"][0])  # type: ignore[index]
-            command = RunnerCommand(
-                id=f"cancel-command-{self.cancel_commands}",
+            command = _verified_remote_command(
+                command_id=f"cancel-command-{self.cancel_commands}",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.COMPLETED,
                 result={
                     "outcomes": [

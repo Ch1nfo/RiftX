@@ -15,7 +15,17 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from pydantic import JsonValue
 
-from riftx.domain import RunnerCommand, RunnerCommandKind, RunnerCommandStatus
+from riftx.domain import (
+    RUNNER_STOP_ACK_TARGET_HTTP_SCHEMA,
+    RunnerCommand,
+    RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandStatus,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
+)
 from riftx.domain.base import new_id
 from riftx.scope import ScopeGuard, ScopeTargetKind
 from riftx.target_http.errors import (
@@ -60,6 +70,14 @@ class TargetHttpCommandControl(Protocol):
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]: ...
 
     async def wait_command(
@@ -382,6 +400,17 @@ class RemoteTargetHttpClient:
             launch.node_id,
             kind=RunnerCommandKind.TARGET_HTTP,
             idempotency_key=f"target-http:{request.execution_key}",
+            run_id=launch.run_id,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.TARGET_HTTP,
+            resource_kind=RunnerResourceKind.TARGET_HTTP_INTENT,
+            resource_id=launch.tool_call_id,
+            output_contract=RunnerOutputContract(
+                max_result_bytes=64 * 1024,
+                max_output_bytes=request.max_response_bytes,
+                allowed_streams=("command",),
+                result_schema="riftx.runner-result/target-http/v1",
+            ),
             payload={
                 "launch": {
                     "run_id": launch.run_id,
@@ -391,7 +420,6 @@ class RemoteTargetHttpClient:
                     "scope": launch.scope.model_dump(mode="json"),
                     "request": request.runner_payload(),
                 },
-                "max_response_bytes": request.max_response_bytes,
             },
         )
         try:
@@ -504,6 +532,15 @@ class RemoteTargetHttpClient:
                     node_id,
                     kind=RunnerCommandKind.TARGET_HTTP_CANCEL,
                     idempotency_key=_target_http_cancel_key(run_id, intent_id),
+                    run_id=run_id,
+                    origin=RunnerCommandOrigin.SAFETY_RECONCILER,
+                    operation_family=RunnerOperationFamily.SAFETY_STOP,
+                    resource_kind=RunnerResourceKind.TARGET_HTTP_INTENT,
+                    resource_id=intent_id,
+                    output_contract=RunnerOutputContract(
+                        result_schema="riftx.runner-result/target-http-stop/v1",
+                        stop_ack_schema=RUNNER_STOP_ACK_TARGET_HTTP_SCHEMA,
+                    ),
                     payload={
                         "run_id": run_id,
                         "tool_call_ids": [intent_id],

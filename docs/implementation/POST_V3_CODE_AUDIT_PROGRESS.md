@@ -8,7 +8,13 @@
 >
 > Authoritative specification: `docs/riftx-3-code-audit-development-spec.md`
 >
-> Specification baseline commit: `9a9b0e4d`
+> Specification version: `riftx.code-audit-development-spec/v2`
+>
+> Specification revision: 2026-08-03 / execution ownership, Security Context lifecycle,
+> closure recovery, milestone dependencies, and incremental product-surface rollout synchronized
+>
+> Specification baseline commit: `9a9b0e4d` (original committed baseline; later
+> authoritative revisions are tracked by this ledger and Git history)
 >
 > Implementation branch: `ch1nfo/riftx-3-code-audit`
 
@@ -25,21 +31,22 @@
 
 ## Current Wave
 
-- Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-106 — RunKind Workflow Router`
-- Next dependency: `AUD-105` is complete under ADR-0005; AUD-106 is the next unblocked task.
+- Milestone: `M1 — Run kind, domain, and persistence` completed.
+- Current task: none; no M2 implementation task has started.
+- Next dependency: `M2 — Preflight, Snapshot, and Scope Ledger` remains `pending`; its first
+  task may start only in a new, separately committed work unit.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-105 complete; AUD-106 is next |
+| M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
-| M6 API, CLI, and WebUI | pending | Not started |
+| M6 Standard Core API, CLI, and WebUI | pending | Not started |
 | M7 Production isolation and dynamic validation | pending | Not started |
 | M8 Diff and Deep | pending | Not started |
 | M9 Fix, Retest, and lifecycle | pending | Not started |
@@ -65,11 +72,13 @@
 | AUD-103 AuditApplicationService | completed |
 | AUD-104 API skeleton and policy | completed |
 | AUD-105 Artifact access foundation | completed |
-| AUD-106 RunKind workflow router | pending |
+| AUD-106 RunKind workflow router | completed |
 
-AUD-106 must replace the temporary effect bridge with the machine-readable operation catalog,
-RunWorkflowControlRouter, immutable RunnerCommand ownership, and legacy reconciliation. Until that
-work is complete, Code Audit remains non-executable and the M1 generic-read allowlist stays fail-closed.
+AUD-106 replaced the temporary effect-only design with the machine-readable operation catalog,
+RunWorkflowControlRouter, immutable RunnerCommand ownership, durable Workflow signal routing, and
+legacy reconciliation. M1 intentionally leaves Code Audit non-executable: no authoritative Audit
+effect plan exists, so Code Audit Runner enqueue remains zero until later milestone-specific plans open
+individual operation families.
 
 ### M2
 
@@ -77,26 +86,34 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 | --- | --- |
 | AUD-200 Source root and Git preflight | pending |
 | AUD-201 Signed preflight token | pending |
-| AUD-202 Snapshot materializer | pending |
+| AUD-202A SnapshotStore and CAS foundation | pending |
+| AUD-202B Commit/working-tree materializer | pending |
+| AUD-202C Same-node mount, pin, and static ownership | pending |
+| AUD-206 Content Sandbox and safety stop | pending |
 | AUD-203 Inventory and Scope | pending |
 | AUD-204 Snapshot reader | pending |
 | AUD-205 Snapshot Artifact and API | pending |
-| AUD-206 Content Sandbox and safety stop | pending |
+| AUD-202D Snapshot retention and GC receipts | pending |
 | AUD-207 Evaluation schema and harness | pending |
 | AUD-208 StartIntent delivery skeleton | pending |
+| AUD-209 Security Context Bundle | pending |
 
 ### M3
 
 | Task | Status |
 | --- | --- |
 | AUD-300 Detector registry | pending |
+| AUD-308 Budget reservation and Usage Ledger | pending |
 | AUD-301 Detector runner | pending |
 | AUD-302 Native baseline Detectors | pending |
 | AUD-303 SARIF import | pending |
 | AUD-304 Signal normalization | pending |
-| AUD-305 Deterministic Evidence-to-Closure slice | pending |
+| AUD-305A Deterministic Evidence, Location, and Decision ACL | pending |
+| AUD-305B Reducer, risk, identity, and prepared closure | pending |
+| AUD-305C Stop-proof convergence and immutable closure | pending |
 | AUD-306 Deterministic Audit workflow | pending |
 | AUD-307 Core seal and minimal reports | pending |
+| AUD-309 Audit metrics and performance-baseline skeleton | pending |
 
 ### M4
 
@@ -123,19 +140,31 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 | AUD-504 Baseline comparison | pending |
 | AUD-505 Closure Validator | pending |
 | AUD-506 Audit reports and SARIF | pending |
+| AUD-507 Triage revalidation | pending |
 
 ### M6
 
 | Task | Status |
 | --- | --- |
-| AUD-600 Complete API | pending |
-| AUD-601 CLI | pending |
-| AUD-602 Web types, client, and queries | pending |
-| AUD-603 Layout and routing | pending |
-| AUD-604 AuditsPage and NewAuditPage | pending |
-| AUD-605 AuditDetailPage | pending |
-| AUD-606 CodeFindingPage | pending |
-| AUD-607 i18n, accessibility, and responsive UI | pending |
+| AUD-600A UI read models and signed cursor | pending |
+| AUD-600B Standard Core API | pending |
+| AUD-601 Standard Core CLI | pending |
+| AUD-602A Audit types, client, and query root | pending |
+| AUD-602B SecurityContext and sensitive-cache lifecycle | pending |
+| AUD-602C Durable Event transport | pending |
+| AUD-602D Shared Inspector, Download, and Approval infrastructure | pending |
+| AUD-603A Feature-aware layout and route metadata | pending |
+| AUD-603B RunRouteGate | pending |
+| AUD-604A AuditsPage | pending |
+| AUD-604B NewAuditPage | pending |
+| AUD-605A AuditDetail shell | pending |
+| AUD-605B Summary and Coverage | pending |
+| AUD-605C Findings, Signals, Evidence, and Baseline | pending |
+| AUD-605D Activity, Artifacts, and Report | pending |
+| AUD-606A Long-lived Code Finding and Triage | pending |
+| AUD-606B CodeLocationViewer and CodeFlow | pending |
+| AUD-607A Per-page i18n, accessibility, and responsive unit gate | pending |
+| AUD-607B Playwright browser gate | pending |
 | AUD-608 Demo and README | pending |
 
 ### M7
@@ -144,9 +173,12 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 | --- | --- |
 | AUD-700 Sandbox backend | pending |
 | AUD-701 Runner capability | pending |
-| AUD-702 Validation plan and Approval | pending |
+| AUD-702A Validation plan, Approval domain, and admission | pending |
 | AUD-703 Sandbox Capsule Evidence | pending |
 | AUD-704 Failure and cancellation | pending |
+| AUD-702B Validation API and read models | pending |
+| AUD-702C Validation CLI surface | pending |
+| AUD-702D Validation WebUI surface | pending |
 
 ### M8
 
@@ -156,16 +188,26 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 | AUD-801 Diff classification | pending |
 | AUD-802 Deep Child Workflow | pending |
 | AUD-803 Saturation and Budget | pending |
-| AUD-804 Deep/Diff UI and CLI | pending |
+| AUD-804A Deep/Diff API and read models | pending |
+| AUD-804B Deep/Diff WebUI | pending |
+| AUD-804C Deep/Diff CLI | pending |
 
 ### M9
 
 | Task | Status |
 | --- | --- |
 | AUD-900 Fix Advisor | pending |
-| AUD-901 Isolated fix worktree | pending |
-| AUD-902 Retest | pending |
+| AUD-901A Fix follow-up domain, persistence, and Workflow owner | pending |
+| AUD-901B Isolated fix worktree, Patch Capsule, and Artifact | pending |
+| AUD-901C Fix API and read models | pending |
+| AUD-901D Fix CLI surface | pending |
+| AUD-901E Fix WebUI surface | pending |
+| AUD-902A Patched Snapshot and Retest domain/Workflow | pending |
+| AUD-902B Retest API and read models | pending |
+| AUD-902C Retest CLI surface | pending |
+| AUD-902D Retest WebUI surface | pending |
 | AUD-903 Lifecycle projection | pending |
+| AUD-904 Structural hardening portfolio | pending |
 
 ### M10
 
@@ -177,6 +219,7 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 | AUD-1003 Independence, SBOM, and licensing | pending |
 | AUD-1004 Release gate | pending |
 | AUD-1005 Version and documentation | pending |
+| AUD-1006 Performance, capacity, and retention gate | pending |
 
 ## Task Records
 
@@ -1070,7 +1113,8 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
     used. The implementation is RiftX-owned.
   - Production Code Audit Agent instructions remain out of scope; this task only
     narrows the existing generic Agent Artifact result projection.
-- Commit: Introducing commit; hash will be backfilled by the AUD-106 ledger update.
+- Commit: `ee9adaa99df08f043a3c2a813da3728aeb81a6b6`
+  (`feat(artifacts): secure Code Audit access`).
 - Known limitations / next contracts:
   - AUD-106 must install the machine-readable effect inventory,
     RunWorkflowControlRouter, immutable RunnerCommand ownership envelope, and legacy
@@ -1084,6 +1128,137 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
     Seal/distribution revisions, WebUI restricted-cache behavior, and real
     PostgreSQL production qualification remain assigned to their later tasks.
 - Next unblocked task: AUD-106.
+
+### AUD-106 — RunKind Workflow Router
+
+- Status: completed.
+- Outcome:
+  - Accepted ADR-0006 and replaced the temporary effect-only bridge with a
+    machine-readable RunKind operation/origin/effect catalog. The catalog covers the
+    complete route, service, callback, reconciler, cleanup, and Runner command
+    inventory and rejects unknown or incompatible combinations.
+  - Added `RunWorkflowControlRouter` as the only General/Audit Workflow control
+    boundary. General operations cannot be rewritten or fall back to Audit operations,
+    Audit operations cannot enter the General Workflow, and safety paths may only
+    reduce or prove an already-authorized effect.
+  - Added owner-bound `workflow_signal_intents` for General Approval and Execution
+    terminal facts. Source mutation and intent creation are atomic; delivery uses
+    lease/CAS dispatch, persisted Workflow identity, outcome-unknown reconciliation,
+    typed tombstones, restart recovery, and terminal supersession.
+  - Added immutable Runner effect binding, command ownership, lease/envelope
+    verification, result validation, and durable stop receipts. All eleven Runner
+    command kinds use the shared protocol registry; output caps truncate only the
+    affected stream while preserving other streams and terminal reporting.
+  - Split the protocol endpoints deliberately: legacy `/finish` accepts only the
+    migration-only stop-proof ACK wire, while ownership-v1 `/finish-owned` requires
+    state version, verified envelope, and immutable effect binding. The RiftX Runner
+    client always uses `/finish-owned`; cross-wired payloads fail validation.
+  - Added `LegacyRunnerCommandEffectOwnership` for pre-AUD-106 leased stop commands.
+    It contains the original node/principal/command/lease identity, is permanently
+    `quarantined:legacy_ownership_missing`, carries no RunKind, and is usable only by
+    the dedicated `STOP_PROOF` operation.
+  - Legacy ACK admission is restricted to the original authenticated principal and
+    lease, a still-`LEASED` command, one of the four safety-stop command kinds, and
+    affirmative typed proof. It appends namespaced quarantine evidence only: it never
+    completes the command, creates a normal receipt/projection, advances an Execution,
+    closes a resource, or emits a Workflow signal. Exact replay is idempotent and any
+    identity, state, command-kind, or evidence drift fails closed.
+  - Legacy replacement planning is authority-ledger based. A Terminal close is issued
+    only when one unambiguous Terminal belongs to the same Run, Runner, and Execution;
+    duplicate or mismatched Terminal ledgers degrade to authoritative Execution cancel.
+  - Preserved the M1 execution fence: no authoritative Code Audit effect plan exists,
+    therefore Code Audit Runner enqueue is unconditionally zero. AUD-106 does not
+    start M2 and does not make Code Audit executable.
+- Files changed:
+  - Architecture/specification: ADR-0005 cross-reference, ADR-0006, the authoritative
+    development specification, and this ledger.
+  - Domain/application/API: RunKind effects and router, Audit control service,
+    Workflow signal domain/ports/services, Runner ownership/protocol models, control
+    service/client/routes/schemas, and all cataloged effect entrypoints.
+  - Persistence/runtime: Runner ownership, command effect binding, stop receipt and
+    projection repositories; Workflow signal outbox and transport; API/Temporal
+    dispatcher and reconciler assembly; kind-aware Execution/runtime completion.
+  - Migrations:
+    `4f9a6c1d2e30_add_workflow_signal_intents.py` and
+    `8d7c2e4f1a90_add_runner_command_ownership.py`.
+  - Tests: catalog/policy/domain, Runner protocol/client/daemon, API callback and
+    cross-wire behavior, Workflow signal atomicity/restart recovery, repository
+    ownership/receipt projection, migration/downgrade protection, Temporal/runtime,
+    Browser/Terminal/Target HTTP/Connector, and long-horizon recovery regressions.
+- Schema/migration impact:
+  - Added the durable Workflow signal-intent outbox with owner, identity, lease,
+    attempt, reconciliation, delivery, supersession, and typed tombstone state.
+  - Added immutable Runner command ownership/effect binding and durable stop
+    receipt/projection facts, including the quarantined legacy ownership variant.
+  - Upgrade quarantines every legacy pending/leased/terminal command without inferring
+    ownership from payload, command kind, target, result, or lease metadata.
+  - PostgreSQL offline upgrade emits stable SQL. Offline downgrade fails closed with a
+    deliberate migration guard. Online downgrade locks all seven Runner fact tables
+    before any safety read or DDL and refuses downgrade when protocol capability,
+    non-zero command state version, ownership/effect binding, receipt/projection,
+    replacement, reconciliation, or Execution Runner-binding evidence would be lost.
+  - SQLite upgrade/downgrade retains exclusive transaction and foreign-key validation
+    behavior; restart, rollback, retry, and legacy ACK evidence preservation are tested.
+- Security boundary impact:
+  - Generic Run and Code Audit controls now have separate typed operations, services,
+    Workflow owners, callbacks, and Runner effect identities. No fallback crosses the
+    boundary, including failure, cancellation, cleanup, replay, or legacy recovery.
+  - Runner completion is accepted only for the authenticated principal, current lease,
+    exact command state version, verified envelope, and immutable effect binding.
+    Repository checks repeat the service checks before durable projection.
+  - Legacy compatibility is a quarantine evidence sink, not an authority-upgrade path.
+    It cannot mint RunKind, Workflow ownership, ordinary completion, or resource state.
+  - M1 Code Audit Runner enqueue remains zero. M2/M3 may later open only explicitly
+    registered `AuditStaticEffectPlan` families; M7/M9 dynamic Build/Test/PoC/Fix must
+    remain on the separate `AuditExecutionPlan` plus `mandatory_one_plan` approval.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/runner`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_runner_ownership_migration.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/application/run_kind_effects.py src/riftx/application/workflow_router.py src/riftx/application/services/audit_controls.py src/riftx/application/services/workflow_signals.py src/riftx/domain/runner.py src/riftx/domain/workflow_signal.py src/riftx/persistence/workflow_signals.py src/riftx/persistence/audit_control_uow.py src/riftx/temporal/workflow_signal_transport.py src/riftx/api/routes/runner_control.py src/riftx/api/schemas/runner_control.py src/riftx/application/services/runner_control.py src/riftx/runner/control_client.py src/riftx/runner/daemon.py src/riftx/persistence/repositories.py`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Full repository: `4365 passed, 5 skipped, 11 warnings in 356.87s`.
+  - Runner matrix: `410 passed, 5 skipped`; migration matrix: `14 passed`.
+  - Additional focused matrices passed: API `78`, Runner ownership `140`,
+    Execution/Runtime/Temporal `341`, Browser/Terminal/Connector/Evaluation `158`,
+    Target HTTP `53`, and Workflow signals `56` tests.
+  - Targeted Mypy passed with `Success: no issues found in 15 source files`.
+    Repository Ruff and `compileall` passed; `git diff --check` passed with no output.
+  - The independence boundary reported `ready=true` with policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+    The executable release gate also reported `ready=true`.
+  - Independent completion review found no remaining P0/P1 and passed an additional
+    focused `152` tests. The five skips are platform-only Windows/PowerShell/cgroup
+    conditions; the eleven warnings are the known Python 3.12 datetime-adapter notices.
+- Manual verification:
+  - Reviewed the complete operation/effect inventory, General/Audit non-fallback,
+    M1 zero-enqueue invariant, signal outbox restart semantics, all eleven Runner
+    command bindings, endpoint cross-wiring, legacy ACK replay/drift behavior,
+    ambiguous Terminal replacement, and downgrade evidence preservation.
+  - Independent review result: accepted, with no remaining P0/P1. No issue was
+    deferred into M2 as a substitute for the AUD-106 contract.
+- Provenance:
+  - Requirements source: authoritative specification sections 4.3 through 4.5, 14,
+    20.4, and 22 / AUD-106; accepted ADR-0006.
+  - Implementation inputs: RiftX repository baseline `ee9adaa9`, ADR-0001
+    through ADR-0005, and the current RiftX route/service/Runner/Temporal code.
+  - Third-party expressive material: none. No Codex Security Provider, code, Prompt,
+    Schema, Skill, runtime, endpoint, dependency, test, or generated artifact was
+    used. The implementation and protocol are RiftX-owned.
+- Commit: this AUD-106 local commit; its hash is backfilled by the next ledger update
+  because a commit cannot contain its own hash.
+- Known limitations / next contracts:
+  - M2 remains `pending / not started`. Its future static operations require explicit
+    `AuditStaticEffectPlan` registrations; AUD-106 grants no implicit capability.
+  - Real PostgreSQL production qualification, dynamic Audit execution, Content
+    Sandbox, Scanner/Detector/Agent producers, and product UI remain assigned to their
+    later milestones and are not represented as implemented here.
+- Next unblocked task: AUD-200, but only as a new, separately committed M2 work unit.
 
 ## Design Deviations and ADRs
 
@@ -1106,6 +1281,11 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
   canonical storage keys, lossless migration, generic public-only visibility, explicit
   Audit-root reads, descriptor-safe ingest/download, corrupt-row redaction, and
   external projection boundaries implemented by AUD-105.
+- `ADR-0006`: freezes the machine-readable RunKind effect catalog, full entrypoint
+  inventory, General-compatible Workflow router, Audit-owned controls, kind-aware
+  cleanup/completion, immutable Runner effect/command ownership, legacy quarantine,
+  protocol capability gate, M1 zero-enqueue fence, future family-specific static and
+  dynamic plan extensions, and safety-reduce-only semantics for AUD-106.
 
 ## Current Risks
 
@@ -1125,6 +1305,10 @@ work is complete, Code Audit remains non-executable and the M1 generic-read allo
 - PostgreSQL remains a contract-tested future runtime, not a supported deployment;
   the current persistence concurrency evidence is authoritative for SQLite only, and
   the Project natural-key gap race still requires a real PostgreSQL barrier test.
-- AUD-106 must install the kind-aware mutation inventory, Workflow router, and
-  reconciliation boundary before any `code_audit` Run can execute. Until then the M1
-  generic-read allowlist and temporary effect bridge must remain fail-closed.
+- AUD-106 installed the kind-aware mutation inventory, Workflow router, and
+  reconciliation boundary, but M1 deliberately grants no Code Audit effect plan.
+  Code Audit therefore remains non-executable and Runner enqueue remains zero.
+- M2 Preflight must use a durable pre-Audit `AuditPreflightJob` owner and must never
+  invent a Run/Audit owner. M2/M3 static effects and M7/M9 dynamic effects use
+  different authoritative plan families; an implementation must not broaden one
+  plan family into another.

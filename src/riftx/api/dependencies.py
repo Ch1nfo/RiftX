@@ -11,6 +11,7 @@ from riftx.application.errors import (
     AuthenticationError,
     EntityNotFoundError,
     ResourceNotAccessibleError,
+    ServiceUnavailableError,
     resource_not_accessible,
 )
 from riftx.application.ports import AuditObjectAuthorizer
@@ -19,6 +20,7 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ArtifactApplicationService,
     AuditApplicationService,
+    AuditControlApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -141,6 +143,16 @@ def get_audit_service(request: Request) -> AuditApplicationService:
     return request.app.state.control_plane.audit_service
 
 
+def get_audit_control_service(request: Request) -> AuditControlApplicationService:
+    service = getattr(request.app.state.control_plane, "audit_control_service", None)
+    if service is None:
+        raise ServiceUnavailableError(
+            "audit_control_unavailable",
+            "RiftX Code Audit controls are temporarily unavailable",
+        )
+    return service
+
+
 def get_audit_object_authorizer(request: Request) -> AuditObjectAuthorizer:
     return request.app.state.local_object_authorizer
 
@@ -257,6 +269,10 @@ def authorize_admin(
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
 AuditServiceDependency = Annotated[AuditApplicationService, Depends(get_audit_service)]
+AuditControlServiceDependency = Annotated[
+    AuditControlApplicationService,
+    Depends(get_audit_control_service),
+]
 AuditObjectAuthorizerDependency = Annotated[
     AuditObjectAuthorizer,
     Depends(get_audit_object_authorizer),
@@ -316,6 +332,19 @@ LocalPrincipalDependency = Annotated[
 
 
 @dataclass(frozen=True, slots=True)
+class RunReadAuthorizationSnapshot:
+    """Frozen owner and authenticated principal for one long-lived Run read."""
+
+    run_id: str
+    run_kind: RunKind
+    engagement_id: str
+    node_id: str
+    principal: LocalPrincipal
+    audit_id: str | None = None
+    audit_project_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunReadAuthorizer:
     run_service: RunApplicationService
     audit_service: AuditApplicationService
@@ -337,6 +366,55 @@ class RunReadAuthorizer:
             return await self.run_service.get_run(run_id)
         except (EntityNotFoundError, ResourceNotAccessibleError):
             raise resource_not_accessible() from None
+
+    async def require_stream_snapshot(self, run_id: str) -> RunReadAuthorizationSnapshot:
+        """Authorize and freeze the owner graph used by a long-lived stream."""
+
+        try:
+            kind = await self.run_service.resolve_kind(run_id)
+            if kind is RunKind.CODE_AUDIT:
+                aggregate = await self.audit_service.get_by_run_authorized(
+                    run_id,
+                    principal=self.principal,
+                    authorizer=self.audit_authorizer,
+                )
+                run = aggregate.run
+                return RunReadAuthorizationSnapshot(
+                    run_id=run.id,
+                    run_kind=run.kind,
+                    engagement_id=run.engagement_id,
+                    node_id=run.node_id,
+                    principal=self.principal,
+                    audit_id=aggregate.audit.value.id,
+                    audit_project_id=aggregate.project.value.id,
+                )
+            run = await self.run_service.get_run(run_id)
+            return RunReadAuthorizationSnapshot(
+                run_id=run.id,
+                run_kind=run.kind,
+                engagement_id=run.engagement_id,
+                node_id=run.node_id,
+                principal=self.principal,
+            )
+        except (EntityNotFoundError, ResourceNotAccessibleError):
+            raise resource_not_accessible() from None
+
+    async def revalidate_stream_snapshot(
+        self,
+        request: Request,
+        frozen: RunReadAuthorizationSnapshot,
+    ) -> None:
+        """Reauthenticate and reauthorize the exact frozen owner before one batch."""
+
+        principal = await authorize_local_operator(request)
+        current = await RunReadAuthorizer(
+            run_service=self.run_service,
+            audit_service=self.audit_service,
+            principal=principal,
+            audit_authorizer=self.audit_authorizer,
+        ).require_stream_snapshot(frozen.run_id)
+        if current != frozen:
+            raise resource_not_accessible()
 
 
 def require_run_read_binding(expected_run_id: str, actual_run_id: str | None) -> None:

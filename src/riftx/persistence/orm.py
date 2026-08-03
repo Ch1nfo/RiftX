@@ -1424,6 +1424,31 @@ class ToolCallRecord(Base):
 class ExecutionRecord(Base):
     __tablename__ = "executions"
     __table_args__ = (
+        CheckConstraint(
+            "(audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
+            name="ck_executions_audit_plan_pair",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("plan_digest"),
+            name="ck_executions_plan_digest",
+        ),
+        CheckConstraint(
+            "(runner_command_id IS NULL AND runner_effect_binding_id IS NULL "
+            "AND runner_binding_digest IS NULL AND runner_envelope_digest IS NULL) OR "
+            "(runner_command_id IS NOT NULL AND runner_effect_binding_id IS NOT NULL "
+            "AND runner_binding_digest IS NOT NULL AND runner_envelope_digest IS NOT NULL)",
+            name="ck_executions_runner_binding_shape",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("runner_binding_digest"),
+            name="ck_executions_runner_binding_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("runner_envelope_digest"),
+            name="ck_executions_runner_envelope_digest",
+        ),
+        UniqueConstraint("runner_command_id", name="uq_executions_runner_command"),
         Index(
             "ix_executions_run_tool_created_id",
             "run_id",
@@ -1439,6 +1464,12 @@ class ExecutionRecord(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey("audit_scans.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    plan_digest: Mapped[str | None] = mapped_column(String(64))
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_sessions.id", ondelete="SET NULL"), index=True
     )
@@ -1447,6 +1478,18 @@ class ExecutionRecord(Base):
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     owner_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     owner_runner_epoch: Mapped[int | None] = mapped_column(BigInteger)
+    runner_command_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    runner_effect_binding_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    runner_binding_digest: Mapped[str | None] = mapped_column(String(64))
+    runner_envelope_digest: Mapped[str | None] = mapped_column(String(64))
     executor_type: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     argv_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     command_text: Mapped[str | None] = mapped_column(Text)
@@ -1733,6 +1776,11 @@ class RunnerCredentialRecord(Base):
     runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    protocol_capabilities_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     rotated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -1741,6 +1789,7 @@ class RunnerCredentialRecord(Base):
 class RunnerCommandRecord(Base):
     __tablename__ = "runner_commands"
     __table_args__ = (
+        CheckConstraint("state_version >= 0", name="ck_runner_commands_state_version"),
         UniqueConstraint(
             "node_id",
             "idempotency_key",
@@ -1771,9 +1820,252 @@ class RunnerCommandRecord(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class RunnerEffectBindingRecord(Base):
+    __tablename__ = "runner_effect_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.runner-effect-binding/v1'",
+            name="ck_runner_effect_bindings_schema",
+        ),
+        CheckConstraint(
+            "run_kind IN ('general', 'code_audit')",
+            name="ck_runner_effect_bindings_run_kind",
+        ),
+        CheckConstraint(
+            "origin IN "
+            "('application_service', 'temporal_worker', "
+            "'control_plane_reconciler', 'worker_reconciler', 'safety_reconciler')",
+            name="ck_runner_effect_bindings_origin",
+        ),
+        CheckConstraint(
+            "operation_family IN "
+            "('execution', 'terminal', 'browser', 'target_http', 'connector', "
+            "'safety_stop')",
+            name="ck_runner_effect_bindings_family",
+        ),
+        CheckConstraint(
+            "resource_kind IN "
+            "('execution', 'terminal_session', 'browser_session', "
+            "'target_http_intent', 'connector_session')",
+            name="ck_runner_effect_bindings_resource_kind",
+        ),
+        CheckConstraint(
+            "(run_kind = 'general' AND audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
+            name="ck_runner_effect_bindings_run_owner_shape",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("plan_digest"),
+            name="ck_runner_effect_bindings_plan_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("binding_digest"),
+            name="ck_runner_effect_bindings_binding_digest",
+        ),
+        CheckConstraint(
+            "resource_kind <> 'execution' OR "
+            "(execution_id IS NOT NULL AND resource_id = execution_id)",
+            name="ck_runner_effect_bindings_execution_identity",
+        ),
+        Index(
+            "ix_runner_effect_bindings_family_resource",
+            "operation_family",
+            "resource_kind",
+            "resource_id",
+        ),
+        Index(
+            "ix_runner_effect_bindings_run_execution",
+            "run_id",
+            "execution_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    run_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    node_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("nodes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    target_runner_instance_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_credentials.runner_instance_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    target_runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey("audit_scans.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    plan_digest: Mapped[str | None] = mapped_column(String(64))
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerCommandOwnershipRecord(Base):
+    __tablename__ = "runner_command_ownerships"
+    __table_args__ = (
+        CheckConstraint(
+            "verification_state IN ('verified', 'quarantined')",
+            name="ck_runner_command_ownerships_state",
+        ),
+        CheckConstraint(
+            "operation_family IS NULL OR operation_family IN "
+            "('execution', 'terminal', 'browser', 'target_http', 'connector', "
+            "'safety_stop')",
+            name="ck_runner_command_ownerships_family",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("payload_digest"),
+            name="ck_runner_command_ownerships_payload_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("output_contract_digest"),
+            name="ck_runner_command_ownerships_output_contract_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("envelope_digest"),
+            name="ck_runner_command_ownerships_envelope_digest",
+        ),
+        CheckConstraint(
+            "(verification_state = 'verified' "
+            "AND schema_version = 'riftx.runner-command-ownership/v1' "
+            "AND effect_binding_id IS NOT NULL AND operation IS NOT NULL "
+            "AND operation_family IS NOT NULL AND payload_digest IS NOT NULL "
+            "AND output_contract_json IS NOT NULL AND output_contract_digest IS NOT NULL "
+            "AND envelope_digest IS NOT NULL AND quarantine_reason IS NULL "
+            "AND quarantined_at IS NULL AND reconciliation_state IS NULL) OR "
+            "(verification_state = 'quarantined' AND quarantine_reason IS NOT NULL "
+            "AND quarantined_at IS NOT NULL AND reconciliation_state IN "
+            "('untouched', 'pending', 'replaced', 'manual'))",
+            name="ck_runner_command_ownerships_verification_shape",
+        ),
+        Index(
+            "ix_runner_command_ownerships_state_family",
+            "verification_state",
+            "operation_family",
+        ),
+        Index(
+            "ix_runner_command_ownerships_reconciliation",
+            "reconciliation_state",
+            "quarantined_at",
+        ),
+        UniqueConstraint(
+            "effect_binding_id",
+            name="uq_runner_command_ownerships_effect_binding",
+        ),
+    )
+
+    command_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    verification_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[str | None] = mapped_column(String(64))
+    effect_binding_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    operation: Mapped[str | None] = mapped_column(String(32))
+    operation_family: Mapped[str | None] = mapped_column(String(32))
+    payload_digest: Mapped[str | None] = mapped_column(String(64))
+    output_contract_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    output_contract_digest: Mapped[str | None] = mapped_column(String(64))
+    envelope_digest: Mapped[str | None] = mapped_column(String(64), index=True)
+    quarantine_reason: Mapped[str | None] = mapped_column(String(255))
+    quarantined_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    reconciliation_state: Mapped[str | None] = mapped_column(String(32), index=True)
+    replacement_command_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerStopReceiptRecord(Base):
+    __tablename__ = "runner_stop_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.runner-stop-receipt/v1'",
+            name="ck_runner_stop_receipts_schema",
+        ),
+        CheckConstraint(_lower_hex_digest_check("envelope_digest"), name="ck_stop_envelope"),
+        CheckConstraint(_lower_hex_digest_check("binding_digest"), name="ck_stop_binding"),
+        CheckConstraint(_lower_hex_digest_check("ack_digest"), name="ck_stop_ack"),
+        UniqueConstraint("command_id", name="uq_runner_stop_receipts_command"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    effect_binding_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    envelope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    principal_instance_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    principal_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ack_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ack_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerStopProjectionRecord(Base):
+    __tablename__ = "runner_stop_projections"
+    __table_args__ = (
+        CheckConstraint(
+            "projection_state IN ('pending', 'applied', 'manual')",
+            name="ck_runner_stop_projections_state",
+        ),
+        CheckConstraint("state_version >= 0", name="ck_runner_stop_projections_version"),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_stop_receipts.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    projection_state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class ToolStateRecord(Base):

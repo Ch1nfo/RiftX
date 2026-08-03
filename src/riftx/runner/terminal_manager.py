@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -47,6 +50,70 @@ _PHYSICAL_STOP_PROOF_STATUSES = {
     ExecutionStatus.CANCELLED,
     ExecutionStatus.HARD_TIMEOUT,
 }
+_OPERATION_JOURNAL_SCHEMA_VERSION = "riftx.runner-operation-journal/v1"
+_LEGACY_UNBOUND_OUTCOME = {"state": "legacy_unbound"}
+_OPERATION_CLAIMED_OUTCOME = {"state": "effect_claimed"}
+
+
+class OperationJournalConflict(RuntimeError):
+    """A durable operation key is already bound to another immutable command."""
+
+    def __init__(self, operation_key: str) -> None:
+        super().__init__(
+            f"Runner operation {operation_key!r} conflicts with its durable journal record"
+        )
+        self.operation_key = operation_key
+
+
+@dataclass(frozen=True, slots=True)
+class OperationJournalIdentity:
+    """Immutable Runner ownership identity attached to one local operation fact."""
+
+    command_id: str
+    binding_digest: str
+    envelope_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.command_id or len(self.command_id) > 64:
+            raise ValueError("Runner operation journal command_id is invalid")
+        _validate_journal_digest(self.binding_digest, "binding_digest")
+        _validate_journal_digest(self.envelope_digest, "envelope_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationJournalRecord:
+    """Versioned durable fact used for exact replay and fail-closed divergence."""
+
+    operation_key: str
+    command_id: str | None
+    binding_digest: str | None
+    envelope_digest: str | None
+    outcome: dict[str, object]
+    schema_version: str = _OPERATION_JOURNAL_SCHEMA_VERSION
+
+    @property
+    def is_legacy_unbound(self) -> bool:
+        return (
+            self.command_id is None
+            and self.binding_digest is None
+            and self.envelope_digest is None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceTombstone:
+    """Digest-independent, monotonic safety state for one local resource."""
+
+    resource_key: str
+    outcome: dict[str, object]
+    schema_version: str = _OPERATION_JOURNAL_SCHEMA_VERSION
+
+
+@dataclass(slots=True)
+class _OperationJournalState:
+    records: dict[str, OperationJournalRecord]
+    resource_tombstones: dict[str, ResourceTombstone]
+    legacy_resource_tombstones: dict[str, ResourceTombstone]
 
 
 class TerminalControlClient(Protocol):
@@ -58,6 +125,10 @@ class TerminalControlClient(Protocol):
         execution_id: str,
         status: ExecutionStatus,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         pid: int | None = None,
         process_group_id: int | None = None,
         exit_code: int | None = None,
@@ -68,6 +139,10 @@ class TerminalControlClient(Protocol):
         self,
         execution_id: str,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         stream: str,
         offset: int,
         data: bytes,
@@ -95,6 +170,24 @@ class NullRunEventRepository:
             sequence=self._sequence,
             event_type=event_type,
             payload=payload or {},
+        )
+
+    async def get(self, event_id: str) -> RunEvent | None:
+        del event_id
+        return None
+
+    async def append_user_message(
+        self,
+        run_id: str,
+        message: str,
+        *,
+        event_id: str | None = None,
+    ) -> RunEvent:
+        return await self.append(
+            run_id,
+            "user.message",
+            {"message": message},
+            event_id=event_id,
         )
 
     async def append_terminal_projection_if_current(
@@ -130,54 +223,598 @@ class NullRunEventRepository:
 
 
 class OperationJournal:
-    """Persist one-way Runner operation facts across command re-leases."""
+    """Persist digest-bound Runner operation facts across command re-leases.
 
-    def __init__(self, path: Path) -> None:
+    ``contains`` retains the historical mixed record/resource lookup used by
+    operation journals. Safety fences must use ``get_resource`` (or the explicit
+    legacy lookup) so a command-attempt record can never masquerade as a resource
+    tombstone.
+
+    Legacy V2 journals were bare lists. Execution cancellation used caller-chosen
+    execution keys in that format, so those entries must be structurally isolated
+    from modern typed Execution-ID resource keys. ``legacy_list_resources`` opts a
+    journal into that one-way migration without changing legacy semantics for the
+    terminal-operation and delivery journals that stored exact operation keys.
+    """
+
+    def __init__(self, path: Path, *, legacy_list_resources: bool = False) -> None:
         self.path = path
+        self._legacy_list_resources = legacy_list_resources
         self._lock = asyncio.Lock()
 
     async def contains(self, operation_id: str) -> bool:
         async with self._lock:
             return await asyncio.to_thread(self._contains_locked, operation_id)
 
-    async def add(self, operation_id: str) -> None:
-        await self.claim(operation_id)
+    async def get_exact(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_exact_locked,
+                operation_id,
+                identity,
+            )
 
-    async def claim(self, operation_id: str) -> bool:
-        """Atomically persist an operation id and report whether this caller won."""
+    async def add(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> None:
+        await self.claim(operation_id, identity, outcome=outcome)
+
+    async def claim(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> bool:
+        """Persist a bound fact and report whether this exact caller won.
+
+        An existing key is idempotent only when both immutable digests and the
+        outcome are equal. Any divergent reuse raises before the journal is
+        changed.
+        """
 
         async with self._lock:
-            return await asyncio.to_thread(self._claim_locked, operation_id)
+            return await asyncio.to_thread(
+                self._claim_locked,
+                operation_id,
+                identity,
+                outcome,
+            )
+
+    async def transition(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        """CAS one exact command fact from an admitted to a durable outcome."""
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._transition_locked,
+                operation_id,
+                identity,
+                expected_outcome,
+                outcome,
+            )
+
+    async def get_resource(
+        self,
+        resource_key: str,
+    ) -> ResourceTombstone | None:
+        async with self._lock:
+            return await asyncio.to_thread(self._get_resource_locked, resource_key)
+
+    async def get_legacy_resource(
+        self,
+        resource_key: str,
+    ) -> ResourceTombstone | None:
+        """Read a pre-typed resource tombstone from its isolated namespace."""
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_legacy_resource_locked,
+                resource_key,
+            )
+
+    async def get_resource_attempt_exact(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        return await self.get_exact(_resource_attempt_key(resource_key, identity), identity)
+
+    async def claim_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        """Atomically bind one command attempt and raise a no-restart tombstone."""
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._claim_resource_locked,
+                resource_key,
+                identity,
+                outcome,
+            )
+
+    async def transition_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+        resource_outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        """CAS an exact attempt and monotonically confirm its resource stopped."""
+
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._transition_resource_locked,
+                resource_key,
+                identity,
+                expected_outcome,
+                outcome,
+                resource_outcome,
+            )
 
     def _contains_locked(self, operation_id: str) -> bool:
         with locked_file(self.path):
-            return operation_id in self._read()
+            state = self._read()
+            return (
+                operation_id in state.records
+                or operation_id in state.resource_tombstones
+            )
 
-    def _claim_locked(self, operation_id: str) -> bool:
+    def _get_exact_locked(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        with locked_file(self.path):
+            record = self._read().records.get(operation_id)
+            if record is None:
+                return None
+            self._require_exact_identity(record, identity)
+            return record
+
+    def _claim_locked(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        outcome: dict[str, object],
+    ) -> bool:
         # The read/merge/replace transaction must happen under the OS lock.
         # Per-instance asyncio locks cannot protect two Runner processes (or
         # two independently constructed journal objects) sharing state_path.
         with locked_file(self.path):
-            items = self._read()
-            if operation_id in items:
+            state = self._read()
+            existing = state.records.get(operation_id)
+            if existing is not None:
+                self._require_exact_identity(existing, identity)
+                if existing.outcome != outcome:
+                    raise OperationJournalConflict(operation_id)
                 return False
-            items.add(operation_id)
-            self._write(items)
+            state.records[operation_id] = OperationJournalRecord(
+                operation_key=operation_id,
+                command_id=identity.command_id,
+                binding_digest=identity.binding_digest,
+                envelope_digest=identity.envelope_digest,
+                outcome=_copy_journal_outcome(outcome),
+            )
+            self._write(state)
             return True
 
-    def _read(self) -> set[str]:
+    def _transition_locked(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        with locked_file(self.path):
+            state = self._read()
+            existing = state.records.get(operation_id)
+            if existing is None:
+                raise OperationJournalConflict(operation_id)
+            self._require_exact_identity(existing, identity)
+            if existing.outcome == outcome:
+                return existing
+            if existing.outcome != expected_outcome:
+                raise OperationJournalConflict(operation_id)
+            transitioned = OperationJournalRecord(
+                operation_key=operation_id,
+                command_id=identity.command_id,
+                binding_digest=identity.binding_digest,
+                envelope_digest=identity.envelope_digest,
+                outcome=_copy_journal_outcome(outcome),
+            )
+            state.records[operation_id] = transitioned
+            self._write(state)
+            return transitioned
+
+    def _get_resource_locked(self, resource_key: str) -> ResourceTombstone | None:
+        with locked_file(self.path):
+            return self._read().resource_tombstones.get(resource_key)
+
+    def _get_legacy_resource_locked(
+        self,
+        resource_key: str,
+    ) -> ResourceTombstone | None:
+        with locked_file(self.path):
+            return self._read().legacy_resource_tombstones.get(resource_key)
+
+    def _claim_resource_locked(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        attempt_key = _resource_attempt_key(resource_key, identity)
+        with locked_file(self.path):
+            state = self._read()
+            existing = state.records.get(attempt_key)
+            claimed = existing is None
+            if existing is not None:
+                self._require_exact_identity(existing, identity)
+                if existing.outcome != outcome:
+                    raise OperationJournalConflict(resource_key)
+            else:
+                state.records[attempt_key] = OperationJournalRecord(
+                    operation_key=attempt_key,
+                    command_id=identity.command_id,
+                    binding_digest=identity.binding_digest,
+                    envelope_digest=identity.envelope_digest,
+                    outcome=_copy_journal_outcome(outcome),
+                )
+            tombstone = state.resource_tombstones.get(resource_key)
+            if tombstone is None:
+                tombstone = ResourceTombstone(
+                    resource_key=resource_key,
+                    outcome={"state": "cancellation_requested"},
+                )
+                state.resource_tombstones[resource_key] = tombstone
+            elif tombstone.outcome.get("state") not in {
+                "cancellation_requested",
+                "physical_stop_confirmed",
+                "legacy_unbound",
+            }:
+                raise RuntimeError(
+                    f"Runner resource tombstone has an invalid outcome: {self.path}"
+                )
+            self._write(state)
+            return claimed, tombstone
+
+    def _transition_resource_locked(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+        resource_outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        attempt_key = _resource_attempt_key(resource_key, identity)
+        with locked_file(self.path):
+            state = self._read()
+            existing = state.records.get(attempt_key)
+            if existing is None:
+                raise OperationJournalConflict(resource_key)
+            self._require_exact_identity(existing, identity)
+            if existing.outcome != outcome:
+                if existing.outcome != expected_outcome:
+                    raise OperationJournalConflict(resource_key)
+                existing = OperationJournalRecord(
+                    operation_key=attempt_key,
+                    command_id=identity.command_id,
+                    binding_digest=identity.binding_digest,
+                    envelope_digest=identity.envelope_digest,
+                    outcome=_copy_journal_outcome(outcome),
+                )
+                state.records[attempt_key] = existing
+            tombstone = state.resource_tombstones.get(resource_key)
+            if tombstone is None:
+                raise OperationJournalConflict(resource_key)
+            if tombstone.outcome.get("state") == "physical_stop_confirmed":
+                # A resource-level stop is monotonic. A fresh verified command
+                # may bind its own attempt to the already-confirmed outcome.
+                pass
+            elif tombstone.outcome.get("state") in {
+                "cancellation_requested",
+                "legacy_unbound",
+            }:
+                state.resource_tombstones[resource_key] = ResourceTombstone(
+                    resource_key=resource_key,
+                    outcome=_copy_journal_outcome(resource_outcome),
+                )
+            else:
+                raise RuntimeError(
+                    f"Runner resource tombstone has an invalid outcome: {self.path}"
+                )
+            self._write(state)
+            return existing
+
+    @staticmethod
+    def _require_exact_identity(
+        record: OperationJournalRecord,
+        identity: OperationJournalIdentity,
+    ) -> None:
+        if (
+            record.command_id is None
+            or record.binding_digest is None
+            or record.envelope_digest is None
+            or not hmac.compare_digest(record.command_id, identity.command_id)
+            or not hmac.compare_digest(record.binding_digest, identity.binding_digest)
+            or not hmac.compare_digest(record.envelope_digest, identity.envelope_digest)
+        ):
+            raise OperationJournalConflict(record.operation_key)
+
+    def _read(self) -> _OperationJournalState:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return set()
+            return _OperationJournalState(
+                records={},
+                resource_tombstones={},
+                legacy_resource_tombstones={},
+            )
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"terminal operation journal is corrupted: {self.path}") from exc
-        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-            raise RuntimeError(f"terminal operation journal has an invalid shape: {self.path}")
-        return set(raw)
+            raise RuntimeError(f"Runner operation journal is corrupted: {self.path}") from exc
+        if isinstance(raw, list):
+            # V2 journals stored only string keys. Preserve them as monotonic,
+            # unbound tombstones, but never treat them as an exact replay.
+            if any(not isinstance(item, str) or not item for item in raw):
+                raise RuntimeError(
+                    f"Runner operation journal has an invalid legacy shape: {self.path}"
+                )
+            tombstones = {
+                operation_key: ResourceTombstone(
+                    resource_key=operation_key,
+                    outcome=dict(_LEGACY_UNBOUND_OUTCOME),
+                )
+                for operation_key in raw
+            }
+            if self._legacy_list_resources:
+                return _OperationJournalState(
+                    records={},
+                    resource_tombstones={},
+                    legacy_resource_tombstones=tombstones,
+                )
+            records = {
+                operation_key: OperationJournalRecord(
+                    operation_key=operation_key,
+                    command_id=None,
+                    binding_digest=None,
+                    envelope_digest=None,
+                    outcome=dict(_LEGACY_UNBOUND_OUTCOME),
+                )
+                for operation_key in raw
+            }
+            return _OperationJournalState(
+                records=records,
+                resource_tombstones=tombstones,
+                legacy_resource_tombstones={},
+            )
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != _OPERATION_JOURNAL_SCHEMA_VERSION
+            or not isinstance(raw.get("records"), list)
+            or not isinstance(raw.get("resource_tombstones", []), list)
+            or not isinstance(raw.get("legacy_resource_tombstones", []), list)
+        ):
+            raise RuntimeError(f"Runner operation journal has an invalid shape: {self.path}")
+        records: dict[str, OperationJournalRecord] = {}
+        for item in raw["records"]:
+            record = _parse_journal_record(item, path=self.path)
+            if record.operation_key in records:
+                raise RuntimeError(
+                    f"Runner operation journal contains duplicate keys: {self.path}"
+                )
+            records[record.operation_key] = record
+        tombstones: dict[str, ResourceTombstone] = {}
+        for item in raw.get("resource_tombstones", []):
+            tombstone = _parse_resource_tombstone(item, path=self.path)
+            if tombstone.resource_key in tombstones:
+                raise RuntimeError(
+                    f"Runner operation journal contains duplicate resource tombstones: "
+                    f"{self.path}"
+                )
+            tombstones[tombstone.resource_key] = tombstone
+        legacy_tombstones: dict[str, ResourceTombstone] = {}
+        for item in raw.get("legacy_resource_tombstones", []):
+            tombstone = _parse_resource_tombstone(item, path=self.path)
+            if tombstone.resource_key in legacy_tombstones:
+                raise RuntimeError(
+                    f"Runner operation journal contains duplicate legacy resource "
+                    f"tombstones: {self.path}"
+                )
+            legacy_tombstones[tombstone.resource_key] = tombstone
+        return _OperationJournalState(
+            records=records,
+            resource_tombstones=tombstones,
+            legacy_resource_tombstones=legacy_tombstones,
+        )
 
-    def _write(self, items: set[str]) -> None:
-        atomic_write_json(self.path, sorted(items))
+    def _write(self, state: _OperationJournalState) -> None:
+        atomic_write_json(
+            self.path,
+            {
+                "schema_version": _OPERATION_JOURNAL_SCHEMA_VERSION,
+                "records": [
+                    {
+                        "schema_version": record.schema_version,
+                        "operation_key": record.operation_key,
+                        "command_id": record.command_id,
+                        "binding_digest": record.binding_digest,
+                        "envelope_digest": record.envelope_digest,
+                        "outcome": record.outcome,
+                    }
+                    for record in sorted(
+                        state.records.values(),
+                        key=lambda item: item.operation_key,
+                    )
+                ],
+                "resource_tombstones": [
+                    {
+                        "schema_version": tombstone.schema_version,
+                        "resource_key": tombstone.resource_key,
+                        "outcome": tombstone.outcome,
+                    }
+                    for tombstone in sorted(
+                        state.resource_tombstones.values(),
+                        key=lambda item: item.resource_key,
+                    )
+                ],
+                "legacy_resource_tombstones": [
+                    {
+                        "schema_version": tombstone.schema_version,
+                        "resource_key": tombstone.resource_key,
+                        "outcome": tombstone.outcome,
+                    }
+                    for tombstone in sorted(
+                        state.legacy_resource_tombstones.values(),
+                        key=lambda item: item.resource_key,
+                    )
+                ],
+            },
+        )
+
+
+def _parse_journal_record(item: object, *, path: Path) -> OperationJournalRecord:
+    if not isinstance(item, dict):
+        raise RuntimeError(f"Runner operation journal has an invalid record: {path}")
+    expected_keys = {
+        "schema_version",
+        "operation_key",
+        "command_id",
+        "binding_digest",
+        "envelope_digest",
+        "outcome",
+    }
+    if set(item) != expected_keys:
+        raise RuntimeError(f"Runner operation journal has an invalid record: {path}")
+    schema_version = item.get("schema_version")
+    operation_key = item.get("operation_key")
+    command_id = item.get("command_id")
+    binding_digest = item.get("binding_digest")
+    envelope_digest = item.get("envelope_digest")
+    outcome = item.get("outcome")
+    if (
+        schema_version != _OPERATION_JOURNAL_SCHEMA_VERSION
+        or not isinstance(operation_key, str)
+        or not operation_key
+        or not isinstance(outcome, dict)
+        or any(not isinstance(key, str) for key in outcome)
+    ):
+        raise RuntimeError(f"Runner operation journal has an invalid record: {path}")
+    if command_id is None or binding_digest is None or envelope_digest is None:
+        if not (
+            command_id is None
+            and binding_digest is None
+            and envelope_digest is None
+            and outcome == _LEGACY_UNBOUND_OUTCOME
+        ):
+            raise RuntimeError(f"Runner operation journal has an invalid record: {path}")
+    else:
+        try:
+            if not isinstance(command_id, str) or not command_id or len(command_id) > 64:
+                raise ValueError("invalid command_id")
+            _validate_journal_digest(binding_digest, "binding_digest")
+            _validate_journal_digest(envelope_digest, "envelope_digest")
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Runner operation journal has an invalid record: {path}"
+            ) from exc
+    return OperationJournalRecord(
+        operation_key=operation_key,
+        command_id=command_id,
+        binding_digest=binding_digest,
+        envelope_digest=envelope_digest,
+        outcome=_copy_journal_outcome(outcome),
+    )
+
+
+def _parse_resource_tombstone(item: object, *, path: Path) -> ResourceTombstone:
+    if not isinstance(item, dict) or set(item) != {
+        "schema_version",
+        "resource_key",
+        "outcome",
+    }:
+        raise RuntimeError(f"Runner operation journal has an invalid tombstone: {path}")
+    resource_key = item.get("resource_key")
+    outcome = item.get("outcome")
+    if (
+        item.get("schema_version") != _OPERATION_JOURNAL_SCHEMA_VERSION
+        or not isinstance(resource_key, str)
+        or not resource_key
+        or not isinstance(outcome, dict)
+        or outcome.get("state")
+        not in {"cancellation_requested", "physical_stop_confirmed", "legacy_unbound"}
+    ):
+        raise RuntimeError(f"Runner operation journal has an invalid tombstone: {path}")
+    return ResourceTombstone(
+        resource_key=resource_key,
+        outcome=_copy_journal_outcome(outcome),
+    )
+
+
+def _resource_attempt_key(
+    resource_key: str,
+    identity: OperationJournalIdentity,
+) -> str:
+    command_hash = hashlib.sha256(identity.command_id.encode("utf-8")).hexdigest()
+    return f"{resource_key}:command:{command_hash}"
+
+
+def _validate_journal_digest(value: object, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"Runner operation journal {field_name} must be a SHA-256 digest")
+
+
+def _copy_journal_outcome(outcome: dict[str, object]) -> dict[str, object]:
+    try:
+        encoded = json.dumps(
+            outcome,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        copied = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Runner operation journal outcome must be canonical JSON") from exc
+    if not isinstance(copied, dict):  # pragma: no cover - input is statically a dict
+        raise ValueError("Runner operation journal outcome must be an object")
+    return copied
+
+
+def _completed_operation_result(record: OperationJournalRecord) -> dict[str, object]:
+    if record.outcome.get("state") != "effect_completed":
+        raise RuntimeError(
+            f"Runner operation {record.operation_key!r} has an unconfirmed physical outcome"
+        )
+    result = record.outcome.get("result")
+    if not isinstance(result, dict) or any(not isinstance(key, str) for key in result):
+        raise RuntimeError(
+            f"Runner operation {record.operation_key!r} has an invalid durable outcome"
+        )
+    return _copy_journal_outcome(result)
 
 
 class RemoteTerminalManager:
@@ -211,6 +848,7 @@ class RemoteTerminalManager:
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity: OperationJournalIdentity | None = None,
         effect_guard: EffectGuard | None = None,
         on_admitted: Callable[[], None] | None = None,
     ) -> object:
@@ -229,11 +867,31 @@ class RemoteTerminalManager:
             raise ValueError(f"unsupported terminal command: {kind.value}")
 
         operation_id = _required_string(payload, "operation_id")
+        if journal_identity is None:
+            raise RuntimeError(
+                f"Terminal operation {operation_id!r} omitted its Runner journal identity"
+            )
         async with self._command_lock:
-            if await self._journal.contains(operation_id):
-                return {"operation_id": operation_id, "duplicate": True}
+            existing = await self._journal.get_exact(operation_id, journal_identity)
+            if existing is not None:
+                result = _completed_operation_result(existing)
+                return {**result, "operation_id": operation_id, "duplicate": True}
+            claimed = await self._journal.claim(
+                operation_id,
+                journal_identity,
+                outcome=_OPERATION_CLAIMED_OUTCOME,
+            )
+            if not claimed:  # pragma: no cover - serialized by _command_lock
+                raise RuntimeError(
+                    f"Terminal operation {operation_id!r} has an unconfirmed physical outcome"
+                )
             result = await self._apply_operation(kind, payload)
-            await self._journal.add(operation_id)
+            await self._journal.transition(
+                operation_id,
+                journal_identity,
+                expected_outcome=_OPERATION_CLAIMED_OUTCOME,
+                outcome={"state": "effect_completed", "result": result},
+            )
             return {**result, "operation_id": operation_id, "duplicate": False}
 
     async def resume_active(self) -> None:
@@ -362,9 +1020,9 @@ class RemoteTerminalManager:
                 except Exception:
                     if on_admitted is not None:
                         on_admitted()
-                    execution = await self._executions.get(execution_id)
-                    if execution is not None and execution.status in _FINAL_STATUSES:
-                        await self._report_execution(execution)
+                    recovered = await self._executions.get(execution_id)
+                    if recovered is not None and recovered.status in _FINAL_STATUSES:
+                        await self._report_execution(recovered)
                     raise
                 if on_admitted is not None:
                     on_admitted()
@@ -406,9 +1064,9 @@ class RemoteTerminalManager:
             # upload so Control Plane I/O cannot delay a safety stop.
             if on_admitted is not None:
                 on_admitted()
-            execution = await self._executions.get(execution_id)
-            if execution is not None and execution.status in _FINAL_STATUSES:
-                await self._report_execution(execution)
+            recovered = await self._executions.get(execution_id)
+            if recovered is not None and recovered.status in _FINAL_STATUSES:
+                await self._report_execution(recovered)
             raise
         if on_admitted is not None:
             on_admitted()
@@ -508,6 +1166,7 @@ class RemoteTerminalManager:
         try:
             return await self._client.report_output(
                 execution_id,
+                **_execution_callback_kwargs(execution),
                 stream="stdout",
                 offset=output.cursor,
                 data=output.data,
@@ -528,6 +1187,7 @@ class RemoteTerminalManager:
         await self._client.report_status(
             execution.id,
             execution.status,
+            **_execution_callback_kwargs(execution),
             pid=execution.pid if execution.status is ExecutionStatus.RUNNING else None,
             process_group_id=(
                 execution.process_group_id if execution.status is ExecutionStatus.RUNNING else None
@@ -551,6 +1211,20 @@ class RemoteTerminalManager:
             raise RuntimeError(
                 f"Terminal execution {execution.id!r} belongs to another Runner principal"
             )
+
+
+def _execution_callback_kwargs(execution: Execution) -> dict[str, str]:
+    values = {
+        "runner_command_id": execution.runner_command_id,
+        "runner_effect_binding_id": execution.runner_effect_binding_id,
+        "runner_binding_digest": execution.runner_binding_digest,
+        "runner_envelope_digest": execution.runner_envelope_digest,
+    }
+    if any(value is None for value in values.values()):
+        raise RuntimeError(
+            f"Terminal execution {execution.id!r} has no verified launch callback binding"
+        )
+    return {name: value for name, value in values.items() if value is not None}
 
 
 def _required_string(payload: dict[str, object], key: str) -> str:

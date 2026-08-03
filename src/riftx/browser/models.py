@@ -55,6 +55,8 @@ class BrowserOpenCommand(DomainModel):
 
 class BrowserObserveCommand(DomainModel):
     session_id: str = Field(min_length=1)
+    run_id: str | None = Field(default=None, min_length=1)
+    node_id: str | None = Field(default=None, min_length=1, max_length=64)
     page_id: str | None = Field(default=None, min_length=1)
     include_screenshot: bool = False
     include_network: bool = True
@@ -62,12 +64,16 @@ class BrowserObserveCommand(DomainModel):
 
 class BrowserActCommand(DomainModel):
     session_id: str = Field(min_length=1)
+    run_id: str | None = Field(default=None, min_length=1)
+    node_id: str | None = Field(default=None, min_length=1, max_length=64)
     action: BrowserAction
     include_screenshot: bool = True
 
 
 class BrowserSessionCommand(DomainModel):
     session_id: str = Field(min_length=1)
+    run_id: str | None = Field(default=None, min_length=1)
+    node_id: str | None = Field(default=None, min_length=1, max_length=64)
     # Close commands may carry the Control Plane's durable snapshot so a
     # Runner can acknowledge a cancellation tombstone even when a delayed
     # open never registered a local session.

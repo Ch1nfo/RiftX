@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import datetime
 from json import JSONDecodeError
+from typing import Never
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import and_, case, func, or_, select, update
@@ -53,13 +54,17 @@ from riftx.domain import (
     RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOwnershipState,
     RunnerCommandStatus,
     RunnerCredential,
+    RunnerEffectBinding,
     RunnerPrincipal,
+    RunnerStopReceipt,
     RunStatus,
     TerminalSession,
     TerminalStatus,
     ToolCall,
+    runner_stop_ack_digest,
 )
 from riftx.domain.base import utc_now
 
@@ -99,9 +104,13 @@ from .mappers import (
     run_from_record,
     run_to_record,
     runner_command_from_record,
+    runner_command_ownership_to_record,
     runner_command_to_record,
     runner_credential_from_record,
     runner_credential_to_record,
+    runner_effect_binding_to_record,
+    runner_stop_receipt_from_record,
+    runner_stop_receipt_to_record,
     terminal_from_record,
     terminal_to_record,
     tool_call_from_record,
@@ -119,8 +128,12 @@ from .orm import (
     NodeRecord,
     ReportRecord,
     RunEventRecord,
+    RunnerCommandOwnershipRecord,
     RunnerCommandRecord,
     RunnerCredentialRecord,
+    RunnerEffectBindingRecord,
+    RunnerStopProjectionRecord,
+    RunnerStopReceiptRecord,
     RunRecord,
     RuntimeApprovalRequestRecord,
     TargetHttpRequestRecord,
@@ -136,6 +149,17 @@ from .transactions import serialized_write
 _serialized_run_write = serialized_write
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+_LEGACY_STOP_ACK_EVIDENCE_KEY = "_riftx_legacy_stop_ack_evidence"
+_LEGACY_STOP_ACK_EVIDENCE_SCHEMA = "riftx.runner-legacy-stop-ack-evidence/v1"
+_LEGACY_STOP_KINDS = frozenset(
+    {
+        RunnerCommandKind.CANCEL,
+        RunnerCommandKind.TERMINAL_CLOSE,
+        RunnerCommandKind.TARGET_HTTP_CANCEL,
+        RunnerCommandKind.BROWSER_CLOSE,
+    }
+)
 
 
 class SQLAlchemyArtifactRepository:
@@ -534,6 +558,7 @@ class SQLAlchemyRunnerCredentialRepository:
         token_prefix: str,
         issued_at: datetime,
         instance_id: str | None = None,
+        protocol_capabilities: tuple[str, ...] = (),
     ) -> RunnerCredential:
         """Atomically advance a node epoch and persist its new owner credential."""
 
@@ -553,6 +578,7 @@ class SQLAlchemyRunnerCredentialRepository:
                     principal=principal,
                     token_hash=token_hash,
                     token_prefix=token_prefix,
+                    protocol_capabilities=tuple(sorted(set(protocol_capabilities))),
                     created_at=issued_at,
                     rotated_at=issued_at,
                 )
@@ -639,28 +665,194 @@ class SQLAlchemyRunnerCommandRepository:
         self._session_factory = session_factory
 
     async def enqueue(self, command: RunnerCommand) -> tuple[RunnerCommand, bool]:
-        try:
-            async with self._session_factory() as session, session.begin():
-                session.add(runner_command_to_record(command))
-                await session.flush()
-            return command, True
-        except IntegrityError as exc:
-            statement = select(RunnerCommandRecord).where(
-                RunnerCommandRecord.node_id == command.node_id,
-                RunnerCommandRecord.idempotency_key == command.idempotency_key,
-            )
-            async with self._session_factory() as session:
-                existing = await session.scalar(statement)
-            if existing is not None:
-                return runner_command_from_record(existing), False
-            raise RepositoryConflictError(
-                f"could not enqueue runner command {command.id!r}"
-            ) from exc
+        _require_verified_new_runner_command(command)
+        assert command.ownership is not None
+        binding = command.ownership.effect_binding
+        last_error: IntegrityError | None = None
+        for attempt in range(2):
+            try:
+                async with self._session_factory() as session, session.begin():
+                    existing_binding = await session.get(RunnerEffectBindingRecord, binding.id)
+                    if existing_binding is None:
+                        session.add(runner_effect_binding_to_record(binding))
+                        await session.flush()
+                    elif not _effect_binding_record_matches(existing_binding, binding):
+                        raise RepositoryConflictError(
+                            "Runner effect binding id is bound to different immutable facts"
+                        )
+                    session.add(runner_command_to_record(command))
+                    await session.flush()
+                    session.add(runner_command_ownership_to_record(command))
+                    await session.flush()
+                    if command.kind in {
+                        RunnerCommandKind.EXECUTE,
+                        RunnerCommandKind.TERMINAL_START,
+                    }:
+                        await _bind_execution_launch_command(
+                            session,
+                            command=command,
+                            binding=binding,
+                        )
+                        await session.flush()
+                return command, True
+            except IntegrityError as exc:
+                last_error = exc
+                persisted = await self._get_by_idempotency(
+                    command.node_id,
+                    command.idempotency_key,
+                )
+                if persisted is not None:
+                    if _runner_command_replay_matches(persisted, command):
+                        return persisted, False
+                    raise RepositoryConflictError(
+                        "runner command idempotency key is bound to different immutable facts"
+                    ) from exc
+                # A concurrent command for the same resource may have inserted
+                # the deterministic effect binding first. Retry once and reuse it.
+                if attempt == 0 and await self._effect_binding_matches(binding):
+                    continue
+                break
+        raise RepositoryConflictError(
+            f"could not enqueue runner command {command.id!r}"
+        ) from last_error
 
     async def get(self, command_id: str) -> RunnerCommand | None:
         async with self._session_factory() as session:
-            record = await session.get(RunnerCommandRecord, command_id)
-        return runner_command_from_record(record) if record is not None else None
+            records = await _load_runner_command_records(session, command_id)
+        if records is None:
+            return None
+        return runner_command_from_record(*records)
+
+    async def list_quarantined(self, *, limit: int = 100) -> Sequence[RunnerCommand]:
+        if limit < 1 or limit > 1_000:
+            raise ValueError("quarantined Runner command limit must be between 1 and 1000")
+        statement = (
+            select(RunnerCommandRecord, RunnerCommandOwnershipRecord)
+            .join(
+                RunnerCommandOwnershipRecord,
+                RunnerCommandOwnershipRecord.command_id == RunnerCommandRecord.id,
+            )
+            .where(
+                RunnerCommandOwnershipRecord.verification_state
+                == RunnerCommandOwnershipState.QUARANTINED.value,
+                RunnerCommandOwnershipRecord.reconciliation_state.in_(
+                    ("untouched", "pending")
+                ),
+            )
+            .order_by(RunnerCommandRecord.created_at, RunnerCommandRecord.id)
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement)).all()
+        return [runner_command_from_record(command, ownership, None) for command, ownership in rows]
+
+    async def quarantine(
+        self,
+        command_id: str,
+        *,
+        reason: str,
+        quarantined_at: datetime,
+        expected_state_version: int | None = None,
+    ) -> RunnerCommand:
+        normalized_reason = reason.strip()
+        if not normalized_reason or len(normalized_reason) > 255:
+            raise ValueError("Runner command quarantine reason must be 1-255 characters")
+        async with self._session_factory() as session, session.begin():
+            command = await session.get(RunnerCommandRecord, command_id, with_for_update=True)
+            if command is None:
+                raise EntityNotFoundError("RunnerCommand", command_id)
+            if (
+                expected_state_version is not None
+                and command.state_version != expected_state_version
+            ):
+                raise RepositoryConflictError("Runner command state version changed")
+            ownership = await session.get(
+                RunnerCommandOwnershipRecord,
+                command_id,
+                with_for_update=True,
+            )
+            if ownership is None:
+                ownership = RunnerCommandOwnershipRecord(
+                    command_id=command_id,
+                    verification_state=RunnerCommandOwnershipState.QUARANTINED.value,
+                    schema_version=None,
+                    effect_binding_id=None,
+                    operation=None,
+                    operation_family=None,
+                    payload_digest=None,
+                    output_contract_json=None,
+                    output_contract_digest=None,
+                    envelope_digest=None,
+                    quarantine_reason=normalized_reason,
+                    quarantined_at=quarantined_at,
+                    reconciliation_state="untouched",
+                    replacement_command_id=None,
+                    created_at=command.created_at,
+                )
+                session.add(ownership)
+            elif ownership.verification_state != RunnerCommandOwnershipState.QUARANTINED.value:
+                ownership.verification_state = RunnerCommandOwnershipState.QUARANTINED.value
+                ownership.quarantine_reason = normalized_reason
+                ownership.quarantined_at = quarantined_at
+                ownership.reconciliation_state = "pending"
+            command.lease_id = None
+            command.lease_expires_at = None
+            command.updated_at = quarantined_at
+            command.state_version += 1
+            await session.flush()
+            result = runner_command_from_record(command, ownership, None)
+        return result
+
+    async def mark_quarantine_reconciled(
+        self,
+        command_id: str,
+        *,
+        replacement_command_id: str | None,
+        reconciled_at: datetime,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            ownership = await session.get(
+                RunnerCommandOwnershipRecord,
+                command_id,
+                with_for_update=True,
+            )
+            if ownership is None:
+                raise EntityNotFoundError("RunnerCommandOwnership", command_id)
+            if ownership.verification_state != RunnerCommandOwnershipState.QUARANTINED.value:
+                raise RepositoryConflictError("Runner command is not quarantined")
+            if ownership.reconciliation_state in {"replaced", "manual"}:
+                if ownership.replacement_command_id == replacement_command_id:
+                    return
+                raise RepositoryConflictError("Runner quarantine was already reconciled")
+            ownership.reconciliation_state = (
+                "replaced" if replacement_command_id is not None else "manual"
+            )
+            ownership.replacement_command_id = replacement_command_id
+            ownership.quarantined_at = reconciled_at
+            await session.flush()
+
+    async def _get_by_idempotency(
+        self,
+        node_id: str,
+        idempotency_key: str,
+    ) -> RunnerCommand | None:
+        statement = select(RunnerCommandRecord.id).where(
+            RunnerCommandRecord.node_id == node_id,
+            RunnerCommandRecord.idempotency_key == idempotency_key,
+        )
+        async with self._session_factory() as session:
+            command_id = await session.scalar(statement)
+            if command_id is None:
+                return None
+            records = await _load_runner_command_records(session, command_id)
+        if records is None:
+            return None
+        return runner_command_from_record(*records)
+
+    async def _effect_binding_matches(self, binding: RunnerEffectBinding) -> bool:
+        async with self._session_factory() as session:
+            record = await session.get(RunnerEffectBindingRecord, binding.id)
+        return record is not None and _effect_binding_record_matches(record, binding)
 
     async def lease_next(
         self,
@@ -670,80 +862,175 @@ class SQLAlchemyRunnerCommandRepository:
         lease_id: str,
         leased_until: datetime,
         now: datetime,
+        validate_candidate: Callable[[RunnerCommand], Awaitable[str | None]],
         safety_only: bool = False,
     ) -> RunnerCommand | None:
         if leased_until <= now:
             raise ValueError("leased_until must be later than now")
         async with self._session_factory() as session, session.begin():
-            await session.execute(
-                update(RunnerCommandRecord)
-                .where(
-                    RunnerCommandRecord.node_id == node_id,
-                    RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
-                    RunnerCommandRecord.target_runner_epoch == principal.epoch,
-                    RunnerCommandRecord.status == RunnerCommandStatus.LEASED.value,
-                    RunnerCommandRecord.lease_expires_at <= now,
-                )
-                .values(
-                    status=RunnerCommandStatus.PENDING.value,
-                    lease_id=None,
-                    lease_expires_at=None,
-                    updated_at=now,
-                )
-            )
-
-            safety_kinds = [
-                RunnerCommandKind.CANCEL.value,
-                RunnerCommandKind.TARGET_HTTP_CANCEL.value,
-                RunnerCommandKind.BROWSER_CLOSE.value,
-                RunnerCommandKind.TERMINAL_CLOSE.value,
-            ]
-            candidate = select(RunnerCommandRecord.id).where(
-                RunnerCommandRecord.node_id == node_id,
-                RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
-                RunnerCommandRecord.target_runner_epoch == principal.epoch,
-                RunnerCommandRecord.status == RunnerCommandStatus.PENDING.value,
-            )
-            if safety_only:
-                candidate = candidate.where(RunnerCommandRecord.kind.in_(safety_kinds))
-            candidate_id = await session.scalar(
-                candidate.order_by(
-                    case(
-                        (
-                            RunnerCommandRecord.kind.in_(safety_kinds),
-                            0,
+            for _ in range(64):
+                candidate = (
+                    select(RunnerCommandRecord.id)
+                    .join(
+                        RunnerCommandOwnershipRecord,
+                        RunnerCommandOwnershipRecord.command_id == RunnerCommandRecord.id,
+                    )
+                    .join(
+                        RunnerEffectBindingRecord,
+                        RunnerEffectBindingRecord.id
+                        == RunnerCommandOwnershipRecord.effect_binding_id,
+                    )
+                    .where(
+                        RunnerCommandRecord.node_id == node_id,
+                        RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
+                        RunnerCommandRecord.target_runner_epoch == principal.epoch,
+                        or_(
+                            RunnerCommandRecord.status
+                            == RunnerCommandStatus.PENDING.value,
+                            and_(
+                                RunnerCommandRecord.status
+                                == RunnerCommandStatus.LEASED.value,
+                                RunnerCommandRecord.lease_expires_at <= now,
+                            ),
                         ),
-                        else_=1,
-                    ),
-                    RunnerCommandRecord.created_at,
-                    RunnerCommandRecord.id,
-                ).limit(1)
-            )
-            if candidate_id is None:
-                return None
-            claimed = await session.execute(
-                update(RunnerCommandRecord)
-                .where(
-                    RunnerCommandRecord.id == candidate_id,
-                    RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
-                    RunnerCommandRecord.target_runner_epoch == principal.epoch,
-                    RunnerCommandRecord.status == RunnerCommandStatus.PENDING.value,
+                        RunnerCommandOwnershipRecord.verification_state
+                        == RunnerCommandOwnershipState.VERIFIED.value,
+                        RunnerEffectBindingRecord.node_id == node_id,
+                        RunnerEffectBindingRecord.target_runner_instance_id
+                        == principal.instance_id,
+                        RunnerEffectBindingRecord.target_runner_epoch == principal.epoch,
+                    )
                 )
-                .values(
-                    status=RunnerCommandStatus.LEASED.value,
-                    lease_id=lease_id,
-                    lease_expires_at=leased_until,
-                    attempts=RunnerCommandRecord.attempts + 1,
-                    updated_at=now,
+                if safety_only:
+                    candidate = candidate.where(
+                        RunnerCommandOwnershipRecord.operation_family == "safety_stop"
+                    )
+                candidate_id = await session.scalar(
+                    candidate.order_by(
+                        case(
+                            (
+                                RunnerCommandOwnershipRecord.operation_family == "safety_stop",
+                                0,
+                            ),
+                            else_=1,
+                        ),
+                        RunnerCommandRecord.created_at,
+                        RunnerCommandRecord.id,
+                    ).limit(1)
                 )
-            )
-            if claimed.rowcount != 1:  # type: ignore[attr-defined]
-                return None
-            record = await session.get(RunnerCommandRecord, candidate_id)
-            if record is None:
-                raise EntityNotFoundError("RunnerCommand", candidate_id)
-            command = runner_command_from_record(record)
-        return command
+                if candidate_id is None:
+                    return None
+                records = await _load_runner_command_records(
+                    session,
+                    candidate_id,
+                    for_update=True,
+                )
+                if records is None:
+                    continue
+                try:
+                    candidate_command = runner_command_from_record(*records)
+                except RepositoryIntegrityError:
+                    command_record, ownership_record, _ = records
+                    if ownership_record is None:
+                        ownership_record = RunnerCommandOwnershipRecord(
+                            command_id=command_record.id,
+                            verification_state=(
+                                RunnerCommandOwnershipState.QUARANTINED.value
+                            ),
+                            schema_version=None,
+                            effect_binding_id=None,
+                            operation=None,
+                            operation_family=None,
+                            payload_digest=None,
+                            output_contract_json=None,
+                            output_contract_digest=None,
+                            envelope_digest=None,
+                            quarantine_reason="ownership_integrity_invalid",
+                            quarantined_at=now,
+                            reconciliation_state="pending",
+                            replacement_command_id=None,
+                            created_at=command_record.created_at,
+                        )
+                        session.add(ownership_record)
+                    else:
+                        ownership_record.verification_state = (
+                            RunnerCommandOwnershipState.QUARANTINED.value
+                        )
+                        ownership_record.quarantine_reason = "ownership_integrity_invalid"
+                        ownership_record.quarantined_at = now
+                        ownership_record.reconciliation_state = "pending"
+                    command_record.status = RunnerCommandStatus.PENDING.value
+                    command_record.lease_id = None
+                    command_record.lease_expires_at = None
+                    command_record.state_version += 1
+                    command_record.updated_at = now
+                    await session.flush()
+                    continue
+
+                quarantine_reason = await validate_candidate(candidate_command)
+                command_record, ownership_record, _ = records
+                if quarantine_reason is not None:
+                    normalized_reason = quarantine_reason.strip()
+                    if not normalized_reason or len(normalized_reason) > 255:
+                        raise ValueError(
+                            "Runner command quarantine reason must be 1-255 characters"
+                        )
+                    if ownership_record is None:
+                        raise RepositoryIntegrityError(
+                            "RunnerCommandOwnership",
+                            candidate_id,
+                            reason_code="runner_command_ownership_missing",
+                        )
+                    ownership_record.verification_state = (
+                        RunnerCommandOwnershipState.QUARANTINED.value
+                    )
+                    ownership_record.quarantine_reason = normalized_reason
+                    ownership_record.quarantined_at = now
+                    ownership_record.reconciliation_state = "pending"
+                    command_record.status = RunnerCommandStatus.PENDING.value
+                    command_record.lease_id = None
+                    command_record.lease_expires_at = None
+                    command_record.state_version += 1
+                    command_record.updated_at = now
+                    await session.flush()
+                    continue
+
+                expected_state_version = candidate_command.state_version
+                expected_status = candidate_command.status.value
+                claimed = await session.execute(
+                    update(RunnerCommandRecord)
+                    .where(
+                        RunnerCommandRecord.id == candidate_id,
+                        RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
+                        RunnerCommandRecord.target_runner_epoch == principal.epoch,
+                        RunnerCommandRecord.status == expected_status,
+                        RunnerCommandRecord.state_version == expected_state_version,
+                        or_(
+                            RunnerCommandRecord.status
+                            == RunnerCommandStatus.PENDING.value,
+                            and_(
+                                RunnerCommandRecord.status
+                                == RunnerCommandStatus.LEASED.value,
+                                RunnerCommandRecord.lease_expires_at <= now,
+                            ),
+                        ),
+                    )
+                    .values(
+                        status=RunnerCommandStatus.LEASED.value,
+                        lease_id=lease_id,
+                        lease_expires_at=leased_until,
+                        attempts=RunnerCommandRecord.attempts + 1,
+                        state_version=RunnerCommandRecord.state_version + 1,
+                        updated_at=now,
+                    )
+                )
+                if claimed.rowcount != 1:  # type: ignore[attr-defined]
+                    continue
+                records = await _load_runner_command_records(session, candidate_id)
+                if records is None:
+                    raise EntityNotFoundError("RunnerCommand", candidate_id)
+                return runner_command_from_record(*records)
+            return None
 
     async def renew_lease(
         self,
@@ -751,34 +1038,40 @@ class SQLAlchemyRunnerCommandRepository:
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         leased_until: datetime,
         now: datetime,
     ) -> RunnerCommand:
         if leased_until <= now:
             raise ValueError("leased_until must be later than now")
         async with self._session_factory() as session, session.begin():
-            renewed = await session.execute(
-                update(RunnerCommandRecord)
-                .where(
-                    RunnerCommandRecord.id == command_id,
-                    RunnerCommandRecord.target_runner_instance_id == principal.instance_id,
-                    RunnerCommandRecord.target_runner_epoch == principal.epoch,
-                    RunnerCommandRecord.status == RunnerCommandStatus.LEASED.value,
-                    RunnerCommandRecord.lease_id == lease_id,
-                    RunnerCommandRecord.lease_expires_at > now,
-                )
-                .values(
-                    lease_expires_at=leased_until,
-                    updated_at=now,
-                )
+            records = await _load_runner_command_records(
+                session,
+                command_id,
+                for_update=True,
             )
-            if renewed.rowcount != 1:  # type: ignore[attr-defined]
-                raise RepositoryConflictError("runner command lease does not match or expired")
-            record = await session.get(RunnerCommandRecord, command_id)
-            if record is None:
+            if records is None:
                 raise EntityNotFoundError("RunnerCommand", command_id)
-            command = runner_command_from_record(record)
-        return command
+            record, _, _ = records
+            command = runner_command_from_record(*records)
+            _require_runner_command_callback(
+                command,
+                principal=principal,
+                lease_id=lease_id,
+                state_version=state_version,
+                envelope_digest=envelope_digest,
+                binding_digest=binding_digest,
+                now=now,
+            )
+            record.lease_expires_at = leased_until
+            record.updated_at = now
+            record.state_version += 1
+            await session.flush()
+            records = await _load_runner_command_records(session, command_id)
+            assert records is not None
+            return runner_command_from_record(*records)
 
     async def finish(
         self,
@@ -786,39 +1079,515 @@ class SQLAlchemyRunnerCommandRepository:
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         status: RunnerCommandStatus,
         result: dict[str, object],
         error: str,
         completed_at: datetime,
+        stop_receipt: RunnerStopReceipt | None = None,
     ) -> RunnerCommand:
         if status not in {RunnerCommandStatus.COMPLETED, RunnerCommandStatus.FAILED}:
             raise ValueError("runner command final status must be completed or failed")
         async with self._session_factory() as session, session.begin():
-            record = await session.get(RunnerCommandRecord, command_id, with_for_update=True)
-            if record is None:
+            records = await _load_runner_command_records(
+                session,
+                command_id,
+                for_update=True,
+            )
+            if records is None:
                 raise EntityNotFoundError("RunnerCommand", command_id)
-            if (
-                record.target_runner_instance_id != principal.instance_id
-                or record.target_runner_epoch != principal.epoch
-            ):
-                raise RepositoryConflictError("runner command owner does not match")
+            record, _, _ = records
+            command = runner_command_from_record(*records)
             if record.status in {
                 RunnerCommandStatus.COMPLETED.value,
                 RunnerCommandStatus.FAILED.value,
             }:
-                if record.lease_id == lease_id:
-                    return runner_command_from_record(record)
+                if (
+                    record.lease_id == lease_id
+                    and record.state_version == state_version + 1
+                    and record.status == status.value
+                    and (record.result_json or {}) == result
+                    and record.error == error
+                ):
+                    if stop_receipt is not None:
+                        existing_receipt = await session.scalar(
+                            select(RunnerStopReceiptRecord).where(
+                                RunnerStopReceiptRecord.command_id == command_id
+                            )
+                        )
+                        if (
+                            existing_receipt is None
+                            or existing_receipt.ack_digest != stop_receipt.ack_digest
+                        ):
+                            raise RepositoryConflictError(
+                                "Runner stop receipt retry does not match"
+                            )
+                    return command
                 raise RepositoryConflictError("runner command was already completed")
-            if record.status != RunnerCommandStatus.LEASED.value or record.lease_id != lease_id:
-                raise RepositoryConflictError("runner command lease does not match")
+            _require_runner_command_callback(
+                command,
+                principal=principal,
+                lease_id=lease_id,
+                state_version=state_version,
+                envelope_digest=envelope_digest,
+                binding_digest=binding_digest,
+                now=completed_at,
+            )
             record.status = status.value
             record.result_json = result
             record.error = error
             record.updated_at = completed_at
             record.completed_at = completed_at
+            record.state_version += 1
+            if stop_receipt is not None:
+                session.add(runner_stop_receipt_to_record(stop_receipt, ack=result))
+                await session.flush()
+                session.add(
+                    RunnerStopProjectionRecord(
+                        receipt_id=stop_receipt.id,
+                        projection_state="pending",
+                        state_version=0,
+                        last_error="",
+                        updated_at=completed_at,
+                    )
+                )
             await session.flush()
-            command = runner_command_from_record(record)
-        return command
+            records = await _load_runner_command_records(session, command_id)
+            assert records is not None
+            return runner_command_from_record(*records)
+
+    async def record_legacy_stop_ack(
+        self,
+        command_id: str,
+        *,
+        principal: RunnerPrincipal,
+        lease_id: str,
+        expected_state_version: int,
+        ack: dict[str, object],
+        received_at: datetime,
+    ) -> RunnerCommand:
+        """Persist isolated proof for one pre-ownership in-flight stop.
+
+        This deliberately does not finish the command, create a stop receipt,
+        or advance quarantine reconciliation.  The namespaced evidence stays
+        inside the legacy row and preserves every pre-existing result field.
+        """
+
+        if expected_state_version < 0:
+            raise ValueError("expected Runner command state version must be non-negative")
+        ack_digest = runner_stop_ack_digest(ack)
+        async with self._session_factory() as session, session.begin():
+            records = await _load_runner_command_records(
+                session,
+                command_id,
+                for_update=True,
+            )
+            if records is None:
+                raise EntityNotFoundError("RunnerCommand", command_id)
+            record, ownership_record, binding_record = records
+            command = runner_command_from_record(*records)
+            _require_legacy_stop_ack_record(
+                command,
+                ownership_record=ownership_record,
+                binding_record=binding_record,
+                principal=principal,
+                lease_id=lease_id,
+            )
+            _require_legacy_stop_ack_repository_policy(
+                command,
+                principal=principal,
+                lease_id=lease_id,
+            )
+
+            result = dict(record.result_json or {})
+            existing = result.get(_LEGACY_STOP_ACK_EVIDENCE_KEY)
+            if existing is not None:
+                if not _legacy_stop_ack_evidence_matches(
+                    existing,
+                    command=command,
+                    principal=principal,
+                    lease_id=lease_id,
+                    ack=ack,
+                    ack_digest=ack_digest,
+                ):
+                    raise RepositoryConflictError(
+                        "legacy Runner stop acknowledgement retry does not match"
+                    )
+                assert isinstance(existing, dict)
+                recorded_version = existing.get("recorded_from_state_version")
+                if (
+                    not isinstance(recorded_version, int)
+                    or isinstance(recorded_version, bool)
+                    or recorded_version < 0
+                    or record.state_version != recorded_version + 1
+                    or expected_state_version not in {recorded_version, record.state_version}
+                ):
+                    raise RepositoryConflictError(
+                        "legacy Runner stop acknowledgement state version changed"
+                    )
+                return command
+
+            if record.state_version != expected_state_version:
+                raise RepositoryConflictError("Runner command state version changed")
+            evidence: dict[str, object] = {
+                "schema_version": _LEGACY_STOP_ACK_EVIDENCE_SCHEMA,
+                "command_id": command.id,
+                "node_id": command.node_id,
+                "operation": command.kind.value,
+                "principal": principal.model_dump(mode="json"),
+                "lease_id": lease_id,
+                "recorded_from_state_version": record.state_version,
+                "ack_digest": ack_digest,
+                "ack": ack,
+                "received_at": received_at.isoformat(),
+            }
+            result[_LEGACY_STOP_ACK_EVIDENCE_KEY] = evidence
+            record.result_json = result
+            record.updated_at = received_at
+            record.state_version += 1
+            await session.flush()
+            records = await _load_runner_command_records(session, command_id)
+            assert records is not None
+            return runner_command_from_record(*records)
+
+    async def get_stop_receipt(self, command_id: str) -> RunnerStopReceipt | None:
+        async with self._session_factory() as session:
+            record = await session.scalar(
+                select(RunnerStopReceiptRecord).where(
+                    RunnerStopReceiptRecord.command_id == command_id
+                )
+            )
+        return runner_stop_receipt_from_record(record) if record is not None else None
+
+    async def list_pending_stop_receipts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunnerStopReceipt]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("pending stop receipt limit must be between 1 and 1000")
+        statement = (
+            select(RunnerStopReceiptRecord)
+            .join(
+                RunnerStopProjectionRecord,
+                RunnerStopProjectionRecord.receipt_id == RunnerStopReceiptRecord.id,
+            )
+            .where(RunnerStopProjectionRecord.projection_state == "pending")
+            .order_by(RunnerStopReceiptRecord.received_at, RunnerStopReceiptRecord.id)
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            records = (await session.scalars(statement)).all()
+        return [runner_stop_receipt_from_record(record) for record in records]
+
+    async def mark_stop_receipt_projected(
+        self,
+        receipt_id: str,
+        *,
+        projected_at: datetime,
+        expected_state_version: int,
+    ) -> bool:
+        async with self._session_factory() as session, session.begin():
+            updated = await session.execute(
+                update(RunnerStopProjectionRecord)
+                .where(
+                    RunnerStopProjectionRecord.receipt_id == receipt_id,
+                    RunnerStopProjectionRecord.projection_state == "pending",
+                    RunnerStopProjectionRecord.state_version == expected_state_version,
+                )
+                .values(
+                    projection_state="applied",
+                    state_version=RunnerStopProjectionRecord.state_version + 1,
+                    updated_at=projected_at,
+                    last_error="",
+                )
+            )
+            return bool(updated.rowcount == 1)  # type: ignore[attr-defined]
+
+
+def _require_verified_new_runner_command(command: RunnerCommand) -> None:
+    if (
+        command.ownership_state is not RunnerCommandOwnershipState.VERIFIED
+        or command.ownership is None
+    ):
+        raise RepositoryConflictError("new Runner commands require verified ownership")
+    if (
+        command.status is not RunnerCommandStatus.PENDING
+        or command.attempts != 0
+        or command.lease_id is not None
+        or command.lease_expires_at is not None
+        or command.result
+        or command.error
+        or command.state_version != 0
+        or command.completed_at is not None
+    ):
+        raise RepositoryConflictError("new Runner command carries mutable delivery state")
+
+
+async def _bind_execution_launch_command(
+    session: AsyncSession,
+    *,
+    command: RunnerCommand,
+    binding: RunnerEffectBinding,
+) -> None:
+    if binding.execution_id is None or command.ownership is None or command.target is None:
+        raise RepositoryConflictError(
+            "Runner launch command requires an Execution-bound ownership envelope"
+        )
+    execution = await session.get(
+        ExecutionRecord,
+        binding.execution_id,
+        with_for_update=True,
+    )
+    if execution is None:
+        raise EntityNotFoundError("Execution", binding.execution_id)
+    if (
+        execution.run_id != binding.run_id
+        or execution.node_id != binding.node_id
+        or execution.owner_runner_instance_id != command.target.instance_id
+        or execution.owner_runner_epoch != command.target.epoch
+        or execution.audit_id != binding.audit_id
+        or execution.plan_digest != binding.plan_digest
+    ):
+        raise RepositoryConflictError(
+            "Runner launch command does not match its authoritative Execution"
+        )
+    proposed = (
+        command.id,
+        binding.id,
+        binding.binding_digest,
+        command.ownership.envelope_digest,
+    )
+    persisted = (
+        execution.runner_command_id,
+        execution.runner_effect_binding_id,
+        execution.runner_binding_digest,
+        execution.runner_envelope_digest,
+    )
+    if persisted == proposed:
+        return
+    if persisted != (None, None, None, None):
+        raise RepositoryConflictError(
+            "Execution is already bound to a different Runner launch command"
+        )
+    (
+        execution.runner_command_id,
+        execution.runner_effect_binding_id,
+        execution.runner_binding_digest,
+        execution.runner_envelope_digest,
+    ) = proposed
+
+
+def _runner_command_replay_matches(
+    existing: RunnerCommand,
+    proposed: RunnerCommand,
+) -> bool:
+    return (
+        existing.node_id == proposed.node_id
+        and existing.kind is proposed.kind
+        and existing.idempotency_key == proposed.idempotency_key
+        and existing.target == proposed.target
+        and existing.ownership_state is RunnerCommandOwnershipState.VERIFIED
+        and existing.ownership is not None
+        and proposed.ownership is not None
+        and existing.ownership.envelope_digest == proposed.ownership.envelope_digest
+        and existing.ownership.effect_binding.binding_digest
+        == proposed.ownership.effect_binding.binding_digest
+        and existing.payload == proposed.payload
+    )
+
+
+async def _load_runner_command_records(
+    session: AsyncSession,
+    command_id: str,
+    *,
+    for_update: bool = False,
+) -> tuple[
+    RunnerCommandRecord,
+    RunnerCommandOwnershipRecord | None,
+    RunnerEffectBindingRecord | None,
+] | None:
+    command = await session.get(
+        RunnerCommandRecord,
+        command_id,
+        with_for_update=for_update,
+    )
+    if command is None:
+        return None
+    ownership = await session.get(
+        RunnerCommandOwnershipRecord,
+        command_id,
+        with_for_update=for_update,
+    )
+    binding = None
+    if ownership is not None and ownership.effect_binding_id is not None:
+        binding = await session.get(
+            RunnerEffectBindingRecord,
+            ownership.effect_binding_id,
+            with_for_update=for_update,
+        )
+    return command, ownership, binding
+
+
+def _require_runner_command_callback(
+    command: RunnerCommand,
+    *,
+    principal: RunnerPrincipal,
+    lease_id: str,
+    state_version: int,
+    envelope_digest: str,
+    binding_digest: str,
+    now: datetime,
+) -> None:
+    ownership = command.ownership
+    if (
+        command.ownership_state is not RunnerCommandOwnershipState.VERIFIED
+        or ownership is None
+    ):
+        raise RepositoryConflictError("runner command ownership is not verified")
+    if command.target != principal:
+        raise RepositoryConflictError("runner command owner does not match")
+    if (
+        command.status is not RunnerCommandStatus.LEASED
+        or command.lease_id != lease_id
+        or command.lease_expires_at is None
+        or command.lease_expires_at <= now
+    ):
+        raise RepositoryConflictError("runner command lease does not match or expired")
+    if command.state_version != state_version:
+        raise RepositoryConflictError("runner command state version changed")
+    if ownership.envelope_digest != envelope_digest:
+        raise RepositoryConflictError("runner command envelope digest does not match")
+    if ownership.effect_binding.binding_digest != binding_digest:
+        raise RepositoryConflictError("runner effect binding digest does not match")
+
+
+def _require_legacy_stop_ack_record(
+    command: RunnerCommand,
+    *,
+    ownership_record: RunnerCommandOwnershipRecord | None,
+    binding_record: RunnerEffectBindingRecord | None,
+    principal: RunnerPrincipal,
+    lease_id: str,
+) -> None:
+    if (
+        ownership_record is None
+        or ownership_record.verification_state
+        != RunnerCommandOwnershipState.QUARANTINED.value
+        or ownership_record.quarantine_reason != "legacy_ownership_missing"
+        or binding_record is not None
+        or any(
+            value is not None
+            for value in (
+                ownership_record.schema_version,
+                ownership_record.effect_binding_id,
+                ownership_record.operation,
+                ownership_record.operation_family,
+                ownership_record.payload_digest,
+                ownership_record.output_contract_json,
+                ownership_record.output_contract_digest,
+                ownership_record.envelope_digest,
+            )
+        )
+    ):
+        raise RepositoryConflictError(
+            "Runner command is not an ownership-missing legacy quarantine"
+        )
+    if command.kind not in _LEGACY_STOP_KINDS:
+        raise RepositoryConflictError("legacy Runner command is not a safety stop")
+    if command.target != principal:
+        raise RepositoryConflictError("legacy Runner command owner does not match")
+    if (
+        command.status is not RunnerCommandStatus.LEASED
+        or command.lease_id != lease_id
+        or command.lease_expires_at is None
+    ):
+        raise RepositoryConflictError("legacy Runner command lease does not match")
+
+
+def _legacy_stop_ack_evidence_matches(
+    raw: object,
+    *,
+    command: RunnerCommand,
+    principal: RunnerPrincipal,
+    lease_id: str,
+    ack: dict[str, object],
+    ack_digest: str,
+) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    return (
+        raw.get("schema_version") == _LEGACY_STOP_ACK_EVIDENCE_SCHEMA
+        and raw.get("command_id") == command.id
+        and raw.get("node_id") == command.node_id
+        and raw.get("operation") == command.kind.value
+        and raw.get("principal") == principal.model_dump(mode="json")
+        and raw.get("lease_id") == lease_id
+        and raw.get("ack_digest") == ack_digest
+        and raw.get("ack") == ack
+        and isinstance(raw.get("received_at"), str)
+    )
+
+
+def _require_legacy_stop_ack_repository_policy(
+    command: RunnerCommand,
+    *,
+    principal: RunnerPrincipal,
+    lease_id: str,
+) -> None:
+    from riftx.application.run_kind_effects import (
+        EffectMode,
+        EffectOrigin,
+        LegacyRunnerCommandEffectOwnership,
+        OperationEffect,
+        RunEffectOperation,
+        RunKindEffectPolicyDenied,
+        require_run_kind_effect_policy,
+    )
+
+    try:
+        require_run_kind_effect_policy(
+            RunEffectOperation.RUNNER_COMMAND_LEGACY_STOP_ACK,
+            EffectOrigin.RUNNER_COMMAND,
+            ownership=LegacyRunnerCommandEffectOwnership(
+                node_id=command.node_id,
+                runner_principal=principal,
+                runner_command_id=command.id,
+                lease_identity=lease_id,
+                quarantine_state="quarantined:legacy_ownership_missing",
+            ),
+            effect=OperationEffect.RUNNER_CALLBACK,
+            mode=EffectMode.STOP_PROOF,
+        )
+    except (RunKindEffectPolicyDenied, TypeError, ValueError):
+        raise RepositoryConflictError(
+            "legacy Runner stop acknowledgement policy denied"
+        ) from None
+
+
+def _effect_binding_record_matches(
+    record: RunnerEffectBindingRecord,
+    binding: RunnerEffectBinding,
+) -> bool:
+    return (
+        record.id == binding.id
+        and record.schema_version == binding.schema_version
+        and record.run_id == binding.run_id
+        and record.run_kind == binding.run_kind.value
+        and record.node_id == binding.node_id
+        and record.target_runner_instance_id == binding.target.instance_id
+        and record.target_runner_epoch == binding.target.epoch
+        and record.origin == binding.origin.value
+        and record.operation_family == binding.operation_family.value
+        and record.execution_id == binding.execution_id
+        and record.resource_kind == binding.resource_kind.value
+        and record.resource_id == binding.resource_id
+        and record.audit_id == binding.audit_id
+        and record.plan_digest == binding.plan_digest
+        and record.binding_digest == binding.binding_digest
+    )
 
 
 class SQLAlchemyRunRepository:
@@ -2238,6 +3007,16 @@ class SQLAlchemyApprovalRepository:
                         changed = True
                     await session.flush()
                     self._hit_decision_failpoint("after_event")
+
+                    await self._stage_runtime_decision_signal(
+                        session,
+                        run_record=run_record,
+                        approval=approval_from_record(approval_record),
+                        status=expected_status,
+                        source_event_id=decision_event.id,
+                        decided_at=decided_at,
+                    )
+                    self._hit_decision_failpoint("after_signal_intent")
                     return approval_from_record(approval_record), changed
             except (RepositoryConflictError, EntityNotFoundError):
                 raise
@@ -2251,6 +3030,59 @@ class SQLAlchemyApprovalRepository:
     def _hit_decision_failpoint(self, stage: str) -> None:
         if self._decision_failpoint is not None:
             self._decision_failpoint(stage)
+
+    async def _stage_runtime_decision_signal(
+        self,
+        session: AsyncSession,
+        *,
+        run_record: RunRecord,
+        approval: Approval,
+        status: ApprovalStatus,
+        source_event_id: str,
+        decided_at: datetime,
+    ) -> None:
+        """Persist the General Workflow decision intent in the decision UoW."""
+
+        if RunKind(run_record.kind) is not RunKind.GENERAL:
+            raise RepositoryConflictError(
+                "Generic Runtime Approval decisions require a General Run owner"
+            )
+        workflow_id = run_record.temporal_workflow_id
+        if not workflow_id:
+            raise RepositoryIntegrityError(
+                "Run",
+                run_record.id,
+                reason_code="workflow_identity_missing",
+            )
+
+        from riftx.domain.workflow_signal import (  # noqa: PLC0415
+            WorkflowSignalIntent,
+            WorkflowSignalKind,
+            WorkflowSignalSourceKind,
+        )
+
+        from .workflow_signals import (  # noqa: PLC0415
+            SQLAlchemyWorkflowSignalIntentRepository,
+        )
+
+        signal_kind = (
+            WorkflowSignalKind.APPROVE
+            if status is ApprovalStatus.APPROVED
+            else WorkflowSignalKind.REJECT
+        )
+        intent = WorkflowSignalIntent.general_run(
+            run_id=approval.run_id,
+            workflow_id=workflow_id,
+            signal_kind=signal_kind,
+            source_event_kind=WorkflowSignalSourceKind.APPROVAL_DECISION,
+            source_event_id=source_event_id,
+            source_state_version=1,
+            payload={"approval_id": approval.id},
+            created_at=decided_at,
+        )
+        await SQLAlchemyWorkflowSignalIntentRepository(
+            self._session_factory
+        ).create_in_session(session, intent)
 
     async def grant_for_run(
         self,
@@ -2329,12 +3161,24 @@ class SQLAlchemyTerminalRepository:
         return terminal_from_record(record) if record is not None else None
 
     async def get_by_execution(self, execution_id: str) -> TerminalSession | None:
-        statement = select(TerminalSessionRecord).where(
-            TerminalSessionRecord.execution_id == execution_id
+        statement = (
+            select(TerminalSessionRecord)
+            .where(TerminalSessionRecord.execution_id == execution_id)
+            .order_by(TerminalSessionRecord.id)
+            .limit(2)
         )
         async with self._session_factory() as session:
-            record = await session.scalar(statement)
-        return terminal_from_record(record) if record is not None else None
+            records = list(await session.scalars(statement))
+        if len(records) > 1:
+            # A TerminalSession is a typed one-to-one projection of one PTY
+            # Execution.  Returning an arbitrary row would let a stop receipt
+            # bound to session A mutate session B and then be marked applied.
+            raise RepositoryIntegrityError(
+                "TerminalSession",
+                execution_id,
+                reason_code="duplicate_execution_binding",
+            )
+        return terminal_from_record(records[0]) if records else None
 
     async def save(self, terminal: TerminalSession) -> TerminalSession:
         async with serialized_write(self._session_factory) as session:
@@ -2455,6 +3299,12 @@ _EXECUTION_FIRST_WRITE_WINS_FIELDS = (
     "started_at",
     "physical_stop_confirmed_at",
 )
+_EXECUTION_CALLBACK_BINDING_FIELDS = (
+    "runner_command_id",
+    "runner_effect_binding_id",
+    "runner_binding_digest",
+    "runner_envelope_digest",
+)
 _EXECUTION_MUTABLE_RECORD_FIELDS = (
     "session_id",
     "tool_call_id",
@@ -2529,6 +3379,23 @@ def _validate_execution_bound_fields(current: Execution, incoming: Execution) ->
             f"{current.owner.model_dump(mode='json')!r}"
         )
     stale = False
+    for field_name in _EXECUTION_CALLBACK_BINDING_FIELDS:
+        persisted = getattr(current, field_name)
+        proposed = getattr(incoming, field_name)
+        if persisted is None:
+            if proposed is not None:
+                raise RepositoryConflictError(
+                    f"Execution {current.id!r} callback binding can only be installed "
+                    "atomically with Runner command enqueue"
+                )
+            continue
+        if proposed is None:
+            stale = True
+        elif proposed != persisted:
+            raise RepositoryConflictError(
+                f"Execution {current.id!r} callback binding field {field_name!r} "
+                f"is already bound to {persisted!r}, not {proposed!r}"
+            )
     for field_name in _EXECUTION_IMMUTABLE_IDENTITY_FIELDS:
         persisted = getattr(current, field_name)
         proposed = getattr(incoming, field_name)
@@ -2665,9 +3532,17 @@ class SQLAlchemyExecutionRepository:
         session_factory: SessionFactory,
         *,
         clock: Clock = utc_now,
+        emit_workflow_signal_intents: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
+        self._emit_workflow_signal_intents = emit_workflow_signal_intents
+
+    @property
+    def emits_workflow_signal_intents(self) -> bool:
+        """Declare whether terminal writes can stage ordinary Workflow signals."""
+
+        return self._emit_workflow_signal_intents
 
     async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]:
         try:
@@ -2689,10 +3564,10 @@ class SQLAlchemyExecutionRepository:
                 await session.flush()
             return execution, True
         except IntegrityError as exc:
-            existing = await self.get_by_key(execution.execution_key)
-            if existing is not None:
-                _validate_execution_duplicate(existing, execution)
-                return existing, False
+            replay = await self.get_by_key(execution.execution_key)
+            if replay is not None:
+                _validate_execution_duplicate(replay, execution)
+                return replay, False
             raise RepositoryConflictError(f"could not create execution {execution.id!r}") from exc
 
     async def get_run_id(self, execution_id: str) -> str | None:
@@ -2789,14 +3664,92 @@ class SQLAlchemyExecutionRepository:
             before = _execution_metadata_state(record)
             apply_execution_to_record(execution, record)
             if _execution_metadata_state(record) == before:
+                await self._stage_terminal_workflow_signal(session, execution)
                 return execution, True
             record.updated_at = next_mutation_at(
                 self._clock,
                 stored=record.updated_at,
                 lifecycle_timestamps=_execution_lifecycle_timestamps(record),
             )
+            await self._stage_terminal_workflow_signal(session, execution)
             await session.flush()
         return execution, True
+
+    async def _stage_terminal_workflow_signal(
+        self,
+        session: AsyncSession,
+        execution: Execution,
+    ) -> None:
+        """Stage signals only on a repository bound to normal completion sources.
+
+        Runner stop receipt projection deliberately uses a separate repository
+        instance with emission disabled, so a physical-stop ACK can never
+        become an ordinary ``execution_completed`` Workflow signal.
+        """
+
+        if not self._emit_workflow_signal_intents or execution.status not in {
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.EXITED,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.HARD_TIMEOUT,
+            ExecutionStatus.LOST,
+        }:
+            return
+
+        run_record = await session.scalar(
+            select(RunRecord)
+            .where(RunRecord.id == execution.run_id)
+            .with_for_update()
+        )
+        if run_record is None:
+            raise EntityNotFoundError("Run", execution.run_id)
+        if RunKind(run_record.kind) is not RunKind.GENERAL:
+            # M1 has no authoritative Code Audit effect plan. Persisting the
+            # terminal state is safe, but it must never fall back to the
+            # General Workflow protocol.
+            return
+        if execution.audit_id is not None or execution.plan_digest is not None:
+            raise RepositoryConflictError(
+                "General execution completion carried Code Audit ownership"
+            )
+        workflow_id = run_record.temporal_workflow_id
+        if not workflow_id:
+            raise RepositoryIntegrityError(
+                "Run",
+                run_record.id,
+                reason_code="workflow_identity_missing",
+            )
+
+        from riftx.domain.workflow_signal import (  # noqa: PLC0415
+            WorkflowSignalIntent,
+            WorkflowSignalKind,
+            WorkflowSignalSourceKind,
+        )
+
+        from .workflow_signals import (  # noqa: PLC0415
+            SQLAlchemyWorkflowSignalIntentRepository,
+        )
+
+        created_at = (
+            execution.finished_at
+            or execution.physical_stop_confirmed_at
+            or execution.created_at
+            or utc_now()
+        )
+        intent = WorkflowSignalIntent.general_run(
+            run_id=execution.run_id,
+            workflow_id=workflow_id,
+            signal_kind=WorkflowSignalKind.EXECUTION_COMPLETED,
+            source_event_kind=WorkflowSignalSourceKind.EXECUTION_TERMINAL,
+            source_event_id=execution.id,
+            source_state_version=1,
+            payload={"execution_id": execution.id},
+            created_at=created_at,
+        )
+        await SQLAlchemyWorkflowSignalIntentRepository(
+            self._session_factory
+        ).create_in_session(session, intent)
 
     async def list(
         self,
@@ -2953,7 +3906,7 @@ def _raise_decision_conflict(
     *,
     runtime_record: RuntimeApprovalRequestRecord | None,
     requested_decision: ApprovalDecision,
-) -> None:
+) -> Never:
     raise RepositoryDecisionConflictError(
         message,
         details={

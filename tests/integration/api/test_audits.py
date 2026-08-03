@@ -16,6 +16,7 @@ from tests.unit.domain.test_audit_domain import _contract as domain_contract
 
 from riftx.api import APISettings, create_app
 from riftx.api.dependencies import (
+    get_audit_control_service,
     get_audit_object_authorizer,
     get_audit_service,
     get_run_service,
@@ -25,12 +26,18 @@ from riftx.application.ports import (
     AuditAuthorizationBinding,
     AuditEngagementScope,
 )
-from riftx.application.services import AuditApplicationService
+from riftx.application.services import (
+    AuditApplicationService,
+    AuditControlApplicationService,
+    AuditRunStateProjector,
+    SafetyStopResult,
+)
 from riftx.config import AuditConfig
 from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
 from riftx.persistence import (
     Database,
     SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditControlUnitOfWork,
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyRunRepository,
 )
@@ -40,6 +47,12 @@ NOW = datetime(2026, 8, 3, 8, tzinfo=UTC)
 REQUEST_ONE = "11111111-1111-4111-8111-111111111111"
 REQUEST_TWO = "22222222-2222-4222-8222-222222222222"
 SOURCE_CANARY = "/sensitive/RIFTX_AUDIT_SOURCE_PATH_MUST_NOT_LEAK"
+
+
+class _EmptySafetyStopper:
+    async def stop_run(self, run_id: str, *, drain: bool = True) -> SafetyStopResult:
+        del run_id, drain
+        return SafetyStopResult(resources={})
 
 
 def _digest(seed: str) -> str:
@@ -97,10 +110,14 @@ def _service(
     settings: APISettings,
     *,
     enabled: bool,
+    aggregate_repository: SQLAlchemyAuditAggregateReadRepository | None = None,
 ) -> AuditApplicationService:
     return AuditApplicationService(
         creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-        aggregate_repository=SQLAlchemyAuditAggregateReadRepository(database.session_factory),
+        aggregate_repository=(
+            aggregate_repository
+            or SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+        ),
         feature_enabled=enabled,
         workspace_root=settings.audit.temp_root,
         clock=lambda: NOW,
@@ -126,9 +143,25 @@ async def _audit_api(
     )
     database = Database(f"sqlite+aiosqlite:///{tmp_path / f'{name}.db'}")
     await database.create_schema()
-    service = _service(database, settings, enabled=enabled)
+    aggregate_repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+    service = _service(
+        database,
+        settings,
+        enabled=enabled,
+        aggregate_repository=aggregate_repository,
+    )
+    controls = AuditControlApplicationService(
+        audits=service,
+        projector=AuditRunStateProjector(
+            SQLAlchemyAuditControlUnitOfWork(database.session_factory),
+            clock=lambda: NOW,
+        ),
+        safety_stopper=_EmptySafetyStopper(),  # type: ignore[arg-type]
+        events=SimpleNamespace(),  # not used by the draft-cancel happy path
+    )
     app = create_app(control_plane=SimpleNamespace(settings=settings))  # type: ignore[arg-type]
     app.dependency_overrides[get_audit_service] = lambda: service
+    app.dependency_overrides[get_audit_control_service] = lambda: controls
     headers = {"Authorization": f"Bearer {LOCAL_TOKEN}"} if authenticated else {}
     try:
         async with app.router.lifespan_context(app):
@@ -205,6 +238,53 @@ async def test_create_replay_list_and_detail_are_draft_only_and_path_free(
             "source_snapshots": 0,
             "audit_start_intents": 0,
         }
+
+
+async def test_draft_cancel_uses_dedicated_audit_control_without_general_workflow(
+    tmp_path: Path,
+) -> None:
+    async with _audit_api(tmp_path, name="audit-cancel-draft") as (
+        _settings_value,
+        _database,
+        _service_value,
+        _app,
+        client,
+    ):
+        created = await client.post("/api/v1/audits", json=_request_payload())
+        audit_id = created.json()["audit"]["id"]
+
+        cancelled = await client.post(f"/api/v1/audits/{audit_id}/cancel")
+
+        assert cancelled.status_code == 200, cancelled.text
+        payload = cancelled.json()
+        assert payload["lifecycle_status"] == "cleaning"
+        assert payload["terminal_outcome"] == "cancelled"
+        assert payload["run_status"] == "cancelled"
+        assert payload["started_at"] is None
+
+
+async def test_m1_code_audit_runner_enqueue_count_remains_zero(
+    tmp_path: Path,
+) -> None:
+    async with _audit_api(tmp_path, name="audit-zero-runner-enqueue") as (
+        _settings_value,
+        database,
+        _service_value,
+        _app,
+        client,
+    ):
+        created = await client.post("/api/v1/audits", json=_request_payload())
+        assert created.status_code == 201, created.text
+        audit_id = created.json()["audit"]["id"]
+
+        cancelled = await client.post(f"/api/v1/audits/{audit_id}/cancel")
+        assert cancelled.status_code == 200, cancelled.text
+
+        async with database.engine.connect() as connection:
+            enqueue_count = await connection.scalar(
+                text("SELECT count(*) FROM runner_commands")
+            )
+        assert int(enqueue_count or 0) == 0
 
 
 async def test_feature_flag_blocks_first_create_and_replay_but_not_existing_reads(
@@ -339,6 +419,62 @@ async def test_missing_and_denied_detail_are_byte_identical_generic_404(
         }
 
 
+async def test_audit_controls_reject_wrong_owner_before_any_side_effect(
+    tmp_path: Path,
+) -> None:
+    async with _audit_api(tmp_path, name="audit-control-owner") as (
+        _settings_value,
+        database,
+        _service_value,
+        app,
+        client,
+    ):
+        created = await client.post("/api/v1/audits", json=_request_payload())
+        assert created.status_code == 201
+        audit_id = created.json()["audit"]["id"]
+        run_id = created.json()["audit"]["run_id"]
+
+        async def persisted_projection() -> tuple[str, int, str, int]:
+            async with database.engine.connect() as connection:
+                audit_row = (
+                    await connection.execute(
+                        text(
+                            "SELECT lifecycle_status, state_version "
+                            "FROM audit_scans WHERE id = :audit_id"
+                        ),
+                        {"audit_id": audit_id},
+                    )
+                ).one()
+                run_status = await connection.scalar(
+                    text("SELECT status FROM runs WHERE id = :run_id"),
+                    {"run_id": run_id},
+                )
+                event_count = await connection.scalar(
+                    text("SELECT count(*) FROM run_events WHERE run_id = :run_id"),
+                    {"run_id": run_id},
+                )
+            assert run_status is not None
+            return (
+                str(audit_row.lifecycle_status),
+                int(audit_row.state_version),
+                str(run_status),
+                int(event_count or 0),
+            )
+
+        before = await persisted_projection()
+        missing = await client.post("/api/v1/audits/audit-that-does-not-exist/cancel")
+        app.dependency_overrides[get_audit_object_authorizer] = lambda: _DenyingAuthorizer(
+            app.state.local_object_authorizer
+        )
+
+        for control in ("pause", "resume", "cancel"):
+            denied = await client.post(f"/api/v1/audits/{audit_id}/{control}")
+            assert denied.status_code == 404
+            assert denied.content == missing.content
+
+        assert await persisted_projection() == before
+
+
 async def test_generic_code_audit_run_reads_use_audit_authorization_and_projection(
     tmp_path: Path,
 ) -> None:
@@ -452,6 +588,56 @@ async def test_audit_routes_require_the_declared_read_and_write_capabilities(
         assert (await _counts(database))["audit_scans"] == 0
 
 
+async def test_audit_cancel_requires_host_control_not_workflow_control(
+    tmp_path: Path,
+) -> None:
+    async with _audit_api(
+        tmp_path,
+        name="audit-workflow-control-only",
+        capabilities=frozenset(
+            {
+                OperatorCapability.READ,
+                OperatorCapability.WRITE,
+                OperatorCapability.CONTROL,
+            }
+        ),
+    ) as (_settings_value, _database, _service_value, _app, client):
+        created = await client.post("/api/v1/audits", json=_request_payload())
+        assert created.status_code == 201
+        audit_id = created.json()["audit"]["id"]
+
+        cancelled = await client.post(f"/api/v1/audits/{audit_id}/cancel")
+        unchanged = await client.get(f"/api/v1/audits/{audit_id}")
+
+        assert cancelled.status_code == 403
+        assert unchanged.status_code == 200
+        assert unchanged.json()["lifecycle_status"] == "draft"
+        assert unchanged.json()["run_status"] == "created"
+
+    async with _audit_api(
+        tmp_path,
+        name="audit-host-control-only",
+        capabilities=frozenset(
+            {
+                OperatorCapability.READ,
+                OperatorCapability.WRITE,
+                OperatorCapability.HOST_CONTROL,
+            }
+        ),
+    ) as (_settings_value, _database, _service_value, _app, client):
+        created = await client.post("/api/v1/audits", json=_request_payload())
+        assert created.status_code == 201
+        audit_id = created.json()["audit"]["id"]
+
+        pause = await client.post(f"/api/v1/audits/{audit_id}/pause")
+        resume = await client.post(f"/api/v1/audits/{audit_id}/resume")
+        cancel = await client.post(f"/api/v1/audits/{audit_id}/cancel")
+
+        assert pause.status_code == resume.status_code == 403
+        assert cancel.status_code == 200
+        assert cancel.json()["terminal_outcome"] == "cancelled"
+
+
 async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
     tmp_path: Path,
 ) -> None:
@@ -472,12 +658,17 @@ async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
         assert set(paths) == {
             "/api/v1/audits",
             "/api/v1/audits/{audit_id}",
+            "/api/v1/audits/{audit_id}/pause",
+            "/api/v1/audits/{audit_id}/resume",
+            "/api/v1/audits/{audit_id}/cancel",
             "/api/v1/audits/{audit_id}/artifacts",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
         }
         assert set(paths["/api/v1/audits"]) == {"get", "post"}
         assert set(paths["/api/v1/audits/{audit_id}"]) == {"get"}
+        for control in ("pause", "resume", "cancel"):
+            assert set(paths[f"/api/v1/audits/{{audit_id}}/{control}"]) == {"post"}
         assert set(paths["/api/v1/audits/{audit_id}/artifacts"]) == {"get"}
         assert set(paths["/api/v1/audits/{audit_id}/artifacts/{artifact_id}"]) == {
             "get"

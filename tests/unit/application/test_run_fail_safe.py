@@ -6,14 +6,22 @@ from types import SimpleNamespace
 
 import pytest
 
+import riftx.application.services.runs as run_service_module
 from riftx.application.errors import ApplicationConflictError, ServiceUnavailableError
+from riftx.application.run_kind_effects import (
+    PolicyDenialReason,
+    RunEffectOperation,
+    RunKindEffectPolicyDenied,
+)
 from riftx.application.services.run_safety import RunSafetyStopService
-from riftx.application.services.runs import RunApplicationService
+from riftx.application.services.runs import CreateRun, RunApplicationService
 from riftx.domain import (
     Execution,
     ExecutionStatus,
     ExecutorType,
+    LocalPrincipal,
     Objective,
+    OperatorCapability,
     Run,
     RunKind,
     RunStatus,
@@ -159,28 +167,46 @@ class FakeWorkflowClient:
     def __init__(self, failure: Exception | None = None) -> None:
         self.failure = failure
         self.calls: list[tuple[str, str]] = []
+        self.workflow_ids: list[str | None] = []
 
-    async def pause(self, run_id: str) -> None:
-        await self._record("pause", run_id)
+    async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._record("pause", run_id, workflow_id)
 
-    async def resume(self, run_id: str) -> None:
-        await self._record("resume", run_id)
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._record("resume", run_id, workflow_id)
 
-    async def cancel_current_execution(self, run_id: str) -> None:
-        await self._record("cancel_current_execution", run_id)
+    async def cancel_current_execution(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        await self._record("cancel_current_execution", run_id, workflow_id)
 
-    async def cancel(self, run_id: str) -> None:
-        await self._record("cancel", run_id)
+    async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._record("cancel", run_id, workflow_id)
 
-    async def _record(self, action: str, run_id: str) -> None:
+    async def _record(
+        self,
+        action: str,
+        run_id: str,
+        workflow_id: str | None,
+    ) -> None:
         self.calls.append((action, run_id))
+        self.workflow_ids.append(workflow_id)
         if self.failure is not None:
             raise self.failure
 
 
 class BlockingWorkflowClient(FakeWorkflowClient):
-    async def _record(self, action: str, run_id: str) -> None:
+    async def _record(
+        self,
+        action: str,
+        run_id: str,
+        workflow_id: str | None,
+    ) -> None:
         self.calls.append((action, run_id))
+        self.workflow_ids.append(workflow_id)
         await asyncio.Event().wait()
 
 
@@ -190,8 +216,9 @@ class GatedResumeWorkflowClient(FakeWorkflowClient):
         self.resume_entered = asyncio.Event()
         self.release_resume = asyncio.Event()
 
-    async def resume(self, run_id: str) -> None:
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
         self.calls.append(("resume", run_id))
+        self.workflow_ids.append(workflow_id)
         self.resume_entered.set()
         await self.release_resume.wait()
 
@@ -447,6 +474,7 @@ def make_service(
         "compact",
         "switch_model",
         "append_user_message",
+        "stop_resources_for_cleanup",
     ],
 )
 async def test_code_audit_rejects_generic_run_operations_before_any_effect(
@@ -468,6 +496,7 @@ async def test_code_audit_rejects_generic_run_operations_before_any_effect(
         "compact": lambda: service.compact(run.id, max_history_items=1),
         "switch_model": lambda: service.switch_model(run.id, "fast"),
         "append_user_message": lambda: service.append_user_message(run.id, "bypass"),
+        "stop_resources_for_cleanup": lambda: service.stop_resources_for_cleanup(run.id),
     }
 
     with pytest.raises(ApplicationConflictError) as captured:
@@ -481,6 +510,81 @@ async def test_code_audit_rejects_generic_run_operations_before_any_effect(
     assert runner.calls == []
     assert execution.status is ExecutionStatus.RUNNING
     assert execution.physical_stop_confirmed_at is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_policy_operation"),
+    [
+        ("create_run", RunEffectOperation.SERVICE_RUN_CREATE),
+        ("pause", RunEffectOperation.SERVICE_RUN_PAUSE),
+        ("resume", RunEffectOperation.SERVICE_RUN_RESUME),
+        ("cancel", RunEffectOperation.SERVICE_RUN_CANCEL),
+        (
+            "cancel_current_execution",
+            RunEffectOperation.SERVICE_RUN_CANCEL_CURRENT_EXECUTION,
+        ),
+        ("compact", RunEffectOperation.SERVICE_RUN_COMPACT),
+        ("switch_model", RunEffectOperation.SERVICE_RUN_SWITCH_MODEL),
+        ("append_user_message", RunEffectOperation.SERVICE_RUN_APPEND_MESSAGE),
+        ("stop_resources_for_cleanup", RunEffectOperation.SERVICE_RUN_CLEANUP),
+    ],
+)
+async def test_general_run_service_catalog_denial_precedes_every_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    expected_policy_operation: RunEffectOperation,
+) -> None:
+    policy_calls: list[RunEffectOperation] = []
+
+    def deny_policy(
+        policy_operation: RunEffectOperation,
+        *_: object,
+        **__: object,
+    ) -> None:
+        policy_calls.append(policy_operation)
+        raise RunKindEffectPolicyDenied(PolicyDenialReason.OWNERSHIP_CLAIM_MISSING)
+
+    monkeypatch.setattr(
+        run_service_module,
+        "require_run_kind_effect_policy",
+        deny_policy,
+    )
+    run = make_run(tmp_path)
+    execution = make_execution(tmp_path, run.id, "policy-denial-canary")
+    service, runs, events, _, workflow, runner = make_service(
+        tmp_path,
+        run,
+        [execution],
+    )
+    calls = {
+        "create_run": lambda: service.create_run(
+            CreateRun(objective="must-not-create", node_id="local"),
+            principal=LocalPrincipal(
+                id="operator-1",
+                capabilities=frozenset(OperatorCapability),
+            ),
+        ),
+        "pause": lambda: service.pause(run.id),
+        "resume": lambda: service.resume(run.id),
+        "cancel": lambda: service.cancel(run.id),
+        "cancel_current_execution": lambda: service.cancel_current_execution(run.id),
+        "compact": lambda: service.compact(run.id, max_history_items=1),
+        "switch_model": lambda: service.switch_model(run.id, "fast"),
+        "append_user_message": lambda: service.append_user_message(run.id, "blocked"),
+        "stop_resources_for_cleanup": lambda: service.stop_resources_for_cleanup(run.id),
+    }
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await calls[operation]()
+
+    assert captured.value.code == "run_kind_effect_policy_denied"
+    assert policy_calls == [expected_policy_operation]
+    assert runs.transitions == []
+    assert events.events == []
+    assert workflow.calls == []
+    assert runner.calls == []
+    assert execution.status is ExecutionStatus.RUNNING
 
 
 @pytest.mark.parametrize(

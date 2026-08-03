@@ -175,6 +175,10 @@ class TerminalSupervisor:
             attempt_group=request.attempt_group,
             node_id=request.node_id,
             owner=request.runner_principal,
+            runner_command_id=request.runner_command_id,
+            runner_effect_binding_id=request.runner_effect_binding_id,
+            runner_binding_digest=request.runner_binding_digest,
+            runner_envelope_digest=request.runner_envelope_digest,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
             tool_id=request.tool_id,
@@ -592,6 +596,25 @@ class TerminalSupervisor:
             ("cwd", execution.cwd, str(request.cwd)),
             ("env", execution.env_diff, request.env),
         )
+        if request.runner_command_id is not None:
+            fields += (
+                ("runner_command_id", execution.runner_command_id, request.runner_command_id),
+                (
+                    "runner_effect_binding_id",
+                    execution.runner_effect_binding_id,
+                    request.runner_effect_binding_id,
+                ),
+                (
+                    "runner_binding_digest",
+                    execution.runner_binding_digest,
+                    request.runner_binding_digest,
+                ),
+                (
+                    "runner_envelope_digest",
+                    execution.runner_envelope_digest,
+                    request.runner_envelope_digest,
+                ),
+            )
         mismatched = [name for name, persisted, requested in fields if persisted != requested]
         if (
             execution.launch_fingerprint is not None

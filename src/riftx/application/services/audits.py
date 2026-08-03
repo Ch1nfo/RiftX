@@ -463,6 +463,7 @@ class AuditApplicationService:
         *,
         principal: LocalPrincipal,
         authorizer: AuditObjectAuthorizer,
+        capability: OperatorCapability = OperatorCapability.READ,
     ) -> AuditAggregate:
         """Authorize a contract-free owner binding before loading the aggregate."""
 
@@ -472,7 +473,7 @@ class AuditApplicationService:
                 authorize=lambda binding: authorizer.require_audit_binding(
                     principal,
                     binding,
-                    capability=OperatorCapability.READ,
+                    capability=capability,
                 ),
             )
         except (RepositoryIntegrityError, RepositoryUnavailableError):
@@ -601,7 +602,12 @@ class AuditApplicationService:
         return aggregates
 
     async def pause(self, audit_id: str) -> AuditControlPlan:
-        aggregate = await self.get(audit_id)
+        return self.plan_pause(await self.get(audit_id))
+
+    def plan_pause(self, aggregate: AuditAggregate) -> AuditControlPlan:
+        """Derive pause admission from one already-authorized aggregate read."""
+
+        _validate_run_projection(aggregate)
         status = aggregate.audit.value.lifecycle_status
         if status in {
             AuditLifecycleStatus.RUNNING,
@@ -638,7 +644,13 @@ class AuditApplicationService:
 
     async def resume(self, audit_id: str) -> AuditControlPlan:
         self._require_enabled()
-        aggregate = await self.get(audit_id)
+        return self.plan_resume(await self.get(audit_id))
+
+    def plan_resume(self, aggregate: AuditAggregate) -> AuditControlPlan:
+        """Derive resume admission from one already-authorized aggregate read."""
+
+        self._require_enabled()
+        _validate_run_projection(aggregate)
         if aggregate.audit.value.lifecycle_status is not AuditLifecycleStatus.PAUSED:
             self._not_controllable(aggregate, AuditControlAction.RESUME)
         return _control_plan(
@@ -652,7 +664,12 @@ class AuditApplicationService:
         )
 
     async def cancel(self, audit_id: str) -> AuditControlPlan:
-        aggregate = await self.get(audit_id)
+        return self.plan_cancel(await self.get(audit_id))
+
+    def plan_cancel(self, aggregate: AuditAggregate) -> AuditControlPlan:
+        """Derive cancel admission from one already-authorized aggregate read."""
+
+        _validate_run_projection(aggregate)
         scan = aggregate.audit.value
         cleanup_converged = (
             scan.cleanup_proof_digest is not None and scan.run_terminal_status is not None

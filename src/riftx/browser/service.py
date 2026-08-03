@@ -375,6 +375,8 @@ class BrowserApplicationService:
         exchange = await self._runner.observe(
             BrowserObserveCommand(
                 session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
                 page_id=page_id,
                 include_screenshot=include_screenshot,
                 include_network=include_network,
@@ -467,6 +469,8 @@ class BrowserApplicationService:
                 exchange = await self._runner.act(
                     BrowserActCommand(
                         session_id=session_id,
+                        run_id=session.run_id,
+                        node_id=session.node_id,
                         action=candidate,
                         include_screenshot=command.include_screenshot,
                     )
@@ -514,7 +518,13 @@ class BrowserApplicationService:
     async def takeover(self, session_id: str) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_effect_session(session_id)
-        exchange = await self._runner.takeover(BrowserSessionCommand(session_id=session.id))
+        exchange = await self._runner.takeover(
+            BrowserSessionCommand(
+                session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
+            )
+        )
         async with self._session_lock(session_id):
             await self._require_post_runner_effect_allowed(session.id, session.run_id)
             view = await self._persist_exchange(exchange, persist_observation=False)
@@ -536,7 +546,13 @@ class BrowserApplicationService:
                 raise ApplicationConflictError(
                     "browser_not_taken_over", "Browser is not under user takeover"
                 )
-        exchange = await self._runner.release(BrowserSessionCommand(session_id=session.id))
+        exchange = await self._runner.release(
+            BrowserSessionCommand(
+                session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
+            )
+        )
         async with self._session_lock(session_id):
             await self._require_post_runner_effect_allowed(session.id, session.run_id)
             view = await self._persist_exchange(exchange)
@@ -769,6 +785,8 @@ class BrowserApplicationService:
             exchange = await self._runner.close(
                 BrowserSessionCommand(
                     session_id=session_id,
+                    run_id=before.run_id,
+                    node_id=before.node_id,
                     session=before.model_copy(deep=True),
                 )
             )

@@ -100,6 +100,16 @@ class Execution(DomainModel):
     execution_key: str = Field(min_length=1)
     launch_fingerprint: str | None = Field(default=None, min_length=1, max_length=80)
     run_id: str
+    # Code Audit executions bind the immutable Audit plan at admission. M1
+    # keeps both fields NULL and therefore denies Code Audit Runner admission.
+    audit_id: str | None = Field(default=None, min_length=1, max_length=128, frozen=True)
+    plan_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        frozen=True,
+    )
     session_id: str | None = None
     tool_call_id: str | None = None
     attempt_group: str | None = None
@@ -107,6 +117,30 @@ class Execution(DomainModel):
     # Local and pre-fencing legacy executions have no remote owner. Remote
     # admission will bind this before dispatch in the Phase 2 wiring.
     owner: RunnerPrincipal | None = None
+    # Remote launch callbacks must prove the exact immutable Runner command
+    # envelope that admitted this Execution. Legacy/local rows keep all four
+    # fields NULL and cannot use the verified callback protocol.
+    runner_command_id: str | None = Field(default=None, min_length=1, max_length=64, frozen=True)
+    runner_effect_binding_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        frozen=True,
+    )
+    runner_binding_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        frozen=True,
+    )
+    runner_envelope_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        frozen=True,
+    )
     executor_type: ExecutorType
     argv: list[str] = Field(default_factory=list)
     command_text: str | None = None
@@ -136,6 +170,18 @@ class Execution(DomainModel):
 
     @model_validator(mode="after")
     def validate_physical_stop_proof(self) -> Execution:
+        if (self.audit_id is None) != (self.plan_digest is None):
+            raise ValueError("Audit Execution requires audit_id and plan_digest together")
+        runner_binding = (
+            self.runner_command_id,
+            self.runner_effect_binding_id,
+            self.runner_binding_digest,
+            self.runner_envelope_digest,
+        )
+        if any(item is None for item in runner_binding) and any(
+            item is not None for item in runner_binding
+        ):
+            raise ValueError("Runner Execution callback binding must be all NULL or all present")
         if (
             self.physical_stop_confirmed_at is not None
             and self.status not in _PHYSICAL_STOP_PROOF_STATUSES

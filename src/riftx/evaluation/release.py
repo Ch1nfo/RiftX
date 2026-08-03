@@ -11,6 +11,7 @@ from riftx.domain.base import DomainModel, utc_now
 
 class ReleaseGate(StrEnum):
     CODE_AUDIT_INDEPENDENCE_BOUNDARY = "code_audit_independence_boundary"
+    RUN_KIND_EFFECT_ISOLATION = "run_kind_effect_isolation"
     MODEL_CALLS_USE_CONTEXT_COMPILER = "model_calls_use_context_compiler"
     TOOL_CALL_PERSISTED_BEFORE_EXECUTION = "tool_call_persisted_before_execution"
     EXECUTION_HAS_IDEMPOTENCY_KEY = "execution_has_idempotency_key"
@@ -101,6 +102,24 @@ def release_gate_manifest() -> dict[ReleaseGate, tuple[str, tuple[str, ...]]]:
                 "tests/evaluation/test_independence_gate.py::test_compressed_tar_scans_pax_metadata_and_allows_safe_link",
                 "tests/evaluation/test_independence_gate.py::test_unsupported_archive_compression_fails_closed",
                 "tests/evaluation/test_independence_gate.py::test_tar_sidecar_signature_is_not_misclassified_and_content_is_scanned",
+            ),
+        ),
+        ReleaseGate.RUN_KIND_EFFECT_ISOLATION: (
+            (
+                "RunKind effect routing, immutable Runner ownership, durable Workflow "
+                "signal sources, and long-lived read authorization fail closed."
+            ),
+            (
+                "tests/unit/application/test_run_kind_effect_policy.py::test_managed_service_callback_and_reconciler_inventory_is_registered",
+                "tests/unit/application/test_runner_control_policy.py::test_code_audit_m1_enqueue_is_zero_before_node_or_credential_state",
+                "tests/integration/api/test_audits.py::test_m1_code_audit_runner_enqueue_count_remains_zero",
+                "tests/integration/persistence/test_workflow_signals.py::test_repository_rejects_missing_child_sources_without_writing",
+                "tests/unit/temporal/test_workflow_signal_transport.py::test_transport_rejects_foreign_child_source_before_router_call",
+                "tests/unit/api/test_event_stream.py::test_stream_reauthorizes_before_every_batch_and_denial_reads_or_emits_nothing",
+                "tests/integration/persistence/test_runner_control_repository.py::test_pending_stop_receipt_converges_after_control_plane_restart",
+                "tests/integration/persistence/test_runner_control_repository.py::test_resource_stop_receipt_projects_authoritative_state_after_restart",
+                "tests/integration/persistence/test_runner_ownership_migration.py::test_runner_safe_downgrade_reupgrades_to_head_and_reopens",
+                "tests/integration/api/test_control_plane.py::test_general_workflow_controls_keep_the_persisted_id_after_prefix_drift",
             ),
         ),
         ReleaseGate.MODEL_CALLS_USE_CONTEXT_COMPILER: (

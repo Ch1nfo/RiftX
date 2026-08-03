@@ -35,7 +35,8 @@ class FakeRuns:
     async def resolve_kind(self, run_id: str):
         return self.run.kind
 
-    async def create_run(self, command):
+    async def create_run(self, command, *, principal):
+        del principal
         self.created_command = command
         return self.run
 

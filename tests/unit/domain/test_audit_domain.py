@@ -1416,6 +1416,19 @@ def test_contract_record_must_be_sealed_before_audit_start() -> None:
         scan.validate_contract_record(sealed_too_late)
 
 
+def test_never_started_audit_can_cancel_without_sealing_contract() -> None:
+    contract = _contract()
+    record = _record(contract)
+    scan = _scan(contract, record).transition_to(
+        AuditLifecycleStatus.CANCELLING,
+        at=NOW + timedelta(seconds=1),
+    )
+
+    assert scan.started_at is None
+    assert record.sealed_at is None
+    assert scan.validate_contract_record(record) == contract
+
+
 def test_audit_scan_purpose_requires_the_correct_parent_relationship() -> None:
     payload = _payload(_scan())
     payload["purpose"] = AuditPurpose.VALIDATION_FOLLOWUP

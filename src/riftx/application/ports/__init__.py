@@ -5,7 +5,11 @@ from .audits import (
     AuditAggregateReadRepository,
     AuditAuthorizationBinding,
     AuditBindingAuthorizer,
+    AuditCleanupConvergence,
     AuditContractRepository,
+    AuditControlProjection,
+    AuditControlTransition,
+    AuditControlUnitOfWork,
     AuditCreationUnitOfWork,
     AuditDraftAggregateFactory,
     AuditDraftCreationEnvelope,
@@ -39,6 +43,10 @@ from .repositories import (
     ToolCallIntentExecutionClaim,
     ToolCallIntentRepository,
 )
+from .workflow_signals import (
+    WorkflowSignalIntentRepository,
+    WorkflowSignalSourceValidator,
+)
 
 __all__ = [
     "ActionReadRepository",
@@ -48,9 +56,13 @@ __all__ = [
     "AuditBindingAuthorizer",
     "AuditCreationUnitOfWork",
     "AuditContractRepository",
+    "AuditControlProjection",
+    "AuditControlTransition",
+    "AuditControlUnitOfWork",
     "AuditDraftAggregateFactory",
     "AuditDraftCreationEnvelope",
     "AuditEngagementScope",
+    "AuditCleanupConvergence",
     "AuditObjectAuthorizer",
     "AuditPhaseRepository",
     "AuditProjectRepository",
@@ -76,4 +88,6 @@ __all__ = [
     "TerminalRepository",
     "ToolCallIntentExecutionClaim",
     "ToolCallIntentRepository",
+    "WorkflowSignalIntentRepository",
+    "WorkflowSignalSourceValidator",
 ]

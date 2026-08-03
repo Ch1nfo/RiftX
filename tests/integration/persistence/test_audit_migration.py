@@ -863,7 +863,7 @@ def test_audit_migration_rejects_nonempty_downgrade_before_ddl(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "audit-nonempty-downgrade.db"
-    run_alembic(database_path, "head")
+    run_alembic(database_path, AUDIT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         _insert_engagement(connection, "engagement-protected-audit")
@@ -915,11 +915,7 @@ def test_audit_migration_rejects_nonempty_downgrade_before_ddl(
         for statement in audit_statements
         if statement.upper().startswith(("DROP TABLE", "DROP INDEX"))
     ]
-    assert destructive_statements
-    assert all(
-        "audit_client_requests" in statement or "artifacts" in statement
-        for statement in destructive_statements
-    )
+    assert destructive_statements == []
 
 
 def test_sqlite_downgrade_serialization_blocks_a_competing_writer(

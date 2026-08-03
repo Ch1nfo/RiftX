@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from riftx.domain import OperatorCapability
 
 from ..dependencies import (
+    AuditControlServiceDependency,
     AuditObjectAuthorizerDependency,
     AuditServiceDependency,
     LocalPrincipalDependency,
@@ -124,6 +125,66 @@ async def get_audit(
         authorizer=authorizer,
     )
     return AuditResponse.from_aggregate(aggregate)
+
+
+@router.post(
+    "/{audit_id}/pause",
+    response_model=AuditResponse,
+    responses=_ERROR_RESPONSES,
+)
+async def pause_audit(
+    audit_id: AuditId,
+    controls: AuditControlServiceDependency,
+    principal: LocalPrincipalDependency,
+    authorizer: AuditObjectAuthorizerDependency,
+) -> AuditResponse:
+    return AuditResponse.from_aggregate(
+        await controls.pause(
+            audit_id,
+            principal=principal,
+            authorizer=authorizer,
+        )
+    )
+
+
+@router.post(
+    "/{audit_id}/resume",
+    response_model=AuditResponse,
+    responses=_ERROR_RESPONSES,
+)
+async def resume_audit(
+    audit_id: AuditId,
+    controls: AuditControlServiceDependency,
+    principal: LocalPrincipalDependency,
+    authorizer: AuditObjectAuthorizerDependency,
+) -> AuditResponse:
+    return AuditResponse.from_aggregate(
+        await controls.resume(
+            audit_id,
+            principal=principal,
+            authorizer=authorizer,
+        )
+    )
+
+
+@router.post(
+    "/{audit_id}/cancel",
+    response_model=AuditResponse,
+    responses=_ERROR_RESPONSES,
+)
+async def cancel_audit(
+    audit_id: AuditId,
+    controls: AuditControlServiceDependency,
+    principal: LocalPrincipalDependency,
+    authorizer: AuditObjectAuthorizerDependency,
+) -> AuditResponse:
+    return AuditResponse.from_aggregate(
+        await controls.cancel(
+            audit_id,
+            principal=principal,
+            authorizer=authorizer,
+        )
+    )
 
 
 __all__ = ["router"]

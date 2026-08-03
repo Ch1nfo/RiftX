@@ -18,11 +18,16 @@ from riftx.application.ports import (
 )
 from riftx.application.services.runner_control import RunnerControlService
 from riftx.domain import (
+    RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     Execution,
     ExecutionStatus,
     ExecutorType,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
     TerminalOwner,
     TerminalSession,
     TerminalStatus,
@@ -315,6 +320,17 @@ class RemoteTerminalSupervisor:
                 kind=RunnerCommandKind.TERMINAL_START,
                 idempotency_key=f"terminal-start:{session_id}",
                 target=runner_principal,
+                run_id=request.run_id,
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.TERMINAL,
+                resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+                resource_id=session_id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    max_output_bytes=100_000_000,
+                    allowed_streams=("stderr", "stdout"),
+                    result_schema="riftx.runner-result/terminal-start/v1",
+                ),
                 payload={
                     "session_id": session_id,
                     "execution_id": execution.id,
@@ -327,6 +343,10 @@ class RemoteTerminalSupervisor:
                     ).model_dump(mode="json"),
                 },
             )
+            # RunnerCommandRepository installs the immutable launch callback
+            # binding in the same transaction as enqueue.  Re-read it before
+            # this supervisor can return or persist another state transition.
+            execution = await self.get_execution(session_id)
         except Exception:
             current = await self.get_execution(session_id)
             if current.status is ExecutionStatus.STARTING:
@@ -496,6 +516,25 @@ class RemoteTerminalSupervisor:
             ("cwd", execution.cwd, str(request.cwd)),
             ("env", execution.env_diff, request.env),
         )
+        if request.runner_command_id is not None:
+            fields += (
+                ("runner_command_id", execution.runner_command_id, request.runner_command_id),
+                (
+                    "runner_effect_binding_id",
+                    execution.runner_effect_binding_id,
+                    request.runner_effect_binding_id,
+                ),
+                (
+                    "runner_binding_digest",
+                    execution.runner_binding_digest,
+                    request.runner_binding_digest,
+                ),
+                (
+                    "runner_envelope_digest",
+                    execution.runner_envelope_digest,
+                    request.runner_envelope_digest,
+                ),
+            )
         mismatched = [name for name, persisted, requested in fields if persisted != requested]
         if (
             execution.launch_fingerprint is not None
@@ -604,9 +643,10 @@ class RemoteTerminalSupervisor:
         try:
             durable = create_task.result()
         except BaseException:
-            durable = await self._terminals.get_by_execution(execution.id)
-            if durable is None:
+            recovered = await self._terminals.get_by_execution(execution.id)
+            if recovered is None:
                 raise
+            durable = recovered
             self._require_exact_terminal_replay(durable, execution, request)
         if interrupted:
             raise asyncio.CancelledError
@@ -764,6 +804,16 @@ class RemoteTerminalSupervisor:
             kind=RunnerCommandKind.CANCEL,
             idempotency_key=operation_id,
             target=runner_principal,
+            run_id=execution.run_id,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.SAFETY_STOP,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=execution.id,
+            execution_id=execution.id,
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1",
+                stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+            ),
             payload={
                 "execution_id": execution.id,
                 "execution_key": execution.execution_key,
@@ -825,6 +875,15 @@ class RemoteTerminalSupervisor:
             kind=kind,
             idempotency_key=operation_id,
             target=runner_principal,
+            run_id=execution.run_id,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.TERMINAL,
+            resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+            resource_id=str(payload["session_id"]),
+            execution_id=execution.id,
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/terminal-operation/v1",
+            ),
             payload={
                 **payload,
                 "execution_id": execution.id,

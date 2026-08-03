@@ -30,6 +30,7 @@ from riftx.domain import (
     RunEvent,
     RunStatus,
     SourceSnapshot,
+    WorkflowSignalKind,
 )
 
 
@@ -256,6 +257,73 @@ class AuditCreationUnitOfWork(Protocol):
         self,
         factory: AuditDraftAggregateFactory,
     ) -> tuple[AuditAggregate, bool]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AuditControlTransition:
+    """One CAS-bound Audit/Run lifecycle projection request.
+
+    The request carries both sides of the expected owner state.  Persistence
+    must update the Scan, Run, and canonical events in one transaction; it may
+    not infer an Audit from ``run_id`` or accept a caller-provided target that
+    disagrees with :class:`AuditRunStateMappingPolicy`.
+    """
+
+    audit_id: str
+    run_id: str
+    expected_audit_state_version: int
+    expected_audit_lifecycle: AuditLifecycleStatus
+    expected_run_status: RunStatus
+    target_audit_lifecycle: AuditLifecycleStatus
+    target_run_status: RunStatus
+    operation: str
+    reason_code: str
+    occurred_at: datetime
+    audit_event_id: str
+    run_event_id: str
+    workflow_signal_kind: WorkflowSignalKind | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AuditCleanupConvergence:
+    """A caller-owned cleanup proof projection request.
+
+    The UoW derives the terminal Run status from the locked Audit outcome and
+    records ``Run terminal + cleanup proof + Event`` atomically.  Callers cannot
+    choose a terminal status or use an Execution result as a substitute for the
+    complete safety-stop proof digest.
+    """
+
+    audit_id: str
+    run_id: str
+    expected_audit_state_version: int
+    expected_audit_lifecycle: AuditLifecycleStatus
+    expected_run_status: RunStatus
+    cleanup_proof_digest: str
+    operation: str
+    reason_code: str
+    occurred_at: datetime
+    audit_event_id: str
+    run_event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditControlProjection:
+    audit: StoredAuditEntity[AuditScan]
+    run: Run
+    changed: bool
+
+
+class AuditControlUnitOfWork(Protocol):
+    async def transition(
+        self,
+        request: AuditControlTransition,
+    ) -> AuditControlProjection: ...
+
+    async def converge_cleanup(
+        self,
+        request: AuditCleanupConvergence,
+    ) -> AuditControlProjection: ...
 
 
 class AuditAggregateReadRepository(Protocol):

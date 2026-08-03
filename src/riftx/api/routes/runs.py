@@ -4,7 +4,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.run_kind_effects import (
+    EffectMode,
+    EffectOrigin,
+    OperationEffect,
+    RunEffectOperation,
+    global_effect_ownership_for_local_principal,
+)
+from riftx.application.services.runs import (
+    require_global_effect_operation,
+    require_run_kind_effect_operation,
+)
 from riftx.domain import RunKind, RunStatus
 
 from ..dependencies import (
@@ -47,8 +57,19 @@ async def create_run(
     request: CreateRunRequest,
     run_service: RunServiceDependency,
     tool_service: ToolServiceDependency,
+    principal: LocalPrincipalDependency,
 ) -> RunResponse:
-    run = await run_service.create_run(request.to_command(default_node_id=tool_service.node_id))
+    ownership = global_effect_ownership_for_local_principal(principal)
+    require_global_effect_operation(
+        ownership,
+        operation=RunEffectOperation.CREATE_RUN,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.DURABLE_WRITE,
+    )
+    run = await run_service.create_run(
+        request.to_command(default_node_id=tool_service.node_id),
+        principal=principal,
+    )
     return RunResponse.from_domain(run)
 
 
@@ -109,7 +130,13 @@ async def get_run(
     responses=_ERROR_RESPONSES,
 )
 async def pause_run(run_id: str, run_service: RunServiceDependency) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.PAUSE_RUN,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(run=RunResponse.from_domain(await run_service.pause(run_id)))
 
 
@@ -120,7 +147,13 @@ async def pause_run(run_id: str, run_service: RunServiceDependency) -> RunAction
     responses=_ERROR_RESPONSES,
 )
 async def resume_run(run_id: str, run_service: RunServiceDependency) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.RESUME_RUN,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(run=RunResponse.from_domain(await run_service.resume(run_id)))
 
 
@@ -131,7 +164,13 @@ async def resume_run(run_id: str, run_service: RunServiceDependency) -> RunActio
     responses=_ERROR_RESPONSES,
 )
 async def cancel_run(run_id: str, run_service: RunServiceDependency) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.CANCEL_RUN,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(run=RunResponse.from_domain(await run_service.cancel(run_id)))
 
 
@@ -146,7 +185,13 @@ async def compact_run(
     request: CompactRunRequest,
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.COMPACT_RUN,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(
         run=RunResponse.from_domain(
             await run_service.compact(run_id, max_history_items=request.max_history_items)
@@ -165,7 +210,13 @@ async def switch_run_model(
     request: SwitchRunModelRequest,
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.SWITCH_RUN_MODEL,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(
         run=RunResponse.from_domain(await run_service.switch_model(run_id, request.model_profile))
     )
@@ -181,7 +232,13 @@ async def cancel_current_execution(
     run_id: str,
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.CANCEL_CURRENT_EXECUTION,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(
         run=RunResponse.from_domain(await run_service.cancel_current_execution(run_id))
     )
@@ -198,7 +255,13 @@ async def append_message(
     request: RunMessageRequest,
     run_service: RunServiceDependency,
 ) -> RunActionResponse:
-    require_general_run_operation(await run_service.get_run(run_id))
+    require_run_kind_effect_operation(
+        await run_service.get_run(run_id),
+        operation=RunEffectOperation.APPEND_MESSAGE,
+        origin=EffectOrigin.LOCAL_OPERATOR_API,
+        effect=OperationEffect.WORKFLOW_CONTROL,
+        mode=EffectMode.NORMAL,
+    )
     return RunActionResponse(
         run=RunResponse.from_domain(
             await run_service.append_user_message(

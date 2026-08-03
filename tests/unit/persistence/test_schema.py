@@ -1,4 +1,7 @@
 from riftx.persistence.orm import Base
+from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
+
+assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
@@ -37,7 +40,11 @@ EXPECTED_TABLES = {
     "reports",
     "runtime_approval_requests",
     "runner_commands",
+    "runner_command_ownerships",
     "runner_credentials",
+    "runner_effect_bindings",
+    "runner_stop_projections",
+    "runner_stop_receipts",
     "run_events",
     "run_leases",
     "runs",
@@ -56,6 +63,7 @@ EXPECTED_TABLES = {
     "web_search_queries",
     "web_search_results",
     "working_memories",
+    "workflow_signal_intents",
 }
 
 
@@ -350,6 +358,7 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         "runner_epoch",
         "token_hash",
         "token_prefix",
+        "protocol_capabilities_json",
         "created_at",
         "rotated_at",
         "revoked_at",
@@ -370,6 +379,7 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         "lease_expires_at",
         "result_json",
         "error",
+        "state_version",
         "created_at",
         "updated_at",
         "completed_at",

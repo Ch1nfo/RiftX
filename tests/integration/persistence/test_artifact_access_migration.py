@@ -97,7 +97,7 @@ def test_artifact_access_migration_backfills_legacy_rows_and_restarts(
         _insert_legacy_artifact_graph(connection)
         connection.commit()
 
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
@@ -144,7 +144,7 @@ def test_artifact_access_constraints_reject_unsafe_raw_metadata_writes(
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
 
     provenance_json = json.dumps(
         {
@@ -245,7 +245,7 @@ def test_artifact_access_migration_rejects_legacy_code_audit_before_ddl(
         connection.commit()
 
     with pytest.raises(RuntimeError, match="code_audit Runs"):
-        run_alembic(database_path, "head")
+        run_alembic(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
@@ -299,7 +299,7 @@ def test_artifact_access_migration_rejects_cross_run_execution_owner_before_ddl(
         connection.commit()
 
     with pytest.raises(RuntimeError, match="cross-Run Execution owner"):
-        run_alembic(database_path, "head")
+        run_alembic(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
@@ -334,7 +334,7 @@ def test_artifact_access_migration_rejects_unsafe_legacy_components(
         connection.commit()
 
     with pytest.raises(RuntimeError, match="unsafe legacy Artifact"):
-        run_alembic(database_path, "head")
+        run_alembic(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         assert "storage_key" not in _columns(connection)
@@ -355,7 +355,7 @@ def test_artifact_access_migration_rejects_unsafe_legacy_mime_type_before_ddl(
         connection.commit()
 
     with pytest.raises(RuntimeError, match="unsafe legacy Artifact metadata"):
-        run_alembic(database_path, "head")
+        run_alembic(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
@@ -375,7 +375,7 @@ def test_artifact_access_migration_lossless_downgrade_and_reupgrade(
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
 
     downgrade_alembic(database_path, BASE_REVISION)
     with sqlite3.connect(database_path) as connection:
@@ -385,7 +385,7 @@ def test_artifact_access_migration_lossless_downgrade_and_reupgrade(
         ).fetchone() == ("/legacy/private/result.json",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT access_class FROM artifacts WHERE id = 'artifact-legacy'"
@@ -419,7 +419,7 @@ def test_artifact_access_downgrade_refuses_new_security_facts_before_ddl(
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             f"UPDATE artifacts SET {assignment} WHERE id = 'artifact-legacy'",
@@ -445,7 +445,7 @@ def test_artifact_access_downgrade_rejects_corrupt_mime_before_ddl(
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
@@ -504,7 +504,7 @@ def test_artifact_access_downgrade_rejects_cross_run_execution_owner(
             ),
         )
         connection.commit()
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             "UPDATE artifacts SET execution_id = ? WHERE id = 'artifact-legacy'",
@@ -564,7 +564,7 @@ def test_artifact_upgrade_holds_exclusive_lock_across_every_phase(
 
     def migrate() -> None:
         try:
-            _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+            _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
         except Exception as error:  # pragma: no cover - surfaced below
             migration_errors.append(error)
 
@@ -612,7 +612,7 @@ def test_artifact_downgrade_holds_exclusive_lock_through_batch_ddl(
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
 
     batch_ddl_reached = threading.Event()
     release_migration = threading.Event()
@@ -675,7 +675,7 @@ def test_artifact_downgrade_holds_exclusive_lock_through_batch_ddl(
             "SELECT path FROM artifacts WHERE id = 'artifact-legacy'"
         ).fetchone() == ("/legacy/private/result.json",)
 
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT content_trust FROM artifacts WHERE id = 'artifact-legacy'"
@@ -708,7 +708,7 @@ def test_artifact_upgrade_fault_rolls_back_and_can_retry(tmp_path: Path) -> None
     event.listen(Engine, "before_cursor_execute", fail_after_partial_column_ddl)
     try:
         with pytest.raises(RuntimeError, match="injected Artifact upgrade fault"):
-            _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+            _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
     finally:
         event.remove(Engine, "before_cursor_execute", fail_after_partial_column_ddl)
     assert fault_injected
@@ -735,7 +735,7 @@ def test_artifact_upgrade_fault_rolls_back_and_can_retry(tmp_path: Path) -> None
             is None
         )
 
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             ARTIFACT_REVISION,
@@ -752,7 +752,7 @@ def test_artifact_downgrade_fault_rolls_back_and_can_retry(tmp_path: Path) -> No
     with sqlite3.connect(database_path) as connection:
         _insert_legacy_artifact_graph(connection)
         connection.commit()
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         expected_row = connection.execute(
@@ -842,7 +842,7 @@ def test_artifact_downgrade_fault_rolls_back_and_can_retry(tmp_path: Path) -> No
             "SELECT path FROM artifacts WHERE id = 'artifact-legacy'"
         ).fetchone() == ("/legacy/private/result.json",)
 
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             ARTIFACT_REVISION,
@@ -887,7 +887,7 @@ def test_artifact_access_migration_preserves_sqlite_foreign_keys(
         _insert_legacy_artifact_graph(connection)
         connection.commit()
 
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -914,7 +914,7 @@ def test_artifact_execution_fk_restricts_provenance_deletion(
         )
         connection.commit()
 
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -948,7 +948,7 @@ def test_artifact_downgrade_restores_legacy_execution_set_null(
             execution_id="execution-artifact",
         )
         connection.commit()
-    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    _run_alembic_with_sqlite_foreign_keys(database_path, ARTIFACT_REVISION)
 
     _run_alembic_with_sqlite_foreign_keys(
         database_path,
@@ -978,7 +978,7 @@ def test_artifact_downgrade_restores_legacy_execution_set_null(
 
 def test_artifact_access_migration_matches_orm_metadata(tmp_path: Path) -> None:
     database_path = tmp_path / "artifact-schema-parity.db"
-    run_alembic(database_path, "head")
+    run_alembic(database_path, ARTIFACT_REVISION)
     engine = create_engine(f"sqlite:///{database_path}")
     try:
         inspector = inspect(engine)

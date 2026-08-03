@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+import riftx.application.services.runs as run_service_module
 from riftx.api.auth import get_authenticated_local_principal
 from riftx.api.dependencies import (
     get_artifact_service,
@@ -18,6 +19,7 @@ from riftx.api.dependencies import (
     get_report_service,
     get_run_service,
     get_terminal_service,
+    get_tool_service,
 )
 from riftx.api.errors import install_error_handlers
 from riftx.api.routes.artifacts import router as artifacts_router
@@ -27,6 +29,10 @@ from riftx.api.routes.memories import router as memories_router
 from riftx.api.routes.reports import router as reports_router
 from riftx.api.routes.runs import router as runs_router
 from riftx.api.routes.terminals import router as terminals_router
+from riftx.application.run_kind_effects import (
+    PolicyDenialReason,
+    RunKindEffectPolicyDenied,
+)
 from riftx.domain import LocalPrincipal, Objective, OperatorCapability, Run, RunKind
 
 
@@ -38,6 +44,10 @@ class FakeRunService:
     async def get_run(self, run_id: str) -> Run:
         assert run_id == self.run.id
         return self.run
+
+    async def create_run(self, command: object, *, principal: object) -> Run:
+        del command, principal
+        return self._record("create_run", self.run.id)
 
     async def resolve_kind(self, run_id: str) -> RunKind:
         assert run_id == self.run.id
@@ -135,6 +145,7 @@ def _app(service: FakeRunService) -> FastAPI:
     app.include_router(runs_router, prefix="/api/v1")
     app.include_router(connectors_router, prefix="/api/v1")
     app.dependency_overrides[get_run_service] = lambda: service
+    app.dependency_overrides[get_tool_service] = lambda: SimpleNamespace(node_id="local")
     audit_service = FakeAuditService(service.run)
     app.state.fake_audit_service = audit_service
     app.dependency_overrides[get_audit_service] = lambda: audit_service
@@ -295,3 +306,38 @@ async def test_general_run_read_and_mutation_contract_remains_compatible(tmp_pat
     assert paused.status_code == 202, paused.text
     assert paused.json()["run"]["workspace_path"] == run.workspace_path
     assert service.mutation_calls == [("pause", run.id)]
+
+
+@pytest.mark.asyncio
+async def test_general_run_api_catalog_denial_precedes_every_service_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def deny_policy(*_: object, **__: object) -> None:
+        raise RunKindEffectPolicyDenied(PolicyDenialReason.OWNERSHIP_CLAIM_MISSING)
+
+    monkeypatch.setattr(
+        run_service_module,
+        "require_run_kind_effect_policy",
+        deny_policy,
+    )
+    run = _run(RunKind.GENERAL, tmp_path)
+    service = FakeRunService(run)
+    requests: tuple[tuple[str, dict[str, object] | None], ...] = (
+        ("/api/v1/runs", {"objective": "must-not-create"}),
+        (f"/api/v1/runs/{run.id}/pause", None),
+        (f"/api/v1/runs/{run.id}/resume", None),
+        (f"/api/v1/runs/{run.id}/cancel", None),
+        (f"/api/v1/runs/{run.id}/cancel-current-execution", None),
+        (f"/api/v1/runs/{run.id}/compact", {"max_history_items": 1}),
+        (f"/api/v1/runs/{run.id}/model", {"model_profile": "fast"}),
+        (f"/api/v1/runs/{run.id}/message", {"message": "must-not-dispatch"}),
+    )
+
+    async with _client(service) as client:
+        responses = [await client.post(path, json=body) for path, body in requests]
+
+    for response in responses:
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "run_kind_effect_policy_denied"
+    assert service.mutation_calls == []

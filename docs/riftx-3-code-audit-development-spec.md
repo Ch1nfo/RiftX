@@ -1,6 +1,6 @@
 # RiftX 3.0 — RiftX Code Audit 开发目标与实施规格
 
-> 状态：Proposed / 3.0 开发权威目标
+> 状态：Accepted / 3.0 开发权威目标
 >
 > 文档日期：2026-08-02（Asia/Shanghai）
 >
@@ -10,7 +10,10 @@
 >
 > 产品主功能名称：RiftX Code Audit
 >
-> 规格修订：2026-08-03 / M1 契约收口
+> 规格版本：riftx.code-audit-development-spec/v2
+>
+> 规格修订：2026-08-03 / M1 effect routing、Runner ownership/legacy proof、执行所有权、
+> 安全上下文版本化、Closure 恢复、阶段依赖与产品表面收口
 
 ## 0. 文档用途
 
@@ -71,7 +74,8 @@ RiftX Code Audit 不是：
 
 ### 2.1 3.0 GA 必须交付
 
-1. 本地 Git 仓库、指定 revision、工作区快照和 base/head diff 的不可变审计目标。
+1. 在同一受信 source/analysis node 上，对本地 Git 仓库、指定 revision、工作区快照和
+   base/head diff 建立不可变审计目标；3.0 不承诺跨 Node 源码传输。
 2. Standard、Deep、Diff 三种扫描模式。
 3. Git-aware 文件清单、语言/依赖/入口面清单和显式 Scope Ledger。
 4. RiftX 原生 Detector 接口、确定性基础检测器和通用 SARIF 导入适配器。
@@ -96,6 +100,10 @@ RiftX Code Audit 不是：
 - 对所有语言宣称完整 AST/CFG/污点分析能力。
 - 二进制逆向、移动应用、固件或大型单体二进制审计。
 - 将模型推理过程或 chain-of-thought 暴露到 UI、Event 或 Report。
+- source node 与 analysis node 不同的跨 Node Snapshot 传输、水合、共享 CAS 或远程源码读取；
+  这些能力需要独立的 NodeAuditPolicy、双向认证、证书生命周期和对象授权协议，放到 3.x。
+- 多仓库 Campaign/Bulk Scan、Git pre-commit hook、托管 CI/PR 状态检查、自动 Jira/Linear/
+  GitHub issue 投递和私有安全公告工作流；它们是 3.x 产品集成，不是 3.0 审计核心。
 
 ### 2.3 语言能力分级
 
@@ -129,6 +137,8 @@ Agent Engine，确定性模式在没有任何模型 Provider 时仍能完成扫�
 | Diff 聚焦变更但理解全仓边界 | base/head Snapshot、change-impact graph、hunk/edge Closure |
 | 扫描历史、误报与比较 | Baseline、Triage、new/persisting/mitigated/resolved/regressed/reintroduced/unknown |
 | 动态 PoC 与静态 Proof 互补 | Approval + AuditSandbox；不可执行时保留明确 proof_gap |
+| 架构、安全策略和部署上下文 | RiftX 自有 AuditSecurityContextBundle；带 digest/provenance，默认只形成待证假设 |
+| 历史误报原因参与后续扫描 | Triage applicability predicate 每次在当前 Snapshot 重新验证，不能跳过检测 |
 
 明确不吸收：
 
@@ -256,6 +266,11 @@ Workflow 与 Activity 之间只传 ID、digest、小型状态和计数。源代�
 - 旧 RiftXRunWorkflow 不做分支改造；新增 RiftXCodeAuditWorkflow。
 - Audit 暂时继续使用关联 Run 的 Approval、Execution、Artifact 和 Event；API 对外使用 audit_id，不要求用户理解内部 run_id。
 - 关联 Run 的 workspace_path 必须是 RiftX 管理的 Audit 输出工作区，绝不能指向被审计仓库；所有源码读取都通过 Snapshot ID 和只读映射。
+- 3.0 GA 强制 `source_node_id == analysis_node_id == "local"`；远程 Runner Node 属于 3.x。local
+  Node 必须具有显式
+  `NodeAuditPolicy`，声明允许的 source roots、Snapshot/CAS root、Sandbox backend、固定镜像/
+  工具 digest 和最大资源；Control Plane 与 Node 两端都校验。请求不同 Node 时返回
+  `audit_cross_node_not_supported`，不得尝试共享目录或明文传输。
 - 新增 RunWorkflowControlRouter，按 RunKind 把 pause/resume/cancel/stop 信号发送到通用或 Audit Workflow；不能让现有 TemporalRunClient 错误寻找 riftx-run-{id}。
 - code_audit Run 拒绝 message、compact、switch-model 和通用 terminal 等不适用操作；返回结构化 run_kind_operation_unsupported。
 - 通用 Dashboard 默认只展示 general Run；Audit Run 通过 Code Audit 页面展示。Run API 返回 kind 并支持显式 kind filter。
@@ -265,6 +280,15 @@ Workflow 与 Activity 之间只传 ID、digest、小型状态和计数。源代�
 ### 4.4 RunKindEffectPolicy
 
 新增服务端 `RunKindEffectPolicy`，所有接受/间接解析 `run_id` 的 mutation 都在 API 依赖和 Application Service 内层各检查一次；未知 operation/kind/origin 默认拒绝。不能只维护 message/model/compact 三个特例。
+
+Policy catalog 的 ownership 使用必填
+`EffectOwnerKind = global | run | preflight_job | legacy_runner_command` 判别联合：只有 `run`
+variant 读取 `run_id/run_kind`；M2 Preflight route/Runner envelope 使用
+`preflight_job_id + principal + authorization/request/lease digest`，不得伪造 Run/Audit；global 只用于
+不能被 Run caller 复用的管理操作。`legacy_runner_command` 不是 Run/effect owner，只允许迁移后
+ownership-missing leased stop 用原 node/principal/command/lease 与固定 quarantine state 保存隔离
+stop proof；不得进入普通 callback、Preflight 或管理操作。owner kind 未知、nullable 字段组合或跨
+variant fallback 均拒绝。
 
 | mutation family | general Run | code_audit Run |
 | --- | --- | --- |
@@ -281,6 +305,36 @@ Workflow 与 Activity 之间只传 ID、digest、小型状态和计数。源代�
 | read-only Run/Event/Execution/Artifact | 现有行为 | 可读安全投影；restricted access class、Audit ownership 与 UI redirect 仍生效 |
 
 实现时建立 machine-readable operation catalog，覆盖 policy.py 中所有 DURABLE_WRITE/WORKFLOW_CONTROL/HOST_EXECUTION/HOST_CONTROL route、内部 Service mutation 和 Runner callback。测试枚举现有 route names 与 Service commands：每项必须声明 allowed kinds、origin、required RouteEffect 和 Audit alternative；新增未登记 mutation 使 CI 失败。特别证明 generic cancel 的 WORKFLOW_CONTROL 权限不能触发需要 HOST_CONTROL 的 Audit cancel。
+
+### 4.5 效果所有权根与执行计划层级
+
+Code Audit 的宿主效果不是一种统一的“允许执行命令”。3.0 固定三类 Code Audit 效果所有权根，
+并要求每类使用不同的 schema、capability 和 admission rule。另有一个只在 2.x→3.0 迁移兼容期
+存在的 `LegacyRunnerCommandEffectOwnership`：它只能证明原 Runner 对原 leased stop callback 的
+身份，不能证明 Run/Audit/resource owner，也不属于下表三类 Code Audit 执行计划。
+
+| 所有权根 | 何时存在 | 允许的效果 | 人工审批 |
+| --- | --- | --- | --- |
+| `AuditPreflightJob` | Audit/Run 创建之前 | source-root 授权后的 Git/object/index 只读预检、能力探测、最小预算估计 | 不需要，但必须是 Operator 发起、Node policy 允许的冻结请求 |
+| `AuditStaticEffectPlan` | Audit/Run 与冻结合同存在之后 | Snapshot materialize、same-node mount/pin、content parse、原生/已注册静态 Detector | Policy-owned；不使用通用 Run grant，也不能运行目标构建/测试 |
+| `AuditExecutionPlan` | M7 动态验证或 M9 Fix/Retest | Build、Test、PoC、依赖/目标网络、临时 worktree 写入 | `mandatory_one_plan`，每个 plan 单独批准 |
+
+`AuditPreflightJob` 不是 Run，也不得伪造 `run_id/audit_id`。它使用独立的 typed owner envelope，至少
+绑定 `job_id + operator_principal + authorization_scope_digest + source_node_id + source_root_identity +
+request_digest + backend/image/policy_digest + lease/expiry`。若通过 Runner transport 执行，M2 必须
+发布显式 `preflight_job_owner` protocol capability；不支持该 capability 的 Runner 不得接收任务。
+Preflight timeout、客户端断线或 Control Plane 重启后由持久 job reconciler 继续 cancel/stop/projection，
+不能留下无 owner Capsule。
+
+`AuditStaticEffectPlan` 与 `AuditExecutionPlan` 都使用 domain-separated canonical JSON 和服务端计算的
+plan digest，绑定 operation family、Audit/Run/Snapshot、Node/backend、只读/可写 mount、固定 image/
+tool/rulepack/config digest、clean env、网络策略、资源上限、输入与输出 contract。Static plan 的网络
+永远是 none、源码 mount 永远只读、可写范围只限 bounded out/tmp，且操作 family allowlist 不含
+build/test/poc/fix。动态 plan 才能在第 15.6 节审批后扩大这些能力。
+
+AUD-106/M1 在上述计划尚不存在时继续保持 Code Audit Runner enqueue 为零；这只是 M1 admission
+fence，不表示所有 Code Audit Runner 效果都推迟到 AUD-702A..D。M2 按 owner/plan schema 逐项开放
+Preflight、Snapshot 和 content processing，M3 再开放静态 Detector；未实现的 family 始终 deny-all。
 
 ## 5. 总体架构
 
@@ -388,13 +442,31 @@ running -> pausing -> paused -> running
 
 Audit 生命周期是产品投影；Run 仍是底层控制状态。映射必须由一个服务集中维护，不能由 UI 推断。即使错误发生在早期，进入 `failed/cancelled` 前也必须执行第 14.6 节 cleanup/stop audit，并对已产生事实走 partial terminal core seal/报告/manifest；若停止证明不完整则保持 `failing/cancelling/cleaning` 可控制非终态，不能直达失败终态。
 
+唯一例外是从未写入 StartIntent、从未创建 Capsule/effect/Workflow 的 draft：它可以在原子证明“从未
+启动”后记录 `never_started_cancelled` receipt，不生成扫描 Closure/CoreSeal，也不能被计入 completed
+Audit。只要 StartIntent、Workflow 或任一 host effect 曾存在，就必须走下面的 terminal closure 协议。
+
 `AuditScan.terminal_outcome` 是独立于 lifecycle/publication 的持久判定，固定为
 `complete | partial | failed | cancelled`。正常分析只能在 `validate_closure ->
-finalizing` 时选择 complete/partial；进入 cancelling/failing 分别原子冻结
+finalizing` 时根据 **PreparedClosure** 选择 complete/partial；进入 cancelling/failing 分别原子冻结
 cancelled/failed。该值在 cleaning、core seal、报告失败与发布重试期间保持不变，恢复时不得
-依据当前 lifecycle 重新猜测。Closure 只能在 `cleaning/cleanup` 中、所有效果停止证明肯定后
-记录；一经记录不可改写。停止证明前发生的 integrity/security 失败可把尚未记录 Closure 的
-complete/partial 单调升级为 failed，cancelled 不得降级成 failed。
+依据当前 lifecycle 重新猜测。
+
+Closure 是明确的两阶段协议：`validate_closure` 只生成可重算、尚未封存的
+`PreparedClosure(input_root, proposed_status, reason_codes, required_effect_inventory_digest)`；它不能
+写 terminal `AuditClosure`、不能让 UI 显示 complete，也不能进入 core seal。Cleanup 围栏新效果、
+取得所有 affirmative stop proof 并让 Run 收敛到匹配终态后，`FinalizeClosureUoW` 在同一事务中重验
+PreparedClosure 输入根、资源清单、stop proof、Run/Audit 映射和 budget/capability 状态，才写一次性
+不可变 `AuditClosure`。一经记录不得改写。停止证明前发生的 integrity/security 失败可把尚未完成
+finalize 的 complete/partial 单调升级为 failed，cancelled 不得降级成 failed。
+
+正常流程未到 `validate_closure` 就收到 cancel/fatal error 时，必须调用幂等
+`PrepareTerminalClosureUoW`：在围栏新效果的同一事务中冻结 `terminal_outcome=cancelled|failed`，
+按当前事实把尚未开始/失败/deferred/未知对象显式写入 PreparedClosure，并创建
+`TerminalClosureIntent`。事务失败时不得进入 cleaning/terminal；lease-based reconciler 持续扫描
+`cancelling|failing` 且缺 PreparedClosure/intent 的 Audit 并重建。PreparedClosure 可缺 Snapshot，
+但必须包含 `snapshot_not_created` 等 reason code、当前 effect inventory digest 和已持久 Evidence root；
+不得把早期失败伪装成空的正常 Closure。
 
 ### 6.2 Audit Phase
 
@@ -448,8 +520,8 @@ new -> normalized -> validating
 | Prove | 静态 trace、反证、测试或 PoC Evidence | 每个 Candidate 进入终态 |
 | Compose Risk | 事实化风险字段、AttackPath、Occurrence | High/Critical 达到证据门槛 |
 | Compare Baseline | new/persisting/mitigated/resolved/regressed/reintroduced/unknown | Coverage 足以支持每个历史结论 |
-| Validate Closure | 待封存 Coverage、未完成工作、效果清单 | 领域 Closure 通过且没有新效果可调度 |
-| Cleanup | Execution/Capsule stop proof、Run 终态 | 所有效果确认停止，Run 安全进入终态 |
+| Validate Closure | PreparedClosure、待封存 Coverage、未完成工作、效果清单 digest | proposal 可重算且没有新效果可调度；不得写 terminal Closure |
+| Cleanup | Execution/Capsule/Egress stop proof、Run 终态、不可变 AuditClosure | 所有效果确认停止；FinalizeClosureUoW 原子写 Closure 并使 Run 安全进入终态 |
 | Seal Core | canonical ledger roots、core seal、全部权威 Artifact digest | 事实层不可变且 core_seal_root 已持久化 |
 | Generate Reports | JSON/SARIF/Markdown/HTML | 仅从 core-sealed 事实生成并引用 core root |
 | Package & Publish | distribution manifest 与 digest | 报告/Artifact 校验完成，manifest 排除自身且最终封存 |
@@ -482,7 +554,7 @@ matrix_schema_version
 - Diff 要求 sealed base/head、Diff mapper/Comparator 和成对 Closure；缺一项拒绝 Start；
 - dynamic policy 选中的 Sandbox/Approval/Egress capability required；`static_only` 时 Build/Test/PoC not_applicable；
 - required 在 Start 缺失必须 reject_start，运行中缺失只能按合同选择 partial_capability 或 failed；optional 的两个时点都只能 continue_without_claim，not_applicable 的两个时点都必须 not_applicable；
-- SourceIngest row 必须绑定冻结的 source node、ingest backend digest 和 prepare proof；AnalysisBackend row 必须绑定 selected analysis node、backend ID、backend digest 和 analysis prepare proof；Detector/parser、hybrid execution 与选中的 dynamic validation row 必须绑定同一 selected analysis node/backend 及各自组件 version/digest；
+- SourceIngest row 必须绑定冻结的 source node、ingest backend digest 和 prepare proof；AnalysisBackend row 必须绑定 selected analysis node、backend ID、backend digest 和 analysis prepare proof；3.0 要求两者 node ID 恒等；Detector/parser、hybrid execution 与选中的 dynamic validation row 必须绑定该同一 Node/backend 及各自组件 version/digest；
 - mode/profile/policy 声明为 not_applicable 的 capability 不能被 scoped row 重新启用；全局 required 的 scoped row 不能降级，也不能替换 provider/node/backend、version/digest、proof 或 missing outcome；
 - 每个已知 capability（包括 Detector/parser scoped row）只能出现在规定 Phase，不能依赖 specificity resolver 改换执行身份；
 - `optional` 只能表示合同明确不作能力声明的增强项，不能用于隐藏 GA required；所有 Policy exclusion 在 Review 可见。
@@ -675,9 +747,47 @@ Preflight 是纯读取、无模型、无凭据变更的操作，必须返回：
 
 Preflight 不创建 Audit，不执行 Scanner，不访问模型。
 
+Preflight 会先创建一个持久、非 Run-scoped 的 `AuditPreflightJob`；“不创建 Audit”不等于允许
+best-effort 宿主进程。最小字段：
+
+~~~text
+job_id
+client_request_id
+operator_principal_id
+authorization_scope_digest
+source_node_id
+source_root_identity_digest
+request_schema_version
+request_digest
+backend_id/image_digest/policy_digest
+security_context_input_id/security_context_input_digest
+status: pending | claimed | running | succeeded | rejected | failed | cancelling | cancelled | outcome_unknown
+lease_owner/lease_expires_at
+capsule_id/effect_owner_digest
+result_plan_id/result_plan_digest
+result_context_bundle_id/result_context_bundle_digest
+stop_receipt_digest
+expires_at
+created_at/finished_at/state_version
+~~~
+
+同一 `operator_principal + client_request_id + request_digest` 精确重放返回同一 job；同键异请求拒绝。
+API 可以在短任务内等待结果，但 wire contract 必须返回 `job_id/status`，并提供 status/cancel；HTTP
+断线不取消 job。所有 claim/renew/finish/cancel 使用 state_version CAS。timeout、Runner/Control Plane
+重启或 outcome_unknown 由 reconciler 先查询 Capsule/Node 权威状态，禁止盲目重跑可能已经开始的
+解析。只有 stop receipt 肯定或证明从未产生 Capsule 时才能进入 cancelled/failed terminal。
+
+Preflight Job 的成功结果是短期 `AuditPreflightPlan`，不是 AuditContract，也不是执行授权。Plan
+冻结规范化 target/Scope、same-node selection、NodeAuditPolicy、backend/image/policy/capability proof、
+repository/content identity、MinimumFeasibleBudget、`security_context_bundle_id/digest` 和 expiry；
+服务端只持久 token hash。没有选择上下文时也必须绑定版本化 canonical empty bundle，而不是使用
+null/当前默认值。Create draft 只能消费/预留该 plan，不能让客户端 body 伪造 proof 或替换 Bundle。
+Preflight 原始路径、token、Git stderr、Context 原文和 Capsule locator 不进入 Event、普通日志或
+响应投影。
+
 本地 Git 仓库、object pack、index 和 config 本身也不可信。Control Plane 可信层只做 source-root/realpath/dirfd 授权、大小上限和 opaque job 调度；不得在带数据库、Temporal、模型或云凭据的进程里 import Git parser、解压 object 或启动 `git`。
 
-Preflight 与 Snapshot 在 M2 的 `SourceIngestCapsule` 中执行：只读挂载目标 repo，独立 Snapshot staging/out，无网络/凭据/socket，非 root，限制 CPU/memory/pids/time/input/output；经过安全评审的 object/index reader 以 raw blob 方式读取，不解释 repository/system/global Git config，不运行 hook、fsmonitor、textconv、diff driver、clean/smudge filter、credential helper、URL rewrite、submodule helper或 LFS 命令。必须验证 `.git` file、gitdir/commondir、object alternates 和 worktree admin path；逃出允许 root 的 external gitdir/alternate 默认拒绝。Capsule 只返回 bounded metadata、digest、CAS ingest handle 和 stop proof。
+Preflight 与 Snapshot 在 M2 的 `SourceIngestCapsule` 中执行：只读挂载目标 repo，独立 Snapshot staging/out，无网络/凭据/socket，非 root，限制 CPU/memory/pids/time/input/output；经过安全评审的 object/index reader 以 raw blob 方式读取，不解释 repository/system/global Git config，不运行 hook、fsmonitor、textconv、diff driver、clean/smudge filter、credential helper、URL rewrite、submodule helper或 LFS 命令。必须验证 `.git` file、gitdir/commondir、object alternates 和 worktree admin path；逃出允许 root 的 external gitdir/alternate 默认拒绝。Capsule 只返回 bounded metadata、digest、CAS ingest handle 和 stop proof。3.0 中 source/analysis node 必须相同；不同 Node 请求在创建 Job 前拒绝。
 
 若某个只读操作必须调用 `git` CLI，集中 `SafeGitAdapter` 也只能存在于 SourceIngestCapsule 内，使用固定 argv allowlist、clean env、超时与输出上限，并显式禁用 optional locks、prompt、replace refs、hooks、fsmonitor、external diff/textconv、filters、网络协议与 system/global config；不能调用 checkout、submodule update、LFS materialize 或任何会解释目标 repo driver 的命令。无法证明安全的路径标记 capability unavailable。恶意 object/index/config、压缩炸弹、include、hooks、fsmonitor、attributes filter/textconv、credential helper、alternate 与 replace-ref fixtures必须证明宿主零解析、零额外进程、零网络、零仓库写入，并受资源上限终止。
 
@@ -767,7 +877,9 @@ garbage_collect(unreferenced_before, dry_run) -> gc_plan/receipt
 
 Run-scoped Artifact 只保存 Audit 对该 Snapshot 的 Manifest/报告投影；它可以引用 snapshot_id/digest，但不拥有或删除共享 Snapshot 内容。
 
-跨 Node 水合使用短期 `SnapshotHydrationLease`，而不是“知道 digest 即可下载”：
+3.0 只实现 same-node materialization。SourceIngestCapsule 将 bytes 写入该 Node 上 RiftX 管理的
+SnapshotStore；analysis Capsule 通过短期 `SnapshotMountLease` 获得同一 Snapshot 的只读 mount，
+不能凭 digest 或路径直接遍历 CAS：
 
 ~~~text
 lease_id/nonce
@@ -778,18 +890,30 @@ target_node_id
 allowed_blob_digests
 max_bytes
 expires_at
-hydration_policy_digest
+mount_policy_digest
 status
 ~~~
 
-每个 manifest/chunk 请求都验证认证 Runner principal、Audit/Node/lease/expiry/剩余字节并防 replay；服务不提供跨 Audit digest 查询/list oracle。传输强制 TLS/mTLS 或等价双向认证加密，每块与最终 node-local CAS 重新验证 digest/manifest root，文件权限只授予关联 Audit worker。Lease/session 持久化、可撤销且绑定一个 Runner Execution；Run admission fence/cancel 先撤销 Lease，再由 Execution stopper证明无活跃传输。没有加密、object authorization 或 stop ownership 的跨 Node backend 必须标记 capability unavailable，不能回退明文共享目录。
+每次 mount/open 都验证认证 Runner principal、Audit/Node/lease/expiry、Manifest/blob digest 与剩余
+字节；服务不提供跨 Audit digest 查询/list oracle。Lease 持久、可撤销并绑定一个
+`AuditStaticEffectPlan` 和 effect execution identity；Run admission fence/cancel 先撤销 Lease，再由
+Capsule/Execution stopper 证明无活跃 fd、mount 或 worker。请求另一 Node 一律返回
+`audit_cross_node_not_supported`，不能回退 NFS、SMB、共享宿主路径、临时 HTTP 下载或明文复制。
 
-node-local bytes 也有独立生命周期。Backend 二选一且写入 capability proof：
+node-local bytes 有独立生命周期。Backend 二选一且写入 capability proof：
 
 1. 每 Execution 私有 materialization，目录只属于该 worker/mount namespace，cleanup 在进程停止后卸载、撤权并删除；或
-2. daemon-only 共享 CAS：底层 root 对普通 worker 不可遍历，`snapshot_hydration_objects` 只存 node/blob/local-key/integrity，`snapshot_hydration_pins` 为每个 Audit/Execution 创建不可转让的只读 mount token/ref。
+2. daemon-only 共享 CAS：底层 root 对普通 worker 不可遍历，`snapshot_mount_objects` 只存
+   node/blob/local-key/integrity，`snapshot_mount_pins` 为每个 Audit/effect execution 创建不可转让的
+   只读 mount token/ref。
 
-任一方案都要求：其他 Audit/同 UID 进程不能凭 path/digest 读取；stop proof 包含活跃 fd/process 已停、mount namespace 卸载、lease/pin revoked、worker path 不可访问。Runner 重启 reconciler 重建 object/pin/session 状态，无法证明撤权时 Cancel 保持 unconfirmed。Eviction/GC 只删除无 active pin 且超过保留期的对象，使用原子 tombstone，生成 node、object digests、bytes、reason、deleted_at 的 `HydrationGCReceipt`；Audit/Baseline/Retest pin 阻止删除。node-local cache 命中仍需新 Lease/Pin/ownership 校验，不能跨 Audit 沿用旧 mount。
+任一方案都要求：其他 Audit/同 UID 进程不能凭 path/digest 读取；stop proof 包含活跃 fd/process
+已停、mount namespace 卸载、lease/pin revoked、worker path 不可访问。Runner 重启 reconciler 重建
+object/pin/session 状态，无法证明撤权时 Cancel 保持 unconfirmed。Eviction/GC 只删除无 active pin
+且超过保留期的对象，使用原子 tombstone，生成 node、object digests、bytes、reason、deleted_at 的
+`SnapshotGCReceipt`；Audit/Baseline/Retest pin 阻止删除。cache 命中仍需新 Lease/Pin/ownership
+校验，不能跨 Audit 沿用旧 mount。跨 Node CAS/传输协议留到 3.x，并且不得通过扩展本地 locator
+绕过独立安全设计。
 
 ### 8.4 Code Scope Ledger
 
@@ -1028,6 +1152,70 @@ Threat Model 不能只是一段自由文本，至少包含：
 
 没有 Evidence 的部署假设必须标记 unresolved，不能作为排除漏洞的事实。
 
+#### 10.3.1 Audit Security Context Bundle
+
+RiftX 可以把仓库内 `SECURITY.md`、架构/威胁模型/部署文档，以及 Operator 明确提供的环境事实
+作为审计上下文，但这些内容不是 Prompt、不是 Policy，也不具备自动覆盖 Scope 的优先级。
+生命周期固定为：Operator 先创建可选的 pre-Audit `AuditSecurityContextInput`；Preflight 在同一
+SourceIngest/Content Sandbox 边界内解析该输入和被选择的仓库相对路径，产生 principal-owned、
+不可变且尚未归属 Audit 的 `AuditSecurityContextBundle`；`AuditPreflightPlan` 冻结 Bundle identity/
+digest；Create v2 UoW 最后写独立 binding，把该 Bundle 原子关联到新 Audit。不得先创建 Audit 再
+热填上下文，也不得让客户端在 Create body 中替换 Bundle。
+
+外部输入最小字段：
+
+~~~text
+input_id
+owner_principal_id
+authorization_scope_digest
+artifact_refs
+input_manifest_digest
+created_at/expires_at
+~~~
+
+最终 `AuditSecurityContextBundle` 不含 `audit_id`，最小字段为：
+
+~~~text
+context_bundle_id
+owner_principal_id
+authorization_scope_digest
+preflight_job_id
+source_input_digest
+schema_version
+entry_manifest_digest
+bundle_digest
+created_at/expires_at
+entries[]:
+  context_entry_id
+  source_kind: snapshot_security_policy | architecture_document | threat_model_document | operator_fact
+  artifact_or_blob_ref
+  scope_selectors
+  trust_class: untrusted_context | operator_attested_fact
+  policy_version
+  content_digest
+  claims_digest
+~~~
+
+Audit 归属由 insert-only `AuditSecurityContextBinding(audit_id, preflight_plan_id,
+context_bundle_id, context_bundle_digest, bound_at)` 表达。Bundle 可按内容去重，但读取必须同时验证
+principal/authorization、exact Preflight plan 和 Audit binding；知道 bundle digest/Artifact ID 不产生
+访问权。未选择任何上下文时，Preflight 生成版本化 canonical empty bundle，确保 deterministic profile
+的合同与重放仍有稳定 input root。
+
+仓库内文档始终是 `untrusted_context`，只能形成带 provenance 的待证声明或
+`unresolved_assumptions`；其中“忽略目录、这是误报、运行某命令、允许联网”等文字永远不能改变
+Scope、工具、审批、网络或 Closure。只有独立的 Operator attestation 可以证明部署、资产、权限或
+配置环境事实，但它不能单独证明代码漏洞不存在，也不能替代 Q1/Q2/Q3 技术 Evidence。
+
+外部上下文只通过有上限的受限 Artifact 上传接入，不开放服务器任意路径。上传 API 只做 bounded
+ingest；内容解析必须在 Preflight 的 Content Sandbox 中，并限制类型、大小、递归深度、压缩、页数和
+输出。仓库文档只接受已规范化的仓库相对路径或版本化 default-discovery policy；实际 bytes/digest
+来自同一 Preflight source target。冲突声明由确定性 policy 保存为 `context_conflict/unresolved`，
+不能按目录距离或模型偏好静默择一。Bundle ID/digest 冻结进 PreflightPlan、AuditContract、
+ModelDataEgressPolicy、ThreatModel input root 和 CoreSeal；Agent 只通过 Snapshot-aware 工具读取带
+provenance 的片段。输入、选择器、仓库内容或 Bundle digest 变化必须重新 Preflight/Review，不能
+热替换运行中的 Audit。
+
 ### 10.4 Prompt Injection 防线
 
 仓库代码、注释、README、Issue 模板、Scanner 输出和测试数据全部视为 untrusted source data：
@@ -1051,6 +1239,8 @@ provider_display_name
 execution_locality
 retention/training_disclosure
 allowed_scope_classes
+security_context_bundle_digest
+allowed_context_trust_classes
 allowed_remote_origins
 max_bytes_per_call
 max_bytes_per_audit
@@ -1072,7 +1262,10 @@ provider_terms_version
 provider_terms_digest
 ~~~
 
-Model egress v1 wire schema 为 `riftx.model-data-egress/v1`。endpoint origin 集使用
+面向权威 Preflight/Create 路径的 Model egress wire schema 为 `riftx.model-data-egress/v2`。
+`security_context_bundle_digest` 必须与
+同一 AuditContract/PreflightPlan binding 恒等；`allowed_context_trust_classes` 只能是合同明确允许的
+子集，默认不允许把 `operator_attested_fact` 原文发送到远程模型。endpoint origin 集使用
 canonical HTTPS origin 并计算独立 domain digest；policy_digest 覆盖上述全部冻结字段。
 `operator_consent_requirement_digest` 由除 consent 时间、该 digest 自身和 policy_digest 以外的
 所有 egress 风险字段，以 `riftx.model-egress-consent-requirement/v1` domain-separated SHA-256
@@ -1080,6 +1273,11 @@ canonical HTTPS origin 并计算独立 domain digest；policy_digest 覆盖上�
 仍需把实际 `start_request_id + reviewed_contract_digest` 同意保存为独立 Start 事实，不能在
 Start 后回写合同形成循环 digest。任意 schema、未知驻留/保留/训练披露或 consent digest
 mismatch 都必须 fail-closed。
+
+M1 已落地的 `riftx.model-data-egress/v1` parser/mapper 必须原样保留，只用于读取历史 synthetic
+draft；不得给 v1 注入 Context 字段、重新计算成 v2 digest 或允许其 Start。v1 与 v2 使用不同
+domain separator/schema digest，migration/full-chain tests 同时证明 v1 read-only 恢复和 v2
+authoritative path。
 
 默认 profile 为 deterministic；`local_only` 只允许服务端标记并验证为本地受控 origin 的模型。远程 profile 必须在 Review 明示 provider、base origin、数据驻留/保留/训练披露、最大外发字节和风险，由 Operator 对该 contract digest 显式同意；未知披露、origin 变化或 proxy 重定向一律阻止 Start。RiftX 不因 Provider 宣称“零保留”而跳过技术控制。
 
@@ -1325,6 +1523,21 @@ Triage 状态：
 
 每次 Triage 保存 actor、reason、created_at、expires_at（适用时）和 scope。Suppressions 必须可过期、可审计，不能删除原 Finding。
 
+历史 `false_positive`、`accepted_risk`、`fixed` 或 suppression 永远不能跳过当前 Audit 的 Detector、
+Hunter、Proof、Coverage 或 Closure。Triage 可以附带版本化 `applicability_predicate`，绑定 logical
+Finding、canonical anchor、guard/configuration/deployment facts、Evidence refs、policy/canonicalizer
+version 与 expiry；自由文本 reason 不能作为可执行 predicate。
+
+新 Occurrence 必须在当前 Snapshot 上重新计算 predicate，并保存 input digest、结果、reason code 与
+lineage：
+
+- `true`：只产生“历史 Triage 可能仍适用”的建议，当前技术 Decision 仍独立生成；
+- `false`：当前 Finding 保持 open，必要时投影 reopened；
+- `unknown`、能力/Coverage 不足或已过期：状态为 needs_review/open，绝不静默 suppress。
+
+Triage reason 和 predicate 不能提升 Evidence 质量、不能作为 Q1/Q2/Q3 漏洞证据，也不能回写旧
+Occurrence/CoreSeal。Baseline、Retest 和报告把技术生命周期与人工 Triage 分栏展示。
+
 ## 13. 领域模型与数据库
 
 ### 13.1 Run 扩展
@@ -1385,13 +1598,20 @@ Retest 的 `parent_snapshot_id + base_tree_digest + patch_digest` 必须 all-or-
 
 Audit 开始后不能只剩几个 digest。`audit_contracts` 必须保存有大小上限、版本化 canonical JSON 及其 digest，至少冻结规范化 source target（绝对路径作为敏感字段，不进 Event/API）、base/head、Scope/capture policy、analysis profile、Detector/rulepack/parser 集、模型 profile 与 ModelDataEgressPolicy、ValidationPolicy、预算、选定 node/backend、环境能力要求和所有 schema version：
 
-v1 使用 `riftx.audit-contract/v1`，canonical UTF-8 JSON 上限 256 KiB；内嵌
+M1 历史 draft 使用 `riftx.audit-contract/v1`；其 parser/mapper 必须保持逐字段兼容且只读恢复，
+永不可 Start、不能原地增加 Context 或重算 digest。M2/AUD-201 起的权威合同使用
+`riftx.audit-contract/v2`，canonical UTF-8 JSON 上限 256 KiB；内嵌
 versioned policy document 使用 `riftx.versioned-policy-document/v1`、单文档上限 64 KiB，
 ValidationPolicy document 还必须使用 `riftx.validation-policy/v1` 并显式携带与枚举一致的
 `validation_policy`。canonical parser 拒绝 duplicate key、非 canonical encoding、未知字段，
 并限制 depth 64、总节点 10,000、单 key 1 KiB UTF-8、单 string 64 KiB UTF-8。
-Contract、SourceTarget、Budget、CapabilityMatrix、Policy document、ModelDataEgressPolicy
+Contract、SourceTarget、Budget、CapabilityMatrix、SecurityContextBundle、Policy document、ModelDataEgressPolicy
 分别使用带 schema/domain separator 的 SHA-256，禁止跨对象类型复用裸 payload digest。
+
+v1/v2 使用独立 schema/domain digest；v2 缺少 Security Context Bundle 或携带 v1 Model Egress
+document 必须拒绝。migration 不改写 v1 canonical bytes，只标记其无 authoritative Preflight
+binding；full-chain/replay tests 必须覆盖 v1 read-only、v1 Start rejection 和 v2
+create/start/recovery。
 
 ~~~text
 contract_id
@@ -1405,7 +1625,9 @@ source_ingest_backend_digest
 source_prepare_proof_digest
 selected_node_id
 required_backend_id
-snapshot_hydration_policy_digest
+snapshot_mount_policy_digest
+security_context_bundle_id
+security_context_bundle_digest
 created_at
 sealed_at
 state_version
@@ -1423,7 +1645,8 @@ analysis_backend_digest
 analysis_prepare_proof_digest
 analysis_image_digest
 analysis_policy_digest
-snapshot_hydration_policy_digest
+snapshot_mount_policy_digest
+security_context_bundle_id/digest
 selection_policy_version
 eligible_candidates_digest
 ~~~
@@ -1431,6 +1654,11 @@ eligible_candidates_digest
 CapabilityMatrix 的 SourceIngest/AnalysisBackend rows 是这些字段的交叉证明，不允许形成两套
 互相冲突的 backend 身份。AuditContractRecord 的冗余查询列只是索引/快速校验；canonical
 contract 始终是完整恢复源，每个冗余值都必须与其重新解析结果恒等。
+
+Create v2 UoW 必须同时插入 `AuditSecurityContextBinding`，验证 Bundle principal/authorization、
+expiry、PreflightPlan identity 与 digest，并把相同 digest 写入 Contract 和
+ModelDataEgressPolicy。任一步失败时 Audit、Run、Project、Binding 和 token reservation 全部回滚；
+不得先提交 draft 再异步补 binding。
 
 Worker 重启只从该记录恢复，不读取当前配置来“补全”旧合同。
 `canonical_contract_json` 必须用 Text 原样保存，不能由 JSON column 重新编码。为避免循环 FK，
@@ -1455,7 +1683,7 @@ contract_id
 snapshot_id（sealed Snapshot 创建/绑定前可空）
 base_snapshot_id（Diff 可选）
 baseline_audit_id（可选）
-purpose: primary | validation_followup | retest
+purpose: primary | validation_followup | fix_followup | retest
 parent_audit_id（follow-up 可选）
 mode
 analysis_profile: deterministic | hybrid
@@ -1577,15 +1805,20 @@ finish 使用 CAS。Activity 重试先查询已有 terminal WorkItem；`outcome_
 | 表 | 作用 | 关键约束/索引 |
 | --- | --- | --- |
 | audit_projects | 稳定项目身份与 Engagement FK | repository_identity_digest 唯一；engagement_id FK |
+| audit_preflight_jobs | Audit 前 host effect 的持久 owner/lease/stop 账本 | principal + client_request_id 唯一；request digest、node/status/lease/expiry 索引 |
 | audit_preflight_plans | 短期冻结创建计划 | token_hash 唯一；expires/status 索引 |
+| audit_security_context_inputs | pre-Audit 外部上下文的 bounded Artifact input | principal/input manifest digest/expiry 索引；原文 restricted |
+| audit_security_context_bundles | Preflight 解析后的 principal-owned 不可变 Bundle/entries | owner/bundle/content/entry digest 唯一；无 audit_id |
+| audit_security_context_bindings | Audit 与 exact Preflight Bundle 的 insert-only 关联 | audit_id 唯一；plan/bundle/digest 复合 FK |
 | audit_contracts | 可恢复的 canonical 冻结合同 | audit_id 唯一；contract_digest 校验 |
 | audit_start_intents | DB→Temporal 可靠启动投递 | audit_id 唯一；start_request_id 唯一；status/next_attempt 索引 |
 | source_snapshots | insert-is-seal 不可变源码目标 | project_id + snapshot_digest 唯一；sealed_at 非空；tree/policy/schema 可校验 |
 | snapshot_references | Audit/Baseline/Evidence 对 CAS Snapshot 的生命周期引用 | audit/snapshot/role 唯一；GC 外键保护 |
-| snapshot_hydration_leases | 跨 Node CAS 对象授权与活跃传输 | lease nonce 唯一；audit/snapshot/target/expiry/status 索引 |
-| snapshot_hydration_objects | Node-local daemon CAS 对象（共享 backend） | node/blob digest 唯一；integrity/GC 状态 |
-| snapshot_hydration_pins | Audit/Execution 私有 mount/ref 授权 | node/object/audit/execution 唯一；revoked/expiry 索引 |
+| snapshot_mount_leases | same-node CAS mount 授权 | lease nonce 唯一；audit/snapshot/node/expiry/status 索引 |
+| snapshot_mount_objects | Node-local daemon CAS 对象（共享 backend） | node/blob digest 唯一；integrity/GC 状态 |
+| snapshot_mount_pins | Audit/effect execution 私有 mount/ref 授权 | node/object/audit/effect 唯一；revoked/expiry 索引 |
 | audit_scans | 审计聚合 | run_id 唯一；project/status/created 索引 |
+| audit_static_effect_plans | Snapshot/content/static Detector 的不可变执行计划 | audit/operation/input digest 唯一；plan digest 可重算 |
 | audit_phase_runs | 阶段执行 | audit/phase/idempotency 唯一 |
 | audit_scope_units | Coverage 工作单元 | audit/snapshot/kind/stable_key 唯一；audit/kind/status/risk 索引 |
 | audit_work_items | 可恢复 Agent/Detector 工作 | audit/phase/epoch/stable_key 唯一 |
@@ -1596,25 +1829,56 @@ finish 使用 CAS。Activity 重试先查询已有 terminal WorkItem；`outcome_
 | audit_capsules | Content/Validation/Fix 沙箱资源账本 | run/audit/status 索引；backend/node/stop proof 持久化 |
 | audit_network_egress_receipts | Broker 连接/DNS/TLS/redirect 凭证 | audit/approval/connection 索引；无 payload |
 | audit_egress_sessions | Broker 活跃 client/upstream/transfer 资源 | run/audit/status 索引；admission fence 与 stop proof |
+| workflow_signal_intents | General/Audit completion/approval/safety signal durable outbox | owner_kind/run/audit/event identity 唯一；判别 CHECK、lease/next_attempt/delivery receipt 索引 |
 | audit_signals | 未确认线索 | audit/disposition/cluster 索引 |
 | audit_signal_locations | Signal 精确位置 | signal/path/symbol 索引 |
 | audit_evidence | Audit-local 内容寻址证据引用 | audit_id + evidence_digest 唯一；跨 Audit 禁止直接引用 |
 | audit_evidence_locations | Evidence 与代码位置 | evidence/location 复合唯一 |
 | audit_decisions | append-only 裁决 | subject/created 索引；禁止覆盖 |
+| audit_terminal_closure_intents | early cancel/fatal 的 PreparedClosure durable repair intent | audit_id 唯一；outcome/status/lease/next_attempt 索引 |
 | code_finding_identities | 跨扫描逻辑 Finding | project/fingerprint_version/fingerprint 唯一 |
 | code_finding_occurrences | 单次观察 | audit/identity 唯一 |
 | code_finding_locations | Finding 代码位置 | occurrence/role/path 索引 |
 | code_finding_aliases | 重构/rename 身份关系 | from/to/version 唯一 |
 | code_finding_triage | append-only Triage | identity/created 索引 |
+| audit_triage_revalidations | 历史 Triage predicate 的当前 Snapshot 重验证 | occurrence/predicate/input digest 唯一；result/lineage 索引 |
 | code_finding_validation_supplements | 原 Occurrence 与独立 Validation Audit 关系 | source occurrence/validation audit 唯一；seal root |
 | audit_comparisons | Baseline 对比 | audit/baseline/identity 唯一 |
-| audit_closures | 封存 Coverage | audit_id 唯一 |
+| audit_prepared_closures | cleanup 前可重算的 Closure proposal | audit_id 唯一；input/effect inventory root 可重算 |
+| audit_closures | stop proof 后不可变封存 Coverage | audit_id 唯一；prepared/root/cleanup proof 恒等 |
 | audit_distribution_revisions | append-only 报告/manifest 发布版本 | audit/revision 唯一；manifest digest 唯一；parent 可追溯 |
-| audit_usage_records | token/调用/时长/worker | audit/kind/created 索引 |
+| audit_usage_records | 原子预算 reservation、实际 usage 与 uncertainty | audit/dimension/attempt 唯一；append-only/CAS reservation |
 | audit_model_calls | 模型请求意图、幂等能力与不确定结果 | request_id 唯一；audit/work_item/attempt 索引 |
 | audit_model_egress_receipts | 远程模型脱敏外发范围与字节凭证 | audit/call/sequence 唯一；outbound digest；不存明文 |
 
-所有多行子记录必须带 audit_id 或 project_id 并在 Repository 层验证对象归属，不能只依赖调用方传入正确 ID。
+`workflow_signal_intents` 使用严格 Schema：
+
+~~~text
+intent_id
+owner_kind: general_run | code_audit
+run_id
+run_kind
+audit_id?
+workflow_protocol_version
+workflow_id
+signal_kind
+source_event_kind/source_event_id/source_state_version
+payload_digest
+delivery_state: pending | claimed | delivered | observed_delivered | retryable | outcome_unknown
+lease_owner/lease_expires_at/attempt/next_attempt_at
+delivery_receipt_digest
+created_at/delivered_at/state_version
+~~~
+
+CHECK 要求 General 的 `audit_id IS NULL` 且 workflow identity/protocol 是 General；Code Audit 的
+`audit_id` 必填并与 Run/plan/execution owner 恒等。唯一键至少覆盖 owner、workflow protocol、
+signal kind 与 source event identity。升级时不盲目重放历史终态：migration/reconciler 先把缺可靠
+receipt 的 General Execution/Approval 标记 `reconciliation_required`，查询 Temporal/权威 projection；
+已反映则写 `observed_delivered`，明确未反映才创建 pending，无法判定则保持 `outcome_unknown` 并禁止
+自动重复 signal。stop ACK 使用独立 receipt，永不创建普通 completion intent。
+
+所有 Audit-specific 多行子记录必须带 audit_id 或 project_id 并在 Repository 层验证对象归属；通用
+shared 表必须带判别 owner root（如 run_id + owner_kind）和同等 FK/CHECK，不能只依赖调用方传入正确 ID。
 
 ### 13.4 JSON 使用边界
 
@@ -1791,14 +2055,35 @@ plan_validation_activity
 run_validation_child_workflows
 compose_risk_activity
 compare_baseline_activity
-validate_audit_closure_activity
+prepare_audit_closure_activity
 cleanup_audit_activity
+finalize_audit_closure_activity
 seal_audit_core_activity
 generate_audit_reports_activity
 seal_audit_manifest_activity
 ~~~
 
-Standard 完成一个 Hunt Epoch；Deep 执行多个 Epoch；Diff 使用独立 Scope planner，但最终共用 Reconcile、Proof、Risk 和 Closure。领域 Closure 通过后先围栏并清理所有效果，使关联 Run 达到可报告终态；随后封存权威事实 core root、生成引用该 root 的报告，最后生成 distribution manifest。
+Standard 完成一个 Hunt Epoch；Deep 执行多个 Epoch；Diff 使用独立 Scope planner，但最终共用
+Reconcile、Proof、Risk 和 Closure。`prepare_audit_closure_activity` 只生成 PreparedClosure；随后
+围栏并清理所有效果，使关联 Run 达到可报告终态；`finalize_audit_closure_activity` 重验 stop proof
+后原子写不可变 AuditClosure。只有 finalized Closure 可以进入 core root、报告和 distribution
+manifest。
+
+任意正常步骤的 cancel/fatal 分支使用同一尾链：
+
+~~~text
+fence_new_effects
+prepare_terminal_closure_activity
+cleanup_audit_activity
+finalize_audit_closure_activity
+seal_audit_core_activity
+generate_incomplete_report_activity
+seal_audit_manifest_activity
+~~~
+
+`prepare_terminal_closure_activity` 消费/创建 durable `TerminalClosureIntent`；Workflow 在该 Activity
+返回前崩溃、信号早于 phase transition 到达或 Control Plane 直接设置 fence 时，reconciler 都必须
+把它恢复到同一 tail，不允许跳过 PreparedClosure。
 
 这一顺序保留现有 ReportApplicationService 的“Run 终态后才可报告”安全约束。若报告生成失败，Run 和 core seal 可以保持已完成/不可变，但 Audit 必须是 completed_partial/report_failed，并允许只重试报告与 distribution manifest；不得重新启动扫描或改写 Finding。
 
@@ -1811,6 +2096,14 @@ Standard 完成一个 Hunt Epoch；Deep 执行多个 Epoch；Diff 使用独立 S
 - 长任务每 30 秒或更短 heartbeat，并在 heartbeat detail 中只保存安全小对象。
 - 超时、取消、解析失败、能力缺失和预算耗尽使用不同 error code。
 - 不把 Python exception repr 原样返回 UI。
+- Execution/effect terminal transition、Approval decision、stop ACK 和需要发送的 Workflow signal
+  必须使用持久 receipt/outbox：业务状态与 signal intent 同一事务提交，Control Plane 与 Worker 的
+  lease-based reconciler 幂等投递并记录 delivery receipt。进程内有限次数 retry 不是持久性保证；
+  Temporal 暂时不可用时 intent 保持 pending/retryable。stop ACK 只推进 safety/cleanup projection，
+  永远不产生普通 `execution_completed` signal。
+- outbox 是通用 `workflow_signal_intents`，使用 `owner_kind=general_run|code_audit` 判别字段和
+  exact workflow protocol/version；不能只建立 Audit 表后让 General completion 继续依赖内存 retry，
+  也不能让 Audit intent fallback 到 General workflow ID/signal。
 
 模型调用遵守 at-least-once 现实：调用前先持久 `ModelCallIntent/Attempt`（request_id、WorkItem、payload/schema/model digest、adapter、idempotency capability、预算 reservation、status）。Adapter 若支持服务端 idempotency/retrieve，重试必须复用同一 request_id 并先 reconcile；若不支持，Worker 在“请求可能已被 Provider 接收、结果尚未持久化”边界崩溃时，把 attempt 标为 `outcome_unknown`，不得自动再次调用。Policy 可将 WorkItem deferred/partial，或由 Operator 显式创建新 attempt；所有已知/可能被接收的 attempt 都计入最坏情况调用与 token 预算，并显示 usage uncertainty。故障注入必须覆盖 send 前、Provider accept 后、typed Packet 持久化前后三个边界。
 
@@ -1867,6 +2160,8 @@ Query 只返回 Workflow 已知的小型状态；完整详情由 API 查询数�
 
 - Pause 先停止调度新 WorkItem，再等待当前安全点；已经运行的静态只读 job 可按策略完成或中断。
 - Cancel 立即围栏新效果，并进入现有 RunSafetyStopService 的全资源停止流程。
+- 一旦 Audit 曾启动，Cancel/fatal 在 cleanup 前必须完成 `PrepareTerminalClosureUoW`；正常
+  `prepare_audit_closure_activity` 尚未运行、Snapshot 尚未创建或 Workflow 未收到信号都不是省略理由。
 - 只有所有效果均有停止证明，Audit 才进入 cancelled。
 - Activity fatal error 进入 failed 前也必须执行清理。
 - 清理无法证明完成时，Workflow 保持可控制状态，不把错误关闭成终态。
@@ -1914,7 +2209,15 @@ Temporal task queue 可以继续使用现有队列开发；生产建议允许单
 
 ### 15.2 最小 Content Processing Sandbox
 
-M2/M3 必须先交付最小 `AuditContentSandbox`，M7 再在同一 Backend contract 上增加 Build/Test/PoC/Fix。SourceIngest/Git object/index/config、Inventory 内容解析、language parser、Secret/Structural/Config Detector、dependency/SBOM、SARIF parser 与外部 Scanner均在对应低权限 profile 执行；SafeGitAdapter 不是宿主例外：
+M2/AUD-206 必须交付可用于真实授权仓库的、生产级最小 Linux container/VM
+`AuditContentSandbox`；fake backend 只用于 contract tests，不能满足 M2/M3 Exit。macOS 开发部署可以
+使用本机受控 Linux VM/container backend，但没有真实 backend/image/policy/stop proof 时，Preflight
+和真实仓库 Audit 必须 unavailable。M7 只在同一 Backend contract 上增加 Build/Test/PoC/Fix 与
+受控 egress，不得把“生产 Sandbox”整体推迟到 M7。
+
+SourceIngest/Git object/index/config、Inventory 内容解析、language parser、Secret/Structural/Config
+Detector、dependency/SBOM、SARIF parser 与外部 Scanner 均在对应低权限 profile 执行；
+SafeGitAdapter 不是宿主例外：
 
 - Snapshot/CAS 以只读、单 Snapshot 挂载；独立限额 out/tmp；
 - 非 root、只读 rootfs、无宿主 home、Docker/SSH/cloud socket；
@@ -1923,7 +2226,30 @@ M2/M3 必须先交付最小 `AuditContentSandbox`，M7 再在同一 Backend cont
 - 输入/output digest、image/backend proof、process identity 和 stop receipt 可追溯；
 - parser 只输出 bounded typed result/Artifact handle，不能直接连接数据库。
 
-Control Plane/普通 Temporal Worker 只处理 source-root dirfd 授权、有上限的 schema、digest 和 ID；不得 import 后直接调用敌对 Git/SARIF/AST parser。macOS 开发机可用可信自建 fixture 和 fake sandbox 测试 contract；没有合格 source-ingest/content sandbox proof 时，真实仓库的 Preflight/Snapshot/native/static parsing 必须显示 `audit_sandbox_unavailable`，不能只把动态验证标为 unavailable。
+Control Plane/普通 Temporal Worker 只处理 source-root dirfd 授权、有上限的 schema、digest 和 ID；不得 import 后直接调用敌对 Git/SARIF/AST parser。可信自建 fixture 可以使用 fake sandbox 做快速单元测试，但 M2/M3 集成与发布门禁必须在真实最小 backend 上执行。没有合格 source-ingest/content sandbox proof 时，真实仓库的 Preflight/Snapshot/native/static parsing 必须显示 `audit_sandbox_unavailable`，不能只把动态验证标为 unavailable。
+
+#### 15.2.1 Static Effect Plan
+
+M2 引入 `AuditStaticEffectPlan/v1`，作为 §4.5 的 post-Audit 只读/静态效果合同。每个 plan 至少包含：
+
+~~~text
+plan_id/schema_version/plan_digest
+audit_id/run_id/snapshot_id
+operation_family: snapshot_materialize | snapshot_mount | content_parse | static_detector
+node_id/backend_id/image_digest/policy_digest
+tool_or_parser_digest/rulepack_config_digest
+read_only_mounts/unique_bounded_output_root
+network: none
+clean_env_digest
+cpu/memory/pids/wall/disk/file/output limits
+input_manifest_digest/output_contract_digest
+created_by_policy/policy_version/created_at
+~~~
+
+Plan 由 RiftX policy 生成，不由 Agent、Runner 或 API caller 提交；不需要人工点击，但仍需完整 owner、
+digest、capability、lease、output 和 stop-proof 验证。`operation_family` 每个里程碑逐项开放：M2 只开
+Snapshot/content，M3 才开 static_detector。任何 build、test、PoC、依赖下载、目标网络或 writable
+source mount 都不属于 Static plan，必须等待第 15.6 节动态计划与审批。
 
 ### 15.3 ValidationPolicy
 
@@ -1962,7 +2288,9 @@ stop(capsule) -> stop_proof
 destroy(capsule) -> destruction_receipt
 ~~~
 
-首个生产 backend 目标为隔离 Linux 容器或 VM。最小 Content Sandbox 在 M3 前可用；M7 扩展动态执行能力。没有对应 backend proof 时相关静态或动态 capability 分别显示 unavailable，禁止宿主降级。
+首个生产 backend 为隔离 Linux 容器或 VM。最小 Content Sandbox 必须在 M2/AUD-206 完成并通过
+真实 backend gate；M7 只扩展动态执行能力。没有对应 backend proof 时相关静态或动态 capability
+分别显示 unavailable，禁止宿主降级。
 
 Capsule 约束：
 
@@ -2017,7 +2345,9 @@ Broker 在打开 socket 前持久化 `audit_egress_sessions` 并检查 Run-scope
 
 远程模型是单独的 Audit-level `ModelEgressConsent`：Start 时对固定 contract/provider/origin/redaction policy/max calls/max bytes/expiry 一次确认，每个 ModelCall 仍做 admission、budget、broker 与 EgressReceipt，但不复用一次性动态 Approval，也不要求每 call 人工点击。任何合同字段变化需要重新 Review/Start consent。该 consent 不能授权 dependency、PoC、target 或其他网络；`local_only` 不产生远程 consent。
 
-每个 `AuditExecutionPlan` 以 canonical schema 冻结并计算 `plan_digest`，至少包含 Audit/Snapshot/Finding、operation、argv、node/backend、只读 mount、唯一 writable roots、egress broker origin/resolved-IP/TLS/redirect policy digest、clean env diff、CPU/memory/pids/time/disk/output、输入/预期输出 digest 和 policy version。所有供应链对象必须绑定 bytes 而非名字：OCI manifest/rootfs digest（tag 仅显示）、executable SHA-256、签名 Tool Registry revision、interpreter/compiler/runtime digest、rulepack/parser/config/lock digest、registry metadata snapshot 与签名/allowlist 验证结果。mutable tag、PATH lookup 或普通文件路径不能作为执行身份。
+每个动态 `AuditExecutionPlan/v1` 以 canonical schema 冻结并计算 `plan_digest`。它是 §4.5 计划层级
+中的动态 subtype，不得与无需人工审批的 `AuditStaticEffectPlan` 混用。它至少包含
+Audit/Snapshot/Finding、operation、argv、node/backend、只读 mount、唯一 writable roots、egress broker origin/resolved-IP/TLS/redirect policy digest、clean env diff、CPU/memory/pids/time/disk/output、输入/预期输出 digest 和 policy version。所有供应链对象必须绑定 bytes 而非名字：OCI manifest/rootfs digest（tag 仅显示）、executable SHA-256、签名 Tool Registry revision、interpreter/compiler/runtime digest、rulepack/parser/config/lock digest、registry metadata snapshot 与签名/allowlist 验证结果。mutable tag、PATH lookup 或普通文件路径不能作为执行身份。
 
 这些 digest 必须在 Review 前解析；Approval 保存完整 plan digest，admission、sandbox prepare 与 Runner 真正 execute 前都从实际 bytes 重新计算并常量时间比较。解析结果、签名状态、tool/image/rulepack 任一变化都使 Approval 失效并回到 Review。一个 Approval ID 只能原子消费一次且只能用于该 plan；任何命令、backend、网络或资源上限变化也创建新 Approval。Operator 对部署事实的确认不能替代技术执行 Evidence。
 
@@ -2025,61 +2355,90 @@ Broker 在打开 socket 前持久化 `audit_egress_sessions` 并检查 Run-scope
 
 ### 15.7 修复与 Retest
 
-Fix Advisor 只产生结构化建议。操作员选择生成补丁后：
+Fix Advisor 只产生结构化建议。操作员选择生成补丁时，服务端先原子创建
+`purpose=fix_followup` 的独立 Audit/Run，绑定 source Audit/Snapshot/Occurrence/Decision digest 和
+client request identity，并返回可观察的 `fix_audit_id/run_id`。该 follow-up 使用普通 Audit
+status/cancel/SSE/Artifact API，但有独立 Workflow/phase allowlist；它不能创建 Finding、改写 source
+Occurrence 或继承 General Run grant。后续流程为：
 
-1. 从 Snapshot 创建临时 Git worktree/overlay。
-2. 记录 base tree digest。
-3. Agent 仅在该临时副本写入。
-4. 生成 patch Artifact 与文件变更摘要。
-5. 运行批准的回归测试与目标验证。
-6. 把 patched overlay 物化并封存为新的 SourceSnapshot，保存 `parent_snapshot_id + base_tree_digest + patch_digest`；绝不修改或复用原 Snapshot bytes。
-7. 创建 Retest Audit，关联原 Occurrence、新 Snapshot 和 patch digest。只可复用 scope policy 与稳定 target anchors；ScopeUnit、Receipt、Evidence、Occurrence 和 Closure 必须针对新 blob 重新生成。
-8. UI 提供补丁下载或人工复制；3.0 不自动提交、推送或合并。
+1. 生成结构化 Fix plan，并冻结 `AuditExecutionPlan(fix)`；写入临时副本前必须
+   `mandatory_one_plan` approve_once。
+2. 从 source Snapshot 创建临时 Git worktree/overlay，记录 base tree digest。
+3. Agent 仅在该临时副本和 plan 的 writable roots 内写入。
+4. 生成 restricted patch Artifact、文件变更摘要和 immutable patch/base digest；Artifact owner 是
+   fix follow-up Audit。
+5. 运行获批的回归测试与目标验证，保存 Execution/Capsule/stop proof；失败、取消和重启都投影到
+   fix Audit，不丢弃已经生成的证据/patch。
+6. Operator 明确触发 Retest 时，服务端验证 `fix_audit_id + patch_artifact_id + patch_digest +
+   base_tree_digest`，把 patched overlay 物化并封存为新的 SourceSnapshot，保存
+   `parent_snapshot_id + base_tree_digest + patch_digest`；绝不修改或复用原 Snapshot bytes。
+7. 创建 `purpose=retest` Audit，关联原 Occurrence、fix follow-up、新 Snapshot 和 patch digest。只可
+   复用 scope policy 与稳定 target anchors；ScopeUnit、Receipt、Evidence、Occurrence 和 Closure
+   必须针对新 blob 重新生成。
+8. UI 提供 fix Audit 状态、取消、补丁下载或人工复制；3.0 不自动提交、推送或合并。
 
 ## 16. API 契约
 
 ### 16.1 路由
 
-~~~text
-POST /api/v1/audits/preflight
-POST /api/v1/audits
-POST /api/v1/audits/{audit_id}/start
-GET  /api/v1/audits
-GET  /api/v1/audits/{audit_id}
-POST /api/v1/audits/{audit_id}/pause
-POST /api/v1/audits/{audit_id}/resume
-POST /api/v1/audits/{audit_id}/cancel
-GET  /api/v1/audits/{audit_id}/phases
-GET  /api/v1/audits/{audit_id}/coverage
-GET  /api/v1/audits/{audit_id}/threat-model
-GET  /api/v1/audits/{audit_id}/signals
-GET  /api/v1/audits/{audit_id}/findings
-GET  /api/v1/audits/{audit_id}/evidence/{evidence_id}
-GET  /api/v1/audits/{audit_id}/compare
-POST /api/v1/audits/{audit_id}/reports
-GET  /api/v1/audits/{audit_id}/reports
-GET  /api/v1/code-findings/{finding_id}
-POST /api/v1/code-findings/{finding_id}/triage
-POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/validate
-POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/fix
-POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/retest
-~~~
+下表是 GA 最终路由及最早允许注册的里程碑。后端能力未完成时不得提前注册“永远 unavailable”
+的占位 endpoint，也不得让 M6 UI 伪造 M7/M8/M9 状态。
 
-Artifact 下载继续使用现有认证下载能力。Audit 事件继续使用关联 run_id 的现有 SSE；AuditResponse 必须返回 run_id 供客户端接线。
+| 最早里程碑 | 路由 | RouteEffect / 说明 |
+| --- | --- | --- |
+| M1 | `POST /api/v1/audits` | DURABLE_WRITE；只创建 draft |
+| M1 | `GET /api/v1/audits`、`GET /api/v1/audits/{audit_id}` | READ_ONLY；授权投影 |
+| M1 | `POST /api/v1/audits/{audit_id}/pause`、`POST /api/v1/audits/{audit_id}/resume` | WORKFLOW_CONTROL；只走 Audit router |
+| M1 | `POST /api/v1/audits/{audit_id}/cancel` | HOST_CONTROL；围栏、stop、proof |
+| M1 | `GET /api/v1/audits/{audit_id}/artifacts` | READ_ONLY；Audit-root list |
+| M1 | `GET /api/v1/audits/{audit_id}/artifacts/{artifact_id}` | READ_ONLY；exact owner detail |
+| M1 | `GET /api/v1/audits/{audit_id}/artifacts/{artifact_id}/content` | READ_ONLY；bounded authenticated stream |
+| M2/AUD-209 | `POST /api/v1/audit-context-inputs` | DURABLE_WRITE；只做 bounded restricted Artifact ingest，不解析内容 |
+| M2/AUD-209 | `GET /api/v1/audit-context-inputs/{input_id}` | READ_ONLY；principal-owned 安全摘要，无原文/locator |
+| M2/AUD-209 | `GET /api/v1/audit-context-bundles/{bundle_id}` | READ_ONLY；exact principal/plan 授权的 provenance/conflict 摘要 |
+| M2 | `POST /api/v1/audits/preflight` | HOST_EXECUTION；创建/可短暂等待 AuditPreflightJob |
+| M2 | `GET /api/v1/audits/preflight/{job_id}` | READ_ONLY；只返回安全 job/result projection |
+| M2 | `POST /api/v1/audits/preflight/{job_id}/cancel` | HOST_CONTROL；pre-Audit Capsule stop |
+| M2 | `POST /api/v1/audits/{audit_id}/start` | HOST_EXECUTION；只持久 StartIntent |
+| M2/AUD-209 | `GET /api/v1/audits/{audit_id}/security-context` | READ_ONLY；只读 bound Bundle/entry provenance 与 unresolved conflict |
+| M2 | `GET /api/v1/audits/{audit_id}/snapshots/{snapshot_id}` | READ_ONLY；Manifest 摘要，无 locator |
+| M3/M5 | `GET /api/v1/audits/{audit_id}/phases`、`coverage`、`threat-model`、`signals`、`findings`、`compare` | READ_ONLY；服务端 read model/cursor |
+| M3/M5 | `GET /api/v1/audits/{audit_id}/evidence/{evidence_id}` | READ_ONLY；positive allowlist |
+| M5 | `GET /api/v1/code-findings/{finding_id}` | READ_ONLY；长期 Finding/Occurrence |
+| M5 | `POST /api/v1/code-findings/{finding_id}/triage` | DURABLE_WRITE；带 reason/predicate |
+| M5/M6 | `POST /api/v1/audits/{audit_id}/reports` | DURABLE_WRITE；只重建 distribution revision |
+| M5/M6 | `GET /api/v1/audits/{audit_id}/reports`、`GET .../reports/{revision_id}`、`GET .../reports/{revision_id}/verify` | READ_ONLY；revision 可列出/校验 |
+| M6 | `GET /api/v1/audit-summary` | READ_ONLY；AuditsPage 权威 metrics；避免与 `{audit_id}` 动态路由冲突 |
+| M6 | `GET /api/v1/audits/{audit_id}/snapshots/{snapshot_id}/snippets` | READ_ONLY；relative path、bounded lines、digest |
+| M7/AUD-702B | `GET /api/v1/audits/{audit_id}/approvals`、`GET .../approvals/{approval_id}` | READ_ONLY；Audit-owned plan projection |
+| M7/AUD-702B | `POST /api/v1/audits/{audit_id}/approvals/{approval_id}/decision` | HOST_CONTROL；mandatory-one-plan approve_once/reject |
+| M7/AUD-702B | `POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/validate` | HOST_EXECUTION；创建 validation follow-up Audit |
+| M9/AUD-901C | `GET /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/fixes` | READ_ONLY；列出 fix follow-up Audit 与 patch/status 摘要 |
+| M9/AUD-901C | `POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/fix` | HOST_EXECUTION；202 创建 `purpose=fix_followup` Audit/Run |
+| M9/AUD-902B | `POST /api/v1/code-findings/{finding_id}/occurrences/{occurrence_id}/retest` | HOST_EXECUTION；绑定 fix Audit/patch/base 后创建 Retest Audit |
 
-Validate/Fix/Retest 不能只绑定长期 logical finding。请求体还必须带 `source_audit_id + source_snapshot_id + expected_snapshot_digest + expected_occurrence_decision_digest + client_request_id`；Retest 再带 patch/base digest。Service 验证 path 中 finding/occurrence、Audit、Snapshot、Evidence 和当前 Decision 全部同域且未过期，任何 mismatch 返回 `audit_occurrence_stale`。不提供 occurrence 的逻辑 Finding action 不实现“自动选最新”；UI/CLI 必须让 Operator 明确选择要验证/修复的 Observation。
+Audit 事件继续使用关联 `run_id` 的现有 SSE；AuditResponse 必须返回 run_id 供客户端接线。M8
+Deep/Diff 优先扩展上述 Audit/Phase/Coverage/Compare read models，而不是另造不兼容根 API；Epoch、
+novelty、impact scope 等字段在 M8 后才可出现。Artifact content、snippet、Evidence 和报告下载都
+必须走 authenticated abortable stream，并复用 auth session epoch/owner 校验。
+
+Validate/Fix/Retest 不能只绑定长期 logical finding。请求体还必须带 `source_audit_id + source_snapshot_id + expected_snapshot_digest + expected_occurrence_decision_digest + client_request_id`；Retest 再带 `fix_audit_id + patch_artifact_id + patch_digest + base_tree_digest`。Service 验证 path 中 finding/occurrence、Audit、Snapshot、Evidence、当前 Decision、fix follow-up 和 patch Artifact 全部同域且未过期，任何 mismatch 返回 `audit_occurrence_stale`。不提供 occurrence 的逻辑 Finding action不实现“自动选最新”；UI/CLI 必须让 Operator 明确选择要验证/修复的 Observation。
 
 Occurrence validate 是 sealed 后的 follow-up，不改写原 Audit：source Audit/Occurrence/core seal 必须已封存；endpoint 原子创建 `purpose=validation_followup` 的新 Audit/Run，引用同一 immutable Snapshot，但重新生成有限 ScopeUnit、Receipt、Approval、Execution、Evidence、Decision 与自己的 core seal。结果通过 `code_finding_validation_supplements(source_occurrence_id, validation_audit_id, result_occurrence_id, seal_root)` 追加关联，UI 分栏显示“original scan”与“follow-up validation”。原 Occurrence disposition/Evidence/core 不变。source Audit 尚未 sealed 时返回 `audit_occurrence_not_sealed`；运行中验证只由原 Workflow 的 Candidate plan 完成，不通过该 endpoint。
 
-Fix 同样只产生新 plan/patch Artifact；Retest 对 patched bytes 创建第 15.7 节的新 Snapshot/Audit。任何 follow-up 失败都不能回写 source Decision。
+Fix endpoint 原子创建 `purpose=fix_followup` 的 Audit/Run 并返回 202；状态、SSE、cancel、Approval 与
+Artifact 复用 Audit-owned API，patch Artifact 只能属于该 fix Audit。Retest 对已封存、digest 校验
+通过的 patched bytes 创建第 15.7 节新 Snapshot/Audit。任何 follow-up 失败都不能回写 source
+Decision；取消 fix Audit 后不得继续写 worktree、执行命令或生成新 patch。
 
 ### 16.2 PreflightRequest
 
 ~~~json
 {
+  "client_request_id": "uuid",
   "repository_path": "/absolute/local/path",
   "source_execution_target": {
-    "node_id": "source-node-id",
+    "node_id": "local",
     "source_ingest_backend": "linux_container"
   },
   "target": {
@@ -2090,6 +2449,11 @@ Fix 同样只产生新 plan/patch Artifact；Retest 对 patched bytes 创建第 
   },
   "include_paths": [],
   "exclude_paths": [],
+  "security_context": {
+    "input_id": null,
+    "repository_paths": ["SECURITY.md"],
+    "discover_defaults": true
+  },
   "mode": "standard"
 }
 ~~~
@@ -2101,9 +2465,24 @@ base_revision；revision target 禁止 include_untracked。repository_path 必�
 只接受大写 drive + `/`，或 lowercase server 的 `//server/share/...` UNC 形式，不接受反斜线、
 重复 separator、尾 separator 或 home expansion。原路径仍是敏感合同字段，不进入 Event/API。
 
-绝对路径是 node-local，不能在未选 Node 时解释。Operator 必须指定 `source_execution_target`，或先调用服务端确定性 eligible-node selection 并把结果放入请求。Control Plane 根据 operator-approved Node/source-root inventory 授权；Source Runner 在打开前再次 realpath/dirfd 校验自己的 allowed roots，双方任一拒绝即失败。禁止仅信 Runner 自报 capability。
+`security_context.input_id` 只能引用同一 principal/authorization scope 下尚未过期的 bounded input；
+`repository_paths` 必须是规范化仓库相对路径，数量、总字节和允许文档类型有上限。`discover_defaults`
+只启用版本化、可在 Review 展示的 filename policy，不能遍历任意文档或采用仓库内指令。任一字段变化
+都改变 Preflight request digest；AUD-209 未启用时只接受空 input/paths 与 canonical empty bundle。
 
-Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 `source_node_id + source_root_identity_digest + repository_identity_digest + backend/image/policy digest + capsule_prepare_proof_digest + content digest`。Start/Snapshot 必须在同一 source Node 重新证明路径 identity 与内容；同名路径在另一 Node 不可替代。若 analysis `execution_target.node_id` 不同，只把已封存、逐 blob 校验的 CAS Snapshot 经认证 content-addressed channel 传输/水合到目标 Node，绝不传原绝对路径或让目标 Node重读源仓库。
+绝对路径是 node-local，不能在未选 Node 时解释。Operator 必须指定
+`source_execution_target`，或先调用服务端确定性 eligible-node selection 并把结果放入请求。
+3.0 eligible set 只包含具备显式 `NodeAuditPolicy` 的 `local` Node；Control Plane 根据
+operator-approved local source-root inventory 授权，Source Runner 在打开前
+再次 realpath/dirfd 校验自己的 allowed roots，双方任一拒绝即失败。禁止仅信 Runner 自报
+capability，也禁止选择不同 analysis node。
+
+Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 `preflight_job_id +
+operator/authorization digest + source_node_id + source_root_identity_digest + repository_identity_digest +
+backend/image/policy digest + capsule_prepare_proof_digest + content digest + security_context_input_digest +
+security_context_bundle_id/digest`。Start/Snapshot 必须在同一 Node 重新证明路径 identity、
+NodeAuditPolicy、内容与 Bundle binding；同名路径在另一 Node 不可替代。Create/Start 提交的
+`execution_target.node_id` 若与 source node 不同，返回 `audit_cross_node_not_supported`。
 
 ### 16.3 CreateAuditRequest
 
@@ -2127,7 +2506,7 @@ Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 
   "validation_policy": "static_only",
   "baseline_audit_id": null,
   "execution_target": {
-    "node_id": "node-id",
+    "node_id": "local",
     "required_sandbox_backend": "linux_container"
   },
   "budget": {
@@ -2147,7 +2526,7 @@ Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 
 | 所有者 | 事实 | wire 规则 |
 | --- | --- | --- |
 | Caller | client_request_id、project name、允许的 engagement、mode/profile、model/egress 选择、validation policy、baseline、预算和受约束的 execution preference | 可以提交；进入版本化请求摘要 |
-| Preflight / 服务端 capability | repository identity、规范化 target/Scope、source/analysis node、实际 backend、eligible candidates、image/policy/component digest、prepare/capability proof、CAS handoff policy | 只能由 `preflight_token` 解析出的持久 plan 注入；body 出现同名 proof/selection 字段返回 422 |
+| Preflight / 服务端 capability | repository identity、规范化 target/Scope、same-node source/analysis selection、NodeAuditPolicy、实际 backend、eligible candidates、image/policy/component digest、prepare/capability proof、local mount policy、security context bundle identity/digest | 只能由 `preflight_token` 解析出的持久 plan 注入；body 出现同名 proof/selection/context bundle 字段返回 422 |
 | 服务端授权/执行 | authorization_reference、Audit/Run/Project/Contract/Execution ID、Operator consent 的服务端记录时间、contract digest、StartIntent | 永远不是 caller wire 字段 |
 
 AUD-104 为验证 M1 persistence 暂时暴露
@@ -2159,7 +2538,9 @@ untrusted assertions**，没有授权、Preflight、执行选择、审批或 Sta
 永远不能 Start。
 
 AUD-201 必须引入 `riftx.audit-create-draft-request/v2`，从 HTTP body 移除上述 proof/selection/
-consent 事实，由持久 Preflight plan 构造权威 Contract，并让 Start UoW 强制验证 plan binding。
+consent/Bundle 事实，由持久 Preflight plan 构造权威 Contract，并让 Create UoW 原子写
+`AuditSecurityContextBinding`、让 Start UoW 强制验证 plan/bundle binding。AUD-209 完成前只允许
+Preflight 绑定 canonical empty bundle；非空输入返回 capability unavailable，而不是省略 digest。
 迁移前创建的 v1 draft 不得被“补一个 token”升级为可执行对象；Operator 必须重新 Preflight 并
 创建 v2 draft。任何代码若把 v1 synthetic assertion 当作 proof，按 P0 安全问题处理。
 
@@ -2171,12 +2552,22 @@ client_request_id 是请求级幂等键。M1/v1 的 request identity 明确定�
 authorization domain 重用时不是 exact replay，而是 `audit_idempotency_conflict`。该 binding 不
 返回客户端，也不是凭据。M2/v2 还必须纳入稳定的 Preflight plan identity/digest，但排除 raw
 token。同一 key/schema/request identity 返回同一 Audit 的当前 lifecycle/version，同 key 异
-identity 返回 conflict。HTTP 响应丢失后的 exact retry 不新增 Event，也不把已推进 Audit 改回
+identity 返回 conflict。v2 identity 同时绑定 security context bundle digest；HTTP 响应丢失后的
+exact retry 不新增 Event，也不把已推进 Audit 改回
 draft。`audit.enabled=false` 的 create admission fence 优先于 exact replay。
 
 `engagement_id` 可引用已授权的现有 Engagement；为空时 UoW 为新 CodeProject 创建 Engagement。复用时必须验证 authorization_reference/source policy 与 Project 对象域，不允许借任意 Engagement 绕过 source authorization。
 
-最终 `POST /audits` 只创建 `draft`，不再次接触 Git、不物化 Snapshot、不启动 Temporal。关联 Run 的 `node_id` 来自服务端冻结的 analysis selection；source node/backend/proof 来自绑定的 Preflight plan，而不是 body 中的同名值。Node 自报 capability 只作提示：Preflight 已获得 source-ingest prepare proof；Start 重新校验 source/analysis Node，后续每次 content/dynamic `sandbox.prepare` 再验证实际隔离能力。自动选择必须在 Review 前完成，选择算法、候选集合、source/analysis node/backend/image policy 均冻结到 AuditContract。
+最终 `POST /audits` 只创建 `draft`，不再次接触 Git、不物化 Snapshot、不启动 Temporal。关联 Run
+的 `node_id` 来自服务端冻结的 same-node selection；source/analysis node/backend/proof 来自绑定的
+Preflight plan，而不是 body 中的同名值。Node 自报 capability 只作提示：Preflight 已获得
+source-ingest prepare proof；Start 重新校验同一 Node 与 NodeAuditPolicy，后续每次 content/dynamic
+`sandbox.prepare` 再验证实际隔离能力。自动选择必须在 Review 前完成，选择算法、候选集合、
+same-node backend/image/policy 均冻结到 AuditContract。
+
+Create draft 的同一事务还必须验证并插入 exact `AuditSecurityContextBinding`；失败时不得留下没有
+Bundle root 的 Audit。Create 成功后上下文只能通过 Audit-bound read projection 查看，不能换绑、
+增删 entry 或更新 digest；任何变化都需要新的 input、Preflight plan 和 Audit。
 
 `POST /audits/{audit_id}/start` 接受独立 `start_request_id + reviewed_contract_digest`，重新验证 preflight plan、目标 digest、冻结合同、ModelDataEgress consent、Node/backend 与 Feature Flag，并在同一数据库事务中把 Audit 转为 queued、消费 token、写 `AuditStartIntent`。任何自动选择、origin、image/policy 或 capability 摘要变化都返回 `audit_contract_review_required`，由 UI 展示新合同后重新确认。它只返回已持久化的启动意图；Temporal 启动由第 14.1 节可靠投递协议完成。
 
@@ -2211,7 +2602,10 @@ analysis_finished_at
 publication_finished_at
 ~~~
 
-`execution_target_summary` 必须分别显示 source/analysis node、backend、CAS handoff、immutable image/policy digest 与 capability/prepare proof 状态；`model_data_egress_summary` 显示 local/remote、provider/origin 安全摘要、redaction/retention disclosure 和批准状态。绝对 Runner 路径、源代码、模型原始输出和凭据不得进入摘要响应。
+`execution_target_summary` 必须显示 same-node source/analysis identity、backend、local mount policy、
+immutable image/policy digest 与 capability/prepare proof 状态；`model_data_egress_summary` 显示
+local/remote、provider/origin 安全摘要、redaction/retention disclosure 和批准状态。绝对 Runner
+路径、源代码、模型原始输出和凭据不得进入摘要响应。
 
 Response 使用 lifecycle discriminated union：`draft/queued/preflighting/snapshotting` 的 `snapshot` 可以为 null，并有 `snapshot_status`；Snapshot sealed 的原子事务填入 snapshot_id 后，`running` 及后续状态 DB CHECK 要求非空。Diff 的 base/head 采用同样规则。前端不能对 draft 强制解引用 Snapshot。
 
@@ -2223,9 +2617,9 @@ UI/CLI 必须直接显示 `publication_status`：仍在 sealing/reporting/packag
 | 阶段 | 必须存在的 projection | 明确不得伪造 |
 | --- | --- | --- |
 | AUD-104 / M1 | Audit/Run ID、Project summary、state version、snapshot/base/baseline ID、purpose/parent、mode/profile、lifecycle/phase/terminal/closure/publication、distribution revision ID、model profile、Run status 和 lifecycle timestamps | Snapshot object/status、progress、usage、approval、proof 和 seal 不存在时不得填默认成功值 |
-| AUD-205 / AUD-208 | Snapshot/base status 与摘要、source/analysis target 和 CAS handoff 的安全摘要、StartIntent 状态 | 绝对路径、token、storage locator、原始 proof bytes |
+| AUD-205 / AUD-208 | Snapshot/base status 与摘要、same-node target/local mount 的安全摘要、StartIntent 状态 | 绝对路径、token、storage locator、原始 proof bytes |
 | AUD-307 / AUD-506 | core seal root、initial/latest distribution revision、revision count 与报告状态 | 未 sealed 的 Audit 不得出现 seal root |
-| AUD-407 / AUD-600 | progress counts、budget/usage、pending approval count、完整 execution target summary、model data egress summary | UI 不得从 Event 数量或客户端缓存推断 |
+| AUD-407 / AUD-600A/B | progress counts、budget/usage、pending approval count、完整 execution target summary、model data egress summary | UI 不得从 Event 数量或客户端缓存推断 |
 
 ADR-0004 的 `AuditResponse` 是上述第一行的 M1 positive allowlist；它不是另一套最终 API。
 后续添加字段必须逐项审查 access class，并同时更新 OpenAPI、前端 type、Schema contract test 和
@@ -2238,10 +2632,10 @@ ADR-0004 的 `AuditResponse` 是上述第一行的 M1 positive allowlist；它�
 - Cursor 必须签名并绑定 Scope、filter、sort 与 snapshot version；拓扑变化时返回 stale cursor。
 - 默认 page size 50，最大 200；不允许无界查询。
 
-Signed cursor 是 AUD-600 的最终契约。AUD-104 只允许稳定的
+Signed cursor 是 AUD-600A/B 的最终契约。AUD-104 只允许稳定的
 `created_at DESC, id DESC + limit/offset`，默认 50、最大 200，并且授权 scope 必须在 SQL 的排序和
 分页之前。`/runs?kind=code_audit` 在 M1 同样不得跨多个独立 session 拼接一个大于 200 的页面；
-超限应返回 validation error，直到 AUD-600 提供单一一致读取和 signed cursor。
+超限应返回 validation error，直到 AUD-600A/B 提供单一一致读取和 signed cursor。
 
 ### 16.6 错误码
 
@@ -2342,9 +2736,20 @@ aggregate transaction 中先写 `run.created`（sequence 1），再写
 
 ~~~text
 audit.created
+audit.preflight_job_started
 audit.preflight_completed
+audit.start_queued
+audit.started
 audit.snapshot_started
 audit.snapshot_sealed
+audit.pause_requested
+audit.paused
+audit.resumed
+audit.cancel_requested
+audit.failing
+audit.cleanup_started
+audit.cleanup_completed
+audit.stop_unconfirmed
 audit.phase_started
 audit.phase_completed
 audit.phase_failed
@@ -2363,13 +2768,27 @@ audit.finding_confirmed
 audit.finding_rejected
 audit.coverage_updated
 audit.baseline_compared
+audit.closure_prepared
+audit.closure_finalized
 audit.contract_sealed
+audit.core_seal_started
+audit.core_sealed
+audit.report_generation_started
 audit.report_generated
+audit.report_failed
+audit.package_started
+audit.distribution_revision_published
+audit.package_failed
 audit.completed
 audit.completed_partial
+audit.failed
+audit.cancelled
 ~~~
 
-Event payload 只允许 ID、枚举、计数、digest 摘要和安全状态。不得写源代码、完整路径、Scanner 输出、Prompt 或模型回复。
+每个事件使用版本化 typed payload schema，并在 Event projection 层有 positive allowlist。Event payload
+只允许 ID、枚举、计数、digest 摘要和安全状态；PreflightJob 事件不得带 repository path/token，
+cleanup/stop 事件只带 resource counts/reason code/proof digest。不得写源代码、完整路径、Scanner
+输出、Prompt、模型回复、命令/env 或 Artifact locator。未知 event version 不进入普通 UI reducer。
 
 ### 17.2 Artifact 分类
 
@@ -2512,6 +2931,10 @@ Code Audit 必须继续使用 apps/web/DESIGN.md 定义的 Blue Team Cartridge /
 - Severity、Confidence、Validation、Coverage 和 Stop 状态必须同时使用文本/图标，不能只靠颜色。
 
 所有新增样式优先复用 pixel-theme.css 的 token 和现有 class。审计专用 CSS 使用 audit- 前缀，避免继续堆叠 RunDetailPage 的全局样式。
+新增 `apps/web/src/audit.css`，所有 selector 必须位于 `.audit-*` 或 `.audit-surface` 下并只使用
+`--pc-*`/现有语义 token；禁止新增无前缀的 `table/card/tabs` 全局覆盖。冻结
+`styles.css -> pixel-theme.css -> pixel-dense.css -> audit.css` 的导入与覆盖测试，不复制 Dashboard
+中的内联十六进制状态色。
 
 ### 18.2 一级导航
 
@@ -2525,10 +2948,15 @@ Code Audit 必须继续使用 apps/web/DESIGN.md 定义的 Blue Team Cartridge /
 
 通用 New Run 仍通过 Dashboard 的 New run 主按钮和 /runs/new 路由访问。这样移动端继续保持五个主导航目标，同时把 3.0 主功能提升为一级入口。
 
+导航由 `LocalOperatorSecurityContext` 投影：`features.code_audit=true` 且具有 read capability 时第二项
+为 Code Audit；Feature 关闭时保留现有 New run，移动端始终恰好五项。write、host.execute、
+workflow control、host control 分别控制 New/Start/Pause-Resume/Cancel 的可发现性，后端仍做最终
+授权。英文 “Code Audit” 必须在 58px/移动端目标中完整可读，可使用两行标签，不能只靠 tooltip。
+
 修改 apps/web/src/components/Layout.tsx：
 
 - 增加 /audits 导航和 shield/target PixelIcon；
-- 为 /audits、/audits/new、/audits/:id、/code-findings/:id 提供标题解析；
+- 新增纯函数 `resolvePageMeta(pathname)`，为 /audits、/audits/new、/audits/:id、/code-findings/:id 提供 pattern-based 标题解析与穷尽测试；
 - 动态路由不能错误回退到 Dashboard 标题；
 - 保持现有 sidebar/bottom-nav 响应式结构。
 
@@ -2555,6 +2983,26 @@ Code Audit 必须继续使用 apps/web/DESIGN.md 定义的 Blue Team Cartridge /
 ~~~
 
 关闭 Inspector 后必须恢复触发按钮 focus；Escape、浏览器前进后退和直接 deep link 均需测试。
+
+`/runs/:runId` 不能直接挂载 `RunDetailPage`。新增 `RunRouteGate`：先只请求最小 Run projection；
+`general` 才 lazy-mount 通用详情，`code_audit` 使用唯一 run_id 查询 audit_id 并 `replace` 到
+`/audits/:auditId`。Gate 完成前不得创建 General Actions/Findings/Artifacts/Approvals/Reports/SSE
+query，也不得闪现 Conversation、Pause/Resume 或 Emergency Stop。
+
+#### 18.3.1 里程碑产品表面矩阵
+
+第 18 节描述 GA 最终页面；Codex 实现时以下矩阵优先于单个页面中的最终字段清单。前置 backend、
+read model 和 capability projection 不存在时，route、option、button、help text 与空状态都不得出现。
+
+| 里程碑 | WebUI/CLI 可见表面 | 必须隐藏/拒绝 |
+| --- | --- | --- |
+| M6 | Standard；deterministic/hybrid；static-only；Preflight/Create/Start/Control；Coverage/Finding/Evidence/Triage/Report | Validate/Approval decision、Deep/Diff、Fix/Retest |
+| M7 | Validate、mandatory-one-plan Approval、validation supplement 与 dynamic Capsule status | Deep/Diff、Fix/Retest |
+| M8 | Deep/Diff、base/head、Epoch/novelty/saturation、impact scope 与 Diff attribution | Fix/Retest |
+| M9 | Fix Job、patch、Retest、lifecycle projection 与 structural hardening | 仅 GA 门禁未通过的发布声明 |
+
+M6 的 Preflight/Create 对 `mode=deep|diff` 必须返回 capability unavailable；M8 完成 API/read-model
+扩展后才允许选择。Feature Flag 关闭时整个 Code Audit 表面消失且不发送 Audit 请求。
 
 ### 18.4 AuditsPage
 
@@ -2605,6 +3053,13 @@ apps/web/src/components/audit/CoverageStatus.tsx
 
 使用现有 NewRunPage 的分段表单语法与 panel 视觉，但实现独立表单：
 
+表单状态使用 typed reducer，而不是扩展成大量独立 `useState`。至少包含
+`editing -> preflighting -> preflight_valid | preflight_stale -> creating_draft -> draft_created ->
+starting -> started | start_failed_draft_preserved`。任何绑定 target/scope/node/mode/profile/budget/
+context 字段变化都立即使 token stale；Create 成功而 Start 失败时必须显示已存在 audit_id、真实
+draft 状态和安全重试入口。repository path、preflight token、snippet 不进入 local/session storage，
+刷新页面后重新 Preflight。
+
 #### Step 01 — Repository
 
 - 先选择/解析 source node 与 SourceIngest backend，再解释 node-local 路径；
@@ -2626,7 +3081,8 @@ apps/web/src/components/audit/CoverageStatus.tsx
 - Standard、Deep、Diff；
 - deterministic 或 hybrid；
 - Model Profile（hybrid 必填）；
-- local/remote execution、provider/base origin、retention/training disclosure 与 ModelDataEgressPolicy；远程必须显式同意 redacted source egress；
+- model execution locality（local/remote model）、provider/base origin、retention/training disclosure 与 ModelDataEgressPolicy；source/analysis execution 在 3.0 始终是 local same-node；远程模型必须显式同意 redacted source egress；
+- 可选上传/选择 pre-Audit ContextInput，并选择仓库相对 context paths/default discovery；Preflight 后显示 resolved Bundle digest、provenance、trust 与 conflict，任何变化使 token stale；
 - applicable Detectors 与 unavailable 原因；
 - Baseline Audit（可选）。
 
@@ -2643,7 +3099,8 @@ apps/web/src/components/audit/CoverageStatus.tsx
 - Scope 与排除；
 - 模式、模型、Detector；
 - 预算与验证权限；
-- 最终 source node/ingest backend/prepare proof、analysis node/backend、CAS handoff、immutable image/policy digest 与 capability proof 摘要；
+- 最终 same-node source/analysis identity、ingest/content backend、prepare proof、local mount policy、immutable image/policy digest 与 capability proof 摘要；
+- bound Security Context Bundle 的 identity/digest、来源、trust class 与 unresolved conflicts；
 - 模型数据是否离机、provider/origin、脱敏与最大外发字节；
 - “Create draft and start audit”的明确执行确认；客户端先创建 draft，再调用需要 host-execution 权限的 Start，任一步失败都显示真实状态，不能把两次 API 合成一个越权后端效果。
 
@@ -2652,6 +3109,10 @@ apps/web/src/components/audit/CoverageStatus.tsx
 ### 18.6 AuditDetailPage
 
 不要基于现有超大的 RunDetailPage 复制全部功能。创建独立页面，复用小组件、StatusBadge、ErrorState、LoadingState、Artifact 下载和 Approval 控制。
+
+`AuditDetailPage.tsx` 只负责 route/query 状态和组合；Summary/Coverage/Findings/Evidence/Activity/
+Report 分别放入 `components/audit/detail/` 子视图。`tab/view/scope/evidence/occurrence` 由一个 typed
+URL-state parser 解析，非法值用 replace 规范化；关闭 Inspector 只移除相关参数，不清空其他筛选。
 
 页头：
 
@@ -2787,6 +3248,12 @@ AuditLimitationsPanel
 
 组件必须接收 typed props，不在组件内部拼接 API 路径或推断领域状态。
 
+先抽取三个共享基础设施：`AccessibleInspector`（focus trap/Escape/初始与返回 focus）、
+`AuthenticatedDownload`（Abort、大小限制、object URL revoke、authSessionEpoch）和 typed
+`ApprovalCard`（General/Audit variant，Audit 增加 mandatory-one-plan）。AuditStatus/Coverage/
+Evidence badges 使用 exhaustiveness mapping 输出 `label + icon + tone + explanation`；未知服务端枚举
+显示固定 `Unknown contract state` 并 fail closed，不能原样渲染任意字符串。
+
 ### 18.9 API Client 与 Queries
 
 扩展：
@@ -2827,6 +3294,11 @@ apps/web/src/hooks/useEventStream.ts
 - light/dark 均通过对比度与截图审查；
 - reduced-motion 时阶段进度无动画。
 
+AUD-607B 必须加入 Playwright 浏览器门禁；Vitest/JSDOM 只覆盖 reducer/组件契约，不能替代真实布局。
+至少覆盖 1440×900 与 390×844、dark/light、English/中文、direct deep link、back/forward、lazy 404、
+focus trap/return focus、reduced-motion、底栏完整标签、页面无水平 overflow 和代码区独立横向滚动。
+截图只使用脱敏 fixture，并保存为测试 Artifact；任一模式失败不得靠人工声明通过。
+
 ### 18.11 Dashboard 与 Demo
 
 DashboardPage 增加一个 Code Audit 状态入口，但不替换现有 Run 核心指标。建议在 Hero 下方增加紧凑 Audit strip：
@@ -2843,10 +3315,21 @@ DashboardPage 增加一个 Code Audit 状态入口，但不替换现有 Run 核�
 新增 audit Typer 子应用，放在 src/riftx/cli/audit.py，并在 cli/app.py 注册。CLI 只调用 APIClient。
 
 ~~~text
-riftx audit preflight PATH [--revision HEAD] [--base REF] [--include PATH] [--exclude PATH]
-riftx audit start PATH [--mode standard|deep|diff] [--profile deterministic|hybrid]
-                        [--model PROFILE] [--validation static_only]
-                        [--baseline AUDIT_ID] [budget options]
+riftx audit preflight PATH --node NODE_ID [--revision HEAD | --working-tree]
+                              [--base REF --head REF] [--include PATH] [--exclude PATH]
+                              [--include-untracked] [--context-input INPUT_ID]
+                              [--context-path PATH] [--no-context-discovery]
+riftx audit preflight-status JOB_ID
+riftx audit preflight-cancel JOB_ID
+riftx audit context-upload FILE... [--operator-fact FILE...]
+riftx audit context-show CONTEXT_INPUT_OR_BUNDLE_ID
+riftx audit start PATH --node NODE_ID [--mode standard|deep|diff]
+                        [--revision HEAD | --working-tree] [--base REF --head REF]
+                        [--include PATH] [--exclude PATH] [--include-untracked]
+                        [--context-input INPUT_ID] [--context-path PATH]
+                        [--no-context-discovery]
+                        [--profile deterministic|hybrid] [--model PROFILE]
+                        [--validation static_only] [--baseline AUDIT_ID] [budget options]
 riftx audit list [filters]
 riftx audit show AUDIT_ID
 riftx audit watch AUDIT_ID
@@ -2858,21 +3341,42 @@ riftx audit threat-model AUDIT_ID
 riftx audit signals AUDIT_ID [filters]
 riftx audit findings AUDIT_ID [filters]
 riftx audit compare AUDIT_ID
-riftx audit triage FINDING_ID --status ... --reason ...
-riftx audit validate FINDING_ID
-riftx audit fix FINDING_ID
-riftx audit retest FINDING_ID
+riftx audit triage FINDING_ID --status ... --reason ... [--expires-at ...]
+riftx audit approvals AUDIT_ID
+riftx audit approval AUDIT_ID APPROVAL_ID
+riftx audit approval-decision AUDIT_ID APPROVAL_ID --decision approve_once|reject
+                                                   --plan-digest DIGEST [--reason TEXT]
+riftx audit validate FINDING_ID --occurrence OCCURRENCE_ID
+riftx audit fix FINDING_ID --occurrence OCCURRENCE_ID
+riftx audit retest FINDING_ID --occurrence OCCURRENCE_ID --fix-audit AUDIT_ID
+                         --patch-artifact ARTIFACT_ID --patch-digest DIGEST
+                         --base-digest DIGEST
 riftx audit report AUDIT_ID --format markdown|html|json|sarif
 ~~~
 
 CLI 规则：
 
-- start 先执行 Preflight，并显示冻结摘要；非交互模式使用 --yes 明确确认。
+- start 先执行 Preflight，并显示冻结摘要；交互模式使用确认提示。非交互模式必须提供服务端返回的
+  `--confirm-contract-digest`；`--yes` 只能关闭普通交互提示，永远不能替代 digest 确认或
+  `--allow-remote-model-egress` 披露。
 - 输出默认 Rich table，--json 返回版本化 API payload。
+- 所有用户可见 Audit CLI 文案、枚举标签、错误与 help 使用现有 CLI i18n catalog；English/zh-CN key
+  集必须相同，并为 text/JSON/error/exit-code 建立双语 golden tests。JSON 字段和稳定枚举不随 locale
+  改名。
 - watch 复用 SSE cursor 并支持断线恢复。
 - 不打印绝对 Snapshot 存储路径、源代码、凭据或完整命令环境。
 - Cancel 结果区分 accepted、fencing、confirmed、unconfirmed。
 - Exit code：0 完成且策略门禁通过；1 工具/API/failed；2 使用错误；3 completed_partial；4 Finding policy failure；5 cancelled。
+- validate/fix/retest 必须显式选择 occurrence；CLI 从授权 detail 获取 source Audit/Snapshot/Decision
+  digest，在确认前显示并原样提交。`fix` 返回 fix follow-up Audit ID，后续使用 `audit show/watch/cancel`
+  观察；`retest` 必须显式提交 exact fix Audit、patch Artifact、patch/base digest。禁止自动选择“最新
+  Observation”或“最新 patch”。Diff 必须同时给出 base/head，非 Diff 禁止该组合；
+  `--include-untracked` 只对 working-tree 有效。
+- `approval-decision` 必须从 Audit 专用 endpoint 读取 immutable plan，要求调用方原样确认
+  `plan_digest`，且只允许 `approve_once|reject`；禁止调用或兼容映射到 General `riftx approve`、
+  run grant 或 `approve_for_run`。
+- M6 只交付 Standard Core CLI；Audit approval/validate 在 M7、Deep/Diff 参数与视图在 M8、
+  fix/retest 在 M9 才注册。help/manifest 不能提前宣传不存在的后端。
 
 APIClient 增加对应方法，所有 HTTP 错误继续通过 RiftXAPIError 统一渲染。
 
@@ -2888,6 +3392,9 @@ APIClient 增加对应方法，所有 HTTP 错误继续通过 RiftXAPIError 统�
 audit:
   # 开发期保持 false；M10 GA 门禁通过后默认改为 true。
   enabled: false
+  # 3.0 wire contract；远程/cross-node 放到 3.x。
+  node_mode: local_same_node
+  allowed_node_ids: [local]
   # 部署者必须显式配置授权源码根目录。
   source_roots: []
   # 示例必须是 source_roots 之外的绝对持久路径。
@@ -2907,6 +3414,11 @@ audit:
   max_files: 200000
   max_artifact_bytes: 67108864
   max_total_artifact_bytes: 268435456
+  retention:
+    unreferenced_snapshot_days: 30
+    staging_orphan_hours: 24
+    minimum_free_bytes: 10737418240
+    gc_requires_receipt: true
   workers:
     max_parallel: 4
     max_epochs: 8
@@ -2929,7 +3441,17 @@ audit:
 
 数值是安全默认上限，部署者可以进一步降低。具体默认值在实现阶段通过 fixtures 和性能测试校准，但任何配置都必须有明确范围验证。单 Artifact 的 64 MiB 默认上限与当前 Web 认证下载边界一致；更大的内部数据必须分片/分页且保持 restricted，不能生成 UI 无法安全下载的单文件。
 
+3.0 只接受 `node_mode=local_same_node` 与 `allowed_node_ids=[local]`。配置出现远程 Node、source 与
+analysis 不同、远程 CAS endpoint 或共享网络文件系统时启动失败，而不是忽略字段。3.x 若增加远程
+Node，必须升级配置/schema 并另立 NodeAuditPolicy、mTLS/证书轮换、Runner protocol 与 CAS 对象授权
+ADR；不能把 3.0 的 local path contract 直接推广。
+
 `source_roots: []` 明确表示 deny-all，不得回退到当前目录。启动与每次 Preflight 都必须 realpath 校验：任一 source root 与 SnapshotStore、Run workspace、Artifact store、数据库/state、audit temp、fix worktree 根目录之间，只要存在任一方向的 ancestor/descendant 或同目录关系就拒绝配置/请求；不存在的输出目录按最近已存在父目录校验，创建后再校验一次。相对 storage root、CWD 推导 root 和 symlink 交叠均 fail-closed。这样 dogfood RiftX 自身时，`.riftx/...` 也不会落入被审计仓库。
+
+Retention 只生成 GC plan，不授权删除 active reference。Snapshot/Audit/Baseline/Finding Evidence/
+Retest/DistributionRevision 引用和 active mount pin 均阻止回收；staging orphan 与无引用对象按不同
+策略处理。低磁盘水位先停止新 Audit 并报告 `audit_storage_pressure`，不能通过立即删除仍受保留/
+引用保护的 Evidence 自救。每次删除必须有 SnapshotGCReceipt/Artifact deletion receipt，失败可重试。
 
 ### 20.2 Detector Registry
 
@@ -3514,10 +4036,13 @@ bridge；这些边界分别由 AUD-106 及后续执行阶段任务负责。
 
 实现 machine-readable `RunKindEffectPolicy` 全 route/service/callback inventory 与
 `RunWorkflowControlRouter`，有序替换 AUD-104 临时 bridge，同时保持 general Run 和旧 Temporal
-history 完全不变。
+history 完全不变。ADR-0006 是本任务的完整验收契约；若本节摘要与 ADR-0006 冲突，以更严格的
+fail-closed 条款为准，并在提交前同步修正文档。
 
-1. 每个 operation 记录 `allowed_run_kinds + origin + required RouteEffect + ownership resolver +
-   Audit alternative`；未知 kind/origin/operation 默认拒绝。inventory 覆盖 API Policy 的所有
+1. 每个 operation 记录 `owner_kind + allowed_run_kinds + origin + required RouteEffect + ownership
+   resolver + Audit alternative`；未知 owner kind/kind/origin/operation 默认拒绝。M1 实现
+   global/run variant、迁移专用且不能 fallback 的 `legacy_runner_command` stop-proof variant，并冻结
+   preflight_job extension contract；inventory 覆盖 API Policy 的所有
    DURABLE_WRITE/WORKFLOW_CONTROL/HOST_EXECUTION/HOST_CONTROL、内部 Service mutation、WebSocket、
    Worker/Runner callback 和 safety reconciler，并由 CI 防止新增未登记入口。
 2. 按 RunKind 路由 Audit pause/resume/cancel、Approval decision、Execution completion、stop callback
@@ -3532,7 +4057,10 @@ history 完全不变。
 5. migration 对缺 ownership 的 legacy/pending/replayed command 使用显式 quarantine +
    reconciliation；未知 ownership 不执行普通效果。已经存在的 cancel/close/stop command 只能在
    owner 校验后收敛物理停止，不能因 blanket deny 丢失 stop proof，也不能借 ACK 推进 generic
-   Workflow。
+   Workflow。旧 `/runner/commands/{id}/finish` 只接受严格 legacy stop wire；ownership-v1 Runner 只走
+   `/runner/commands/{id}/finish-owned` 且 state/envelope/binding 全部必填。legacy ACK 只保存 namespaced
+   quarantine evidence，不结束 command、不创建普通 receipt/projection/signal；任一 ACK 造成的
+   `state_version` 变化必须阻止 lossful downgrade。
 6. 对 Finding、Report、Approval、Action、Graph、Run metrics、Target HTTP/Traffic、Terminal、
    Browser、Context、Memory、Connector 等 generic Code Audit read 做最终逐项决策：没有专用安全
    投影和产品用例就保持拒绝；若开放长连接，每批数据都复验 frozen child/run identity。Approval
@@ -3540,6 +4068,17 @@ history 完全不变。
 7. 为 `TemporalRunClient`、Approval、Execution、Artifact/Report/Finding/Memory、Terminal、Browser、
    Target HTTP、Connector、Runner 和所有组合根增加 zero-side-effect、wrong-owner precedence、
    stop convergence 与 general regression tests。
+8. Execution/effect terminal transition与 Approval decision 在业务事务中原子创建 durable Workflow
+   signal intent；Control Plane/Worker lease-based reconciler 幂等投递并保存 receipt。移除只存在于
+   内存的有限次数 completion retry。stop ACK 使用 family-specific receipt，只推进 safety/cleanup，
+   不发送普通 execution-completed signal。
+9. 新服务器只向声明 `runner_command_ownership_v1` capability 的 Runner lease verified 普通命令；
+   daemon/client 必须 echo binding/envelope digest。迁移对 legacy command 全量 quarantine，upgrade/
+   downgrade/full-chain、PostgreSQL lock/offline contract 与 protocol compatibility tests 必须通过。
+
+AUD-106 结束时没有正式 Code Audit effect plan，因此 Code Audit Runner enqueue 必须恒为零；General
+Run 按 verified ownership 正常工作。M2 的 PreflightJob owner 与 AuditStaticEffectPlan 是后续显式
+protocol extension，不能在本任务用 contract/policy digest 或 payload 字符串伪造。
 
 M1 Exit：
 
@@ -3549,15 +4088,25 @@ M1 Exit：
 - 重启后 Audit 可读取；
 - Restricted Artifact 不会从通用路由泄露；
 - general Run 控制/Approval/Execution callback 回归通过，code_audit 不适用操作 fail-closed；
+- completion/approval signal 在进程、Worker 与 Temporal 故障后可由 outbox 恢复且不重复推进；
+- stop ACK 不触发普通 completion，legacy command 不会被猜 owner 后执行；
 - Audit 尚不能接触仓库或模型。
 
 ### M2 — Preflight、Snapshot 与 Scope Ledger
 
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
+M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
+AUD-203/AUD-204 -> AUD-205/AUD-202D/AUD-207/AUD-208/AUD-209`。AUD-203 的 language/dependency/
+configuration content parsing 在生产 Content Sandbox 完成前不得开始；可以提前编写纯路径/manifest
+planner contract 和 synthetic unit fixture，但不能解析真实仓库字节。
+
 #### AUD-200：Source Root 与 Git Preflight
 
-先实现第 8.2 节最小 SourceIngestCapsule、source node/backend 选择与双端 source-root 校验，再实现 audit/snapshot.py 的宿主路径授权与 Capsule 内 Git 元数据读取：
+本任务先交付第 8.2/4.5 节 `AuditPreflightJob` owner、Repository/migration、幂等 request digest、
+lease、status/cancel API、preflight Runner protocol capability、stop receipt 和 reconciler；在该 owner
+链未通过测试前不得启动 SourceIngestCapsule。随后实现 local Node/backend 选择、Control Plane 与
+Node 的双端 source-root 校验，再实现 audit/snapshot.py 的宿主路径授权与 Capsule 内 Git 元数据读取：
 
 - allowed_source_roots；
 - realpath 二次校验；
@@ -3568,7 +4117,11 @@ M1 Exit：
 - capability warnings。
 - versioned capability matrix、proof digest 与 mode/profile feasibility。
 
-不得把“argv、不使用 shell”当成 Git 安全边界。`SafeGitAdapter`/object reader 只在无凭据 SourceIngestCapsule，禁用 repository-controlled config、hook、fsmonitor、textconv/filter/helper/alternate 逃逸；stderr 作为受限诊断。增加恶意 object/index/`.git/config`、压缩炸弹与外部程序 canary 测试。
+3.0 只接受 `node_id=local` 且 source/analysis 同 Node。不得把“argv、不使用 shell”当成 Git 安全
+边界。`SafeGitAdapter`/object reader 只在无凭据 SourceIngestCapsule，禁用 repository-controlled
+config、hook、fsmonitor、textconv/filter/helper/alternate 逃逸；stderr 作为受限诊断。增加恶意
+object/index/`.git/config`、压缩炸弹、客户端断线、job timeout、Control Plane/Runner 重启、
+outcome_unknown、orphan Capsule 与外部程序 canary 测试。
 
 #### AUD-201：Signed Preflight Token
 
@@ -3576,31 +4129,52 @@ M1 Exit：
 
 同时发布 `riftx.audit-create-draft-request/v2`：HTTP 只接收第 16.3 节 caller-owned preference 和
 opaque token，Contract 的 selection/proof/consent facts全部从 authoritative plan、Capability
-Registry 和服务端 consent event 构造。v2 request digest 绑定 server authorization domain 与
-稳定 plan identity/digest，不包含 raw token。迁移把所有 v1/M1 draft 标记为无 authoritative
+Registry 和服务端 consent event 构造。Plan 必须始终带
+`security_context_bundle_id/digest`；AUD-209 以前只接受 canonical empty bundle，Create UoW 已按
+第 10.3.1 节原子写 Binding。新对象必须使用 `riftx.audit-contract/v2` 与
+`riftx.model-data-egress/v2`；保留 v1 parser 仅作历史只读。v2 request digest 绑定 server authorization domain、稳定 plan
+identity/digest 与 bundle digest，不包含 raw token。迁移把所有 v1/M1 draft 标记为无 authoritative
 preflight binding；这些 draft 永不可 Start，也不能原地替换 immutable Contract，只能重新
 Preflight 后创建 v2 draft。增加伪造 proof field、token steal/replay、principal 变化、expiry、
-reservation race、重启恢复和 v1 start rejection 测试。
+reservation race、Bundle swap/cross-principal binding、重启恢复、v1 read-only replay 和 v1 Start
+rejection 测试。
 
-#### AUD-202：Snapshot Materializer
+#### AUD-202A：SnapshotStore 与 CAS Foundation
 
-实现独立 SnapshotStore/CAS Port，以及 commit 与 dirty working tree 的内容寻址 Snapshot、Manifest、只读权限、临时目录原子 rename、并发去重、引用生命周期和失败清理。定义 source Node → SnapshotStore → analysis Node 的 mTLS/等价加密、SnapshotHydrationLease object authorization、认证分块上传/下载、水合、逐 blob digest、断点/重试、replay/cross-Audit 拒绝和删除协议；活跃传输绑定 Runner Execution/stop proof。实现每 Execution 私有 materialization 或 daemon CAS object/pin、卸载撤权、reconcile、eviction/GC receipt tests。Snapshot 内容不归首个 Run Artifact 或某一 Node 所有。
+依赖 AUD-201。建立 `audit/snapshot.py` 的 SnapshotStore/CAS Port、domain-separated object key、
+staging/fsync/atomic rename、insert-is-seal、Audit/Project reference 和 crash cleanup。重复写入只在
+digest、size、object type 与 manifest metadata 全部恒等时复用；坏对象、半写对象或跨 owner locator
+一律隔离。退出 Artifact 是 CAS contract、Schema/migration、Repository tests 和 power-loss fixtures。
 
-必须覆盖：
+#### AUD-202B：Commit 与 Working-tree Materializer
 
-- symlink；
-- hardlink；
-- submodule；
-- LFS pointer；
-- special file；
-- invalid UTF-8；
-- 超大文件；
-- ignored/untracked；
-- TOCTOU。
+依赖 AUD-202A。实现 commit、staged/unstaged/dirty/untracked 的确定性 materializer 与版本化 Manifest，
+处理 concurrent identical capture、内容变化、失败清理和 retry。原仓库保持只读；symlink、hardlink、
+submodule、LFS pointer、special file、invalid UTF-8、超大文件、ignored/untracked 和 TOCTOU 必须有成对
+fixture 与明确 Manifest 决议。Snapshot 内容不归首个 Run Artifact，其他 Audit 即使知道 digest/path
+也不能读取。
+
+#### AUD-202C：Same-node Mount、Pin 与 Static Ownership
+
+依赖 AUD-202B。实现 same-node
+`AuditStaticEffectPlan(snapshot_materialize|snapshot_mount)`、SnapshotMountLease、私有 read-only
+mount/pin、Runner ownership、lease expiry、卸载撤权、stop proof 与重启 reconciliation。plan、mount、
+Audit/Run/Snapshot/Node/backend 必须全链恒等；绝对 locator 不进入 API/Event。3.0 不实现 source Node →
+analysis Node 传输、mTLS CAS channel、远程分块上传/下载或跨 Node hydration。
+
+#### AUD-202D：Retention、Eviction 与 GC Receipt
+
+依赖 AUD-202C。实现中央 retention policy、reference release、disk-watermark admission、GC plan、
+tombstone、quarantine 与 immutable SnapshotGCReceipt。active Audit、Baseline、Retest、CoreSeal 或
+DistributionRevision 引用存在时不得删除；ambiguous delete 保持 tombstoned/unavailable 并由
+reconciler 收敛，不能把缺失对象当成成功清理。
 
 #### AUD-203：Inventory 与 Scope
 
-实现路径分类、language、dependency manifest、configuration、generated/vendor、include/exclude，并为每个对象创建 ScopeUnit。
+依赖 AUD-202C 与 AUD-206。实现路径分类、language、dependency manifest、configuration、
+generated/vendor、include/exclude，并为每个对象创建 ScopeUnit。宿主只处理已验证的 bounded
+metadata/receipts；language/dependency/config 内容解析必须通过 `AuditStaticEffectPlan(content_parse)`
+进入生产 Content Sandbox，缺 backend 时 capability unavailable，不能回退宿主。
 
 #### AUD-204：Snapshot Reader
 
@@ -3612,7 +4186,11 @@ reservation race、重启恢复和 v1 start rejection 测试。
 
 #### AUD-206：Content Sandbox 与 Safety Stop
 
-在 AUD-200 SourceIngestCapsule 基础上交付第 15.2 节通用无网/无凭据 content-processing sandbox，持久 `audit_capsules/audit_egress_sessions`；扩展 RunSafetyStopService required resource，同时注入 CapsuleStopper 与零网络也可证明的 EgressStopper、API/Worker 组合根和 Feature Flag 关闭路径。M3 所有 AST/SARIF/Detector 解析均依赖它，不允许宿主降级。
+在 AUD-200 SourceIngestCapsule 基础上交付第 15.2 节 **真实生产级本地 Linux** 无网/无凭据
+content-processing sandbox，以及 `AuditStaticEffectPlan(content_parse)`；持久
+`audit_capsules/audit_egress_sessions`，扩展 RunSafetyStopService required resource，同时注入
+CapsuleStopper 与零网络也可证明的 EgressStopper、API/Worker 组合根和 Feature Flag 关闭路径。
+M3 所有 AST/SARIF/Detector 解析均依赖它，不允许宿主降级；fake backend 不满足 Exit。
 
 #### AUD-207：评测 Schema 与 Harness
 
@@ -3621,6 +4199,17 @@ reservation race、重启恢复和 v1 start rejection 测试。
 #### AUD-208：Start Intent 投递骨架
 
 实现 `POST /audits/{id}/start` 的 HOST_EXECUTION policy、start UoW、AuditStartIntent、确定性 Workflow ID、dispatcher/reconciler 和 fake Temporal 故障注入。Feature Flag 仍关闭真实扫描；M3 接入真实 Audit Workflow。
+
+#### AUD-209：Security Context Bundle
+
+依赖 AUD-200、AUD-201 和 AUD-206。实现第 10.3.1 节 pre-Audit ContextInput、principal-owned
+immutable Bundle、insert-only Audit binding、受限 Artifact ingest、Content Sandbox parser、
+repository relative-path/default-discovery policy、Scope/trust/conflict policy、API/CLI/UI 安全摘要和
+Contract/ModelDataEgressPolicy/ThreatModel/CoreSeal digest 接线。Preflight request/plan/token 必须
+绑定 input 与 resolved bundle；Create v2 在一个 UoW 内绑定 Audit，禁止 post-create hot fill。
+恶意 SECURITY.md/架构文档不能改变 Scope、工具、审批或网络；cross-principal input、expired bundle、
+bundle swap 和 context change 均 fail-closed 并使 Preflight/Review stale。未选择上下文时使用 canonical
+empty bundle，deterministic scan 结果必须保持可复现。
 
 M2 Exit：
 
@@ -3632,6 +4221,10 @@ M2 Exit：
 - storage/source roots 无任一方向重叠，空 source_roots 为 deny-all；
 - 敌对 Git config/hook/filter/helper 不产生外部进程或网络；
 - parser/Detector 只能进入 Content Sandbox，Cancel 可证明停止 Capsule；
+- 真实授权仓库 Preflight/Snapshot/content parse 在生产级 local Linux backend 上通过；fake backend
+  只用于 unit tests；
+- Preflight 具有独立 owner/job/lease/stop proof，HTTP 断线与重启不会产生 orphan Capsule；
+- source/analysis node 均为 local，任何远程/cross-node 请求 fail-closed；
 - DB commit/Temporal start 边界崩溃后 StartIntent 可恢复且不产生两个 Workflow；
 - Preflight 全程无模型、无 Scanner、无网络。
 
@@ -3639,14 +4232,27 @@ M2 Exit：
 
 目标：完成第一个不依赖模型的完整、可封存审计。
 
+执行顺序固定为：先冻结 AUD-300 contract，再立即完成 AUD-308；AUD-301 以及其后的 Detector、
+WorkItem、Evidence/Report Artifact 都必须经过统一 Budget Service。M2 Preflight/Snapshot 使用冻结的
+硬资源上限与 MinimumFeasibleBudget，不倒置依赖到尚不存在的扫描 Usage Ledger。
+
 #### AUD-300：Detector Registry
 
 实现 AuditDetector、Descriptor、Job、ExecutionResult、Signal 契约；新增 audit-detectors 配置、Tool Registry 引用与 doctor。
 
+#### AUD-308：Budget Reservation 与 Usage Ledger
+
+依赖 M2 与 AUD-300，不依赖任何 Detector 执行。实现 `audit_usage_records`、各维度原子
+reservation/commit/release、重启 reconciliation、outcome_unknown 最坏情况计数和统一 Usage
+projection。自 AUD-301 起，所有 Detector/Worker、M3+ Audit Artifact、Model 与 Dynamic plan 都只能
+通过同一 Budget Service 消耗；超过上限停止新调度并进入 partial_budget，不能删除工作来适配预算。
+
 #### AUD-301：Detector Runner
 
-通过 Runner 执行 registered_command Detector：
+依赖 AUD-300、AUD-308 与 M2 Production Content Sandbox。通过 Runner 执行 registered_command
+Detector：
 
+- 先由 RiftX policy 创建 `AuditStaticEffectPlan(static_detector)`，Runner 全链复验 plan/owner/digest；
 - EnvironmentMode.CLEAN；
 - Snapshot 只读；
 - 输出目录独立；
@@ -3675,17 +4281,42 @@ M2 Exit：
 
 实现 canonical locations、weakness family、rule IDs、producer provenance、初步 cluster key。不得生成最终 Finding。
 
-#### AUD-305：Deterministic Evidence-to-Closure Slice
+#### AUD-305A：Deterministic Evidence、Location 与 Decision ACL
 
-在第一次允许 `complete/sealed` 前，实现生产级 schema 的最小纵切：Detector Evidence/Location、Decision ACL、canonical weakness/risk facts、deterministic Finding identity/Occurrence、Scope/Detector/Candidate Closure。只支持确定性 producer 也必须遵守 Q1/Q2、stable ID、append-only 与 core-seal 规则；不允许用 Signal 直接冒充 Finding。`analysis_profile=deterministic` 可以生成 complete_under_declared_scope 或明确 partial。
+依赖 AUD-304。把规范化 Signal 转为内容寻址 Detector Evidence 与 digest-bound CodeLocation，建立
+append-only Decision Ledger、producer/transition ACL、quality Q1/Q2 和同 Audit/Snapshot 引用校验。
+Signal 不能直接冒充 Finding；坏 digest、越界 Location、跨 owner Evidence 或未授权 transition
+必须零副作用失败。
+
+#### AUD-305B：Reducer、Risk、Identity 与 PreparedClosure
+
+依赖 AUD-305A。实现 canonical weakness/risk facts、确定性聚类、stable fingerprint、
+CodeFindingIdentity/Occurrence、Scope/Detector/Candidate receipts 与 PreparedClosure。只支持确定性
+producer 也必须遵守 Q1/Q2、stable ID、append-only 和可重建规则；重复/retry 不产生第二个逻辑
+Finding，Coverage 缺口只允许 partial/unknown。
+
+#### AUD-305C：Stop-proof Convergence 与 Immutable Closure
+
+依赖 AUD-305B。实现正常 `PrepareClosureUoW`、early cancel/fatal 的
+`PrepareTerminalClosureUoW + TerminalClosureIntent/reconciler`、Safety cleanup、family-specific
+stop proof、Run/Audit convergence 和单一 FinalizeClosureUoW：cleanup 前只能存在 PreparedClosure，
+只有肯定停止证明与状态收敛后才能写不可变 AuditClosure；任一阶段 crash 后可幂等恢复，不能提前
+seal、丢失早期事实或覆盖旧 Closure。
+`analysis_profile=deterministic` 最终只能生成 `complete_under_declared_scope` 或带原因的 partial。
 
 #### AUD-306：Deterministic Audit Workflow
 
-新增独立 RiftXCodeAuditWorkflow/Activities 与 concrete `TemporalAuditClient`，先串起 freeze、Snapshot、Inventory、Detector、normalize、deterministic adjudication、Closure、Safety cleanup 与 Run 终态；接入 M2 StartIntent 和 M1 RunWorkflowControlRouter。Agent phases 由冻结 profile 标记 not_applicable。
+新增独立 RiftXCodeAuditWorkflow/Activities 与 concrete `TemporalAuditClient`，先串起 freeze、Snapshot、Inventory、Detector、normalize、deterministic adjudication、PreparedClosure、Safety cleanup、FinalizeClosure 与 Run 终态；接入 M2 StartIntent 和 M1 RunWorkflowControlRouter。Agent phases 由冻结 profile 标记 not_applicable。
 
 #### AUD-307：Core Seal 与最小报告
 
 实现 canonical ledger roots、audit-core-seal、JSON/SARIF/Markdown/HTML deterministic composer 和外层 distribution manifest。报告只引用 core_seal_root；故障重试不得重跑扫描。
+
+#### AUD-309：Audit Metrics 与性能基线骨架
+
+接入第 21.2 节核心指标的数据库事实投影，并建立 SQLite 基准 fixture：至少覆盖 200k ScopeUnit、
+16k Signal、cursor page、SSE batch 与最小报告重建。此阶段冻结测量 schema/环境，不要求达到 M10
+最终阈值，但不得引入无界查询或全量 UI payload。
 
 M3 Exit：
 
@@ -3696,6 +4327,8 @@ M3 Exit：
 - 外部 Scanner 缺失不会被当作零 Finding；
 - 所有 parser/Detector 在 Content Sandbox，原始输出经 bounded fd/stream ingest；
 - 无 Evidence→Decision→Identity→Closure 的路径不能进入 completed/sealed；
+- cleanup 前不存在 terminal Closure，stop proof/Run convergence 失败时保持可控制非终态；
+- 预算 reservation 在崩溃/重试后不重复释放或超卖，Usage 可重建；
 - 产生 JSON、SARIF、Markdown 和 HTML 最小报告。
 
 ### M4 — Model-adapter-neutral Typed Agent 与 Standard Workflow
@@ -3724,7 +4357,9 @@ M3 Exit：
 
 #### AUD-403：System Mapper
 
-从 Inventory、Detector Signal 和安全代码读取构建 ThreatModelPacket。无 Evidence 的 assumption 标记 unresolved。
+从 Inventory、Detector Signal、安全代码读取和 M2 `AuditSecurityContextBundle` 构建
+ThreatModelPacket。上下文声明只作为带 provenance 的待证 claim；冲突或无 Evidence 的 assumption
+标记 unresolved，Operator attestation 只证明允许的环境事实。
 
 #### AUD-404：Hunter 与 Skeptic
 
@@ -3812,79 +4447,162 @@ M4 Exit：
 
 实现第 17 节完整输出、CoreSeal、append-only DistributionRevision、Schema、golden tests、幂等/升级重建测试和受限 Artifact。
 
+#### AUD-507：Triage Revalidation
+
+实现第 12.4 节结构化 applicability predicate、当前 Snapshot 重验证、needs_review/reopened 投影和
+lineage。历史 false-positive/accepted-risk/suppression 不跳过当前扫描；Coverage 不可比、predicate
+过期或能力不足时为 unknown/needs_review。结果只能影响当前 supplemental Triage projection，不能
+改写技术 Decision、Evidence quality 或旧 CoreSeal。
+
 M5 Exit：
 
 - 每个 UI/API Finding 可追溯到 Snapshot、Location、Signal、Decision 与 Evidence；
 - 报告完全由持久事实重建；
 - formatting/line shift 不改变 logical ID；
 - Coverage 不足不会误判 resolved；
+- 历史 Triage 原因在当前 Snapshot 重新验证，失效/未知时不会静默 suppress；
 - 所有报告通过版本化 Schema。
 
-### M6 — 完整 API、CLI 与 WebUI
+### M6 — Standard Core API、CLI 与 WebUI
 
-目标：在不改变主体风格的情况下交付完整操作体验。
+目标：在不改变主体风格的情况下交付 Standard/deterministic/hybrid 的完整操作体验。M6 只显示
+已由 M2–M5 落地的真实能力；Validation controls 在 M7、Deep/Diff 在 M8、Fix/Retest 在 M9 增量
+接入。对应 endpoint、CLI command、按钮和状态在前置后端完成前不得注册或宣传。
 
-#### AUD-600：API 完整化
+#### AUD-600A：UI Read Models 与 Cursor
 
-实现第 16 节端点、cursor、filters、错误码、Policy 和对象授权；添加 OpenAPI schema tests。
+冻结 AuditsPage/AuditDetail/CodeFinding 所需的 summary metrics、Audit/Phase/Coverage/Threat/Signal/
+Finding/Evidence/Comparison/Report DTO、signed cursor/filter 与 access-class projection；前端不得从
+Event/Artifact 数量拼装领域状态。添加 OpenAPI/schema、pagination、cross-owner 与 corrupt-row tests。
 
-#### AUD-601：CLI
+#### AUD-600B：Standard Core API
 
-实现第 19 节命令、Rich render、JSON mode、SSE resume 和 exit code。
+完成第 16.1 节 M1–M6 路由：Preflight job/status/cancel、Create/Start/controls、Snapshot/snippet、
+Artifact、Triage、Report revision/verify 和对象授权。明确不注册 M7 validate、M9 fix/retest；M8
+字段尚不出现在 response。每条 route 在 Policy/catalog 显式登记。
 
-#### AUD-602：Web Types/Client/Queries
+#### AUD-601：Standard Core CLI
 
-增加 typed contracts、API 方法、React Query keys、mutation invalidation 和 Audit SSE reducer。
+实现第 19 节 M2–M6 命令、Rich render、JSON mode、SSE resume、exit code、现有 CLI i18n catalog
+接线和 English/zh-CN golden parity。help/manifest 只公开 Standard Core；M7/M8/M9 命令由对应
+里程碑追加，并继承相同 locale gate。
 
-#### AUD-603：Layout 与路由
+#### AUD-602A：Audit Types、Client 与 Query Root
 
-一级导航替换、lazy routes、动态标题、mobile 五项导航和 404。
+新增独立 `api/audit-types.ts`（由现有 types re-export）、API 方法、query key root、cursor 和
+mutation invalidation；长期 Code Finding 不塞入通用 Finding optional fields。
 
-若用户直接访问 /runs/{audit_run_id}，在取得 Run.kind 后通过 Audits 的唯一 run_id filter 解析 audit_id，再 replace 跳转到 /audits/{audit_id}；不得渲染通用 Conversation，也不得短暂启用不适用控制。
+#### AUD-602B：SecurityContext 与敏感缓存生命周期
 
-#### AUD-604：AuditsPage 与 NewAuditPage
+实现 `LocalOperatorSecurityContext`、`features.code_audit`、authSessionEpoch、全局 abort/relock、
+401 全量敏感 cache/object URL 清理、403 scoped 清理与迟到响应拒绝。
 
-实现总览、Preflight、创建表单、预算/策略和所有 loading/empty/error/changed states。
+#### AUD-602C：Durable Event Transport
 
-#### AUD-605：AuditDetailPage
+把现有 SSE 拆成 `useDurableEventTransport`、`useRunEventStream` 与 `useAuditEventStream`；保留 cursor
+gap repair/32ms 级批处理，Audit payload 经过 allowlist reducer 后才能进入 cache。
 
-实现阶段轨、6 个主 Tabs、secondary views/Inspector、实时状态、控制、共享 mandatory Approval、Coverage、Threat、Signals、Findings、Evidence、Baseline、Timeline、Artifacts、Reports；接入 SecurityProfile feature context 与全局敏感 query 清理。
+#### AUD-602D：共享 Inspector、Download 与 Approval 基础设施
 
-#### AUD-606：CodeFindingPage
+抽取第 18.8 节 AccessibleInspector、AuthenticatedDownload、typed ApprovalCard。M6 只展示已有
+approval/consent read state；mandatory-one-plan decision variant 在 M7 启用。
 
-实现长期 Finding、Occurrence、代码流、Triage、修复建议和 Retest 投影。
+#### AUD-603A：Feature-aware Layout 与路由元数据
 
-#### AUD-607：i18n/A11y/Responsive
+实现五项导航 feature-off fallback、`resolvePageMeta`、lazy Audit routes、mobile labels 和 404。
 
-补齐中英文、键盘、focus、ARIA、light/dark、reduced motion 和断点测试。
+#### AUD-603B：RunRouteGate
+
+在挂载 RunDetail 前解析 RunKind；code_audit 只执行最小 read 与 replace redirect，General 子资源
+请求、Conversation 和 controls 数量必须为零。
+
+#### AUD-604A：AuditsPage
+
+实现权威 metrics、Recent Audits、filters、cursor、capability/coverage health 和 loading/empty/error/
+stale/partial 状态。
+
+#### AUD-604B：NewAuditPage
+
+实现 typed reducer、Preflight job polling/cancel、token stale、Security Context、预算/策略、Create
+draft 与 Start 两阶段 mutation，以及 start_failed_draft_preserved。
+
+#### AUD-605A：AuditDetail Shell
+
+实现页头、阶段轨、六主 Tabs、typed URL state、Pause/Resume/Cancel 和 pending/partial/failure banner。
+
+#### AUD-605B：Summary 与 Coverage
+
+实现 Snapshot、phase、budget/usage、Detector、Threat secondary view、Coverage matrix/reasons/receipts。
+
+#### AUD-605C：Findings、Signals、Evidence 与 Baseline
+
+实现服务端分页、typed badges、Evidence Inspector、Triage 和不可比时禁止 resolved 的投影。
+
+#### AUD-605D：Activity、Artifacts 与 Report
+
+接入 Audit SSE timeline、authenticated Artifact/download、DistributionRevision list/verify 与结构化
+report.json 视图，不 inline restricted raw output 或同源不可信 HTML。
+
+#### AUD-606A：长期 Code Finding 与 Triage
+
+实现 Finding/Occurrence timeline、stable identity、安全摘要、Triage/revalidation lineage；不显示尚未
+存在的 Validate/Fix/Retest controls。
+
+#### AUD-606B：CodeLocationViewer 与 CodeFlow
+
+接入 bounded snippet API、相对路径、行号/高亮和 verified source/control/sanitizer/sink；不用大型
+编辑器，不使用 `dangerouslySetInnerHTML`。
+
+#### AUD-607A：逐页面 i18n/A11y/Responsive Unit Gate
+
+每个页面任务同步完成 English/zh-CN key parity、keyboard/ARIA/focus、light/dark 和 responsive
+component tests；本任务做全局 exhaustiveness，不把可访问性推迟到最后。
+
+#### AUD-607B：Playwright Browser Gate
+
+实现第 18.10/24.6 节真实浏览器矩阵、截图与 overflow/deep-link/focus/reduced-motion 门禁。
 
 #### AUD-608：Demo 与 README
 
-更新独立 Demo、PRODUCT/DESIGN 必要说明和脱敏截图；不写未经测量的质量或性能宣传。
+更新独立 Demo、PRODUCT/DESIGN 必要说明、feature-off fallback 和脱敏截图；不写未经测量的质量或
+性能宣传。
 
 M6 Exit：
 
-- Web production typecheck/test/build 通过；
-- 所有新页面英文/中文、light/dark、desktop/mobile 可用；
-- 直接 deep link 和浏览器导航可恢复；
+- Web production typecheck/test/build 与 Playwright browser matrix 通过；
+- Standard Core 新页面英文/中文、light/dark、desktop/mobile 可用；
+- `/runs/{audit_run_id}` 从未挂载 General RunDetail 或请求 General 子资源；
+- 401/403、Audit A→B 切换与迟到响应不会残留 snippet/Evidence/Artifact；
+- 直接 deep link、Inspector focus 和浏览器导航可恢复；
 - 不展示 chain-of-thought、绝对路径或敏感 Artifact；
-- WebUI 与 CLI 对同一 Audit 显示一致权威状态。
+- WebUI 与 CLI 对同一 Audit 显示一致权威状态；
+- M7/M8/M9 未实现产品表面在 route/help/UI 中不存在。
 
 ### M7 — 生产隔离与动态验证
 
 目标：安全地执行 Build/Test/PoC，并继承 RiftX 的停止证明。
 
+执行顺序固定为 `AUD-700 -> AUD-701 -> AUD-702A -> AUD-703 -> AUD-704 -> AUD-702B ->
+(AUD-702C || AUD-702D)`。在 Capsule Evidence、停止/恢复和 unconfirmed projection 通过前，不得
+注册 validate/Approval 产品表面；CLI 与 WebUI 只在 API contract 冻结后并行。
+
 #### AUD-700：Sandbox Backend
 
-在 M2 Content Sandbox contract 上扩展 Build/Test/PoC/Fix 能力并实现 Linux 生产 backend；把 M4 EgressBroker 扩展到 dependency/registry/target policy class。Fake backend 只能用于测试，静态解析也不得退回宿主。
+在 M2 已通过生产门禁的 Linux Content Sandbox backend 上增加独立 Build/Test/PoC/Fix profile；
+不得更换成另一套无兼容证明的运行时。把 M4 EgressBroker 扩展到 dependency/registry/target policy
+class。Fake backend 只能用于测试，静态解析与动态验证都不得退回宿主。
 
 #### AUD-701：Runner Capability
 
 Runner 注册 audit.readonly、audit.sandbox、audit.network-scoped 等能力，但自报字符串只用于候选筛选。Control Plane 还要校验 operator-approved backend/image policy，Worker 在调度前验证，`sandbox.prepare` 返回的 mount/network/credential/resource proof 在执行前再次验证；proof 不符即 fail-closed 并隔离 Node。
 
-#### AUD-702：Validation Plan 与 Approval
+#### AUD-702A：Validation Plan、Approval Domain 与 Admission
 
-把 ValidationPlanPacket 转为 canonical AuditExecutionPlan 与 `mandatory_one_plan` Approval；扩展现有领域字段，拒绝 AUTO/grant/approve_for_run 绕过，admission 与 Runner 执行前重算 plan digest。实现 sealed Occurrence → 独立 validation_followup Audit/Supplement 关系，禁止追加原 core seal。
+把 ValidationPlanPacket 转为 canonical AuditExecutionPlan 与 `mandatory_one_plan` Approval；扩展现有
+领域/Repository/Runner admission，拒绝 AUTO/grant/approve_for_run 绕过，admission 与 Runner 执行前
+重算 plan digest。实现 sealed Occurrence → 独立 validation_followup Audit/Supplement owner 关系，禁止
+追加原 core seal。本任务只交付 domain/application/persistence/protocol contract 与无 UI 的 integration
+tests，不注册第 16.1 节 validate/Approval endpoint、CLI help 或按钮。
 
 #### AUD-703：Sandbox Capsule Evidence
 
@@ -3894,13 +4612,33 @@ Runner 注册 audit.readonly、audit.sandbox、audit.network-scoped 等能力，
 
 加固 M2 的 AuditCapsuleStopper，实现 Build/Test/PoC/Fix Capsule cleanup/reconciliation、Runner 重启恢复、cgroup/容器双重停止证明、Feature Flag 关闭后的 stop 与 unconfirmed UI。
 
+#### AUD-702B：Validation API 与 Read Models
+
+依赖 AUD-702A、AUD-703、AUD-704 和 M6 shared infrastructure。此时才注册第 16.1 节
+Approval/validate API、OpenAPI、Audit-owned Approval/validation supplement/Capsule Evidence read model、
+authorization、cursor 和 SSE projection。M6 不预留 endpoint；cross-owner、stale plan、General grant、
+cancel/unconfirmed 和 sealed-source tests 必须先通过。
+
+#### AUD-702C：Validation CLI Surface
+
+依赖 AUD-702B 与 AUD-601。注册 CLI `validate --occurrence`、`audit approvals`、`audit approval` 和
+`audit approval-decision --plan-digest`；使用 Audit 专用 endpoint、capability-aware help、en/zh locale
+golden 和稳定 exit code，不得委托 General `riftx approve`。
+
+#### AUD-702D：Validation WebUI Surface
+
+依赖 AUD-702B 与 M6 shared Web infrastructure。启用 Audit/CodeFinding mandatory-one-plan decision、
+Capsule Evidence、unconfirmed/cancel 和 validation supplement UI；覆盖 auth epoch、deep link、focus、
+mobile、light/dark 和 Playwright。M6 不预留假按钮或隐藏 route。
+
 M7 Exit：
 
 - 源码只读、默认禁网、环境无凭据；
 - path/symlink/hardlink/mount/socket/credential escape 测试零容忍；
 - Cancel 后无残留进程/Capsule；
 - 没有支持能力的平台明确 unavailable；
-- Dynamic Finding 满足 Q3 contract。
+- Dynamic Finding 满足 Q3 contract；
+- validate/Approval API、CLI、UI 只对 immutable plan 开放，General grant 无法旁路。
 
 ### M8 — Diff 与 Deep
 
@@ -3922,9 +4660,24 @@ M7 Exit：
 
 实现至少/最多 Epoch、连续无新 Cluster、风险 Coverage gap 和在途 job 上限。
 
-#### AUD-804：Deep/Diff UI 与 CLI
+#### AUD-804A：Deep/Diff API 与 Read Models
 
-在 M6 API/Web/CLI contract 完成后展示 Epoch、novelty、impact scope、baseline 可比性与 partial budget；后端 AUD-800～803 可与 M6 并行，此任务显式依赖 M6。
+依赖 AUD-800～803 和 AUD-600A/B。扩展 Preflight/Create capability admission，以及 Audit/Phase/
+Coverage/Compare response、OpenAPI、signed cursor/filter、access projection 与 SSE event allowlist，加入
+base/head、hunk/impact edge、attribution、Epoch、novelty、saturation 与 partial budget。M6 对
+`mode=deep|diff` 必须 fail-closed；只有本任务完成后服务端才公开对应枚举/字段。
+
+#### AUD-804B：Deep/Diff WebUI
+
+依赖 AUD-804A 和 M6 shared Web infrastructure。按第 18.3.1 节启用 NewAudit mode、base/head、
+impact scope、Epoch/novelty/saturation、baseline comparability 与 partial budget；沿用六 Tab 和现有
+Blue Team Cartridge 组件，不复制详情页或预先加载全量 Epoch 数据。
+
+#### AUD-804C：Deep/Diff CLI
+
+依赖 AUD-804A 和 AUD-601。注册 `--mode deep|diff`、Diff base/head、Deep progress/watch 与 JSON
+projection；help/manifest、locale golden 和 exit-code tests 必须与服务端 capability 同步。不能在 M6
+保留隐藏参数或把 unavailable 当成空结果。
 
 M8 Exit：
 
@@ -3939,27 +4692,85 @@ M8 Exit：
 
 目标：从 Finding 安全进入修复建议、补丁和复测，而不修改原工作区。
 
+执行顺序固定为 `AUD-900 -> AUD-901A -> AUD-901B -> AUD-901C -> (AUD-901D || AUD-901E) ->
+AUD-902A -> AUD-902B -> (AUD-902C || AUD-902D) -> AUD-903/AUD-904`。API contract 完成后 CLI/Web
+才可并行；任何后端未完成时对应产品表面不存在。
+
 #### AUD-900：Fix Advisor
 
 结构化修复策略、受影响 symbol、建议测试和预期风险降低。
 
-#### AUD-901：Isolated Fix Worktree
+#### AUD-901A：Fix Follow-up Domain、Persistence 与 Workflow Owner
 
-创建临时副本、限制可写范围、生成 patch 与 delta Artifact。
+依赖 AUD-900 与 M7 dynamic plan contract。新增 `purpose=fix_followup` 的 Audit/Run、source
+Occurrence/Decision relation、schema/migration/repository、idempotent creation UoW 和专用 Workflow
+phase allowlist。此任务不注册 API/CLI/UI，也不创建 worktree；证明 follow-up 不能改写 source
+Occurrence、继承 General grant 或跨 owner 复用 plan。
 
-#### AUD-902：Retest
+#### AUD-901B：Isolated Fix Worktree、Patch Capsule 与 Artifact
 
-从 patched overlay 封存新的 content-addressed SourceSnapshot，记录 parent/base/patch digest；新建 Retest Audit。只复用 scope policy/稳定 anchors，重新生成 ScopeUnit、Receipt、Evidence、Occurrence 与 Closure，并与原 Finding 比较。
+依赖 AUD-901A。实现 `AuditExecutionPlan(fix)`、mandatory Approval、临时副本、writable-root 限制、
+patch/delta Artifact、Execution/Capsule Evidence、重启恢复、取消/stop proof 和 orphan worktree cleanup。
+Artifact 必须归属 fix Audit，原仓库 digest 不变；此任务仍不开放产品 endpoint。
+
+#### AUD-901C：Fix API 与 Read Models
+
+依赖 AUD-901B。注册第 16.1 节 fix create/list、fix Audit status/patch summary read models、OpenAPI、
+authorization、idempotency、cursor 和 SSE projection；POST 返回 202 + fix audit ID。未完成 backend、
+cross-owner occurrence、stale Decision 或 unavailable capability 均 fail-closed。
+
+#### AUD-901D：Fix CLI Surface
+
+依赖 AUD-901C 与 AUD-601。注册 `fix --occurrence`、fix Audit show/watch/cancel/patch download，使用
+capability-aware help、en/zh golden、稳定 JSON/exit code；不得自动选择最新 Occurrence/patch。
+
+#### AUD-901E：Fix WebUI Surface
+
+依赖 AUD-901C 与 M6/M7 shared Web infrastructure。实现 CodeFinding/Audit 的 fix plan、Approval、
+status、cancel、Evidence 和 authenticated patch download；覆盖 auth epoch、deep link、focus、mobile、
+light/dark 与 Playwright，未实现 Retest 时不显示 Retest control。
+
+#### AUD-902A：Patched Snapshot 与 Retest Domain/Workflow
+
+依赖 AUD-901B。验证 exact fix follow-up、patch Artifact/base digest，从 patched overlay 封存新的
+content-addressed SourceSnapshot，记录 parent/base/patch digest，并创建 `purpose=retest` Audit/Run、
+Contract、Scope/Receipt/Evidence/Closure 工作流。只复用 scope policy/稳定 anchors；任一 owner/digest
+mismatch fail-closed。此任务不注册 API/CLI/UI。
+
+#### AUD-902B：Retest API 与 Read Models
+
+依赖 AUD-902A。注册第 16.1 节 retest endpoint、Retest relation/status/comparison read models、OpenAPI、
+authorization、idempotency 与 SSE projection；请求显式绑定 fix Audit、patch Artifact、patch/base digest。
+
+#### AUD-902C：Retest CLI Surface
+
+依赖 AUD-902B 与 AUD-601。注册
+`retest --occurrence --fix-audit --patch-artifact --patch-digest --base-digest`、watch/show 与 en/zh
+golden；禁止自动选择最新 fix/patch，JSON/exit code 与 API 状态一致。
+
+#### AUD-902D：Retest WebUI Surface
+
+依赖 AUD-902B 与 AUD-901E。实现 explicit patch selection/confirmation、Retest progress、new Snapshot、
+comparison/lifecycle projection 和 failure/cancel 状态；覆盖 direct link、auth cache cleanup、mobile、
+light/dark、keyboard 与 Playwright。
 
 #### AUD-903：Lifecycle Projection
 
-根据 Retest 与 Triage 投影 fixed/reopened/reintroduced，保留历史。
+根据 Retest、Triage revalidation 与技术 Evidence 投影 fixed/reopened/reintroduced，保留历史；不得
+反向改写旧 Audit CoreSeal。
+
+#### AUD-904：Structural Hardening Portfolio
+
+从已 Confirmed Findings、Threat Model 与持久 Evidence 生成跨 Finding 的共同根因、控制面缺口和
+架构加固建议。它不创建 Finding、不改变 Severity/Coverage，只作为带事实引用的 supplemental
+DistributionRevision Artifact；纯设计建议标记 non-finding。
 
 M9 Exit：
 
 - 原仓库零修改；
 - Patch 可审阅、可下载、带 base digest；
 - Retest 结果可追溯；
+- Structural hardening 与单 Finding 修复分离，不污染扫描事实；
 - 自动 push/merge 永远不存在；
 - UI/CLI 完成 Finding 到 Retest 闭环。
 
@@ -3998,6 +4809,12 @@ M9 Exit：
 - 更新 v3 completion audit；
 - 生成脱敏截图。
 
+#### AUD-1006：性能、容量与保留门禁
+
+冻结并验证 SQLite/Artifact/SnapshotStore 的 3.0 支持规模：200k ScopeUnit、16k Signal、最大 cursor
+page、SSE batch、报告重建、Snapshot retention/GC 与磁盘水位。门禁记录硬件/环境、p50/p95、峰值
+内存/磁盘和 query plan；无界查询、UI 全量载入、GC 删除 active reference 或超阈值均阻止发布。
+
 M10 Exit = 第 25 节 Definition of Done 全部满足。
 
 ## 23. 任务依赖与并行边界
@@ -4005,29 +4822,52 @@ M10 Exit = 第 25 节 Definition of Done 全部满足。
 ~~~mermaid
 flowchart LR
     M0["M0 契约"] --> M1["M1 领域/数据库"]
-    M1 --> M2["M2 Snapshot/Scope"]
-    M2 --> M3["M3 Deterministic"]
+    M1 --> P0["AUD-200 Preflight owner"]
+    P0 --> P1["AUD-201 Plan/token"]
+    P1 --> S0["AUD-202A/B Snapshot CAS"]
+    S0 --> SM["AUD-202C Mount/ownership"]
+    SM --> CS["AUD-206 Production content sandbox"]
+    SM --> GC["AUD-202D Retention/GC"]
+    CS --> INV["AUD-203/204 Inventory/read"]
+    INV --> M2X["AUD-205/207/208/209 M2 exit"]
+    GC --> M2X
+    M2X --> BUD["AUD-300 + AUD-308 contracts/budget"]
+    BUD --> M3["AUD-301..309 Deterministic"]
     M3 --> M4["M4 Standard Agent"]
     M4 --> M5["M5 Finding/Closure"]
-    M5 --> M6["M6 API/CLI/UI"]
-    M5 --> M7["M7 Sandbox/Validation"]
+    M5 --> M6["M6 Standard Core surface"]
+    M5 --> M7B["AUD-700/701/702A/703/704 Dynamic backend"]
+    M6 --> M7U["AUD-702B..D Validation surface"]
+    M7B --> M7U
     M5 --> M8B["M8 AUD-800..803 Backend"]
-    M6 --> M8UI["M8 AUD-804 UI/CLI"]
+    M6 --> M8UI["M8 AUD-804A..C Surface"]
     M8B --> M8UI
-    M6 --> M9["M9 Fix/Retest"]
-    M7 --> M9
-    M8UI --> M9
-    M9 --> M10["M10 GA"]
+    M7U --> F0["AUD-900/901A/B Fix backend"]
+    M8UI --> F0
+    F0 --> FS["AUD-901C..E Fix surface"]
+    M6 --> FS
+    FS --> R0["AUD-902A Retest backend"]
+    R0 --> RS["AUD-902B..D Retest surface"]
+    RS --> LIFE["AUD-903/904 Lifecycle/hardening"]
+    LIFE --> M10["M10 GA"]
 ~~~
+
+每个执行单元必须在进度账本记录 `depends_on`、exact modules/files、schema/migration owner、API
+surface、fail-closed conditions、targeted tests、explicit non-goals 与 exit artifacts。预计超过 1–3
+个工作日、同时跨越多个独立安全边界的父任务必须先拆为 `AUD-xxxA/B/...`；每个子任务单独提交、
+验收和更新账本，父任务只在全部子任务完成后标 completed。本文已对 AUD-202A..D、
+AUD-305A..C、M6 全部字母子任务、AUD-702A..D、AUD-804A..C、AUD-901A..E 与
+AUD-902A..D 给出强制拆分，后续不得合回“大提交”。
 
 允许的并行：
 
 - M2 的 Snapshot tests 与 UI Preflight mock 可以并行，但 UI 不得先冻结错误 API。
 - M3 的各原生 Detector 在统一契约稳定后并行。
 - M5 的 Report/SARIF 与 Fingerprint tests 可以并行。
-- M6 的 CLI 与 WebUI 在 API Schema 稳定后并行。
-- M7 的容器 backend 与 Approval UI 可以并行。
-- M8 的 Diff/Deep 后端 AUD-800～803 可与 M6 并行，但依赖 Standard Closure；AUD-804 明确等待 M6 Web/CLI contract。
+- M6 的 CLI 与 WebUI 只在对应 Standard Core API Schema 稳定后并行。
+- M7 动态 backend 可与 M6 Standard Core 并行；Approval/Validation UI 必须等待 M6 shared
+  infrastructure 和 M7 API Schema。
+- M8 的 Diff/Deep 后端 AUD-800～803 可与 M6 并行，但依赖 Standard Closure；AUD-804A..C 明确等待对应 M6 API/Web/CLI contract。
 
 禁止的捷径：
 
@@ -4051,6 +4891,7 @@ tests/audit/evaluation/
 tests/fixtures/audit_repositories/
 apps/web/src/pages/*.audit.test.tsx
 apps/web/src/components/audit/*.test.tsx
+apps/web/e2e/code-audit/*.spec.ts
 ~~~
 
 测试遵循现有目录约定时可以合并到 tests/unit、tests/integration，但必须可通过 marker 或路径独立运行。
@@ -4149,6 +4990,9 @@ apps/web/src/components/audit/*.test.tsx
 - non-color status；
 - sensitive data absence。
 - authSessionEpoch late-response/401 relock/403 scoped cache；
+- Playwright 1440×900/390×844、dark/light、en/zh、back/forward/deep-link/404；
+- RunRouteGate 证明 code_audit 从未挂载/请求 General RunDetail 子资源；
+- screenshot/overflow/focus trap/return focus/reduced-motion 门禁。
 
 ### 24.7 评测门槛
 
@@ -4253,19 +5097,30 @@ Scorer 的 candidate graph、最终 matching、排除原因、每个指标分子
 
 ~~~bash
 conda run --no-capture-output -n agent ruff check src/riftx tests migrations
+conda run --no-capture-output -n agent python -m mypy src/riftx
 conda run --no-capture-output -n agent python -m pytest tests/audit
 conda run --no-capture-output -n agent python -m pytest
+conda run --no-capture-output -n agent python -m pytest tests/integration/persistence -k migration
+conda run --no-capture-output -n agent python -m pytest tests/runner tests/unit/application -k 'ownership or protocol or effect_policy'
 conda run --no-capture-output -n agent python scripts/qa/code-audit-release-gate.py
+conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py
+conda run --no-capture-output -n agent python scripts/qa/code-audit-performance-gate.py
 conda run --no-capture-output -n agent python scripts/qa/release-gate.py
 conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/web test
+conda run --no-capture-output -n agent pnpm --filter @riftx/web exec playwright test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 conda run --no-capture-output -n agent pnpm --filter @riftx/demo typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/demo test
 conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 ~~~
 
-Targeted tests 每项任务执行；每个 Milestone 执行完整后端/Web gate；M10 执行全部命令和无害部署检查。
+Targeted tests 每项任务执行；涉及 Schema 的任务必须同时做最早 revision→head upgrade、head→前一
+revision downgrade（仅在契约允许时）和完整链重开；涉及 Runner 的任务必须做新旧 protocol
+capability matrix。每个 Milestone 执行完整后端/Web gate；M10 创建并执行 performance gate，重新
+构建候选安装物后用 `code-audit-boundary-gate.py --require-artifact ...` 扫描实际 inventory/SBOM，
+再执行全部命令和无害部署检查。上述未来脚本在其 owner 任务完成前不是可跳过项，而是该任务必须
+交付的稳定入口。
 
 ## 25. 3.0 Definition of Done
 
@@ -4277,6 +5132,7 @@ RiftX Code Audit 只有在以下全部成立时才算完成：
 - Standard、Deep、Diff 均是真实后端能力，不是 UI 占位。
 - 创建、控制、Coverage、Finding、Evidence、Baseline、报告、Fix 与 Retest 可用。
 - WebUI/CLI 双语状态一致。
+- M6/M7/M8/M9 产品表面按后端能力增量注册，任何未实现按钮、route 或 help command 为 0。
 
 ### 独立掌控
 
@@ -4296,6 +5152,7 @@ RiftX Code Audit 只有在以下全部成立时才算完成：
 ### 安全
 
 - 原仓库只读。
+- 3.0 source/analysis 均绑定 local same-node；任何 remote/cross-node 请求 fail-closed。
 - 动态验证使用生产隔离 backend。
 - 默认禁网和 clean environment。
 - 审批绑定不可变计划。
@@ -4312,6 +5169,7 @@ RiftX Code Audit 只有在以下全部成立时才算完成：
 ### 质量
 
 - 第 24.7 节全部 GA 门槛通过。
+- AUD-1006 性能、容量、磁盘水位、Retention/GC 门禁通过。
 - 当前完整 release gate 通过。
 - 无开放 P0/P1 安全问题。
 - P2 问题有明确接受理由、Owner 与到期时间。
@@ -4352,6 +5210,7 @@ RiftX Code Audit 只有在以下全部成立时才算完成：
 ### 3.0 Alpha
 
 - M4–M5；
+- 工程 Alpha，只承诺内部 API/开发 CLI 与测试投影，不承诺 M6 完整 WebUI；
 - Standard hybrid；
 - Snapshot、Finding、Coverage、Report 完整；
 - 仅允许可信本地仓库；
@@ -4360,15 +5219,16 @@ RiftX Code Audit 只有在以下全部成立时才算完成：
 ### 3.0 Beta
 
 - M6–M8；
-- 完整 WebUI/CLI；
+- 对 M6–M8 已实现能力提供完整 WebUI/CLI；Fix/Retest/Structural Hardening 仍隐藏；
 - 生产 Linux Sandbox；
 - Standard/Deep/Diff；
+- `audit.enabled` 默认关闭，由明确配置 opt-in；
 - 外部小范围 dogfood。
 
 ### 3.0 GA
 
 - M9–M10；
-- Fix/Retest；
+- 完整 3.0 WebUI/CLI，包括 Fix/Retest；
 - 质量、安全、恢复和独立性门禁全部通过；
 - audit.enabled 默认 true；
 - 仍保持 local_single_operator 可信边界。

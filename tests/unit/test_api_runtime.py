@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from riftx.api.runtime import APISettings, ControlPlane, _create_audit_service
 from riftx.application.services import AuditApplicationService
 from riftx.config import AuditConfig
-from riftx.domain import RunStatus
+from riftx.domain import RunKind, RunStatus
 from riftx.persistence import (
     Database,
     SQLAlchemyAuditAggregateReadRepository,
@@ -83,7 +83,7 @@ class RecordingCleanupRunService:
             RunStatus.COMPLETING,
         }:
             self.all_fences_seen.set()
-        return [SimpleNamespace(id=f"run-{status.value}")]
+        return [SimpleNamespace(id=f"run-{status.value}", kind=RunKind.GENERAL)]
 
     async def stop_resources_for_cleanup(self, run_id: str) -> SimpleNamespace:
         self.stopped_run_ids.append(run_id)
@@ -98,6 +98,7 @@ class PagedCleanupRunService:
         self.remaining = {
             f"run-{index:03d}": SimpleNamespace(
                 id=f"run-{index:03d}",
+                kind=RunKind.GENERAL,
                 created_at=created + timedelta(microseconds=index),
             )
             for index in range(count)
@@ -155,7 +156,7 @@ async def test_control_plane_owner_reconciler_covers_every_fence_and_stops_clean
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]
         node_service=placeholder,  # type: ignore[arg-type]
-        runner_control_service=placeholder,  # type: ignore[arg-type]
+        runner_control_service=AsyncMock(),
         report_service=placeholder,  # type: ignore[arg-type]
         tool_service=placeholder,  # type: ignore[arg-type]
         model_profile_service=placeholder,  # type: ignore[arg-type]
@@ -189,6 +190,66 @@ async def test_control_plane_owner_reconciler_covers_every_fence_and_stops_clean
     database.dispose.assert_awaited_once_with()
 
 
+async def test_control_plane_runner_reconciler_retries_and_runs_both_paths() -> None:
+    runner_control = AsyncMock()
+    stop_attempts = 0
+    reconciled = asyncio.Event()
+
+    async def reconcile_stop_receipts() -> int:
+        nonlocal stop_attempts
+        stop_attempts += 1
+        if stop_attempts == 1:
+            raise RuntimeError("transient stop receipt failure")
+        return 1
+
+    async def reconcile_quarantined_commands() -> int:
+        reconciled.set()
+        return 1
+
+    runner_control.reconcile_stop_receipts.side_effect = reconcile_stop_receipts
+    runner_control.reconcile_quarantined_commands.side_effect = (
+        reconcile_quarantined_commands
+    )
+    placeholder = object()
+    runtime = ControlPlane(
+        settings=APISettings(),
+        database=AsyncMock(),
+        run_service=placeholder,  # type: ignore[arg-type]
+        audit_service=placeholder,  # type: ignore[arg-type]
+        action_service=placeholder,  # type: ignore[arg-type]
+        event_service=placeholder,  # type: ignore[arg-type]
+        execution_service=placeholder,  # type: ignore[arg-type]
+        finding_service=placeholder,  # type: ignore[arg-type]
+        node_service=placeholder,  # type: ignore[arg-type]
+        runner_control_service=runner_control,
+        report_service=placeholder,  # type: ignore[arg-type]
+        tool_service=placeholder,  # type: ignore[arg-type]
+        model_profile_service=placeholder,  # type: ignore[arg-type]
+        approval_service=placeholder,  # type: ignore[arg-type]
+        artifact_service=placeholder,  # type: ignore[arg-type]
+        context_service=placeholder,  # type: ignore[arg-type]
+        memory_service=placeholder,  # type: ignore[arg-type]
+        runtime_observability_service=placeholder,  # type: ignore[arg-type]
+        terminal_service=placeholder,  # type: ignore[arg-type]
+        terminal_supervisor=AsyncMock(),
+        graph_repository=placeholder,  # type: ignore[arg-type]
+        traffic_repository=placeholder,  # type: ignore[arg-type]
+    )
+
+    task = asyncio.create_task(runtime._reconcile_runner_state())
+    try:
+        await asyncio.wait_for(reconciled.wait(), timeout=1)
+        assert not task.done()
+        assert stop_attempts >= 2
+        assert runner_control.reconcile_quarantined_commands.await_count >= 1
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def test_control_plane_owner_reconciler_recovers_after_list_failure() -> None:
     runs = RecordingCleanupRunService(fail_first_list=True)
     database = AsyncMock()
@@ -204,7 +265,7 @@ async def test_control_plane_owner_reconciler_recovers_after_list_failure() -> N
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]
         node_service=placeholder,  # type: ignore[arg-type]
-        runner_control_service=placeholder,  # type: ignore[arg-type]
+        runner_control_service=AsyncMock(),
         report_service=placeholder,  # type: ignore[arg-type]
         tool_service=placeholder,  # type: ignore[arg-type]
         model_profile_service=placeholder,  # type: ignore[arg-type]
@@ -250,7 +311,7 @@ async def test_control_plane_owner_reconciler_keyset_scan_does_not_skip_mutated_
         execution_service=placeholder,  # type: ignore[arg-type]
         finding_service=placeholder,  # type: ignore[arg-type]
         node_service=placeholder,  # type: ignore[arg-type]
-        runner_control_service=placeholder,  # type: ignore[arg-type]
+        runner_control_service=AsyncMock(),
         report_service=placeholder,  # type: ignore[arg-type]
         tool_service=placeholder,  # type: ignore[arg-type]
         model_profile_service=placeholder,  # type: ignore[arg-type]
@@ -271,3 +332,66 @@ async def test_control_plane_owner_reconciler_keyset_scan_does_not_skip_mutated_
 
     assert len(runs.stopped_run_ids) == 205
     assert len(set(runs.stopped_run_ids)) == 205
+
+
+async def test_control_plane_routes_code_audit_cleanup_to_dedicated_reconciler() -> None:
+    delivered = False
+    reconciled = asyncio.Event()
+    run_service = AsyncMock()
+
+    async def list_runs_for_reconciliation(**filters: object) -> list[SimpleNamespace]:
+        nonlocal delivered
+        if filters["status"] is RunStatus.PAUSING and not delivered:
+            delivered = True
+            return [
+                SimpleNamespace(
+                    id="audit-run-1",
+                    kind=RunKind.CODE_AUDIT,
+                    created_at=datetime.now(UTC),
+                )
+            ]
+        return []
+
+    run_service.list_runs_for_reconciliation.side_effect = list_runs_for_reconciliation
+    audit_controls = AsyncMock()
+
+    async def reconcile_run(run_id: str) -> SimpleNamespace:
+        assert run_id == "audit-run-1"
+        reconciled.set()
+        return SimpleNamespace(succeeded=True, failed_resource_types=())
+
+    audit_controls.reconcile_run.side_effect = reconcile_run
+    terminal_supervisor = AsyncMock()
+    placeholder = object()
+    runtime = ControlPlane(
+        settings=APISettings(),
+        database=AsyncMock(),
+        run_service=run_service,
+        audit_service=placeholder,  # type: ignore[arg-type]
+        action_service=placeholder,  # type: ignore[arg-type]
+        event_service=placeholder,  # type: ignore[arg-type]
+        execution_service=placeholder,  # type: ignore[arg-type]
+        finding_service=placeholder,  # type: ignore[arg-type]
+        node_service=placeholder,  # type: ignore[arg-type]
+        runner_control_service=AsyncMock(),
+        report_service=placeholder,  # type: ignore[arg-type]
+        tool_service=placeholder,  # type: ignore[arg-type]
+        model_profile_service=placeholder,  # type: ignore[arg-type]
+        approval_service=placeholder,  # type: ignore[arg-type]
+        artifact_service=placeholder,  # type: ignore[arg-type]
+        context_service=placeholder,  # type: ignore[arg-type]
+        memory_service=placeholder,  # type: ignore[arg-type]
+        runtime_observability_service=placeholder,  # type: ignore[arg-type]
+        terminal_service=placeholder,  # type: ignore[arg-type]
+        terminal_supervisor=terminal_supervisor,
+        graph_repository=placeholder,  # type: ignore[arg-type]
+        traffic_repository=placeholder,  # type: ignore[arg-type]
+        audit_control_service=audit_controls,
+    )
+
+    runtime.start_cleanup_reconciler()
+    await asyncio.wait_for(reconciled.wait(), timeout=1)
+    await runtime.close()
+
+    run_service.stop_resources_for_cleanup.assert_not_awaited()
+    audit_controls.reconcile_run.assert_awaited_once_with("audit-run-1")

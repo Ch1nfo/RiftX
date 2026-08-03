@@ -41,6 +41,24 @@ class RecordingTemporalClient:
         return object()
 
 
+class RecordingSignalHandle:
+    def __init__(self) -> None:
+        self.args: tuple[object, ...] | None = None
+
+    async def signal(self, *args: object) -> None:
+        self.args = args
+
+
+class RecordingSignalTemporalClient:
+    def __init__(self) -> None:
+        self.workflow_id: str | None = None
+        self.handle = RecordingSignalHandle()
+
+    def get_workflow_handle(self, workflow_id: str) -> RecordingSignalHandle:
+        self.workflow_id = workflow_id
+        return self.handle
+
+
 class UnavailableStartTemporalClient:
     async def start_workflow(self, *_: object, **__: object) -> object:
         raise RPCError("Temporal transport unavailable", RPCStatusCode.UNAVAILABLE, b"")
@@ -90,6 +108,24 @@ async def test_user_message_uses_signal_with_start_and_never_restarts_closed_wor
         "start_signal": "user_input",
         "start_signal_args": ["message-1"],
     }
+
+
+async def test_control_signal_can_target_exact_persisted_workflow_id() -> None:
+    temporal = RecordingSignalTemporalClient()
+    client = TemporalRunClient(
+        temporal,  # type: ignore[arg-type]
+        TemporalRuntimeConfig(workflow_id_prefix="current-prefix"),
+    )
+
+    await client.approve(
+        "run-1",
+        "approval-1",
+        workflow_id="historical-prefix-run-1",
+    )
+
+    assert temporal.workflow_id == "historical-prefix-run-1"
+    assert temporal.handle.args is not None
+    assert temporal.handle.args[-1] == "approval-1"
 
 
 class AlreadyClosedTemporalClient:
