@@ -5,22 +5,32 @@ from __future__ import annotations
 import asyncio
 import codecs
 from contextlib import suppress
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from riftx.application.errors import (
     ApplicationServiceError,
     EntityNotFoundError,
+    resource_not_accessible,
 )
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain import DomainError, TerminalOwner, TerminalStatus
 
 from ..auth import accept_local_operator_websocket
-from ..dependencies import TerminalServiceDependency
+from ..dependencies import (
+    RunReadAuthorizerDependency,
+    RunServiceDependency,
+    TerminalServiceDependency,
+    load_authorized_child,
+    require_run_read_binding,
+    websocket_run_read_authorizer,
+)
 from ..schemas import ErrorResponse, TerminalCreateRequest, TerminalResponse
 
 router = APIRouter(tags=["terminals"])
 
-_ERROR_RESPONSES = {
+_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     404: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
@@ -38,7 +48,9 @@ async def create_terminal(
     run_id: str,
     request: TerminalCreateRequest,
     service: TerminalServiceDependency,
+    runs: RunServiceDependency,
 ) -> TerminalResponse:
+    require_general_run_operation(await runs.get_run(run_id))
     return TerminalResponse.from_view(await service.create(run_id, request.to_command()))
 
 
@@ -50,8 +62,17 @@ async def create_terminal(
 async def get_terminal(
     session_id: str,
     service: TerminalServiceDependency,
+    authorizer: RunReadAuthorizerDependency,
 ) -> TerminalResponse:
-    return TerminalResponse.from_view(await service.get(session_id))
+    run_id = await service.resolve_run_id(session_id)
+    authorized_run = await authorizer.require(run_id)
+    require_general_run_operation(authorized_run)
+    view = await load_authorized_child(
+        service.get(session_id, expected_run_id=run_id)
+    )
+    require_run_read_binding(run_id, view.terminal.run_id)
+    require_run_read_binding(run_id, view.execution.run_id)
+    return TerminalResponse.from_view(view)
 
 
 @router.delete(
@@ -62,7 +83,10 @@ async def get_terminal(
 async def close_terminal(
     session_id: str,
     service: TerminalServiceDependency,
+    runs: RunServiceDependency,
 ) -> TerminalResponse:
+    current = await service.get(session_id)
+    require_general_run_operation(await runs.get_run(current.terminal.run_id))
     return TerminalResponse.from_view(await service.close(session_id))
 
 
@@ -71,6 +95,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     service = websocket.app.state.control_plane.terminal_service
     cursor = _cursor(websocket.query_params.get("cursor"))
     await accept_local_operator_websocket(websocket)
+    authorizer = websocket_run_read_authorizer(websocket)
     send_lock = asyncio.Lock()
 
     async def send(payload: dict[str, object]) -> None:
@@ -78,7 +103,10 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
             await websocket.send_json(payload)
 
     async def send_state() -> TerminalResponse:
-        response = TerminalResponse.from_view(await service.get(session_id))
+        view = await service.get(session_id, expected_run_id=run_id)
+        require_run_read_binding(run_id, view.terminal.run_id)
+        require_run_read_binding(run_id, view.execution.run_id)
+        response = TerminalResponse.from_view(view)
         await send({"type": "state", "session": response.model_dump(mode="json")})
         return response
 
@@ -88,7 +116,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
         nonlocal cursor
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         while True:
-            view = await service.get(session_id)
+            view = await service.get(session_id, expected_run_id=run_id)
+            require_run_read_binding(run_id, view.terminal.run_id)
+            require_run_read_binding(run_id, view.execution.run_id)
             state = (
                 view.terminal.status,
                 view.terminal.owner,
@@ -99,7 +129,11 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                 await send_state()
                 previous_state = state
             try:
-                output = await service.read(session_id, cursor=cursor)
+                output = await service.read(
+                    session_id,
+                    cursor=cursor,
+                    expected_run_id=run_id,
+                )
             except ValueError as exc:
                 await send(
                     {
@@ -177,16 +211,20 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                 )
 
     try:
+        run_id = await service.resolve_run_id(session_id)
+        authorized_run = await authorizer.require(run_id)
+        require_general_run_operation(authorized_run)
         initial = await send_state()
-    except EntityNotFoundError as exc:
+    except EntityNotFoundError:
+        error = resource_not_accessible()
         await send(
             {
                 "type": "error",
-                "code": "terminal_session_not_found",
-                "message": str(exc),
+                "code": error.code,
+                "message": error.message,
             }
         )
-        await websocket.close(code=4404)
+        await websocket.close(code=4409)
         return
     except (ApplicationServiceError, DomainError, ValueError) as exc:
         await send(

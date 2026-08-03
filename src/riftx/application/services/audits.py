@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import unicodedata
 from collections.abc import Callable, Sequence
@@ -18,7 +19,9 @@ from riftx.application.errors import (
     AuditIdempotencyConflictError,
     EntityNotFoundError,
     RepositoryConflictError,
+    RepositoryIntegrityError,
     RepositoryUnavailableError,
+    ResourceNotAccessibleError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import (
@@ -26,6 +29,8 @@ from riftx.application.ports import (
     AuditAggregateReadRepository,
     AuditCreationUnitOfWork,
     AuditDraftCreationEnvelope,
+    AuditEngagementScope,
+    AuditObjectAuthorizer,
 )
 from riftx.domain import (
     AUDIT_CLIENT_REQUEST_SCHEMA_VERSION,
@@ -41,7 +46,9 @@ from riftx.domain import (
     AuditScan,
     AuditTerminalOutcome,
     Engagement,
+    LocalPrincipal,
     Objective,
+    OperatorCapability,
     Run,
     RunEvent,
     RunKind,
@@ -166,11 +173,13 @@ class _AuditDraftBuilder:
         self,
         command: CreateAuditDraft,
         *,
+        authorized_engagement_scope: AuditEngagementScope,
         workspace_root: Path,
         id_factory: AuditIdFactory,
         clock: AuditClock,
     ) -> None:
         self._command = _validate_create_command(command)
+        self._authorized_engagement_scope = authorized_engagement_scope
         self._workspace_root = workspace_root
         self._id_factory = id_factory
         self._clock = clock
@@ -200,6 +209,10 @@ class _AuditDraftBuilder:
     @property
     def authorization_reference(self) -> str:
         return self._command.authorization_reference
+
+    @property
+    def authorized_engagement_scope(self) -> AuditEngagementScope:
+        return self._authorized_engagement_scope
 
     @property
     def workspace_root(self) -> str:
@@ -357,10 +370,64 @@ class AuditApplicationService:
         self._clock = clock
 
     async def create_draft(self, command: CreateAuditDraft) -> AuditDraftResult:
+        """Trusted application edge retained for non-HTTP composition and tests."""
+
+        return await self._create_draft(
+            command,
+            authorized_engagement_scope=AuditEngagementScope.profile_a(),
+        )
+
+    async def create_draft_authorized(
+        self,
+        command: CreateAuditDraft,
+        *,
+        principal: LocalPrincipal,
+        authorizer: AuditObjectAuthorizer,
+    ) -> AuditDraftResult:
+        """Create through a server-derived authorization domain and scope."""
+
+        self._require_enabled()
+        scope = authorizer.authorized_engagement_scope(
+            principal,
+            capability=OperatorCapability.WRITE,
+        )
+        expected_reference = authorizer.draft_authorization_reference(
+            principal,
+            capability=OperatorCapability.WRITE,
+        )
+        if (
+            not isinstance(command, CreateAuditDraft)
+            or not isinstance(command.authorization_reference, str)
+            or not isinstance(expected_reference, str)
+            or not hmac.compare_digest(
+                command.authorization_reference,
+                expected_reference,
+            )
+            or (
+                command.engagement_id is not None
+                and not scope.permits(command.engagement_id)
+            )
+        ):
+            raise ApplicationConflictError(
+                "audit_creation_conflict",
+                "The Code Audit draft conflicts with an existing authorization domain",
+            ) from None
+        return await self._create_draft(
+            command,
+            authorized_engagement_scope=scope,
+        )
+
+    async def _create_draft(
+        self,
+        command: CreateAuditDraft,
+        *,
+        authorized_engagement_scope: AuditEngagementScope,
+    ) -> AuditDraftResult:
         self._require_enabled()
         try:
             builder = _AuditDraftBuilder(
                 command,
+                authorized_engagement_scope=authorized_engagement_scope,
                 workspace_root=self._workspace_root,
                 id_factory=self._id_factory,
                 clock=self._clock,
@@ -377,18 +444,112 @@ class AuditApplicationService:
                 "audit_idempotency_conflict",
                 "The client request identifier is already bound to different content",
             ) from None
-        except RepositoryConflictError:
+        except (EntityNotFoundError, RepositoryConflictError):
             raise ApplicationConflictError(
                 "audit_creation_conflict",
                 "The Code Audit draft conflicts with an existing authorization domain",
             ) from None
-        except RepositoryUnavailableError:
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
             raise ServiceUnavailableError(
                 "audit_persistence_unavailable",
                 "RiftX Code Audit persistence is temporarily unavailable",
             ) from None
         _validate_run_projection(aggregate)
         return AuditDraftResult(aggregate=aggregate, created=created)
+
+    async def get_authorized(
+        self,
+        audit_id: str,
+        *,
+        principal: LocalPrincipal,
+        authorizer: AuditObjectAuthorizer,
+    ) -> AuditAggregate:
+        """Authorize a contract-free owner binding before loading the aggregate."""
+
+        try:
+            aggregate = await self._aggregate_repository.get_authorized(
+                audit_id,
+                authorize=lambda binding: authorizer.require_audit_binding(
+                    principal,
+                    binding,
+                    capability=OperatorCapability.READ,
+                ),
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _audit_persistence_unavailable() from None
+        if aggregate is None:
+            raise _audit_not_accessible() from None
+        _validate_authorized_projection(aggregate)
+        return aggregate
+
+    async def list_authorized(
+        self,
+        *,
+        principal: LocalPrincipal,
+        authorizer: AuditObjectAuthorizer,
+        run_id: str | None = None,
+        project_id: str | None = None,
+        engagement_id: str | None = None,
+        lifecycle_status: AuditLifecycleStatus | None = None,
+        mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[AuditAggregate]:
+        """Apply the server scope in SQL before ordering and pagination."""
+
+        _validate_page(limit=limit, offset=offset)
+        _validate_created_range(created_from, created_to)
+        scope = authorizer.authorized_engagement_scope(
+            principal,
+            capability=OperatorCapability.READ,
+        )
+        try:
+            aggregates = await self._aggregate_repository.list_authorized(
+                authorized_scope=scope,
+                run_id=run_id,
+                project_id=project_id,
+                engagement_id=engagement_id,
+                lifecycle_status=lifecycle_status,
+                mode=mode,
+                run_status=run_status,
+                created_from=created_from,
+                created_to=created_to,
+                limit=limit,
+                offset=offset,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _audit_persistence_unavailable() from None
+        for aggregate in aggregates:
+            _validate_authorized_projection(aggregate)
+        return aggregates
+
+    async def get_by_run_authorized(
+        self,
+        run_id: str,
+        *,
+        principal: LocalPrincipal,
+        authorizer: AuditObjectAuthorizer,
+    ) -> AuditAggregate:
+        """Resolve an Audit-owned generic Run through the Audit ACL root."""
+
+        try:
+            aggregate = await self._aggregate_repository.get_by_run_authorized(
+                run_id,
+                authorize=lambda binding: authorizer.require_audit_binding(
+                    principal,
+                    binding,
+                    capability=OperatorCapability.READ,
+                ),
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _audit_persistence_unavailable() from None
+        if aggregate is None:
+            raise _audit_not_accessible() from None
+        _validate_authorized_projection(aggregate)
+        return aggregate
 
     async def get(
         self,
@@ -415,6 +576,7 @@ class AuditApplicationService:
         engagement_id: str | None = None,
         lifecycle_status: AuditLifecycleStatus | None = None,
         mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 50,
@@ -428,6 +590,7 @@ class AuditApplicationService:
             engagement_id=engagement_id,
             lifecycle_status=lifecycle_status,
             mode=mode,
+            run_status=run_status,
             created_from=created_from,
             created_to=created_to,
             limit=limit,
@@ -708,6 +871,28 @@ def _validate_run_projection(aggregate: AuditAggregate) -> None:
                 "run_status": aggregate.run.status.value,
             },
         )
+
+
+def _validate_authorized_projection(aggregate: AuditAggregate) -> None:
+    try:
+        _validate_run_projection(aggregate)
+    except ApplicationConflictError:
+        raise _audit_persistence_unavailable() from None
+
+
+def _audit_not_accessible() -> ResourceNotAccessibleError:
+    return ResourceNotAccessibleError(
+        "resource_not_accessible",
+        "The requested resource was not found",
+        details={"messages": {"zh-CN": "未找到请求的资源"}},
+    )
+
+
+def _audit_persistence_unavailable() -> ServiceUnavailableError:
+    return ServiceUnavailableError(
+        "audit_persistence_unavailable",
+        "RiftX Code Audit persistence is temporarily unavailable",
+    )
 
 
 def _control_plan(

@@ -57,6 +57,8 @@ class TerminalController(Protocol):
 
     async def get(self, session_id: str) -> TerminalSession: ...
 
+    async def resolve_run_id(self, session_id: str) -> str: ...
+
     async def get_execution(self, session_id: str) -> Execution: ...
 
     async def read(
@@ -807,6 +809,12 @@ class TerminalSupervisor:
         if terminal is None:
             raise EntityNotFoundError("Terminal Session", session_id)
         return terminal
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        run_id = await self._terminals.get_run_id(session_id)
+        if run_id is None:
+            raise EntityNotFoundError("Terminal Session", session_id)
+        return run_id
 
     async def get_execution(self, session_id: str) -> Execution:
         terminal = await self.get(session_id)

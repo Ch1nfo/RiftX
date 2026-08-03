@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from ..dependencies import EventServiceDependency
+from ..dependencies import AuthorizedRunReadDependency, EventServiceDependency
 from ..errors import APIError
 from ..schemas import ErrorResponse, RunEventListResponse, RunEventResponse
 
@@ -25,6 +25,7 @@ router = APIRouter(prefix="/runs/{run_id}/events", tags=["events"])
 async def list_events(
     run_id: str,
     service: EventServiceDependency,
+    _authorized_run: AuthorizedRunReadDependency,
     after_sequence: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> RunEventListResponse:
@@ -40,13 +41,12 @@ async def list_events(
 
 
 async def _prepare_stream_cursor(
-    run_id: str,
-    service: EventServiceDependency,
+    _authorized_run: AuthorizedRunReadDependency,
     after_sequence: Annotated[int | None, Query(ge=0)] = None,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> int:
+    del _authorized_run
     cursor = _resolve_cursor(after_sequence, last_event_id)
-    await service.require_run(run_id)
     return cursor
 
 

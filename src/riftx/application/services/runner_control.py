@@ -22,6 +22,7 @@ from riftx.application.ports import (
     RunEventRepository,
     RunnerCommandRepository,
     RunnerCredentialRepository,
+    RunRepository,
     TerminalRepository,
 )
 from riftx.domain import (
@@ -42,6 +43,7 @@ from riftx.runner.paths import RunnerPaths
 from riftx.security import validate_runner_registration_credential
 
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
+from .runs import require_general_run_operation
 
 _MAX_RESULT_BYTES = 64 * 1024
 _MAX_BROWSER_RESULT_BYTES = 512 * 1024
@@ -107,6 +109,7 @@ class RunnerControlService:
         commands: RunnerCommandRepository,
         nodes: NodeApplicationService,
         executions: ExecutionRepository,
+        runs: RunRepository,
         paths: RunnerPaths,
         registration_token: str | None,
         terminals: TerminalRepository | None = None,
@@ -120,6 +123,7 @@ class RunnerControlService:
         self._commands = commands
         self._nodes = nodes
         self._executions = executions
+        self._runs = runs
         self._paths = paths
         self._registration_token = validate_runner_registration_credential(registration_token)
         self._terminals = terminals
@@ -433,6 +437,10 @@ class RunnerControlService:
         execution = await self._require_execution(execution_id)
         self._require_execution_scope(execution, node_id, credential.principal)
         _validate_execution_status_report(report)
+        await self._require_execution_callback_kind(
+            execution,
+            allow_safety_stop=_is_physical_stop_report(report),
+        )
         received_at = self._clock()
         for _ in range(8):
             expected_status = execution.status
@@ -681,6 +689,7 @@ class RunnerControlService:
         credential = await self.authenticate(node_id, token)
         execution = await self._require_execution(execution_id)
         self._require_execution_scope(execution, node_id, credential.principal)
+        await self._require_execution_callback_kind(execution)
         if stream not in {"stdout", "stderr"}:
             raise ValueError("stream must be stdout or stderr")
         if len(data) > _MAX_OUTPUT_CHUNK_BYTES:
@@ -694,6 +703,37 @@ class RunnerControlService:
         async with lock:
             next_offset = await asyncio.to_thread(_append_exact, path, offset, data)
         return next_offset
+
+    async def require_execution_callback_kind(
+        self,
+        *,
+        node_id: str,
+        principal: RunnerPrincipal,
+        execution_id: str,
+        allow_safety_stop: bool = False,
+    ) -> Execution:
+        """Outer callback admission after API authentication and owner proof."""
+
+        execution = await self._require_execution(execution_id)
+        self._require_execution_scope(execution, node_id, principal)
+        await self._require_execution_callback_kind(
+            execution,
+            allow_safety_stop=allow_safety_stop,
+        )
+        return execution
+
+    async def _require_execution_callback_kind(
+        self,
+        execution: Execution,
+        *,
+        allow_safety_stop: bool = False,
+    ) -> None:
+        run = await self._runs.get(execution.run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", execution.run_id)
+        if allow_safety_stop:
+            return
+        require_general_run_operation(run)
 
     def authenticate_bootstrap(self, token: str) -> None:
         """Validate the shared token used to provision a Runner credential."""
@@ -848,6 +888,13 @@ def _validate_execution_status_report(report: ExecutionStatusReport) -> None:
             "Runner cannot attach physical-stop proof to this execution status",
             details={"status": report.status.value},
         )
+
+
+def _is_physical_stop_report(report: ExecutionStatusReport) -> bool:
+    return (
+        report.status in _PHYSICAL_STOP_PROOF_REQUIRED_STATUSES
+        and report.physical_stop_confirmed is True
+    )
 
 
 def _apply_execution_provenance(

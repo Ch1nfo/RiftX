@@ -13,7 +13,7 @@ import httpx
 from fastapi import FastAPI
 
 from riftx.api import APISettings, create_app
-from riftx.api.dependencies import get_graph_service
+from riftx.api.dependencies import authorize_run_read, get_graph_service
 from riftx.api.policy import RouteAuthorization, RouteEffect
 from riftx.application.errors import ResourceNotAccessibleError
 from riftx.application.graphs import (
@@ -24,7 +24,7 @@ from riftx.application.graphs import (
     InvalidGraphCursorError,
     StaleGraphCursorError,
 )
-from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
+from riftx.domain import LocalPrincipal, OperatorCapability, RunKind, TrustProfile
 from riftx.persistence import Database, GraphReadLimits, SQLAlchemyGraphReadRepository
 from riftx.persistence.orm import (
     ArtifactRecord,
@@ -36,6 +36,10 @@ from riftx.persistence.orm import (
 
 LOCAL_TOKEN = "test-only-graph-api-local-operator-token-0001"
 NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
+
+
+async def _allow_general_run_read() -> object:
+    return SimpleNamespace(kind=RunKind.GENERAL)
 
 
 @dataclass(slots=True)
@@ -180,6 +184,7 @@ async def _graph_api(
     control_plane = SimpleNamespace(settings=settings)
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
     app.dependency_overrides[get_graph_service] = lambda: service
+    app.dependency_overrides[authorize_run_read] = _allow_general_run_read
     headers = {"Authorization": f"Bearer {LOCAL_TOKEN}"} if authenticated else {}
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -379,6 +384,7 @@ async def test_real_graph_service_wiring_authenticates_authorizes_and_reports_so
             graph_repository=repository,
         )
         app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
+        app.dependency_overrides[authorize_run_read] = _allow_general_run_read
 
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
@@ -404,7 +410,9 @@ async def test_real_graph_service_wiring_authenticates_authorizes_and_reports_so
             "plan-item-1",
             "plan-item-2",
         ]
-        assert app.dependency_overrides == {}
+        assert app.dependency_overrides == {
+            authorize_run_read: _allow_general_run_read,
+        }
         assert app.state.graph_service._repository is repository
         assert app.state.graph_service._authorizer is app.state.graph_object_authorizer
         assert app.state.graph_object_authorizer.delegate is app.state.local_object_authorizer
@@ -485,6 +493,7 @@ async def test_evidence_graph_excludes_target_http_artifacts_without_hiding_ordi
         app = create_app(
             control_plane=SimpleNamespace(settings=settings, graph_repository=repository)  # type: ignore[arg-type]
         )
+        app.dependency_overrides[authorize_run_read] = _allow_general_run_read
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),

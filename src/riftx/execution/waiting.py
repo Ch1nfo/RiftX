@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
 
 from riftx.domain import Execution, ExecutionStatus
@@ -29,6 +30,7 @@ async def wait_for_execution(
     stderr_cursor: int = 0,
     max_bytes: int = 64 * 1024,
     next_poll_after_seconds: int = 10,
+    validate_execution: Callable[[Execution], None] | None = None,
 ) -> ExecutionWaitResult:
     """Wait for one terminal state without mutating it when only the wait expires."""
 
@@ -52,6 +54,9 @@ async def wait_for_execution(
             with suppress(asyncio.CancelledError):
                 await waiter
             execution = await runner.get(execution.id)
+
+    if validate_execution is not None:
+        validate_execution(execution)
 
     output = await runner.read_output(
         execution.id,

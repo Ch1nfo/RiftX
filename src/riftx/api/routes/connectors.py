@@ -11,9 +11,11 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import RedirectResponse
 
 from riftx.application.errors import ServiceUnavailableError
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain import RunKind, RunStatus, Scope
 
 from ..dependencies import (
+    AuthorizedRunReadDependency,
     ConnectorServiceDependency,
     RunServiceDependency,
     ToolServiceDependency,
@@ -65,6 +67,7 @@ async def submit_http_capture(
         run_id = run.id
         created = True
     assert run_id is not None
+    require_general_run_operation(await runs.get_run(run_id))
     receipt = await connector.ingest(run_id, payload.capture, created_run=created)
     return ConnectorReceiptResponse(receipt=receipt)
 
@@ -92,10 +95,10 @@ async def list_connector_runs(
 @router.get("/runs/{run_id}/events", responses=_ERROR_RESPONSES)
 async def connector_events(
     run_id: str,
-    runs: RunServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
     after_sequence: Annotated[int, Query(ge=0)] = 0,
 ) -> RedirectResponse:
-    await runs.get_run(run_id)
+    require_general_run_operation(authorized_run)
     return RedirectResponse(
         url=(
             f"/api/v1/runs/{run_id}/events/stream?"
@@ -114,6 +117,7 @@ async def connector_events(
 async def cancel_connector_run(
     run_id: str, runs: RunServiceDependency
 ) -> RunActionResponse:
+    require_general_run_operation(await runs.get_run(run_id))
     return RunActionResponse(run=RunResponse.from_domain(await runs.cancel(run_id)))
 
 
@@ -125,9 +129,9 @@ async def cancel_connector_run(
 async def connector_webui(
     run_id: str,
     request: Request,
-    runs: RunServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
 ) -> ConnectorWebUIResponse:
-    await runs.get_run(run_id)
+    require_general_run_operation(authorized_run)
     base = str(request.base_url).rstrip("/")
     return ConnectorWebUIResponse(run_id=run_id, url=f"{base}/runs/{run_id}")
 

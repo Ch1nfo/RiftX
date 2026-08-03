@@ -8,7 +8,7 @@ import pytest
 from riftx.application.errors import ApplicationConflictError
 from riftx.connectors import ConnectorHttpCapture, ConnectorSource
 from riftx.connectors.service import ConnectorApplicationService
-from riftx.domain import Objective, Run, Scope
+from riftx.domain import Objective, Run, RunKind, Scope
 
 
 class FakeRuns:
@@ -98,3 +98,26 @@ async def test_connector_rejects_scope_escape_and_capture_id_conflict() -> None:
     await service.ingest("run-1", capture())
     with pytest.raises(ApplicationConflictError, match="different content"):
         await service.ingest("run-1", capture(url="https://example.com/different"))
+
+
+async def test_connector_rejects_code_audit_before_new_or_replayed_ingest() -> None:
+    runs = FakeRuns()
+    artifacts = FakeArtifacts()
+    submissions = FakeSubmissions()
+    service = ConnectorApplicationService(
+        runs=runs,
+        submissions=submissions,  # type: ignore[arg-type]
+        artifacts=artifacts,  # type: ignore[arg-type]
+    )
+    await service.ingest(runs.run.id, capture())
+    baseline_artifacts = list(artifacts.items)
+    baseline_submissions = dict(submissions.items)
+    runs.run = runs.run.model_copy(update={"kind": RunKind.CODE_AUDIT})
+
+    for item in (capture(), capture(capture_id="new-audit-capture")):
+        with pytest.raises(ApplicationConflictError) as captured:
+            await service.ingest(runs.run.id, item)
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    assert artifacts.items == baseline_artifacts
+    assert submissions.items == baseline_submissions

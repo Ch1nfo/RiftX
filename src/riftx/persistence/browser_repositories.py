@@ -52,6 +52,14 @@ class SQLAlchemyBrowserRepository:
             row = await session.get(BrowserSessionRecord, session_id)
         return _session_from_record(row) if row is not None else None
 
+    async def get_run_id(self, session_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(BrowserSessionRecord.run_id).where(
+                    BrowserSessionRecord.id == session_id
+                )
+            )
+
     async def save_session(self, item: BrowserSession) -> BrowserSession:
         async with self._session_factory() as session, session.begin():
             row = await session.get(BrowserSessionRecord, item.id)

@@ -98,3 +98,12 @@ class AuthorizationError(ApplicationServiceError):
 
 class ResourceNotAccessibleError(ApplicationServiceError):
     """A resource is absent or not accessible without revealing which case applies."""
+
+
+def resource_not_accessible() -> ResourceNotAccessibleError:
+    """Return the uniform absent-or-denied error used at object read boundaries."""
+
+    return ResourceNotAccessibleError(
+        "resource_not_accessible",
+        "The requested resource was not found",
+    )

@@ -43,6 +43,9 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert len(inventory) == len(ROUTE_POLICIES)
     assert {record.name for record in inventory} == set(ROUTE_POLICIES)
     assert ROUTE_POLICIES["cancel_run"].effect is RouteEffect.WORKFLOW_CONTROL
+    assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.DURABLE_WRITE
+    assert ROUTE_POLICIES["list_audits"].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["get_audit"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["observe_browser"].effect is RouteEffect.HOST_CONTROL
     assert ROUTE_POLICIES["terminal_websocket"].authorization is RouteAuthorization.LOCAL_OPERATOR
     assert ROUTE_POLICIES["upsert_model_profile"].authorization is RouteAuthorization.ADMIN_TOKEN
@@ -57,6 +60,14 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     update_model = openapi["paths"]["/api/v1/model-profiles/{profile_name}"]["put"]
     assert update_model["x-riftx-authorization"] == "admin_token"
     assert update_model["x-riftx-effect"] == "durable_write"
+    create_audit = openapi["paths"]["/api/v1/audits"]["post"]
+    assert create_audit["x-riftx-authorization"] == "local_operator"
+    assert create_audit["x-riftx-effect"] == "durable_write"
+    assert openapi["paths"]["/api/v1/audits"]["get"]["x-riftx-effect"] == "read_only"
+    assert (
+        openapi["paths"]["/api/v1/audits/{audit_id}"]["get"]["x-riftx-effect"]
+        == "read_only"
+    )
 
     register_parameters = {
         (parameter["in"], parameter["name"]): parameter

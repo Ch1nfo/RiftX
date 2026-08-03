@@ -30,6 +30,7 @@ from riftx.domain import (
     BrowserTakeoverSummary,
     Objective,
     Run,
+    RunKind,
     RunStatus,
     Scope,
 )
@@ -157,6 +158,22 @@ class FenceAfterCreateBrowserRepository(InMemoryBrowserRepository):
 class NoArtifactWrites:
     async def register_content(self, *_args, **_kwargs):
         raise AssertionError("safety tests do not produce browser artifacts")
+
+
+class RecordingEvents:
+    def __init__(self) -> None:
+        self.types: list[str] = []
+
+    async def append(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, object],
+    ) -> object:
+        assert run_id == "run-1"
+        assert payload is not None
+        self.types.append(event_type)
+        return SimpleNamespace()
 
 
 class ControlledBrowserRunner:
@@ -311,9 +328,13 @@ def _exchange(
     )
 
 
-def _run(status: RunStatus = RunStatus.RUNNING) -> Run:
+def _run(
+    status: RunStatus = RunStatus.RUNNING,
+    *,
+    kind: RunKind = RunKind.GENERAL,
+) -> Run:
     return Run(
-        kind="general",
+        kind=kind,
         id="run-1",
         engagement_id="engagement-1",
         node_id="local",
@@ -345,8 +366,10 @@ def _session(
 async def _service(
     *,
     run_status: RunStatus = RunStatus.RUNNING,
+    run_kind: RunKind = RunKind.GENERAL,
     session: BrowserSession | None = None,
     runner: ControlledBrowserRunner | None = None,
+    events: RecordingEvents | None = None,
     stop_timeout_seconds: float = 1,
 ) -> tuple[
     BrowserApplicationService,
@@ -354,7 +377,7 @@ async def _service(
     InMemoryBrowserRepository,
     ControlledBrowserRunner,
 ]:
-    runs = MutableRunRepository(_run(run_status))
+    runs = MutableRunRepository(_run(run_status, kind=run_kind))
     repository = InMemoryBrowserRepository()
     controlled = runner or ControlledBrowserRunner()
     if session is not None:
@@ -389,6 +412,7 @@ async def _service(
         repository=repository,
         runner=controlled,
         artifacts=NoArtifactWrites(),  # type: ignore[arg-type]
+        events=events,
         stop_timeout_seconds=stop_timeout_seconds,
     )
     return service, runs, repository, controlled
@@ -664,6 +688,85 @@ async def test_stop_run_times_out_fail_closed_when_runner_never_acknowledges() -
     assert result.observed_statuses == {"browser-1": "lost"}
     assert "stop deadline" in result.failures["browser-1"]
     assert repository.sessions["browser-1"].status is BrowserSessionStatus.LOST
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["open", "observe", "act", "takeover", "release", "close", "stream"],
+)
+async def test_code_audit_rejects_generic_browser_operations_before_any_effect(
+    operation: str,
+) -> None:
+    owner = BrowserOwner.USER if operation == "release" else BrowserOwner.AGENT
+    seeded = None if operation == "open" else _session(owner=owner)
+    events = RecordingEvents()
+    service, _, repository, runner = await _service(
+        run_kind=RunKind.CODE_AUDIT,
+        session=seeded,
+        events=events,
+    )
+    before_sessions = {
+        key: value.model_copy(deep=True) for key, value in repository.sessions.items()
+    }
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        if operation == "open":
+            await service.open(
+                OpenBrowser(
+                    run_id="run-1",
+                    agent_session_id="agent-session-1",
+                    url="https://example.com/",
+                )
+            )
+        elif operation == "observe":
+            await service.observe("browser-1")
+        elif operation == "act":
+            await service.act(
+                "browser-1",
+                ActBrowser(
+                    page_id="page-1",
+                    observation_version=1,
+                    action=BrowserActionType.CLICK,
+                    action_key="blocked-code-audit-action",
+                    element_ref="e-1",
+                ),
+            )
+        elif operation == "takeover":
+            await service.takeover("browser-1")
+        elif operation == "release":
+            await service.release("browser-1")
+        elif operation == "close":
+            await service.close("browser-1")
+        else:
+            await service.observations_after("browser-1", 0)
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert runner.calls == {
+        "open": 0,
+        "observe": 0,
+        "act": 0,
+        "takeover": 0,
+        "release": 0,
+        "close": 0,
+    }
+    assert repository.sessions == before_sessions
+    assert repository.actions == {}
+    assert events.types == []
+
+
+async def test_code_audit_stop_run_still_uses_private_safety_close() -> None:
+    service, _, repository, runner = await _service(
+        run_status=RunStatus.CANCELLING,
+        run_kind=RunKind.CODE_AUDIT,
+        session=_session(),
+    )
+
+    result = await service.stop_run("run-1")
+
+    assert result.succeeded is True
+    assert result.confirmed_statuses == {"browser-1": "closed"}
+    assert repository.sessions["browser-1"].status is BrowserSessionStatus.CLOSED
+    assert runner.calls["close"] == 1
 
 
 async def test_read_only_observation_and_close_remain_available_when_paused() -> None:

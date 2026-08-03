@@ -32,6 +32,9 @@ class FakeRuns:
     async def get_run(self, run_id: str):
         return self.run
 
+    async def resolve_kind(self, run_id: str):
+        return self.run.kind
+
     async def create_run(self, command):
         self.created_command = command
         return self.run
@@ -85,6 +88,7 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         settings=settings,
         connector_service=connector,
         run_service=runs,
+        audit_service=object(),
         tool_service=SimpleNamespace(node_id="local"),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]

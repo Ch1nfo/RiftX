@@ -13,6 +13,7 @@ from riftx.domain import (
     Engagement,
     Objective,
     Run,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
     RunnerCommandStatus,
@@ -352,11 +353,29 @@ class Events:
         self.types.append((run_id, event_type, payload))
 
 
+class KindSwitchingRuns:
+    """Expose a defensive recheck that changes after initial admission."""
+
+    def __init__(self, delegate: SQLAlchemyRunRepository) -> None:
+        self.delegate = delegate
+        self.reads = 0
+
+    async def get(self, run_id: str) -> Run | None:
+        run = await self.delegate.get(run_id)
+        if run is None:
+            return None
+        self.reads += 1
+        if self.reads > 1:
+            return run.model_copy(update={"kind": RunKind.CODE_AUDIT})
+        return run
+
+
 async def build_service(
     tmp_path: Path,
     *,
     status=ToolCallStatus.READY,
     run_status=RunStatus.CREATED,
+    run_kind=RunKind.GENERAL,
     runner=None,
 ):
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'target-http.db'}")
@@ -367,7 +386,7 @@ async def build_service(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
-            kind="general",
+            kind=run_kind,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -546,6 +565,131 @@ async def test_stopped_run_status_blocks_before_target_http_effect(
 
         assert caught.value.code == "run_target_http_blocked"
         assert runner.launches == []
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_rejects_before_intent_or_external_effect(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(submission())
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.READY
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(
+            submission().request.execution_key
+        ) is None
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_rejects_before_existing_result_replay(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    request = submission()
+    replayed = TargetHttpResult(
+        request_id="existing-request",
+        execution_key=request.request.execution_key,
+        request_hash=request.request.fingerprint,
+        status_code=200,
+        elapsed_ms=1,
+        content_type="text/plain",
+        content_length=8,
+        body_excerpt="existing",
+        final_url=request.request.url,
+    )
+    await repository.create(request, replayed)
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(request)
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.READY
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(request.request.execution_key) == replayed
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_stop_run_remains_available_for_safety(
+    tmp_path: Path,
+) -> None:
+    database, service, _, _, _, tool_calls, _ = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    try:
+        result = await service.stop_run("run-1")
+
+        assert result.succeeded is True
+        assert result.confirmed_statuses == {"tool-call-1": "cancelled"}
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.CANCELLED
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_stop_run_can_converge_executing_intent(
+    tmp_path: Path,
+) -> None:
+    runner = UncertainExecutionRunner(execute_stop_confirmed=True)
+    database, service, _, _, _, tool_calls, _ = await build_service(
+        tmp_path,
+        status=ToolCallStatus.EXECUTING,
+        run_kind=RunKind.CODE_AUDIT,
+        runner=runner,
+    )
+    try:
+        result = await service.stop_run("run-1")
+
+        assert result.succeeded is True
+        assert result.confirmed_statuses == {"tool-call-1": "cancelled"}
+        assert runner.stop_calls == 1
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.CANCELLED
+    finally:
+        await database.dispose()
+
+
+async def test_target_http_effect_guard_rechecks_run_kind_before_event_or_runner(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path
+    )
+    service._runs = KindSwitchingRuns(  # type: ignore[assignment]
+        SQLAlchemyRunRepository(database.session_factory)
+    )
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(submission())
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.EXECUTING
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(
+            submission().request.execution_key
+        ) is None
     finally:
         await database.dispose()
 

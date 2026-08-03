@@ -21,6 +21,7 @@ from .routes import (
     actions_router,
     approvals_router,
     artifacts_router,
+    audits_router,
     browser_router,
     connectors_router,
     context_router,
@@ -104,6 +105,7 @@ def create_app(
             allow_headers=["*"],
         )
     app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(audits_router, prefix="/api/v1")
     app.include_router(actions_router, prefix="/api/v1")
     app.include_router(nodes_router, prefix="/api/v1")
     app.include_router(observability_router, prefix="/api/v1")

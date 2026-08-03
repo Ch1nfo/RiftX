@@ -15,6 +15,7 @@ from riftx.domain import (
     ExecutorType,
     Objective,
     Run,
+    RunKind,
     RunStatus,
 )
 from riftx.domain.base import utc_now
@@ -376,6 +377,18 @@ def make_initially_waiting_paused_run(tmp_path: Path) -> Run:
     return run
 
 
+def make_code_audit_run(tmp_path: Path) -> Run:
+    return Run(
+        kind=RunKind.CODE_AUDIT,
+        id="code-audit-run",
+        engagement_id="engagement-1",
+        node_id="local",
+        objective=Objective(description="Code Audit safety bridge"),
+        workspace_path=str(tmp_path / "audit-workspace"),
+        temporal_workflow_id="riftx-code-audit-audit-1",
+    )
+
+
 def make_service(
     tmp_path: Path,
     run: Run,
@@ -422,6 +435,52 @@ def make_service(
         workflow_signal_timeout_seconds=workflow_signal_timeout_seconds,
     )
     return service, runs, events, execution_repository, workflow, runner
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "pause",
+        "resume",
+        "cancel",
+        "cancel_current_execution",
+        "compact",
+        "switch_model",
+        "append_user_message",
+    ],
+)
+async def test_code_audit_rejects_generic_run_operations_before_any_effect(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    run = make_code_audit_run(tmp_path)
+    execution = make_execution(tmp_path, run.id, "audit-execution-canary")
+    service, runs, events, _, workflow, runner = make_service(
+        tmp_path,
+        run,
+        [execution],
+    )
+    calls = {
+        "pause": lambda: service.pause(run.id),
+        "resume": lambda: service.resume(run.id),
+        "cancel": lambda: service.cancel(run.id),
+        "cancel_current_execution": lambda: service.cancel_current_execution(run.id),
+        "compact": lambda: service.compact(run.id, max_history_items=1),
+        "switch_model": lambda: service.switch_model(run.id, "fast"),
+        "append_user_message": lambda: service.append_user_message(run.id, "bypass"),
+    }
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await calls[operation]()
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert run.status is RunStatus.CREATED
+    assert runs.transitions == []
+    assert events.events == []
+    assert workflow.calls == []
+    assert runner.calls == []
+    assert execution.status is ExecutionStatus.RUNNING
+    assert execution.physical_stop_confirmed_at is None
 
 
 @pytest.mark.parametrize(

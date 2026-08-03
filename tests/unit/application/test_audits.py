@@ -28,12 +28,15 @@ from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
     RepositoryUnavailableError,
+    ResourceNotAccessibleError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import (
     AuditAggregate,
+    AuditAuthorizationBinding,
     AuditDraftAggregateFactory,
     AuditDraftCreationEnvelope,
+    AuditEngagementScope,
     StoredAuditEntity,
 )
 from riftx.application.services.audits import (
@@ -56,7 +59,9 @@ from riftx.domain import (
     AuditScan,
     AuditTerminalOutcome,
     Engagement,
+    LocalPrincipal,
     Objective,
+    OperatorCapability,
     Run,
     RunKind,
     RunStatus,
@@ -68,6 +73,64 @@ LATER = NOW + timedelta(hours=1)
 WORKSPACE_ROOT = Path("/var/lib/riftx/code-audits")
 SOURCE_PATH = "/srv/authorized/repository"
 CLIENT_REQUEST_ID = "6ed6232a-3fb3-4f93-868f-0be291142f31"
+
+
+class FakeAuditAuthorizer:
+    def __init__(
+        self,
+        *,
+        scope: AuditEngagementScope | None = None,
+        reference: str | None = None,
+        deny_binding: bool = False,
+    ) -> None:
+        self.scope = scope or AuditEngagementScope.profile_a()
+        self.reference = reference or _digest("server-authorization")
+        self.deny_binding = deny_binding
+        self.capabilities: list[OperatorCapability] = []
+        self.bindings: list[AuditAuthorizationBinding] = []
+
+    def authorized_engagement_scope(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> AuditEngagementScope:
+        assert principal.id == "principal-1"
+        self.capabilities.append(capability)
+        return self.scope
+
+    def require_audit_binding(
+        self,
+        principal: LocalPrincipal,
+        binding: AuditAuthorizationBinding,
+        *,
+        capability: OperatorCapability,
+    ) -> None:
+        assert principal.id == "principal-1"
+        self.capabilities.append(capability)
+        self.bindings.append(binding)
+        if self.deny_binding:
+            raise ResourceNotAccessibleError(
+                "resource_not_accessible",
+                "The requested resource was not found",
+                details={"messages": {"zh-CN": "未找到请求的资源"}},
+            )
+
+    def draft_authorization_reference(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str:
+        assert principal.id == "principal-1"
+        self.capabilities.append(capability)
+        return self.reference
+
+
+PRINCIPAL = LocalPrincipal(
+    id="principal-1",
+    capabilities=frozenset(OperatorCapability),
+)
 
 
 def _digest(seed: str) -> str:
@@ -167,6 +230,73 @@ class FakeAggregateRepository:
         self.list_result = tuple(items if list_result is None else list_result)
         self.get_calls: list[tuple[str, str | None, str | None]] = []
         self.list_calls: list[dict[str, object]] = []
+        self.authorized_get_calls: list[str] = []
+        self.authorized_list_calls: list[dict[str, object]] = []
+
+    async def get_authorized(
+        self,
+        audit_id: str,
+        *,
+        authorize: Callable[[AuditAuthorizationBinding], None],
+    ) -> AuditAggregate | None:
+        self.authorized_get_calls.append(audit_id)
+        aggregate = self.items.get(audit_id)
+        if aggregate is None:
+            return None
+        authorize(_authorization_binding(aggregate, requested_audit_id=audit_id))
+        return aggregate
+
+    async def get_by_run_authorized(
+        self,
+        run_id: str,
+        *,
+        authorize: Callable[[AuditAuthorizationBinding], None],
+    ) -> AuditAggregate | None:
+        aggregate = next(
+            (item for item in self.items.values() if item.run.id == run_id),
+            None,
+        )
+        if aggregate is None:
+            return None
+        authorize(
+            _authorization_binding(
+                aggregate,
+                requested_audit_id=aggregate.audit.value.id,
+            )
+        )
+        return aggregate
+
+    async def list_authorized(
+        self,
+        *,
+        authorized_scope: AuditEngagementScope,
+        run_id: str | None = None,
+        project_id: str | None = None,
+        engagement_id: str | None = None,
+        lifecycle_status: AuditLifecycleStatus | None = None,
+        mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[AuditAggregate]:
+        call: dict[str, object] = {
+                "authorized_scope": authorized_scope,
+                "run_id": run_id,
+                "project_id": project_id,
+                "engagement_id": engagement_id,
+                "lifecycle_status": lifecycle_status,
+                "mode": mode,
+                "created_from": created_from,
+                "created_to": created_to,
+                "limit": limit,
+                "offset": offset,
+            }
+        if run_status is not None:
+            call["run_status"] = run_status
+        self.authorized_list_calls.append(call)
+        return self.list_result
 
     async def get(
         self,
@@ -186,13 +316,13 @@ class FakeAggregateRepository:
         engagement_id: str | None = None,
         lifecycle_status: AuditLifecycleStatus | None = None,
         mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Sequence[AuditAggregate]:
-        self.list_calls.append(
-            {
+        call: dict[str, object] = {
                 "run_id": run_id,
                 "project_id": project_id,
                 "engagement_id": engagement_id,
@@ -203,7 +333,9 @@ class FakeAggregateRepository:
                 "limit": limit,
                 "offset": offset,
             }
-        )
+        if run_status is not None:
+            call["run_status"] = run_status
+        self.list_calls.append(call)
         return self.list_result
 
 
@@ -322,6 +454,41 @@ def _aggregate_for_scan(
         run=run,
         engagement=engagement,
         client_request=request,
+    )
+
+
+def _authorization_binding(
+    aggregate: AuditAggregate,
+    *,
+    requested_audit_id: str,
+) -> AuditAuthorizationBinding:
+    scan = aggregate.audit.value
+    contract = aggregate.contract.value
+    project = aggregate.project.value
+    request = aggregate.client_request
+    return AuditAuthorizationBinding(
+        requested_audit_id=requested_audit_id,
+        audit_id=scan.id,
+        scan_run_id=scan.run_id,
+        scan_project_id=scan.project_id,
+        scan_engagement_id=aggregate.engagement.id,
+        scan_contract_id=scan.contract_id,
+        scan_contract_digest=scan.contract_digest,
+        run_id=aggregate.run.id,
+        run_engagement_id=aggregate.run.engagement_id,
+        run_kind=aggregate.run.kind.value,
+        project_id=project.id,
+        project_engagement_id=project.engagement_id,
+        engagement_id=aggregate.engagement.id,
+        contract_id=contract.contract_id,
+        contract_audit_id=contract.audit_id,
+        contract_digest=contract.contract_digest,
+        request_audit_id=request.audit_id,
+        request_run_id=request.run_id,
+        request_project_id=request.project_id,
+        request_engagement_id=request.engagement_id,
+        request_contract_id=request.contract_id,
+        request_contract_digest=request.contract_digest,
     )
 
 
@@ -682,6 +849,121 @@ async def test_get_passes_owner_scope_and_missing_audits_are_not_found() -> None
         await service.get("audit-missing", project_id="project-1")
     assert captured.value.entity == "Audit"
     assert captured.value.entity_id == "audit-missing"
+
+
+async def test_authorized_create_uses_only_the_server_reference_and_scope() -> None:
+    scope = AuditEngagementScope(
+        all_engagements=False,
+        engagement_ids=frozenset({"engagement-1"}),
+        can_create_engagement=False,
+    )
+    authorizer = FakeAuditAuthorizer(scope=scope)
+    uow = FakeCreationUnitOfWork()
+    service = _service(uow=uow)
+    command = _command(
+        authorization_reference=authorizer.reference,
+        engagement_id="engagement-1",
+    )
+
+    result = await service.create_draft_authorized(
+        command,
+        principal=PRINCIPAL,
+        authorizer=authorizer,
+    )
+
+    assert result.created is True
+    assert uow.calls[0].authorized_engagement_scope is scope
+    assert authorizer.capabilities == [OperatorCapability.WRITE, OperatorCapability.WRITE]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        _command(authorization_reference=_digest("client-selected")),
+        _command(
+            authorization_reference=_digest("server-authorization"),
+            engagement_id="engagement-outside-scope",
+        ),
+    ],
+)
+async def test_authorized_create_rejects_client_domain_or_scope_override_before_uow(
+    command: CreateAuditDraft,
+) -> None:
+    scope = AuditEngagementScope(
+        all_engagements=False,
+        engagement_ids=frozenset({"engagement-1"}),
+        can_create_engagement=False,
+    )
+    uow = FakeCreationUnitOfWork()
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await _service(uow=uow).create_draft_authorized(
+            command,
+            principal=PRINCIPAL,
+            authorizer=FakeAuditAuthorizer(scope=scope),
+        )
+
+    assert captured.value.code == "audit_creation_conflict"
+    assert uow.calls == []
+
+
+async def test_authorized_detail_missing_and_denied_share_the_generic_error() -> None:
+    aggregate = _aggregate_for_scan(_domain_scan())
+    repository = FakeAggregateRepository((aggregate,))
+    service = _service(repository=repository)
+
+    errors: list[ResourceNotAccessibleError] = []
+    for audit_id, deny in (("audit-missing", False), (aggregate.audit.value.id, True)):
+        with pytest.raises(ResourceNotAccessibleError) as captured:
+            await service.get_authorized(
+                audit_id,
+                principal=PRINCIPAL,
+                authorizer=FakeAuditAuthorizer(deny_binding=deny),
+            )
+        errors.append(captured.value)
+
+    assert [(error.code, error.message, error.details) for error in errors] == [
+        (
+            "resource_not_accessible",
+            "The requested resource was not found",
+            {"messages": {"zh-CN": "未找到请求的资源"}},
+        )
+    ] * 2
+
+
+async def test_authorized_list_forwards_server_scope_before_caller_filters() -> None:
+    aggregate = _aggregate_for_scan(_domain_scan())
+    repository = FakeAggregateRepository(list_result=(aggregate,))
+    scope = AuditEngagementScope(
+        all_engagements=False,
+        engagement_ids=frozenset({"engagement-1"}),
+        can_create_engagement=False,
+    )
+
+    result = await _service(repository=repository).list_authorized(
+        principal=PRINCIPAL,
+        authorizer=FakeAuditAuthorizer(scope=scope),
+        project_id="project-1",
+        engagement_id="engagement-1",
+        limit=1,
+        offset=2,
+    )
+
+    assert result == (aggregate,)
+    assert repository.authorized_list_calls == [
+        {
+            "authorized_scope": scope,
+            "run_id": None,
+            "project_id": "project-1",
+            "engagement_id": "engagement-1",
+            "lifecycle_status": None,
+            "mode": None,
+            "created_from": None,
+            "created_to": None,
+            "limit": 1,
+            "offset": 2,
+        }
+    ]
 
 
 async def test_list_passes_every_filter_and_bounded_page_argument() -> None:

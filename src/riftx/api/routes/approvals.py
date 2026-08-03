@@ -5,9 +5,15 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from riftx.application.services import DecideApproval
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain import ApprovalStatus
 
-from ..dependencies import ApprovalServiceDependency, LocalPrincipalDependency
+from ..dependencies import (
+    ApprovalServiceDependency,
+    AuthorizedRunReadDependency,
+    LocalPrincipalDependency,
+    RunServiceDependency,
+)
 from ..schemas import (
     ApprovalDecisionRequest,
     ApprovalListResponse,
@@ -33,8 +39,10 @@ _ERROR_RESPONSES = {
 async def list_approvals(
     run_id: str,
     service: ApprovalServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
     approval_status: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
 ) -> ApprovalListResponse:
+    require_general_run_operation(authorized_run)
     approvals = await service.list(run_id, status=approval_status)
     return ApprovalListResponse(
         items=[ApprovalResponse.from_domain(approval) for approval in approvals]
@@ -51,7 +59,10 @@ async def approve(
     request: ApprovalDecisionRequest,
     service: ApprovalServiceDependency,
     principal: LocalPrincipalDependency,
+    runs: RunServiceDependency,
 ) -> ApprovalResponse:
+    current = await service.get(approval_id)
+    require_general_run_operation(await runs.get_run(current.run_id))
     approval = await service.approve(
         approval_id,
         DecideApproval(
@@ -73,7 +84,10 @@ async def reject(
     request: ApprovalDecisionRequest,
     service: ApprovalServiceDependency,
     principal: LocalPrincipalDependency,
+    runs: RunServiceDependency,
 ) -> ApprovalResponse:
+    current = await service.get(approval_id)
+    require_general_run_operation(await runs.get_run(current.run_id))
     approval = await service.reject(
         approval_id,
         DecideApproval(

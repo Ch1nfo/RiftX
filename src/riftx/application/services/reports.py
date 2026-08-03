@@ -10,7 +10,11 @@ from typing import Protocol
 
 from pydantic import AwareDatetime, BaseModel, Field
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    resource_not_accessible,
+)
 from riftx.application.event_projection import (
     redact_sensitive_event,
     target_http_artifact_candidates,
@@ -26,6 +30,7 @@ from riftx.domain import Finding, Report, ReportFormat, Run, RunEvent, RunStatus
 from riftx.domain.base import utc_now
 
 from .artifacts import ArtifactApplicationService, RegisterArtifactContent
+from .runs import require_general_run_operation
 
 _MAX_SUMMARY_LENGTH = 2_000
 _MAX_TEXT_LENGTH = 10_000
@@ -193,6 +198,7 @@ class ReportApplicationService:
         request = command or GenerateReports()
         formats = _normalize_formats(request.formats)
         run = await self._require_run(run_id)
+        require_general_run_operation(run)
         if run.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
             raise ApplicationConflictError(
                 "run_not_reportable",
@@ -252,6 +258,12 @@ class ReportApplicationService:
         if report is None:
             raise EntityNotFoundError("Report", report_id)
         return report
+
+    async def resolve_run_id(self, report_id: str) -> str:
+        run_id = await self._report_repository.get_run_id(report_id)
+        if run_id is None:
+            raise resource_not_accessible()
+        return run_id
 
     async def list(
         self,

@@ -6,8 +6,16 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 
 from riftx.application.services import RegisterArtifact
+from riftx.application.services.runs import require_general_run_operation
 
-from ..dependencies import ArtifactServiceDependency
+from ..dependencies import (
+    ArtifactServiceDependency,
+    AuthorizedRunReadDependency,
+    RunReadAuthorizerDependency,
+    RunServiceDependency,
+    load_authorized_child,
+    require_run_read_binding,
+)
 from ..schemas import (
     ArtifactListResponse,
     ArtifactResponse,
@@ -28,7 +36,9 @@ async def register_artifact(
     run_id: str,
     request: RegisterArtifactRequest,
     service: ArtifactServiceDependency,
+    runs: RunServiceDependency,
 ) -> ArtifactResponse:
+    require_general_run_operation(await runs.get_run(run_id))
     artifact = await service.register(
         run_id,
         RegisterArtifact(**request.model_dump()),
@@ -44,6 +54,7 @@ async def register_artifact(
 async def list_artifacts(
     run_id: str,
     service: ArtifactServiceDependency,
+    _authorized_run: AuthorizedRunReadDependency,
     execution_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -69,8 +80,13 @@ async def list_artifacts(
 async def get_artifact(
     artifact_id: str,
     service: ArtifactServiceDependency,
+    authorizer: RunReadAuthorizerDependency,
 ) -> ArtifactResponse:
-    return ArtifactResponse.from_domain(await service.get(artifact_id))
+    run_id = await service.resolve_run_id(artifact_id)
+    await authorizer.require(run_id)
+    artifact = await load_authorized_child(service.get(artifact_id))
+    require_run_read_binding(run_id, artifact.run_id)
+    return ArtifactResponse.from_domain(artifact)
 
 
 @router.get(
@@ -81,8 +97,16 @@ async def get_artifact(
 async def download_artifact(
     artifact_id: str,
     service: ArtifactServiceDependency,
+    authorizer: RunReadAuthorizerDependency,
 ) -> FileResponse:
-    artifact, path = await service.content_path(artifact_id)
+    run_id = await service.resolve_run_id(artifact_id)
+    await authorizer.require(run_id)
+    artifact, path = await load_authorized_child(
+        service.content_path(
+            artifact_id,
+            expected_run_id=run_id,
+        )
+    )
     return FileResponse(
         path,
         media_type=artifact.mime_type,

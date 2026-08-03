@@ -493,6 +493,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         commands=runner_command_repository,
         nodes=node_service,
         executions=execution_repository,
+        runs=run_repository,
         paths=runner_paths,
         registration_token=settings.runner_registration_token,
         terminals=terminal_repository,
@@ -663,7 +664,10 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         artifact_service=artifact_service,
         context_service=ContextApplicationService(context_repository),
-        memory_service=MemoryService(memory_repository),
+        memory_service=MemoryService(
+            memory_repository,
+            run_repository=run_repository,
+        ),
         runtime_observability_service=RuntimeObservabilityService(
             SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
         ),

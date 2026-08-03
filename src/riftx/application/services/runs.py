@@ -60,6 +60,17 @@ _SAFETY_FENCE_RUN_STATUSES = frozenset(
 )
 
 
+def require_general_run_operation(run: Run) -> Run:
+    """Fail closed while a generic Run operation lacks a kind-aware contract."""
+
+    if run.kind is not RunKind.GENERAL:
+        raise ApplicationConflictError(
+            "run_kind_operation_unsupported",
+            "The requested operation is not supported for this Run kind",
+        )
+    return run
+
+
 class RunWorkflowClient(Protocol):
     """Small Temporal boundary consumed by the control plane."""
 
@@ -220,6 +231,12 @@ class RunApplicationService:
         if run is None:
             raise EntityNotFoundError("Run", run_id)
         return run
+
+    async def resolve_kind(self, run_id: str) -> RunKind:
+        kind = await self._run_repository.get_kind(run_id)
+        if kind is None:
+            raise EntityNotFoundError("Run", run_id)
+        return kind
 
     async def list_runs(
         self,
@@ -545,7 +562,7 @@ class RunApplicationService:
     async def cancel_current_execution(self, run_id: str) -> Run:
         # Safety controls must remain available for a terminal Run because a
         # crashed Workflow can leave an orphaned host process behind.
-        run = await self.get_run(run_id)
+        run = await self._require_general_run(run_id)
         stop_result = await self._stop_run_resources(run.id, drain=False)
         # Releasing the Workflow's waiting Execution while its physical stop is
         # unconfirmed would let the Agent continue and produce more effects next
@@ -569,7 +586,7 @@ class RunApplicationService:
     async def cancel(self, run_id: str) -> Run:
         # Full cancellation is also an orphan-process recovery operation, so it
         # intentionally remains callable after the Workflow/Run became terminal.
-        run = await self.get_run(run_id)
+        run = await self._require_general_run(run_id)
         if run.status not in {
             RunStatus.COMPLETED,
             RunStatus.FAILED,
@@ -765,7 +782,7 @@ class RunApplicationService:
         return await self._engagement_repository.create(engagement)
 
     async def _require_controllable_run(self, run_id: str, *, action: str) -> Run:
-        run = await self.get_run(run_id)
+        run = await self._require_general_run(run_id)
         if run.status in _TERMINAL_RUN_STATUSES | _SAFETY_FENCE_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_not_controllable",
@@ -777,7 +794,7 @@ class RunApplicationService:
     async def _require_safety_controllable_run(self, run_id: str, *, action: str) -> Run:
         """Keep recovery controls available while an admission fence is active."""
 
-        run = await self.get_run(run_id)
+        run = await self._require_general_run(run_id)
         if run.status in _TERMINAL_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_not_controllable",
@@ -785,6 +802,9 @@ class RunApplicationService:
                 details={"run_id": run.id, "status": run.status.value},
             )
         return run
+
+    async def _require_general_run(self, run_id: str) -> Run:
+        return require_general_run_operation(await self.get_run(run_id))
 
     async def _require_pauseable_run(self, run_id: str) -> Run:
         run = await self._require_safety_controllable_run(run_id, action="pause")

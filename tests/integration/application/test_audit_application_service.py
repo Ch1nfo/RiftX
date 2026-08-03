@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +21,7 @@ import riftx.persistence.audit_uow as audit_uow_module
 from riftx.application.errors import (
     ApplicationConflictError,
     RepositoryIntegrityError,
+    ResourceNotAccessibleError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import (
@@ -28,6 +29,7 @@ from riftx.application.ports import (
     AuditCreationUnitOfWork,
     AuditDraftAggregateFactory,
     AuditDraftCreationEnvelope,
+    AuditEngagementScope,
 )
 from riftx.application.services import (
     AuditApplicationService,
@@ -145,6 +147,10 @@ class _DelegatingAuditFactory:
     @property
     def authorization_reference(self) -> str:
         return self._delegate.authorization_reference
+
+    @property
+    def authorized_engagement_scope(self) -> AuditEngagementScope:
+        return self._delegate.authorized_engagement_scope
 
     @property
     def workspace_root(self) -> str:
@@ -1086,6 +1092,7 @@ async def test_duplicate_request_by_client_key_rowset_fails_closed() -> None:
         request_digest=_digest("request"),
         repository_identity_digest=_digest("repository"),
         authorization_reference=_digest("authorization"),
+        authorized_engagement_scope=AuditEngagementScope.profile_a(),
         requested_engagement_id=None,
         workspace_root="/var/lib/riftx/audit/tmp",
         source_repository_path=SOURCE_PATH,
@@ -1164,5 +1171,91 @@ async def test_list_query_count_is_constant_across_page_sizes(tmp_path: Path) ->
         assert len(eight) == 8
         assert one_page_selects == 2
         assert eight_page_selects == 2
+    finally:
+        await database.dispose()
+
+
+async def test_authorization_denial_happens_before_sensitive_aggregate_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await _database(tmp_path / "audit-binding-before-contract.db")
+    service = _service(database, tmp_path / "audit-workspaces")
+    try:
+        created = await service.create_draft(_command())
+        repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+        aggregate_loader_calls = 0
+
+        async def forbidden_loader(*_args: object, **_kwargs: object) -> Sequence[AuditAggregate]:
+            nonlocal aggregate_loader_calls
+            aggregate_loader_calls += 1
+            raise AssertionError("sensitive aggregate loader must not run before authorization")
+
+        monkeypatch.setattr(audit_uow_module, "_read_aggregates", forbidden_loader)
+
+        def deny(_binding: object) -> None:
+            raise ResourceNotAccessibleError(
+                "resource_not_accessible",
+                "The requested resource was not found",
+            )
+
+        with pytest.raises(ResourceNotAccessibleError):
+            await repository.get_authorized(
+                created.aggregate.audit.value.id,
+                authorize=deny,
+            )
+
+        assert aggregate_loader_calls == 0
+    finally:
+        await database.dispose()
+
+
+async def test_authorized_engagement_scope_is_applied_before_sort_and_pagination(
+    tmp_path: Path,
+) -> None:
+    database = await _database(tmp_path / "audit-scope-before-page.db")
+    service = _service(database, tmp_path / "audit-workspaces")
+    try:
+        allowed = await service.create_draft(
+            _command(
+                REQUEST_ONE,
+                repository_seed="allowed-repository",
+                authorization_seed="allowed-authorization",
+            )
+        )
+        denied = await service.create_draft(
+            _command(
+                REQUEST_TWO,
+                repository_seed="denied-repository",
+                authorization_seed="denied-authorization",
+            )
+        )
+        await _raw_update_without_foreign_keys(
+            database,
+            "UPDATE audit_scans SET created_at=:created_at WHERE id=:audit_id",
+            {
+                "created_at": NOW + timedelta(days=1),
+                "audit_id": denied.aggregate.audit.value.id,
+            },
+        )
+        repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+        scope = AuditEngagementScope(
+            all_engagements=False,
+            engagement_ids=frozenset({allowed.aggregate.engagement.id}),
+            can_create_engagement=False,
+        )
+
+        page = await repository.list_authorized(
+            authorized_scope=scope,
+            limit=1,
+        )
+        contradictory = await repository.list_authorized(
+            authorized_scope=scope,
+            engagement_id=denied.aggregate.engagement.id,
+            limit=1,
+        )
+
+        assert [item.audit.value.id for item in page] == [allowed.aggregate.audit.value.id]
+        assert contradictory == ()
     finally:
         await database.dispose()

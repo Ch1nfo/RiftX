@@ -7,11 +7,23 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from riftx.application.errors import ApplicationServiceError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationServiceError,
+    EntityNotFoundError,
+    resource_not_accessible,
+)
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain.errors import DomainError
 
 from ..auth import accept_local_operator_websocket
-from ..dependencies import BrowserServiceDependency
+from ..dependencies import (
+    BrowserServiceDependency,
+    RunReadAuthorizerDependency,
+    RunServiceDependency,
+    load_authorized_child,
+    require_run_read_binding,
+    websocket_run_read_authorizer,
+)
 from ..schemas.browser import (
     BrowserActionRequest,
     BrowserObserveRequest,
@@ -32,20 +44,30 @@ router = APIRouter(prefix="/browser/sessions", tags=["browser"])
 async def open_browser(
     request: BrowserSessionCreateRequest,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    require_general_run_operation(await runs.get_run(request.run_id))
     return BrowserViewResponse.from_view(await service.open(request.to_command()))
 
 
 @router.get(
     "/{session_id}",
     response_model=BrowserViewResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
 async def get_browser(
     session_id: str,
     service: BrowserServiceDependency,
+    authorizer: RunReadAuthorizerDependency,
 ) -> BrowserViewResponse:
-    return BrowserViewResponse.from_view(await service.get(session_id))
+    run_id = await service.resolve_run_id(session_id)
+    authorized_run = await authorizer.require(run_id)
+    require_general_run_operation(authorized_run)
+    view = await load_authorized_child(
+        service.get(session_id, expected_run_id=run_id)
+    )
+    require_run_read_binding(run_id, view.session.run_id)
+    return BrowserViewResponse.from_view(view)
 
 
 @router.delete(
@@ -56,7 +78,9 @@ async def get_browser(
 async def close_browser(
     session_id: str,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    await _require_general_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.close(session_id))
 
 
@@ -69,7 +93,9 @@ async def observe_browser(
     session_id: str,
     request: BrowserObserveRequest,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    await _require_general_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.observe(session_id, **request.model_dump()))
 
 
@@ -82,7 +108,9 @@ async def act_browser(
     session_id: str,
     request: BrowserActionRequest,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    await _require_general_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.act(session_id, request.to_command()))
 
 
@@ -94,7 +122,9 @@ async def act_browser(
 async def takeover_browser(
     session_id: str,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    await _require_general_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.takeover(session_id))
 
 
@@ -106,7 +136,9 @@ async def takeover_browser(
 async def release_browser(
     session_id: str,
     service: BrowserServiceDependency,
+    runs: RunServiceDependency,
 ) -> BrowserViewResponse:
+    await _require_general_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.release(session_id))
 
 
@@ -114,6 +146,7 @@ async def release_browser(
 async def stream_browser(session_id: str, websocket: WebSocket) -> None:
     await accept_local_operator_websocket(websocket)
     service = websocket.app.state.control_plane.browser_service
+    authorizer = websocket_run_read_authorizer(websocket)
     send_lock = asyncio.Lock()
 
     async def send(payload: dict[str, object]) -> None:
@@ -121,10 +154,25 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
             await websocket.send_json(payload)
 
     try:
-        initial = await service.get(session_id)
-    except EntityNotFoundError as exc:
-        await send({"type": "error", "code": "browser_session_not_found", "message": str(exc)})
-        await websocket.close(code=4404)
+        run_id = await service.resolve_run_id(session_id)
+        authorized_run = await authorizer.require(run_id)
+        require_general_run_operation(authorized_run)
+        initial = await service.get(session_id, expected_run_id=run_id)
+        require_run_read_binding(run_id, initial.session.run_id)
+    except EntityNotFoundError:
+        error = resource_not_accessible()
+        await send({"type": "error", "code": error.code, "message": error.message})
+        await websocket.close(code=4409)
+        return
+    except (ApplicationServiceError, DomainError, ValueError) as exc:
+        await send(
+            {
+                "type": "error",
+                "code": getattr(exc, "code", "browser_unavailable"),
+                "message": str(exc),
+            }
+        )
+        await websocket.close(code=4409)
         return
 
     version = initial.observation.observation_version if initial.observation else 0
@@ -231,3 +279,12 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
     finally:
         with suppress(RuntimeError):
             await websocket.close()
+
+
+async def _require_general_session_operation(
+    session_id: str,
+    service: BrowserServiceDependency,
+    runs: RunServiceDependency,
+) -> None:
+    current = await service.get(session_id)
+    require_general_run_operation(await runs.get_run(current.session.run_id))

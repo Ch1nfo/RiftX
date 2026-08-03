@@ -8,6 +8,7 @@ import json
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.services import ArtifactApplicationService, RunApplicationService
 from riftx.application.services.artifacts import RegisterArtifactContent
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain import Run
 from riftx.scope import ScopeGuard, ScopeTargetKind
 
@@ -43,6 +44,10 @@ class ConnectorApplicationService:
         lock = self._locks.setdefault(key, asyncio.Lock())
         try:
             async with lock:
+                # Admission precedes replay so a historical generic receipt
+                # cannot authorize effects for an Audit-owned Run.
+                run = await self._require_run(run_id)
+                require_general_run_operation(run)
                 existing = await self._submissions.get(capture.source, capture.capture_id)
                 if existing is not None:
                     if existing.run_id != run_id or existing.fingerprint != capture.fingerprint:
@@ -51,7 +56,6 @@ class ConnectorApplicationService:
                             "Connector capture ID was reused with different content or Run",
                         )
                     return _receipt(existing, created_run=False)
-                run = await self._require_run(run_id)
                 ScopeGuard(run.scope).require(capture.url, kind=ScopeTargetKind.URL)
                 request_artifact = await self._artifacts.register_content(
                     run.id,

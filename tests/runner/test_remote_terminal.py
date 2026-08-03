@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from riftx.application.errors import ApplicationConflictError
+from riftx.application.errors import ApplicationConflictError, AuthenticationError
 from riftx.application.services.runner_control import (
     ExecutionStatusReport,
     RunnerControlService,
@@ -22,6 +22,7 @@ from riftx.domain import (
     Objective,
     Run,
     RunEvent,
+    RunKind,
     RunnerCommandKind,
     RunnerPrincipal,
     TerminalOwner,
@@ -48,6 +49,101 @@ from riftx.runner.terminal_manager import (
 from ._containment_support import FakeKernelContainmentManager
 
 _OWNER = RunnerPrincipal(instance_id="runner-instance-windows-a", epoch=1)
+
+
+async def test_runner_audit_callbacks_reject_effects_but_accept_stop_proof(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-runner-callback.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-audit", name="Audit Runner callback fence")
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    run = Run(
+        kind=RunKind.CODE_AUDIT,
+        id="audit-run",
+        engagement_id="engagement-audit",
+        node_id="windows-a",
+        objective=Objective(description="Reject generic Runner callback"),
+        workspace_path=str(tmp_path / "audit-output"),
+    )
+    await runs.create(run)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    stdout_path = tmp_path / "audit.stdout"
+    stderr_path = tmp_path / "audit.stderr"
+    stdout_path.write_bytes(b"baseline")
+    stderr_path.write_bytes(b"")
+    execution = Execution(
+        id="audit-execution",
+        execution_key="audit-execution-key",
+        run_id=run.id,
+        node_id="windows-a",
+        owner=_OWNER,
+        executor_type=ExecutorType.PROCESS,
+        argv=["true"],
+        cwd=str(tmp_path),
+        stdout_path=str(stdout_path),
+        stderr_path=str(stderr_path),
+    )
+    await executions.create_if_absent(execution)
+    service = RunnerControlService(
+        credentials=object(),  # type: ignore[arg-type]
+        commands=object(),  # type: ignore[arg-type]
+        nodes=object(),  # type: ignore[arg-type]
+        executions=executions,
+        runs=runs,
+        paths=RunnerPaths(tmp_path / "runner-state"),
+        registration_token=None,
+    )
+    service.authenticate = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(principal=_OWNER)
+    )
+
+    with pytest.raises(ApplicationConflictError) as status_error:
+        await service.report_execution(
+            "windows-a",
+            "runner-token",
+            execution.id,
+            ExecutionStatusReport(status=ExecutionStatus.RUNNING, pid=1234),
+        )
+    with pytest.raises(ApplicationConflictError) as output_error:
+        await service.append_output(
+            "windows-a",
+            "runner-token",
+            execution.id,
+            stream="stdout",
+            offset=len(b"baseline"),
+            data=b"forbidden",
+        )
+    with pytest.raises(AuthenticationError) as owner_error:
+        await service.require_execution_callback_kind(
+            node_id="foreign-node",
+            principal=_OWNER,
+            execution_id=execution.id,
+        )
+
+    assert status_error.value.code == output_error.value.code == (
+        "run_kind_operation_unsupported"
+    )
+    assert owner_error.value.code == "runner_execution_scope_mismatch"
+    unchanged = await executions.get(execution.id)
+    assert unchanged is not None and unchanged.status is ExecutionStatus.CREATED
+    assert stdout_path.read_bytes() == b"baseline"
+
+    stopped = await service.report_execution(
+        "windows-a",
+        "runner-token",
+        execution.id,
+        ExecutionStatusReport(
+            status=ExecutionStatus.CANCELLED,
+            exit_code=130,
+            physical_stop_confirmed=True,
+        ),
+    )
+    assert stopped.status is ExecutionStatus.CANCELLED
+    assert stopped.physical_stop_confirmed_at is not None
+    await database.dispose()
 
 
 def _foreign_terminal_start_replays(
@@ -173,7 +269,8 @@ async def _central_terminal_runtime(
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Remote admission")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             kind="general",
             id="run-1",
@@ -318,7 +415,8 @@ async def test_remote_terminal_projection_create_failure_persists_predispatch_st
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Remote projection failure")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             kind="general",
             id="run-1",
@@ -818,7 +916,8 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
     await SQLAlchemyEngagementRepository(database.session_factory).create(
         Engagement(id="engagement-1", name="Remote terminal")
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(
         Run(
             kind="general",
             id="run-1",
@@ -907,6 +1006,7 @@ async def test_remote_terminal_dispatch_preserves_ids_ownership_and_operations(
         commands=object(),  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
         executions=executions,
+        runs=runs,
         paths=RunnerPaths(tmp_path / "central-state"),
         registration_token=None,
         terminals=terminals,
@@ -955,7 +1055,8 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
         objective=Objective(description="Terminal projection race"),
         workspace_path=str(tmp_path),
     )
-    await SQLAlchemyRunRepository(database.session_factory).create(run)
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.create(run)
     executions = SQLAlchemyExecutionRepository(database.session_factory)
     terminals = SQLAlchemyTerminalRepository(database.session_factory)
     durable_events = SQLAlchemyRunEventRepository(database.session_factory)
@@ -1018,6 +1119,7 @@ async def test_runner_control_does_not_append_opened_after_closed_projection(
         commands=object(),  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
         executions=executions,
+        runs=runs,
         paths=RunnerPaths(tmp_path / "projection-race-state"),
         registration_token=None,
         terminals=terminals,

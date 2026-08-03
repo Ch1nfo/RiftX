@@ -1,6 +1,7 @@
 """Public execution inspection and output schemas."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -45,8 +46,46 @@ class ExecutionResponse(BaseModel):
         return cls.model_validate(execution.model_dump())
 
 
+class CodeAuditExecutionResponse(BaseModel):
+    """Positive allowlist for Audit-owned generic Execution reads."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["code_audit"] = "code_audit"
+    id: str
+    run_id: str
+    node_id: str
+    executor_type: ExecutorType
+    tool_id: str | None
+    tool_version: str | None
+    status: ExecutionStatus
+    exit_code: int | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    physical_stop_confirmed_at: datetime | None
+
+    @classmethod
+    def from_domain(cls, execution: Execution) -> "CodeAuditExecutionResponse":
+        return cls(
+            id=execution.id,
+            run_id=execution.run_id,
+            node_id=execution.node_id,
+            executor_type=execution.executor_type,
+            tool_id=execution.tool_id,
+            tool_version=execution.tool_version,
+            status=execution.status,
+            exit_code=execution.exit_code,
+            started_at=execution.started_at,
+            finished_at=execution.finished_at,
+            physical_stop_confirmed_at=execution.physical_stop_confirmed_at,
+        )
+
+
+ExecutionReadResponse = ExecutionResponse | CodeAuditExecutionResponse
+
+
 class ExecutionListResponse(BaseModel):
-    items: list[ExecutionResponse]
+    items: list[ExecutionReadResponse]
     limit: int
     offset: int
 

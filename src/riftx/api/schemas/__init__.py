@@ -7,6 +7,15 @@ from .artifacts import (
     ArtifactResponse,
     RegisterArtifactRequest,
 )
+from .audits import (
+    AuditContractDraftRequest,
+    AuditDraftResponse,
+    AuditListQuery,
+    AuditListResponse,
+    AuditProjectSummaryResponse,
+    AuditResponse,
+    CreateAuditDraftRequest,
+)
 from .browser import (
     BrowserActionRequest,
     BrowserObserveRequest,
@@ -21,8 +30,10 @@ from .connectors import (
 from .errors import ErrorDetail, ErrorResponse
 from .events import RunEventListResponse, RunEventResponse
 from .executions import (
+    CodeAuditExecutionResponse,
     ExecutionListResponse,
     ExecutionOutputResponse,
+    ExecutionReadResponse,
     ExecutionResponse,
     ExecutionWaitResponse,
 )
@@ -98,6 +109,12 @@ __all__ = [
     "ApprovalResponse",
     "ArtifactListResponse",
     "ArtifactResponse",
+    "AuditContractDraftRequest",
+    "AuditDraftResponse",
+    "AuditListQuery",
+    "AuditListResponse",
+    "AuditProjectSummaryResponse",
+    "AuditResponse",
     "BrowserActionRequest",
     "BrowserObserveRequest",
     "BrowserSessionCreateRequest",
@@ -105,7 +122,9 @@ __all__ = [
     "ConnectorReceiptResponse",
     "ConnectorSubmissionRequest",
     "ConnectorWebUIResponse",
+    "CodeAuditExecutionResponse",
     "CreateRunRequest",
+    "CreateAuditDraftRequest",
     "CreateMemoryRequest",
     "CompactRunRequest",
     "CreateFindingRequest",
@@ -115,6 +134,7 @@ __all__ = [
     "ErrorResponse",
     "ExecutionListResponse",
     "ExecutionOutputResponse",
+    "ExecutionReadResponse",
     "ExecutionResponse",
     "ExecutionWaitResponse",
     "FindingListResponse",

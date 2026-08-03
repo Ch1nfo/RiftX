@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -24,10 +24,104 @@ from riftx.domain import (
     AuditWorkItem,
     AuditWorkStatus,
     Engagement,
+    LocalPrincipal,
+    OperatorCapability,
     Run,
     RunEvent,
+    RunStatus,
     SourceSnapshot,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEngagementScope:
+    """Server-derived Engagement scope applied before Audit pagination.
+
+    ``all_engagements`` is explicit rather than an empty-set convention so a
+    future ACL adapter cannot accidentally turn "no grants" into global access.
+    ``can_create_engagement`` is separate because permission to read an
+    existing Engagement does not necessarily permit creating a new owner root.
+    """
+
+    all_engagements: bool
+    engagement_ids: frozenset[str]
+    can_create_engagement: bool
+
+    def __post_init__(self) -> None:
+        if self.all_engagements and self.engagement_ids:
+            raise ValueError("an unrestricted Audit scope cannot carry Engagement IDs")
+        if any(not isinstance(value, str) or not value for value in self.engagement_ids):
+            raise ValueError("Audit Engagement scope IDs must be non-empty strings")
+
+    @classmethod
+    def profile_a(cls) -> AuditEngagementScope:
+        """Return the explicit single-operator Profile-A scope."""
+
+        return cls(
+            all_engagements=True,
+            engagement_ids=frozenset(),
+            can_create_engagement=True,
+        )
+
+    def permits(self, engagement_id: str) -> bool:
+        return self.all_engagements or engagement_id in self.engagement_ids
+
+
+@dataclass(frozen=True, slots=True)
+class AuditAuthorizationBinding:
+    """Contract-free raw ownership graph used before loading sensitive facts."""
+
+    requested_audit_id: str
+    audit_id: str
+    scan_run_id: str
+    scan_project_id: str
+    scan_engagement_id: str
+    scan_contract_id: str
+    scan_contract_digest: str
+    run_id: str | None
+    run_engagement_id: str | None
+    run_kind: str | None
+    project_id: str | None
+    project_engagement_id: str | None
+    engagement_id: str | None
+    contract_id: str | None
+    contract_audit_id: str | None
+    contract_digest: str | None
+    request_audit_id: str | None
+    request_run_id: str | None
+    request_project_id: str | None
+    request_engagement_id: str | None
+    request_contract_id: str | None
+    request_contract_digest: str | None
+
+
+type AuditBindingAuthorizer = Callable[[AuditAuthorizationBinding], None]
+
+
+class AuditObjectAuthorizer(Protocol):
+    """Typed Profile-A object authorization seam for Audit API operations."""
+
+    def authorized_engagement_scope(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> AuditEngagementScope: ...
+
+    def require_audit_binding(
+        self,
+        principal: LocalPrincipal,
+        binding: AuditAuthorizationBinding,
+        *,
+        capability: OperatorCapability,
+    ) -> None: ...
+
+    def draft_authorization_reference(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +232,9 @@ class AuditDraftAggregateFactory(Protocol):
     def authorization_reference(self) -> str: ...
 
     @property
+    def authorized_engagement_scope(self) -> AuditEngagementScope: ...
+
+    @property
     def workspace_root(self) -> str: ...
 
     @property
@@ -162,6 +259,36 @@ class AuditCreationUnitOfWork(Protocol):
 
 
 class AuditAggregateReadRepository(Protocol):
+    async def get_authorized(
+        self,
+        audit_id: str,
+        *,
+        authorize: AuditBindingAuthorizer,
+    ) -> AuditAggregate | None: ...
+
+    async def get_by_run_authorized(
+        self,
+        run_id: str,
+        *,
+        authorize: AuditBindingAuthorizer,
+    ) -> AuditAggregate | None: ...
+
+    async def list_authorized(
+        self,
+        *,
+        authorized_scope: AuditEngagementScope,
+        run_id: str | None = None,
+        project_id: str | None = None,
+        engagement_id: str | None = None,
+        lifecycle_status: AuditLifecycleStatus | None = None,
+        mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[AuditAggregate]: ...
+
     async def get(
         self,
         audit_id: str,
@@ -178,6 +305,7 @@ class AuditAggregateReadRepository(Protocol):
         engagement_id: str | None = None,
         lifecycle_status: AuditLifecycleStatus | None = None,
         mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 50,

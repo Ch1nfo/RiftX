@@ -4,7 +4,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from ..dependencies import ActionServiceDependency, LocalPrincipalDependency
+from riftx.application.services.runs import require_general_run_operation
+
+from ..dependencies import (
+    ActionServiceDependency,
+    AuthorizedRunReadDependency,
+    LocalPrincipalDependency,
+)
 from ..schemas import ErrorResponse, RunActionListView, RunActionView
 
 router = APIRouter(prefix="/runs/{run_id}/actions", tags=["actions"])
@@ -14,6 +20,7 @@ _ERROR_RESPONSES = {
     401: {"model": ErrorResponse},
     403: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
 }
 
@@ -27,6 +34,7 @@ async def list_run_actions(
     run_id: str,
     service: ActionServiceDependency,
     principal: LocalPrincipalDependency,
+    authorized_run: AuthorizedRunReadDependency,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: str | None = None,
     sort: Annotated[
@@ -37,6 +45,7 @@ async def list_run_actions(
         ),
     ] = _DEFAULT_SORT,
 ) -> RunActionListView:
+    require_general_run_operation(authorized_run)
     return await service.list(
         run_id,
         principal=principal,
@@ -56,7 +65,9 @@ async def get_run_action(
     action_id: str,
     service: ActionServiceDependency,
     principal: LocalPrincipalDependency,
+    authorized_run: AuthorizedRunReadDependency,
 ) -> RunActionView:
+    require_general_run_operation(authorized_run)
     return await service.get(
         run_id,
         action_id,

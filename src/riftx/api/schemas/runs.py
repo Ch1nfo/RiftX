@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -115,7 +116,7 @@ class RunResponse(BaseModel):
     success_criteria: list[SuccessCriterion]
     entry_points: list[EntryPoint]
     scope: Scope
-    kind: RunKind
+    kind: Literal[RunKind.GENERAL]
     status: RunStatus
     approval_mode: ApprovalMode
     model_profile: str | None
@@ -130,8 +131,45 @@ class RunResponse(BaseModel):
         return cls.model_validate(run)
 
 
+class CodeAuditRunResponse(BaseModel):
+    """Safe generic read projection for the Run owned by a Code Audit."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    engagement_id: str
+    node_id: str
+    objective: Objective
+    success_criteria: list[SuccessCriterion]
+    entry_points: list[EntryPoint]
+    scope: Scope
+    kind: Literal[RunKind.CODE_AUDIT]
+    status: RunStatus
+    approval_mode: ApprovalMode
+    model_profile: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @classmethod
+    def from_domain(cls, run: Run) -> CodeAuditRunResponse:
+        return cls.model_validate(run)
+
+
+RunReadResponse = Annotated[
+    RunResponse | CodeAuditRunResponse,
+    Field(discriminator="kind"),
+]
+
+
+def run_read_response_from_domain(run: Run) -> RunReadResponse:
+    if run.kind is RunKind.CODE_AUDIT:
+        return CodeAuditRunResponse.from_domain(run)
+    return RunResponse.from_domain(run)
+
+
 class RunListResponse(BaseModel):
-    items: list[RunResponse]
+    items: list[RunReadResponse]
     limit: int
     offset: int
 

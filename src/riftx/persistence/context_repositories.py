@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
 from riftx.context import ContextCompilation
@@ -35,6 +36,31 @@ class SQLAlchemyContextCompilationRepository:
             record = await session.get(ContextCompilationRecord, compilation_id)
         return context_compilation_from_record(record) if record is not None else None
 
+    async def get_run_id(self, compilation_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(ContextCompilationRecord.run_id).where(
+                    ContextCompilationRecord.id == compilation_id
+                )
+            )
+
+    async def latest_binding_for_session(
+        self,
+        session_id: str,
+    ) -> tuple[str, str] | None:
+        statement = (
+            select(ContextCompilationRecord.id, ContextCompilationRecord.run_id)
+            .where(ContextCompilationRecord.session_id == session_id)
+            .order_by(
+                ContextCompilationRecord.created_at.desc(),
+                ContextCompilationRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            row = (await session.execute(statement)).one_or_none()
+        return (str(row.id), str(row.run_id)) if row is not None else None
+
     async def latest_for_session(self, session_id: str) -> ContextCompilation | None:
         return await self._latest(ContextCompilationRecord.session_id == session_id)
 
@@ -60,7 +86,7 @@ class SQLAlchemyContextCompilationRepository:
             compilation = context_compilation_from_record(record)
         return compilation
 
-    async def _latest(self, predicate: object) -> ContextCompilation | None:
+    async def _latest(self, predicate: ColumnElement[bool]) -> ContextCompilation | None:
         statement = (
             select(ContextCompilationRecord)
             .where(predicate)

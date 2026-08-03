@@ -618,6 +618,12 @@ class RemoteTerminalSupervisor:
             raise EntityNotFoundError("Terminal Session", session_id)
         return terminal
 
+    async def resolve_run_id(self, session_id: str) -> str:
+        run_id = await self._terminals.get_run_id(session_id)
+        if run_id is None:
+            raise EntityNotFoundError("Terminal Session", session_id)
+        return run_id
+
     async def get_execution(self, session_id: str) -> Execution:
         terminal = await self.get(session_id)
         execution = await self._executions.get(terminal.execution_id)
@@ -872,6 +878,12 @@ class NodeTerminalRouter:
     async def get(self, session_id: str) -> TerminalSession:
         controller = await self._for_session(session_id)
         return await controller.get(session_id)
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        run_id = await self._terminals.get_run_id(session_id)
+        if run_id is None:
+            raise EntityNotFoundError("Terminal Session", session_id)
+        return run_id
 
     async def get_execution(self, session_id: str) -> Execution:
         controller = await self._for_session(session_id)

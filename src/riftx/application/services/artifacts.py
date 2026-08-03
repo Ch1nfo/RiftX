@@ -6,11 +6,16 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+import secrets
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    resource_not_accessible,
+)
 from riftx.application.ports import (
     ArtifactRepository,
     ExecutionRepository,
@@ -20,6 +25,8 @@ from riftx.application.ports import (
 from riftx.domain import Artifact
 from riftx.domain.base import new_id
 from riftx.runner import RunnerPaths
+
+from .runs import require_general_run_operation
 
 _COPY_CHUNK_SIZE = 1024 * 1024
 
@@ -61,6 +68,7 @@ class ArtifactApplicationService:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
+        require_general_run_operation(run)
         if command.execution_id is not None:
             execution = await self._execution_repository.get(command.execution_id)
             if execution is None:
@@ -129,8 +137,10 @@ class ArtifactApplicationService:
         run_id: str,
         command: RegisterArtifactContent,
     ) -> Artifact:
-        if await self._run_repository.get(run_id) is None:
+        run = await self._run_repository.get(run_id)
+        if run is None:
             raise EntityNotFoundError("Run", run_id)
+        require_general_run_operation(run)
         name = _safe_artifact_name(command.name)
         mime_type = command.mime_type.strip()
         if not mime_type or len(mime_type) > 255:
@@ -183,6 +193,12 @@ class ArtifactApplicationService:
             raise EntityNotFoundError("Artifact", artifact_id)
         return artifact
 
+    async def resolve_run_id(self, artifact_id: str) -> str:
+        run_id = await self._artifact_repository.get_run_id(artifact_id)
+        if run_id is None:
+            raise resource_not_accessible()
+        return run_id
+
     async def list(
         self,
         run_id: str,
@@ -202,8 +218,18 @@ class ArtifactApplicationService:
             )
         )
 
-    async def content_path(self, artifact_id: str) -> tuple[Artifact, Path]:
+    async def content_path(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> tuple[Artifact, Path]:
         artifact = await self.get(artifact_id)
+        if expected_run_id is not None and not secrets.compare_digest(
+            expected_run_id,
+            artifact.run_id,
+        ):
+            raise resource_not_accessible()
         expected = self._paths.artifact(artifact.run_id, artifact.id, artifact.name).content
         try:
             actual = await asyncio.to_thread(Path(artifact.path).resolve, strict=True)

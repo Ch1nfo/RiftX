@@ -9,6 +9,8 @@
 > 目标版本：3.0.0
 >
 > 产品主功能名称：RiftX Code Audit
+>
+> 规格修订：2026-08-03 / M1 契约收口
 
 ## 0. 文档用途
 
@@ -26,6 +28,24 @@ Codex 执行本计划时必须遵守以下规则：
 8. 如果实现中发现本文档与现有安全不变量冲突，优先保持 fail-closed，并先更新 ADR 和本文档，不得静默降低安全标准。
 9. 不引入 Codex Security 的包、CLI、运行时、插件、MCP 服务、账号依赖、代码、Prompt、Skill、Schema、测试、示例或品牌资产。
 10. 不以“模型说完成了”“没有发现漏洞”或“进程已经退出”作为 Coverage、扫描成功或安全停止证明。
+
+### 0.1 Codex 执行入口与文档层级
+
+Codex 不应把本文一次性解释成“同时实现全部 M0–M10”。每次开发从
+`docs/implementation/POST_V3_CODE_AUDIT_PROGRESS.md` 找到唯一当前任务，只读取该任务的前置
+ADR、本文对应章节和实际代码，然后完成一个可独立验收的提交。没有通过当前任务的退出门禁时，
+不得开始依赖它的后续任务。
+
+本文同时描述 **3.0 GA 最终契约** 和 **分阶段交付契约**。二者按以下规则解释：
+
+1. 第 1–21、24–27 节默认描述 GA 目标；第 22 节和对应 ADR 规定各阶段何时引入这些能力。
+2. 标记为 M1、temporary、draft-only、offset 或 synthetic 的接口只是受 Feature Flag 隔离的开发
+   脚手架，不是可对外承诺的 3.0 wire contract，也不能被后续任务默认继承。
+3. milestone ADR 可以收紧当前阶段，但不能降低本文的安全不变量或把暂态行为升级为 GA 行为。
+4. 若 ADR、本文、进度账本和实现互相矛盾，立即保持 fail-closed，把当前任务留在
+   `in_progress`，先修正文档并增加回归测试；不得选择最宽松解释继续编码。
+5. 当前工作树可能包含未提交的前序任务变更。Codex 只能修改当前任务范围内的文件，不能覆盖、
+   回退或顺手整理用户及其他任务的变更。
 
 ## 1. 最终产品结论
 
@@ -89,6 +109,13 @@ RiftX Code Audit 不是：
 ### 2.4 从公开 Code Security 方法中吸收什么
 
 本项目只吸收通用安全审计思想，并用 RiftX 自有架构重新实现：
+
+研究边界只产生下面这种去表达化的产品需求。RiftX 不调用 Codex Security，不把它注册成
+Provider，也不设计兼容层；Code Audit 的模型能力始终经过 RiftX 自有、provider-neutral 的
+Agent Engine，确定性模式在没有任何模型 Provider 时仍能完成扫描。公开方法核对基线记录为
+`openai/codex-security@a8fc00984b07f10f5b607a9521c2f05aa57c5107`（核对日期
+2026-08-03），该记录只用于说明研究时点，不能作为复制源码、Prompt、Schema、测试或产品表达
+的许可。
 
 | 可取思想 | RiftX 3.0 的独立实现 |
 | --- | --- |
@@ -2080,6 +2107,11 @@ Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 
 
 ### 16.3 CreateAuditRequest
 
+本节定义 `AUD-201` 接入后、面向 3.0 产品的最终创建请求；它不是 AUD-104 的 M1 测试 wire。
+最终请求只允许调用方表达目标和策略选择，所有“系统已经证明了什么、最终选择了什么”的事实
+都必须从服务端持久化的 Preflight plan、Capability Registry、Operator consent event 和当前配置
+生成。
+
 ~~~json
 {
   "client_request_id": "uuid",
@@ -2110,13 +2142,41 @@ Preflight 在该 Node 的 SourceIngestCapsule 中运行，Response/token 绑定 
 }
 ~~~
 
-preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。本段 token 行为由 M2/AUD-201 接入：创建 draft 时 token 在同一个 creation UoW 中原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。Start 时重新检查目标；若工作树内容已经变化，返回 snapshot_changed，并把 draft 标为需要重新 Preflight，不得扫描与预检不同的输入。只有 Start 事务成功写入 `AuditStartIntent` 时 token 才进入 `consumed`。AUD-103/M1 不接受、保存、hash 或预留 token，也不读取 Git；AUD-104 的 draft-only test path 不得伪造已完成 Preflight。
+字段所有权冻结如下：
 
-client_request_id 是请求级幂等键。服务端按 `riftx.audit-create-draft-request/v1` 对 canonical caller payload 计算 domain-separated SHA-256；同一 key/digest 返回同一 Audit 的当前 lifecycle/version，同 key 异 payload 返回 `audit_idempotency_conflict`。HTTP 响应丢失后 exact retry 不新增 Event，也不把已推进 Audit 改回 draft。`audit.enabled=false` 的 create admission fence 优先于 exact replay。
+| 所有者 | 事实 | wire 规则 |
+| --- | --- | --- |
+| Caller | client_request_id、project name、允许的 engagement、mode/profile、model/egress 选择、validation policy、baseline、预算和受约束的 execution preference | 可以提交；进入版本化请求摘要 |
+| Preflight / 服务端 capability | repository identity、规范化 target/Scope、source/analysis node、实际 backend、eligible candidates、image/policy/component digest、prepare/capability proof、CAS handoff policy | 只能由 `preflight_token` 解析出的持久 plan 注入；body 出现同名 proof/selection 字段返回 422 |
+| 服务端授权/执行 | authorization_reference、Audit/Run/Project/Contract/Execution ID、Operator consent 的服务端记录时间、contract digest、StartIntent | 永远不是 caller wire 字段 |
+
+AUD-104 为验证 M1 persistence 暂时暴露
+`riftx.audit-create-draft-request/v1`。该测试 wire 因现有 Domain 要求完整 Contract，接受一个完整
+contract-shaped assertion；其中 `operator_consent_at`、capability `proof_digest`、source/analysis
+prepare proof、selected node/backend、image/policy 和 candidate digest 全部只是 **M1 synthetic
+untrusted assertions**，没有授权、Preflight、执行选择、审批或 Start 效力。所有这类 draft 都必须
+保持 `preflight_plan_id = null`（或等价的显式 untrusted provenance），Feature Flag 默认关闭，且
+永远不能 Start。
+
+AUD-201 必须引入 `riftx.audit-create-draft-request/v2`，从 HTTP body 移除上述 proof/selection/
+consent 事实，由持久 Preflight plan 构造权威 Contract，并让 Start UoW 强制验证 plan binding。
+迁移前创建的 v1 draft 不得被“补一个 token”升级为可执行对象；Operator 必须重新 Preflight 并
+创建 v2 draft。任何代码若把 v1 synthetic assertion 当作 proof，按 P0 安全问题处理。
+
+preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。本段 token 行为由 M2/AUD-201 接入：创建 draft 时 token 在同一个 creation UoW 中原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。Start 时重新检查目标；若工作树内容已经变化，返回 snapshot_changed，并把 draft 标为需要重新 Preflight，不得扫描与预检不同的输入。只有 Start 事务成功写入 `AuditStartIntent` 时 token 才进入 `consumed`。AUD-103/M1 不接受、保存、hash 或预留 token，也不读取 Git；AUD-104 的 draft-only test path 只能保存前述 synthetic assertions，不得伪造已完成 Preflight。
+
+client_request_id 是请求级幂等键。M1/v1 的 request identity 明确定义为
+`canonical caller payload + server-derived authorization binding`，而不是仅 HTTP body；服务端按
+`riftx.audit-create-draft-request/v1` 做 domain-separated SHA-256。这样相同 body 被另一 principal/
+authorization domain 重用时不是 exact replay，而是 `audit_idempotency_conflict`。该 binding 不
+返回客户端，也不是凭据。M2/v2 还必须纳入稳定的 Preflight plan identity/digest，但排除 raw
+token。同一 key/schema/request identity 返回同一 Audit 的当前 lifecycle/version，同 key 异
+identity 返回 conflict。HTTP 响应丢失后的 exact retry 不新增 Event，也不把已推进 Audit 改回
+draft。`audit.enabled=false` 的 create admission fence 优先于 exact replay。
 
 `engagement_id` 可引用已授权的现有 Engagement；为空时 UoW 为新 CodeProject 创建 Engagement。复用时必须验证 authorization_reference/source policy 与 Project 对象域，不允许借任意 Engagement 绕过 source authorization。
 
-`POST /audits` 只创建 `draft`，不再次接触 Git、不物化 Snapshot、不启动 Temporal。关联 Run 的 `node_id` 来自 analysis `execution_target`；source node/backend/proof 来自绑定的 Preflight plan。Node 自报 capability 只作提示：Preflight 已获得 source-ingest prepare proof；Start 重新校验 source/analysis Node，后续每次 content/dynamic `sandbox.prepare` 再验证实际隔离能力。自动选择必须在 Review 前完成，选择算法、候选集合、source/analysis node/backend/image policy 均冻结到 AuditContract。
+最终 `POST /audits` 只创建 `draft`，不再次接触 Git、不物化 Snapshot、不启动 Temporal。关联 Run 的 `node_id` 来自服务端冻结的 analysis selection；source node/backend/proof 来自绑定的 Preflight plan，而不是 body 中的同名值。Node 自报 capability 只作提示：Preflight 已获得 source-ingest prepare proof；Start 重新校验 source/analysis Node，后续每次 content/dynamic `sandbox.prepare` 再验证实际隔离能力。自动选择必须在 Review 前完成，选择算法、候选集合、source/analysis node/backend/image policy 均冻结到 AuditContract。
 
 `POST /audits/{audit_id}/start` 接受独立 `start_request_id + reviewed_contract_digest`，重新验证 preflight plan、目标 digest、冻结合同、ModelDataEgress consent、Node/backend 与 Feature Flag，并在同一数据库事务中把 Audit 转为 queued、消费 token、写 `AuditStartIntent`。任何自动选择、origin、image/policy 或 capability 摘要变化都返回 `audit_contract_review_required`，由 UI 展示新合同后重新确认。它只返回已持久化的启动意图；Temporal 启动由第 14.1 节可靠投递协议完成。
 
@@ -2157,12 +2217,31 @@ Response 使用 lifecycle discriminated union：`draft/queued/preflighting/snaps
 
 UI/CLI 必须直接显示 `publication_status`：仍在 sealing/reporting/packaging、seal_failed、report_failed、package_failed 与 published 不得从 lifecycle/Artifact 数量猜测。Revision 摘要含 revision id、manifest digest、composer/schema digest、created_at 和是否 latest；retry 后通过 SSE/GET 更新权威投影。
 
+上面的字段是 **3.0 GA 最低投影**，不是要求 AUD-104 在 M1 伪造尚不存在的数据。投影按以下
+任务扩展，任何阶段都只能返回已持久化、已授权的真实事实：
+
+| 阶段 | 必须存在的 projection | 明确不得伪造 |
+| --- | --- | --- |
+| AUD-104 / M1 | Audit/Run ID、Project summary、state version、snapshot/base/baseline ID、purpose/parent、mode/profile、lifecycle/phase/terminal/closure/publication、distribution revision ID、model profile、Run status 和 lifecycle timestamps | Snapshot object/status、progress、usage、approval、proof 和 seal 不存在时不得填默认成功值 |
+| AUD-205 / AUD-208 | Snapshot/base status 与摘要、source/analysis target 和 CAS handoff 的安全摘要、StartIntent 状态 | 绝对路径、token、storage locator、原始 proof bytes |
+| AUD-307 / AUD-506 | core seal root、initial/latest distribution revision、revision count 与报告状态 | 未 sealed 的 Audit 不得出现 seal root |
+| AUD-407 / AUD-600 | progress counts、budget/usage、pending approval count、完整 execution target summary、model data egress summary | UI 不得从 Event 数量或客户端缓存推断 |
+
+ADR-0004 的 `AuditResponse` 是上述第一行的 M1 positive allowlist；它不是另一套最终 API。
+后续添加字段必须逐项审查 access class，并同时更新 OpenAPI、前端 type、Schema contract test 和
+本文 rollout 表。禁止用 `model_validate(aggregate)` 自动把持久化字段暴露到 wire。
+
 ### 16.5 列表与分页
 
 - Audits、Signals、Findings、Evidence 和 Phase 列表必须使用稳定 cursor 或明确稳定排序。
 - Audit filters 包括 run_id（唯一映射）、project、status、mode 和 created range；Finding/Signal filters 包括 severity、confidence、CWE、validation、history_state、path。
 - Cursor 必须签名并绑定 Scope、filter、sort 与 snapshot version；拓扑变化时返回 stale cursor。
 - 默认 page size 50，最大 200；不允许无界查询。
+
+Signed cursor 是 AUD-600 的最终契约。AUD-104 只允许稳定的
+`created_at DESC, id DESC + limit/offset`，默认 50、最大 200，并且授权 scope 必须在 SQL 的排序和
+分页之前。`/runs?kind=code_audit` 在 M1 同样不得跨多个独立 session 拼接一个大于 200 的页面；
+超限应返回 validation error，直到 AUD-600 提供单一一致读取和 signed cursor。
 
 ### 16.6 错误码
 
@@ -2200,6 +2279,18 @@ UI/CLI 必须直接显示 `publication_status`：仍在 sealing/reporting/packag
 
 错误 Envelope 继续沿用 RiftX 现有统一 APIError。敏感路径和命令输出不得进入 message。
 
+对象不存在、对象授权拒绝以及 bounded owner resolver 成功后 full object 已消失，必须在
+Audit/child-read Service 或 API 边界重新构造同一个固定 `404 resource_not_accessible` envelope。
+不得依赖 Authorizer、Repository 或实体 Service “刚好使用相同 message”。测试必须让 denying
+authorizer 与 full getter 携带 canary message/entity ID，并证明最终 body 与真实 missing
+逐字节一致。
+
+Audit mutation 的 422 脱敏面包括 body 的 **mapping key、mapping value、sequence value 以及由
+body 生成的 `loc` segment**。未知顶层字段、Contract 字段或任意深层字段名都属于攻击者可控
+字符串，不能原样回显；已知安全字段名可以按固定 allowlist 保留，其他 segment 使用
+`[redacted]`。所有 error `input` 固定为 `[redacted]`，message/context 中出现的 body literal 也要
+清除。测试至少包含顶层、Contract 和深层未知-key canary。
+
 ### 16.7 API Policy
 
 所有路由必须在 api/policy.py 逐路由显式登记 `RouteEffect`，不能用“Audit 路由”通配：
@@ -2214,6 +2305,30 @@ UI/CLI 必须直接显示 `publication_status`：仍在 sealing/reporting/packag
 policy inventory test 必须枚举每个新 route name，并证明未知路由 fail-closed；不能把 `create_audit` 登记成普通 `DURABLE_WRITE` 后在 handler 内顺手启动 Workflow。
 
 LocalObjectAuthorizer 必须验证 Audit、Run、Project、Finding、Artifact、Execution 属于同一授权对象；跨 Scope 统一返回不可区分的 404。
+
+所有 child-ID read 使用同一不可交换的顺序：
+
+~~~text
+bounded child owner columns
+  -> resolve RunKind
+  -> code_audit 回到 Audit raw binding / ACL root
+  -> load full child 或读取文件/Runner output
+  -> revalidate exact child ID + immutable owner Run/Audit
+  -> positive allowlist projection
+~~~
+
+授权拒绝前不得 hydrate Finding Evidence、Artifact 文件、Runner output、Browser observation、
+Context Manifest 或 Memory content。Code Audit Execution 必须使用单独的安全投影，禁止返回
+`argv`、`command_text`、`executable_path`、`cwd`、`env_diff`、stdout/stderr path、PID/process
+group、containment ID 或 host platform fingerprint。Artifact metadata 继续排除 storage path；
+restricted content 的 fd/hash/access-class 契约由 AUD-105 完成。M1 的 generic Code Audit read 是
+显式白名单：只允许 Run、Event、Execution 与 Artifact；Finding、Report、Approval、Action、Graph、
+Run metrics、Target HTTP/Traffic、Terminal、Browser、Context、Memory 与 Connector facade 全部在
+Audit 根授权之后、任何 full object/content getter 之前返回 `run_kind_operation_unsupported`。全局
+Node、Tool、Model profile 与 Security Profile 不属于 Run-scoped read，不受此白名单影响。AUD-106
+的 operation catalog 或后续专用 Audit projection 只能逐项放行，不能把 Audit-root authorization
+本身解释为读取许可。长连接每一批数据都必须重新验证冻结的 child/run ownership，不能只在握手
+时授权一次。
 
 ## 17. Event、Artifact 与输出契约
 
@@ -2826,6 +2941,12 @@ detectors:
 
 开发期 audit.enabled 默认 false；完成 Snapshot、基础 Detector、API 权限和测试后在 Alpha 配置示例中显式开启；GA 默认 true。
 
+下列行为是 AUD-106 接入专用 Audit controls 后的最终契约。AUD-104 的暂态 API 只有 create/list/
+detail：它尚未公开 Audit pause/cancel/stop，generic Run controls 对 Code Audit 必须返回
+`run_kind_operation_unsupported`。在这个暂态窗口中，可达的只有内部 safety stopper、cleanup/
+reconciler 和经过 owner 校验的 affirmative physical-stop proof。缺少公开 cancel 是 M1
+开发限制，不是 3.0 产品行为；进入 M2 前必须由 AUD-106 消除。
+
 当关闭时：
 
 - Preflight、创建和所有会启动新执行的 Audit 端点返回 feature_disabled；`create_draft`
@@ -3089,11 +3210,12 @@ Scope/Work planning、Detector/Agent/Receipt/Evidence/Finding/Closure，也不�
 2. **Request digest 与持久化**
 
    - 服务端按
-     `SHA256(UTF8("riftx.audit-create-draft-request/v1") || 0x00 || canonical_payload)`
-     计算摘要；canonical payload 覆盖所有 caller-owned、会改变初始 aggregate 的字段，排除
-     client_request_id、generated ID/time/state_version；AUD-103 的 request surface 不含
-     preflight token，M2 纳入 reservation 前必须版本化摘要 schema 或绑定稳定 plan digest，
-     不得静默排除新增 caller-owned input；
+     `SHA256(UTF8("riftx.audit-create-draft-request/v1") || 0x00 ||
+     canonical_request_identity_payload)` 计算摘要；identity payload 覆盖所有 caller-owned、会
+     改变初始 aggregate 的字段以及 server-derived `authorization_reference`，排除
+     client_request_id、generated ID/time/state_version。相同 HTTP body 在不同 authorization
+     domain 下不是 exact replay。AUD-103 的 request surface 不含 preflight token；AUD-201 必须
+     发布 v2 并绑定稳定 plan identity/digest，排除 raw token，不得静默排除新增 input；
    - 摘要比较使用 constant-time primitive；客户端提供的 digest 不可信；
    - 新增 `audit_client_requests` migration、ORM 和 strict mapper；
      `client_request_id` 与 `audit_id` 唯一，operation/schema 用 CHECK，
@@ -3251,21 +3373,107 @@ preflight reservation，不能引入第二个提交链。
 
 #### AUD-104：API Skeleton 与 Policy
 
-添加 schemas/audits.py、routes/audits.py、dependencies 和 app router：
+本任务以 ADR-0004 为完整验收契约，不得只完成三条 route。交付范围固定如下：
 
-- POST /audits（draft-only test path）；
-- GET /audits；
-- GET /audits/{id}。
+1. **M1 wire 与效果边界**
 
-在 api/policy.py 登记权限；补 Control Plane 和跨对象授权测试。
+   - 只公开 `POST /audits`、`GET /audits`、`GET /audits/{id}`；OpenAPI 不出现 Preflight、Start、
+     control、Finding 或 Report endpoint；
+   - create 是 `DURABLE_WRITE` 且严格 draft-only：零 Git/source read、realpath、Snapshot、mkdir、
+     Temporal、Runner、模型、Artifact 或 stop side effect；首次返回 201，exact replay 返回 200；
+   - 明确 v1 full-contract-shaped input 中 proof/consent/selection 字段只是 synthetic untrusted
+     assertions；记录没有 Preflight binding，不能 Start，最终 v2 wire 由 AUD-201 替换；
+   - request digest 按 caller payload + server-derived authorization binding 解释；服务端授权域变化
+     不是 exact replay，Feature Flag 在查询 replay 前拒绝。
+
+2. **对象授权与读取一致性**
+
+   - `authorization_reference` 只能从 authenticated principal 服务端派生；caller 不能选择；
+   - detail 使用不加载 canonical Contract/path 的 typed raw binding 先授权，再在同一 consistent-read
+     session 加载完整 aggregate 并复验所有 owner/digest/state binding；
+   - list 先把 typed Engagement scope 下推 SQL，再排序/分页；空 scope 不是 unrestricted；M1
+     limit 最大 200，不跨 session 拼大页；
+   - `/runs` 默认 general；显式 Code Audit list/detail 必须从已授权 Audit aggregate 产生
+     discriminated safe projection，orphan/bare Audit Run 不返回；
+   - child read 固定执行“bounded owner → Audit root auth → full child/IO → exact child+owner
+     revalidation → positive projection”，授权失败前所有内容 getter 和 IO 调用为零；
+   - Code Audit Execution 使用专用 allowlist，不能泄漏 env、command、cwd、host path、PID 或
+     containment/platform facts。M1 generic read 只允许 Run/Event/Execution/Artifact；其余
+     Run-scoped route 在 Audit-root authorization 后、内容读取前统一拒绝。
+
+3. **临时双层 RunKind bridge**
+
+   - 对第 4.4 节全部 generic mutation，在 API route 和 Application Service 首个副作用前各检查
+     一次；Finding、Artifact/Report、RUN Memory、Approval/Run grant、Execution cancel、Terminal、
+     Browser、Target HTTP、Connector、Run controls 与 Runner callback 均在枚举内；
+   - `wait_execution` 若登记为 `READ_ONLY`，不得追加 `execution.wait_completed` 或任何 Event；
+   - General Run 行为不变；Code Audit 普通 mutation 统一返回
+     `409 run_kind_operation_unsupported`；
+   - 安全停止 sweep、private safety-close、cleanup 和经认证/owner 校验的 affirmative physical-stop
+     proof 始终可达，但只能减少或证明已有副作用；
+   - Worker 看到 Code Audit completion 时不得 signal `riftx-run-{run_id}`；AUD-106 前 Code Audit
+     不得产生 Execution 或 RunnerCommand。
+
+4. **稳定失败与脱敏**
+
+   - missing、authorizer denied 和 owner-resolver 后 full object disappearance 都由边界重建固定
+     `404 resource_not_accessible`，不能信任下层错误文字；
+   - 422 同时清除 body key/value、unknown-key `loc` segment、input 和 message/context literal；
+   - 401/403/404/409/422/503 的 OpenAPI 与真实 body 一致，Repository/driver/canonical Contract/
+     path 不进入响应、日志或 exception chain。
+
+5. **必须通过的反例**
+
+   - denying authorizer 使用自定义 canary message/details，响应仍与真实 missing 逐字节一致；
+   - 顶层、Contract、深层未知 JSON key canary 在 422 中完全消失；
+   - resolver owner A/full object owner B、resolver 后对象消失、同 Run 不同 Execution ID 均拒绝；
+   - Code Audit Execution detail/list seed secret env 和绝对 path，响应中完全不存在；
+   - 每个 generic mutation 证明 Event/row/file/Hook/Runner/network/Workflow/Memory promotion 为零，
+     同时 General Run regression 不变；
+   - wrong Runner token/owner 仍优先 401，只有合法 owner 的普通 Audit callback 才得到 409；肯定
+     stop proof 不被 blanket bridge 丢弃。
+
+上述任一条件未满足时 AUD-104 保持 `in_progress`，不得开始 AUD-105/106 或把 Feature Flag 开启。
 
 #### AUD-105：Artifact Access Foundation
 
-在任何 Scanner/模型原始输出进入系统前，扩展 Artifact 的 `audit_id/access_class/content_trust/ingest provenance`，让通用 list/download 服务端过滤 restricted Artifact；实现 bounded stream/fd ingest，消除 path reopen TOCTOU、symlink/hardlink 与输出增长问题。
+在任何 Scanner/模型原始输出进入系统前，扩展 Artifact 的
+`audit_id/access_class/content_trust/ingest provenance`，让通用 list/download 服务端过滤
+restricted Artifact；实现单次 no-follow open 后基于同一 fd 的 bounded stream/hash/ingest，消除
+path reopen TOCTOU、symlink/hardlink 与输出增长问题。下载在 Audit root auth 后再次检查 access
+class、digest 和 immutable owner；denied/owner mismatch 前不得 open/hash。为 metadata、restricted
+download、oversize、concurrent replacement 和 partial ingest 增加零泄漏/失败清理测试。
 
 #### AUD-106：RunKind Workflow Router
 
-实现 machine-readable `RunKindEffectPolicy` 全 mutation inventory 与 `RunWorkflowControlRouter`，先保持 general Run 行为完全一致；按 RunKind 路由 pause/resume/cancel、Approval decision、Execution completion 与 stop callback。code_audit 的 generic Run mutation 按第 4.4 节逐项拒绝或走 Audit-owned alternative。为当前 `TemporalRunClient`、ApprovalService、Artifact/Report/Finding/Memory/Terminal/Browser/HTTP/Connector Service 和组合根增加 regression tests；旧 Workflow history 不变。
+实现 machine-readable `RunKindEffectPolicy` 全 route/service/callback inventory 与
+`RunWorkflowControlRouter`，有序替换 AUD-104 临时 bridge，同时保持 general Run 和旧 Temporal
+history 完全不变。
+
+1. 每个 operation 记录 `allowed_run_kinds + origin + required RouteEffect + ownership resolver +
+   Audit alternative`；未知 kind/origin/operation 默认拒绝。inventory 覆盖 API Policy 的所有
+   DURABLE_WRITE/WORKFLOW_CONTROL/HOST_EXECUTION/HOST_CONTROL、内部 Service mutation、WebSocket、
+   Worker/Runner callback 和 safety reconciler，并由 CI 防止新增未登记入口。
+2. 按 RunKind 路由 Audit pause/resume/cancel、Approval decision、Execution completion、stop callback
+   和 Feature-Flag cleanup。Audit cancel 必须是 Audit-owned `HOST_CONTROL`，generic
+   `/runs/{id}/cancel` 的 `WORKFLOW_CONTROL` 永远不能旁路。
+3. 为 RunnerCommand 新增版本化、持久、不可变 ownership envelope，至少包含
+   `schema_version + run_id + origin/operation_family + execution_id`；Audit origin 还必须包含
+   `audit_id + plan_digest`（必要时命名 `audit_execution_id`，但不能藏在自由 payload 中）。
+4. 在 enqueue、idempotent replay、claim/dequeue、poll、lease renew、status、output、finish、cancel/
+   stop ACK 与 Workflow completion 全链验证 command↔Execution↔RunKind↔Audit↔plan↔Node↔Runner
+   principal。不得从 payload、target path、session ID 或 command kind 猜 ownership。
+5. migration 对缺 ownership 的 legacy/pending/replayed command 使用显式 quarantine +
+   reconciliation；未知 ownership 不执行普通效果。已经存在的 cancel/close/stop command 只能在
+   owner 校验后收敛物理停止，不能因 blanket deny 丢失 stop proof，也不能借 ACK 推进 generic
+   Workflow。
+6. 对 Finding、Report、Approval、Action、Graph、Run metrics、Target HTTP/Traffic、Terminal、
+   Browser、Context、Memory、Connector 等 generic Code Audit read 做最终逐项决策：没有专用安全
+   投影和产品用例就保持拒绝；若开放长连接，每批数据都复验 frozen child/run identity。Approval
+   禁止 generic Run grant/`approve_for_run`，Audit 只接受绑定一个 immutable plan 的专用 decision。
+7. 为 `TemporalRunClient`、Approval、Execution、Artifact/Report/Finding/Memory、Terminal、Browser、
+   Target HTTP、Connector、Runner 和所有组合根增加 zero-side-effect、wrong-owner precedence、
+   stop convergence 与 general regression tests。
 
 M1 Exit：
 
@@ -3299,6 +3507,14 @@ M1 Exit：
 #### AUD-201：Signed Preflight Token
 
 实现高熵 opaque token 与持久 audit_preflight_plans：数据库只保存 token hash，计划绑定 source node/root identity、ingest backend/image/policy/prepare proof、目标、Scope、内容摘要和短时 expiry。这样 Control Plane 重启后仍可安全创建。Start 时在同一 source Node 重验，变化返回 audit_snapshot_changed；token reservation/consume 与 audit_id 幂等。
+
+同时发布 `riftx.audit-create-draft-request/v2`：HTTP 只接收第 16.3 节 caller-owned preference 和
+opaque token，Contract 的 selection/proof/consent facts全部从 authoritative plan、Capability
+Registry 和服务端 consent event 构造。v2 request digest 绑定 server authorization domain 与
+稳定 plan identity/digest，不包含 raw token。迁移把所有 v1/M1 draft 标记为无 authoritative
+preflight binding；这些 draft 永不可 Start，也不能原地替换 immutable Contract，只能重新
+Preflight 后创建 v2 draft。增加伪造 proof field、token steal/replay、principal 变化、expiry、
+reservation race、重启恢复和 v1 start rejection 测试。
 
 #### AUD-202：Snapshot Materializer
 

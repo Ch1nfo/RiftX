@@ -50,6 +50,7 @@ from riftx.domain import (
     MessageRole,
     MessageType,
     MessageVisibility,
+    RunKind,
     RunStatus,
     TranscriptMessageDraft,
 )
@@ -596,7 +597,10 @@ async def build_temporal_worker(
             database.session_factory
         )
         memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
-        memory_service = MemoryService(memory_repository)
+        memory_service = MemoryService(
+            memory_repository,
+            run_repository=run_repository,
+        )
         hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
         memory_writer = MemoryWriter(
             memory_repository,
@@ -641,6 +645,7 @@ async def build_temporal_worker(
             commands=runner_command_repository,
             nodes=node_service,
             executions=execution_repository,
+            runs=run_repository,
             paths=paths,
             registration_token=config.runner.registration_token,
             terminals=terminal_repository,
@@ -667,6 +672,7 @@ async def build_temporal_worker(
             process_executor=process_executor,
             on_completed=lambda execution: _signal_execution_completion(
                 workflow_client,
+                run_repository,
                 run_id=execution.run_id,
                 execution_id=execution.id,
             ),
@@ -688,6 +694,7 @@ async def build_temporal_worker(
             require_containment=config.execution.require_containment,
             on_completed=lambda execution: _signal_execution_completion(
                 workflow_client,
+                run_repository,
                 run_id=execution.run_id,
                 execution_id=execution.id,
             ),
@@ -1030,10 +1037,17 @@ def _validate_audit_config_path_isolation(config: RiftXConfig) -> None:
 
 async def _signal_execution_completion(
     workflow_client: TemporalRunClient,
+    run_repository: SQLAlchemyRunRepository,
     *,
     run_id: str,
     execution_id: str,
 ) -> None:
+    run = await run_repository.get(run_id)
+    if run is None or run.kind is not RunKind.GENERAL:
+        # Audit execution completion requires the kind-aware workflow router
+        # introduced by AUD-106. Physical cleanup remains complete; only the
+        # unsafe generic Temporal signal is suppressed here.
+        return
     for attempt in range(3):
         try:
             await workflow_client.execution_completed(run_id, execution_id)

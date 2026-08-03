@@ -115,22 +115,31 @@ request_schema_version = "riftx.audit-create-draft-request/v1"
 request_digest = SHA256(
   UTF8(request_schema_version)
   || 0x00
-  || canonical_normalized_caller_payload_utf8
+  || canonical_request_identity_payload_utf8
 )
 ~~~
 
-canonical payload 使用 UTF-8、稳定 key 排序、无多余空白和枚举 wire value。它必须覆盖所有
-会影响 Engagement/Project、Run、Contract 或 Scan 初始事实的调用方字段，包括显式
-`engagement_id` 和授权/目标 identity；必须排除：
+`canonical_request_identity_payload` 使用 UTF-8、稳定 key 排序、无多余空白和枚举 wire
+value，并固定包含两个逻辑部分：
+
+1. 所有会影响 Engagement/Project、Run、Contract 或 Scan 初始事实的 caller payload，包括显式
+   `engagement_id` 和目标 identity；
+2. 从 authenticated principal/Trust Profile 服务端派生的 `authorization_reference`。它不是
+   caller wire、凭据或响应字段，只是 principal-scoped idempotency binding。
+
+因此，相同 HTTP body 和 client_request_id 被不同 principal/authorization domain 重用时不是
+exact replay，而是 `audit_idempotency_conflict`。这是防止跨授权域接管 request key 的有意语义，
+不是偶然实现细节。request identity 必须排除：
 
 - `client_request_id` 自身；
 - 服务端生成的 Audit/Run/Project/Contract/Event ID；
 - 服务端时间戳与 persistence `state_version`；
 - 本任务尚不接受或预留的 preflight token。
 
-`AUD-103` 的 request surface 因而没有 preflight 字段。M2 若让 reservation 成为创建语义，
-必须先版本化本摘要 schema，或纳入稳定的 preflight plan identity/digest；不得把新增的
-caller-owned token/plan 从幂等比较中静默排除。
+`AUD-103` 的 request surface 因而没有 preflight 字段。M2/AUD-201 必须发布
+`riftx.audit-create-draft-request/v2`，纳入稳定的 preflight plan identity/digest 并排除 raw
+opaque token；不得把新增 plan binding 从幂等比较中静默排除。v1 在 Feature Flag 默认关闭的
+M1 阶段只用于 draft persistence 验证，不是已公开兼容契约。
 
 若某个调用方字段会改变最终聚合却未进入摘要，测试必须失败。若字段只改变服务端生成 ID 或
 时间，则不得导致摘要变化。摘要比较使用 constant-time primitive。

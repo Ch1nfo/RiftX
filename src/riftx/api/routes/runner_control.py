@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from riftx.application.services import ExecutionStatusReport
+from riftx.domain import ExecutionStatus
 from riftx.domain.base import utc_now
 
 from ..dependencies import RunnerControlServiceDependency, RunnerDependency
@@ -23,6 +24,15 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/runner", tags=["runner-control"])
+
+_PHYSICAL_STOP_STATUSES = frozenset(
+    {
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.EXITED,
+        ExecutionStatus.CANCELLED,
+        ExecutionStatus.HARD_TIMEOUT,
+    }
+)
 
 
 @router.get(
@@ -127,7 +137,11 @@ async def report_runner_command_output(
 
 @router.post(
     "/executions/{execution_id}/status",
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
 )
 async def report_execution_status(
     execution_id: str,
@@ -135,24 +149,34 @@ async def report_execution_status(
     service: RunnerControlServiceDependency,
     authorized: RunnerDependency,
 ) -> dict[str, object]:
+    report = ExecutionStatusReport(
+        status=payload.status,
+        pid=payload.pid,
+        process_group_id=payload.process_group_id,
+        exit_code=payload.exit_code,
+        executable_path=payload.executable_path,
+        tool_id=payload.tool_id,
+        tool_version=payload.tool_version,
+        platform_system=payload.platform_system,
+        platform_release=payload.platform_release,
+        platform_architecture=payload.platform_architecture,
+        process_created_at=payload.process_created_at,
+        physical_stop_confirmed=payload.physical_stop_confirmed,
+    )
+    await service.require_execution_callback_kind(
+        node_id=authorized.node_id,
+        principal=authorized.principal,
+        execution_id=execution_id,
+        allow_safety_stop=(
+            report.physical_stop_confirmed is True
+            and report.status in _PHYSICAL_STOP_STATUSES
+        ),
+    )
     execution = await service.report_execution(
         authorized.node_id,
         authorized.token,
         execution_id,
-        ExecutionStatusReport(
-            status=payload.status,
-            pid=payload.pid,
-            process_group_id=payload.process_group_id,
-            exit_code=payload.exit_code,
-            executable_path=payload.executable_path,
-            tool_id=payload.tool_id,
-            tool_version=payload.tool_version,
-            platform_system=payload.platform_system,
-            platform_release=payload.platform_release,
-            platform_architecture=payload.platform_architecture,
-            process_created_at=payload.process_created_at,
-            physical_stop_confirmed=payload.physical_stop_confirmed,
-        ),
+        report,
     )
     return execution.model_dump(mode="json")
 
@@ -160,7 +184,11 @@ async def report_execution_status(
 @router.post(
     "/executions/{execution_id}/output",
     response_model=ExecutionOutputReportResponse,
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
 )
 async def report_execution_output(
     execution_id: str,
@@ -168,6 +196,11 @@ async def report_execution_output(
     service: RunnerControlServiceDependency,
     authorized: RunnerDependency,
 ) -> ExecutionOutputReportResponse:
+    await service.require_execution_callback_kind(
+        node_id=authorized.node_id,
+        principal=authorized.principal,
+        execution_id=execution_id,
+    )
     next_offset = await service.append_output(
         authorized.node_id,
         authorized.token,

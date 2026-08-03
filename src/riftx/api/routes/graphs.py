@@ -4,7 +4,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from ..dependencies import GraphServiceDependency, LocalPrincipalDependency
+from riftx.application.services.runs import require_general_run_operation
+
+from ..dependencies import (
+    AuthorizedRunReadDependency,
+    GraphServiceDependency,
+    LocalPrincipalDependency,
+)
 from ..schemas import ErrorResponse, GraphViewPage, GraphViewQuery
 
 router = APIRouter(prefix="/runs/{run_id}/graph", tags=["graphs"])
@@ -27,8 +33,10 @@ async def get_run_graph(
     run_id: str,
     service: GraphServiceDependency,
     principal: LocalPrincipalDependency,
+    authorized_run: AuthorizedRunReadDependency,
     query: Annotated[GraphViewQuery, Query()],
 ) -> GraphViewPage:
+    require_general_run_operation(authorized_run)
     return await service.get_view(
         run_id,
         principal=principal,

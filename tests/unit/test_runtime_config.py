@@ -157,6 +157,7 @@ def test_runner_bootstrap_canary_reaches_auth_boundary_without_repr_or_error_lea
         commands=object(),  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
         executions=object(),  # type: ignore[arg-type]
+        runs=object(),  # type: ignore[arg-type]
         paths=RunnerPaths(tmp_path / "runner"),
         registration_token=settings.runner_registration_token,
     )
@@ -183,6 +184,7 @@ def test_runner_bootstrap_canary_reaches_auth_boundary_without_repr_or_error_lea
             commands=object(),  # type: ignore[arg-type]
             nodes=object(),  # type: ignore[arg-type]
             executions=object(),  # type: ignore[arg-type]
+            runs=object(),  # type: ignore[arg-type]
             paths=RunnerPaths(tmp_path / "weak-runner"),
             registration_token="weak-bootstrap-token",
         )

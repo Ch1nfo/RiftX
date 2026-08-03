@@ -26,15 +26,15 @@
 ## Current Wave
 
 - Milestone: `M1 — Run kind, domain, and persistence`
-- Current task: `AUD-104 — API Skeleton and Policy`
-- Next dependency: `AUD-103` is complete; `AUD-104` is unblocked.
+- Current task: `AUD-105 — Artifact Access Foundation`
+- Next dependency: `AUD-104` is complete under ADR-0004; AUD-105 is the next unblocked task.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-103 complete; AUD-104 is the current unblocked task |
+| M1 Run kind, domain, and persistence | in_progress | AUD-100 through AUD-104 complete; AUD-105 is next |
 | M2 Preflight, Snapshot, and Scope Ledger | pending | Not started |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
@@ -63,9 +63,13 @@
 | AUD-101 Audit domain | completed |
 | AUD-102 ORM and repositories | completed |
 | AUD-103 AuditApplicationService | completed |
-| AUD-104 API skeleton and policy | pending |
+| AUD-104 API skeleton and policy | completed |
 | AUD-105 Artifact access foundation | pending |
 | AUD-106 RunKind workflow router | pending |
+
+AUD-105 must preserve ADR-0004 authorization ordering while adding Artifact access class, immutable
+Audit ownership, and descriptor-safe content reads. It may not relax the M1 generic-read allowlist or
+enable Audit execution before AUD-106 installs the workflow/effect router.
 
 ### M2
 
@@ -786,7 +790,7 @@
     Schema, Skill, runtime, endpoint, dependency, or generated artifact was used.
   - Production Code Audit Agent instructions: not applicable; AUD-103 contains no
     production Agent prompt or model call.
-- Commit: Introducing commit; hash will be backfilled by the AUD-104 ledger update.
+- Commit: `51fa06cb` (`feat(application): create Code Audit drafts atomically`).
 - Known limitations:
   - The Project natural-key gap race is covered by code reasoning and SQLite
     concurrency tests, but has not yet been reproduced with a real PostgreSQL barrier.
@@ -797,6 +801,155 @@
   - Preflight reservation, Snapshot/source ingest, StartIntent, API policy, Workflow,
     Detector/Agent analysis, findings, reports, and UI remain deliberately deferred.
 - Next unblocked task: AUD-104.
+
+### AUD-104 — API Skeleton and Policy
+
+- Status: completed.
+- Outcome:
+  - Accepted ADR-0004 and exposed only the M1 draft API:
+    `POST /api/v1/audits`, `GET /api/v1/audits`, and
+    `GET /api/v1/audits/{audit_id}`. Create is durable-write, draft-only, returns
+    `201` on first creation and `200` on exact replay, and remains fenced by the
+    default-disabled Feature Flag before replay lookup.
+  - Added strict request, filter, and positive-allowlist response schemas. M1 v1
+    contract-shaped proof/consent/selection values are explicitly synthetic,
+    untrusted, lack a Preflight binding, and cannot Start; AUD-201 owns the v2 wire.
+  - Derived request authorization identity from the authenticated principal on the
+    server. Principal-scoped request identity now binds caller payload plus the
+    server authorization domain without exposing that binding in the wire.
+  - Added typed raw Audit authorization bindings that exclude canonical Contract,
+    source path, workspace, and storage locators. Detail authorizes the raw binding
+    before loading the complete aggregate in one consistent-read session; list
+    pushes typed Engagement scope into SQL before stable ordering and pagination.
+  - Preserved the historical general Run response while adding an Audit-rooted,
+    discriminated Code Audit Run projection. Bare/orphan Code Audit Runs are not
+    returned, and the default Run list remains general-only.
+  - Standardized child reads as bounded owner resolution → Audit-root authorization
+    → M1 RunKind read admission → full object or I/O → exact child/owner revalidation
+    → safe projection. Missing, denied, post-authorization disappearance, and owner
+    mismatch use the same opaque `404 resource_not_accessible` envelope.
+  - Added the Code Audit Execution positive allowlist. Command, argv, executable,
+    cwd, environment, output paths, PID/process group, containment identity, and
+    host platform fingerprint cannot enter detail or list responses.
+  - Froze the M1 generic Code Audit read allowlist to Run, Event, Execution, and
+    Artifact. Finding, Report, Approval, Action, Graph, Run metrics, Target
+    HTTP/Traffic, Terminal, Browser, Context, Memory, and Connector facade routes
+    authorize the Audit root first and then return
+    `409 run_kind_operation_unsupported` before any content getter or I/O.
+  - Installed a temporary double RunKind effect bridge at API and Application
+    boundaries for Run controls, Finding, Artifact/Report, RUN Memory, Approval/Run
+    grant, Execution cancel, Terminal, Browser, Target HTTP, Connector, and Runner
+    execution callbacks. General Run behavior remains unchanged.
+  - Kept safety convergence reachable across Run kinds: stop sweeps, private
+    safety-close, cleanup, and authenticated owner-matched affirmative physical-stop
+    proof are not blocked by the temporary bridge. Code Audit completion cannot
+    signal the legacy `riftx-run-{run_id}` workflow.
+  - Removed the durable `execution.wait_completed` Event from the READ_ONLY wait
+    route. Feature-off reads of already authorized allowlisted objects and internal
+    cleanup/reconciliation remain registered and reachable.
+  - Added complete body-validation redaction for attacker-controlled mapping keys,
+    values, sequence values, unknown `loc` segments, `input`, message, and context
+    literals, plus OpenAPI contracts for stable 401/403/404/409/422/503 errors.
+- Files changed:
+  - Architecture and execution contract:
+    `docs/architecture/decisions/0003-riftx-code-audit-application-contract.md`,
+    `docs/architecture/decisions/0004-riftx-code-audit-api-authorization-contract.md`,
+    `docs/riftx-3-code-audit-development-spec.md`, and this ledger.
+  - Audit API and policy:
+    `src/riftx/api/{app,dependencies,errors,policy,runtime}.py`,
+    `src/riftx/api/routes/{__init__,audits,runs,events,executions,artifacts}.py`, and
+    `src/riftx/api/schemas/{__init__,audits,runs,executions}.py`.
+  - Generic read admission and mutation bridge:
+    the Action, Approval, Browser, Connector, Context, Finding, Graph, Memory,
+    Observability, Report, Runner-control, Terminal, Traffic, and related API routes;
+    Run, Approval, Artifact, Execution, Finding, Report, Runner-control, Terminal,
+    Browser, Connector, Context, Memory, Target HTTP, and Worker services.
+  - Authorization/persistence:
+    `src/riftx/application/errors.py`, affected modules under
+    `src/riftx/application/{ports,services}/`,
+    `src/riftx/persistence/{audit_uow,browser_repositories,context_repositories,memory_repositories,repositories}.py`,
+    and `src/riftx/security.py`.
+  - Primary new tests:
+    `tests/integration/api/test_audits.py`,
+    `tests/integration/api/test_audit_child_read_authorization.py`,
+    `tests/integration/api/test_run_kind_bridge.py`,
+    `tests/unit/application/test_run_kind_effect_bridge.py`, and
+    `tests/unit/models/test_audit_api_schemas.py`, plus affected Control Plane,
+    Application, Browser, Connector, Context, Memory, Runner, Runtime, Target HTTP,
+    policy, security, and configuration regressions.
+- Schema/migration impact:
+  - No Alembic revision or database table change. AUD-104 extends bounded raw-binding,
+    authorized aggregate, child-owner, Run grant, and scope-filter queries over the
+    AUD-100 through AUD-103 schema.
+- Security boundary impact:
+  - External callers can now create and read a Code Audit draft only when the
+    Feature Flag and typed authorization contract allow it. Draft creation performs
+    no Git/source access, realpath, Snapshot, mkdir, Temporal, Runner, model,
+    Artifact, network, or stop effect.
+  - Audit-root authorization is necessary but not treated as blanket permission to
+    expose generic child data. Denied objects are not hydrated; Artifact file/hash,
+    Runner output, Browser observation, Context Manifest, Memory content, Finding
+    Evidence, Report content link, Approval command/env, and other non-allowlisted
+    projections remain untouched before rejection.
+  - Existing safety stop and cleanup paths do not depend on `audit.enabled=true`.
+    Unknown Run kind/origin/operation remains fail-closed while AUD-106 builds the
+    versioned operation catalog and workflow router.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/api/test_audit_child_read_authorization.py tests/integration/api/test_actions_api.py tests/integration/api/test_graph_api.py tests/integration/api/test_traffic_api.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/api/dependencies.py src/riftx/api/routes/audits.py src/riftx/api/routes/executions.py src/riftx/api/routes/memories.py src/riftx/api/schemas/audits.py src/riftx/api/schemas/executions.py src/riftx/api/schemas/runs.py src/riftx/application/ports/audits.py src/riftx/application/services/audits.py src/riftx/memory/service.py src/riftx/persistence/audit_uow.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Final generic-read authorization/OpenAPI matrix passed: `91 passed`.
+  - The clean full Python rerun passed:
+    `3882 passed, 5 skipped, 11 warnings in 259.67s`. The first full run observed one
+    unchanged async reconciler observation race after terminal status became
+    visible; its two-case selector passed three consecutive independent reruns before
+    the clean full rerun.
+  - Repository Ruff passed with `All checks passed!`.
+  - Targeted Mypy passed with no issues in the 11 selected Audit/API/Memory/Execution
+    files. This is not a repository-wide Mypy claim; a wider touched-source probe
+    still reports legacy errors in `security.py` and `routes/runs.py`.
+  - Independence boundary reported `ready=true`: 9 dependency manifests, 460
+    production files, 0 explicit artifacts, and 0 violations.
+  - Executable release qualification reported `ready=true`; all 16 gates passed.
+    Eleven Python 3.12 `aiosqlite` datetime-adapter deprecations are non-blocking.
+  - `git diff --check` passed with no output.
+- Manual verification:
+  - Independent reviews covered effectful mutation bypasses, child authorization and
+    I/O ordering, response projection leakage, full-get disappearance, Runner owner
+    precedence, physical-stop convergence, and the exact M1 generic-read allowlist.
+  - Final contract decision is fail-closed: only Run/Event/Execution/Artifact are
+    generic Code Audit reads in M1. No remaining P0/P1/P2 was accepted as deferred
+    AUD-104 work; persistent RunnerCommand ownership is explicitly an AUD-106 design
+    dependency and Audit execution remains impossible until then.
+- Provenance:
+  - Requirements source: authoritative specification sections 4.4, 16.3-16.7, 20,
+    and section 22 / AUD-104; accepted ADR-0004.
+  - Implementation and primary test author: Codex task `/root`; Git author: Ch1nfo.
+    Independent reviews: `aud103_independent_review/effect_domain_routes`,
+    `aud104_child_read_security`, and `aud104_contract_review`.
+  - Third-party expressive material: none. No Codex Security Provider, code, Prompt,
+    Schema, Skill, runtime, endpoint, dependency, test, or generated artifact was
+    used. The implementation is RiftX-owned.
+  - Production Code Audit Agent instructions: not applicable; AUD-104 contains no
+    production Audit Agent prompt or model call.
+- Commit: Introducing commit; hash will be backfilled by the AUD-105 ledger update.
+- Known limitations / next contracts:
+  - AUD-105 must add Artifact audit ownership, access classes, trust/provenance, and
+    descriptor-safe bounded content delivery before restricted output can exist.
+  - AUD-106 must replace the temporary bridge with the machine-readable operation
+    catalog, RunWorkflowControlRouter, versioned immutable RunnerCommand ownership,
+    legacy quarantine/reconciliation, and Audit-owned control/approval/callback paths.
+  - M1 v1 drafts have no authoritative Preflight plan and can never Start. AUD-201
+    must create v2 drafts from server-owned Preflight/capability/consent facts rather
+    than upgrading v1 Contract assertions in place.
+  - PostgreSQL remains a contract-tested future runtime; AUD-104 adds no real
+    PostgreSQL authorization/concurrency execution evidence.
+- Next unblocked task: AUD-105.
 
 ## Design Deviations and ADRs
 
@@ -810,17 +963,23 @@
   request-level idempotency record, single-commit draft creation order, complete
   aggregate loader, centralized Audit↔Run state mapping, read-only control plans,
   Feature Flag admission order, and driver-error redaction implemented by AUD-103.
+- `ADR-0004`: freezes the M1 Audit API wire, typed raw-binding authorization,
+  scope-before-pagination, positive-allowlist projections, opaque child-read ordering,
+  strict generic-read allowlist, temporary double RunKind effect bridge, safety-stop
+  exceptions, Runner callback precedence, and Feature-Flag cleanup contract implemented
+  by AUD-104.
 
 ## Current Risks
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- Atomic draft creation now exists only behind the internal Application Service.
-  External Audit admission and execution remain unavailable until AUD-104 onward
-  adds API policy, signed preflight, SnapshotStore, Inventory, and the deterministic
-  slice.
+- External draft admission now exists behind the default-disabled Feature Flag and
+  ADR-0004 authorization boundary. It is deliberately non-executable: signed
+  Preflight, SnapshotStore, Inventory, the deterministic slice, and v2 draft creation
+  remain unavailable.
 - PostgreSQL remains a contract-tested future runtime, not a supported deployment;
   the current persistence concurrency evidence is authoritative for SQLite only, and
   the Project natural-key gap race still requires a real PostgreSQL barrier test.
 - AUD-106 must install the kind-aware mutation inventory, Workflow router, and
-  reconciliation boundary before any `code_audit` Run can execute.
+  reconciliation boundary before any `code_audit` Run can execute. Until then the M1
+  generic-read allowlist and temporary effect bridge must remain fail-closed.

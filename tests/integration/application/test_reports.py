@@ -1,8 +1,13 @@
 from pathlib import Path
 
+import pytest
+
+from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
     ArtifactApplicationService,
     GenerateReports,
+    RegisterArtifact,
+    RegisterArtifactContent,
     ReportApplicationService,
 )
 from riftx.domain import (
@@ -14,6 +19,7 @@ from riftx.domain import (
     Objective,
     ReportFormat,
     Run,
+    RunKind,
     RunStatus,
 )
 from riftx.persistence import (
@@ -27,6 +33,73 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
 )
 from riftx.runner import RunnerPaths
+
+
+async def test_code_audit_generic_artifact_and_report_mutations_are_side_effect_free(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-report-fence.db'}")
+    await database.create_schema()
+    engagements = SQLAlchemyEngagementRepository(database.session_factory)
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    executions = SQLAlchemyExecutionRepository(database.session_factory)
+    artifacts = SQLAlchemyArtifactRepository(database.session_factory)
+    findings = SQLAlchemyFindingRepository(database.session_factory)
+    reports = SQLAlchemyReportRepository(database.session_factory)
+    await engagements.create(Engagement(id="engagement-audit", name="Audit report fence"))
+    run = Run(
+        kind=RunKind.CODE_AUDIT,
+        id="audit-run",
+        engagement_id="engagement-audit",
+        node_id="local",
+        objective=Objective(description="Reject generic Artifact and Report"),
+        workspace_path=str(tmp_path / "audit-output"),
+    )
+    await runs.create(run)
+    runner_root = tmp_path / "runner-state"
+    artifact_service = ArtifactApplicationService(
+        run_repository=runs,
+        execution_repository=executions,
+        artifact_repository=artifacts,
+        event_repository=events,
+        paths=RunnerPaths(runner_root),
+    )
+    report_service = ReportApplicationService(
+        run_repository=runs,
+        finding_repository=findings,
+        artifact_repository=artifacts,
+        report_repository=reports,
+        event_repository=events,
+        artifact_service=artifact_service,
+    )
+    baseline_events = await events.list_after(run.id)
+
+    operations = (
+        artifact_service.register(
+            run.id,
+            RegisterArtifact(source_path="/sensitive/host/path-must-not-be-opened"),
+        ),
+        artifact_service.register_content(
+            run.id,
+            RegisterArtifactContent(
+                content=b"must not persist",
+                name="forged.txt",
+                mime_type="text/plain",
+            ),
+        ),
+        report_service.generate(run.id, GenerateReports(formats=[ReportFormat.JSON])),
+    )
+    for operation in operations:
+        with pytest.raises(ApplicationConflictError) as captured:
+            await operation
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    assert await artifacts.list(run.id) == []
+    assert await reports.list(run.id) == []
+    assert await events.list_after(run.id) == baseline_events
+    assert not runner_root.exists()
+    await database.dispose()
 
 
 async def test_report_service_generates_safe_linked_immutable_outputs(tmp_path: Path) -> None:

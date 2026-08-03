@@ -139,6 +139,14 @@ class SQLAlchemyArtifactRepository:
             raise RepositoryConflictError(f"could not create artifact {artifact.id!r}") from exc
         return artifact
 
+    async def get_run_id(self, artifact_id: str) -> str | None:
+        statement = select(ArtifactRecord.run_id).where(
+            ArtifactRecord.id == artifact_id,
+            artifact_is_not_target_http_sensitive(),
+        )
+        async with self._session_factory() as session:
+            return await session.scalar(statement)
+
     async def get(self, artifact_id: str) -> Artifact | None:
         statement = select(ArtifactRecord).where(
             ArtifactRecord.id == artifact_id,
@@ -601,6 +609,13 @@ class SQLAlchemyRunRepository:
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not create run {run.id!r}") from exc
         return run
+
+    async def get_kind(self, run_id: str) -> RunKind | None:
+        async with self._session_factory() as session:
+            value = await session.scalar(
+                select(RunRecord.kind).where(RunRecord.id == run_id)
+            )
+        return RunKind(value) if value is not None else None
 
     async def get(self, run_id: str) -> Run | None:
         async with self._session_factory() as session:
@@ -1539,6 +1554,12 @@ class SQLAlchemyFindingRepository:
             raise RepositoryConflictError(f"could not create finding {finding.id!r}") from exc
         return authoritative
 
+    async def get_run_id(self, finding_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(FindingRecord.run_id).where(FindingRecord.id == finding_id)
+            )
+
     async def get(self, finding_id: str) -> Finding | None:
         async with self._session_factory() as session:
             record = await session.get(FindingRecord, finding_id)
@@ -1614,6 +1635,12 @@ class SQLAlchemyReportRepository:
         except IntegrityError as exc:
             raise RepositoryConflictError(f"could not create report {report.id!r}") from exc
         return report
+
+    async def get_run_id(self, report_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(ReportRecord.run_id).where(ReportRecord.id == report_id)
+            )
 
     async def get(self, report_id: str) -> Report | None:
         async with self._session_factory() as session:
@@ -2057,6 +2084,14 @@ class SQLAlchemyTerminalRepository:
             ) from exc
         return terminal
 
+    async def get_run_id(self, session_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(TerminalSessionRecord.run_id).where(
+                    TerminalSessionRecord.id == session_id
+                )
+            )
+
     async def get(self, session_id: str) -> TerminalSession | None:
         async with self._session_factory() as session:
             record = await session.get(TerminalSessionRecord, session_id)
@@ -2428,6 +2463,12 @@ class SQLAlchemyExecutionRepository:
                 _validate_execution_duplicate(existing, execution)
                 return existing, False
             raise RepositoryConflictError(f"could not create execution {execution.id!r}") from exc
+
+    async def get_run_id(self, execution_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(ExecutionRecord.run_id).where(ExecutionRecord.id == execution_id)
+            )
 
     async def get(self, execution_id: str) -> Execution | None:
         async with self._session_factory() as session:

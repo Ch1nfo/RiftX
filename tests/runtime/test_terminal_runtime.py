@@ -21,6 +21,7 @@ from riftx.domain import (
     ExecutorType,
     Objective,
     Run,
+    RunKind,
     RunStatus,
     TerminalOwner,
     TerminalSession,
@@ -179,6 +180,67 @@ class RunControlWorkflow:
 
     async def cancel(self, run_id: str) -> None:
         return None
+
+
+async def test_code_audit_terminal_mutations_fail_before_supervisor_effects(
+    tmp_path: Path,
+) -> None:
+    run = Run(
+        kind=RunKind.CODE_AUDIT,
+        id="audit-run",
+        engagement_id="engagement-1",
+        node_id="local",
+        objective=Objective(description="Code Audit terminal fence"),
+        workspace_path=str(tmp_path / "audit-output"),
+    )
+    terminal = TerminalSession(
+        id="audit-terminal",
+        run_id=run.id,
+        execution_id="audit-execution",
+        runner_id="local",
+        cwd=str(tmp_path),
+    )
+
+    class _Runs:
+        async def get(self, run_id: str) -> Run | None:
+            return run if run_id == run.id else None
+
+    class _Supervisor:
+        def __init__(self) -> None:
+            self.effects: list[str] = []
+
+        async def get(self, session_id: str) -> TerminalSession:
+            assert session_id == terminal.id
+            return terminal
+
+        def __getattr__(self, name: str):
+            async def effect(*_: object, **__: object) -> object:
+                self.effects.append(name)
+                raise AssertionError(f"terminal effect {name} must not be called")
+
+            return effect
+
+    supervisor = _Supervisor()
+    service = TerminalApplicationService(
+        run_repository=_Runs(),  # type: ignore[arg-type]
+        supervisor=supervisor,  # type: ignore[arg-type]
+    )
+    operations = (
+        service.create(run.id, CreateTerminal(argv=["sh", "-c", "touch forbidden"])),
+        service.write(terminal.id, b"forbidden", actor=TerminalOwner.USER),
+        service.resize(terminal.id, cols=80, rows=24),
+        service.interrupt(terminal.id, actor=TerminalOwner.USER),
+        service.take_over(terminal.id),
+        service.release(terminal.id),
+        service.close(terminal.id),
+    )
+
+    for operation in operations:
+        with pytest.raises(ApplicationConflictError) as captured:
+            await operation
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    assert supervisor.effects == []
 
 
 async def test_materialized_terminal_launch_is_built_once_and_reused(

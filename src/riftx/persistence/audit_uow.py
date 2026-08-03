@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import Select, and_, or_, select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,8 +23,11 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import (
     AuditAggregate,
+    AuditAuthorizationBinding,
+    AuditBindingAuthorizer,
     AuditDraftAggregateFactory,
     AuditDraftCreationEnvelope,
+    AuditEngagementScope,
     StoredAuditEntity,
 )
 from riftx.domain import (
@@ -89,6 +92,7 @@ class _AuditFactoryIdentity:
     request_digest: str
     repository_identity_digest: str
     authorization_reference: str
+    authorized_engagement_scope: AuditEngagementScope
     requested_engagement_id: str | None
     workspace_root: str
     source_repository_path: str
@@ -120,6 +124,7 @@ def _validate_factory_identity(
         request_digest = factory.request_digest
         repository_digest = factory.repository_identity_digest
         authorization_digest = factory.authorization_reference
+        authorized_scope = factory.authorized_engagement_scope
         requested_engagement_id = factory.requested_engagement_id
         workspace_root = factory.workspace_root
         source_path = factory.source_repository_path
@@ -144,6 +149,7 @@ def _validate_factory_identity(
         or not isinstance(authorization_digest, str)
         or len(authorization_digest) != 64
         or any(character not in "0123456789abcdef" for character in authorization_digest)
+        or not isinstance(authorized_scope, AuditEngagementScope)
         or not isinstance(workspace_root, str)
         or not isinstance(source_path, str)
         or not source_path
@@ -177,6 +183,7 @@ def _validate_factory_identity(
         request_digest=request_digest,
         repository_identity_digest=repository_digest,
         authorization_reference=authorization_digest,
+        authorized_engagement_scope=authorized_scope,
         requested_engagement_id=requested_engagement_id,
         workspace_root=workspace_root,
         source_repository_path=source_path,
@@ -544,6 +551,8 @@ def _require_authorized_engagement(
     identity: _AuditFactoryIdentity,
 ) -> None:
     if (
+        not identity.authorized_engagement_scope.permits(engagement.id)
+        or
         engagement.authorization_reference is None
         or not hmac.compare_digest(
             engagement.authorization_reference,
@@ -590,6 +599,10 @@ async def _resolve_project(
         return project, engagement
 
     if identity.requested_engagement_id is not None:
+        if not identity.authorized_engagement_scope.permits(
+            identity.requested_engagement_id
+        ):
+            _opaque_conflict("Audit Engagement is outside the authorized scope")
         engagement_bundle = await _validated_engagement(
             session,
             identity.requested_engagement_id,
@@ -600,6 +613,8 @@ async def _resolve_project(
         engagement = engagement_bundle[1]
         _require_authorized_engagement(engagement, identity)
     else:
+        if not identity.authorized_engagement_scope.can_create_engagement:
+            _opaque_conflict("Audit Engagement creation is outside the authorized scope")
         try:
             engagement = Engagement.model_validate(factory.build_engagement())
         except (AttributeError, TypeError, ValueError, OverflowError):
@@ -780,6 +795,7 @@ class SQLAlchemyAuditCreationUnitOfWork:
                         for_update=True,
                     )
                     if existing is not None:
+                        _require_authorized_engagement(existing.engagement, identity)
                         return existing, False
                     project, engagement = await _resolve_project(
                         session,
@@ -834,6 +850,7 @@ class SQLAlchemyAuditCreationUnitOfWork:
                         for_update=False,
                     )
                     if existing is not None:
+                        _require_authorized_engagement(existing.engagement, identity)
                         return existing, False
             except SQLAlchemyError:
                 recovery_failure = True
@@ -843,6 +860,153 @@ class SQLAlchemyAuditCreationUnitOfWork:
                 _opaque_conflict("Audit draft could not be created after a concurrent conflict")
 
         raise AssertionError("unreachable Audit creation retry state")
+
+
+async def _read_audit_authorization_binding(
+    session: AsyncSession,
+    audit_id: str,
+) -> AuditAuthorizationBinding | None:
+    """Read only raw owner columns; never select canonical Contract content."""
+
+    statement = (
+        select(
+            AuditScanRecord.id,
+            AuditScanRecord.run_id,
+            AuditScanRecord.project_id,
+            AuditScanRecord.engagement_id,
+            AuditScanRecord.contract_id,
+            AuditScanRecord.contract_digest,
+            RunRecord.id,
+            RunRecord.engagement_id,
+            RunRecord.kind,
+            AuditProjectRecord.id,
+            AuditProjectRecord.engagement_id,
+            EngagementRecord.id,
+            AuditContractORMRecord.contract_id,
+            AuditContractORMRecord.audit_id,
+            AuditContractORMRecord.contract_digest,
+            AuditClientRequestRecord.audit_id,
+            AuditClientRequestRecord.run_id,
+            AuditClientRequestRecord.project_id,
+            AuditClientRequestRecord.engagement_id,
+            AuditClientRequestRecord.contract_id,
+            AuditClientRequestRecord.contract_digest,
+        )
+        .select_from(AuditScanRecord)
+        .outerjoin(RunRecord, RunRecord.id == AuditScanRecord.run_id)
+        .outerjoin(AuditProjectRecord, AuditProjectRecord.id == AuditScanRecord.project_id)
+        .outerjoin(
+            EngagementRecord,
+            EngagementRecord.id == AuditProjectRecord.engagement_id,
+        )
+        .outerjoin(
+            AuditContractORMRecord,
+            AuditContractORMRecord.contract_id == AuditScanRecord.contract_id,
+        )
+        .outerjoin(
+            AuditClientRequestRecord,
+            AuditClientRequestRecord.audit_id == AuditScanRecord.id,
+        )
+        .where(AuditScanRecord.id == audit_id)
+        .limit(2)
+    )
+    rows = (await session.execute(statement)).all()
+    if len(rows) > 1:
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            audit_id,
+            reason_code="ambiguous_authorization_binding",
+        )
+    if not rows:
+        return None
+    row = rows[0]
+    return AuditAuthorizationBinding(
+        requested_audit_id=audit_id,
+        audit_id=row[0],
+        scan_run_id=row[1],
+        scan_project_id=row[2],
+        scan_engagement_id=row[3],
+        scan_contract_id=row[4],
+        scan_contract_digest=row[5],
+        run_id=row[6],
+        run_engagement_id=row[7],
+        run_kind=row[8],
+        project_id=row[9],
+        project_engagement_id=row[10],
+        engagement_id=row[11],
+        contract_id=row[12],
+        contract_audit_id=row[13],
+        contract_digest=row[14],
+        request_audit_id=row[15],
+        request_run_id=row[16],
+        request_project_id=row[17],
+        request_engagement_id=row[18],
+        request_contract_id=row[19],
+        request_contract_digest=row[20],
+    )
+
+
+def _require_aggregate_matches_authorized_binding(
+    aggregate: AuditAggregate,
+    binding: AuditAuthorizationBinding,
+) -> None:
+    scan = aggregate.audit.value
+    contract = aggregate.contract.value
+    project = aggregate.project.value
+    actual = (
+        scan.id,
+        scan.run_id,
+        scan.project_id,
+        scan.contract_id,
+        scan.contract_digest,
+        aggregate.run.id,
+        aggregate.run.engagement_id,
+        aggregate.run.kind.value,
+        project.id,
+        project.engagement_id,
+        aggregate.engagement.id,
+        contract.contract_id,
+        contract.audit_id,
+        contract.contract_digest,
+        aggregate.client_request.audit_id,
+        aggregate.client_request.run_id,
+        aggregate.client_request.project_id,
+        aggregate.client_request.engagement_id,
+        aggregate.client_request.contract_id,
+        aggregate.client_request.contract_digest,
+    )
+    expected = (
+        binding.audit_id,
+        binding.scan_run_id,
+        binding.scan_project_id,
+        binding.scan_contract_id,
+        binding.scan_contract_digest,
+        binding.run_id,
+        binding.run_engagement_id,
+        binding.run_kind,
+        binding.project_id,
+        binding.project_engagement_id,
+        binding.engagement_id,
+        binding.contract_id,
+        binding.contract_audit_id,
+        binding.contract_digest,
+        binding.request_audit_id,
+        binding.request_run_id,
+        binding.request_project_id,
+        binding.request_engagement_id,
+        binding.request_contract_id,
+        binding.request_contract_digest,
+    )
+    if actual != expected:
+        raise RepositoryIntegrityError(
+            "AuditScan",
+            binding.requested_audit_id,
+            reason_code="authorized_binding_changed",
+        )
+
+
+class _AuditFilterMismatch(RuntimeError):
+    """Internal signal used to preserve the pre-authorization legacy read API."""
 
 
 class SQLAlchemyAuditAggregateReadRepository:
@@ -856,15 +1020,77 @@ class SQLAlchemyAuditAggregateReadRepository:
         project_id: str | None = None,
         engagement_id: str | None = None,
     ) -> AuditAggregate | None:
-        async with consistent_read(self._session_factory) as session:
-            aggregate = await _read_aggregate(session, audit_id)
-            if aggregate is None:
-                return None
-            if project_id is not None and aggregate.project.value.id != project_id:
-                return None
-            if engagement_id is not None and aggregate.engagement.id != engagement_id:
-                return None
-            return aggregate
+        def authorize_filter(binding: AuditAuthorizationBinding) -> None:
+            if (
+                project_id is not None and binding.project_id != project_id
+            ) or (
+                engagement_id is not None and binding.engagement_id != engagement_id
+            ):
+                raise _AuditFilterMismatch
+
+        try:
+            return await self.get_authorized(audit_id, authorize=authorize_filter)
+        except _AuditFilterMismatch:
+            return None
+
+    async def get_authorized(
+        self,
+        audit_id: str,
+        *,
+        authorize: AuditBindingAuthorizer,
+    ) -> AuditAggregate | None:
+        try:
+            async with consistent_read(self._session_factory) as session:
+                binding = await _read_audit_authorization_binding(session, audit_id)
+                if binding is None:
+                    return None
+                authorize(binding)
+                aggregates = await _read_aggregates(session, (binding.audit_id,))
+                aggregate = aggregates[0]
+                _require_aggregate_matches_authorized_binding(aggregate, binding)
+                return aggregate
+        except SQLAlchemyError:
+            _database_unavailable()
+
+    async def get_by_run_authorized(
+        self,
+        run_id: str,
+        *,
+        authorize: AuditBindingAuthorizer,
+    ) -> AuditAggregate | None:
+        """Authorize raw owner columns before parsing the Audit aggregate."""
+
+        try:
+            async with consistent_read(self._session_factory) as session:
+                audit_ids = (
+                    await session.scalars(
+                        select(AuditScanRecord.id)
+                        .where(AuditScanRecord.run_id == run_id)
+                        .limit(2)
+                    )
+                ).all()
+                if len(audit_ids) > 1:
+                    raise RepositoryIntegrityError(
+                        "AuditScan",
+                        run_id,
+                        reason_code="ambiguous_run_authorization_binding",
+                    )
+                if not audit_ids:
+                    return None
+                binding = await _read_audit_authorization_binding(session, audit_ids[0])
+                if binding is None:
+                    raise RepositoryIntegrityError(
+                        "AuditScan",
+                        audit_ids[0],
+                        reason_code="authorization_binding_disappeared",
+                    )
+                authorize(binding)
+                aggregates = await _read_aggregates(session, (binding.audit_id,))
+                aggregate = aggregates[0]
+                _require_aggregate_matches_authorized_binding(aggregate, binding)
+                return aggregate
+        except SQLAlchemyError:
+            _database_unavailable()
 
     async def list(
         self,
@@ -874,6 +1100,44 @@ class SQLAlchemyAuditAggregateReadRepository:
         engagement_id: str | None = None,
         lifecycle_status: AuditLifecycleStatus | None = None,
         mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Sequence[AuditAggregate]:
+        scope = (
+            AuditEngagementScope(
+                all_engagements=False,
+                engagement_ids=frozenset({engagement_id}),
+                can_create_engagement=False,
+            )
+            if engagement_id is not None
+            else AuditEngagementScope.profile_a()
+        )
+        return await self.list_authorized(
+            authorized_scope=scope,
+            run_id=run_id,
+            project_id=project_id,
+            lifecycle_status=lifecycle_status,
+            mode=mode,
+            run_status=run_status,
+            created_from=created_from,
+            created_to=created_to,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def list_authorized(
+        self,
+        *,
+        authorized_scope: AuditEngagementScope,
+        run_id: str | None = None,
+        project_id: str | None = None,
+        engagement_id: str | None = None,
+        lifecycle_status: AuditLifecycleStatus | None = None,
+        mode: AuditMode | None = None,
+        run_status: RunStatus | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 50,
@@ -881,25 +1145,37 @@ class SQLAlchemyAuditAggregateReadRepository:
     ) -> Sequence[AuditAggregate]:
         _validate_page(limit=limit, offset=offset)
         _validate_created_range(created_from, created_to)
-        statement: Select[tuple[AuditScanRecord]] = select(AuditScanRecord)
+        if not isinstance(authorized_scope, AuditEngagementScope):
+            raise TypeError("authorized_scope must be AuditEngagementScope")
+        statement = (
+            select(AuditScanRecord.id)
+            .outerjoin(
+                AuditProjectRecord,
+                AuditProjectRecord.id == AuditScanRecord.project_id,
+            )
+            .outerjoin(
+                RunRecord,
+                RunRecord.id == AuditScanRecord.run_id,
+            )
+        )
+        if not authorized_scope.all_engagements:
+            if not authorized_scope.engagement_ids:
+                return ()
+            statement = statement.where(
+                AuditProjectRecord.engagement_id.in_(authorized_scope.engagement_ids)
+            )
         if run_id is not None:
             statement = statement.where(AuditScanRecord.run_id == run_id)
         if project_id is not None:
             statement = statement.where(AuditScanRecord.project_id == project_id)
         if engagement_id is not None:
-            statement = statement.outerjoin(
-                AuditProjectRecord,
-                AuditProjectRecord.id == AuditScanRecord.project_id,
-            ).where(
-                or_(
-                    AuditScanRecord.engagement_id == engagement_id,
-                    AuditProjectRecord.engagement_id == engagement_id,
-                )
-            )
+            statement = statement.where(AuditProjectRecord.engagement_id == engagement_id)
         if lifecycle_status is not None:
             statement = statement.where(AuditScanRecord.lifecycle_status == lifecycle_status.value)
         if mode is not None:
             statement = statement.where(AuditScanRecord.mode == mode.value)
+        if run_status is not None:
+            statement = statement.where(RunRecord.status == run_status.value)
         if created_from is not None:
             statement = statement.where(AuditScanRecord.created_at >= created_from)
         if created_to is not None:
@@ -912,9 +1188,12 @@ class SQLAlchemyAuditAggregateReadRepository:
             .limit(limit)
             .offset(offset)
         )
-        async with consistent_read(self._session_factory) as session:
-            records = (await session.scalars(statement)).all()
-            return await _read_aggregates(session, [record.id for record in records])
+        try:
+            async with consistent_read(self._session_factory) as session:
+                audit_ids = (await session.scalars(statement)).all()
+                return await _read_aggregates(session, audit_ids)
+        except SQLAlchemyError:
+            _database_unavailable()
 
 
 __all__ = [

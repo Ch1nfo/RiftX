@@ -98,6 +98,8 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
@@ -350,6 +352,7 @@ class RuntimeFixture:
     report_repository: SQLAlchemyReportRepository
     run_repository: SQLAlchemyRunRepository
     execution_repository: SQLAlchemyExecutionRepository
+    event_repository: SQLAlchemyRunEventRepository
     terminal_repository: SQLAlchemyTerminalRepository
 
 
@@ -482,6 +485,7 @@ tools:
         commands=runner_command_repository,
         nodes=node_service,
         executions=execution_repository,
+        runs=run_repository,
         paths=runner_paths,
         registration_token=settings.runner_registration_token,
         terminals=terminal_repository,
@@ -522,7 +526,14 @@ tools:
                 execution_cancel_timeout_seconds=0.2,
                 execution_cancel_poll_seconds=0.01,
             ),
-            audit_service=object(),  # type: ignore[arg-type]
+            audit_service=AuditApplicationService(
+                creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
+                aggregate_repository=SQLAlchemyAuditAggregateReadRepository(
+                    database.session_factory
+                ),
+                feature_enabled=settings.audit.enabled,
+                workspace_root=settings.audit.temp_root,
+            ),
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),
                 authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
@@ -567,7 +578,10 @@ tools:
             ),
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
-            memory_service=MemoryService(memory_repository),
+            memory_service=MemoryService(
+                memory_repository,
+                run_repository=run_repository,
+            ),
             runtime_observability_service=RuntimeObservabilityService(
                 SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
             ),
@@ -597,6 +611,7 @@ tools:
         report_repository=report_repository,
         run_repository=run_repository,
         execution_repository=execution_repository,
+        event_repository=event_repository,
         terminal_repository=terminal_repository,
     )
 
@@ -708,10 +723,9 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 params={"kind": "code_audit"},
             )
             assert listed_audits.status_code == 200
-            assert [item["id"] for item in listed_audits.json()["items"]] == [
-                audit_run.id
-            ]
-            assert listed_audits.json()["items"][0]["kind"] == "code_audit"
+            # A bare code_audit Run is not an authorized Audit aggregate and
+            # must never become visible through the generic Run projection.
+            assert listed_audits.json()["items"] == []
 
             combined_filter = await client.get(
                 "/api/v1/runs",
@@ -1603,9 +1617,9 @@ async def test_unified_errors_and_temporal_outage(tmp_path: Path) -> None:
             assert missing.status_code == 404
             assert missing.json() == {
                 "error": {
-                    "code": "run_not_found",
-                    "message": "Run 'missing' was not found",
-                    "details": {"entity": "Run", "entity_id": "missing"},
+                    "code": "resource_not_accessible",
+                    "message": "The requested resource was not found",
+                    "details": {},
                 }
             }
 
@@ -2467,7 +2481,7 @@ async def test_terminal_rest_lifecycle_and_start_failure(tmp_path: Path) -> None
 
             missing = await client.get("/api/v1/terminals/missing")
             assert missing.status_code == 404
-            assert missing.json()["error"]["code"] == "terminal_session_not_found"
+            assert missing.json()["error"]["code"] == "resource_not_accessible"
 
             failed = await client.post(
                 f"/api/v1/runs/{run['id']}/terminals",
@@ -2651,7 +2665,7 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
             ) as websocket:
                 error = websocket.receive_json()
                 assert error["type"] == "error"
-                assert error["code"] == "terminal_session_not_found"
+                assert error["code"] == "resource_not_accessible"
     finally:
         asyncio.run(runtime.control_plane.close())
 
@@ -4937,6 +4951,7 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             execution.transition_to(ExecutionStatus.RUNNING)
             execution.transition_to(ExecutionStatus.EXITED, exit_code=0)
             await runtime.execution_repository.create_if_absent(execution)
+            events_before_wait = await runtime.event_repository.list_after(run_id)
 
             listed = await client.get(f"/api/v1/runs/{run_id}/executions")
             fetched = await client.get(f"/api/v1/executions/{execution.id}")
@@ -4961,6 +4976,8 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             assert waited.json()["wait_status"] == "execution_completed"
             assert waited.json()["execution_status"] == "exited"
             assert waited.json()["partial_output"] == "hellodiagn"
+            events_after_wait = await runtime.event_repository.list_after(run_id)
+            assert events_after_wait == events_before_wait
             assert output.status_code == 200
             assert output.json()["stdout"]["data"] == "aGVsbG8="
             assert output.json()["stdout"]["next_cursor"] == 5
