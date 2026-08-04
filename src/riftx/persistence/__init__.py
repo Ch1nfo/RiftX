@@ -39,6 +39,7 @@ from .browser_repositories import SQLAlchemyBrowserRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
 from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
+from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .orm import Base
 from .repositories import (
@@ -99,6 +100,7 @@ __all__ = [
     "SQLAlchemyFindingRepository",
     "GraphReadLimits",
     "SQLAlchemyGraphReadRepository",
+    "SQLAlchemyLocalAuditJobRepository",
     "SQLAlchemyNodeRepository",
     "SQLAlchemyProviderStateRepository",
     "SQLAlchemyReportRepository",

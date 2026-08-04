@@ -57,6 +57,7 @@ EXPECTED_TABLES = {
     "engagement_facts",
     "executions",
     "findings",
+    "local_audit_jobs",
     "fact_relations",
     "memories",
     "nodes",

@@ -34,7 +34,7 @@ from riftx.persistence.orm import Base
 
 BASE_REVISION = "4f9a6c1d2e30"
 PREFLIGHT_REVISION = "2b7d9e4a6c10"
-HEAD_REVISION = "d0b4e6f8a102"
+HEAD_REVISION = "6e4a2c9f1b30"
 EARLIEST_REVISION = "2f14cbcea74b"
 PREFLIGHT_TABLES = {
     "audit_preflight_jobs",

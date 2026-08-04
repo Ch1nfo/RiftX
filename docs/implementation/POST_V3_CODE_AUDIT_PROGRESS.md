@@ -31,14 +31,14 @@
 
 ## Current Wave
 
-- Milestone: `S3 — Findings and reports` is `in_progress`.
-- Completed task: `AUD-S301 — JSON/Markdown Report`.
+- Milestone: `S4 — Local product wiring` is `in_progress`.
+- Completed task: `AUD-S400 — Local Audit Job`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S400 — Local Audit Job`.
+- Next task: `AUD-S401 — Minimal API and CLI`.
 
 ## Milestone Status
 
@@ -48,7 +48,7 @@
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
 | S3 Findings and reports | completed | stable redacted Findings and deterministic JSON/Markdown reports completed with full regression evidence |
-| S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
+| S4 Local product wiring | in_progress | durable single-machine Audit Job is complete; minimal API/CLI and WebUI remain |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
 
 ## Task Status
@@ -64,7 +64,7 @@
 | AUD-S202 Built-in security rules | completed |
 | AUD-S300 Signal normalization and Finding | completed |
 | AUD-S301 JSON/Markdown Report | completed |
-| AUD-S400 Local Audit Job | pending |
+| AUD-S400 Local Audit Job | completed |
 | AUD-S401 Minimal API and CLI | pending |
 | AUD-S402 Minimal WebUI | pending |
 | AUD-S500 Local-folder end-to-end acceptance | pending |
@@ -2485,8 +2485,67 @@ individual operation families.
   - Audit unit regression: `202 passed`;
   - full repository suite: `4894 passed, 5 skipped, 12 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `36003a22 feat(code-audit): add deterministic audit reports`.
 - Next unblocked task: `AUD-S400 — Local Audit Job`.
+
+### AUD-S400 — Local Audit Job
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/jobs.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/persistence/local_audit_jobs.py`
+  - `src/riftx/persistence/orm.py`
+  - `src/riftx/persistence/__init__.py`
+  - `migrations/versions/6e4a2c9f1b30_add_local_audit_jobs.py`
+  - `tests/integration/persistence/test_local_audit_job_repository.py`
+  - `tests/integration/persistence/test_local_audit_job_migration.py`
+  - persistence migration-head and metadata tests updated for the new revision/table
+  - this ledger
+- Outcome:
+  - added the simplified `draft -> queued -> scanning -> completed|failed|cancelled`
+    lifecycle with idempotent start, durable status, stable failure codes and terminal
+    convergence;
+  - added a trusted same-machine Worker that composes local path admission, stable
+    Snapshot publication, Inventory, built-in Detector execution, Finding normalization
+    and deterministic JSON/Markdown reporting without Docker, another host, subprocesses,
+    plugins or target-code execution;
+  - persists the completed read model, Findings and reports in SQLite so terminal state
+    and results remain readable after process restart;
+  - restart reconciliation converts abandoned scanning Jobs to stable `failed` or
+    `cancelled` outcomes while leaving queued work available for local dispatch;
+  - cancellation uses a durable request flag, the Detector publication fence and an
+    atomic terminal write, so a cancellation race cannot publish late Findings;
+  - source paths remain private persistence inputs and are excluded from Job repr,
+    Findings and reports; the original selected folder is unchanged by the scan.
+- Schema/migration impact:
+  - added Alembic revision `6e4a2c9f1b30` and the independent `local_audit_jobs` table;
+  - the table contains only the simplified local lifecycle and final read model, with no
+    remote Node, Runner, Docker, Agent, validation, fix or release relationships;
+  - downgrade refuses to discard durable local Job facts and preserves the existing
+    lower-revision loss guards before any cross-boundary DDL.
+- Security boundary impact:
+  - the Worker only reads an admitted local directory through held no-follow descriptors,
+    copies selected bytes into RiftX-owned private staging/CAS, then scans the sealed copy;
+  - no target Git command, Hook, helper, package manager, build, test, shell, network call,
+    executable, plugin or repository module is invoked;
+  - failed exceptions converge to path-free stable codes, and reports contain only
+    relative paths plus redacted evidence.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s400-focused-2 tests/integration/persistence/test_local_audit_job_repository.py tests/integration/persistence/test_local_audit_job_migration.py tests/unit/persistence/test_schema.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s400-audit tests/unit/audit`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s400-persistence-final tests/integration/persistence tests/unit/persistence`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s400-full-final`
+  - `git diff --check`
+- Test results:
+  - focused local Job/migration/schema suite: `23 passed`;
+  - Audit unit regression: `202 passed`;
+  - persistence regression: `496 passed, 10 warnings`;
+  - full repository suite: `4899 passed, 5 skipped, 11 warnings`;
+  - Ruff passed; whitespace check is run immediately before commit.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S401 — Minimal API and CLI`.
 
 ## Design Deviations and ADRs
 
@@ -2544,14 +2603,11 @@ individual operation families.
 
 ## Current Risks
 
-- The simplified end-to-end local scan is not implemented yet. Existing RunKind,
-  Snapshot seal, Inventory and Scope foundations are not by themselves a user-visible
-  scanner.
-- Built-in security rules, Finding normalization, reports and local job/API/UI wiring
-  remain unimplemented.
+- The local Job is not user-visible yet. API/CLI dispatch, startup recovery wiring,
+  Findings/report endpoints and the minimal WebUI remain in AUD-S401/AUD-S402.
+- Product configuration must supply explicit allowed source roots and disjoint private
+  staging/Snapshot paths when AUD-S401 wires the Job service into the running app.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
-- Built-in rule work must preserve the fixed metadata, bounded output, deterministic
-  ordering and cancel fence without adding plugin or target-execution surfaces.
 - The private RiftX state root must not be writable by the audited project or any
   target-controlled process.

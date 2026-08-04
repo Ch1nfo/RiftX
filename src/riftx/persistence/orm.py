@@ -236,6 +236,105 @@ class EngagementRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class LocalAuditJobRecord(Base):
+    __tablename__ = "local_audit_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'queued', 'scanning', 'completed', 'failed', 'cancelled')",
+            name="ck_local_audit_jobs_status",
+        ),
+        CheckConstraint(
+            "state_version >= 1",
+            name="ck_local_audit_jobs_state_version",
+        ),
+        CheckConstraint(
+            "total_files >= 0 AND scanned_files >= 0 AND finding_count >= 0 "
+            "AND scanned_files <= total_files",
+            name="ck_local_audit_jobs_nonnegative_counts",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("source_identity_digest"),
+            name="ck_local_audit_jobs_source_identity_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("snapshot_digest"),
+            name="ck_local_audit_jobs_snapshot_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("manifest_digest"),
+            name="ck_local_audit_jobs_manifest_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("inventory_digest"),
+            name="ck_local_audit_jobs_inventory_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("detector_run_digest"),
+            name="ck_local_audit_jobs_detector_run_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("report_digest"),
+            name="ck_local_audit_jobs_report_digest",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND source_identity_digest IS NOT NULL "
+            "AND snapshot_digest IS NOT NULL AND manifest_digest IS NOT NULL "
+            "AND inventory_digest IS NOT NULL AND detector_run_digest IS NOT NULL "
+            "AND report_digest IS NOT NULL AND json_report IS NOT NULL "
+            "AND markdown_report IS NOT NULL AND scanned_files = total_files "
+            "AND failure_code IS NULL AND finished_at IS NOT NULL) OR status <> 'completed'",
+            name="ck_local_audit_jobs_completed_result",
+        ),
+        CheckConstraint(
+            "(status = 'failed' AND failure_code IS NOT NULL AND finished_at IS NOT NULL) "
+            "OR status <> 'failed'",
+            name="ck_local_audit_jobs_failed_result",
+        ),
+        CheckConstraint(
+            "(status = 'cancelled' AND finished_at IS NOT NULL) OR status <> 'cancelled'",
+            name="ck_local_audit_jobs_cancelled_result",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_local_audit_jobs_timestamp_order",
+        ),
+        Index(
+            "ix_local_audit_jobs_status_created_id",
+            "status",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    include_paths_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    exclude_paths_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    failure_code: Mapped[str | None] = mapped_column(String(128))
+    source_identity_digest: Mapped[str | None] = mapped_column(String(64))
+    snapshot_digest: Mapped[str | None] = mapped_column(String(64))
+    manifest_digest: Mapped[str | None] = mapped_column(String(64))
+    inventory_digest: Mapped[str | None] = mapped_column(String(64))
+    detector_run_digest: Mapped[str | None] = mapped_column(String(64))
+    report_digest: Mapped[str | None] = mapped_column(String(64))
+    total_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanned_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    json_report: Mapped[str | None] = mapped_column(Text)
+    markdown_report: Mapped[str | None] = mapped_column(Text)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class RunRecord(Base):
     __tablename__ = "runs"
     __table_args__ = (
