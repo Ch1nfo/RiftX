@@ -2,7 +2,7 @@
 
 > 状态：Accepted
 >
-> 实施状态：AUD-202C C1/C2a implemented；C2b private backend pending
+> 实施状态：AUD-202C C1/C2a/C2b1 implemented；C2b2 Linux qualification pending
 >
 > 日期：2026-08-04（Asia/Shanghai）
 >
@@ -14,15 +14,16 @@ AUD-202A/B 已能把 commit 或 working tree 冻结为 Project-bound content/Man
 执行仍不能安全消费这些 bytes。直接向 worker 返回 CAS locator、宿主绝对路径或共享目录会绕过
 Audit/Run/Snapshot/Node owner 校验，也无法在取消、过期或 Runner 重启后证明访问权已经撤销。
 
-AUD-202C 因此拆成三个可独立验证的内部阶段：
+AUD-202C 因此拆成四个可独立验证的内部阶段：
 
 1. C1 冻结 Static Plan、Lease、Pin、Stop Proof 与持久事务权威；
 2. C2a 实现 trusted CAS source、backend proof contract、expiry/revocation coordinator 与 restart
    reconciler；
-3. C2b 实现每 effect execution 私有的只读 materialization/mount backend 与真实 Linux proof。
+3. C2b1 实现每 effect execution 私有的只读 materialization/mount backend；
+4. C2b2 在真实 local-Linux daemon/image 上记录 qualification proof。
 
-本 ADR 冻结 C1/C2a 合同，并限定 C2b 必须在同一合同上实现。C2a 完成不代表存在可用的 mount
-backend，也不开放 Runner enqueue、API、Event、Temporal 或产品扫描能力。
+本 ADR 冻结 C1/C2a/C2b1 合同，并限定 C2b2 必须在同一合同上资格验证。backend 代码与 mocked
+Docker evidence 完成不等于生产可用，也不开放 Runner enqueue、API、Event、Temporal 或产品扫描能力。
 
 ## 2. Decision
 
@@ -161,23 +162,47 @@ mount 走同一 stop/Stop Proof 路径；issued orphan 尝试 cleanup 后进入 
 Runner credential 轮换不妨碍旧 generation authority 的检查与撤权。C2a 没有引入新的 Runner family、
 enqueue、API/Event、Temporal 或跨 Node hydration。
 
+### 2.7 C2b1 Docker private materialization backend
+
+新增 `DockerSnapshotMountBackend`，其 component digest 绑定 pinned image、non-root container user、
+container-private tmpfs、network none、read-only rootfs、root-owned read-only source tree 与 backend schema。
+availability 必须证明本机为 Linux、Docker server 为 Linux、image ID 与 pinned digest 恒等，并执行
+non-root tmpfs read/write-denial round trip；qualification probe 无论成功或失败都按确定性 owner/name
+发现并肯定删除，response loss 不能遗留匿名容器。
+
+prepare 在任何 Docker effect 前读取并验证完整 Snapshot blob set。regular file 仅保留 read/execute
+语义，目录为 `0555`，文件为 `0444/0555`，symlink 为 root-contained link；absolute 或逃逸 target
+拒绝。tar 只存在于 bounded process memory，并经 `docker cp -` 写入容器私有 `/workspace` tmpfs，
+不落宿主明文 path。容器使用 pinned image、network none、read-only rootfs、all capabilities dropped、
+no-new-privileges、non-root UID、bounded pids/memory/disk 和 empty-safe environment。
+
+materialization 完成后写入 immutable path-free proof document。non-root probe 对全树执行 lstat、owner/
+mode 校验与 regular/symlink bytes hash，拒绝额外类型、写权限或 proof drift。inspect 通过确定性 owner
+name 和 labels 找回容器，并重新验证 Plan image/limits、Lease/Pin/Node/backend/principal、Docker
+security config 与 proof；仅 running + exact proof 返回 active。stop 只在 stop/remove 后按 container ID
+与 name 双重确认 absence，才证明零 process/fd、namespace removed 和 worker path inaccessible。
+
+同一 Lease 的并发激活以 mount key/proof 为物理幂等 identity。一个请求赢得 durable CAS 后，另一个
+请求若观察到相同 active proof，返回 exact convergence，不得执行 cleanup；不同 proof 或 owner drift
+继续 fail closed。C2b1 仍未向 Runner/API/Temporal 注册执行入口。
+
 ## 3. Explicit non-goals
 
-C1/C2a 不实现：
+C1/C2a/C2b1 不实现：
 
-- 实际目录 materialization、mount namespace、fd broker、真实 unmount、目录删除或 filesystem proof；
-- production scheduler/service wiring 与真实 backend inspection/reconciliation；
+- 真实 local-Linux pinned-image qualification evidence 与 production scheduler/service wiring；
+- analysis command admission/exec、fd broker 或对 worker 暴露宿主 mount path；
 - source Node 到 analysis Node 传输、远程 CAS、mTLS hydration；
 - Content Sandbox、content parser、Detector、Scanner、模型或动态 Execution Plan；
 - Snapshot reader、Retention/GC、Artifact、API、CLI、WebUI、Event、Start 或 Temporal dispatch。
 
-因此 AUD-202C 仍为 `in_progress`，只有 C2b 在真实 backend 上证明 private read-only mount、撤权和重启
+因此 AUD-202C 仍为 `in_progress`，只有 C2b2 在真实 backend 上证明 private read-only mount、撤权和重启
 收敛后才能标记 completed。
 
 ## 4. Consequences
 
-- C2b 不需要再发明 owner 或 reconciliation schema，可以围绕 durable Lease/Pin state machine 实现
-  backend。
+- 后续 static execution 不需要再发明 owner、materialization 或 reconciliation schema，可以围绕
+  durable Lease/Pin 与 qualified Docker backend 接入。
 - Runner generation 轮换后仍可读取旧 authority 进行撤权；新 mount 签发只接受当前 principal。
 - raw CAS locator 不进入 authority envelope，知道 digest、relative path 或同 UID 宿主身份都不足以访问
   Snapshot。

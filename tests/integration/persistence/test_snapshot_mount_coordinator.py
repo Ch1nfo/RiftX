@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -120,7 +121,8 @@ class _FakePrivateMountBackend:
             return replace(prepared, backend_digest=_digest("foreign-backend"))
         return prepared
 
-    async def inspect(self, *, lease, pin, observed_at):
+    async def inspect(self, *, plan, lease, pin, observed_at):
+        SnapshotMountSource.require_authority(plan=plan, lease=lease)
         self.inspect_calls += 1
         if self.inspect_error is not None:
             raise self.inspect_error
@@ -147,7 +149,8 @@ class _FakePrivateMountBackend:
             return replace(inspection, backend_digest=_digest("foreign-backend"))
         return inspection
 
-    async def stop(self, *, lease, pin, stopped_at):
+    async def stop(self, *, plan, lease, pin, stopped_at):
+        SnapshotMountSource.require_authority(plan=plan, lease=lease)
         self.stop_calls += 1
         mounted = self.objects.get(lease.id)
         mount_key = (
@@ -356,6 +359,37 @@ async def test_activate_and_terminal_stop_are_exactly_replayable(tmp_path: Path)
     assert replayed_stop == (*stopped[:3], False)
     assert await authority.get_stop_proof(issue.lease.id) == stopped[2]
     assert backend.stop_calls == 1
+    await database.dispose()
+
+
+async def test_concurrent_activation_converges_without_destroying_winning_mount(
+    tmp_path: Path,
+) -> None:
+    runtime = await _runtime(tmp_path, "activation-concurrency")
+    database, authority, credential, plan, issue, _, _, backend, coordinator = runtime
+
+    first, second = await asyncio.gather(
+        coordinator.activate(
+            lease_id=issue.lease.id,
+            nonce=issue.nonce,
+            principal=credential.principal,
+            node_id=plan.node_id,
+            observed_at=_EFFECT_NOW + timedelta(seconds=1),
+        ),
+        coordinator.activate(
+            lease_id=issue.lease.id,
+            nonce=issue.nonce,
+            principal=credential.principal,
+            node_id=plan.node_id,
+            observed_at=_EFFECT_NOW + timedelta(seconds=2),
+        ),
+    )
+
+    assert sorted((first[2], second[2])) == [False, True]
+    assert first[:2] == second[:2]
+    assert backend.stop_calls == 0
+    assert issue.lease.id in backend.objects
+    assert await authority.get_mount(issue.lease.id) == first[:2]
     await database.dispose()
 
 

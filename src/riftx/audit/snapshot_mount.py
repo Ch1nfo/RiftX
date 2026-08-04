@@ -23,6 +23,7 @@ from .static_effect import (
     SnapshotMountLease,
     SnapshotMountLeaseStatus,
     SnapshotMountPin,
+    SnapshotMountPinStatus,
     SnapshotMountStopDisposition,
     SnapshotMountStopProof,
     snapshot_mount_key_digest,
@@ -277,7 +278,7 @@ class PreparedSnapshotMount:
         pin: SnapshotMountPin,
         source: SnapshotMountSource,
         *,
-        prepared_at: datetime,
+        observed_at: datetime,
     ) -> bool:
         return (
             self.lease_id == lease.id
@@ -294,7 +295,7 @@ class PreparedSnapshotMount:
             and self.descriptor_digest == source.descriptor.descriptor_digest
             and self.file_count == source.descriptor.file_count
             and self.total_bytes == source.descriptor.total_bytes
-            and self.prepared_at == prepared_at
+            and lease.created_at <= self.prepared_at <= observed_at
         )
 
 
@@ -510,6 +511,7 @@ class SnapshotMountBackend(Protocol):
     async def inspect(
         self,
         *,
+        plan: AuditStaticEffectPlan,
         lease: SnapshotMountLease,
         pin: SnapshotMountPin,
         observed_at: datetime,
@@ -518,6 +520,7 @@ class SnapshotMountBackend(Protocol):
     async def stop(
         self,
         *,
+        plan: AuditStaticEffectPlan,
         lease: SnapshotMountLease,
         pin: SnapshotMountPin,
         stopped_at: datetime,
@@ -594,8 +597,13 @@ class SnapshotMountCoordinator:
                     observed_at=observed_at,
                 )
             raise SnapshotMountError(exc.failure) from None
-        if not prepared.matches(lease, pin, source, prepared_at=observed_at):
-            await self._cleanup_uncommitted_prepare(lease, pin, observed_at=observed_at)
+        if not prepared.matches(lease, pin, source, observed_at=observed_at):
+            await self._cleanup_uncommitted_prepare(
+                plan,
+                lease,
+                pin,
+                observed_at=observed_at,
+            )
             raise SnapshotMountError(SnapshotMountFailure.OWNER_MISMATCH)
         active_lease = lease.activate(
             mount_key=prepared.mount_key,
@@ -614,7 +622,25 @@ class SnapshotMountCoordinator:
             current = await self._authority.get_mount(lease.id)
             if current == (active_lease, active_pin):
                 return active_lease, active_pin, False
-            await self._cleanup_uncommitted_prepare(lease, pin, observed_at=observed_at)
+            if current is not None:
+                current_lease, current_pin = current
+                if (
+                    current_lease.status is SnapshotMountLeaseStatus.ACTIVE
+                    and current_pin.status is SnapshotMountPinStatus.ACTIVE
+                    and current_lease.mount_key == prepared.mount_key
+                    and current_lease.mount_proof_digest == prepared.mount_proof_digest
+                    and current_pin.mount_key == prepared.mount_key
+                    and current_pin.mount_proof_digest == prepared.mount_proof_digest
+                ):
+                    return current_lease, current_pin, False
+                if current != (lease, pin):
+                    raise
+            await self._cleanup_uncommitted_prepare(
+                plan,
+                lease,
+                pin,
+                observed_at=observed_at,
+            )
             raise
 
     async def stop(
@@ -631,6 +657,7 @@ class SnapshotMountCoordinator:
             if proof is None or lease.stop_proof_digest != proof.proof_digest:
                 raise SnapshotMountError(SnapshotMountFailure.AUTHORITY_MISSING)
             return lease, pin, proof, False
+        plan = await self._require_plan(lease)
         if lease.status is SnapshotMountLeaseStatus.ACTIVE:
             pending_lease = lease.begin_stop(
                 expired=requested_at >= lease.expires_at,
@@ -652,6 +679,7 @@ class SnapshotMountCoordinator:
             raise SnapshotMountError(SnapshotMountFailure.STOP_UNCONFIRMED)
         try:
             evidence = await self._backend.stop(
+                plan=plan,
                 lease=pending_lease,
                 pin=pending_pin,
                 stopped_at=requested_at,
@@ -719,8 +747,10 @@ class SnapshotMountCoordinator:
                 else:
                     stopped += 1
                 continue
+            plan = await self._require_plan(lease)
             try:
                 inspection = await self._backend.inspect(
+                    plan=plan,
                     lease=lease,
                     pin=pin,
                     observed_at=observed_at,
@@ -769,7 +799,12 @@ class SnapshotMountCoordinator:
             if lease.status is SnapshotMountLeaseStatus.ISSUED:
                 if inspection.state is SnapshotMountBackendState.ABSENT:
                     continue
-                await self._cleanup_uncommitted_prepare(lease, pin, observed_at=observed_at)
+                await self._cleanup_uncommitted_prepare(
+                    plan,
+                    lease,
+                    pin,
+                    observed_at=observed_at,
+                )
                 unknown += 1
                 continue
             if lease.status is SnapshotMountLeaseStatus.OUTCOME_UNKNOWN:
@@ -779,6 +814,7 @@ class SnapshotMountCoordinator:
                 }:
                     try:
                         await self._backend.stop(
+                            plan=plan,
                             lease=lease,
                             pin=pin,
                             stopped_at=observed_at,
@@ -801,6 +837,13 @@ class SnapshotMountCoordinator:
         if mount is None:
             raise SnapshotMountError(SnapshotMountFailure.AUTHORITY_MISSING)
         return mount
+
+    async def _require_plan(self, lease: SnapshotMountLease) -> AuditStaticEffectPlan:
+        plan = await self._authority.get_plan(lease.plan_id)
+        if plan is None:
+            raise SnapshotMountError(SnapshotMountFailure.AUTHORITY_MISSING)
+        SnapshotMountSource.require_authority(plan=plan, lease=lease)
+        return plan
 
     def _require_backend_owner(self, lease: SnapshotMountLease) -> None:
         if lease.target_node_id != self._backend.node_id:
@@ -834,6 +877,7 @@ class SnapshotMountCoordinator:
 
     async def _cleanup_uncommitted_prepare(
         self,
+        plan: AuditStaticEffectPlan,
         lease: SnapshotMountLease,
         pin: SnapshotMountPin,
         *,
@@ -841,6 +885,7 @@ class SnapshotMountCoordinator:
     ) -> None:
         try:
             await self._backend.stop(
+                plan=plan,
                 lease=lease,
                 pin=pin,
                 stopped_at=observed_at,

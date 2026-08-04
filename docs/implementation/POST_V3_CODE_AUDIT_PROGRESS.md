@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202C C2a mount coordination and restart
-> reconciliation boundary synchronized
+> Specification revision: 2026-08-04 / AUD-202C C2b1 Docker private materialization
+> boundary synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,12 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed internal stage: `AUD-202C C2a — Mount coordination and restart
-  reconciliation`; parent AUD-202C remains `in_progress`.
-- Completed C2a scope: trusted owner-bound Snapshot source resolution, backend proof
-  contracts, authenticated activation, affirmative stop/expiry convergence, exact
-  terminal replay, and bounded same-node restart reconciliation.
-- Next unblocked task: `AUD-202C C2b — Docker private read-only materialization`, as a
+- Completed internal stage: `AUD-202C C2b1 — Docker private read-only
+  materialization`; parent AUD-202C remains `in_progress`.
+- Completed C2b1 scope: deterministic owner-labelled private tmpfs container,
+  bounded in-memory archive, root-owned read-only tree, non-root full-tree proof,
+  exact restart inspection, affirmative removal and concurrent activation convergence.
+- Next unblocked task: `AUD-202C C2b2 — Real local-Linux qualification`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
   descriptor/mount and Capsule-denial evidence is recorded.
@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a completed; C2b remains |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a/C2b1 completed; C2b2 remains |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -1801,9 +1801,81 @@ individual operation families.
     found zero violations, and retained policy digest
     `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
   - The executable release gate reported `ready=true`; every registered gate passed.
-- Commit: this C2a local commit; its hash will be backfilled by the next ledger update.
-- Next unblocked task: AUD-202C C2b real Docker private read-only materialization and
-  local-Linux qualification.
+- Commit: `6e1b64e6 feat(code-audit): add snapshot mount coordinator`.
+- Next unblocked task: AUD-202C C2b1 Docker private read-only materialization.
+
+### AUD-202C C2b1 — Docker Private Read-only Materialization
+
+- Status: completed internal implementation stage; parent AUD-202C remains in progress
+  until real local-Linux qualification is recorded.
+- Depends on: AUD-202C C2a (`6e1b64e6`).
+- Exact modules/files:
+  - `src/riftx/audit/snapshot_mount_docker.py`
+  - `src/riftx/audit/snapshot_mount.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_snapshot_mount_docker.py`
+  - `tests/integration/persistence/test_snapshot_mount_coordinator.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Added a deterministic backend component digest and explicit Linux/Docker/pinned
+    image/private-tmpfs qualification contract. Non-Linux hosts fail closed; no macOS
+    fallback or host-directory materialization exists.
+  - Added one owner-labelled container per effect execution. Source bytes are read and
+    bounded before Docker effects, packaged only in memory, then copied into a
+    container-private tmpfs. There is no host shared plaintext source path.
+  - Enforced network none, read-only rootfs, all capabilities dropped,
+    no-new-privileges, non-root holder/reader, bounded pids/memory/disk, no bind mounts
+    and a positive clean-environment allowlist.
+  - Materialized directories first, regular files next and safe symlinks without
+    following them. Directories/files are root-owned and `0555`/`0444` or `0555`;
+    absolute and root-escaping symlink targets reject before Docker I/O.
+  - Added a non-root full-tree probe that validates object kind, uid/gid, mode, bytes,
+    blob digest, counts and tree proof, plus an immutable mount proof tied to
+    Plan/Lease/Pin/Node/backend/image/container identity.
+  - Added restart discovery by deterministic owner name/labels, exact Docker security
+    config and proof inspection, bounded convergence on an in-flight identical
+    prepare, and affirmative stop/remove/absence evidence.
+  - Hardened coordinator CAS recovery so concurrent valid activations with the same
+    physical mount proof converge without deleting the winner's mount. Backend
+    inspect/stop now receive the immutable Plan and revalidate image/limits after
+    restart.
+- API surface: none. No Runner operation family, command, enqueue, Temporal activity,
+  ordinary API, Event, CLI or WebUI was added. The container remains an internal mount
+  holder; analysis command execution is still fenced.
+- Fail-closed conditions:
+  - host/daemon/image qualification failure, image/backend drift, owner label or
+    security config drift, proof/timestamp/tree drift and ambiguous Docker effects
+    reject or become durable unknown;
+  - source corruption, archive overflow and unsafe symlink reject before container
+    creation;
+  - stop is affirmative only after both container ID and deterministic name are absent.
+- Explicit non-goals / qualification boundary:
+  - this macOS development host did not execute the real Linux Docker path; mocked
+    Docker fixtures prove command/proof logic but are not production qualification;
+  - C2b2 must run the real pinned-image descriptor/tmpfs/non-root denial/stop/restart
+    smoke and record its proof before AUD-202C can become completed;
+  - analysis exec/admission, Content Sandbox, Scope/reader/GC, Artifact/API,
+    Start/Workflow, Detector/Scanner/model remain absent.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_docker.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - C1/C2a/C2b1 domain, backend, coordinator, repository and migration regression:
+    `121 passed` in `58.54s`.
+  - Final full repository suite: `4841 passed, 5 skipped, 12 warnings` in `446.74s`.
+  - Repository Ruff, `compileall` and `git diff --check` passed.
+  - The independence boundary reported `ready=true`, scanned 512 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+- Commit: this C2b1 local commit; its hash will be backfilled by the next ledger update.
+- Next unblocked task: AUD-202C C2b2 real local-Linux qualification and evidence.
 
 ## Design Deviations and ADRs
 
@@ -1850,8 +1922,8 @@ individual operation families.
 - `ADR-0011`: freezes policy-owned Static Plan identity, role-separated opaque storage
   key digests, same-node Lease/Pin/Runner-generation ownership, strict lifecycle CAS,
   affirmative Stop Proof, durable authority persistence, trusted CAS source,
-  path-free backend proof contract and restart reconciliation for AUD-202C C1/C2a;
-  the real private filesystem backend remains C2b.
+  path-free backend proof contract, restart reconciliation and Docker private tmpfs
+  implementation for AUD-202C C1/C2a/C2b1; real Linux qualification remains C2b2.
 
 ## Current Risks
 
@@ -1859,10 +1931,10 @@ individual operation families.
   M10 SBOM, licensing, similarity, and human copyright review.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
   current `preflight_bound_draft` v2 wire remain permanently non-startable. The
-  SnapshotStore/CAS, Git/working-tree materializer, static mount authority and mount
-  coordinator/restart state machine now exist, but there is no real private
-  filesystem mount backend, sealed `SourceSnapshot` UoW, Scope Inventory, or
-  Start-ready Contract;
+  SnapshotStore/CAS, Git/working-tree materializer, static mount authority, mount
+  coordinator/restart state machine and private Docker backend implementation now
+  exist, but the backend is not yet qualified on real local Linux. There is also no
+  sealed `SourceSnapshot` UoW, Scope Inventory, or Start-ready Contract;
   deterministic scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,

@@ -4163,7 +4163,7 @@ M1 Exit：
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
 实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A/B 已
-`completed`；AUD-202C C1/C2a authority/reconciliation 已完成、C2b private backend 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+`completed`；AUD-202C C1/C2a authority/reconciliation 与 C2b1 private backend implementation 已完成，C2b2 real-Linux qualification 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
 Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
@@ -4263,12 +4263,20 @@ expiry/revocation stopper 及 bounded restart reconciliation。任何 absent/liv
 Lease/Pin/Node/backend digest/Runner generation；inspection 不可用、对象缺失/漂移、非肯定 stop 或
 prepare commit 歧义均 fail closed 到 durable `outcome_unknown`，Pin 保持最保守的未撤权状态。
 
-C2b 继续实现真实 same-node 私有 read-only materialization backend：每 effect execution 独立 mount
-namespace/capsule、root-owned sealed tree、非 root readability proof、无网络/无宿主共享明文路径、真实
-inspect/unmount/revoke/delete 与 local-Linux qualification smoke。parent AUD-202C 在 C2b 完成前仍为
-`in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须全链恒等；绝对 locator 不进入
-API/Event。3.0 不实现 source Node → analysis Node 传输、mTLS CAS channel、远程分块上传/下载或跨
-Node hydration。
+C2b1 已实现真实 same-node Docker private materialization backend contract：每 effect execution 一个
+确定性 owner-labelled 容器，源码只经 bounded in-memory tar 流进入 container-private tmpfs，不创建宿主
+共享明文目录；rootfs read-only、network none、capabilities 全 drop、no-new-privileges，holder/后续
+reader 使用 non-root UID。目录/regular/symlink 按安全顺序 materialize，root-owned tree 固定为只读
+mode；escaping symlink 拒绝。容器内 non-root probe 逐项 lstat/read/hash 全树并验证 owner/mode/count/
+bytes/tree proof，inspect 重验完整 Plan/image/limits/Lease/Pin/Node/backend/principal 与 immutable proof；
+stop/remove 后必须用 ID 与确定性 name 双重证明容器缺失，才返回 affirmative evidence。并发激活若
+观察到同一 mount proof，收敛为同一 durable active authority，不能删除 CAS 赢家的 mount。
+
+C2b2 仍需在受支持的真实 local-Linux Docker daemon 与 pinned image 上执行 descriptor/tmpfs/non-root
+read/write-denial/stop/restart smoke，并记录 qualification proof；macOS mocked fixtures 不构成生产证据。
+parent AUD-202C 在该门禁通过前保持 `in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须
+全链恒等；绝对 locator 不进入 API/Event。3.0 不实现 source Node → analysis Node 传输、mTLS CAS
+channel、远程分块上传/下载或跨 Node hydration。
 
 #### AUD-202D：Retention、Eviction 与 GC Receipt
 
