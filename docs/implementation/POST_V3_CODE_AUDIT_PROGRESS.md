@@ -32,20 +32,20 @@
 ## Current Wave
 
 - Milestone: `S1 — Local folder and Snapshot` is `in_progress`.
-- Completed task: `AUD-S100 — local ordinary-directory and Git-directory admission`.
+- Completed task: `AUD-S101 — Local Snapshot View`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S101 — Local Snapshot View`.
+- Next task: `AUD-S102 — SourceSnapshot seal`.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
-| S1 Local folder and Snapshot | in_progress | AUD-S100 completed; AUD-S101 and AUD-S102 pending |
+| S1 Local folder and Snapshot | in_progress | AUD-S100 and AUD-S101 completed; AUD-S102 pending |
 | S2 Inventory and Detector | pending | AUD-S200 through AUD-S202 not started |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
@@ -57,7 +57,7 @@
 | --- | --- |
 | AUD-S001 Retire Docker runtime, qualification and release path | completed |
 | AUD-S100 Local folder admission | completed |
-| AUD-S101 Local Snapshot View | pending |
+| AUD-S101 Local Snapshot View | completed |
 | AUD-S102 SourceSnapshot seal | pending |
 | AUD-S200 File Inventory and Scope | pending |
 | AUD-S201 Detector registry and runner | pending |
@@ -2156,8 +2156,48 @@ individual operation families.
   - legacy Preflight/API compatibility suite: `36 passed`;
   - full repository suite: `4844 passed, 5 skipped, 11 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `40fe27f4 feat(code-audit): add local source admission`.
 - Next unblocked task: `AUD-S101 — Local Snapshot View`.
+
+### AUD-S101 — Local Snapshot View
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/snapshot_view.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_snapshot_view.py`
+  - this ledger
+- Outcome:
+  - added an owner-bound descriptor open over the existing `SnapshotStore` using the
+    exact Project/Snapshot/Manifest binding and expected descriptor digest;
+  - projected deterministic sorted entry metadata with relative path, object type,
+    size, mode and content digest only;
+  - kept the raw CAS content storage key private and excluded absolute paths and
+    locators from entries, summary and repr;
+  - added exact whole-entry bytes reads, strict UTF-8 text reads, per-file/session byte
+    budgets and text character limits;
+  - made shared session-budget reservation thread-safe so concurrent reads cannot
+    overspend;
+  - mapped owner, descriptor, missing-entry, corruption, decoding and budget failures
+    to stable path-free errors;
+  - detected post-open CAS corruption, restored failed-read reservations and rejected
+    entry enumeration and content reads after close.
+- Schema/migration impact: none.
+- API/Runner/Temporal surface: none opened; the view is an internal bounded read port
+  for Inventory and Detector work.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_view.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_snapshot_view.py tests/integration/persistence/test_snapshot_mount_coordinator.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `git diff --check`
+- Test results:
+  - Local Snapshot View unit suite: `12 passed`;
+  - SnapshotStore/View/coordinator regression: `31 passed`;
+  - full repository suite: `4857 passed, 5 skipped, 12 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S102 — SourceSnapshot seal`.
 
 ## Design Deviations and ADRs
 
@@ -2218,9 +2258,9 @@ individual operation families.
 - The simplified end-to-end local scan is not implemented yet. Existing RunKind,
   domain, persistence, SnapshotStore/CAS and source materializer foundations are not
   by themselves a user-visible scanner.
-- `AUD-S101` must provide bounded owner-bound Snapshot reads without exposing raw CAS
-  locators or host paths. Ordinary-directory materialization remains for `AUD-S102`;
-  the existing materializer is still primarily Git commit/working-tree oriented.
+- `AUD-S102` must atomically seal Snapshot/Manifest/Audit ownership and add ordinary
+  directory materialization. The existing materializer is still primarily Git
+  commit/working-tree oriented.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
 - Local static reading still requires strict path, symlink, owner, digest, file-count,

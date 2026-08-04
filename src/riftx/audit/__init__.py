@@ -68,6 +68,15 @@ from .snapshot_mount import (
     SnapshotMountStopEvidence,
 )
 from .snapshot_store import LocalSnapshotStore, SnapshotBlobReader
+from .snapshot_view import (
+    LOCAL_SNAPSHOT_VIEW_SCHEMA_VERSION,
+    LocalSnapshotView,
+    LocalSnapshotViewEntry,
+    LocalSnapshotViewError,
+    LocalSnapshotViewFailure,
+    LocalSnapshotViewSummary,
+    open_local_snapshot_view,
+)
 from .source_manifest import (
     SOURCE_CAPTURE_POLICY_SCHEMA_VERSION,
     SOURCE_MANIFEST_BLOB_NAME,
@@ -125,6 +134,7 @@ __all__ = [
     "DEFAULT_MAX_SOURCE_PATH_BYTES",
     "DEFAULT_SOURCE_PATH_POLICY_VERSION",
     "LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN",
+    "LOCAL_SNAPSHOT_VIEW_SCHEMA_VERSION",
     "REPOSITORY_DESCRIPTOR_CHAIN_DIGEST_DOMAIN",
     "REPOSITORY_IDENTITY_DIGEST_DOMAIN",
     "SNAPSHOT_CAS_INDEX_SCHEMA_VERSION",
@@ -153,6 +163,11 @@ __all__ = [
     "LocalSourceIdentity",
     "LocalSourceKind",
     "LocalSnapshotStore",
+    "LocalSnapshotView",
+    "LocalSnapshotViewEntry",
+    "LocalSnapshotViewError",
+    "LocalSnapshotViewFailure",
+    "LocalSnapshotViewSummary",
     "OpenedSnapshotBlob",
     "PreparedSnapshotMount",
     "PublishedSourceSnapshot",
@@ -208,6 +223,7 @@ __all__ = [
     "StoredSnapshotTree",
     "open_authorized_local_source",
     "open_authorized_source_repository",
+    "open_local_snapshot_view",
     "audit_static_effect_plan_digest",
     "parse_snapshot_content_storage_key",
     "publish_source_manifest",
