@@ -62,6 +62,7 @@ EXPECTED_TABLES = {
     "run_leases",
     "runs",
     "source_snapshots",
+    "snapshot_references",
     "source_references",
     "target_http_requests",
     "terminal_sessions",

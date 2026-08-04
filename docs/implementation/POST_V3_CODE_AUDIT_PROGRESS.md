@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-201 Start admission capability
-> reconciliation and adjacent AUD-208 boundary synchronized
+> Specification revision: 2026-08-04 / AUD-202A SnapshotStore/CAS and durable
+> reference boundary synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,11 +32,11 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed task: `AUD-201 — Signed preflight token`.
-- Completed AUD-201 steps: durable Plan/token issuance, atomic Create v2, strict
-  Start request/revalidation/UoW contracts, and current-version zero-side-effect
-  Start rejection.
-- Next unblocked task: `AUD-202A — SnapshotStore and CAS foundation`, as a
+- Completed task: `AUD-202A — SnapshotStore and CAS foundation`.
+- Completed AUD-202A scope: owner-bound CAS descriptor/locator, private
+  same-filesystem staging, fsync/atomic publish, full verify/bounded open,
+  quarantine/crash cleanup, and durable Audit/Project/Snapshot references.
+- Next unblocked task: `AUD-202B — Commit/working-tree materializer`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
   descriptor/mount and Capsule-denial evidence is recorded.
@@ -47,7 +47,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200 and AUD-201 completed; AUD-202A is next |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, and AUD-202A completed; AUD-202B is next |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -91,7 +91,7 @@ individual operation families.
 | --- | --- |
 | AUD-200 Source root and Git preflight | completed |
 | AUD-201 Signed preflight token | completed |
-| AUD-202A SnapshotStore and CAS foundation | pending |
+| AUD-202A SnapshotStore and CAS foundation | completed |
 | AUD-202B Commit/working-tree materializer | pending |
 | AUD-202C Same-node mount, pin, and static ownership | pending |
 | AUD-206 Content Sandbox and safety stop | pending |
@@ -1456,8 +1456,7 @@ individual operation families.
   - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
     dependency, test, or generated artifact was used. The implementation and
     protocol are RiftX-owned.
-- Commit: this AUD-201 Start admission contract local commit; its hash is backfilled
-  by the next ledger update because a commit cannot contain its own hash.
+- Commit: `f24771cc` (`feat(code-audit): close AUD-201 start admission contract`).
 - Known limitations / production qualification:
   - Successful Plan consume + Audit queued + Run preparing + pending StartIntent is
     deliberately deferred until later capabilities can create a new immutable
@@ -1466,7 +1465,107 @@ individual operation families.
   - The completion review ran on macOS. The mandatory real local-Linux descriptor/
     mount round-trip and Capsule write/create/chmod/rename/unlink denial smoke was not
     executed, so production release qualification remains disabled.
-- Next unblocked task: AUD-202A, as a separately committed work unit.
+- Next unblocked task at AUD-201 completion: AUD-202A; it is now completed below.
+
+### AUD-202A — SnapshotStore and CAS Foundation
+
+- Status: completed.
+- Depends on: AUD-201 (`f24771cc`).
+- Exact modules/files:
+  - `src/riftx/audit/snapshot.py`
+  - `src/riftx/audit/snapshot_store.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/persistence/audit_snapshot.py`
+  - `src/riftx/persistence/orm.py`
+  - `src/riftx/persistence/__init__.py`
+  - `migrations/versions/8a1f3c5e7b90_add_snapshot_references.py`
+  - `tests/unit/audit/test_snapshot_store.py`
+  - `tests/unit/persistence/test_audit_schema.py`
+  - `tests/unit/persistence/test_schema.py`
+  - `tests/integration/persistence/test_snapshot_references.py`
+  - `tests/integration/persistence/test_snapshot_reference_migration.py`
+  - `docs/architecture/decisions/0009-riftx-code-audit-snapshot-store-cas-foundation.md`
+  - `docs/architecture/decisions/0007-riftx-code-audit-preflight-job-and-source-ingest-contract.md`
+- Outcome:
+  - Accepted ADR-0009 and added `riftx.snapshot-cas-object/v1` with canonical,
+    domain-separated object identity. Project, Snapshot digest, Manifest digest,
+    object type, sorted blob paths, blob type/mode/digest/size, and aggregate counters
+    all participate in the descriptor and opaque locator.
+  - Added `LocalSnapshotStore` under the configured private Snapshot root. It copies
+    an exact declared regular-file/symlink staging tree into store-owned same-filesystem
+    staging, fsyncs bytes/index/directories, atomically renames, then seals and fully
+    verifies the final object read-only.
+  - Exact replay requires identical canonical metadata, bytes, modes, sizes, digests,
+    Manifest binding, and sealed permissions. Corrupt or half-written objects are
+    atomically quarantined and the request fails; they are never overwritten in place.
+  - Added owner/Manifest-bound `verify` and `open_blob`; relative paths must be in the
+    descriptor allowlist. regular files use no-follow verified descriptors and bounded
+    readers; symlinks return verified target bytes without following the target.
+  - Added cross-process per-object publication locks and explicit power-loss stages.
+    Pre-publish crash leaves a private staging orphan that supports dry-run cleanup;
+    post-publish crash retries through full verify and exact replay.
+  - Added `snapshot_references` migration/ORM/Repository. Composite FKs bind Audit and
+    Snapshot to the same Project; exact replay is idempotent, cross-owner/digest
+    corruption fails closed, and a non-empty table blocks lossy downgrade before DDL.
+- Schema/migration owner:
+  - Revision `8a1f3c5e7b90`, down revision `5d8c1a7e3b24`.
+  - Owns only `snapshot_references`; existing insert-is-seal `source_snapshots` schema
+    is unchanged. The new table primary key is `(audit_id, snapshot_id, role)` and
+    carries `project_id`, schema version, reference digest, and creation time.
+- API surface: none. No ordinary API, CLI, WebUI, Event, Artifact, Start, Runner, or
+  Temporal surface receives a CAS locator or Snapshot bytes in this task.
+- Fail-closed conditions:
+  - invalid/noncanonical IDs, digests, paths, modes, size limits, source/store overlap,
+    undeclared or missing entries, linked/mutating regular files, Manifest/owner drift,
+    writable/corrupt persisted objects, noncanonical index bytes, cross-Project
+    references, damaged reference digests, and lossy downgrade all reject.
+- Explicit non-goals:
+  - Git object/index capture, commit/dirty materialization, final Source Manifest
+    decisions, `SourceSnapshot` seal UoW, SourceIngest production write protocol,
+    mount/pin/static ownership, retention/GC/pressure eviction, API projection,
+    Start/Workflow, Detector/Scanner/model, and network access remain absent.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_store.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_snapshot_references.py tests/integration/persistence/test_snapshot_reference_migration.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/persistence/test_audit_schema.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py tests/integration/persistence/test_audit_repositories.py tests/integration/persistence/test_snapshot_references.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/audit/test_snapshot_store.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - SnapshotStore contract/power-loss/concurrency matrix: `7 passed` in `0.07s`.
+  - Reference Repository/migration matrix: `6 passed` in `3.21s`.
+  - Related persistence/schema/CAS matrix on the final implementation:
+    `113 passed, 10 warnings` in `30.89s`.
+  - Historical migration/head/no-partial-DDL regression matrix after synchronizing
+    the new head and cross-boundary guards: `45 passed` in `33.46s`.
+  - The first full-suite run exposed only ten stale migration-head/no-partial-DDL
+    expectations: `4778 passed, 10 failed, 5 skipped, 12 warnings` in `416.02s`.
+    The CAS, reference, application, Runner, and other business paths passed; the
+    migration compatibility contract was corrected without weakening its safety rule.
+  - Final full repository suite: `4788 passed, 5 skipped, 11 warnings` in `428.94s`.
+  - Repository Ruff and `compileall` passed; `git diff --check` passed with no output.
+  - The independence boundary reported `ready=true`, scanned 505 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+- Provenance:
+  - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
+    dependency, test, or generated artifact was used. The implementation and
+    protocol are RiftX-owned.
+- Commit: this AUD-202A local commit; its hash is backfilled by the next ledger update
+  because a commit cannot contain its own hash.
+- Known limitations / production qualification:
+  - The CAS index freezes only storage-level blob metadata and the future Manifest
+    digest; AUD-202B still owns deterministic Git/working-tree materialization and
+    final capture-decision Manifest semantics.
+  - This work ran on macOS with synthetic staging trees. It does not replace the
+    mandatory real local-Linux SourceIngest descriptor/mount/Capsule deny smoke;
+    production release qualification remains disabled.
+- Next unblocked task: AUD-202B, as a separately committed work unit.
 
 ## Design Deviations and ADRs
 
@@ -1502,15 +1601,20 @@ individual operation families.
   Create v2 ownership, canonical-empty Context Binding, historical v1 isolation,
   strict Start proof/UoW contracts, current-version zero-side-effect rejection, and
   the future start-ready AUD-208 admission/delivery boundary. AUD-201 is implemented.
+- `ADR-0009`: freezes Project-bound Snapshot CAS identity, opaque locators, exact
+  staging/fsync/atomic publish, full verify and bounded open, corrupt-object
+  quarantine, staging crash cleanup, and durable composite Snapshot references
+  implemented by AUD-202A.
 
 ## Current Risks
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
-  current `preflight_bound_draft` v2 wire remain permanently non-startable. Successful
-  Plan consume, SnapshotStore/CAS, Inventory, and deterministic scanning remain
-  unavailable until later capability-owning tasks provide a new start-ready Contract.
+  current `preflight_bound_draft` v2 wire remain permanently non-startable. The
+  SnapshotStore/CAS foundation exists but has no Git materializer, sealed
+  `SourceSnapshot`, mount/pin, Scope Inventory, or Start-ready Contract; deterministic
+  scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,
   Snapshot/CAS producers, and the final restricted WebUI cache lifecycle remain

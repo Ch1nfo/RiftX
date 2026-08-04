@@ -362,7 +362,8 @@ AUD-200 至少通过：
 ## 11. 实施结论与平台验证边界
 
 AUD-200 实施状态为 `completed`：协议、迁移、API、Runner、SourceIngest、Git guard、恢复、
-停止证明、安全投影与可在当前环境执行的回归已收口，独立复审无剩余 P0/P1。下一项为 AUD-201。
+停止证明、安全投影与可在当前环境执行的回归已收口，独立复审无剩余 P0/P1。当时下一项为
+AUD-201；AUD-201 与 AUD-202A 现已按后续 ADR 完成。
 
 本次完成复核运行于 macOS，未执行真实 local-Linux Docker descriptor/mount round-trip smoke。
 因此本文不声明 macOS/Windows backend 可用，也不声明生产 Linux backend 已完成环境资格认证；

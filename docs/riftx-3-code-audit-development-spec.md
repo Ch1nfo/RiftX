@@ -4143,8 +4143,9 @@ M1 Exit：
 
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
-实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200 已 `completed`；下一项为 AUD-201。
-AUD-200 的完成不等于 M2 Exit，也不开放 Snapshot、Content Sandbox、Detector 或产品扫描表面。
+实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A 已
+`completed`；下一项为 AUD-202B。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
 AUD-203/AUD-204 -> AUD-205/AUD-202D/AUD-207/AUD-208/AUD-209`。AUD-203 的 language/dependency/
@@ -4207,10 +4208,15 @@ Event 不增加、Intent 为零，Runner/Temporal 调用均为零。
 
 #### AUD-202A：SnapshotStore 与 CAS Foundation
 
-依赖 AUD-201。建立 `audit/snapshot.py` 的 SnapshotStore/CAS Port、domain-separated object key、
-staging/fsync/atomic rename、insert-is-seal、Audit/Project reference 和 crash cleanup。重复写入只在
-digest、size、object type 与 manifest metadata 全部恒等时复用；坏对象、半写对象或跨 owner locator
-一律隔离。退出 Artifact 是 CAS contract、Schema/migration、Repository tests 和 power-loss fixtures。
+状态：`completed`（2026-08-04）。依赖 AUD-201。按 ADR-0009 建立 `audit/snapshot.py` 的
+SnapshotStore/CAS Port、Project-bound domain-separated object key、private same-filesystem staging、
+逐文件与目录 fsync、atomic rename、发布后只读 seal、bounded open/verify、staging crash cleanup 与
+`snapshot_references` Audit/Project/Snapshot 复合所有权。重复写入只在 canonical descriptor、digest、
+size、object type、Manifest binding、完整内容和只读权限全部恒等时复用；坏对象、半写对象或跨 owner
+locator 先 quarantine 并 fail closed。CAS index 当前只冻结 AUD-202B Manifest digest 与 blob metadata
+binding，不抢占最终 capture-decision Manifest 语义。退出 Artifact 为 CAS contract、Schema/migration、
+Reference Repository tests、并发 exact replay 与发布前/后 power-loss fixtures；本任务不接 Git、
+SourceSnapshot seal UoW、mount/pin、GC、API、Start、Runner/Temporal 或 Scanner。
 
 #### AUD-202B：Commit 与 Working-tree Materializer
 

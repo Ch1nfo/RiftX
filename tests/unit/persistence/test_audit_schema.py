@@ -7,6 +7,7 @@ AUDIT_TABLES = {
     "audit_preflight_plans",
     "audit_projects",
     "source_snapshots",
+    "snapshot_references",
     "audit_contracts",
     "audit_scans",
     "audit_security_context_bindings",
@@ -177,6 +178,38 @@ def test_audit_project_and_snapshot_keys_preserve_authorization_domains() -> Non
         "source_snapshots.project_id",
     )
     assert Base.metadata.tables["source_snapshots"].c.sealed_at.nullable is False
+
+
+def test_snapshot_references_bind_audit_snapshot_and_project_owners() -> None:
+    references = Base.metadata.tables["snapshot_references"]
+    assert tuple(column.name for column in references.primary_key.columns) == (
+        "audit_id",
+        "snapshot_id",
+        "role",
+    )
+    assert _foreign_keys("snapshot_references") == {
+        ("audit_id", "project_id"): (
+            "audit_scans.id",
+            "audit_scans.project_id",
+        ),
+        ("snapshot_id", "project_id"): (
+            "source_snapshots.id",
+            "source_snapshots.project_id",
+        ),
+    }
+    assert {
+        "ck_snapshot_references_schema_version",
+        "ck_snapshot_references_role",
+        "ck_snapshot_references_digest",
+    } <= _check_names("snapshot_references")
+    assert _indexes("snapshot_references") == {
+        "ix_snapshot_references_audit_created": ("audit_id", "created_at"),
+        "ix_snapshot_references_snapshot_project_created": (
+            "snapshot_id",
+            "project_id",
+            "created_at",
+        ),
+    }
 
 
 def test_contract_keeps_exact_canonical_text_and_noncyclic_binding() -> None:

@@ -458,6 +458,62 @@ class SourceSnapshotRecord(Base):
     sealed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class SnapshotReferenceRecord(Base):
+    __tablename__ = "snapshot_references"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_snapshot_references_audit_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_snapshot_references_snapshot_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "schema_version = 'riftx.snapshot-reference/v1'",
+            name="ck_snapshot_references_schema_version",
+        ),
+        CheckConstraint(
+            "role IN ('primary', 'base', 'baseline', 'finding_evidence', "
+            "'retest_parent', 'distribution_revision')",
+            name="ck_snapshot_references_role",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("reference_digest"),
+            name="ck_snapshot_references_digest",
+        ),
+        Index(
+            "ix_snapshot_references_snapshot_project_created",
+            "snapshot_id",
+            "project_id",
+            "created_at",
+        ),
+        Index(
+            "ix_snapshot_references_audit_created",
+            "audit_id",
+            "created_at",
+        ),
+    )
+
+    audit_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        primary_key=True,
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    reference_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class AuditContractRecord(Base):
     __tablename__ = "audit_contracts"
     __table_args__ = (

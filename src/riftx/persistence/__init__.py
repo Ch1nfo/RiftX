@@ -20,6 +20,7 @@ from .audit_repositories import (
     create_scan_contract_pair,
     load_validated_audit_scan,
 )
+from .audit_snapshot import SQLAlchemySnapshotReferenceRepository
 from .audit_uow import (
     AuditCreationFailpoint,
     SQLAlchemyAuditAggregateReadRepository,
@@ -104,6 +105,7 @@ __all__ = [
     "SQLAlchemyTrafficMetadataReadRepository",
     "SQLAlchemyWorkflowSignalIntentRepository",
     "SQLAlchemySnapshotRepository",
+    "SQLAlchemySnapshotReferenceRepository",
     "AuditCreationFailpoint",
     "compare_and_set_audit_contract",
     "compare_and_set_audit_scan",

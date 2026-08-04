@@ -46,6 +46,7 @@ from riftx.persistence.orm import Base
 
 BASE_REVISION = "2b7d9e4a6c10"
 PLAN_REVISION = "5d8c1a7e3b24"
+HEAD_REVISION = "8a1f3c5e7b90"
 PLAN_TABLE = "audit_preflight_plans"
 MIGRATION = run_path(
     str(
@@ -246,7 +247,7 @@ def test_plan_eligible_job_blocks_downgrade_before_ddl(tmp_path: Path) -> None:
     assert ddl_statements == []
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            PLAN_REVISION,
+            HEAD_REVISION,
         )
         assert connection.execute(
             "SELECT id FROM audit_preflight_jobs"

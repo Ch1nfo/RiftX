@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy import text
+from tests.integration.persistence.test_audit_repositories import (
+    NOW,
+    _create_audit,
+    _create_engagement,
+    _project,
+    _snapshot,
+)
+
+from riftx.application.errors import RepositoryConflictError, RepositoryIntegrityError
+from riftx.audit import SnapshotReference, SnapshotReferenceRole
+from riftx.persistence import (
+    Database,
+    SQLAlchemyAuditProjectRepository,
+    SQLAlchemySnapshotReferenceRepository,
+    SQLAlchemySnapshotRepository,
+)
+
+
+async def _seed(database: Database) -> None:
+    await _create_engagement(database, "engagement-1")
+    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
+    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
+    await _create_audit(database)
+
+
+def _reference(**updates: object) -> SnapshotReference:
+    payload: dict[str, object] = {
+        "audit_id": "audit-1",
+        "snapshot_id": "snapshot-1",
+        "project_id": "project-1",
+        "role": SnapshotReferenceRole.PRIMARY,
+        "created_at": NOW,
+    }
+    payload.update(updates)
+    return SnapshotReference(**payload)  # type: ignore[arg-type]
+
+
+async def test_snapshot_reference_add_replay_list_release_and_restart(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'snapshot-reference.db'}"
+    database = Database(database_url)
+    await database.create_schema()
+    await _seed(database)
+    references = SQLAlchemySnapshotReferenceRepository(database.session_factory)
+    reference = _reference()
+
+    stored, created = await references.add(reference)
+    assert (stored, created) == (reference, True)
+    replayed, created = await references.add(reference)
+    assert (replayed, created) == (reference, False)
+    assert await references.list_for_snapshot("snapshot-1", project_id="project-1") == (
+        reference,
+    )
+
+    with pytest.raises(RepositoryConflictError):
+        await references.add(_reference(created_at=NOW + timedelta(seconds=1)))
+    await database.dispose()
+
+    reopened = Database(database_url)
+    reopened_references = SQLAlchemySnapshotReferenceRepository(reopened.session_factory)
+    assert await reopened_references.list_for_snapshot(
+        "snapshot-1",
+        project_id="project-1",
+    ) == (reference,)
+    assert await reopened_references.release(
+        audit_id="audit-1",
+        snapshot_id="snapshot-1",
+        role=SnapshotReferenceRole.PRIMARY,
+    ) is True
+    assert await reopened_references.release(
+        audit_id="audit-1",
+        snapshot_id="snapshot-1",
+        role=SnapshotReferenceRole.PRIMARY,
+    ) is False
+    await reopened.dispose()
+
+
+async def test_snapshot_reference_owner_fks_and_concurrent_replay_fail_closed(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'snapshot-owner.db'}")
+    await database.create_schema()
+    await _seed(database)
+    projects = SQLAlchemyAuditProjectRepository(database.session_factory)
+    snapshots = SQLAlchemySnapshotRepository(database.session_factory)
+    await projects.create(_project("project-2"))
+    await snapshots.create(_snapshot("snapshot-2", project_id="project-2"))
+    references = SQLAlchemySnapshotReferenceRepository(database.session_factory)
+
+    with pytest.raises(RepositoryConflictError):
+        await references.add(
+            _reference(snapshot_id="snapshot-2", project_id="project-1")
+        )
+    with pytest.raises(RepositoryConflictError):
+        await references.add(_reference(project_id="project-2"))
+
+    outcomes = await asyncio.gather(
+        references.add(_reference()),
+        references.add(_reference()),
+    )
+    assert sorted(created for _stored, created in outcomes) == [False, True]
+    await database.dispose()
+
+
+async def test_snapshot_reference_corrupt_digest_is_not_returned(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'snapshot-corrupt.db'}")
+    await database.create_schema()
+    await _seed(database)
+    references = SQLAlchemySnapshotReferenceRepository(database.session_factory)
+    await references.add(_reference())
+    async with database.session_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE snapshot_references SET reference_digest = :digest "
+                "WHERE audit_id = :audit_id"
+            ),
+            {"digest": "0" * 64, "audit_id": "audit-1"},
+        )
+
+    with pytest.raises(RepositoryIntegrityError) as captured:
+        await references.list_for_snapshot("snapshot-1", project_id="project-1")
+    assert captured.value.entity == "SnapshotReference"
+    assert "snapshot-1" not in str(captured.value.__cause__)
+    await database.dispose()
