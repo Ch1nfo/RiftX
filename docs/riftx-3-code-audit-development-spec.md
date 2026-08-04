@@ -2573,14 +2573,15 @@ untrusted assertions**，没有授权、Preflight、执行选择、审批或 Sta
 
 AUD-201 必须引入 `riftx.audit-create-draft-request/v2`，从 HTTP body 移除上述 proof/selection/
 consent/Bundle 事实，由持久 Preflight plan 构造权威 Contract，并让 Create UoW 原子写
-`AuditSecurityContextBinding`、让 Start UoW 强制验证 plan/bundle binding。AUD-209 完成前只允许
+`AuditSecurityContextBinding`。AUD-201 同时冻结未来 Start UoW 的 plan/bundle binding 输入，但当前
+Contract 必须在调用该 UoW 前拒绝。AUD-209 完成前只允许
 Preflight 绑定 canonical empty bundle；最小 Binding row 必须以 DB CHECK/复合 owner 约束证明它与
 Plan/Audit/固定 ID/digest 恒等，非空输入返回 capability unavailable，而不是省略 digest或伪造
 Bundle row。
 迁移前创建的 v1 draft 不得被“补一个 token”升级为可执行对象；Operator 必须重新 Preflight 并
 创建 v2 draft。任何代码若把 v1 synthetic assertion 当作 proof，按 P0 安全问题处理。
 
-preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。本段 token 行为由 M2/AUD-201 接入：创建 draft 时 token 在同一个 creation UoW 中原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。Start 时重新检查目标；若工作树内容已经变化，返回 `audit_snapshot_changed`，原 draft 和 immutable Contract 保留但 Plan 进入不可启动的 revoked/stale 状态；Operator 必须重新 Preflight 并创建新的 v2 draft，不能给旧 Audit 换 Plan。只有 Start 事务成功写入 `AuditStartIntent` 时 token 才进入 `consumed`。AUD-103/M1 不接受、保存、hash 或预留 token，也不读取 Git；AUD-104 的 draft-only test path 只能保存前述 synthetic assertions，不得伪造已完成 Preflight。
+preflight_token 是高熵 opaque value，服务端只持久化 hash，并绑定规范化目标、Scope、预检时间、expiry 和内容摘要。本段 token 行为由 M2/AUD-201 接入：创建 draft 时 token 在同一个 creation UoW 中原子地 `reserved` 给 audit_id；同一 token 不能创建第二个 Audit，同一 token/client_request_id 的重试返回原 Audit。`consumed` transition 只允许未来 start-ready Contract 的 Start transaction 在同时写入 queued Audit、preparing Run 与 `AuditStartIntent` 时使用。AUD-201 当前 Contract 不读取 Git、不 revalidate、不 consume；它返回 typed capability unavailable，原 Plan/Audit/Contract 保持 reserved/draft/immutable。后续 Start 若发现工作树变化，返回 `audit_snapshot_changed` 并使 Plan revoked/stale；Operator 必须重新 Preflight/Create，不能给旧 Audit 换 Plan。AUD-103/M1 不接受、保存、hash 或预留 token，也不读取 Git；AUD-104 的 draft-only test path 只能保存前述 synthetic assertions，不得伪造已完成 Preflight。
 
 client_request_id 是请求级幂等键。M1/v1 的 request identity 明确定义为
 `canonical caller payload + server-derived authorization binding`，而不是仅 HTTP body；服务端按
@@ -2606,7 +2607,7 @@ Plan owner 与 canonical-empty 常量，AUD-209 起再验证完整 Bundle row。
 root 的 Audit。Create 成功后上下文只能通过 Audit-bound read projection 查看，不能换绑、增删
 entry 或更新 digest；任何变化都需要新的 input、Preflight plan 和 Audit。
 
-`POST /audits/{audit_id}/start` 接受独立 `start_request_id + reviewed_contract_digest`，重新验证 preflight plan、目标 digest、冻结合同、ModelDataEgress consent、Node/backend 与 Feature Flag，并在同一数据库事务中把 Audit 转为 queued、消费 token、写 `AuditStartIntent`。任何自动选择、origin、image/policy 或 capability 摘要变化都返回 `audit_contract_review_required`，由 UI 展示新合同后重新确认。它只返回已持久化的启动意图；Temporal 启动由第 14.1 节可靠投递协议完成。
+`POST /audits/{audit_id}/start` 接受独立 `start_request_id + reviewed_contract_digest`。AUD-201 只交付未公开 route 的 fail-closed application contract：Feature Flag、wire、Audit-root HOST_EXECUTE authorization、review digest、draft/created state、v1 与当前 v2 eligibility 依次验证；`preflight_bound_draft/start_eligible=false` 在 source revalidation/UoW 前返回 capability unavailable，且不得改变任何事实。AUD-208 起，只有新的 start-ready Contract 才重新验证 Plan、目标 digest、ModelDataEgress consent、Node/backend，并在同一数据库事务中把 Audit 转为 queued、Run 转为 preparing、消费 token、写 `AuditStartIntent`。任何自动选择、origin、image/policy 或 capability 摘要变化都返回 `audit_contract_review_required`。Temporal 启动只消费已提交 Intent，由可靠投递协议完成。
 
 ### 16.4 AuditResponse 最低字段
 
@@ -4189,7 +4190,7 @@ SourceIngest 资格前的 mandatory release gate。因此 M2 保持 `in_progress
 
 #### AUD-201：Signed Preflight Token
 
-实现高熵 opaque token 与持久 audit_preflight_plans：数据库只保存 token hash，计划绑定 source node/root identity、ingest backend/image/policy/prepare proof、目标、Scope、内容摘要和短时 expiry。这样 Control Plane 重启后仍可安全创建。Start 时在同一 source Node 重验，变化返回 audit_snapshot_changed；token reservation/consume 与 audit_id 幂等。
+实现高熵 opaque token 与持久 audit_preflight_plans：数据库只保存 token hash，计划绑定 source node/root identity、ingest backend/image/policy/prepare proof、目标、Scope、内容摘要和短时 expiry。这样 Control Plane 重启后仍可安全创建。冻结 Start same-node revalidation proof 与原子 consume/queued/Intent UoW contract；但 AUD-201 唯一可创建的 Contract 明确 `preflight_bound_draft/start_eligible=false`，因此当前 Start service 必须在 revalidation/UoW 前零副作用拒绝，不能伪造成功 admission。
 
 同时发布 `riftx.audit-create-draft-request/v2`：HTTP 只接收第 16.3 节 caller-owned preference 和
 opaque token，Contract 的 selection/proof/consent facts全部从 authoritative plan、Capability
@@ -4201,7 +4202,8 @@ identity/digest 与 bundle digest，不包含 raw token。迁移把所有 v1/M1 
 preflight binding；这些 draft 永不可 Start，也不能原地替换 immutable Contract，只能重新
 Preflight 后创建 v2 draft。增加伪造 proof field、token steal/replay、principal 变化、expiry、
 reservation race、Bundle swap/cross-principal binding、重启恢复、v1 read-only replay 和 v1 Start
-rejection 测试。
+rejection 测试。当前 v2 Start rejection 还必须证明 Plan 保持 reserved、Audit/Run 保持 draft/created、
+Event 不增加、Intent 为零，Runner/Temporal 调用均为零。
 
 #### AUD-202A：SnapshotStore 与 CAS Foundation
 
@@ -4262,7 +4264,7 @@ M3 所有 AST/SARIF/Detector 解析均依赖它，不允许宿主降级；fake b
 
 #### AUD-208：Start Intent 投递骨架
 
-实现 `POST /audits/{id}/start` 的 HOST_EXECUTION policy、start UoW、AuditStartIntent、确定性 Workflow ID、dispatcher/reconciler 和 fake Temporal 故障注入。Feature Flag 仍关闭真实扫描；M3 接入真实 Audit Workflow。
+实现 `POST /audits/{id}/start` 的 HOST_EXECUTION policy、start UoW、AuditStartIntent、确定性 Workflow ID、dispatcher/reconciler 和 fake Temporal 故障注入。成功 admission 只接受后续能力产生的 immutable `start_eligible=true` Contract；历史 v1 与 AUD-201 `preflight_bound_draft` 继续在 source revalidation/UoW 前拒绝，不能原地升级。Feature Flag 仍关闭真实扫描；M3 接入真实 Audit Workflow。
 
 #### AUD-209：Security Context Bundle
 

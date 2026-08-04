@@ -27,6 +27,7 @@ from .audit_preflight_plan import (
     AuditPreflightPlanIssuanceResult,
 )
 from .audit_preflight_runner import AuditPreflightRunnerService
+from .audit_start import AuditStartApplicationService, StartAudit
 from .audits import (
     AuditApplicationService,
     AuditContractBlueprint,
@@ -102,6 +103,7 @@ __all__ = [
     "AuditPreflightPlanIdFactory",
     "AuditPreflightPlanIssuanceResult",
     "AuditPreflightRunnerService",
+    "AuditStartApplicationService",
     "AuditControlApplicationService",
     "AuditContractBlueprint",
     "AuditControlAction",
@@ -115,6 +117,7 @@ __all__ = [
     "CreateAuditDraft",
     "CreateAuditDraftV2",
     "CreateRun",
+    "StartAudit",
     "DecideApproval",
     "EventApplicationService",
     "ExecutionApplicationService",

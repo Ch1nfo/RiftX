@@ -2,7 +2,7 @@
 
 > 状态：Accepted
 >
-> 实施状态：Plan/token、issuance API 与 Create v2 已实现；Start admission pending
+> 实施状态：AUD-201 implemented；current Contract Start admission fail-closed
 >
 > 日期：2026-08-04（Asia/Shanghai）
 >
@@ -55,9 +55,10 @@ Create v2。
    `start_ready`。
 7. AUD-201 只允许固定的 canonical-empty Security Context ID/digest，并创建最小 insert-only
    Binding root；完整 ContextInput、Bundle、entry、parser 和非空上下文由 AUD-209 独占。
-8. Start admission 拥有 same-node revalidation、Plan consume、Audit/Run queued projection 和 pending
-   `AuditStartIntent` 的原子准入决策；AUD-208 只负责 intent claim/lease/dispatch/retry/reconcile，
-   不能替代或放宽 AUD-201 的 source/Plan/Contract admission。
+8. AUD-201 冻结 Start request、same-node revalidation proof 和原子 Start UoW contract，但当前唯一可
+   创建的 Contract 明确 `start_eligible=false`，因此当前 service 必须在 revalidation/UoW 前零副作用
+   拒绝。成功的 Plan consume、Audit queued/Run preparing 与 pending `AuditStartIntent` 由 AUD-208 在存在新的
+   immutable `start_eligible=true` Contract schema 后接入；不能把现有 draft 原地升级。
 9. M1/v1 Contract、client-request parser 和历史读取继续保留，但 v1 proof 永远是 synthetic/
    untrusted。历史 v1 draft 不可 Start、不可原地升级、不可补 token/Plan；Operator 必须重新
    Preflight 并创建新的 v2 Audit。
@@ -88,8 +89,9 @@ AuditPreflightPlan/v1 (ready, short-lived)
         v
 Audit(preflight_bound_draft) + Plan(reserved)
         |
-        | later Start admission: same-node revalidation + reviewed contract
-        | same transaction: consume + queued + pending StartIntent
+        | current AUD-201 Start request: reject before revalidation/UoW
+        | future capabilities + new Preflight/Create produce start-ready Contract
+        | AUD-208 admission: revalidation + one atomic consume/queue/Intent transaction
         v
 Audit(queued) + Plan(consumed) + AuditStartIntent(pending)
         |
@@ -611,50 +613,58 @@ Bundle 后，历史 v2 Audit 不得原地换绑；context 任何变化都要求�
 
 ## 10. Start admission 与 AUD-208 边界
 
-### 10.1 AUD-201 所有的准入事实
+### 10.1 AUD-201 当前版本必须零副作用拒绝
 
-Start 必须接受独立 `start_request_id + reviewed_contract_digest`。AUD-201 冻结的 Start admission
-顺序为：
+Start request 固定为独立 `start_request_id + reviewed_contract_digest`。AUD-201 实现的 service 顺序为：
+
+~~~text
+feature flag + strict request validation
+  -> Audit-root HOST_EXECUTE authorization and complete aggregate read
+  -> reviewed contract digest + draft/created state validation
+  -> historical v1 rejection
+  -> preflight_bound_draft/start_eligible=false capability rejection
+  -> stop: no source revalidation, no Plan mutation, no Run/Audit mutation,
+           no Event, no StartIntent, no Runner, no Temporal
+~~~
+
+这是能力诚实性要求，不是临时测试 shortcut。AUD-201 Contract 同时缺少 SnapshotStore/materializer/mount、
+Scope ledger、Detector registry、analysis prepare 和 start delivery；在这些事实不存在时执行成功
+consume/queued/Intent 会与第 7.3 节逐字段矛盾。现有 Contract/Plan/Audit 均不可变或 insert-only，后续
+能力不能热填进历史 draft。Operator 必须在后续能力启用后重新 Preflight/Create，获得新的、明确
+`start_eligible=true` 的 Contract schema，旧 draft 继续不可 Start。
+
+AUD-201 同时冻结 `AuditStartRevalidationRequest/Proof` 与 `AuditStartAdmissionUnitOfWork` Port。请求以
+domain-separated digest 绑定 Audit/Run/Plan/Contract/Context/authorization/source node/root/repository/
+content/backend/image/policy 和有界绝对路径 digest；raw path `repr=False`。proof 必须短期、同 request、
+同 content 且 `matched` 才可接受。当前 service 在构造 request 或调用任一 Port 前拒绝，测试必须证明
+Plan 保持 reserved、Audit/Run 保持 draft/created、Event 数不变且 Intent 为零。
+
+### 10.2 未来成功 admission 与 AUD-208
+
+当后续任务能够从新 Preflight 生成真正 `start_eligible=true` 的 immutable Contract 时，AUD-208 才接入
+公开 route、same-node revalidation orchestration 和 Start UoW。成功顺序仍冻结为：
 
 ~~~text
 authentication/capability/feature flag
   -> Audit-root authorization and complete aggregate read
-  -> Contract v2 + Plan + Context Binding exact proof
+  -> start-ready Contract + Plan + Context Binding exact proof
   -> same-node source/root/repository/content/backend/policy revalidation
   -> current capability/policy/model-egress consent review
   -> one transaction:
        Plan reserved -> consumed
        Audit draft -> queued
-       Run created -> queued
+       Run created -> preparing
        append Audit/Run events
        insert AuditStartIntent(status=pending)
   -> return persisted intent projection
 ~~~
 
-真实 same-node revalidation 如需 SourceIngest Capsule，可以在数据库 transaction 前产生短期、
-owner-bound、single-use 的 bounded proof；Start UoW 只在 transaction 内接受并重验该 proof。不得在开放
-数据库 transaction 时等待 Runner/Git I/O，也不得让 AUD-208 dispatcher 自行读取 source。无论采用何种
-具体 Port，source revalidation 的发起、proof schema、freshness、Plan/Audit/Contract binding 和接受
-判定属于 Start admission，而不是 intent delivery。
+真实 same-node revalidation 如需 SourceIngest Capsule，只能在数据库 transaction 前产生短期、owner-bound、
+single-use bounded proof；UoW 在 transaction 内重验，不得持锁等待 Runner/Git I/O。若任何 binding 漂移，
+不消费 Plan、不写 queued/Intent，并返回 `audit_snapshot_changed`/
+`audit_contract_review_required`。只有 consume、queued 与 pending Intent 同时提交才算成功。
 
-若 root/repository/content、target、Node、backend/image/policy、empty context 或 reviewed Contract 任一
-变化，Start 不消费 token、不写 queued/Intent；Plan 以 CAS 进入 `stale` 或 `revoked`，返回
-`audit_snapshot_changed`/`audit_contract_review_required`。原 Audit/Contract 保持不可变 draft；用户
-只能重新 Preflight 并创建新 Audit，不能给旧 Audit 换 Plan。
-
-只有 transaction 已同时提交 Plan consume、Audit/Run queued 与 pending Intent 时，Start 才算准入
-成功。AUD-201 本身不调用 Temporal，也不把 HTTP background task 当作可靠投递。
-
-AUD-201 的 OpenAPI 可以暂不新增 Start route，但本 ADR/AUD-201 已拥有并冻结可独立测试的 Start
-admission service/UoW，包括 same-node proof acceptance、Plan consume、queued projection 和 pending
-Intent 原子写入。若公开 `POST /api/v1/audits/{audit_id}/start` 的薄 route adapter 与运行时 wiring 按
-roadmap 落在 AUD-208，它只能调用该既有 admission contract；AUD-208 的新增业务职责仍然只有提交后
-intent claim/lease/dispatch/retry/reconcile。AUD-201 完成时 Temporal client、普通 Runner enqueue 和
-Audit Workflow start 调用次数必须恒为零。
-
-### 10.2 AUD-208 只负责投递
-
-AUD-208 的职责严格限于：
+AUD-208 的提交后 delivery 职责严格限于：
 
 - claim/lease/reclaim pending/retryable intent；
 - 使用持久 `workflow_id = riftx-code-audit-{audit_id}` 调用 Temporal；
@@ -662,8 +672,9 @@ AUD-208 的职责严格限于：
 - 根据 Temporal history/数据库 projection 幂等 reconcile；
 - 保证 cancel 先赢时不再 dispatch。
 
-AUD-208 不得签发/验证新 Plan、读取 Git、重新选择 Node/backend、补 Contract/Binding、消费尚未消费的
-token、把 draft 改为 queued，或在 admission 失败时“为了投递成功”放宽 source/content/expiry 检查。
+dispatcher 不得签发/验证新 Plan、读取 Git、重新选择 Node/backend、补 Contract/Binding、消费尚未
+消费的 token、把 draft 改为 queued，或在 admission 失败时“为了投递成功”放宽 source/content/
+expiry 检查。AUD-201 与 AUD-208 都不得调用 Temporal 作为 admission transaction 的一部分。
 
 ## 11. v1、迁移与历史兼容
 
@@ -821,7 +832,8 @@ API 再补安全边界。
 
 1. 增加 Plan issuance route、policy inventory、OpenAPI、no-store middleware 和安全 projection；
 2. 将 `POST /audits` 新建路径切到 v2，Feature Flag 必须在 token/client-request lookup 前拒绝；
-3. 定义 Start revalidation proof Port 和 Start UoW contract，但 AUD-201 不调用 Temporal；
+3. 定义 Start revalidation proof Port 和 Start UoW contract；当前
+   `preflight_bound_draft/start_eligible=false` 在调用任一 Port 前零副作用拒绝；
 4. 为 AUD-208 提供仅接收已提交 pending Intent 的 dispatcher Port，禁止 dispatcher 反向承担 admission；
 5. 更新 CLI/UI contract fixture 时只展示安全 Plan/Contract 摘要，不持久化 token 到 local/session
    storage；刷新或 token stale 后要求重新 Preflight。
@@ -848,8 +860,9 @@ AUD-201 至少通过以下测试矩阵：
    proof 不得伪造；结果始终是 `preflight_bound_draft/start_eligible=false`。
 9. **v1/migration**：earliest→head→reopen、v1 canonical bytes 未改、v1 list/detail 可读、v1 Start/new
    create/downgrade 拒绝、损坏 Plan/Binding/client-request fail closed。
-10. **Start contract**：same-node/content/policy/context/review drift 不 consume；成功 transaction 同时产生
-    consumed + queued Audit/Run + pending Intent；AUD-201 Temporal 调用次数恒为零。
+10. **Start contract**：feature/wire/review/state/v1/current v2 全部在 revalidation/UoW 前拒绝；Plan 保持
+    reserved、Audit/Run 保持 draft/created、Event 不增、Intent 为零。proof request/digest/expiry/content
+    tamper fail closed；成功 consume + queued + pending Intent 测试移交首个 start-ready Contract/AUD-208。
 11. **Snapshot 边界**：AUD-201 无 Snapshot/CAS/Manifest/mount/pin/materializer；测试不能把
     `content_identity_digest` 接到 Snapshot digest 字段。
 12. **生产 gate**：真实 Linux descriptor mount round-trip 与 Capsule write/create/chmod/rename/unlink
