@@ -28,6 +28,11 @@ from .detectors import (
     LocalDetectorRunner,
     StaticDetector,
 )
+from .finding_normalizer import (
+    AUDIT_FINDING_SCHEMA_VERSION,
+    NormalizedAuditFinding,
+    normalize_detector_signals,
+)
 from .inventory import (
     DEFAULT_FILE_INVENTORY_POLICY_VERSION,
     DEFAULT_SCOPE_ANALYSES,
@@ -180,6 +185,7 @@ from .static_effect import (
 __all__ = [
     "AUDIT_STATIC_EFFECT_LIMITS_SCHEMA_VERSION",
     "AUDIT_STATIC_EFFECT_PLAN_SCHEMA_VERSION",
+    "AUDIT_FINDING_SCHEMA_VERSION",
     "BUILTIN_DETECTOR_SET_VERSION",
     "DETECTOR_REGISTRY_SCHEMA_VERSION",
     "DETECTOR_RUNNER_SCHEMA_VERSION",
@@ -254,6 +260,7 @@ __all__ = [
     "LocalSnapshotViewFailure",
     "LocalSnapshotViewSummary",
     "LocalDetectorRunner",
+    "NormalizedAuditFinding",
     "LocalSourceMaterializationError",
     "LocalSourceMaterializationFailure",
     "LocalSourceMaterializer",
@@ -323,6 +330,7 @@ __all__ = [
     "builtin_detectors",
     "build_source_snapshot",
     "load_source_manifest",
+    "normalize_detector_signals",
     "parse_snapshot_content_storage_key",
     "publish_source_manifest",
     "snapshot_mount_key_digest",

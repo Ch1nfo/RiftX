@@ -31,14 +31,14 @@
 
 ## Current Wave
 
-- Milestone: `S2 — Inventory and Detector` is `in_progress`.
-- Completed task: `AUD-S202 — Built-in security rules`.
+- Milestone: `S3 — Findings and reports` is `in_progress`.
+- Completed task: `AUD-S300 — Signal normalization and Finding`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S300 — Signal normalization and Finding`.
+- Next task: `AUD-S301 — JSON/Markdown Report`.
 
 ## Milestone Status
 
@@ -47,7 +47,7 @@
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
-| S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
+| S3 Findings and reports | in_progress | stable deduplicated Findings with severity, confidence, location and redacted evidence completed; reports remain |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
 
@@ -62,7 +62,7 @@
 | AUD-S200 File Inventory and Scope | completed |
 | AUD-S201 Detector registry and runner | completed |
 | AUD-S202 Built-in security rules | completed |
-| AUD-S300 Signal normalization and Finding | pending |
+| AUD-S300 Signal normalization and Finding | completed |
 | AUD-S301 JSON/Markdown Report | pending |
 | AUD-S400 Local Audit Job | pending |
 | AUD-S401 Minimal API and CLI | pending |
@@ -2416,8 +2416,44 @@ individual operation families.
   - Audit unit regression: `196 passed`;
   - full repository suite: `4888 passed, 5 skipped, 12 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `e7da78be feat(code-audit): add built-in security rules`.
 - Next unblocked task: `AUD-S300 — Signal normalization and Finding`.
+
+### AUD-S300 — Signal Normalization and Finding
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/finding_normalizer.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_finding_normalizer.py`
+  - this ledger
+- Outcome:
+  - added a deterministic audit-specific Finding with structured rule identity,
+    severity, confidence, blob-bound relative location and bounded evidence excerpt;
+  - deduplicates equivalent Signals with a domain-separated stable key and stable
+    `finding-<digest>` ID independent of input order or evidence variants;
+  - applies explicit severity/confidence policy for every built-in rule family;
+  - redacts credential assignments, AWS/GitHub-style tokens and private-key markers,
+    collapses control whitespace and safely truncates UTF-8 evidence;
+  - projects normalized results into the existing durable Finding model as drafts
+    with file/line/column evidence and no reproduction, recommendation or fix fields.
+- Schema/migration impact: none; structured normalization remains audit-owned and
+  reuses the existing durable Finding projection for later local-job persistence.
+- Security boundary impact: no source reads, execution or repair actions; raw evidence
+  is excluded from repr and sanitized before durable projection.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s300-unit tests/unit/audit/test_finding_normalizer.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s300-audit tests/unit/audit tests/unit/domain/test_models.py tests/unit/persistence/test_finding_mapper.py tests/integration/persistence/test_finding_repository.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s300-full-final`
+  - `git diff --check`
+- Test results:
+  - focused normalizer suite: `4 passed`;
+  - Audit/Finding/persistence regression: `233 passed`;
+  - full repository suite: `4892 passed, 5 skipped, 11 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S301 — JSON/Markdown Report`.
 
 ## Design Deviations and ADRs
 
