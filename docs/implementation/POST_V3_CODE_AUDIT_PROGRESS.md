@@ -32,13 +32,13 @@
 ## Current Wave
 
 - Milestone: `S2 — Inventory and Detector` is `in_progress`.
-- Completed task: `AUD-S201 — Detector registry and runner`.
+- Completed task: `AUD-S202 — Built-in security rules`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S202 — Built-in security rules`.
+- Next task: `AUD-S300 — Signal normalization and Finding`.
 
 ## Milestone Status
 
@@ -46,7 +46,7 @@
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
-| S2 Inventory and Detector | in_progress | Inventory, atomic file Scope persistence, fixed Detector registry and bounded local runner completed; built-in rules remain |
+| S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
@@ -61,7 +61,7 @@
 | AUD-S102 SourceSnapshot seal | completed |
 | AUD-S200 File Inventory and Scope | completed |
 | AUD-S201 Detector registry and runner | completed |
-| AUD-S202 Built-in security rules | pending |
+| AUD-S202 Built-in security rules | completed |
 | AUD-S300 Signal normalization and Finding | pending |
 | AUD-S301 JSON/Markdown Report | pending |
 | AUD-S400 Local Audit Job | pending |
@@ -2376,8 +2376,48 @@ individual operation families.
   - Audit unit regression: `190 passed`;
   - full repository suite: `4882 passed, 5 skipped, 11 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `23b8588a feat(code-audit): add bounded detector runner`.
 - Next unblocked task: `AUD-S202 — Built-in security rules`.
+
+### AUD-S202 — Built-in Security Rules
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/builtin_detectors.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_builtin_detectors.py`
+  - this ledger
+- Outcome:
+  - added a fixed five-rule built-in registry for Secret, Dependency,
+    Configuration, Python and JavaScript/TypeScript security checks;
+  - Secret checks cover private-key markers, AWS/GitHub-style tokens and hard-coded
+    credential assignments while redacting credential values from raw evidence;
+  - Dependency checks report mutable/unpinned requirements.txt, package.json and
+    PEP 621 pyproject.toml declarations without network or vulnerability-database use;
+  - Configuration checks report debug mode, disabled TLS verification, wildcard CORS
+    and explicitly root container users;
+  - Python checks use the standard-library AST for eval/exec, os.system,
+    shell=True subprocesses, pickle and unsafe yaml.load calls;
+  - JavaScript/TypeScript checks cover dynamic code execution, command-shell APIs,
+    DOM injection sinks and disabled TLS verification;
+  - every rule carries immutable versioned metadata and an implementation-contract
+    digest and runs through the S201 bounded deterministic runner.
+- Schema/migration/persistence impact: none.
+- Security boundary impact: standard-library-only static parsing and line matching;
+  no target execution, plugin loading, package install, network, Docker or other host.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s202-unit tests/unit/audit/test_builtin_detectors.py tests/unit/audit/test_detectors.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s202-audit tests/unit/audit`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s202-full-final`
+  - `git diff --check`
+- Test results:
+  - focused built-in/runner suite: `13 passed`;
+  - Audit unit regression: `196 passed`;
+  - full repository suite: `4888 passed, 5 skipped, 12 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S300 — Signal normalization and Finding`.
 
 ## Design Deviations and ADRs
 

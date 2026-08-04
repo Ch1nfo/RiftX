@@ -1,5 +1,15 @@
 """RiftX-owned Code Audit primitives."""
 
+from .builtin_detectors import (
+    BUILTIN_DETECTOR_SET_VERSION,
+    ConfigurationDetector,
+    DependencyDetector,
+    JavaScriptDetector,
+    PythonDetector,
+    SecretDetector,
+    builtin_detector_registry,
+    builtin_detectors,
+)
 from .detectors import (
     DETECTOR_REGISTRY_SCHEMA_VERSION,
     DETECTOR_RUNNER_SCHEMA_VERSION,
@@ -170,6 +180,7 @@ from .static_effect import (
 __all__ = [
     "AUDIT_STATIC_EFFECT_LIMITS_SCHEMA_VERSION",
     "AUDIT_STATIC_EFFECT_PLAN_SCHEMA_VERSION",
+    "BUILTIN_DETECTOR_SET_VERSION",
     "DETECTOR_REGISTRY_SCHEMA_VERSION",
     "DETECTOR_RUNNER_SCHEMA_VERSION",
     "DEFAULT_FILE_INVENTORY_POLICY_VERSION",
@@ -180,6 +191,8 @@ __all__ = [
     "DEFAULT_MAX_SOURCE_PATH_BYTES",
     "DEFAULT_SCOPE_ANALYSES",
     "DEFAULT_SOURCE_PATH_POLICY_VERSION",
+    "ConfigurationDetector",
+    "DependencyDetector",
     "DetectorCancellation",
     "DetectorFailure",
     "DetectorFileResult",
@@ -202,6 +215,7 @@ __all__ = [
     "FileInventoryFailure",
     "FileInventoryReason",
     "FileInventoryStatistics",
+    "JavaScriptDetector",
     "LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN",
     "LOCAL_SNAPSHOT_VIEW_SCHEMA_VERSION",
     "LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION",
@@ -246,6 +260,7 @@ __all__ = [
     "OpenedSnapshotBlob",
     "PreparedSnapshotMount",
     "PublishedSourceSnapshot",
+    "PythonDetector",
     "RepositoryPathFilters",
     "SnapshotBlobMetadata",
     "SnapshotBlobObjectType",
@@ -282,6 +297,7 @@ __all__ = [
     "SnapshotStoreCrash",
     "SnapshotStoreError",
     "SnapshotStoreFailure",
+    "SecretDetector",
     "SourceCaptureDecision",
     "SourceCapturePolicy",
     "SourceCaptureReason",
@@ -303,6 +319,8 @@ __all__ = [
     "audit_static_effect_plan_digest",
     "build_file_inventory",
     "build_file_scope_units",
+    "builtin_detector_registry",
+    "builtin_detectors",
     "build_source_snapshot",
     "load_source_manifest",
     "parse_snapshot_content_storage_key",
