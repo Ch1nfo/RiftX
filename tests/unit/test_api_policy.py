@@ -47,6 +47,13 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.DURABLE_WRITE
     assert ROUTE_POLICIES["list_audits"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["get_audit"].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["start_audit"].effect is RouteEffect.HOST_EXECUTION
+    for route_name in (
+        "list_local_audit_findings",
+        "get_local_audit_finding",
+        "get_local_audit_report",
+    ):
+        assert ROUTE_POLICIES[route_name].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["create_audit_preflight"].effect is RouteEffect.HOST_EXECUTION
     assert ROUTE_POLICIES["get_audit_preflight"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["cancel_audit_preflight"].effect is RouteEffect.HOST_CONTROL

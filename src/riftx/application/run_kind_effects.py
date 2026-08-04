@@ -339,6 +339,8 @@ class RunEffectOperation(StrEnum):
     GENERATE_REPORTS = "generate_reports"
     GET_ARTIFACT = "get_artifact"
     GET_AUDIT = "get_audit"
+    GET_LOCAL_AUDIT_FINDING = "get_local_audit_finding"
+    GET_LOCAL_AUDIT_REPORT = "get_local_audit_report"
     GET_AUDIT_PREFLIGHT = "get_audit_preflight"
     GET_AUDIT_ARTIFACT = "get_audit_artifact"
     GET_BROWSER = "get_browser"
@@ -362,6 +364,7 @@ class RunEffectOperation(StrEnum):
     LIST_ARTIFACTS = "list_artifacts"
     LIST_AUDIT_ARTIFACTS = "list_audit_artifacts"
     LIST_AUDITS = "list_audits"
+    LIST_LOCAL_AUDIT_FINDINGS = "list_local_audit_findings"
     LIST_CONNECTOR_RUNS = "list_connector_runs"
     LIST_EVENTS = "list_events"
     LIST_FINDINGS = "list_findings"
@@ -387,6 +390,7 @@ class RunEffectOperation(StrEnum):
     SEARCH_MEMORIES = "search_memories"
     STREAM_BROWSER = "stream_browser"
     STREAM_EVENTS = "stream_events"
+    START_AUDIT = "start_audit"
     SUBMIT_HTTP_CAPTURE = "submit_http_capture"
     SWITCH_RUN_MODEL = "switch_run_model"
     TAKEOVER_BROWSER = "takeover_browser"
@@ -1076,6 +1080,21 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.READ_ONLY,
         _SAME,
     ),
+    *_rules(
+        (
+            RunEffectOperation.LIST_LOCAL_AUDIT_FINDINGS,
+            RunEffectOperation.GET_LOCAL_AUDIT_FINDING,
+            RunEffectOperation.GET_LOCAL_AUDIT_REPORT,
+        ),
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.FINDING,
+        _NO_RUN_KIND,
+        OperationEffect.READ_ONLY,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
     _rule(
         RunEffectOperation.GET_AUDIT_PREFLIGHT,
         EffectOrigin.LOCAL_OPERATOR_API,
@@ -1325,6 +1344,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
     ),
     _rule(
         RunEffectOperation.CREATE_AUDIT_PREFLIGHT,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
+        RunEffectOperation.START_AUDIT,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.RUN_LIFECYCLE,
         _NO_RUN_KIND,

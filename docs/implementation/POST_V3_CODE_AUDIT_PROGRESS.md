@@ -32,13 +32,13 @@
 ## Current Wave
 
 - Milestone: `S4 — Local product wiring` is `in_progress`.
-- Completed task: `AUD-S400 — Local Audit Job`.
+- Completed task: `AUD-S401 — Minimal API and CLI`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S401 — Minimal API and CLI`.
+- Next task: `AUD-S402 — Minimal WebUI`.
 
 ## Milestone Status
 
@@ -48,7 +48,7 @@
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
 | S3 Findings and reports | completed | stable redacted Findings and deterministic JSON/Markdown reports completed with full regression evidence |
-| S4 Local product wiring | in_progress | durable single-machine Audit Job is complete; minimal API/CLI and WebUI remain |
+| S4 Local product wiring | in_progress | durable single-machine Audit Job and minimal API/CLI are complete; minimal WebUI remains |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
 
 ## Task Status
@@ -65,7 +65,7 @@
 | AUD-S300 Signal normalization and Finding | completed |
 | AUD-S301 JSON/Markdown Report | completed |
 | AUD-S400 Local Audit Job | completed |
-| AUD-S401 Minimal API and CLI | pending |
+| AUD-S401 Minimal API and CLI | completed |
 | AUD-S402 Minimal WebUI | pending |
 | AUD-S500 Local-folder end-to-end acceptance | pending |
 
@@ -2544,8 +2544,65 @@ individual operation families.
   - persistence regression: `496 passed, 10 warnings`;
   - full repository suite: `4899 passed, 5 skipped, 11 warnings`;
   - Ruff passed; whitespace check is run immediately before commit.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `0cd0f3f2` (`feat(code-audit): add local audit jobs`).
 - Next unblocked task: `AUD-S401 — Minimal API and CLI`.
+
+### AUD-S401 — Minimal API and CLI
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/jobs.py`
+  - `src/riftx/api/dependencies.py`
+  - `src/riftx/api/runtime.py`
+  - `src/riftx/api/routes/audits.py`
+  - `src/riftx/api/schemas/local_audits.py`
+  - `src/riftx/api/schemas/__init__.py`
+  - `src/riftx/api/policy.py`
+  - `src/riftx/application/run_kind_effects.py`
+  - `src/riftx/cli/client.py`
+  - `src/riftx/cli/app.py`
+  - `tests/integration/api/test_local_audits.py`
+  - existing Audit API, API policy/runtime and CLI tests updated for the new surface
+  - this ledger
+- Outcome:
+  - wired the durable local Audit Job repository and same-machine Worker into the
+    Control Plane with startup recovery, background dispatch and orderly cancellation;
+  - added minimal create, start, status, cancel, Finding list/detail and deterministic
+    JSON/Markdown report endpoints without introducing Runner, Docker, another host,
+    target execution, validation, fixes or release machinery;
+  - preserved historical complex Audit request/read/control compatibility while simple
+    `source_path` requests use the independent local-static Job path;
+  - added severity, category and exact-relative-file Finding filters with bounded
+    pagination, stable not-found/conflict responses and path-free validation failures;
+  - added `riftx audit <folder>`, `status`, `findings`, `report` and `cancel`; the folder
+    command creates and starts a Job and never invokes target commands;
+  - completed API route policy and RunKind effect inventory registration for the new
+    local, non-Run-scoped routes;
+  - completed API readback across service restart and proved source-folder bytes remain
+    unchanged through the full HTTP workflow.
+- Schema/migration impact: None; AUD-S401 uses the `local_audit_jobs` table introduced
+  by AUD-S400.
+- Security boundary impact:
+  - scanning is available only when Audit is enabled and explicit same-machine source
+    roots are configured;
+  - runtime state paths are normalized and protected from source selection, while API
+    responses never expose the absolute source path;
+  - all target analysis remains bounded, read-only and performed against RiftX-owned
+    sealed Snapshot bytes; no subprocess, Git helper, package manager, plugin, network
+    scanner, remote node or container is introduced.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s401-postfix tests/unit/audit tests/integration/api/test_local_audits.py tests/integration/api/test_audits.py tests/unit/application/test_run_kind_effect_policy.py tests/unit/test_api_policy.py tests/unit/test_api_runtime.py tests/unit/cli/test_client.py tests/unit/cli/test_app.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s401-api-cli-regression tests/integration/api tests/unit/cli tests/unit/test_api_policy.py tests/unit/test_api_runtime.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s401-full-final`
+  - `git diff --check`
+- Test results:
+  - focused Audit/API/policy/runtime/CLI suite: `365 passed`;
+  - API and CLI regression: `332 passed`;
+  - full repository suite: `4904 passed, 5 skipped, 11 warnings`;
+  - Ruff passed; whitespace check is run immediately before commit.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S402 — Minimal WebUI`.
 
 ## Design Deviations and ADRs
 
@@ -2603,10 +2660,9 @@ individual operation families.
 
 ## Current Risks
 
-- The local Job is not user-visible yet. API/CLI dispatch, startup recovery wiring,
-  Findings/report endpoints and the minimal WebUI remain in AUD-S401/AUD-S402.
+- The local Job is available through API and CLI; the minimal WebUI remains in AUD-S402.
 - Product configuration must supply explicit allowed source roots and disjoint private
-  staging/Snapshot paths when AUD-S401 wires the Job service into the running app.
+  staging/Snapshot paths before local scans can start.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
 - The private RiftX state root must not be writable by the audited project or any

@@ -55,6 +55,13 @@ from .executions import (
 )
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
 from .graphs import GraphViewPage, GraphViewQuery
+from .local_audits import (
+    CreateLocalAuditRequest,
+    LocalAuditFindingListResponse,
+    LocalAuditFindingResponse,
+    LocalAuditId,
+    LocalAuditJobResponse,
+)
 from .memories import (
     CreateMemoryRequest,
     MemoryListResponse,
@@ -151,6 +158,7 @@ __all__ = [
     "CreateAuditDraftRequest",
     "CreateAuditDraftRequestV2",
     "CreateMemoryRequest",
+    "CreateLocalAuditRequest",
     "CompactRunRequest",
     "CreateFindingRequest",
     "EngagementCreateRequest",
@@ -166,6 +174,10 @@ __all__ = [
     "FinishAuditPreflightRequest",
     "GraphViewPage",
     "GraphViewQuery",
+    "LocalAuditFindingListResponse",
+    "LocalAuditFindingResponse",
+    "LocalAuditId",
+    "LocalAuditJobResponse",
     "MemoryListResponse",
     "MemoryResponse",
     "ModelProfileListResponse",

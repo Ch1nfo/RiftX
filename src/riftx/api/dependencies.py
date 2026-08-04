@@ -38,6 +38,7 @@ from riftx.application.services.audit_preflight_runner import (
 )
 from riftx.application.services.graphs import GraphApplicationService
 from riftx.application.traffic import TrafficMetadataCapability
+from riftx.audit import LocalAuditJobService
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
@@ -153,6 +154,23 @@ def get_audit_control_service(request: Request) -> AuditControlApplicationServic
         raise ServiceUnavailableError(
             "audit_control_unavailable",
             "RiftX Code Audit controls are temporarily unavailable",
+        )
+    return service
+
+
+def get_optional_local_audit_job_service(
+    request: Request,
+) -> LocalAuditJobService | None:
+    service = getattr(request.app.state.control_plane, "local_audit_job_service", None)
+    return service if isinstance(service, LocalAuditJobService) else None
+
+
+def get_local_audit_job_service(request: Request) -> LocalAuditJobService:
+    service = get_optional_local_audit_job_service(request)
+    if service is None:
+        raise ServiceUnavailableError(
+            "local_audit_unavailable",
+            "Local Code Audit is temporarily unavailable",
         )
     return service
 
@@ -351,6 +369,14 @@ ModelProfileServiceDependency = Annotated[
 LocalPrincipalDependency = Annotated[
     LocalPrincipal,
     Depends(get_authenticated_local_principal),
+]
+LocalAuditJobServiceDependency = Annotated[
+    LocalAuditJobService,
+    Depends(get_local_audit_job_service),
+]
+OptionalLocalAuditJobServiceDependency = Annotated[
+    LocalAuditJobService | None,
+    Depends(get_optional_local_audit_job_service),
 ]
 
 

@@ -46,6 +46,30 @@ class FakeAPIClient:
             "temporal_workflow_id": "workflow-run-1",
         }
 
+    def create_local_audit(self, source_path: str) -> dict[str, Any]:
+        self.calls.append(("create_local_audit", source_path))
+        return {"audit_id": "audit-1", "status": "draft"}
+
+    def start_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("start_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "queued"}
+
+    def get_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("get_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "completed"}
+
+    def list_local_audit_findings(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("list_local_audit_findings", audit_id))
+        return {"items": [], "total": 0, "limit": 100, "offset": 0}
+
+    def get_local_audit_report(self, audit_id: str, *, format: str = "json") -> str:
+        self.calls.append(("get_local_audit_report", (audit_id, format)))
+        return "# Local Audit\n" if format == "markdown" else '{"findings":[]}\n'
+
+    def cancel_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("cancel_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "cancelled"}
+
     def list_runs(self, **kwargs: object) -> dict[str, Any]:
         self.calls.append(("list_runs", kwargs))
         if self.fail:
@@ -409,6 +433,41 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeAPIClient.fail = False
     FakeAPIClient.unhealthy = False
     monkeypatch.setattr(cli_module, "APIClient", FakeAPIClient)
+
+
+def test_local_audit_commands_delegate_to_minimal_api(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    scan = runner.invoke(cli_module.app, ["audit", str(project)])
+    status = runner.invoke(cli_module.app, ["audit", "status", "audit-1"])
+    findings = runner.invoke(cli_module.app, ["audit", "findings", "audit-1"])
+    report = runner.invoke(
+        cli_module.app,
+        ["audit", "report", "audit-1", "--format", "markdown"],
+    )
+    cancel = runner.invoke(cli_module.app, ["audit", "cancel", "audit-1"])
+
+    for result in (scan, status, findings, report, cancel):
+        assert result.exit_code == 0, result.output
+    assert "queued" in scan.output
+    assert "completed" in status.output
+    assert "Local Audit" in report.output
+    assert "cancelled" in cancel.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("create_local_audit", str(project.resolve())),
+        ("start_local_audit", "audit-1"),
+    ]
+    assert FakeAPIClient.instances[1].calls == [("get_local_audit", "audit-1")]
+    assert FakeAPIClient.instances[2].calls == [
+        ("list_local_audit_findings", "audit-1")
+    ]
+    assert FakeAPIClient.instances[3].calls == [
+        ("get_local_audit_report", ("audit-1", "markdown"))
+    ]
+    assert FakeAPIClient.instances[4].calls == [("cancel_local_audit", "audit-1")]
 
 
 def test_run_create_builds_api_payload() -> None:

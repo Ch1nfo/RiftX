@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ from .source_manifest import SourceCapturePolicy, publish_source_manifest
 LOCAL_AUDIT_JOB_SCHEMA_VERSION = "riftx.local-audit-job/v1"
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,127}$")
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+logger = logging.getLogger(__name__)
 
 
 class LocalAuditJobStatus(StrEnum):
@@ -566,13 +568,20 @@ class LocalAuditJobService:
     def __init__(
         self,
         store: LocalAuditJobStore,
-        worker: LocalAuditWorker,
+        worker: LocalAuditWorker | None,
         *,
         id_factory: Callable[[], str] | None = None,
+        auto_dispatch: bool = False,
     ) -> None:
         self._jobs = store
         self._worker = worker
         self._id_factory = id_factory or (lambda: f"audit-{uuid4().hex}")
+        self._auto_dispatch = auto_dispatch
+        self._tasks: dict[str, asyncio.Task[LocalAuditJob]] = {}
+
+    @property
+    def runnable(self) -> bool:
+        return self._worker is not None
 
     async def create(
         self,
@@ -594,11 +603,17 @@ class LocalAuditJobService:
         )
 
     async def start(self, audit_id: str) -> LocalAuditJob:
-        return await self._jobs.enqueue(audit_id)
+        if self._worker is None:
+            raise RuntimeError("local Audit Worker is unavailable")
+        job = await self._jobs.enqueue(audit_id)
+        if self._auto_dispatch and job.status is LocalAuditJobStatus.QUEUED:
+            self.dispatch(audit_id)
+        return job
 
     async def cancel(self, audit_id: str) -> LocalAuditJob:
         job = await self._jobs.request_cancel(audit_id)
-        self._worker.cancel(audit_id)
+        if self._worker is not None:
+            self._worker.cancel(audit_id)
         return job
 
     async def status(self, audit_id: str) -> LocalAuditJob | None:
@@ -606,6 +621,56 @@ class LocalAuditJobService:
 
     async def recover(self) -> tuple[int, int]:
         return await self._jobs.recover_interrupted()
+
+    async def run(self, audit_id: str) -> LocalAuditJob:
+        if self._worker is None:
+            raise RuntimeError("local Audit Worker is unavailable")
+        return await self._worker.run(audit_id)
+
+    def dispatch(self, audit_id: str) -> asyncio.Task[LocalAuditJob]:
+        if self._worker is None:
+            raise RuntimeError("local Audit Worker is unavailable")
+        existing = self._tasks.get(audit_id)
+        if existing is not None and not existing.done():
+            return existing
+        task = asyncio.create_task(
+            self.run(audit_id),
+            name=f"riftx-local-audit-{audit_id}",
+        )
+        self._tasks[audit_id] = task
+        task.add_done_callback(lambda value, job_id=audit_id: self._task_done(job_id, value))
+        return task
+
+    async def wait(self, audit_id: str) -> LocalAuditJob | None:
+        task = self._tasks.get(audit_id)
+        if task is not None:
+            await task
+        return await self.status(audit_id)
+
+    async def close(self) -> None:
+        active = tuple(
+            (audit_id, task)
+            for audit_id, task in self._tasks.items()
+            if not task.done()
+        )
+        for audit_id, _task in active:
+            await self.cancel(audit_id)
+        if active:
+            await asyncio.gather(*(task for _audit_id, task in active), return_exceptions=True)
+        self._tasks.clear()
+
+    def _task_done(self, audit_id: str, task: asyncio.Task[LocalAuditJob]) -> None:
+        if self._tasks.get(audit_id) is task:
+            self._tasks.pop(audit_id, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Local Audit background task failed for %s",
+                audit_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
 
 class _Cancelled(RuntimeError):

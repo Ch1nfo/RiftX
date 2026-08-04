@@ -45,6 +45,11 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalReconciler,
 )
 from riftx.application.workflow_router import RunWorkflowControlRouter
+from riftx.audit import (
+    LocalAuditJobService,
+    LocalAuditWorker,
+    LocalAuditWorkerConfig,
+)
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import (
     AuditConfig,
@@ -86,6 +91,7 @@ from riftx.persistence import (
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
+    SQLAlchemyLocalAuditJobRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
@@ -316,6 +322,39 @@ def _create_audit_service(
     )
 
 
+async def _create_local_audit_job_service(
+    settings: APISettings,
+    database: Database,
+) -> LocalAuditJobService:
+    repository = SQLAlchemyLocalAuditJobRepository(database.session_factory)
+    worker = None
+    if settings.audit.enabled and settings.audit.source_roots:
+        worker = LocalAuditWorker(
+            repository,
+            LocalAuditWorkerConfig(
+                allowed_roots=settings.audit.source_roots,
+                protected_paths=(
+                    settings.audit.fix_root,
+                    settings.workspace_root.expanduser().resolve(strict=False),
+                    settings.runner_state_path.expanduser().resolve(strict=False),
+                ),
+                staging_root=settings.audit.temp_root / "local-jobs",
+                snapshot_root=settings.audit.snapshot_root,
+                max_file_bytes=settings.audit.max_file_bytes,
+                max_repository_bytes=settings.audit.max_repository_bytes,
+                max_manifest_entries=settings.audit.max_files,
+                max_text_characters=settings.audit.max_file_bytes,
+            ),
+        )
+    service = LocalAuditJobService(
+        repository,
+        worker,
+        auto_dispatch=True,
+    )
+    await service.recover()
+    return service
+
+
 def _create_audit_preflight_service(
     settings: APISettings,
     database: Database,
@@ -460,6 +499,7 @@ class ControlPlane:
     terminal_supervisor: TerminalSupervisor
     graph_repository: SQLAlchemyGraphReadRepository
     traffic_repository: SQLAlchemyTrafficMetadataReadRepository
+    local_audit_job_service: LocalAuditJobService | None = None
     audit_control_service: AuditControlApplicationService | None = None
     audit_preflight_service: AuditPreflightApplicationService | None = None
     audit_preflight_plan_service: AuditPreflightPlanApplicationService | None = None
@@ -644,6 +684,8 @@ class ControlPlane:
             await asyncio.sleep(0.1)
 
     async def close(self) -> None:
+        if self.local_audit_job_service is not None:
+            await self.local_audit_job_service.close()
         audit_preflight_reconciliation_task = self._audit_preflight_reconciliation_task
         self._audit_preflight_reconciliation_task = None
         if audit_preflight_reconciliation_task is not None:
@@ -745,6 +787,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     audit_preflight_repository = SQLAlchemyAuditPreflightRepository(
         database.session_factory
     )
+    local_audit_job_service = await _create_local_audit_job_service(settings, database)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
     model_profile_service = ModelProfileApplicationService(
@@ -1047,6 +1090,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         terminal_supervisor=terminal_supervisor,
         graph_repository=graph_repository,
         traffic_repository=traffic_repository,
+        local_audit_job_service=local_audit_job_service,
         audit_control_service=audit_control_service,
         audit_preflight_service=audit_preflight_service,
         audit_preflight_plan_service=audit_preflight_plan_service,
@@ -1066,6 +1110,9 @@ def _prepare_local_paths(settings: APISettings) -> None:
     _validate_audit_settings_path_isolation(settings)
     settings.workspace_root.mkdir(parents=True, exist_ok=True)
     settings.runner_state_path.mkdir(parents=True, exist_ok=True)
+    if settings.audit.enabled:
+        settings.audit.snapshot_root.mkdir(parents=True, exist_ok=True)
+        settings.audit.temp_root.mkdir(parents=True, exist_ok=True)
     if settings.database_url.startswith("sqlite+aiosqlite:///"):
         raw_path = settings.database_url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
