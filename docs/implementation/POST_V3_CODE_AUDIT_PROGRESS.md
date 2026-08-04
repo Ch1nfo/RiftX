@@ -31,14 +31,14 @@
 
 ## Current Wave
 
-- Milestone: `S1 — Local folder and Snapshot` is `completed`.
-- Completed task: `AUD-S102 — SourceSnapshot seal`.
+- Milestone: `S2 — Inventory and Detector` is `in_progress`.
+- Completed task: `AUD-S200 — File Inventory and Scope`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S200 — File Inventory and Scope`.
+- Next task: `AUD-S201 — Detector registry and runner`.
 
 ## Milestone Status
 
@@ -46,7 +46,7 @@
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
-| S2 Inventory and Detector | pending | AUD-S200 through AUD-S202 not started |
+| S2 Inventory and Detector | in_progress | deterministic sealed-Manifest Inventory and atomic file Scope persistence completed; Detector work remains |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
@@ -59,7 +59,7 @@
 | AUD-S100 Local folder admission | completed |
 | AUD-S101 Local Snapshot View | completed |
 | AUD-S102 SourceSnapshot seal | completed |
-| AUD-S200 File Inventory and Scope | pending |
+| AUD-S200 File Inventory and Scope | completed |
 | AUD-S201 Detector registry and runner | pending |
 | AUD-S202 Built-in security rules | pending |
 | AUD-S300 Signal normalization and Finding | pending |
@@ -371,7 +371,7 @@ individual operation families.
   - `conda run --no-capture-output -n agent python -m ruff check src/riftx/config.py src/riftx/api/runtime.py src/riftx/temporal/worker_runtime.py src/riftx/cli/app.py tests/unit/test_audit_config.py tests/unit/test_runtime_config.py tests/unit/cli/test_app.py tests/unit/temporal/test_worker_runtime.py`
   - `conda run --no-capture-output -n agent python -m mypy src/riftx/config.py src/riftx/api/runtime.py src/riftx/cli/app.py tests/unit/test_audit_config.py`
   - `conda run --no-capture-output -n agent python -m ruff check src/riftx tests migrations scripts/qa`
-  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s200-full-confirm`
   - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
   - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
   - `git diff --check`
@@ -2270,8 +2270,63 @@ individual operation families.
 - Known limitations:
   - S102 seals the immutable local Snapshot foundation only; file Inventory,
     detectors, Findings and user-facing job wiring begin in S2 and later milestones.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `9f177983 feat(code-audit): seal local source snapshots`.
 - Next unblocked task: `AUD-S200 — File Inventory and Scope`.
+
+### AUD-S200 — File Inventory and Scope
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/inventory.py`
+  - `src/riftx/audit/local_materializer.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/persistence/audit_repositories.py`
+  - `tests/unit/audit/test_inventory.py`
+  - `tests/integration/persistence/test_audit_inventory.py`
+  - this ledger
+- Outcome:
+  - added a deterministic Inventory derived only from the canonical Manifest stored
+    in the sealed Snapshot CAS, never from the mutable original folder;
+  - added owner-bound Manifest reload with strict one-blob shape, bounded reads,
+    canonical JSON parsing and full Snapshot/Manifest digest and counter matching;
+  - projected byte-sorted per-file path digest, safe relative path, object type,
+    language, category, size, blob digest, included/excluded/skipped decision and
+    stable reason without exposing absolute paths or CAS locators;
+  - retained exact Source capture exclusion/defer reasons and applied local-static
+    defaults that exclude generated, build, cache and vendored dependency content;
+  - expanded common static language detection for shell, C/C++, C#, HTML/CSS, SQL
+    and Vue while keeping unknown text eligible for later generic security rules;
+  - added deterministic file/byte totals and sorted language/category breakdowns;
+  - created stable low-risk file Scope Units only for included regular text files,
+    requiring only `static_rules` and no Agent, fix, build or dynamic-analysis work;
+  - added one-transaction batch Scope creation/replay with Audit/Snapshot owner
+    validation, exact/concurrent retry convergence and full rollback on conflicts.
+- Schema/migration impact: none; existing `audit_scope_units` storage and uniqueness
+  constraints are reused.
+- Security boundary impact:
+  - Inventory reads only the private sealed local CAS and does not reopen the source
+    folder after Snapshot seal;
+  - symlinks and capture-deferred/special files are reported as skipped rather than
+    interpreted or followed;
+  - no Docker, Linux VM, remote Runner, another host, subprocess, Git helper, target
+    command, package manager, build, test, plugin or repair action is invoked.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_inventory.py tests/unit/audit/test_local_materializer.py tests/integration/persistence/test_audit_inventory.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src/riftx/audit/inventory.py src/riftx/audit/local_materializer.py src/riftx/audit/__init__.py src/riftx/persistence/audit_repositories.py tests/unit/audit/test_inventory.py tests/integration/persistence/test_audit_inventory.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit tests/unit/domain/test_audit_persistence_domain.py tests/unit/persistence/test_audit_mappers.py tests/integration/persistence/test_audit_inventory.py tests/integration/persistence/test_audit_repositories.py tests/integration/persistence/test_snapshot_references.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `git diff --check`
+- Test results:
+  - focused Inventory/Scope suite: `13 passed`;
+  - broad Audit/Snapshot/persistence regression: `473 passed, 10 warnings`;
+  - full repository suite: `4875 passed, 5 skipped, 11 warnings`;
+  - one preceding full-suite confirmation hit the existing
+    `test_start_error_keeps_durable_context` process-start race; its isolated rerun
+    passed and the subsequent complete confirmation passed;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S201 — Detector registry and runner`.
 
 ## Design Deviations and ADRs
 
@@ -2330,14 +2385,13 @@ individual operation families.
 ## Current Risks
 
 - The simplified end-to-end local scan is not implemented yet. Existing RunKind,
-  domain, persistence, SnapshotStore/CAS and source materializer foundations are not
-  by themselves a user-visible scanner.
-- `AUD-S102` must atomically seal Snapshot/Manifest/Audit ownership and add ordinary
-  directory materialization. The existing materializer is still primarily Git
-  commit/working-tree oriented.
+  Snapshot seal, Inventory and Scope foundations are not by themselves a user-visible
+  scanner.
+- Detector registration/execution, built-in security rules, Finding normalization,
+  reports and local job/API/UI wiring remain unimplemented.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
-- Local static reading still requires strict path, symlink, owner, digest, file-count,
-  byte-budget and TOCTOU controls. Removing Docker does not relax those boundaries.
+- Detector work must preserve the established bounded Snapshot View, per-file failure
+  isolation, deterministic ordering and cancel fence without executing target code.
 - The private RiftX state root must not be writable by the audited project or any
   target-controlled process.

@@ -2321,6 +2321,97 @@ class SQLAlchemyAuditScopeRepository:
                     return stored, False
         _conflict("AuditScopeUnit", scope_unit.id, "could not be created")
 
+    async def create_many(
+        self,
+        scope_units: Sequence[AuditScopeUnit],
+    ) -> tuple[tuple[StoredAuditEntity[AuditScopeUnit], ...], int]:
+        """Atomically create or replay one deterministic file-Scope batch."""
+
+        requested = tuple(AuditScopeUnit.model_validate(value) for value in scope_units)
+        if not requested:
+            return (), 0
+        if len({value.id for value in requested}) != len(requested) or len(
+            {value.stable_key for value in requested}
+        ) != len(requested):
+            raise ValueError("Scope Unit batch identities must be unique")
+        owner = (requested[0].audit_id, requested[0].snapshot_id)
+        if any(
+            value.kind is not AuditScopeKind.FILE
+            or (value.audit_id, value.snapshot_id) != owner
+            for value in requested
+        ):
+            raise ValueError("Scope Unit batch must contain one Audit Snapshot's files")
+
+        for attempt in range(2):
+            try:
+                async with serialized_write(self._session_factory) as session:
+                    scan_bundle = await _validated_scan(
+                        session,
+                        owner[0],
+                        for_update=True,
+                    )
+                    if scan_bundle is None:
+                        raise EntityNotFoundError("AuditScan", owner[0])
+                    scan = scan_bundle[-1]
+                    if owner[1] not in {scan.snapshot_id, scan.base_snapshot_id}:
+                        _conflict(
+                            "AuditScopeUnit",
+                            requested[0].id,
+                            "references a Snapshot not bound to its Audit",
+                        )
+                    results: list[StoredAuditEntity[AuditScopeUnit]] = []
+                    created_count = 0
+                    for scope_unit in requested:
+                        existing = await self._find_create_candidate(session, scope_unit)
+                        if existing is not None:
+                            if existing.audit_id != owner[0]:
+                                _conflict(
+                                    "AuditScopeUnit",
+                                    scope_unit.id,
+                                    "identity already exists",
+                                )
+                            persisted = audit_scope_unit_from_record(
+                                existing,
+                                project_id=scan.project_id,
+                            )
+                            if persisted.snapshot_id not in {
+                                scan.snapshot_id,
+                                scan.base_snapshot_id,
+                            }:
+                                raise RepositoryIntegrityError(
+                                    "AuditScopeUnit",
+                                    existing.id,
+                                    reason_code="snapshot_binding_mismatch",
+                                )
+                            stored = StoredAuditEntity(persisted, existing.state_version)
+                            if not _same_scope_creation(persisted, scope_unit):
+                                _conflict(
+                                    "AuditScopeUnit",
+                                    scope_unit.id,
+                                    "identity already exists",
+                                )
+                            results.append(stored)
+                            continue
+                        session.add(
+                            audit_scope_unit_to_record(
+                                scope_unit,
+                                project_id=scan.project_id,
+                            )
+                        )
+                        results.append(StoredAuditEntity(scope_unit, 1))
+                        created_count += 1
+                    await session.flush()
+                    return tuple(results), created_count
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                _conflict(
+                    "AuditScopeUnit",
+                    requested[0].id,
+                    "batch could not be created",
+                )
+        raise AssertionError("unreachable")
+
     async def get(
         self,
         audit_id: str,

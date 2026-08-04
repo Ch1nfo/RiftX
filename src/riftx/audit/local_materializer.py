@@ -665,10 +665,16 @@ def _is_lfs_pointer(content: bytes) -> bool:
 
 
 _LANGUAGES = {
+    ".bash": "shell",
     ".c": "c",
     ".cc": "cpp",
+    ".cs": "csharp",
     ".cpp": "cpp",
+    ".css": "css",
     ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
     ".java": "java",
     ".js": "javascript",
     ".jsx": "javascript",
@@ -677,9 +683,12 @@ _LANGUAGES = {
     ".py": "python",
     ".rb": "ruby",
     ".rs": "rust",
+    ".sh": "shell",
+    ".sql": "sql",
     ".swift": "swift",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".vue": "vue",
 }
 
 
@@ -691,9 +700,36 @@ def _classify(path: bytes) -> tuple[str, SourceClassification]:
     parts = decoded.split("/")
     suffix = Path(decoded).suffix
     language = _LANGUAGES.get(suffix, "unknown")
-    if any(part in {"vendor", "node_modules", ".venv", "third_party"} for part in parts):
+    if any(
+        part
+        in {
+            ".venv",
+            "bower_components",
+            "node_modules",
+            "site-packages",
+            "third_party",
+            "vendor",
+        }
+        for part in parts
+    ):
         return language, SourceClassification.VENDOR
-    if any(part in {"build", "dist", "generated", "target"} for part in parts):
+    if any(
+        part
+        in {
+            ".cache",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".tox",
+            "__pycache__",
+            "build",
+            "coverage",
+            "dist",
+            "generated",
+            "target",
+        }
+        for part in parts
+    ):
         return language, SourceClassification.GENERATED
     if suffix in {".md", ".rst", ".txt"}:
         return language, SourceClassification.DOCUMENTATION
