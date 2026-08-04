@@ -4294,6 +4294,11 @@ Config/labels/rootfs/size、non-root read-only/no-network smoke，再以生成�
 qualification gate。combined report 的 build/config/smoke/materialization/restart/stop/cleanup 任一项
 不肯定均返回 `ready=false`，evidence 文件不得覆盖。
 
+combined wrapper 必须固定并绑定实际执行的底层 qualification 脚本 digest，执行前后检查 drift；内层
+report 仅在 exact schema/field set、Linux/local identity、完整肯定 checks、固定 proof contract 与
+image digest 全部匹配，且外层重算的 domain-separated evidence digest 一致时才可接受。仅把
+`ready=true` 与 image digest 写入伪造或重新签名的不完整 report，不得通过 combined gate。
+
 C2b2 仍需在受支持的真实 local-Linux Docker daemon 与 pinned image 上实际运行该 gate 并记录
 `ready=true` proof；当前 Darwin 的 fail-closed report 与 macOS mocked fixtures 均不构成生产证据。
 parent AUD-202C 在该门禁通过前保持 `in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须

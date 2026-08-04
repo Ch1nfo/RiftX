@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -29,6 +30,50 @@ REPORT_SCHEMA = "riftx.audit-snapshot-mount-release-qualification/v1"
 REPORT_DIGEST_SCHEMA = "riftx.audit-snapshot-mount-release-qualification-report/v1"
 LOCK_SCHEMA = "riftx.audit-snapshot-mount-image-lock/v1"
 IMAGE_SCHEMA = "riftx.audit-snapshot-mount-image/v1"
+QUALIFICATION_SCHEMA = "riftx.audit-snapshot-mount-real-linux-qualification/v1"
+QUALIFICATION_REPORT_DIGEST_SCHEMA = "riftx.audit-snapshot-mount-qualification-report/v1"
+QUALIFICATION_SCRIPT_DIGEST = "86e37fc3834b932418d056add4ef4f339085041f3a396d6927094ddc68bcf527"
+QUALIFICATION_BACKEND_ID = "private_materialization"
+_QUALIFICATION_REPORT_KEYS = frozenset(
+    {
+        "backend_digest",
+        "backend_id",
+        "checks",
+        "evidence_digest",
+        "failure_code",
+        "failure_outcome_unknown",
+        "generated_at",
+        "host",
+        "image_digest",
+        "node_id",
+        "proof",
+        "ready",
+        "schema_version",
+    }
+)
+_QUALIFICATION_CHECK_KEYS = frozenset(
+    {
+        "availability",
+        "cleanup_confirmed",
+        "descriptor_bound_materialization",
+        "non_root_kernel_mutation_denial",
+        "post_stop_absent",
+        "restart_inspection",
+        "stop_affirmative",
+    }
+)
+_QUALIFICATION_PROOF_DIGEST_KEYS = frozenset(
+    {
+        "availability_proof_digest",
+        "descriptor_digest",
+        "lease_digest",
+        "mount_key_digest",
+        "mount_proof_digest",
+        "pin_digest",
+        "plan_digest",
+    }
+)
+_QUALIFICATION_PROOF_KEYS = _QUALIFICATION_PROOF_DIGEST_KEYS | {"file_count", "total_bytes"}
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_IMAGE_NAME = re.compile(r"^[a-z0-9]+(?:[._/-][a-z0-9]+)*$")
 _SAFE_IMAGE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -207,6 +252,17 @@ def _verify_dockerfile(lock: _ImageLock) -> str:
     ):
         raise _QualificationError("audit_snapshot_mount_image_dockerfile_invalid")
     return hashlib.sha256(content).hexdigest()
+
+
+def _qualification_script_digest() -> str:
+    try:
+        content = QUALIFICATION_SCRIPT.read_bytes()
+    except OSError as error:
+        raise _QualificationError("audit_snapshot_mount_release_gate_unavailable") from error
+    digest = hashlib.sha256(content).hexdigest()
+    if not hmac.compare_digest(digest, QUALIFICATION_SCRIPT_DIGEST):
+        raise _QualificationError("audit_snapshot_mount_release_gate_drifted")
+    return digest
 
 
 def _static_failure() -> str | None:
@@ -450,7 +506,64 @@ def _smoke_image(
     return _domain_digest("riftx.audit-snapshot-mount-image-smoke-proof/v1", value)
 
 
-def _run_mount_qualification(image_digest: str) -> dict[str, Any]:
+def _validate_mount_qualification(
+    report: object,
+    *,
+    image_digest: str,
+) -> dict[str, Any]:
+    if not isinstance(report, dict) or set(report) != _QUALIFICATION_REPORT_KEYS:
+        raise _QualificationError("audit_snapshot_mount_release_gate_invalid")
+    checks = report.get("checks")
+    host = report.get("host")
+    proof = report.get("proof")
+    evidence_digest = report.get("evidence_digest")
+    if (
+        report.get("schema_version") != QUALIFICATION_SCHEMA
+        or report.get("ready") is not True
+        or report.get("image_digest") != image_digest
+        or report.get("node_id") != "local"
+        or report.get("failure_code") is not None
+        or report.get("failure_outcome_unknown") not in (None, False)
+        or report.get("backend_id") != QUALIFICATION_BACKEND_ID
+        or not isinstance(report.get("backend_digest"), str)
+        or _DIGEST.fullmatch(report["backend_digest"]) is None
+        or not isinstance(report.get("generated_at"), str)
+        or not isinstance(host, dict)
+        or set(host) != {"machine", "release", "system"}
+        or host.get("system") != "Linux"
+        or not all(isinstance(value, str) and value for value in host.values())
+        or not isinstance(proof, dict)
+        or set(proof) != _QUALIFICATION_PROOF_KEYS
+        or any(
+            not isinstance(proof.get(key), str) or _DIGEST.fullmatch(proof[key]) is None
+            for key in _QUALIFICATION_PROOF_DIGEST_KEYS
+        )
+        or type(proof.get("file_count")) is not int
+        or proof["file_count"] <= 0
+        or type(proof.get("total_bytes")) is not int
+        or proof["total_bytes"] <= 0
+        or not isinstance(checks, dict)
+        or set(checks) != _QUALIFICATION_CHECK_KEYS
+        or any(value is not True for value in checks.values())
+        or not isinstance(evidence_digest, str)
+        or _DIGEST.fullmatch(evidence_digest) is None
+    ):
+        raise _QualificationError("audit_snapshot_mount_release_gate_invalid")
+    payload = dict(report)
+    payload.pop("evidence_digest")
+    expected_digest = _domain_digest(QUALIFICATION_REPORT_DIGEST_SCHEMA, payload)
+    if not hmac.compare_digest(evidence_digest, expected_digest):
+        raise _QualificationError("audit_snapshot_mount_release_gate_invalid")
+    return report
+
+
+def _run_mount_qualification(
+    image_digest: str,
+    *,
+    qualification_script_digest: str,
+) -> dict[str, Any]:
+    if not hmac.compare_digest(_qualification_script_digest(), qualification_script_digest):
+        raise _QualificationError("audit_snapshot_mount_release_gate_drifted")
     try:
         completed = subprocess.run(
             [
@@ -480,18 +593,18 @@ def _run_mount_qualification(image_digest: str) -> dict[str, Any]:
         report = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise _QualificationError("audit_snapshot_mount_release_gate_invalid") from error
-    if (
-        completed.returncode != 0
-        or completed.stderr
-        or not isinstance(report, dict)
-        or report.get("ready") is not True
-        or report.get("image_digest") != image_digest
-    ):
+    if completed.returncode != 0 or completed.stderr:
         raise _QualificationError("audit_snapshot_mount_release_gate_failed")
-    return report
+    if not hmac.compare_digest(_qualification_script_digest(), qualification_script_digest):
+        raise _QualificationError("audit_snapshot_mount_release_gate_drifted")
+    return _validate_mount_qualification(report, image_digest=image_digest)
 
 
-def _base_report(lock: _ImageLock, dockerfile_digest: str) -> dict[str, Any]:
+def _base_report(
+    lock: _ImageLock,
+    dockerfile_digest: str,
+    qualification_script_digest: str,
+) -> dict[str, Any]:
     return {
         "schema_version": REPORT_SCHEMA,
         "ready": False,
@@ -510,6 +623,10 @@ def _base_report(lock: _ImageLock, dockerfile_digest: str) -> dict[str, Any]:
             "python_version": lock.python_version,
             "source_date_epoch": lock.source_date_epoch,
             "supported_platform_manifests": lock.supported_platform_manifests,
+        },
+        "qualification_gate": {
+            "report_schema_version": QUALIFICATION_SCHEMA,
+            "script_digest": qualification_script_digest,
         },
         "checks": {
             "linux_host": False,
@@ -536,6 +653,7 @@ def _qualify_release() -> dict[str, Any]:
     try:
         lock = _load_lock()
         dockerfile_digest = _verify_dockerfile(lock)
+        qualification_script_digest = _qualification_script_digest()
     except _QualificationError as error:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -544,7 +662,7 @@ def _qualify_release() -> dict[str, Any]:
             "failure_code": error.code,
         }
         return _finish_report(report)
-    report = _base_report(lock, dockerfile_digest)
+    report = _base_report(lock, dockerfile_digest, qualification_script_digest)
     checks = report["checks"]
     proof = report["proof"]
     assert isinstance(checks, dict) and isinstance(proof, dict)
@@ -582,7 +700,10 @@ def _qualify_release() -> dict[str, Any]:
                 image_digest,
             )
             checks["non_root_read_only_smoke"] = True
-            qualification = _run_mount_qualification(image_digest)
+            qualification = _run_mount_qualification(
+                image_digest,
+                qualification_script_digest=qualification_script_digest,
+            )
             report["qualification"] = qualification
             checks["snapshot_mount_qualification"] = True
     except _QualificationError as error:

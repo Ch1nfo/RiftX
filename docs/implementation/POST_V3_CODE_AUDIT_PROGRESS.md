@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202C C2b2 pinned runtime image and release
-> qualification pipeline synchronized
+> Specification revision: 2026-08-04 / AUD-202C C2b2 combined evidence integrity
+> synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,12 +32,13 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed internal stage: `AUD-202C C2b2a — Pinned runtime image and real-Linux
-  qualification pipeline`;
+- Completed internal stage: `AUD-202C C2b2a — Pinned runtime image, real-Linux
+  qualification pipeline and combined evidence integrity`;
   parent AUD-202C remains `in_progress`.
 - Completed C2b2a scope: production-path QA harness, digest-locked minimal runtime,
   fixed local build/inspect/smoke orchestration, kernel mutation-denial proof, restart
-  inspection, affirmative stop/absence and exclusive combined evidence output.
+  inspection, affirmative stop/absence, exclusive combined evidence output and strict
+  nested-gate script/report/digest binding.
 - Next unblocked task: `AUD-202C C2b2b — Execute on real local Linux`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
@@ -2005,10 +2006,59 @@ individual operation families.
   - The combined release command on this Darwin host correctly returned exit 1,
     `ready=false` and `audit_snapshot_mount_release_linux_host_required` before any
     pull, build or container effect.
-- Commit: this C2b2a.2 local commit; its hash will be backfilled by the next ledger
-  update.
+- Commit: `af566892 feat(code-audit): pin snapshot mount runtime image`.
 - Next unblocked task: AUD-202C C2b2b run the combined command on supported same-host
   Linux and commit its exclusive `ready=true` evidence digest/reference.
+
+### AUD-202C C2b2a.3 — Combined Qualification Evidence Integrity
+
+- Status: completed internal evidence-integrity hardening; parent AUD-202C remains in
+  progress until real local-Linux qualification succeeds.
+- Depends on: pinned runtime and release pipeline (`af566892`).
+- Exact modules/files:
+  - `scripts/qa/audit-snapshot-mount-release-qualification.py`
+  - `tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Fixed the production wrapper to pin the exact lower-level qualification script
+    SHA-256 and bind it into every combined report.
+  - Added pre/post execution script-drift checks so a gate changed before or during
+    qualification cannot produce accepted evidence.
+  - Added strict nested report validation for the exact schema and field set, Linux
+    host/local node identity, image digest, all seven affirmative checks, fixed proof
+    field contract, success-only failure state and domain-separated evidence digest.
+  - A forged report, a report with unknown/missing fields, or a correctly re-signed
+    report with any incomplete check/proof now fails closed.
+- API surface: none. This only hardens operator release evidence; Runner enqueue/family,
+  API, Event, Temporal, product scanning and analysis execution remain unavailable.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_release_qualification_script.py tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_qualification_script.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py tests/unit/audit/test_snapshot_mount_docker.py tests/unit/audit/test_snapshot_mount_qualification_script.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m ruff format --check scripts/qa/audit-snapshot-mount-release-qualification.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python -m compileall -q scripts/qa/audit-snapshot-mount-release-qualification.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/audit-snapshot-mount-release-qualification.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - targeted script/image/qualification matrix: `11 passed` in `0.51s`;
+  - Snapshot mount/image/CAS/static authority/repository/migration regression:
+    `133 passed` in `53.95s`;
+  - full repository suite: `4853 passed, 5 skipped, 12 warnings` in `437.85s`;
+  - Ruff, format check, `compileall` and `git diff --check` passed;
+  - independence boundary remained `ready=true`, scanned 512 production files, found
+    zero violations and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`;
+  - final release gate remained `ready=true` with every registered gate passing;
+  - Darwin execution still failed closed before Docker effects with
+    `audit_snapshot_mount_release_linux_host_required`.
+- Commit: this C2b2a.3 local commit; its hash will be backfilled by the next ledger
+  update.
+- Next unblocked task: AUD-202C C2b2b execute the combined gate on supported same-host
+  Linux and commit the exclusive `ready=true` evidence digest/reference.
 
 ## Design Deviations and ADRs
 

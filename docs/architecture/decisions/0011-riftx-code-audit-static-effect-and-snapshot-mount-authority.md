@@ -214,6 +214,11 @@ entrypoint、UID/GID、rootfs/size，执行 non-root/no-network/read-only/cap-dr
 底层 mount qualification gate。combined report 只有 build、image contract、smoke、mount/stop/restart
 与 cleanup 全部肯定才为 `ready=true`。
 
+release wrapper 固定并输出底层 qualification 脚本 SHA-256，执行前后重验脚本未漂移。内层 report
+必须匹配 exact schema/field set、Linux host、local node、完整七项肯定 checks、固定 proof 字段集合与
+image digest；外层重新计算内层 domain-separated evidence digest。脚本漂移、额外/缺失字段、重签但
+不完整的 checks/proof 或 digest 不一致均 fail closed，不能进入 combined `ready=true`。
+
 当前 Darwin 开发机执行该 gate 必须输出
 `audit_snapshot_mount_linux_host_required` 与 `ready=false`。只有在受支持的真实 local-Linux host、
 local Unix socket、Linux daemon 和 exact pinned image 上得到 `ready=true` report，才完成 C2b2；gate

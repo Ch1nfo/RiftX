@@ -25,6 +25,29 @@ def _module():
     return module
 
 
+def _ready_mount_report(module, image_digest: str) -> dict[str, object]:
+    report: dict[str, object] = {
+        "schema_version": module.QUALIFICATION_SCHEMA,
+        "ready": True,
+        "generated_at": "2026-08-04T00:00:00+00:00",
+        "host": {"machine": "x86_64", "release": "test", "system": "Linux"},
+        "backend_id": module.QUALIFICATION_BACKEND_ID,
+        "backend_digest": "b" * 64,
+        "image_digest": image_digest,
+        "node_id": "local",
+        "checks": {key: True for key in module._QUALIFICATION_CHECK_KEYS},
+        "proof": {key: "c" * 64 for key in module._QUALIFICATION_PROOF_DIGEST_KEYS}
+        | {"file_count": 3, "total_bytes": 64},
+        "failure_code": None,
+        "failure_outcome_unknown": None,
+    }
+    report["evidence_digest"] = module._domain_digest(
+        module.QUALIFICATION_REPORT_DIGEST_SCHEMA,
+        report,
+    )
+    return report
+
+
 def test_release_qualification_loads_the_exact_image_contract() -> None:
     module = _module()
 
@@ -39,6 +62,7 @@ def test_release_qualification_loads_the_exact_image_contract() -> None:
         "linux/amd64": "72d3d75f2639ab82b34b29390ad3d6e0827c775befee94edda8e9976818f488d",
         "linux/arm64": "c18c7a910432dde3311fc54d02e5d5220f3ebe26fec43ff15745982863dd7b3b",
     }
+    assert module.QUALIFICATION_SCRIPT_DIGEST == module._qualification_script_digest()
     assert len(dockerfile_digest) == hashlib.sha256().digest_size * 2
 
 
@@ -106,6 +130,47 @@ def test_locked_image_inspection_rejects_default_environment_drift(
         )
 
 
+def test_release_qualification_rejects_forged_nested_evidence() -> None:
+    module = _module()
+    image_digest = "a" * 64
+    report = _ready_mount_report(module, image_digest)
+    report["proof"] = {"mount_proof_digest": "d" * 64}
+
+    with pytest.raises(
+        module._QualificationError,
+        match="audit_snapshot_mount_release_gate_invalid",
+    ):
+        module._validate_mount_qualification(report, image_digest=image_digest)
+
+
+def test_release_qualification_accepts_exact_nested_evidence() -> None:
+    module = _module()
+    image_digest = "a" * 64
+    report = _ready_mount_report(module, image_digest)
+
+    assert module._validate_mount_qualification(report, image_digest=image_digest) == report
+
+
+def test_release_qualification_rejects_resigned_incomplete_nested_checks() -> None:
+    module = _module()
+    image_digest = "a" * 64
+    report = _ready_mount_report(module, image_digest)
+    checks = report["checks"]
+    assert isinstance(checks, dict)
+    checks["cleanup_confirmed"] = False
+    report.pop("evidence_digest")
+    report["evidence_digest"] = module._domain_digest(
+        module.QUALIFICATION_REPORT_DIGEST_SCHEMA,
+        report,
+    )
+
+    with pytest.raises(
+        module._QualificationError,
+        match="audit_snapshot_mount_release_gate_invalid",
+    ):
+        module._validate_mount_qualification(report, image_digest=image_digest)
+
+
 def test_release_qualification_composes_build_smoke_and_mount_proofs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,7 +193,7 @@ def test_release_qualification_composes_build_smoke_and_mount_proofs(
     monkeypatch.setattr(
         module,
         "_run_mount_qualification",
-        lambda digest: {"ready": True, "image_digest": digest},
+        lambda digest, **kwargs: {"ready": True, "image_digest": digest},
     )
 
     report = module._qualify_release()
@@ -139,4 +204,5 @@ def test_release_qualification_composes_build_smoke_and_mount_proofs(
     assert report["proof"]["image_config_proof_digest"] == "b" * 64
     assert report["proof"]["image_smoke_proof_digest"] == "c" * 64
     assert report["qualification"] == {"ready": True, "image_digest": image_digest}
+    assert report["qualification_gate"]["script_digest"] == module._qualification_script_digest()
     assert len(report["evidence_digest"]) == hashlib.sha256().digest_size * 2
