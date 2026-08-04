@@ -42,6 +42,7 @@ from riftx.domain import (
     RunStatus,
     SourceSnapshot,
 )
+from riftx.domain.audit_contract_v2 import AuditContractRecordV2
 
 from .audit_mappers import (
     audit_contract_from_record,
@@ -107,7 +108,7 @@ def _record_values(record: Base, *, excluding: frozenset[str]) -> dict[str, obje
 
 
 def _same_fields(left: object, right: object, fields: tuple[str, ...]) -> bool:
-    return all(getattr(left, field) == getattr(right, field) for field in fields)
+    return all(getattr(left, field, None) == getattr(right, field, None) for field in fields)
 
 
 _PROJECT_CREATION_FIELDS = (
@@ -147,6 +148,10 @@ _CONTRACT_CREATION_FIELDS = (
     "selected_node_id",
     "required_backend_id",
     "snapshot_hydration_policy_digest",
+    "preflight_plan_id",
+    "preflight_plan_digest",
+    "security_context_bundle_id",
+    "security_context_bundle_digest",
 )
 _SCAN_CREATION_FIELDS = (
     "run_id",
@@ -258,7 +263,7 @@ def _stored_project(record: AuditProjectRecord) -> StoredAuditEntity[AuditProjec
 
 def _stored_contract(
     record: AuditContractORMRecord,
-) -> StoredAuditEntity[AuditContractRecord]:
+) -> StoredAuditEntity[AuditContractRecord | AuditContractRecordV2]:
     return StoredAuditEntity(audit_contract_from_record(record), record.state_version)
 
 
@@ -272,9 +277,32 @@ def _stored_work(record: AuditWorkItemRecord) -> StoredAuditEntity[AuditWorkItem
     return StoredAuditEntity(audit_work_item_from_record(record), record.state_version)
 
 
-def _validate_contract_binding(scan: AuditScan, contract: AuditContractRecord) -> None:
+def _validate_contract_binding(
+    scan: AuditScan,
+    contract: AuditContractRecord | AuditContractRecordV2,
+) -> None:
     try:
-        scan.validate_contract_record(contract)
+        if isinstance(contract, AuditContractRecordV2):
+            frozen = contract.contract()
+            checks = (
+                (contract.contract_id, scan.contract_id),
+                (contract.contract_digest, scan.contract_digest),
+                (contract.audit_id, scan.id),
+                (frozen.project_id, scan.project_id),
+                (frozen.mode, scan.mode),
+                (frozen.analysis_profile, scan.analysis_profile),
+                (frozen.baseline_audit_id, scan.baseline_audit_id),
+                (frozen.model_profile, scan.model_profile),
+                (frozen.source_binding.source_node_id, scan.selected_node_id),
+                (None, scan.required_backend_id),
+                (None, scan.policy_digest),
+                (None, scan.config_digest),
+                (frozen.budget.budget_digest, scan.budget_digest),
+            )
+            if scan.started_at is not None or any(left != right for left, right in checks):
+                raise ValueError("v2 Audit draft binding mismatch")
+        else:
+            scan.validate_contract_record(contract)
     except (TypeError, ValueError):
         _conflict("AuditScan", scan.id, "does not match its immutable contract")
 
@@ -700,7 +728,7 @@ async def _reject_ambiguous_contract_replay(
 async def create_scan_contract_pair(
     session: AsyncSession,
     scan: AuditScan,
-    contract: AuditContractRecord,
+    contract: AuditContractRecord | AuditContractRecordV2,
     *,
     flush_failpoint: Callable[[str], None] | None = None,
 ) -> tuple[StoredAuditEntity[AuditScan], bool]:
@@ -711,7 +739,10 @@ async def create_scan_contract_pair(
     """
 
     scan = AuditScan.model_validate(scan)
-    contract = AuditContractRecord.model_validate(contract)
+    if getattr(contract, "schema_version", None) == "riftx.audit-contract/v2":
+        contract = AuditContractRecordV2.model_validate(contract)
+    else:
+        contract = AuditContractRecord.model_validate(contract)
     _validate_contract_binding(scan, contract)
     _reject_distribution_facts(scan)
     if scan.lifecycle_status is not AuditLifecycleStatus.DRAFT:

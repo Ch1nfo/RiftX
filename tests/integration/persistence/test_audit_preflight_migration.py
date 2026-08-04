@@ -34,6 +34,7 @@ from riftx.persistence.orm import Base
 
 BASE_REVISION = "4f9a6c1d2e30"
 PREFLIGHT_REVISION = "2b7d9e4a6c10"
+HEAD_REVISION = "5d8c1a7e3b24"
 EARLIEST_REVISION = "2f14cbcea74b"
 PREFLIGHT_TABLES = {
     "audit_preflight_jobs",
@@ -204,7 +205,7 @@ def test_preflight_nonempty_downgrade_fails_before_ddl_and_preserves_facts(
     assert ddl_statements == []
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            PREFLIGHT_REVISION,
+            HEAD_REVISION,
         )
         assert connection.execute("SELECT id FROM audit_preflight_jobs").fetchone() == (
             "preflight-migration-job",
@@ -273,7 +274,7 @@ def test_preflight_receipt_fact_blocks_downgrade_before_any_ddl(tmp_path: Path) 
             "SELECT id, job_id FROM audit_preflight_stop_receipts"
         ).fetchone() == ("preflight-receipt", "preflight-receipt-job")
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            PREFLIGHT_REVISION,
+            HEAD_REVISION,
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -288,6 +289,7 @@ def test_preflight_capability_fact_blocks_empty_table_downgrade(tmp_path: Path) 
             ('["preflight_job_owner_v1"]',),
         )
         connection.commit()
+    downgrade_alembic(database_path, PREFLIGHT_REVISION)
 
     ddl_statements: list[str] = []
 
@@ -436,7 +438,7 @@ def test_earliest_upgrade_reopens_at_head_with_clean_foreign_keys(tmp_path: Path
     asyncio.run(reopen())
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            PREFLIGHT_REVISION,
+            HEAD_REVISION,
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert PREFLIGHT_TABLES.issubset(
@@ -488,7 +490,7 @@ def test_preflight_upgrade_fault_rolls_back_partial_ddl_and_can_retry(
     _run_alembic_with_sqlite_foreign_keys(database_path, "head")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            PREFLIGHT_REVISION,
+            HEAD_REVISION,
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     assert PREFLIGHT_TABLES.issubset(sqlite_tables(database_path))

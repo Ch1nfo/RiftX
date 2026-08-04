@@ -111,6 +111,13 @@ def _capability_matrix() -> AuditPreflightCapabilityMatrix:
                 reason_code="audit_inventory_unavailable",
             ),
             AuditPreflightCapabilityFact(
+                capability_id="git_metadata",
+                status=AuditPreflightCapabilityStatus.AVAILABLE,
+                component_version="v1",
+                component_digest=_digest("git-metadata-component"),
+                proof_digest=_digest("git-metadata-proof"),
+            ),
+            AuditPreflightCapabilityFact(
                 capability_id="source_ingest",
                 status=AuditPreflightCapabilityStatus.AVAILABLE,
                 component_version="v1",

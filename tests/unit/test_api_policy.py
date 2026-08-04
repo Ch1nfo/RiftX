@@ -94,6 +94,9 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     cancel_preflight = openapi["paths"]["/api/v1/audits/preflight/{job_id}/cancel"]["post"]
     assert cancel_preflight["x-riftx-authorization"] == "local_operator"
     assert cancel_preflight["x-riftx-effect"] == "host_control"
+    issue_plan = openapi["paths"]["/api/v1/audits/preflight/{job_id}/plan"]["post"]
+    assert issue_plan["x-riftx-authorization"] == "local_operator"
+    assert issue_plan["x-riftx-effect"] == "durable_write"
     for path in (
         "/api/v1/audits/{audit_id}/artifacts",
         "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",

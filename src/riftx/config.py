@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -431,6 +432,17 @@ class AuditConfig(_AuditConfigModel):
     enabled: AuditBoolean = False
     node_mode: Literal["local_same_node"] = "local_same_node"
     allowed_node_ids: tuple[Literal["local"], ...] = ("local",)
+    preflight_token_key_id: str = Field(
+        default="primary",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,63}$",
+    )
+    preflight_token_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
     source_roots: tuple[Path, ...] = Field(default_factory=tuple, repr=False)
     snapshot_root: Path = Path("/var/lib/riftx/audit/snapshots")
     temp_root: Path = Path("/var/lib/riftx/audit/tmp")
@@ -481,6 +493,30 @@ class AuditConfig(_AuditConfigModel):
         if values != ("local",):
             raise ValueError("RiftX 3.0 Audit requires allowed_node_ids=[local]")
         return values
+
+    @field_validator("preflight_token_key", mode="before")
+    @classmethod
+    def validate_preflight_token_key(cls, value: object) -> SecretStr | None:
+        if value is None or value == "":
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not isinstance(raw, str) or len(raw) != 43 or not re.fullmatch(
+            r"[A-Za-z0-9_-]{43}", raw
+        ):
+            raise ValueError(
+                "audit preflight token key must be canonical unpadded base64url"
+            )
+        try:
+            decoded = base64.urlsafe_b64decode(raw + "=")
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "audit preflight token key must be canonical unpadded base64url"
+            ) from exc
+        if len(decoded) != 32 or base64.urlsafe_b64encode(decoded).rstrip(b"=").decode(
+            "ascii"
+        ) != raw:
+            raise ValueError("audit preflight token key must decode to exactly 32 bytes")
+        return SecretStr(raw)
 
     @field_validator("source_roots")
     @classmethod
@@ -845,6 +881,8 @@ _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AUDIT_ENABLED": ("audit", "enabled"),
     "RIFTX_AUDIT_NODE_MODE": ("audit", "node_mode"),
     "RIFTX_AUDIT_ALLOWED_NODE_IDS": ("audit", "allowed_node_ids"),
+    "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY_ID": ("audit", "preflight_token_key_id"),
+    "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY": ("audit", "preflight_token_key"),
     "RIFTX_AUDIT_SOURCE_ROOTS": ("audit", "source_roots"),
     "RIFTX_AUDIT_SNAPSHOT_ROOT": ("audit", "snapshot_root"),
     "RIFTX_AUDIT_TEMP_ROOT": ("audit", "temp_root"),
@@ -1233,7 +1271,11 @@ def _reject_plaintext_secrets(payload: Mapping[str, object], path: Path) -> None
         if (
             value is not None
             and value != ""
-            and (normalized.endswith("api_key") or normalized.endswith("token"))
+            and (
+                normalized.endswith("api_key")
+                or normalized.endswith("token")
+                or normalized == "preflight_token_key"
+            )
         ):
             raise RiftXConfigError(f"secret field {key!r} must not be stored in {path}")
         if isinstance(value, Mapping):

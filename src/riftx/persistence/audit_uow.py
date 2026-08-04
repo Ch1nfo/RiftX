@@ -26,7 +26,9 @@ from riftx.application.ports import (
     AuditAuthorizationBinding,
     AuditBindingAuthorizer,
     AuditDraftAggregateFactory,
+    AuditDraftAggregateFactoryV2,
     AuditDraftCreationEnvelope,
+    AuditDraftCreationEnvelopeV2,
     AuditEngagementScope,
     StoredAuditEntity,
 )
@@ -44,6 +46,14 @@ from riftx.domain import (
     RunKind,
     RunStatus,
 )
+from riftx.domain.audit_contract_v2 import (
+    AuditContractRecordV2,
+    AuditSecurityContextBindingV2,
+)
+from riftx.domain.audit_preflight_plan import (
+    AuditPreflightPlan,
+    AuditPreflightPlanStatus,
+)
 
 from .audit_mappers import (
     audit_client_request_from_record,
@@ -51,6 +61,11 @@ from .audit_mappers import (
     audit_contract_from_record,
     audit_project_from_record,
     source_snapshot_from_record,
+)
+from .audit_preflight_plan import (
+    AuditPreflightPlanRecord,
+    compare_and_set_audit_preflight_plan,
+    load_validated_audit_preflight_plan,
 )
 from .audit_repositories import (
     create_audit_project,
@@ -69,6 +84,7 @@ from .orm import (
     AuditClientRequestRecord,
     AuditProjectRecord,
     AuditScanRecord,
+    AuditSecurityContextBindingRecord,
     EngagementRecord,
     RunRecord,
     SourceSnapshotRecord,
@@ -96,6 +112,20 @@ class _AuditFactoryIdentity:
     requested_engagement_id: str | None
     workspace_root: str
     source_repository_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AuditFactoryIdentityV2:
+    client_request_id: str
+    preflight_token_hash: str
+    operator_principal_id: str
+    authorization_scope_digest: str
+    authorization_reference: str
+    authorized_engagement_scope: AuditEngagementScope
+    requested_engagement_id: str | None
+    workspace_root: str
+    audit_id: str
+    created_at: datetime
 
 
 class _RetryAuditCreation(RuntimeError):
@@ -187,6 +217,77 @@ def _validate_factory_identity(
         requested_engagement_id=requested_engagement_id,
         workspace_root=workspace_root,
         source_repository_path=source_path,
+    )
+
+
+def _validate_factory_identity_v2(
+    factory: AuditDraftAggregateFactoryV2,
+) -> _AuditFactoryIdentityV2:
+    try:
+        client_request_id = factory.client_request_id
+        token_hash = factory.preflight_token_hash
+        principal_id = factory.operator_principal_id
+        authorization_scope_digest = factory.authorization_scope_digest
+        authorization_reference = factory.authorization_reference
+        authorized_scope = factory.authorized_engagement_scope
+        requested_engagement_id = factory.requested_engagement_id
+        workspace_root = factory.workspace_root
+        audit_id = factory.audit_id
+        created_at = factory.created_at
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        _opaque_conflict("Audit v2 draft creation identity is invalid")
+    try:
+        request_uuid = UUID(client_request_id)
+    except (AttributeError, TypeError, ValueError):
+        request_uuid = None
+    root = PurePosixPath(workspace_root) if isinstance(workspace_root, str) else None
+    if (
+        request_uuid is None
+        or request_uuid.int == 0
+        or str(request_uuid) != client_request_id
+        or not _is_digest(token_hash)
+        or not _is_safe_identity(principal_id, maximum=128)
+        or not _is_digest(authorization_scope_digest)
+        or not _is_digest(authorization_reference)
+        or not isinstance(authorized_scope, AuditEngagementScope)
+        or not _is_safe_identity(audit_id, maximum=128)
+        or not isinstance(created_at, datetime)
+        or created_at.utcoffset() is None
+        or root is None
+        or not root.is_absolute()
+        or ".." in root.parts
+        or str(root) != workspace_root
+        or (
+            requested_engagement_id is not None
+            and not _is_safe_identity(requested_engagement_id, maximum=64)
+        )
+    ):
+        _opaque_conflict("Audit v2 draft creation identity is invalid")
+    return _AuditFactoryIdentityV2(
+        client_request_id=client_request_id,
+        preflight_token_hash=token_hash,
+        operator_principal_id=principal_id,
+        authorization_scope_digest=authorization_scope_digest,
+        authorization_reference=authorization_reference,
+        authorized_engagement_scope=authorized_scope,
+        requested_engagement_id=requested_engagement_id,
+        workspace_root=workspace_root,
+        audit_id=audit_id,
+        created_at=created_at,
+    )
+
+
+def _is_digest(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _is_safe_identity(value: object, *, maximum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= maximum
+        and all(character in _OPAQUE_ID_CHARACTERS for character in value)
     )
 
 
@@ -503,6 +604,125 @@ async def _read_client_request(
     return aggregate
 
 
+async def _load_plan_for_token(
+    session: AsyncSession,
+    identity: _AuditFactoryIdentityV2,
+    *,
+    for_update: bool,
+) -> AuditPreflightPlan | None:
+    statement = select(AuditPreflightPlanRecord.id).where(
+        AuditPreflightPlanRecord.token_hash == identity.preflight_token_hash
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    plan_ids = (await session.scalars(statement.limit(2))).all()
+    if len(plan_ids) > 1:
+        raise RepositoryIntegrityError(
+            "AuditPreflightPlan",
+            "token-binding",
+            reason_code="ambiguous_token_binding",
+        )
+    if not plan_ids:
+        return None
+    plan = await load_validated_audit_preflight_plan(
+        session,
+        plan_ids[0],
+        for_update=for_update,
+    )
+    if plan is None:
+        raise RepositoryIntegrityError(
+            "AuditPreflightPlan",
+            plan_ids[0],
+            reason_code="plan_disappeared",
+        )
+    if (
+        plan.operator_principal_id != identity.operator_principal_id
+        or not hmac.compare_digest(
+            plan.authorization_scope_digest,
+            identity.authorization_scope_digest,
+        )
+        or not hmac.compare_digest(
+            plan.token_verifier.token_hash,
+            identity.preflight_token_hash,
+        )
+    ):
+        return None
+    return plan
+
+
+async def _read_client_request_v2(
+    session: AsyncSession,
+    identity: _AuditFactoryIdentityV2,
+    plan: AuditPreflightPlan,
+    *,
+    request_digest: str,
+    for_update: bool,
+) -> AuditAggregate | None:
+    statement = select(AuditClientRequestRecord).where(
+        AuditClientRequestRecord.client_request_id == identity.client_request_id
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    records = (await session.scalars(statement.limit(2))).all()
+    if len(records) > 1:
+        raise RepositoryIntegrityError(
+            "AuditClientRequest",
+            identity.client_request_id,
+            reason_code="ambiguous_client_request",
+        )
+    if not records:
+        return None
+    request = audit_client_request_from_record(records[0])
+    if (
+        request.request_schema_version != "riftx.audit-create-draft-request/v2"
+        or not hmac.compare_digest(request.request_digest, request_digest)
+        or request.preflight_plan_id != plan.plan_id
+        or not hmac.compare_digest(
+            request.preflight_plan_digest or "",
+            plan.plan_digest,
+        )
+        or request.security_context_id != plan.security_context_id
+        or not hmac.compare_digest(
+            request.security_context_digest or "",
+            plan.security_context_digest,
+        )
+    ):
+        _idempotency_conflict()
+    aggregate = await _read_aggregate(
+        session,
+        request.audit_id,
+        client_request_record=records[0],
+        for_update=for_update,
+    )
+    if aggregate is None:
+        raise RepositoryIntegrityError(
+            "AuditClientRequest",
+            request.client_request_id,
+            reason_code="orphan_audit_binding",
+        )
+    if (
+        plan.reserved_audit_id != request.audit_id
+        or plan.reserved_client_request_id != request.client_request_id
+    ):
+        raise RepositoryIntegrityError(
+            "AuditPreflightPlan",
+            plan.plan_id,
+            reason_code="reservation_binding_mismatch",
+        )
+    legacy_identity = _AuditFactoryIdentity(
+        client_request_id=identity.client_request_id,
+        request_digest=request_digest,
+        repository_identity_digest=plan.repository_identity_digest,
+        authorization_reference=identity.authorization_reference,
+        authorized_engagement_scope=identity.authorized_engagement_scope,
+        requested_engagement_id=identity.requested_engagement_id,
+        workspace_root=identity.workspace_root,
+        source_repository_path=plan.target.repository_path,
+    )
+    _require_authorized_engagement(aggregate.engagement, legacy_identity)
+    return aggregate
+
+
 async def _validated_engagement(
     session: AsyncSession,
     engagement_id: str,
@@ -667,6 +887,85 @@ async def _resolve_project(
     return stored.value, engagement
 
 
+async def _resolve_project_v2(
+    session: AsyncSession,
+    factory: AuditDraftAggregateFactoryV2,
+    identity: _AuditFactoryIdentityV2,
+    plan: AuditPreflightPlan,
+    *,
+    failpoint: AuditCreationFailpoint | None,
+) -> tuple[AuditProject, Engagement]:
+    legacy_identity = _AuditFactoryIdentity(
+        client_request_id=identity.client_request_id,
+        request_digest=factory.request_digest_for(plan),
+        repository_identity_digest=plan.repository_identity_digest,
+        authorization_reference=identity.authorization_reference,
+        authorized_engagement_scope=identity.authorized_engagement_scope,
+        requested_engagement_id=identity.requested_engagement_id,
+        workspace_root=identity.workspace_root,
+        source_repository_path=plan.target.repository_path,
+    )
+    record = await _project_by_repository_identity(
+        session,
+        plan.repository_identity_digest,
+        for_update=True,
+    )
+    if record is not None:
+        project = audit_project_from_record(record)
+        engagement_bundle = await _validated_engagement(
+            session,
+            project.engagement_id,
+            for_update=True,
+        )
+        if engagement_bundle is None:
+            raise RepositoryIntegrityError(
+                "AuditProject", project.id, reason_code="owner_binding_mismatch"
+            )
+        engagement = engagement_bundle[1]
+        _require_authorized_engagement(engagement, legacy_identity)
+        return project, engagement
+
+    if identity.requested_engagement_id is not None:
+        if not identity.authorized_engagement_scope.permits(identity.requested_engagement_id):
+            _opaque_conflict("Audit Engagement is outside the authorized scope")
+        engagement_bundle = await _validated_engagement(
+            session,
+            identity.requested_engagement_id,
+            for_update=True,
+        )
+        if engagement_bundle is None:
+            raise EntityNotFoundError("Engagement", identity.requested_engagement_id)
+        engagement = engagement_bundle[1]
+        _require_authorized_engagement(engagement, legacy_identity)
+    else:
+        if not identity.authorized_engagement_scope.can_create_engagement:
+            _opaque_conflict("Audit Engagement creation is outside the authorized scope")
+        engagement = Engagement.model_validate(factory.build_engagement())
+        if engagement.authorization_reference is None or not hmac.compare_digest(
+            engagement.authorization_reference,
+            identity.authorization_reference,
+        ):
+            _opaque_conflict("Audit Engagement candidate is outside its authorization domain")
+        if await _validated_engagement(session, engagement.id, for_update=True) is not None:
+            raise _RetryAuditCreation from None
+        session.add(engagement_to_record(engagement))
+        await session.flush()
+        _hit(failpoint, "after_engagement")
+
+    candidate = AuditProject.model_validate(factory.build_project(engagement, plan))
+    if candidate.engagement_id != engagement.id or not hmac.compare_digest(
+        candidate.repository_identity_digest,
+        plan.repository_identity_digest,
+    ):
+        _opaque_conflict("Audit Project candidate has an invalid owner or identity")
+    try:
+        stored, _ = await create_audit_project(session, candidate)
+    except RepositoryConflictError:
+        raise _RetryAuditCreation from None
+    _hit(failpoint, "after_project")
+    return stored.value, engagement
+
+
 def _hit(failpoint: AuditCreationFailpoint | None, stage: str) -> None:
     if failpoint is not None:
         failpoint(stage)
@@ -735,6 +1034,72 @@ def _validate_creation_envelope(
     return validated
 
 
+def _validate_creation_envelope_v2(
+    envelope: AuditDraftCreationEnvelopeV2,
+    *,
+    project: AuditProject,
+    engagement: Engagement,
+    identity: _AuditFactoryIdentityV2,
+    plan: AuditPreflightPlan,
+    request_digest: str,
+) -> AuditDraftCreationEnvelopeV2:
+    validated = AuditDraftCreationEnvelopeV2(
+        engagement=Engagement.model_validate(envelope.engagement),
+        project=AuditProject.model_validate(envelope.project),
+        run=Run.model_validate(envelope.run),
+        run_created_event=RunEvent.model_validate(envelope.run_created_event),
+        audit=AuditScan.model_validate(envelope.audit),
+        contract=AuditContractRecordV2.model_validate(envelope.contract),
+        security_context_binding=AuditSecurityContextBindingV2.model_validate(
+            envelope.security_context_binding
+        ),
+        audit_created_event=RunEvent.model_validate(envelope.audit_created_event),
+        client_request=AuditClientRequest.model_validate(envelope.client_request),
+    )
+    scan = validated.audit
+    contract = validated.contract.contract()
+    expected_audit_payload = {
+        "audit_id": scan.id,
+        "project_id": project.id,
+        "lifecycle_status": scan.lifecycle_status.value,
+        "mode": scan.mode.value,
+        "analysis_profile": scan.analysis_profile.value,
+        "contract_digest": scan.contract_digest,
+    }
+    workspace_root = PurePosixPath(identity.workspace_root)
+    source_path = PurePosixPath(plan.target.repository_path)
+    workspace_overlaps_source = (
+        workspace_root == source_path
+        or workspace_root.is_relative_to(source_path)
+        or source_path.is_relative_to(workspace_root)
+    )
+    if (
+        validated.engagement != engagement
+        or validated.project != project
+        or scan.id != identity.audit_id
+        or validated.run.kind is not RunKind.CODE_AUDIT
+        or validated.run.status is not RunStatus.CREATED
+        or scan.lifecycle_status is not AuditLifecycleStatus.DRAFT
+        or validated.run.workspace_path != str(workspace_root / scan.id)
+        or workspace_overlaps_source
+        or validated.run.started_at is not None
+        or validated.run.finished_at is not None
+        or validated.run.temporal_workflow_id != scan.temporal_workflow_id
+        or validated.run_created_event.payload != {"status": RunStatus.CREATED.value}
+        or validated.audit_created_event.payload != expected_audit_payload
+        or not hmac.compare_digest(
+            validated.client_request.request_digest, request_digest
+        )
+        or validated.client_request.client_request_id != identity.client_request_id
+        or contract.preflight_plan_id != plan.plan_id
+        or not hmac.compare_digest(contract.preflight_plan_digest, plan.plan_digest)
+        or validated.security_context_binding.audit_id != scan.id
+        or validated.security_context_binding.preflight_plan_id != plan.plan_id
+    ):
+        _opaque_conflict("Audit v2 draft creation envelope is invalid")
+    return validated
+
+
 async def _insert_run_and_events(
     session: AsyncSession,
     envelope: AuditDraftCreationEnvelope,
@@ -758,6 +1123,57 @@ async def _insert_run_and_events(
         flush_failpoint=failpoint,
     )
     _hit(failpoint, "after_contract_scan")
+
+    session.add(event_to_record(envelope.audit_created_event))
+    await session.flush()
+    _hit(failpoint, "after_audit_event")
+
+    session.add(audit_client_request_to_record(envelope.client_request))
+    await session.flush()
+    _hit(failpoint, "after_client_request")
+
+
+async def _insert_run_and_events_v2(
+    session: AsyncSession,
+    envelope: AuditDraftCreationEnvelopeV2,
+    *,
+    failpoint: AuditCreationFailpoint | None,
+) -> None:
+    if await session.get(RunRecord, envelope.run.id) is not None:
+        raise _RetryAuditCreation from None
+    session.add(run_to_record(envelope.run))
+    await session.flush()
+    _hit(failpoint, "after_run")
+
+    session.add(event_to_record(envelope.run_created_event))
+    await session.flush()
+    _hit(failpoint, "after_run_event")
+
+    await create_scan_contract_pair(
+        session,
+        envelope.audit,
+        envelope.contract,
+        flush_failpoint=failpoint,
+    )
+    _hit(failpoint, "after_contract_scan")
+
+    binding = envelope.security_context_binding
+    session.add(
+        AuditSecurityContextBindingRecord(
+            audit_id=binding.audit_id,
+            schema_version=binding.schema_version,
+            preflight_plan_id=binding.preflight_plan_id,
+            preflight_plan_digest=binding.preflight_plan_digest,
+            operator_principal_id=binding.operator_principal_id,
+            authorization_scope_digest=binding.authorization_scope_digest,
+            security_context_bundle_id=binding.security_context_bundle_id,
+            security_context_bundle_digest=binding.security_context_bundle_digest,
+            binding_digest=binding.binding_digest,
+            created_at=envelope.audit.created_at,
+        )
+    )
+    await session.flush()
+    _hit(failpoint, "after_security_context_binding")
 
     session.add(event_to_record(envelope.audit_created_event))
     await session.flush()
@@ -860,6 +1276,136 @@ class SQLAlchemyAuditCreationUnitOfWork:
                 _opaque_conflict("Audit draft could not be created after a concurrent conflict")
 
         raise AssertionError("unreachable Audit creation retry state")
+
+    async def create_draft_v2(
+        self,
+        factory: AuditDraftAggregateFactoryV2,
+    ) -> tuple[AuditAggregate, bool]:
+        identity = _validate_factory_identity_v2(factory)
+        for attempt in range(_MAX_CREATE_ATTEMPTS):
+            database_failure = False
+            try:
+                async with serialized_write(self._session_factory) as session:
+                    plan = await _load_plan_for_token(
+                        session,
+                        identity,
+                        for_update=True,
+                    )
+                    if plan is None:
+                        _opaque_conflict("Audit Preflight Plan is unavailable")
+                    try:
+                        factory.validate_plan(plan)
+                        request_digest = factory.request_digest_for(plan)
+                    except (AttributeError, TypeError, ValueError, OverflowError):
+                        _opaque_conflict("Audit Preflight Plan does not match the request")
+                    existing = await _read_client_request_v2(
+                        session,
+                        identity,
+                        plan,
+                        request_digest=request_digest,
+                        for_update=True,
+                    )
+                    if existing is not None:
+                        return existing, False
+                    if (
+                        plan.status is not AuditPreflightPlanStatus.AVAILABLE
+                        or identity.created_at >= plan.expires_at
+                    ):
+                        _opaque_conflict("Audit Preflight Plan is unavailable")
+
+                    project, engagement = await _resolve_project_v2(
+                        session,
+                        factory,
+                        identity,
+                        plan,
+                        failpoint=self._creation_failpoint,
+                    )
+                    reserved = plan.reserve(
+                        audit_id=identity.audit_id,
+                        client_request_id=identity.client_request_id,
+                        at=identity.created_at,
+                    )
+                    await compare_and_set_audit_preflight_plan(
+                        session,
+                        previous=plan,
+                        updated=reserved,
+                    )
+                    _hit(self._creation_failpoint, "after_plan_reservation")
+                    try:
+                        envelope = _validate_creation_envelope_v2(
+                            factory.build(
+                                project,
+                                engagement,
+                                reserved,
+                                request_digest=request_digest,
+                            ),
+                            project=project,
+                            engagement=engagement,
+                            identity=identity,
+                            plan=reserved,
+                            request_digest=request_digest,
+                        )
+                    except RepositoryConflictError:
+                        raise
+                    except (AttributeError, TypeError, ValueError, OverflowError):
+                        _opaque_conflict("Audit v2 draft creation envelope is invalid")
+                    await _insert_run_and_events_v2(
+                        session,
+                        envelope,
+                        failpoint=self._creation_failpoint,
+                    )
+                    aggregate = await _read_aggregate(
+                        session,
+                        envelope.audit.id,
+                        for_update=True,
+                    )
+                    if aggregate is None:
+                        raise RepositoryIntegrityError(
+                            "AuditScan",
+                            envelope.audit.id,
+                            reason_code="aggregate_create_missing",
+                        )
+                    return aggregate, True
+            except (IntegrityError, _RetryAuditCreation):
+                pass
+            except SQLAlchemyError:
+                database_failure = True
+
+            if database_failure:
+                _database_unavailable()
+            recovery_failure = False
+            try:
+                async with consistent_read(self._session_factory) as recovery_session:
+                    plan = await _load_plan_for_token(
+                        recovery_session,
+                        identity,
+                        for_update=False,
+                    )
+                    if plan is not None:
+                        try:
+                            factory.validate_plan(plan)
+                            request_digest = factory.request_digest_for(plan)
+                        except (AttributeError, TypeError, ValueError, OverflowError):
+                            _opaque_conflict(
+                                "Audit Preflight Plan does not match the request"
+                            )
+                        existing = await _read_client_request_v2(
+                            recovery_session,
+                            identity,
+                            plan,
+                            request_digest=request_digest,
+                            for_update=False,
+                        )
+                        if existing is not None:
+                            return existing, False
+            except SQLAlchemyError:
+                recovery_failure = True
+            if recovery_failure:
+                _database_unavailable()
+            if attempt + 1 == _MAX_CREATE_ATTEMPTS:
+                _opaque_conflict("Audit v2 draft could not be created after a conflict")
+
+        raise AssertionError("unreachable Audit v2 creation retry state")
 
 
 async def _read_audit_authorization_binding(

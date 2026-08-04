@@ -325,6 +325,21 @@ def test_plaintext_admin_token_is_rejected_from_yaml(tmp_path: Path) -> None:
         )
 
 
+def test_plaintext_audit_preflight_token_key_is_rejected_from_yaml(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    write_yaml(config_path, {"audit": {"preflight_token_key": "A" * 43}})
+
+    with pytest.raises(RiftXConfigError, match="secret field 'preflight_token_key'"):
+        load_riftx_config(
+            system_path=tmp_path / "missing-system.yaml",
+            user_path=tmp_path / "missing-user.yaml",
+            explicit_path=config_path,
+            environment={},
+        )
+
+
 def test_plaintext_temporal_api_key_is_rejected_from_yaml(tmp_path: Path) -> None:
     config_path = tmp_path / "riftx.yaml"
     write_yaml(

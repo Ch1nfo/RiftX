@@ -16,6 +16,7 @@ from riftx.api.schemas import (
     AuditListResponse,
     AuditResponse,
     CreateAuditDraftRequest,
+    CreateAuditDraftRequestV2,
 )
 from riftx.application.ports import AuditAggregate, StoredAuditEntity
 from riftx.application.services import AuditDraftResult
@@ -53,6 +54,69 @@ def _request_payload() -> dict[str, object]:
             exclude={"audit_id", "project_id"},
         ),
     }
+
+
+def _request_v2_payload() -> dict[str, object]:
+    return {
+        "schema_version": "riftx.audit-create-draft-request/v2",
+        "client_request_id": CLIENT_REQUEST_ID,
+        "preflight_token": "A" * 86,
+        "project_name": "RiftX",
+        "engagement_id": None,
+        "mode": "standard",
+        "analysis_profile": "deterministic",
+        "model_profile": None,
+        "model_data_egress": {"mode": "local_only"},
+        "validation_policy": "static_only",
+        "baseline_audit_id": None,
+        "execution_target": {
+            "node_id": "local",
+            "required_sandbox_backend": "linux_container",
+        },
+        "budget": {
+            "schema_version": "riftx.audit-draft-budget/v2",
+            "max_wall_seconds": 1800,
+            "max_detector_jobs": 64,
+            "max_worker_jobs": 8,
+            "max_epochs": 1,
+            "max_model_calls": 0,
+            "max_input_tokens": 0,
+            "max_output_tokens": 0,
+            "max_read_bytes": 16_777_216,
+            "max_candidates": 100,
+            "max_signals": 1000,
+            "max_dynamic_validations": 0,
+            "max_artifact_output_bytes": 16_777_216,
+        },
+    }
+
+
+def test_create_v2_wire_accepts_only_caller_preferences_and_hides_token() -> None:
+    request = CreateAuditDraftRequestV2.model_validate(_request_v2_payload())
+    command = request.to_command()
+
+    assert command.preflight_token == "A" * 86
+    assert "A" * 86 not in repr(request)
+    assert "A" * 86 not in repr(command)
+    assert command.mode is AuditMode.STANDARD
+    assert command.analysis_profile.value == "deterministic"
+
+    for forbidden in (
+        "repository_path",
+        "source_target",
+        "execution_selection",
+        "operator_consent_at",
+        "security_context_bundle_id",
+        "preflight_plan_digest",
+        "proof_digest",
+    ):
+        payload = _request_v2_payload()
+        payload[forbidden] = "forged"
+        with pytest.raises(ValidationError):
+            CreateAuditDraftRequestV2.model_validate(payload)
+
+    with pytest.raises(ValidationError):
+        CreateAuditDraftRequestV2.model_validate(_request_payload())
 
 
 def _aggregate() -> AuditAggregate:

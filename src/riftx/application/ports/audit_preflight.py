@@ -16,6 +16,10 @@ from riftx.domain.audit_preflight import (
     PreflightRequest,
 )
 
+AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION = (
+    "riftx.audit-preflight-plan-issuance/v1"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AuditPreflightOwnerBinding:
@@ -34,6 +38,7 @@ class AuditPreflightOwnerBinding:
     status: AuditPreflightJobStatus
     state_version: int
     effect_owner_digest: str
+    plan_issuance_schema_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +88,14 @@ class AuditPreflightRepository(Protocol):
         job_id: str,
     ) -> AuditPreflightOwnerBinding | None: ...
 
-    async def get(self, job_id: str) -> AuditPreflightJob | None: ...
+    async def get(self, job_id: str) -> AuditPreflightJob | None:
+        """Load a Job only after validating every owned restricted child row.
+
+        Production adapters must fail closed unless the request, terminal Result,
+        and applicable exit/stop receipt canonical bodies and digests all bind the
+        returned Job. Plan issuance relies on this stronger aggregate-read contract.
+        """
+        ...
 
     async def get_reconciliation_candidate(
         self,
@@ -138,6 +150,7 @@ class AuditPreflightRepository(Protocol):
 
 
 __all__ = [
+    "AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION",
     "AuditPreflightDispatch",
     "AuditPreflightOwnerBinding",
     "AuditPreflightReconciliationCandidate",

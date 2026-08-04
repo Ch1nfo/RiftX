@@ -328,6 +328,7 @@ class RunEffectOperation(StrEnum):
     CONNECTOR_WEBUI = "connector_webui"
     CREATE_AUDIT = "create_audit"
     CREATE_AUDIT_PREFLIGHT = "create_audit_preflight"
+    ISSUE_AUDIT_PREFLIGHT_PLAN = "issue_audit_preflight_plan"
     CREATE_FINDING = "create_finding"
     CREATE_MEMORY = "create_memory"
     CREATE_RUN = "create_run"
@@ -437,6 +438,7 @@ class RunEffectOperation(StrEnum):
     SERVICE_AUDIT_PREFLIGHT_CREATE = "service.audit_preflight.create"
     SERVICE_AUDIT_PREFLIGHT_GET = "service.audit_preflight.get"
     SERVICE_AUDIT_PREFLIGHT_CANCEL = "service.audit_preflight.cancel"
+    SERVICE_AUDIT_PREFLIGHT_PLAN_ISSUE = "service.audit_preflight_plan.issue"
     SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL = "service.audit_preflight_runner.poll"
     SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW = "service.audit_preflight_runner.renew"
     SERVICE_AUDIT_PREFLIGHT_RUNNER_START = "service.audit_preflight_runner.start"
@@ -444,6 +446,7 @@ class RunEffectOperation(StrEnum):
     SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP = "service.audit_preflight_runner.stop"
     SERVICE_AUDIT_PREFLIGHT_RECONCILE = "service.audit_preflight.reconcile"
     PERSIST_AUDIT_PREFLIGHT_MUTATION = "persistence.audit_preflight.mutation"
+    PERSIST_AUDIT_PREFLIGHT_PLAN_MUTATION = "persistence.audit_preflight_plan.mutation"
     SERVICE_AUDIT_PAUSE = "service.audit.pause"
     SERVICE_AUDIT_RESUME = "service.audit.resume"
     SERVICE_AUDIT_CANCEL = "service.audit.cancel"
@@ -1332,6 +1335,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
+        RunEffectOperation.ISSUE_AUDIT_PREFLIGHT_PLAN,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
         RunEffectOperation.PAUSE_RUN,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.WORKFLOW_CONTROL,
@@ -1766,6 +1780,17 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
     ),
+    _rule(
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_PLAN_ISSUE,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
     *_rules(
         (
             RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL,
@@ -1795,6 +1820,17 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
     ),
     _rule(
         RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_PLAN_MUTATION,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.RUN_LIFECYCLE,
         _NO_RUN_KIND,
@@ -2773,6 +2809,12 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(
+        "riftx.application.services.audits:"
+        "AuditApplicationService.create_draft_v2_authorized",
+        RunEffectOperation.SERVICE_AUDIT_CREATE_DRAFT,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
         "riftx.application.services.audit_preflight:"
         "AuditPreflightApplicationService.create_authorized",
         RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CREATE,
@@ -2788,6 +2830,12 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         "riftx.application.services.audit_preflight:"
         "AuditPreflightApplicationService.cancel_authorized",
         RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.application.services.audit_preflight_plan:"
+        "AuditPreflightPlanApplicationService.issue_authorized",
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_PLAN_ISSUE,
         EffectOrigin.APPLICATION_SERVICE,
     ),
     *(
@@ -2827,6 +2875,15 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
             EffectOrigin.APPLICATION_SERVICE,
         )
         for method in ("create", "claim_next", "compare_and_set")
+    ),
+    *(
+        _entry(
+            f"riftx.persistence.audit_preflight_plan:"
+            f"SQLAlchemyAuditPreflightPlanRepository.{method}",
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_PLAN_MUTATION,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+        for method in ("create", "compare_and_set")
     ),
     _entry(
         "riftx.persistence.audit_preflight:"

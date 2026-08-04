@@ -73,6 +73,9 @@ audit:
   # RiftX 3.0 is deliberately same-node only.
   node_mode: local_same_node
   allowed_node_ids: [local]
+  # The signing key itself must come from RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY as
+  # canonical unpadded base64url for exactly 32 random bytes; never store it here.
+  preflight_token_key_id: primary
   source_roots: []
   # Keep every Audit storage root absolute, persistent, and outside source_roots.
   snapshot_root: /var/lib/riftx/audit/snapshots

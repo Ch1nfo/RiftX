@@ -3,6 +3,7 @@
 from .action_repositories import SQLAlchemyActionReadRepository
 from .audit_control_uow import SQLAlchemyAuditControlUnitOfWork
 from .audit_preflight import SQLAlchemyAuditPreflightRepository
+from .audit_preflight_plan import SQLAlchemyAuditPreflightPlanRepository
 from .audit_repositories import (
     SQLAlchemyAuditContractRepository,
     SQLAlchemyAuditPhaseRepository,
@@ -66,6 +67,7 @@ __all__ = [
     "SQLAlchemyAuditCreationUnitOfWork",
     "SQLAlchemyAuditPhaseRepository",
     "SQLAlchemyAuditPreflightRepository",
+    "SQLAlchemyAuditPreflightPlanRepository",
     "SQLAlchemyAuditProjectRepository",
     "SQLAlchemyAuditRepository",
     "SQLAlchemyAuditScopeRepository",

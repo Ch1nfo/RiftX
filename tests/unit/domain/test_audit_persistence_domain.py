@@ -78,7 +78,7 @@ def test_client_request_rejects_noncanonical_or_zero_uuid(client_request_id: str
 
 def test_client_request_rejects_schema_digest_and_workflow_confusion() -> None:
     with pytest.raises(ValidationError, match="unsupported schema"):
-        _client_request(request_schema_version="riftx.audit-create-draft-request/v2")
+        _client_request(request_schema_version="riftx.audit-create-draft-request/v99")
     with pytest.raises(ValidationError):
         _client_request(request_digest="not-a-digest")
     with pytest.raises(ValidationError, match="workflow binding"):

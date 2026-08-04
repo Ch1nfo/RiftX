@@ -119,6 +119,7 @@ def _service(
         ),
         feature_enabled=enabled,
         workspace_root=settings.audit.temp_root,
+        legacy_draft_api_enabled=True,
         clock=lambda: NOW,
     )
 
@@ -663,6 +664,7 @@ async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
             "/api/v1/audits/preflight",
             "/api/v1/audits/preflight/{job_id}",
             "/api/v1/audits/preflight/{job_id}/cancel",
+            "/api/v1/audits/preflight/{job_id}/plan",
         }
         assert set(paths["/api/v1/audits"]) == {"get", "post"}
         assert set(paths["/api/v1/audits/{audit_id}"]) == {"get"}
@@ -674,6 +676,7 @@ async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
         assert set(paths["/api/v1/audits/preflight"]) == {"post"}
         assert set(paths["/api/v1/audits/preflight/{job_id}"]) == {"get"}
         assert set(paths["/api/v1/audits/preflight/{job_id}/cancel"]) == {"post"}
+        assert set(paths["/api/v1/audits/preflight/{job_id}/plan"]) == {"post"}
         for artifact_path in (
             "/api/v1/audits/{audit_id}/artifacts",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",

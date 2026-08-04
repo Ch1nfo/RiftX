@@ -37,6 +37,7 @@ from riftx.application.errors import (
     RepositoryUnavailableError,
 )
 from riftx.application.ports.audit_preflight import (
+    AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION,
     AuditPreflightDispatch,
     AuditPreflightOwnerBinding,
     AuditPreflightReconciliationCandidate,
@@ -318,6 +319,7 @@ class AuditPreflightJobRecord(Base):
     operator_principal_id: Mapped[str] = mapped_column(String(128), nullable=False)
     authorization_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     request_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_issuance_schema_version: Mapped[str | None] = mapped_column(String(64))
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     source_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_root_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1049,7 +1051,10 @@ def _reconciliation_candidate_from_row(
 
 
 def _job_to_record(job: AuditPreflightJob) -> AuditPreflightJobRecord:
-    record = AuditPreflightJobRecord(id=job.job_id)
+    record = AuditPreflightJobRecord(
+        id=job.job_id,
+        plan_issuance_schema_version=AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION,
+    )
     _apply_job_to_record(job, record)
     return record
 
@@ -1339,6 +1344,7 @@ def _owner_binding_from_record(
         status=status,
         state_version=record.state_version,
         effect_owner_digest=owner.effect_owner_digest,
+        plan_issuance_schema_version=record.plan_issuance_schema_version,
     )
 
 

@@ -32,10 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed task: `AUD-200 — Source root and Git preflight`.
-- Next task: `AUD-201 — Signed preflight token`.
-- Next dependency: AUD-202A remains blocked until AUD-201 plan/token,
-  reservation/consume, Create v2, replay/race, and regression gates pass in a
+- Active task: `AUD-201 — Signed preflight token` remains `in_progress`.
+- Completed AUD-201 step: durable Plan/token issuance and atomic Create v2.
+- Next AUD-201 step: reconcile and implement the fail-closed Start admission/UoW
+  contract without introducing Snapshot, Temporal dispatch, or execution capability.
+- Next dependency: AUD-202A remains blocked until AUD-201 Start admission,
+  reservation/consume, replay/race, and remaining production gates pass in a
   separately committed work unit.
 
 ## Milestone Status
@@ -44,7 +46,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200 completed; AUD-201 next |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200 completed; AUD-201 Plan/Create v2 implemented, Start admission pending |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -87,7 +89,7 @@ individual operation families.
 | Task | Status |
 | --- | --- |
 | AUD-200 Source root and Git preflight | completed |
-| AUD-201 Signed preflight token | pending |
+| AUD-201 Signed preflight token | in_progress |
 | AUD-202A SnapshotStore and CAS foundation | pending |
 | AUD-202B Commit/working-tree materializer | pending |
 | AUD-202C Same-node mount, pin, and static ownership | pending |
@@ -1326,8 +1328,7 @@ individual operation families.
   - No Codex Security Provider, code, Prompt, Schema, Skill, runtime,
     endpoint, dependency, test, or generated artifact was used. The
     implementation and protocol are RiftX-owned.
-- Commit: this AUD-200 local commit; its hash is backfilled by the AUD-201 ledger
-  update because a commit cannot contain its own hash.
+- Commit: `3ee0cbf9` (`feat(code-audit): complete source root and Git preflight`).
 - Known limitations / production qualification:
   - The completion review ran on macOS. A real local-Linux Docker
     descriptor/mount round-trip smoke was not executed in this work unit.
@@ -1338,6 +1339,75 @@ individual operation families.
     image/policy/descriptor-mount/identity/stop-proof smoke must pass on a
     supported same-host Linux environment and be recorded as release evidence.
 - Next unblocked task: AUD-201, as a separately committed work unit.
+
+### AUD-201 — Signed Preflight Token (Plan/Create v2 Step)
+
+- Status: in_progress.
+- Outcome of this committed step:
+  - Accepted ADR-0008 and added durable `AuditPreflightPlan` identity, lifecycle,
+    HMAC token codec, key rotation verification, expiry, reservation, and safe replay.
+    Raw bearer tokens are never persisted and are excluded from object repr/log facts.
+  - Added migration `5d8c1a7e3b24`, the Plan repository, issuance eligibility on
+    successful Preflight Jobs, and the canonical-empty
+    `AuditSecurityContextBinding` with exact Plan/owner/Audit composite ownership.
+  - Added `POST /api/v1/audits/preflight/{job_id}/plan` with authorized 201/200
+    issuance replay and `Cache-Control: no-store`. Missing token key configuration
+    fails closed; production assembly has no fallback or development key.
+  - Published caller-only `riftx.audit-create-draft-request/v2`, immutable
+    `riftx.audit-contract/v2`, and `riftx.model-data-egress/v2`. Contract output is
+    honestly `preflight_bound_draft` and `start_eligible=false`; no Snapshot or
+    execution proof is fabricated.
+  - Extended the creation UoW so one transaction locks the Plan by token hash,
+    validates principal/scope/preferences, reserves it, and inserts Engagement,
+    Project, Run/events, Contract, Scan, Binding, and request facts. Exact replay
+    returns the original aggregate; ten injected failure stages prove rollback of
+    both the reservation and every aggregate fact.
+  - Production new-create admission rejects the synthetic v1 path. Historical v1
+    persistence/read behavior remains available, and tests can opt into the legacy
+    draft-only wire explicitly without granting Start authority.
+  - Stabilized the pre-existing Temporal cleanup recovery test so it waits for both
+    the terminal status and its following audit event before cancelling the
+    reconciler; production Temporal behavior is unchanged.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/domain/test_audit_preflight_plan.py tests/unit/domain/test_audit_contract_v2.py tests/unit/application/test_audit_preflight_plan_issuance.py tests/integration/application/test_audit_create_v2.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_audit_preflight_plan_repository.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/api/test_audits.py tests/integration/api/test_control_plane.py tests/unit/models/test_audit_api_schemas.py tests/unit/application/test_run_kind_effect_policy.py tests/unit/domain/test_audit_persistence_domain.py tests/unit/persistence/test_audit_schema.py tests/unit/persistence/test_schema.py tests/unit/test_api_policy.py tests/unit/test_api_runtime.py tests/unit/test_audit_config.py tests/unit/test_runtime_config.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/temporal/test_workflow.py::test_pre_patch_cleanup_exhaustion_keeps_intent_for_worker_recovery`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `git diff --check`
+- Test results:
+  - AUD-201 changed-surface matrix: `695 passed`.
+  - Temporal cleanup recovery regression: `1 passed`.
+  - Repository Ruff and `compileall` passed; `git diff --check` passed with no output.
+  - Full repository suite: `4767 passed, 5 skipped, 12 warnings` in `388.04s`.
+  - The independence boundary reported `ready=true`, scanned 499 production files,
+    and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true` with every registered gate
+    passed. This does not replace the explicitly unexecuted real-Linux AUD-201
+    production qualification noted below.
+- Provenance:
+  - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
+    dependency, test, or generated artifact was used. The implementation and
+    protocol are RiftX-owned.
+- Commit: this AUD-201 Plan/Create v2 local commit; its hash is backfilled by the
+  next ledger update because a commit cannot contain its own hash.
+- Known limitations / next contract:
+  - AUD-201 is not complete. Start revalidation, Plan consume, queued Audit/Run, and
+    pending `AuditStartIntent` admission remain unimplemented.
+  - ADR-0008 currently requires the persisted Create v2 Contract to remain
+    `start_eligible=false` because Snapshot/start-delivery capabilities are absent,
+    while its Definition of Done also requires a successful Start transaction. The
+    next step must explicitly reconcile this contract before implementing success;
+    the runtime remains fail-closed in the meantime.
+  - No Snapshot/CAS/Manifest/materializer/mount/pin, Temporal dispatch, ordinary
+    Runner enqueue, model, Agent, Scanner, Detector, network fetch, dependency
+    installation, or execution capability was introduced.
+  - The real local-Linux descriptor/mount and Capsule deny smoke was not executed on
+    this macOS work unit. Release qualification remains disabled.
+- Next step: complete the separately committed AUD-201 Start admission contract.
 
 ## Design Deviations and ADRs
 
@@ -1369,13 +1439,17 @@ individual operation families.
   Runner protocol, staged AuditPreflightResult, SourceIngest Capsule,
   descriptor/mount identity, affirmative stop/recovery, safe projection, and
   AUD-201/AUD-202/AUD-206/AUD-209 boundaries implemented by AUD-200.
+- `ADR-0008`: freezes durable Plan/token identity and lifecycle, issuance API,
+  Create v2 ownership, canonical-empty Context Binding, historical v1 isolation,
+  fail-closed Start admission, and the AUD-208 delivery boundary. Plan/Create v2 is
+  implemented; Start admission remains pending.
 
 ## Current Risks
 
 - The independence scanner is a bounded known-identity gate, not a substitute for the
   M10 SBOM, licensing, similarity, and human copyright review.
-- External v1 draft admission remains non-startable. AUD-200 now provides the
-  dedicated pre-Audit Job/Result boundary, but signed plan/token, Create v2,
+- Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire is
+  test-enabled only and remains non-startable. Start admission/Plan consume,
   SnapshotStore/CAS, Inventory, and deterministic scanning remain unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,
@@ -1391,9 +1465,10 @@ individual operation families.
   enqueue remains zero. The only executable AUD-200 path is the dedicated
   `preflight_job_owner_v1` SourceIngest protocol; it grants no
   `AuditStaticEffectPlan` or `AuditExecutionPlan` authority.
-- AUD-200 now uses the durable pre-Audit `AuditPreflightJob` owner and never
-  invents a Run/Audit owner. AUD-201 must consume the completed Result without
-  broadening it into Snapshot, static-effect, or dynamic-effect authority.
+- AUD-201 now converts a completed Result into a durable, owner-bound Plan and
+  atomically reserves it for Create v2 without broadening it into Snapshot,
+  static-effect, or dynamic-effect authority. Its next step must reconcile the
+  Start eligibility contract before implementing consume and pending Intent.
 - The completion review ran on macOS and did not execute the real local-Linux
   Docker descriptor/mount smoke. Production backend qualification remains a
   mandatory Linux release gate.

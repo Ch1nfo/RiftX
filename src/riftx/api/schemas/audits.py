@@ -23,6 +23,7 @@ from riftx.application.services import (
     AuditContractBlueprint,
     AuditDraftResult,
     CreateAuditDraft,
+    CreateAuditDraftV2,
 )
 from riftx.domain import (
     AnalysisProfile,
@@ -46,6 +47,8 @@ from riftx.domain import (
     SourceTargetKind,
     ValidationPolicy,
 )
+from riftx.domain.audit_contract_v2 import AuditDraftBudgetV2
+from riftx.domain.audit_preflight_plan import TOKEN_WIRE_LENGTH
 
 _AUDIT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,127}$"
 _AUDIT_NODE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,63}$"
@@ -350,6 +353,100 @@ class CreateAuditDraftRequest(_AuditWireModel):
         )
 
 
+class AuditDraftBudgetV2Request(_AuditWireModel):
+    schema_version: Literal["riftx.audit-draft-budget/v2"] = (
+        "riftx.audit-draft-budget/v2"
+    )
+    max_wall_seconds: int = Field(ge=1, le=7_200)
+    max_detector_jobs: int = Field(ge=0, le=4_096)
+    max_worker_jobs: int = Field(ge=1, le=64)
+    max_epochs: int = Field(ge=1, le=8)
+    max_model_calls: Literal[0] = 0
+    max_input_tokens: Literal[0] = 0
+    max_output_tokens: Literal[0] = 0
+    max_read_bytes: int = Field(ge=1, le=2_147_483_648)
+    max_candidates: int = Field(ge=1, le=1_000)
+    max_signals: int = Field(ge=1, le=16_000)
+    max_dynamic_validations: Literal[0] = 0
+    max_artifact_output_bytes: int = Field(ge=1, le=268_435_456)
+
+    def to_domain(self) -> AuditDraftBudgetV2:
+        return AuditDraftBudgetV2.model_validate(self.model_dump(mode="python"))
+
+
+class AuditModelDataEgressV2Request(_AuditWireModel):
+    mode: Literal["local_only"] = "local_only"
+
+
+class AuditExecutionPreferenceV2Request(_AuditWireModel):
+    node_id: Literal["local"] = "local"
+    required_sandbox_backend: _AuditToken
+
+
+class CreateAuditDraftRequestV2(_AuditWireModel):
+    """Caller-only AUD-201 wire; proof and selection fields are forbidden."""
+
+    schema_version: Literal["riftx.audit-create-draft-request/v2"] = (
+        "riftx.audit-create-draft-request/v2"
+    )
+    client_request_id: str = Field(min_length=36, max_length=36)
+    preflight_token: str = Field(
+        min_length=TOKEN_WIRE_LENGTH,
+        max_length=TOKEN_WIRE_LENGTH,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        repr=False,
+    )
+    project_name: str = Field(min_length=1, max_length=255)
+    engagement_id: _EngagementId | None = None
+    mode: Literal[AuditMode.STANDARD] = AuditMode.STANDARD
+    analysis_profile: Literal[AnalysisProfile.DETERMINISTIC] = (
+        AnalysisProfile.DETERMINISTIC
+    )
+    model_profile: None = None
+    model_data_egress: AuditModelDataEgressV2Request = Field(
+        default_factory=AuditModelDataEgressV2Request
+    )
+    validation_policy: Literal[ValidationPolicy.STATIC_ONLY] = (
+        ValidationPolicy.STATIC_ONLY
+    )
+    baseline_audit_id: None = None
+    execution_target: AuditExecutionPreferenceV2Request
+    budget: AuditDraftBudgetV2Request
+
+    @field_validator("client_request_id")
+    @classmethod
+    def validate_client_request_id(cls, value: str) -> str:
+        try:
+            parsed = UUID(value)
+        except (AttributeError, ValueError):
+            raise ValueError("client_request_id must be a canonical UUID") from None
+        if parsed.int == 0 or str(parsed) != value:
+            raise ValueError("client_request_id must be a non-zero canonical UUID")
+        return value
+
+    @field_validator("project_name")
+    @classmethod
+    def validate_project_name(cls, value: str) -> str:
+        return _bounded_text(value, maximum_bytes=1024, label="project_name")
+
+    def to_command(self) -> CreateAuditDraftV2:
+        return CreateAuditDraftV2(
+            client_request_id=self.client_request_id,
+            preflight_token=self.preflight_token,
+            project_name=self.project_name,
+            engagement_id=self.engagement_id,
+            mode=AuditMode(self.mode),
+            analysis_profile=AnalysisProfile(self.analysis_profile),
+            model_profile=None,
+            model_data_egress_mode=self.model_data_egress.mode,
+            validation_policy=ValidationPolicy(self.validation_policy),
+            baseline_audit_id=None,
+            execution_node_id=self.execution_target.node_id,
+            required_sandbox_backend=self.execution_target.required_sandbox_backend,
+            budget=self.budget.to_domain(),
+        )
+
+
 class AuditListQuery(_AuditWireModel):
     run_id: _AuditId | None = None
     project_id: _AuditId | None = None
@@ -516,4 +613,5 @@ __all__ = [
     "AuditProjectSummaryResponse",
     "AuditResponse",
     "CreateAuditDraftRequest",
+    "CreateAuditDraftRequestV2",
 ]

@@ -203,7 +203,9 @@ def _load_additive_metadata_models() -> None:
     """Register isolated persistence modules on the shared metadata root."""
 
     from .audit_preflight import AuditPreflightJobRecord  # noqa: PLC0415
+    from .audit_preflight_plan import AuditPreflightPlanRecord  # noqa: PLC0415
     from .workflow_signals import WorkflowSignalIntentRecord  # noqa: PLC0415
 
     assert AuditPreflightJobRecord.__tablename__ in Base.metadata.tables
+    assert AuditPreflightPlanRecord.__tablename__ in Base.metadata.tables
     assert WorkflowSignalIntentRecord.__tablename__ in Base.metadata.tables

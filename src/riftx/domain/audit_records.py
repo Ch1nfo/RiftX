@@ -11,7 +11,7 @@ import hashlib
 import json
 import unicodedata
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, StringConstraints, field_validator, model_validator
@@ -30,6 +30,7 @@ from .errors import InvalidStateTransitionError
 
 SOURCE_SNAPSHOT_DIGEST_DOMAIN = "riftx.source-snapshot/v1"
 AUDIT_CLIENT_REQUEST_SCHEMA_VERSION = "riftx.audit-create-draft-request/v1"
+AUDIT_CLIENT_REQUEST_V2_SCHEMA_VERSION = "riftx.audit-create-draft-request/v2"
 _MAX_COUNTER = 2**63 - 1
 _GIT_OBJECT_ID_PATTERN = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
 
@@ -343,6 +344,11 @@ class AuditClientRequest(AuditStrictModel):
         max_length=128,
     )
     request_digest: Sha256Digest
+    preflight_plan_id: AuditId | None = None
+    preflight_plan_digest: Sha256Digest | None = None
+    security_context_id: AuditVersion | None = None
+    security_context_digest: Sha256Digest | None = None
+    contract_stage: Literal["preflight_bound_draft"] | None = None
     audit_id: AuditId
     run_id: AuditId
     project_id: AuditId
@@ -365,7 +371,20 @@ class AuditClientRequest(AuditStrictModel):
 
     @model_validator(mode="after")
     def validate_binding(self) -> AuditClientRequest:
-        if self.request_schema_version != AUDIT_CLIENT_REQUEST_SCHEMA_VERSION:
+        preflight_binding = (
+            self.preflight_plan_id,
+            self.preflight_plan_digest,
+            self.security_context_id,
+            self.security_context_digest,
+            self.contract_stage,
+        )
+        if self.request_schema_version == AUDIT_CLIENT_REQUEST_SCHEMA_VERSION:
+            if any(value is not None for value in preflight_binding):
+                raise ValueError("v1 Audit client request cannot carry Preflight binding")
+        elif self.request_schema_version == AUDIT_CLIENT_REQUEST_V2_SCHEMA_VERSION:
+            if any(value is None for value in preflight_binding):
+                raise ValueError("v2 Audit client request requires complete Preflight binding")
+        else:
             raise ValueError("Audit client request uses an unsupported schema version")
         if self.temporal_workflow_id != f"riftx-code-audit-{self.audit_id}":
             raise ValueError("Audit client request workflow binding is not deterministic")

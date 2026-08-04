@@ -148,6 +148,8 @@ def test_example_config_contains_the_complete_safe_audit_defaults(tmp_path: Path
     assert config.audit.fix_root == Path("/var/lib/riftx/audit/fixes").resolve()
     assert config.audit.default_mode == "standard"
     assert config.audit.default_analysis_profile == "deterministic"
+    assert config.audit.preflight_token_key_id == "primary"
+    assert config.audit.preflight_token_key is None
     assert config.audit.source_ingest.backend_id == "linux_container"
     assert config.audit.source_ingest.runtime == "docker"
     assert config.audit.source_ingest.image_digest is None
@@ -185,6 +187,8 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
         "RIFTX_TRUST_PROFILE": "local_single_operator",
         "RIFTX_ADMIN_TOKEN": "test-only-audit-config-admin-token-0001",
         "RIFTX_AUDIT_ENABLED": "true",
+        "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY_ID": "rotation-2026-08",
+        "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY": "A" * 43,
         "RIFTX_AUDIT_SOURCE_ROOTS": json.dumps([str(source)]),
         "RIFTX_AUDIT_SNAPSHOT_ROOT": str(state / "audit" / "snapshots"),
         "RIFTX_AUDIT_TEMP_ROOT": str(state / "audit" / "tmp"),
@@ -224,6 +228,9 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
     audit = config.audit
 
     assert audit.enabled is True
+    assert audit.preflight_token_key_id == "rotation-2026-08"
+    assert audit.preflight_token_key is not None
+    assert audit.preflight_token_key.get_secret_value() == "A" * 43
     assert audit.source_roots == (source.resolve(),)
     assert audit.default_mode == "deep"
     assert audit.default_analysis_profile == "hybrid"
@@ -671,6 +678,17 @@ def test_source_ingest_config_is_same_node_digest_pinned_and_versioned() -> None
         AuditConfig(allowed_node_ids=())
     with pytest.raises(ValidationError):
         AuditConfig(allowed_node_ids=("remote",))
+
+
+@pytest.mark.parametrize(
+    "token_key",
+    ["short", "A" * 42, "A" * 44, "=" * 43, "é" * 43],
+)
+def test_preflight_token_key_requires_canonical_256_bit_base64url(
+    token_key: str,
+) -> None:
+    with pytest.raises(ValidationError, match="preflight token key"):
+        AuditConfig(preflight_token_key=token_key)
 
 
 def test_api_runtime_rejects_direct_settings_path_overlap_before_side_effect(

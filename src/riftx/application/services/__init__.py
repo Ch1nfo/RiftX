@@ -20,6 +20,12 @@ from .audit_preflight import (
     AuditPreflightAvailabilityCheck,
     AuditPreflightCreationResult,
 )
+from .audit_preflight_plan import (
+    AuditPreflightPlanApplicationService,
+    AuditPreflightPlanClock,
+    AuditPreflightPlanIdFactory,
+    AuditPreflightPlanIssuanceResult,
+)
 from .audit_preflight_runner import AuditPreflightRunnerService
 from .audits import (
     AuditApplicationService,
@@ -31,6 +37,7 @@ from .audits import (
     AuditDraftResult,
     AuditRunStateMappingPolicy,
     CreateAuditDraft,
+    CreateAuditDraftV2,
 )
 from .events import EventApplicationService
 from .executions import ExecutionApplicationService
@@ -90,6 +97,10 @@ __all__ = [
     "AuditPreflightApplicationService",
     "AuditPreflightAvailabilityCheck",
     "AuditPreflightCreationResult",
+    "AuditPreflightPlanApplicationService",
+    "AuditPreflightPlanClock",
+    "AuditPreflightPlanIdFactory",
+    "AuditPreflightPlanIssuanceResult",
     "AuditPreflightRunnerService",
     "AuditControlApplicationService",
     "AuditContractBlueprint",
@@ -102,6 +113,7 @@ __all__ = [
     "AuditRunStateProjector",
     "CreateEngagement",
     "CreateAuditDraft",
+    "CreateAuditDraftV2",
     "CreateRun",
     "DecideApproval",
     "EventApplicationService",

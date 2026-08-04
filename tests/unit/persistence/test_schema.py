@@ -1,8 +1,12 @@
+from sqlalchemy import UniqueConstraint
+
 from riftx.persistence.audit_preflight import AuditPreflightJobRecord
+from riftx.persistence.audit_preflight_plan import AuditPreflightPlanRecord
 from riftx.persistence.orm import Base
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
 assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
+assert AuditPreflightPlanRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
@@ -21,10 +25,12 @@ EXPECTED_TABLES = {
     "audit_preflight_exit_receipts",
     "audit_preflight_job_requests",
     "audit_preflight_jobs",
+    "audit_preflight_plans",
     "audit_preflight_results",
     "audit_preflight_stop_receipts",
     "audit_projects",
     "audit_scans",
+    "audit_security_context_bindings",
     "audit_scope_units",
     "audit_start_intents",
     "audit_work_items",
@@ -76,6 +82,50 @@ EXPECTED_TABLES = {
 
 def test_metadata_contains_v2_business_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES - {"alembic_version"}
+
+
+def test_audit_preflight_plan_table_separates_token_and_lifecycle_facts() -> None:
+    plans = Base.metadata.tables["audit_preflight_plans"]
+
+    assert {
+        "id",
+        "canonical_json",
+        "plan_digest",
+        "preflight_job_id",
+        "operator_principal_id",
+        "authorization_scope_digest",
+        "security_context_id",
+        "security_context_digest",
+        "token_verifier_schema_version",
+        "token_key_id",
+        "token_nonce",
+        "token_hash",
+        "status",
+        "state_version",
+        "reserved_audit_id",
+        "reserved_client_request_id",
+        "consumed_audit_id",
+        "consumed_start_request_id",
+    } <= set(plans.columns.keys())
+    assert "preflight_token" not in plans.columns
+    assert "raw_token" not in plans.columns
+
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in plans.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert ("preflight_job_id",) in unique_columns
+    assert ("token_hash",) in unique_columns
+    assert (
+        "id",
+        "plan_digest",
+        "operator_principal_id",
+        "authorization_scope_digest",
+        "security_context_id",
+        "security_context_digest",
+        "reserved_audit_id",
+    ) in unique_columns
 
 
 def test_run_table_matches_design_contract() -> None:

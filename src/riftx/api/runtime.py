@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import platform
@@ -23,6 +24,7 @@ from riftx.application.services import (
     AuditApplicationService,
     AuditControlApplicationService,
     AuditPreflightApplicationService,
+    AuditPreflightPlanApplicationService,
     AuditPreflightRunnerService,
     AuditRunStateProjector,
     EventApplicationService,
@@ -62,6 +64,7 @@ from riftx.domain import (
     RunStatus,
     TrustProfile,
 )
+from riftx.domain.audit_preflight_plan import AuditPreflightTokenCodec
 from riftx.domain.base import utc_now
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
@@ -77,6 +80,7 @@ from riftx.persistence import (
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditControlUnitOfWork,
     SQLAlchemyAuditCreationUnitOfWork,
+    SQLAlchemyAuditPreflightPlanRepository,
     SQLAlchemyAuditPreflightRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
@@ -346,6 +350,39 @@ def _create_audit_preflight_service(
     )
 
 
+def _create_audit_preflight_plan_service(
+    settings: APISettings,
+    database: Database,
+    *,
+    preflight_repository: SQLAlchemyAuditPreflightRepository | None = None,
+    plan_repository: SQLAlchemyAuditPreflightPlanRepository | None = None,
+) -> AuditPreflightPlanApplicationService:
+    """Assemble Plan issuance without inventing a fallback signing key."""
+
+    audit = settings.audit
+    token_codec: AuditPreflightTokenCodec | None = None
+    if audit.preflight_token_key is not None:
+        encoded = audit.preflight_token_key.get_secret_value()
+        token_codec = AuditPreflightTokenCodec(
+            key_id=audit.preflight_token_key_id,
+            key=base64.urlsafe_b64decode(encoded + "="),
+        )
+    return AuditPreflightPlanApplicationService(
+        preflight_repository=(
+            preflight_repository
+            if preflight_repository is not None
+            else SQLAlchemyAuditPreflightRepository(database.session_factory)
+        ),
+        plan_repository=(
+            plan_repository
+            if plan_repository is not None
+            else SQLAlchemyAuditPreflightPlanRepository(database.session_factory)
+        ),
+        feature_enabled=audit.enabled,
+        token_codec=token_codec,
+    )
+
+
 def _create_audit_preflight_availability_check(
     settings: APISettings,
     *,
@@ -425,6 +462,7 @@ class ControlPlane:
     traffic_repository: SQLAlchemyTrafficMetadataReadRepository
     audit_control_service: AuditControlApplicationService | None = None
     audit_preflight_service: AuditPreflightApplicationService | None = None
+    audit_preflight_plan_service: AuditPreflightPlanApplicationService | None = None
     audit_preflight_runner_service: AuditPreflightRunnerService | None = None
     workflow_signal_dispatcher: WorkflowSignalDispatcher | None = None
     workflow_signal_reconciler: WorkflowSignalReconciler | None = None
@@ -882,6 +920,11 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             credentials=runner_credential_repository,
         ),
     )
+    audit_preflight_plan_service = _create_audit_preflight_plan_service(
+        settings,
+        database,
+        preflight_repository=audit_preflight_repository,
+    )
     workflow_router = RunWorkflowControlRouter(
         runs=run_repository,
         audits=audit_aggregate_repository,
@@ -1006,6 +1049,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         traffic_repository=traffic_repository,
         audit_control_service=audit_control_service,
         audit_preflight_service=audit_preflight_service,
+        audit_preflight_plan_service=audit_preflight_plan_service,
         audit_preflight_runner_service=audit_preflight_runner_service,
         workflow_signal_dispatcher=workflow_signal_dispatcher,
         workflow_signal_reconciler=workflow_signal_reconciler,

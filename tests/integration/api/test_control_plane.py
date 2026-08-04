@@ -800,6 +800,7 @@ tools:
                 aggregate_repository=audit_aggregate_repository,
                 feature_enabled=settings.audit.enabled,
                 workspace_root=settings.audit.temp_root,
+                legacy_draft_api_enabled=True,
             ),
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),

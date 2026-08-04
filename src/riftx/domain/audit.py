@@ -1614,10 +1614,10 @@ class AuditScan(AuditStrictModel):
     latest_distribution_revision_id: AuditId | None = None
     model_profile: AuditToken | None = Field(default=None, max_length=255)
     selected_node_id: AuditNodeId
-    required_backend_id: AuditToken
-    policy_digest: Sha256Digest
+    required_backend_id: AuditToken | None = None
+    policy_digest: Sha256Digest | None = None
     budget_digest: Sha256Digest
-    config_digest: Sha256Digest
+    config_digest: Sha256Digest | None = None
     contract_digest: Sha256Digest
     # Temporal's deterministic ``riftx-code-audit-{audit_id}`` identifier can
     # exceed the 128-character Audit ID bound, so it uses the wider token type.

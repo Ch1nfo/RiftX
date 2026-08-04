@@ -20,6 +20,7 @@ from ..schemas import (
     AuditListResponse,
     AuditResponse,
     CreateAuditDraftRequest,
+    CreateAuditDraftRequestV2,
     ErrorResponse,
 )
 
@@ -54,22 +55,30 @@ AuditId = Annotated[
     },
 )
 async def create_audit(
-    request: CreateAuditDraftRequest,
+    request: CreateAuditDraftRequestV2 | CreateAuditDraftRequest,
     service: AuditServiceDependency,
     principal: LocalPrincipalDependency,
     authorizer: AuditObjectAuthorizerDependency,
 ) -> JSONResponse:
     """Persist a draft only; this route never performs Preflight or Start."""
 
-    authorization_reference = authorizer.draft_authorization_reference(
-        principal,
-        capability=OperatorCapability.WRITE,
-    )
-    result = await service.create_draft_authorized(
-        request.to_command(authorization_reference=authorization_reference),
-        principal=principal,
-        authorizer=authorizer,
-    )
+    if isinstance(request, CreateAuditDraftRequestV2):
+        result = await service.create_draft_v2_authorized(
+            request.to_command(),
+            principal=principal,
+            authorizer=authorizer,
+        )
+    else:
+        service.require_legacy_draft_api_enabled()
+        authorization_reference = authorizer.draft_authorization_reference(
+            principal,
+            capability=OperatorCapability.WRITE,
+        )
+        result = await service.create_draft_authorized(
+            request.to_command(authorization_reference=authorization_reference),
+            principal=principal,
+            authorizer=authorizer,
+        )
     response = AuditDraftResponse.from_result(result)
     return JSONResponse(
         status_code=(status.HTTP_201_CREATED if result.created else status.HTTP_200_OK),

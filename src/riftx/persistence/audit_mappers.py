@@ -43,6 +43,7 @@ from riftx.domain import (
 from riftx.domain import (
     AuditContractRecord as DomainAuditContractRecord,
 )
+from riftx.domain.audit_contract_v2 import AuditContractRecordV2
 
 from .orm import (
     AuditClientRequestRecord,
@@ -62,6 +63,8 @@ _INVALID_PERSISTED_STATE = "invalid_persisted_state"
 _CONTRACT_BINDING_MISMATCH = "contract_binding_mismatch"
 _OWNER_BINDING_MISMATCH = "owner_binding_mismatch"
 _UNSUPPORTED_PUBLICATION_FACTS = "unsupported_publication_facts"
+
+type DomainAuditContractRecordAny = DomainAuditContractRecord | AuditContractRecordV2
 
 
 class _VersionedRecord(Protocol):
@@ -182,6 +185,11 @@ def audit_client_request_to_record(
         operation=request.operation.value,
         request_schema_version=request.request_schema_version,
         request_digest=request.request_digest,
+        preflight_plan_id=request.preflight_plan_id,
+        preflight_plan_digest=request.preflight_plan_digest,
+        security_context_id=request.security_context_id,
+        security_context_digest=request.security_context_digest,
+        contract_stage=request.contract_stage,
         audit_id=request.audit_id,
         run_id=request.run_id,
         project_id=request.project_id,
@@ -206,6 +214,11 @@ def audit_client_request_from_record(
                 "operation": AuditClientRequestOperation(record.operation),
                 "request_schema_version": record.request_schema_version,
                 "request_digest": record.request_digest,
+                "preflight_plan_id": record.preflight_plan_id,
+                "preflight_plan_digest": record.preflight_plan_digest,
+                "security_context_id": record.security_context_id,
+                "security_context_digest": record.security_context_digest,
+                "contract_stage": record.contract_stage,
                 "audit_id": record.audit_id,
                 "run_id": record.run_id,
                 "project_id": record.project_id,
@@ -280,11 +293,16 @@ def source_snapshot_from_record(record: SourceSnapshotRecord) -> SourceSnapshot:
 
 
 def audit_contract_to_record(
-    contract: DomainAuditContractRecord,
+    contract: DomainAuditContractRecordAny,
     *,
     state_version: int = 1,
 ) -> AuditContractORMRecord:
-    contract = DomainAuditContractRecord.model_validate(contract)
+    schema_version = getattr(contract, "schema_version", None)
+    if schema_version == "riftx.audit-contract/v2":
+        validated: DomainAuditContractRecordAny = AuditContractRecordV2.model_validate(contract)
+    else:
+        validated = DomainAuditContractRecord.model_validate(contract)
+    contract = validated
     return AuditContractORMRecord(
         contract_id=contract.contract_id,
         audit_id=contract.audit_id,
@@ -295,9 +313,19 @@ def audit_contract_to_record(
         source_node_id=contract.source_node_id,
         source_ingest_backend_digest=contract.source_ingest_backend_digest,
         source_prepare_proof_digest=contract.source_prepare_proof_digest,
-        selected_node_id=contract.selected_node_id,
-        required_backend_id=contract.required_backend_id,
-        snapshot_hydration_policy_digest=contract.snapshot_hydration_policy_digest,
+        selected_node_id=getattr(contract, "selected_node_id", None),
+        required_backend_id=getattr(contract, "required_backend_id", None),
+        snapshot_hydration_policy_digest=getattr(
+            contract, "snapshot_hydration_policy_digest", None
+        ),
+        preflight_plan_id=getattr(contract, "preflight_plan_id", None),
+        preflight_plan_digest=getattr(contract, "preflight_plan_digest", None),
+        security_context_bundle_id=getattr(
+            contract, "security_context_bundle_id", None
+        ),
+        security_context_bundle_digest=getattr(
+            contract, "security_context_bundle_digest", None
+        ),
         state_version=_validate_write_state_version(state_version),
         created_at=contract.created_at,
         sealed_at=contract.sealed_at,
@@ -306,9 +334,35 @@ def audit_contract_to_record(
 
 def audit_contract_from_record(
     record: AuditContractORMRecord,
-) -> DomainAuditContractRecord:
+) -> DomainAuditContractRecordAny:
     entity_id = _opaque_id(record, "contract_id")
     _state_version(record, entity="AuditContractRecord", entity_id=entity_id)
+    if record.schema_version == "riftx.audit-contract/v2":
+        return _read_strict(
+            entity="AuditContractRecord",
+            entity_id=entity_id,
+            build=lambda: AuditContractRecordV2.model_validate(
+                {
+                    "contract_id": record.contract_id,
+                    "audit_id": record.audit_id,
+                    "schema_version": record.schema_version,
+                    "canonical_contract_json": record.canonical_contract_json,
+                    "contract_digest": record.contract_digest,
+                    "source_target_digest": record.source_target_digest,
+                    "source_node_id": record.source_node_id,
+                    "source_ingest_backend_digest": record.source_ingest_backend_digest,
+                    "source_prepare_proof_digest": record.source_prepare_proof_digest,
+                    "preflight_plan_id": record.preflight_plan_id,
+                    "preflight_plan_digest": record.preflight_plan_digest,
+                    "security_context_bundle_id": record.security_context_bundle_id,
+                    "security_context_bundle_digest": (
+                        record.security_context_bundle_digest
+                    ),
+                    "created_at": record.created_at,
+                    "sealed_at": record.sealed_at,
+                }
+            ),
+        )
     return _read_strict(
         entity="AuditContractRecord",
         entity_id=entity_id,
@@ -481,7 +535,27 @@ def audit_scan_from_record(
     )
 
     def validate_contract_binding() -> AuditScan:
-        scan.validate_contract_record(contract)
+        if isinstance(contract, AuditContractRecordV2):
+            frozen = contract.contract()
+            checks = (
+                (contract.contract_id, scan.contract_id),
+                (contract.contract_digest, scan.contract_digest),
+                (contract.audit_id, scan.id),
+                (frozen.project_id, scan.project_id),
+                (frozen.mode, scan.mode),
+                (frozen.analysis_profile, scan.analysis_profile),
+                (frozen.baseline_audit_id, scan.baseline_audit_id),
+                (frozen.model_profile, scan.model_profile),
+                (frozen.source_binding.source_node_id, scan.selected_node_id),
+                (None, scan.required_backend_id),
+                (None, scan.policy_digest),
+                (None, scan.config_digest),
+                (frozen.budget.budget_digest, scan.budget_digest),
+            )
+            if scan.started_at is not None or any(left != right for left, right in checks):
+                raise ValueError("v2 Audit draft binding mismatch")
+        else:
+            scan.validate_contract_record(contract)
         return scan
 
     return _read_strict(

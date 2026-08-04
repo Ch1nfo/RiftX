@@ -32,6 +32,11 @@ from riftx.domain import (
     SourceSnapshot,
     WorkflowSignalKind,
 )
+from riftx.domain.audit_contract_v2 import (
+    AuditContractRecordV2,
+    AuditSecurityContextBindingV2,
+)
+from riftx.domain.audit_preflight_plan import AuditPreflightPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +154,7 @@ class AuditAggregate:
     """One structurally validated Audit read captured in a single DB session."""
 
     audit: StoredAuditEntity[AuditScan]
-    contract: StoredAuditEntity[AuditContractRecord]
+    contract: StoredAuditEntity[AuditContractRecord | AuditContractRecordV2]
     project: StoredAuditEntity[AuditProject]
     run: Run
     engagement: Engagement
@@ -221,6 +226,61 @@ class AuditDraftCreationEnvelope:
             raise ValueError("Audit draft creation events have an invalid binding or order")
 
 
+@dataclass(frozen=True, slots=True)
+class AuditDraftCreationEnvelopeV2:
+    """Authoritative AUD-201 draft facts written with one Plan reservation."""
+
+    engagement: Engagement
+    project: AuditProject
+    run: Run
+    run_created_event: RunEvent
+    audit: AuditScan
+    contract: AuditContractRecordV2
+    security_context_binding: AuditSecurityContextBindingV2
+    audit_created_event: RunEvent
+    client_request: AuditClientRequest
+
+    def __post_init__(self) -> None:
+        contract = self.contract.contract()
+        binding = self.security_context_binding
+        request = self.client_request
+        if (
+            self.project.engagement_id != self.engagement.id
+            or self.run.engagement_id != self.engagement.id
+            or self.audit.project_id != self.project.id
+            or self.audit.run_id != self.run.id
+            or self.audit.contract_id != self.contract.contract_id
+            or self.contract.audit_id != self.audit.id
+            or contract.audit_id != self.audit.id
+            or contract.project_id != self.project.id
+            or binding != contract.security_context_binding
+            or binding.audit_id != self.audit.id
+            or request.request_schema_version != "riftx.audit-create-draft-request/v2"
+            or request.audit_id != self.audit.id
+            or request.run_id != self.run.id
+            or request.project_id != self.project.id
+            or request.engagement_id != self.engagement.id
+            or request.contract_id != self.contract.contract_id
+            or request.contract_digest != self.contract.contract_digest
+            or request.preflight_plan_id != contract.preflight_plan_id
+            or request.preflight_plan_digest != contract.preflight_plan_digest
+            or request.security_context_id != contract.security_context_bundle_id
+            or request.security_context_digest != contract.security_context_bundle_digest
+            or request.contract_stage != contract.contract_stage
+            or request.temporal_workflow_id != self.audit.temporal_workflow_id
+        ):
+            raise ValueError("Audit v2 draft creation envelope has inconsistent ownership")
+        if (
+            self.run_created_event.run_id != self.run.id
+            or self.run_created_event.sequence != 1
+            or self.run_created_event.event_type != "run.created"
+            or self.audit_created_event.run_id != self.run.id
+            or self.audit_created_event.sequence != 2
+            or self.audit_created_event.event_type != "audit.created"
+        ):
+            raise ValueError("Audit v2 draft creation events have an invalid binding or order")
+
+
 class AuditDraftAggregateFactory(Protocol):
     """Pure application factory invoked after the UoW resolves the real Project."""
 
@@ -259,10 +319,73 @@ class AuditDraftAggregateFactory(Protocol):
     ) -> AuditDraftCreationEnvelope: ...
 
 
+class AuditDraftAggregateFactoryV2(Protocol):
+    """Pure Create-v2 factory; persistence owns token lookup and reservation."""
+
+    @property
+    def client_request_id(self) -> str: ...
+
+    @property
+    def preflight_token(self) -> str: ...
+
+    @property
+    def preflight_token_hash(self) -> str: ...
+
+    @property
+    def operator_principal_id(self) -> str: ...
+
+    @property
+    def authorization_scope_digest(self) -> str: ...
+
+    @property
+    def authorization_reference(self) -> str: ...
+
+    @property
+    def authorized_engagement_scope(self) -> AuditEngagementScope: ...
+
+    @property
+    def requested_engagement_id(self) -> str | None: ...
+
+    @property
+    def workspace_root(self) -> str: ...
+
+    @property
+    def audit_id(self) -> str: ...
+
+    @property
+    def created_at(self) -> datetime: ...
+
+    def request_digest_for(self, plan: AuditPreflightPlan) -> str: ...
+
+    def validate_plan(self, plan: AuditPreflightPlan) -> None: ...
+
+    def build_engagement(self) -> Engagement: ...
+
+    def build_project(
+        self,
+        engagement: Engagement,
+        plan: AuditPreflightPlan,
+    ) -> AuditProject: ...
+
+    def build(
+        self,
+        project: AuditProject,
+        engagement: Engagement,
+        reserved_plan: AuditPreflightPlan,
+        *,
+        request_digest: str,
+    ) -> AuditDraftCreationEnvelopeV2: ...
+
+
 class AuditCreationUnitOfWork(Protocol):
     async def create_draft(
         self,
         factory: AuditDraftAggregateFactory,
+    ) -> tuple[AuditAggregate, bool]: ...
+
+    async def create_draft_v2(
+        self,
+        factory: AuditDraftAggregateFactoryV2,
     ) -> tuple[AuditAggregate, bool]: ...
 
 

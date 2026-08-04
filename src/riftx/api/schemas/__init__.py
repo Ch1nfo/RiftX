@@ -10,6 +10,8 @@ from .artifacts import (
 from .audit_preflight import (
     AuditPreflightCreateResponse,
     AuditPreflightJobResponse,
+    AuditPreflightPlanIssuanceResponse,
+    AuditPreflightPlanResponse,
     AuditPreflightResultResponse,
     CreateAuditPreflightRequest,
 )
@@ -28,6 +30,7 @@ from .audits import (
     AuditProjectSummaryResponse,
     AuditResponse,
     CreateAuditDraftRequest,
+    CreateAuditDraftRequestV2,
 )
 from .browser import (
     BrowserActionRequest,
@@ -127,6 +130,8 @@ __all__ = [
     "AuditDraftResponse",
     "AuditPreflightCreateResponse",
     "AuditPreflightJobResponse",
+    "AuditPreflightPlanIssuanceResponse",
+    "AuditPreflightPlanResponse",
     "AuditPreflightResultResponse",
     "AuditPreflightRunnerPollResponse",
     "AuditListQuery",
@@ -144,6 +149,7 @@ __all__ = [
     "CreateRunRequest",
     "CreateAuditPreflightRequest",
     "CreateAuditDraftRequest",
+    "CreateAuditDraftRequestV2",
     "CreateMemoryRequest",
     "CompactRunRequest",
     "CreateFindingRequest",

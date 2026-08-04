@@ -15,6 +15,9 @@ from pydantic import (
 )
 
 from riftx.application.services.audit_preflight import AuditPreflightCreationResult
+from riftx.application.services.audit_preflight_plan import (
+    AuditPreflightPlanIssuanceResult,
+)
 from riftx.domain import AuditMode, SourceTargetKind
 from riftx.domain.audit_preflight import (
     AUDIT_PREFLIGHT_CANONICAL_EMPTY_CONTEXT_ID,
@@ -31,6 +34,11 @@ from riftx.domain.audit_preflight import (
     AuditPreflightSourceExecutionTarget,
     AuditPreflightTarget,
     PreflightRequest,
+)
+from riftx.domain.audit_preflight_plan import (
+    TOKEN_WIRE_LENGTH,
+    AuditPreflightPlan,
+    AuditPreflightPlanStatus,
 )
 
 _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,127}$"
@@ -386,9 +394,57 @@ class AuditPreflightCreateResponse(AuditPreflightJobResponse):
         )
 
 
+class AuditPreflightPlanResponse(_PreflightResponseModel):
+    """Path-free, verifier-free projection of one issued Plan."""
+
+    id: _Id
+    digest: _Digest
+    status: AuditPreflightPlanStatus
+    preflight_job_id: _Id
+    expires_at: AwareDatetime
+
+    @classmethod
+    def from_plan(cls, plan: AuditPreflightPlan) -> AuditPreflightPlanResponse:
+        return cls(
+            id=plan.plan_id,
+            digest=plan.plan_digest,
+            status=plan.status,
+            preflight_job_id=plan.preflight_job_id,
+            expires_at=plan.expires_at,
+        )
+
+
+class AuditPreflightPlanIssuanceResponse(_PreflightResponseModel):
+    """The sole public response allowed to contain a raw Preflight token."""
+
+    created: bool
+    replayed: bool
+    plan: AuditPreflightPlanResponse
+    preflight_token: str = Field(
+        min_length=TOKEN_WIRE_LENGTH,
+        max_length=TOKEN_WIRE_LENGTH,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        repr=False,
+    )
+
+    @classmethod
+    def from_result(
+        cls,
+        result: AuditPreflightPlanIssuanceResult,
+    ) -> AuditPreflightPlanIssuanceResponse:
+        return cls(
+            created=result.created,
+            replayed=result.replayed,
+            plan=AuditPreflightPlanResponse.from_plan(result.plan),
+            preflight_token=result.preflight_token,
+        )
+
+
 __all__ = [
     "AuditPreflightCreateResponse",
     "AuditPreflightJobResponse",
+    "AuditPreflightPlanIssuanceResponse",
+    "AuditPreflightPlanResponse",
     "AuditPreflightResultResponse",
     "CreateAuditPreflightRequest",
 ]

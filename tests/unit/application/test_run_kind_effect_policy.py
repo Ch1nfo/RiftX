@@ -432,6 +432,9 @@ def test_preflight_routes_and_services_use_only_their_exact_independent_owner() 
     assert API_ROUTE_EFFECT_BINDINGS["cancel_audit_preflight"].operation is (
         RunEffectOperation.CANCEL_AUDIT_PREFLIGHT
     )
+    assert API_ROUTE_EFFECT_BINDINGS["issue_audit_preflight_plan"].operation is (
+        RunEffectOperation.ISSUE_AUDIT_PREFLIGHT_PLAN
+    )
     managed = {
         (entrypoint.qualified_name, entrypoint.operation, entrypoint.origin)
         for entrypoint in MANAGED_EFFECT_ENTRYPOINTS
@@ -453,6 +456,12 @@ def test_preflight_routes_and_services_use_only_their_exact_independent_owner() 
             "riftx.application.services.audit_preflight:"
             "AuditPreflightApplicationService.cancel_authorized",
             RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight_plan:"
+            "AuditPreflightPlanApplicationService.issue_authorized",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_PLAN_ISSUE,
             EffectOrigin.APPLICATION_SERVICE,
         ),
     } <= managed

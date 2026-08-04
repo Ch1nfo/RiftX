@@ -4,10 +4,12 @@ from riftx.persistence.orm import Base
 
 AUDIT_TABLES = {
     "audit_client_requests",
+    "audit_preflight_plans",
     "audit_projects",
     "source_snapshots",
     "audit_contracts",
     "audit_scans",
+    "audit_security_context_bindings",
     "audit_start_intents",
     "audit_phase_runs",
     "audit_scope_units",
@@ -69,6 +71,11 @@ def test_client_request_schema_binds_the_complete_creation_aggregate() -> None:
         table.c.operation,
         table.c.request_schema_version,
         table.c.request_digest,
+        table.c.preflight_plan_id,
+        table.c.preflight_plan_digest,
+        table.c.security_context_id,
+        table.c.security_context_digest,
+        table.c.contract_stage,
         table.c.audit_id,
         table.c.run_id,
         table.c.project_id,
@@ -110,9 +117,47 @@ def test_client_request_schema_binds_the_complete_creation_aggregate() -> None:
         "ck_audit_client_requests_schema",
         "ck_audit_client_requests_request_digest",
         "ck_audit_client_requests_contract_digest",
+        "ck_audit_client_requests_preflight_plan_digest",
+        "ck_audit_client_requests_security_context_digest",
+        "ck_audit_client_requests_version_shape",
     } <= checks
     column_names = set(table.c.keys())
     assert not {"payload", "request_json", "repository_path", "preflight_token"} & column_names
+
+
+def test_security_context_binding_is_owned_by_exact_reserved_plan() -> None:
+    foreign_keys = _foreign_keys("audit_security_context_bindings")
+    assert foreign_keys[("audit_id",)] == ("audit_scans.id",)
+    assert foreign_keys[
+        (
+            "preflight_plan_id",
+            "preflight_plan_digest",
+            "operator_principal_id",
+            "authorization_scope_digest",
+            "security_context_bundle_id",
+            "security_context_bundle_digest",
+            "audit_id",
+        )
+    ] == (
+        "audit_preflight_plans.id",
+        "audit_preflight_plans.plan_digest",
+        "audit_preflight_plans.operator_principal_id",
+        "audit_preflight_plans.authorization_scope_digest",
+        "audit_preflight_plans.security_context_id",
+        "audit_preflight_plans.security_context_digest",
+        "audit_preflight_plans.reserved_audit_id",
+    )
+    assert ("preflight_plan_id",) in _unique_columns(
+        "audit_security_context_bindings"
+    )
+    assert {
+        "ck_audit_security_context_bindings_schema",
+        "ck_audit_security_context_bindings_empty_context",
+        "ck_audit_security_context_bindings_plan_digest",
+        "ck_audit_security_context_bindings_authorization_digest",
+        "ck_audit_security_context_bindings_context_digest",
+        "ck_audit_security_context_bindings_binding_digest",
+    } <= _check_names("audit_security_context_bindings")
 
 
 def test_audit_project_and_snapshot_keys_preserve_authorization_domains() -> None:

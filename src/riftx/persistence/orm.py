@@ -462,7 +462,7 @@ class AuditContractRecord(Base):
     __tablename__ = "audit_contracts"
     __table_args__ = (
         CheckConstraint(
-            "schema_version = 'riftx.audit-contract/v1'",
+            "schema_version IN ('riftx.audit-contract/v1', 'riftx.audit-contract/v2')",
             name="ck_audit_contracts_schema_version",
         ),
         CheckConstraint(
@@ -486,8 +486,31 @@ class AuditContractRecord(Base):
             name="ck_audit_contracts_source_proof_digest",
         ),
         CheckConstraint(
-            _lower_hex_digest_check("snapshot_hydration_policy_digest"),
+            _optional_lower_hex_digest_check("snapshot_hydration_policy_digest"),
             name="ck_audit_contracts_hydration_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_contracts_preflight_plan_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("security_context_bundle_digest"),
+            name="ck_audit_contracts_security_context_digest",
+        ),
+        CheckConstraint(
+            "(schema_version = 'riftx.audit-contract/v1' "
+            "AND selected_node_id IS NOT NULL AND required_backend_id IS NOT NULL "
+            "AND snapshot_hydration_policy_digest IS NOT NULL "
+            "AND preflight_plan_id IS NULL AND preflight_plan_digest IS NULL "
+            "AND security_context_bundle_id IS NULL "
+            "AND security_context_bundle_digest IS NULL) OR "
+            "(schema_version = 'riftx.audit-contract/v2' "
+            "AND selected_node_id IS NULL AND required_backend_id IS NULL "
+            "AND snapshot_hydration_policy_digest IS NULL "
+            "AND preflight_plan_id IS NOT NULL AND preflight_plan_digest IS NOT NULL "
+            "AND security_context_bundle_id = 'riftx.audit-empty-security-context/v1' "
+            "AND security_context_bundle_digest IS NOT NULL)",
+            name="ck_audit_contracts_version_shape",
         ),
         CheckConstraint(
             "sealed_at IS NULL OR sealed_at >= created_at",
@@ -516,9 +539,13 @@ class AuditContractRecord(Base):
     source_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     source_ingest_backend_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     source_prepare_proof_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    selected_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
-    required_backend_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
-    snapshot_hydration_policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    selected_node_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    required_backend_id: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    snapshot_hydration_policy_digest: Mapped[str | None] = mapped_column(String(64))
+    preflight_plan_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    preflight_plan_digest: Mapped[str | None] = mapped_column(String(64))
+    security_context_bundle_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    security_context_bundle_digest: Mapped[str | None] = mapped_column(String(64))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     sealed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -710,7 +737,7 @@ class AuditScanRecord(Base):
             name="ck_audit_scans_core_seal_digest",
         ),
         CheckConstraint(
-            _lower_hex_digest_check("policy_digest"),
+            _optional_lower_hex_digest_check("policy_digest"),
             name="ck_audit_scans_policy_digest",
         ),
         CheckConstraint(
@@ -718,7 +745,7 @@ class AuditScanRecord(Base):
             name="ck_audit_scans_budget_digest",
         ),
         CheckConstraint(
-            _lower_hex_digest_check("config_digest"),
+            _optional_lower_hex_digest_check("config_digest"),
             name="ck_audit_scans_config_digest",
         ),
         CheckConstraint(
@@ -813,10 +840,10 @@ class AuditScanRecord(Base):
     latest_distribution_revision_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
     model_profile: Mapped[str | None] = mapped_column(String(255))
     selected_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
-    required_backend_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
-    policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    required_backend_id: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    policy_digest: Mapped[str | None] = mapped_column(String(64))
     budget_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    config_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_digest: Mapped[str | None] = mapped_column(String(64))
     contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -872,7 +899,8 @@ class AuditClientRequestRecord(Base):
             name="ck_audit_client_requests_operation",
         ),
         CheckConstraint(
-            "request_schema_version = 'riftx.audit-create-draft-request/v1'",
+            "request_schema_version IN ('riftx.audit-create-draft-request/v1', "
+            "'riftx.audit-create-draft-request/v2')",
             name="ck_audit_client_requests_schema",
         ),
         CheckConstraint(
@@ -882,6 +910,26 @@ class AuditClientRequestRecord(Base):
         CheckConstraint(
             _lower_hex_digest_check("contract_digest"),
             name="ck_audit_client_requests_contract_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_client_requests_preflight_plan_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("security_context_digest"),
+            name="ck_audit_client_requests_security_context_digest",
+        ),
+        CheckConstraint(
+            "(request_schema_version = 'riftx.audit-create-draft-request/v1' "
+            "AND preflight_plan_id IS NULL AND preflight_plan_digest IS NULL "
+            "AND security_context_id IS NULL AND security_context_digest IS NULL "
+            "AND contract_stage IS NULL) OR "
+            "(request_schema_version = 'riftx.audit-create-draft-request/v2' "
+            "AND preflight_plan_id IS NOT NULL AND preflight_plan_digest IS NOT NULL "
+            "AND security_context_id = 'riftx.audit-empty-security-context/v1' "
+            "AND security_context_digest IS NOT NULL "
+            "AND contract_stage = 'preflight_bound_draft')",
+            name="ck_audit_client_requests_version_shape",
         ),
         UniqueConstraint("audit_id", name="uq_audit_client_requests_audit"),
         UniqueConstraint("run_id", name="uq_audit_client_requests_run"),
@@ -898,6 +946,11 @@ class AuditClientRequestRecord(Base):
     operation: Mapped[str] = mapped_column(String(32), nullable=False)
     request_schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    preflight_plan_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    preflight_plan_digest: Mapped[str | None] = mapped_column(String(64))
+    security_context_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    security_context_digest: Mapped[str | None] = mapped_column(String(64))
+    contract_stage: Mapped[str | None] = mapped_column(String(64))
     audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
     run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
@@ -905,6 +958,81 @@ class AuditClientRequestRecord(Base):
     contract_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
     contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AuditSecurityContextBindingRecord(Base):
+    __tablename__ = "audit_security_context_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id"],
+            ["audit_scans.id"],
+            name="fk_audit_security_context_bindings_audit",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "preflight_plan_id",
+                "preflight_plan_digest",
+                "operator_principal_id",
+                "authorization_scope_digest",
+                "security_context_bundle_id",
+                "security_context_bundle_digest",
+                "audit_id",
+            ],
+            [
+                "audit_preflight_plans.id",
+                "audit_preflight_plans.plan_digest",
+                "audit_preflight_plans.operator_principal_id",
+                "audit_preflight_plans.authorization_scope_digest",
+                "audit_preflight_plans.security_context_id",
+                "audit_preflight_plans.security_context_digest",
+                "audit_preflight_plans.reserved_audit_id",
+            ],
+            name="fk_audit_security_context_bindings_plan",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "schema_version = 'riftx.audit-security-context-binding/v2'",
+            name="ck_audit_security_context_bindings_schema",
+        ),
+        CheckConstraint(
+            "security_context_bundle_id = 'riftx.audit-empty-security-context/v1'",
+            name="ck_audit_security_context_bindings_empty_context",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_security_context_bindings_plan_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("authorization_scope_digest"),
+            name="ck_audit_security_context_bindings_authorization_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("security_context_bundle_digest"),
+            name="ck_audit_security_context_bindings_context_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("binding_digest"),
+            name="ck_audit_security_context_bindings_binding_digest",
+        ),
+        UniqueConstraint(
+            "preflight_plan_id",
+            name="uq_audit_security_context_bindings_plan",
+        ),
+    )
+
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    preflight_plan_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    preflight_plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operator_principal_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    authorization_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    security_context_bundle_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH), nullable=False
+    )
+    security_context_bundle_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 

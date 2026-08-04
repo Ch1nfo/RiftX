@@ -137,6 +137,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
             {
                 "create_run",
                 "create_audit",
+                "issue_audit_preflight_plan",
                 "create_finding",
                 "update_finding",
                 "create_memory",

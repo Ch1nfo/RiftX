@@ -1,10 +1,16 @@
 """Interfaces implemented by RiftX infrastructure adapters."""
 
 from .audit_preflight import (
+    AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION,
     AuditPreflightDispatch,
     AuditPreflightOwnerBinding,
     AuditPreflightReconciliationCandidate,
     AuditPreflightRepository,
+)
+from .audit_preflight_plan import (
+    AuditPreflightPlanOwnerBinding,
+    AuditPreflightPlanRepository,
+    AuditPreflightPlanTokenBinding,
 )
 from .audits import (
     AuditAggregate,
@@ -18,7 +24,9 @@ from .audits import (
     AuditControlUnitOfWork,
     AuditCreationUnitOfWork,
     AuditDraftAggregateFactory,
+    AuditDraftAggregateFactoryV2,
     AuditDraftCreationEnvelope,
+    AuditDraftCreationEnvelopeV2,
     AuditEngagementScope,
     AuditObjectAuthorizer,
     AuditPhaseRepository,
@@ -56,10 +64,14 @@ from .workflow_signals import (
 
 __all__ = [
     "ActionReadRepository",
+    "AUDIT_PREFLIGHT_PLAN_ISSUANCE_SCHEMA_VERSION",
     "AuditAggregate",
     "AuditAggregateReadRepository",
     "AuditPreflightDispatch",
     "AuditPreflightOwnerBinding",
+    "AuditPreflightPlanOwnerBinding",
+    "AuditPreflightPlanRepository",
+    "AuditPreflightPlanTokenBinding",
     "AuditPreflightReconciliationCandidate",
     "AuditPreflightRepository",
     "AuditAuthorizationBinding",
@@ -70,7 +82,9 @@ __all__ = [
     "AuditControlTransition",
     "AuditControlUnitOfWork",
     "AuditDraftAggregateFactory",
+    "AuditDraftAggregateFactoryV2",
     "AuditDraftCreationEnvelope",
+    "AuditDraftCreationEnvelopeV2",
     "AuditEngagementScope",
     "AuditCleanupConvergence",
     "AuditObjectAuthorizer",

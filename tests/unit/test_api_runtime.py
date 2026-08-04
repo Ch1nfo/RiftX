@@ -13,6 +13,7 @@ from riftx.api.runtime import (
     APISettings,
     ControlPlane,
     _create_audit_preflight_availability_check,
+    _create_audit_preflight_plan_service,
     _create_audit_preflight_service,
     _create_audit_service,
 )
@@ -21,6 +22,7 @@ from riftx.application.errors import ServiceUnavailableError
 from riftx.application.services import (
     AuditApplicationService,
     AuditPreflightApplicationService,
+    AuditPreflightPlanApplicationService,
 )
 from riftx.config import (
     AuditConfig,
@@ -42,6 +44,7 @@ from riftx.persistence import (
     Database,
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditCreationUnitOfWork,
+    SQLAlchemyAuditPreflightPlanRepository,
     SQLAlchemyAuditPreflightRepository,
 )
 
@@ -158,6 +161,37 @@ async def test_audit_preflight_service_is_always_assembled_and_backend_fail_clos
             assert captured.value.code == (
                 "audit_sandbox_unavailable" if enabled else "audit_feature_disabled"
             )
+        finally:
+            await database.dispose()
+
+
+async def test_audit_preflight_plan_service_uses_only_the_configured_secret_key(
+    tmp_path: Path,
+) -> None:
+    for encoded_key in (None, "A" * 43):
+        audit = AuditConfig(
+            enabled=True,
+            preflight_token_key_id="rotation-2026-08",
+            preflight_token_key=encoded_key,
+            snapshot_root=tmp_path / f"snapshots-{encoded_key is not None}",
+            temp_root=tmp_path / f"audit-workspaces-{encoded_key is not None}",
+            fix_root=tmp_path / f"fixes-{encoded_key is not None}",
+        )
+        settings = APISettings(audit=audit)
+        database = Database("sqlite+aiosqlite:///:memory:")
+        try:
+            service = _create_audit_preflight_plan_service(settings, database)
+
+            assert isinstance(service, AuditPreflightPlanApplicationService)
+            assert isinstance(service._preflight_repository, SQLAlchemyAuditPreflightRepository)
+            assert isinstance(service._plan_repository, SQLAlchemyAuditPreflightPlanRepository)
+            assert service._preflight_repository._session_factory is database.session_factory
+            assert service._plan_repository._session_factory is database.session_factory
+            if encoded_key is None:
+                assert service._token_codec is None
+            else:
+                assert service._token_codec is not None
+                assert service._token_codec.key_id == "rotation-2026-08"
         finally:
             await database.dispose()
 
