@@ -59,7 +59,7 @@ from riftx.target_http.models import (
     TargetHttpRunnerStopOutcome,
 )
 
-from .audit_preflight import AuditPreflightRunner, DockerAuditPreflightCapsuleBackend
+from .audit_preflight import AuditPreflightRunner
 from .browser import BrowserRunner, RunnerBrowserManager, execute_browser_command
 from .control_client import (
     LeasedRunnerCommand,
@@ -71,7 +71,6 @@ from .control_client import (
 )
 from .models import ExecutionLaunchRequest, TerminalLaunchRequest
 from .paths import RunnerPaths
-from .preflight import AuditPreflightRunnerJournal, AuditPreflightRunnerJournalError
 from .protocols import EffectGuard, ExecutionRunner
 from .state import FileExecutionRepository, FileTerminalRepository
 from .supervisor import ProcessSupervisor
@@ -2613,70 +2612,12 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
 
 async def _configure_audit_preflight(
     config: RunnerDaemonConfig,
-    client: RunnerControlClient,
+    _client: RunnerControlClient,
 ) -> tuple[RunnerDaemonConfig, AuditPreflightRunner | None]:
-    # Readiness is derived from a fresh local probe. Callers cannot make a
-    # credential advertise Preflight authority merely by setting config data.
-    config = replace(config, audit_preflight_ready=False)
-    audit_preflight_runner: AuditPreflightRunner | None = None
-    candidate = DockerAuditPreflightCapsuleBackend(
-        audit=config.audit,
-        state_root=config.state_path,
-    )
-    try:
-        await candidate.reconcile_mount_probe()
-    except Exception:
-        logger.exception("RiftX Code Audit SourceIngest readiness-probe recovery failed")
-        raise
-    if config.audit.enabled:
-        try:
-            availability = await candidate.probe_availability()
-        except Exception:
-            logger.exception("RiftX Code Audit SourceIngest readiness probe failed")
-            availability = None
-        capability_can_be_enabled = client.can_enable_protocol_capability(
-            AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
-        )
-        if availability is not None and availability.available and capability_can_be_enabled:
-            journal = AuditPreflightRunnerJournal(
-                config.state_path / "audit-preflight-journal.json"
-            )
-            # Validate existing recovery state before advertising an immutable
-            # credential capability. Corruption must not create a false-ready
-            # Runner identity.
-            try:
-                await journal.list_records()
-            except AuditPreflightRunnerJournalError:
-                logger.exception(
-                    "RiftX Code Audit recovery journal is unavailable; "
-                    "Preflight capability will not be advertised"
-                )
-            else:
-                config = replace(config, audit_preflight_ready=True)
-                audit_preflight_runner = AuditPreflightRunner(
-                    client=client,
-                    journal=journal,
-                    backend=candidate,
-                    reconnect_seconds=config.reconnect_initial_seconds,
-                )
-        elif availability is not None and availability.available:
-            logger.warning(
-                "RiftX Code Audit SourceIngest is ready, but the current Runner "
-                "credential lacks %s and no bootstrap token is available; the "
-                "ordinary Runner will continue without Preflight authority",
-                AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
-            )
-        else:
-            logger.warning(
-                "RiftX Code Audit SourceIngest is unavailable on this Runner: %s",
-                (
-                    availability.reason_code
-                    if availability is not None
-                    else "audit_sandbox_unavailable"
-                )
-                or "audit_sandbox_unavailable",
-            )
-    return config, audit_preflight_runner
+    # The v3 local-static product does not use the historical Docker SourceIngest
+    # capsule. Keep the old wire/domain types readable for compatibility, but never
+    # probe Docker or advertise its Runner capability from the supported daemon.
+    return replace(config, audit_preflight_ready=False), None
 
 
 async def _run_configured_runner_daemon(

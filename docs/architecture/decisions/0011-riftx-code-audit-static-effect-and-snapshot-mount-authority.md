@@ -1,13 +1,18 @@
 # ADR-0011：RiftX Code Audit Static Effect 与 Snapshot Mount Authority
 
-> 状态：Accepted
+> 状态：Accepted as historical architecture; Docker production path retired
 >
-> 实施状态：AUD-202C C1/C2a/C2b1 与 C2b2 qualification gate implemented；
-> real-Linux evidence pending
+> 实施状态：AUD-202C C1/C2a authority 与 migration 为兼容性保留；C2b Docker backend、
+> runtime image、qualification 与 release gate 已按 `AUD-S001` 退役
 >
 > 日期：2026-08-04（Asia/Shanghai）
 >
 > 所属任务：AUD-202C
+
+> 当前范围说明：本文记录当时已经实现的设计与安全约束，不再定义 RiftX 3.0 的产品主路径。
+> 当前权威范围以 `docs/riftx-3-code-audit-development-spec.md` 的
+> `riftx.code-audit-development-spec/v3-local-static` 为准：审计只在 RiftX 所在机器静态读取本地
+> 文件夹，不依赖 Docker、Linux 专用主机、远程 Runner 或另一台机器，也不执行目标代码。
 
 ## 1. Context
 
@@ -163,7 +168,7 @@ mount 走同一 stop/Stop Proof 路径；issued orphan 尝试 cleanup 后进入 
 Runner credential 轮换不妨碍旧 generation authority 的检查与撤权。C2a 没有引入新的 Runner family、
 enqueue、API/Event、Temporal 或跨 Node hydration。
 
-### 2.7 C2b1 Docker private materialization backend
+### 2.7 C2b1 Docker private materialization backend（历史实现，已退役）
 
 新增 `DockerSnapshotMountBackend`，其 component digest 绑定 pinned image、non-root container user、
 container-private tmpfs、network none、read-only rootfs、root-owned read-only source tree 与 backend schema。
@@ -187,7 +192,7 @@ security config 与 proof；仅 running + exact proof 返回 active。stop 只�
 请求若观察到相同 active proof，返回 exact convergence，不得执行 cleanup；不同 proof 或 owner drift
 继续 fail closed。C2b1 仍未向 Runner/API/Temporal 注册执行入口。
 
-### 2.8 C2b2 real-Linux qualification gate
+### 2.8 C2b2 real-Linux qualification gate（历史实现，已退役）
 
 新增显式 `scripts/qa/audit-snapshot-mount-qualification.py`，只接受调用方提供且本机已存在的 pinned
 image digest，并固定使用 production allowlisted Docker client 与 `/var/run/docker.sock` 执行
@@ -234,14 +239,16 @@ C1/C2a/C2b1 不实现：
 - Content Sandbox、content parser、Detector、Scanner、模型或动态 Execution Plan；
 - Snapshot reader、Retention/GC、Artifact、API、CLI、WebUI、Event、Start 或 Temporal dispatch。
 
-因此 AUD-202C 仍为 `in_progress`，只有 C2b2 在真实 backend 上证明 private read-only mount、撤权和重启
-收敛后才能标记 completed。
+上述完成条件属于旧计划。精简后的 3.0 不再完成或启用 C2b2；后续工作改由 `AUD-S100` 至
+`AUD-S500` 的本机静态审计任务承接。
 
 ## 4. Consequences
 
-- 后续 static execution 不需要再发明 owner、materialization 或 reconciliation schema，可以围绕
-  durable Lease/Pin 与 qualified Docker backend 接入。
+- 历史 authority schema 继续用于数据库兼容和 downgrade protection，但新的本机静态审计流程不得
+  依赖 Lease/Pin、Docker backend 或 mount qualification。
 - Runner generation 轮换后仍可读取旧 authority 进行撤权；新 mount 签发只接受当前 principal。
 - raw CAS locator 不进入 authority envelope，知道 digest、relative path 或同 UID 宿主身份都不足以访问
   Snapshot。
 - C1 增加持久事实但不增加可执行能力，保持 AUD-106 的 Code Audit zero-enqueue fence。
+- Docker backend、镜像锁、Linux qualification 脚本和专用 release gate 已从生产树移除；历史 migration
+  暂不删除，以免破坏既有数据库升级/降级路径。

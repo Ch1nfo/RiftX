@@ -8,13 +8,13 @@
 >
 > Authoritative specification: `docs/riftx-3-code-audit-development-spec.md`
 >
-> Specification version: `riftx.code-audit-development-spec/v2`
+> Specification version: `riftx.code-audit-development-spec/v3-local-static`
 >
-> Specification revision: 2026-08-04 / AUD-202C C2b2 combined evidence integrity
-> synchronized
+> Specification revision: 2026-08-04 / simplified local static audit scope
 >
-> Specification baseline commit: `9a9b0e4d` (original committed baseline; later
-> authoritative revisions are tracked by this ledger and Git history)
+> Current specification baseline commit: `eba9d240`
+>
+> Historical original baseline commit: `9a9b0e4d`
 >
 > Implementation branch: `ch1nfo/riftx-3-code-audit`
 
@@ -31,36 +31,49 @@
 
 ## Current Wave
 
-- Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed internal stage: `AUD-202C C2b2a — Pinned runtime image, real-Linux
-  qualification pipeline and combined evidence integrity`;
-  parent AUD-202C remains `in_progress`.
-- Completed C2b2a scope: production-path QA harness, digest-locked minimal runtime,
-  fixed local build/inspect/smoke orchestration, kernel mutation-denial proof, restart
-  inspection, affirmative stop/absence, exclusive combined evidence output and strict
-  nested-gate script/report/digest binding.
-- Next unblocked task: `AUD-202C C2b2b — Execute on real local Linux`, as a
-  separately committed work unit.
-- Production qualification remains disabled until the mandatory real-Linux
-  descriptor/mount and Capsule-denial evidence is recorded.
+- Milestone: `S0 — Scope cleanup` is `completed`.
+- Completed task: `AUD-S001 — retire Docker Snapshot mount production path`.
+- Product boundary: audit a user-selected folder on the machine running RiftX by
+  bounded, read-only static analysis. The core path must not require Docker, a Linux
+  VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
+- Historical mount authority tables and migrations remain inert for database
+  compatibility; new product code must not depend on them.
+- Next task: `AUD-S100 — local ordinary-directory and Git-directory admission`.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
-| M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
-| M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a/C2b1/C2b2a completed; C2b2b evidence remains |
-| M3 Deterministic vertical slice | pending | Not started |
-| M4 Typed Agent and Standard workflow | pending | Not started |
-| M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
-| M6 Standard Core API, CLI, and WebUI | pending | Not started |
-| M7 Production isolation and dynamic validation | pending | Not started |
-| M8 Diff and Deep | pending | Not started |
-| M9 Fix, Retest, and lifecycle | pending | Not started |
-| M10 Evaluation, hardening, and release | pending | Not started |
+| S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
+| S1 Local folder and Snapshot | pending | AUD-S100 through AUD-S102 not started |
+| S2 Inventory and Detector | pending | AUD-S200 through AUD-S202 not started |
+| S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
+| S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
+| S5 End-to-end acceptance | pending | AUD-S500 not started |
 
 ## Task Status
+
+| Task | Status |
+| --- | --- |
+| AUD-S001 Retire Docker runtime, qualification and release path | completed |
+| AUD-S100 Local folder admission | pending |
+| AUD-S101 Local Snapshot View | pending |
+| AUD-S102 SourceSnapshot seal | pending |
+| AUD-S200 File Inventory and Scope | pending |
+| AUD-S201 Detector registry and runner | pending |
+| AUD-S202 Built-in security rules | pending |
+| AUD-S300 Signal normalization and Finding | pending |
+| AUD-S301 JSON/Markdown Report | pending |
+| AUD-S400 Local Audit Job | pending |
+| AUD-S401 Minimal API and CLI | pending |
+| AUD-S402 Minimal WebUI | pending |
+| AUD-S500 Local-folder end-to-end acceptance | pending |
+
+## Historical Task Status (pre-simplification)
+
+The following tables and detailed records preserve already-committed implementation
+history. Their unimplemented advanced tasks are no longer part of the authoritative
+3.0 scope and must not be resumed unless the specification changes explicitly.
 
 ### M0
 
@@ -2055,10 +2068,52 @@ individual operation families.
   - final release gate remained `ready=true` with every registered gate passing;
   - Darwin execution still failed closed before Docker effects with
     `audit_snapshot_mount_release_linux_host_required`.
-- Commit: this C2b2a.3 local commit; its hash will be backfilled by the next ledger
-  update.
-- Next unblocked task: AUD-202C C2b2b execute the combined gate on supported same-host
-  Linux and commit the exclusive `ready=true` evidence digest/reference.
+- Commit: `8a42ef43 feat(code-audit): harden mount qualification evidence`.
+- Historical next task was C2b2b real-Linux evidence. The simplified local-static
+  specification retired that production direction before the gate was enabled.
+
+### AUD-S001 — Retire Docker Snapshot Mount Production Path
+
+- Status: completed.
+- Specification baseline: `eba9d240 docs(code-audit): simplify 3.0 local audit scope`.
+- Exact modules/files:
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/audit/snapshot_mount_docker.py` (removed)
+  - `packaging/audit/snapshot_mount/{Dockerfile,image-lock.json}` (removed)
+  - `scripts/qa/audit-snapshot-mount-{qualification,release-qualification}.py`
+    (removed)
+  - four Docker-only Snapshot mount unit/qualification tests (removed)
+  - `src/riftx/runner/daemon.py`
+  - `src/riftx/config.py`
+  - `configs/riftx.example.yaml`
+  - `tests/unit/test_runner_daemon_cli.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - this ledger
+- Outcome:
+  - remove `DockerSnapshotMountBackend` and its public exports;
+  - remove the pinned Snapshot mount runtime image and lock;
+  - remove real-Linux qualification and release wrapper scripts;
+  - remove tests that only validate those retired Docker assets;
+  - stop the supported Runner daemon from probing or advertising the historical
+    Docker SourceIngest capsule;
+  - remove Docker SourceIngest settings from the operator example configuration;
+  - retain generic SnapshotStore/CAS, source materialization, historical mount
+    authority models/repositories/migrations and legacy config parsing compatibility.
+- Product effect: the supported Code Audit path no longer has a Docker daemon, Linux
+  host, VM, remote Runner or second-machine prerequisite.
+- Schema/migration impact: none; historical tables remain inert and downgrade-safe.
+- API/Runner/Temporal surface: none opened.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/test_runner_daemon_cli.py tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `git diff --check`
+- Test results:
+  - targeted Docker-retirement/Snapshot/migration regression: `75 passed`;
+  - full repository suite: `4830 passed, 5 skipped, 11 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S100 — local folder admission`.
 
 ## Design Deviations and ADRs
 
@@ -2086,10 +2141,11 @@ individual operation families.
   cleanup/completion, immutable Runner effect/command ownership, legacy quarantine,
   protocol capability gate, M1 zero-enqueue fence, future family-specific static and
   dynamic plan extensions, and safety-reduce-only semantics for AUD-106.
-- `ADR-0007`: freezes the non-Run-scoped AuditPreflightJob owner, dedicated
+- `ADR-0007`: historically froze the non-Run-scoped AuditPreflightJob owner, dedicated
   Runner protocol, staged AuditPreflightResult, SourceIngest Capsule,
   descriptor/mount identity, affirmative stop/recovery, safe projection, and
-  AUD-201/AUD-202/AUD-206/AUD-209 boundaries implemented by AUD-200.
+  AUD-201/AUD-202/AUD-206/AUD-209 boundaries implemented by AUD-200. Its mandatory
+  Linux Capsule direction is no longer part of the simplified local-static product.
 - `ADR-0008`: freezes durable Plan/token identity and lifecycle, issuance API,
   Create v2 ownership, canonical-empty Context Binding, historical v1 isolation,
   strict Start proof/UoW contracts, current-version zero-side-effect rejection, and
@@ -2102,44 +2158,28 @@ individual operation families.
   blob reads, descriptor-bound working-tree capture, explicit capture decisions,
   TOCTOU revalidation, private staging cleanup/retry, and dual content/Manifest CAS
   publication implemented by AUD-202B.
-- `ADR-0011`: freezes policy-owned Static Plan identity, role-separated opaque storage
+- `ADR-0011`: historically froze policy-owned Static Plan identity, role-separated opaque storage
   key digests, same-node Lease/Pin/Runner-generation ownership, strict lifecycle CAS,
   affirmative Stop Proof, durable authority persistence, trusted CAS source,
   path-free backend proof contract, restart reconciliation and Docker private tmpfs
   implementation for AUD-202C C1/C2a/C2b1, plus the C2b2a production-path
-  qualification gate, pinned runtime image and combined release pipeline; real Linux
-  `ready=true` evidence remains C2b2b.
+  qualification gate, pinned runtime image and combined release pipeline. `AUD-S001`
+  retires those Docker production assets while retaining historical schema compatibility.
+- The authoritative v3 local-static product boundary is now maintained directly in
+  `docs/riftx-3-code-audit-development-spec.md`; no additional ADR is required for
+  the user-requested scope reduction.
 
 ## Current Risks
 
-- The independence scanner is a bounded known-identity gate, not a substitute for the
-  M10 SBOM, licensing, similarity, and human copyright review.
-- Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
-  current `preflight_bound_draft` v2 wire remain permanently non-startable. The
-  SnapshotStore/CAS, Git/working-tree materializer, static mount authority, mount
-  coordinator/restart state machine, private Docker backend, pinned runtime image and
-  release pipeline now exist, but the backend is not yet built and qualified on real
-  local Linux. There is also no
-  sealed `SourceSnapshot` UoW, Scope Inventory, or Start-ready Contract;
-  deterministic scanning remains unavailable.
-- Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
-  foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,
-  Snapshot/CAS producers, and the final restricted WebUI cache lifecycle remain
-  deliberately unavailable.
-- Artifact integrity assumes the private state root and its service identity are not
-  shared with hostile scanner, target, model-tool, or content-sandbox writers. A
-  deployment that cannot maintain that separation must disable the capability.
-- PostgreSQL remains a contract-tested future runtime, not a supported deployment;
-  the current persistence concurrency evidence is authoritative for SQLite only, and
-  the Project natural-key gap race still requires a real PostgreSQL barrier test.
-- Ordinary Audit/Run-scoped Code Audit execution remains fenced and its Runner
-  enqueue remains zero. The only executable AUD-200 path is the dedicated
-  `preflight_job_owner_v1` SourceIngest protocol; it grants no
-  `AuditStaticEffectPlan` or `AuditExecutionPlan` authority.
-- AUD-201 converts a completed Result into a durable, owner-bound Plan, atomically
-  reserves it for Create v2, and rejects current Start attempts without effects. The
-  frozen future proof/UoW contract does not broaden the current Plan into Snapshot,
-  static-effect, dynamic-effect, or delivery authority.
-- The completion review ran on macOS and did not execute the real local-Linux
-  Docker descriptor/mount smoke. Production backend qualification remains a
-  mandatory Linux release gate.
+- The simplified end-to-end local scan is not implemented yet. Existing RunKind,
+  domain, persistence, SnapshotStore/CAS and source materializer foundations are not
+  by themselves a user-visible scanner.
+- `AUD-S100` must reconcile the older Git-only admission contract with the new
+  requirement to accept both ordinary directories and Git directories without
+  executing repository hooks, filters, helpers or project commands.
+- Historical mount authority rows may exist in upgraded databases. They must remain
+  readable/downgrade-protected but inert in the new local-static workflow.
+- Local static reading still requires strict path, symlink, owner, digest, file-count,
+  byte-budget and TOCTOU controls. Removing Docker does not relax those boundaries.
+- The private RiftX state root must not be writable by the audited project or any
+  target-controlled process.

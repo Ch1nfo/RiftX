@@ -378,7 +378,10 @@ AuditValidationConfig = AuditSandboxConfig
 
 
 class AuditSourceIngestConfig(_AuditConfigModel):
-    """Production SourceIngest policy; a missing image is explicitly unavailable."""
+    """Legacy Docker SourceIngest settings retained for config compatibility.
+
+    The v3 local-static audit path does not instantiate this backend.
+    """
 
     backend_id: Literal["linux_container"] = "linux_container"
     runtime: Literal["docker"] = "docker"

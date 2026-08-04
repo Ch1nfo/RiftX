@@ -60,12 +60,6 @@ from .snapshot_mount import (
     SnapshotMountSourceResolver,
     SnapshotMountStopEvidence,
 )
-from .snapshot_mount_docker import (
-    DOCKER_SNAPSHOT_MOUNT_COMPONENT_VERSION,
-    DOCKER_SNAPSHOT_MOUNT_QUALIFICATION_VERSION,
-    DockerSnapshotMountAvailability,
-    DockerSnapshotMountBackend,
-)
 from .snapshot_store import LocalSnapshotStore, SnapshotBlobReader
 from .source_manifest import (
     SOURCE_CAPTURE_POLICY_SCHEMA_VERSION,
@@ -121,8 +115,6 @@ __all__ = [
     "DEFAULT_MAX_REPOSITORY_FILTER_PATHS",
     "DEFAULT_MAX_REPOSITORY_FILTER_TOTAL_BYTES",
     "DEFAULT_SOURCE_PATH_POLICY_VERSION",
-    "DOCKER_SNAPSHOT_MOUNT_COMPONENT_VERSION",
-    "DOCKER_SNAPSHOT_MOUNT_QUALIFICATION_VERSION",
     "REPOSITORY_DESCRIPTOR_CHAIN_DIGEST_DOMAIN",
     "REPOSITORY_IDENTITY_DIGEST_DOMAIN",
     "SNAPSHOT_CAS_INDEX_SCHEMA_VERSION",
@@ -147,8 +139,6 @@ __all__ = [
     "AuditStaticEffectPlan",
     "AuditStaticOperationFamily",
     "AuditStaticReadOnlyMount",
-    "DockerSnapshotMountAvailability",
-    "DockerSnapshotMountBackend",
     "LocalSnapshotStore",
     "OpenedSnapshotBlob",
     "PreparedSnapshotMount",

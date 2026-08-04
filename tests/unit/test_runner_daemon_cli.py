@@ -7,7 +7,6 @@ import pytest
 from typer.testing import CliRunner
 
 import riftx.runner.daemon as daemon_module
-from riftx.audit.source_ingest import SourceIngestBackendAvailability
 from riftx.config import AuditConfig, AuditSourceIngestConfig
 from riftx.domain import AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
 from riftx.runner.control_client import RunnerControlClient
@@ -151,20 +150,8 @@ def test_registration_advertises_audit_only_after_exact_readiness_probe(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("available", "can_enable", "expected_ready"),
-    [
-        (True, True, True),
-        (False, True, False),
-        (True, False, False),
-    ],
-)
-async def test_audit_runner_is_built_only_when_source_ingest_is_available(
+async def test_configure_audit_preflight_never_enables_legacy_docker_source_ingest(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    available: bool,
-    can_enable: bool,
-    expected_ready: bool,
 ) -> None:
     audit = _enabled_audit(tmp_path)
     config = daemon_module.RunnerDaemonConfig(
@@ -176,99 +163,18 @@ async def test_audit_runner_is_built_only_when_source_ingest_is_available(
     )
     config.state_path.mkdir()
 
-    class FakeBackend:
-        def __init__(self, *, audit: AuditConfig, state_root: Path) -> None:
-            assert audit == config.audit
-            assert state_root == config.state_path
-
-        async def reconcile_mount_probe(self) -> str | None:
-            return None
-
-        async def probe_availability(self) -> SourceIngestBackendAvailability:
-            return SourceIngestBackendAvailability(
-                available=available,
-                reason_code=None if available else "audit_sandbox_unavailable",
-                component_digest="b" * 64 if available else None,
-                worker_digest="c" * 64 if available else None,
-            )
-
-    built: list[dict[str, object]] = []
-
-    class FakeAuditRunner:
-        def __init__(self, **kwargs: object) -> None:
-            built.append(kwargs)
-
-    monkeypatch.setattr(
-        daemon_module,
-        "DockerAuditPreflightCapsuleBackend",
-        FakeBackend,
-    )
-    monkeypatch.setattr(daemon_module, "AuditPreflightRunner", FakeAuditRunner)
-
-    class FakeClient:
-        def can_enable_protocol_capability(self, capability: str) -> bool:
-            assert capability == AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
-            return can_enable
-
-    configured, audit_runner = await daemon_module._configure_audit_preflight(
-        config,
-        cast(RunnerControlClient, FakeClient()),
-    )
-
-    assert configured.audit_preflight_ready is expected_ready
-    assert (audit_runner is not None) is expected_ready
-    assert len(built) == int(expected_ready)
-    assert (
-        AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY in configured.registration.capabilities
-    ) is expected_ready
-
-
-@pytest.mark.asyncio
-async def test_disabled_audit_still_reconciles_readiness_probe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = daemon_module.RunnerDaemonConfig(
-        server_url="http://control.invalid",
-        node_id="local",
-        name="Local Runner",
-        state_path=tmp_path / "runner",
-        audit=AuditConfig(enabled=False),
-    )
-    config.state_path.mkdir()
-    reconciled = 0
-
-    class FakeBackend:
-        def __init__(self, *, audit: AuditConfig, state_root: Path) -> None:
-            assert audit == config.audit
-            assert state_root == config.state_path
-
-        async def reconcile_mount_probe(self) -> str | None:
-            nonlocal reconciled
-            reconciled += 1
-            return "d" * 64
-
-        async def probe_availability(self) -> SourceIngestBackendAvailability:
-            raise AssertionError("disabled Audit must not run a new readiness probe")
-
-    monkeypatch.setattr(
-        daemon_module,
-        "DockerAuditPreflightCapsuleBackend",
-        FakeBackend,
-    )
-
     class FakeClient:
         def can_enable_protocol_capability(self, _capability: str) -> bool:
-            raise AssertionError("disabled Audit must not enable capability")
+            raise AssertionError("retired SourceIngest capability must not be queried")
 
     configured, audit_runner = await daemon_module._configure_audit_preflight(
         config,
         cast(RunnerControlClient, FakeClient()),
     )
 
-    assert reconciled == 1
     assert configured.audit_preflight_ready is False
     assert audit_runner is None
+    assert AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY not in configured.registration.capabilities
 
 
 @pytest.mark.asyncio
