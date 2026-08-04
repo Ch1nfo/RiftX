@@ -32,13 +32,13 @@
 ## Current Wave
 
 - Milestone: `S2 — Inventory and Detector` is `in_progress`.
-- Completed task: `AUD-S200 — File Inventory and Scope`.
+- Completed task: `AUD-S201 — Detector registry and runner`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S201 — Detector registry and runner`.
+- Next task: `AUD-S202 — Built-in security rules`.
 
 ## Milestone Status
 
@@ -46,7 +46,7 @@
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
-| S2 Inventory and Detector | in_progress | deterministic sealed-Manifest Inventory and atomic file Scope persistence completed; Detector work remains |
+| S2 Inventory and Detector | in_progress | Inventory, atomic file Scope persistence, fixed Detector registry and bounded local runner completed; built-in rules remain |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
@@ -60,7 +60,7 @@
 | AUD-S101 Local Snapshot View | completed |
 | AUD-S102 SourceSnapshot seal | completed |
 | AUD-S200 File Inventory and Scope | completed |
-| AUD-S201 Detector registry and runner | pending |
+| AUD-S201 Detector registry and runner | completed |
 | AUD-S202 Built-in security rules | pending |
 | AUD-S300 Signal normalization and Finding | pending |
 | AUD-S301 JSON/Markdown Report | pending |
@@ -2325,8 +2325,59 @@ individual operation families.
     `test_start_error_keeps_durable_context` process-start race; its isolated rerun
     passed and the subsequent complete confirmation passed;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `3512a68a feat(code-audit): add deterministic file inventory`.
 - Next unblocked task: `AUD-S201 — Detector registry and runner`.
+
+### AUD-S201 — Detector Registry and Runner
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/detectors.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_detectors.py`
+  - this ledger
+- Outcome:
+  - added immutable rule metadata with stable rule/version/title, supported language
+    and category sets, and an implementation digest that prevents changed code from
+    silently reusing the same rule identity;
+  - added a deterministic in-process registry that rejects duplicate or malformed
+    identities, sorts by rule ID and produces a canonical registry digest;
+  - added bounded detector inputs containing only one verified relative path, blob
+    digest, language/category and Snapshot text, with source content excluded from
+    object representations;
+  - added bounded raw matches/signals with validated line/column ranges, paired end
+    positions, message/evidence byte limits, per-rule/file match limits and a global
+    run match budget;
+  - added deterministic file, rule and signal ordering plus canonical limits and run
+    receipts suitable for later Finding normalization and reporting;
+  - isolated Snapshot read failures per file and detector exceptions/invalid output
+    per rule so one bad file or rule does not terminate the remaining local scan;
+  - added a thread-safe monotonic cancellation token whose lock-protected publication
+    fence discards in-flight rule output and prevents any result commit after cancel;
+  - reports unsupported files honestly when no registered rule applies.
+- Schema/migration/persistence impact: none; S201 is a local in-memory execution
+  contract over the sealed Snapshot View and Inventory.
+- Security boundary impact:
+  - only trusted built-in Python detector objects can be registered; there is no
+    plugin discovery, dynamic import, subprocess, shell, package-manager or target
+    execution surface;
+  - detectors receive bounded decoded text, never the original folder path, CAS
+    locator, file descriptor, SnapshotStore or host execution capability;
+  - exceptions are reduced to stable failure codes and detector input/evidence are
+    excluded from repr output.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s201-unit-final tests/unit/audit/test_detectors.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s201-audit-final tests/unit/audit`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s201-full-final`
+  - `git diff --check`
+- Test results:
+  - focused Detector suite: `7 passed`;
+  - Audit unit regression: `190 passed`;
+  - full repository suite: `4882 passed, 5 skipped, 11 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S202 — Built-in security rules`.
 
 ## Design Deviations and ADRs
 
@@ -2387,11 +2438,11 @@ individual operation families.
 - The simplified end-to-end local scan is not implemented yet. Existing RunKind,
   Snapshot seal, Inventory and Scope foundations are not by themselves a user-visible
   scanner.
-- Detector registration/execution, built-in security rules, Finding normalization,
-  reports and local job/API/UI wiring remain unimplemented.
+- Built-in security rules, Finding normalization, reports and local job/API/UI wiring
+  remain unimplemented.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
-- Detector work must preserve the established bounded Snapshot View, per-file failure
-  isolation, deterministic ordering and cancel fence without executing target code.
+- Built-in rule work must preserve the fixed metadata, bounded output, deterministic
+  ordering and cancel fence without adding plugin or target-execution surfaces.
 - The private RiftX state root must not be writable by the audited project or any
   target-controlled process.
