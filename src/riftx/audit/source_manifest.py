@@ -11,11 +11,16 @@ import shutil
 import tempfile
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from riftx.domain import SourceSnapshot, SourceTargetKind
+from riftx.domain.base import new_id, utc_now
+
 from .snapshot import (
+    SNAPSHOT_STORE_SCHEMA_VERSION,
     SnapshotBlobMetadata,
     SnapshotBlobObjectType,
     SnapshotCASDescriptor,
@@ -26,6 +31,7 @@ from .snapshot import (
 
 SOURCE_MANIFEST_SCHEMA_VERSION = "riftx.source-manifest/v1"
 SOURCE_MATERIALIZER_SCHEMA_VERSION = "riftx.source-materializer/v1"
+LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION = "riftx.local-directory-materializer/v1"
 SOURCE_CAPTURE_POLICY_SCHEMA_VERSION = "riftx.source-capture-policy/v1"
 SOURCE_TREE_DIGEST_DOMAIN = "riftx.source-tree/v1"
 SOURCE_WORKING_TREE_DIGEST_DOMAIN = "riftx.working-tree/v1"
@@ -97,6 +103,7 @@ def _canonical_path_text(value: bytes) -> str | None:
 
 
 class SourceManifestSourceKind(StrEnum):
+    DIRECTORY = "directory"
     REVISION = "revision"
     WORKING_TREE = "working_tree"
 
@@ -136,6 +143,7 @@ class SourceManifestObjectType(StrEnum):
 
 class SourceManifestOrigin(StrEnum):
     COMMIT = "commit"
+    LOCAL_DIRECTORY = "local_directory"
     TRACKED_WORKTREE = "tracked_worktree"
     UNTRACKED = "untracked"
     IGNORED = "ignored"
@@ -414,8 +422,8 @@ class SourceManifestEntry:
 @dataclass(frozen=True, slots=True)
 class SourceManifest:
     source_kind: SourceManifestSourceKind
-    commit_sha: str
-    head_commit_sha: str
+    commit_sha: str | None
+    head_commit_sha: str | None
     capture_policy_digest: str
     entries: tuple[SourceManifestEntry, ...]
     staged: bool = False
@@ -428,10 +436,7 @@ class SourceManifest:
     file_count: int = 0
     total_bytes: int = 0
     schema_version: str = field(default=SOURCE_MANIFEST_SCHEMA_VERSION, init=False)
-    materializer_schema_version: str = field(
-        default=SOURCE_MATERIALIZER_SCHEMA_VERSION,
-        init=False,
-    )
+    materializer_schema_version: str = SOURCE_MATERIALIZER_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_kind, SourceManifestSourceKind):
@@ -449,8 +454,10 @@ class SourceManifest:
         ):
             if type(value) is not int or not 0 <= value <= _MAX_COUNTER:
                 raise ValueError(f"Manifest {label} is invalid")
-        _require_git_object_id(self.commit_sha, label="commit_sha")
-        _require_git_object_id(self.head_commit_sha, label="head_commit_sha")
+        if self.commit_sha is not None:
+            _require_git_object_id(self.commit_sha, label="commit_sha")
+        if self.head_commit_sha is not None:
+            _require_git_object_id(self.head_commit_sha, label="head_commit_sha")
         _require_digest(self.capture_policy_digest, label="capture_policy_digest")
         if not isinstance(self.entries, tuple) or any(
             not isinstance(entry, SourceManifestEntry) for entry in self.entries
@@ -476,14 +483,35 @@ class SourceManifest:
         if self.tree_digest != expected_tree:
             raise ValueError("Manifest tree_digest is invalid")
         dirty = any((self.staged, self.unstaged, self.untracked))
-        if self.source_kind is SourceManifestSourceKind.REVISION:
+        if self.source_kind is SourceManifestSourceKind.DIRECTORY:
             if (
                 dirty
                 or self.working_tree_digest is not None
+                or self.commit_sha is not None
+                or self.head_commit_sha is not None
+                or self.materializer_schema_version
+                != LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION
+            ):
+                raise ValueError("directory Manifest carries Git or working-tree state")
+        elif self.source_kind is SourceManifestSourceKind.REVISION:
+            if (
+                dirty
+                or self.working_tree_digest is not None
+                or self.commit_sha is None
+                or self.head_commit_sha is None
                 or self.commit_sha != self.head_commit_sha
+                or self.materializer_schema_version
+                != SOURCE_MATERIALIZER_SCHEMA_VERSION
             ):
                 raise ValueError("revision Manifest carries working-tree state")
         else:
+            if (
+                self.commit_sha is None
+                or self.head_commit_sha is None
+                or self.materializer_schema_version
+                != SOURCE_MATERIALIZER_SCHEMA_VERSION
+            ):
+                raise ValueError("working-tree Manifest requires Git commit state")
             expected_working = _domain_digest(
                 SOURCE_WORKING_TREE_DIGEST_DOMAIN,
                 {
@@ -520,8 +548,8 @@ class SourceManifest:
         cls,
         *,
         source_kind: SourceManifestSourceKind,
-        commit_sha: str,
-        head_commit_sha: str,
+        commit_sha: str | None,
+        head_commit_sha: str | None,
         capture_policy_digest: str,
         entries: tuple[SourceManifestEntry, ...],
         staged: bool = False,
@@ -529,6 +557,11 @@ class SourceManifest:
         untracked: bool = False,
     ) -> SourceManifest:
         ordered = tuple(sorted(entries, key=lambda entry: entry.path.raw_bytes))
+        materializer_schema_version = (
+            LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION
+            if source_kind is SourceManifestSourceKind.DIRECTORY
+            else SOURCE_MATERIALIZER_SCHEMA_VERSION
+        )
         included = tuple(
             entry for entry in ordered if entry.decision is SourceCaptureDecision.INCLUDED
         )
@@ -556,7 +589,7 @@ class SourceManifest:
             SOURCE_SNAPSHOT_DIGEST_DOMAIN,
             {
                 "capture_policy_digest": capture_policy_digest,
-                "materializer_schema_version": SOURCE_MATERIALIZER_SCHEMA_VERSION,
+                "materializer_schema_version": materializer_schema_version,
                 "tree_digest": tree_digest,
             },
         )
@@ -566,7 +599,7 @@ class SourceManifest:
             "entries": [entry.canonical_payload() for entry in ordered],
             "file_count": len(included),
             "head_commit_sha": head_commit_sha,
-            "materializer_schema_version": SOURCE_MATERIALIZER_SCHEMA_VERSION,
+            "materializer_schema_version": materializer_schema_version,
             "schema_version": SOURCE_MANIFEST_SCHEMA_VERSION,
             "snapshot_digest": snapshot_digest,
             "source_kind": source_kind.value,
@@ -595,6 +628,7 @@ class SourceManifest:
             manifest_digest=manifest_digest,
             file_count=len(included),
             total_bytes=sum(entry.size or 0 for entry in included),
+            materializer_schema_version=materializer_schema_version,
         )
 
     def canonical_payload(self, *, include_manifest_digest: bool = True) -> dict[str, object]:
@@ -666,7 +700,11 @@ class SourceManifest:
             raise ValueError("Source Manifest shape is invalid")
         if (
             payload["schema_version"] != SOURCE_MANIFEST_SCHEMA_VERSION
-            or payload["materializer_schema_version"] != SOURCE_MATERIALIZER_SCHEMA_VERSION
+            or payload["materializer_schema_version"]
+            not in {
+                LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION,
+                SOURCE_MATERIALIZER_SCHEMA_VERSION,
+            }
             or not isinstance(payload["entries"], list)
         ):
             raise ValueError("Source Manifest schema is unsupported")
@@ -685,6 +723,7 @@ class SourceManifest:
             manifest_digest=payload["manifest_digest"],
             file_count=payload["file_count"],
             total_bytes=payload["total_bytes"],
+            materializer_schema_version=payload["materializer_schema_version"],
         )
         if manifest.canonical_json().encode("utf-8") != raw:
             raise ValueError("Source Manifest JSON is not canonical")
@@ -741,6 +780,53 @@ class PublishedSourceSnapshot:
     total_bytes: int = 0
     content_reused: bool = False
     manifest_reused: bool = False
+
+
+def build_source_snapshot(
+    *,
+    project_id: str,
+    manifest: SourceManifest,
+    published: PublishedSourceSnapshot,
+    snapshot_id: str | None = None,
+    created_at: datetime | None = None,
+    sealed_at: datetime | None = None,
+) -> SourceSnapshot:
+    """Build the durable record for one already-published immutable source tree."""
+
+    if not isinstance(manifest, SourceManifest) or not isinstance(
+        published, PublishedSourceSnapshot
+    ):
+        raise TypeError("manifest and published snapshot are required")
+    if (
+        published.snapshot_digest != manifest.snapshot_digest
+        or published.manifest_digest != manifest.manifest_digest
+        or published.tree_digest != manifest.tree_digest
+        or published.working_tree_digest != manifest.working_tree_digest
+        or published.file_count != manifest.file_count
+        or published.total_bytes != manifest.total_bytes
+    ):
+        raise ValueError("published snapshot does not match its Source Manifest")
+    timestamp = created_at or utc_now()
+    sealed_timestamp = sealed_at or timestamp
+    return SourceSnapshot(
+        id=snapshot_id or new_id(),
+        project_id=project_id,
+        source_kind=SourceTargetKind(manifest.source_kind.value),
+        commit_sha=manifest.commit_sha,
+        working_tree_digest=manifest.working_tree_digest,
+        tree_digest=manifest.tree_digest,
+        capture_policy_digest=manifest.capture_policy_digest,
+        materializer_schema_version=manifest.materializer_schema_version,
+        snapshot_digest=manifest.snapshot_digest,
+        snapshot_store_version=SNAPSHOT_STORE_SCHEMA_VERSION,
+        content_storage_key=published.content_storage_key,
+        manifest_storage_key=published.manifest_storage_key,
+        manifest_digest=manifest.manifest_digest,
+        file_count=manifest.file_count,
+        total_bytes=manifest.total_bytes,
+        created_at=timestamp,
+        sealed_at=sealed_timestamp,
+    )
 
 
 def publish_source_manifest(
@@ -817,6 +903,7 @@ __all__ = [
     "SOURCE_MANIFEST_BLOB_NAME",
     "SOURCE_MANIFEST_SCHEMA_VERSION",
     "SOURCE_MATERIALIZER_SCHEMA_VERSION",
+    "LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION",
     "PublishedSourceSnapshot",
     "SourceCaptureDecision",
     "SourceCapturePolicy",
@@ -828,5 +915,6 @@ __all__ = [
     "SourceManifestOrigin",
     "SourceManifestPath",
     "SourceManifestSourceKind",
+    "build_source_snapshot",
     "publish_source_manifest",
 ]

@@ -293,7 +293,10 @@ class RunRecord(Base):
 class AuditProjectRecord(Base):
     __tablename__ = "audit_projects"
     __table_args__ = (
-        CheckConstraint("vcs_kind = 'git'", name="ck_audit_projects_vcs_kind"),
+        CheckConstraint(
+            "vcs_kind IN ('directory', 'git')",
+            name="ck_audit_projects_vcs_kind",
+        ),
         CheckConstraint(
             _lower_hex_digest_check("repository_identity_digest"),
             name="ck_audit_projects_repository_digest",
@@ -343,11 +346,12 @@ class SourceSnapshotRecord(Base):
             ondelete="RESTRICT",
         ),
         CheckConstraint(
-            "source_kind IN ('revision', 'working_tree')",
+            "source_kind IN ('directory', 'revision', 'working_tree')",
             name="ck_source_snapshots_source_kind",
         ),
         CheckConstraint(
-            "(source_kind = 'revision' AND working_tree_digest IS NULL) OR "
+            "(source_kind IN ('directory', 'revision') "
+            "AND working_tree_digest IS NULL) OR "
             "(source_kind = 'working_tree' AND working_tree_digest IS NOT NULL)",
             name="ck_source_snapshots_working_tree_digest",
         ),
@@ -371,7 +375,12 @@ class SourceSnapshotRecord(Base):
             name="ck_source_snapshots_working_tree_sha256",
         ),
         CheckConstraint(
-            _git_object_id_check("commit_sha"),
+            "(source_kind = 'directory' AND commit_sha IS NULL) OR "
+            "(source_kind IN ('revision', 'working_tree') AND commit_sha IS NOT NULL)",
+            name="ck_source_snapshots_commit_presence",
+        ),
+        CheckConstraint(
+            _optional_git_object_id_check("commit_sha"),
             name="ck_source_snapshots_commit_sha",
         ),
         CheckConstraint(
@@ -441,7 +450,7 @@ class SourceSnapshotRecord(Base):
     parent_snapshot_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
     base_tree_digest: Mapped[str | None] = mapped_column(String(64))
     patch_digest: Mapped[str | None] = mapped_column(String(64))
-    commit_sha: Mapped[str] = mapped_column(String(128), nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String(128))
     base_commit_sha: Mapped[str | None] = mapped_column(String(128))
     working_tree_digest: Mapped[str | None] = mapped_column(String(64))
     tree_digest: Mapped[str] = mapped_column(String(64), nullable=False)

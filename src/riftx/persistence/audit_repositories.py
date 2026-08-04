@@ -1036,6 +1036,53 @@ class SQLAlchemyAuditProjectRepository:
         return StoredAuditEntity(replacement, current.state_version + 1), True
 
 
+async def create_source_snapshot(
+    session: AsyncSession,
+    snapshot: SourceSnapshot,
+) -> tuple[SourceSnapshot, bool]:
+    """Create or replay a SourceSnapshot inside a caller-owned transaction."""
+
+    snapshot = SourceSnapshot.model_validate(snapshot)
+    await _validated_project(session, snapshot.project_id, for_update=True)
+    if snapshot.parent_snapshot_id is not None:
+        parent = await _validated_snapshot(
+            session,
+            snapshot.parent_snapshot_id,
+            project_id=snapshot.project_id,
+        )
+        if parent is None:
+            _conflict("SourceSnapshot", snapshot.id, "has an invalid parent")
+    existing = await _single_create_candidate(
+        session,
+        select(SourceSnapshotRecord).where(
+            or_(
+                SourceSnapshotRecord.id == snapshot.id,
+                and_(
+                    SourceSnapshotRecord.project_id == snapshot.project_id,
+                    SourceSnapshotRecord.snapshot_digest == snapshot.snapshot_digest,
+                ),
+            )
+        ),
+        entity="SourceSnapshot",
+        entity_id=snapshot.id,
+    )
+    if existing is not None:
+        bundle = await _validated_snapshot(
+            session,
+            existing.id,
+            project_id=existing.project_id,
+        )
+        if bundle is None:
+            raise RepositoryIntegrityError("SourceSnapshot", existing.id) from None
+        persisted = bundle[1]
+        if _same_snapshot_creation(persisted, snapshot):
+            return persisted, False
+        _conflict("SourceSnapshot", snapshot.id, "identity already exists")
+    session.add(source_snapshot_to_record(snapshot))
+    await session.flush()
+    return snapshot, True
+
+
 class SQLAlchemySnapshotRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
@@ -1064,37 +1111,9 @@ class SQLAlchemySnapshotRepository:
         snapshot = SourceSnapshot.model_validate(snapshot)
         try:
             async with serialized_write(self._session_factory) as session:
-                await _validated_project(session, snapshot.project_id)
-                if snapshot.parent_snapshot_id is not None:
-                    parent = await _validated_snapshot(
-                        session,
-                        snapshot.parent_snapshot_id,
-                        project_id=snapshot.project_id,
-                    )
-                    if parent is None:
-                        _conflict("SourceSnapshot", snapshot.id, "has an invalid parent")
-                existing = await self._find_create_candidate(session, snapshot)
-                if existing is not None:
-                    bundle = await _validated_snapshot(
-                        session,
-                        existing.id,
-                        project_id=existing.project_id,
-                    )
-                    if bundle is None:
-                        raise RepositoryIntegrityError(
-                            "SourceSnapshot",
-                            existing.id,
-                        ) from None
-                    persisted = bundle[1]
-                    if _same_snapshot_creation(persisted, snapshot):
-                        return persisted, False
-                    _conflict("SourceSnapshot", snapshot.id, "identity already exists")
-                session.add(source_snapshot_to_record(snapshot))
-                await session.flush()
+                return await create_source_snapshot(session, snapshot)
         except IntegrityError:
             pass
-        else:
-            return snapshot, True
         async with self._session_factory() as session:
             existing = await self._find_create_candidate(session, snapshot)
             if existing is not None:
@@ -2748,6 +2767,7 @@ __all__ = [
     "SQLAlchemySnapshotRepository",
     "compare_and_set_audit_contract",
     "compare_and_set_audit_scan",
+    "create_source_snapshot",
     "create_audit_project",
     "create_audit_start_intent",
     "create_scan_contract_pair",

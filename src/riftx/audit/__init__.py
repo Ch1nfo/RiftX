@@ -1,5 +1,11 @@
 """RiftX-owned Code Audit primitives."""
 
+from .local_materializer import (
+    LocalMaterializedSource,
+    LocalSourceMaterializationError,
+    LocalSourceMaterializationFailure,
+    LocalSourceMaterializer,
+)
 from .paths import (
     DEFAULT_MAX_REPOSITORY_FILTER_PATH_BYTES,
     DEFAULT_MAX_REPOSITORY_FILTER_PATHS,
@@ -78,6 +84,7 @@ from .snapshot_view import (
     open_local_snapshot_view,
 )
 from .source_manifest import (
+    LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION,
     SOURCE_CAPTURE_POLICY_SCHEMA_VERSION,
     SOURCE_MANIFEST_BLOB_NAME,
     SOURCE_MANIFEST_SCHEMA_VERSION,
@@ -93,6 +100,7 @@ from .source_manifest import (
     SourceManifestOrigin,
     SourceManifestPath,
     SourceManifestSourceKind,
+    build_source_snapshot,
     publish_source_manifest,
 )
 from .static_effect import (
@@ -135,6 +143,8 @@ __all__ = [
     "DEFAULT_SOURCE_PATH_POLICY_VERSION",
     "LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN",
     "LOCAL_SNAPSHOT_VIEW_SCHEMA_VERSION",
+    "LOCAL_DIRECTORY_MATERIALIZER_SCHEMA_VERSION",
+    "LocalMaterializedSource",
     "REPOSITORY_DESCRIPTOR_CHAIN_DIGEST_DOMAIN",
     "REPOSITORY_IDENTITY_DIGEST_DOMAIN",
     "SNAPSHOT_CAS_INDEX_SCHEMA_VERSION",
@@ -168,6 +178,9 @@ __all__ = [
     "LocalSnapshotViewError",
     "LocalSnapshotViewFailure",
     "LocalSnapshotViewSummary",
+    "LocalSourceMaterializationError",
+    "LocalSourceMaterializationFailure",
+    "LocalSourceMaterializer",
     "OpenedSnapshotBlob",
     "PreparedSnapshotMount",
     "PublishedSourceSnapshot",
@@ -225,6 +238,7 @@ __all__ = [
     "open_authorized_source_repository",
     "open_local_snapshot_view",
     "audit_static_effect_plan_digest",
+    "build_source_snapshot",
     "parse_snapshot_content_storage_key",
     "publish_source_manifest",
     "snapshot_mount_key_digest",

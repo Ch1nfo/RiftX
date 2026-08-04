@@ -246,7 +246,7 @@ def _work(status: AuditWorkStatus = AuditWorkStatus.QUEUED) -> AuditWorkItem:
 
 
 def test_persistence_domain_enums_are_closed_contracts() -> None:
-    assert tuple(AuditVcsKind) == (AuditVcsKind.GIT,)
+    assert tuple(AuditVcsKind) == (AuditVcsKind.DIRECTORY, AuditVcsKind.GIT)
     assert {value.value for value in AuditStartIntentStatus} == {
         "pending",
         "claimed",
@@ -395,6 +395,32 @@ def test_source_snapshot_binds_working_tree_digest_to_source_kind() -> None:
         _snapshot(working_tree_digest=_digest("working-tree"))
     with pytest.raises(ValidationError, match="requires working_tree_digest"):
         _snapshot(source_kind=SourceTargetKind.WORKING_TREE)
+
+
+def test_directory_project_and_snapshot_reject_git_state() -> None:
+    project = AuditProject(
+        id="project-directory",
+        engagement_id="engagement-1",
+        display_name="Directory project",
+        vcs_kind=AuditVcsKind.DIRECTORY,
+        repository_identity_digest=_digest("directory-source"),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    assert project.default_branch is None
+    with pytest.raises(ValidationError, match="default_branch"):
+        AuditProject.model_validate(
+            {**project.model_dump(mode="python"), "default_branch": "main"}
+        )
+
+    snapshot = _snapshot(
+        source_kind=SourceTargetKind.DIRECTORY,
+        commit_sha=None,
+    )
+    assert snapshot.commit_sha is None
+    assert snapshot.working_tree_digest is None
+    with pytest.raises(ValidationError, match="cannot carry Git"):
+        _snapshot(source_kind=SourceTargetKind.DIRECTORY)
     working_tree = _snapshot(
         source_kind=SourceTargetKind.WORKING_TREE,
         working_tree_digest=_digest("working-tree"),

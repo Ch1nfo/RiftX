@@ -18,9 +18,14 @@ from .audit_repositories import (
     create_audit_project,
     create_audit_start_intent,
     create_scan_contract_pair,
+    create_source_snapshot,
     load_validated_audit_scan,
 )
-from .audit_snapshot import SQLAlchemySnapshotReferenceRepository
+from .audit_snapshot import (
+    SourceSnapshotSealResult,
+    SQLAlchemySnapshotReferenceRepository,
+    SQLAlchemySourceSnapshotSealUnitOfWork,
+)
 from .audit_static_effect import (
     SQLAlchemyAuditStaticEffectAuthorityRepository,
     SQLAlchemySnapshotMountSourceResolver,
@@ -112,11 +117,14 @@ __all__ = [
     "SQLAlchemyWorkflowSignalIntentRepository",
     "SQLAlchemySnapshotRepository",
     "SQLAlchemySnapshotReferenceRepository",
+    "SQLAlchemySourceSnapshotSealUnitOfWork",
+    "SourceSnapshotSealResult",
     "AuditCreationFailpoint",
     "compare_and_set_audit_contract",
     "compare_and_set_audit_scan",
     "create_audit_project",
     "create_audit_start_intent",
     "create_scan_contract_pair",
+    "create_source_snapshot",
     "load_validated_audit_scan",
 ]

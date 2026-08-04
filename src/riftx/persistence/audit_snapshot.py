@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from riftx.application.errors import RepositoryConflictError, RepositoryIntegrityError
+from riftx.application.ports import StoredAuditEntity
 from riftx.audit.snapshot import (
     SNAPSHOT_REFERENCE_SCHEMA_VERSION,
     SnapshotReference,
     SnapshotReferenceRole,
 )
+from riftx.domain import AuditScan, SourceSnapshot
 
+from .audit_repositories import (
+    compare_and_set_audit_scan,
+    create_source_snapshot,
+    load_validated_audit_scan,
+)
 from .orm import AuditScanRecord, SnapshotReferenceRecord, SourceSnapshotRecord
 from .transactions import SessionFactory, serialized_write
 
@@ -72,6 +81,111 @@ def _from_record(record: SnapshotReferenceRecord) -> SnapshotReference:
         ) from exc
 
 
+async def add_snapshot_reference(
+    session: AsyncSession,
+    reference: SnapshotReference,
+) -> tuple[SnapshotReference, bool]:
+    """Create or replay one Snapshot reference in a caller-owned transaction."""
+
+    if not isinstance(reference, SnapshotReference):
+        raise TypeError("reference must be a SnapshotReference")
+    key = (reference.audit_id, reference.snapshot_id, reference.role.value)
+    audit = await session.get(AuditScanRecord, reference.audit_id)
+    snapshot = await session.get(
+        SourceSnapshotRecord,
+        reference.snapshot_id,
+    )
+    if (
+        audit is None
+        or snapshot is None
+        or audit.project_id != reference.project_id
+        or snapshot.project_id != reference.project_id
+    ):
+        _conflict(reference)
+    existing = await session.get(SnapshotReferenceRecord, key)
+    if existing is not None:
+        persisted = _from_record(existing)
+        if persisted == reference:
+            return persisted, False
+        _conflict(reference)
+    session.add(_to_record(reference))
+    await session.flush()
+    return reference, True
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSnapshotSealResult:
+    snapshot: SourceSnapshot
+    reference: SnapshotReference
+    audit: StoredAuditEntity[AuditScan]
+
+
+class SQLAlchemySourceSnapshotSealUnitOfWork:
+    """Atomically persist a Snapshot, its primary reference, and Audit binding."""
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def seal_primary(
+        self,
+        *,
+        audit_id: str,
+        snapshot: SourceSnapshot,
+    ) -> SourceSnapshotSealResult:
+        _require_id(audit_id, label="audit_id")
+        snapshot = SourceSnapshot.model_validate(snapshot)
+        try:
+            async with serialized_write(self._session_factory) as session:
+                persisted_snapshot, _ = await create_source_snapshot(session, snapshot)
+                bundle = await load_validated_audit_scan(
+                    session,
+                    audit_id,
+                    for_update=True,
+                )
+                if bundle is None or bundle[-1].project_id != snapshot.project_id:
+                    _conflict()
+                record, _contract, _project, _run, scan = bundle
+                existing_primary = (
+                    await session.scalars(
+                        select(SnapshotReferenceRecord).where(
+                            SnapshotReferenceRecord.audit_id == audit_id,
+                            SnapshotReferenceRecord.role
+                            == SnapshotReferenceRole.PRIMARY.value,
+                        )
+                    )
+                ).all()
+                if any(
+                    item.snapshot_id != persisted_snapshot.id
+                    or item.project_id != persisted_snapshot.project_id
+                    for item in existing_primary
+                ):
+                    _conflict()
+                reference = SnapshotReference(
+                    audit_id=audit_id,
+                    snapshot_id=persisted_snapshot.id,
+                    project_id=persisted_snapshot.project_id,
+                    role=SnapshotReferenceRole.PRIMARY,
+                    created_at=persisted_snapshot.sealed_at,
+                )
+                await add_snapshot_reference(session, reference)
+                try:
+                    replacement = scan.bind_snapshots(snapshot_id=persisted_snapshot.id)
+                except ValueError:
+                    _conflict()
+                stored_audit, _ = await compare_and_set_audit_scan(
+                    session,
+                    StoredAuditEntity(scan, record.state_version),
+                    replacement,
+                )
+                return SourceSnapshotSealResult(
+                    snapshot=persisted_snapshot,
+                    reference=reference,
+                    audit=stored_audit,
+                )
+        except IntegrityError:
+            _conflict()
+
+
 class SQLAlchemySnapshotReferenceRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
@@ -85,27 +199,9 @@ class SQLAlchemySnapshotReferenceRepository:
         key = (reference.audit_id, reference.snapshot_id, reference.role.value)
         try:
             async with serialized_write(self._session_factory) as session:
-                audit = await session.get(AuditScanRecord, reference.audit_id)
-                snapshot = await session.get(SourceSnapshotRecord, reference.snapshot_id)
-                if (
-                    audit is None
-                    or snapshot is None
-                    or audit.project_id != reference.project_id
-                    or snapshot.project_id != reference.project_id
-                ):
-                    _conflict(reference)
-                existing = await session.get(SnapshotReferenceRecord, key)
-                if existing is not None:
-                    persisted = _from_record(existing)
-                    if persisted == reference:
-                        return persisted, False
-                    _conflict(reference)
-                session.add(_to_record(reference))
-                await session.flush()
+                return await add_snapshot_reference(session, reference)
         except IntegrityError:
             pass
-        else:
-            return reference, True
 
         async with self._session_factory() as session:
             existing = await session.get(SnapshotReferenceRecord, key)
@@ -162,4 +258,9 @@ class SQLAlchemySnapshotReferenceRepository:
         return tuple(_from_record(record) for record in records)
 
 
-__all__ = ["SQLAlchemySnapshotReferenceRepository"]
+__all__ = [
+    "SQLAlchemySnapshotReferenceRepository",
+    "SQLAlchemySourceSnapshotSealUnitOfWork",
+    "SourceSnapshotSealResult",
+    "add_snapshot_reference",
+]

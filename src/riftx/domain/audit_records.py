@@ -46,6 +46,7 @@ type GitObjectId = Annotated[
 
 
 class AuditVcsKind(StrEnum):
+    DIRECTORY = "directory"
     GIT = "git"
 
 
@@ -296,7 +297,7 @@ class AuditSummaryCount(AuditStrictModel):
 
 
 class AuditProject(AuditStrictModel):
-    """A stable project identity keyed globally by repository identity digest."""
+    """A stable project identity keyed globally by local-source identity digest."""
 
     id: AuditId = Field(default_factory=new_id)
     engagement_id: AuditId
@@ -323,6 +324,8 @@ class AuditProject(AuditStrictModel):
 
     @model_validator(mode="after")
     def validate_timestamps(self) -> AuditProject:
+        if self.vcs_kind is AuditVcsKind.DIRECTORY and self.default_branch is not None:
+            raise ValueError("directory Audit project cannot carry a default_branch")
         if self.updated_at < self.created_at:
             raise ValueError("Audit project updated_at must not precede created_at")
         return self
@@ -400,7 +403,7 @@ class SourceSnapshot(AuditStrictModel):
     parent_snapshot_id: AuditId | None = None
     base_tree_digest: Sha256Digest | None = None
     patch_digest: Sha256Digest | None = None
-    commit_sha: GitObjectId
+    commit_sha: GitObjectId | None = None
     base_commit_sha: GitObjectId | None = None
     working_tree_digest: Sha256Digest | None = None
     tree_digest: Sha256Digest
@@ -462,11 +465,28 @@ class SourceSnapshot(AuditStrictModel):
             raise ValueError(
                 "snapshot_digest does not match the canonical Source Snapshot identity"
             )
-        if self.source_kind is SourceTargetKind.REVISION:
+        if self.source_kind is SourceTargetKind.DIRECTORY:
+            if any(
+                value is not None
+                for value in (
+                    self.commit_sha,
+                    self.base_commit_sha,
+                    self.working_tree_digest,
+                    self.parent_snapshot_id,
+                    self.base_tree_digest,
+                    self.patch_digest,
+                )
+            ):
+                raise ValueError("directory Source Snapshot cannot carry Git or retest state")
+        elif self.source_kind is SourceTargetKind.REVISION:
+            if self.commit_sha is None:
+                raise ValueError("revision Source Snapshot requires commit_sha")
             if self.working_tree_digest is not None:
                 raise ValueError("revision Source Snapshot cannot carry working_tree_digest")
         elif self.working_tree_digest is None:
             raise ValueError("working-tree Source Snapshot requires working_tree_digest")
+        elif self.commit_sha is None:
+            raise ValueError("working-tree Source Snapshot requires commit_sha")
         if self.sealed_at < self.created_at:
             raise ValueError("Source Snapshot sealed_at must not precede created_at")
         return self

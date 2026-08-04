@@ -31,21 +31,21 @@
 
 ## Current Wave
 
-- Milestone: `S1 — Local folder and Snapshot` is `in_progress`.
-- Completed task: `AUD-S101 — Local Snapshot View`.
+- Milestone: `S1 — Local folder and Snapshot` is `completed`.
+- Completed task: `AUD-S102 — SourceSnapshot seal`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S102 — SourceSnapshot seal`.
+- Next task: `AUD-S200 — File Inventory and Scope`.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
-| S1 Local folder and Snapshot | in_progress | AUD-S100 and AUD-S101 completed; AUD-S102 pending |
+| S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | pending | AUD-S200 through AUD-S202 not started |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
@@ -58,7 +58,7 @@
 | AUD-S001 Retire Docker runtime, qualification and release path | completed |
 | AUD-S100 Local folder admission | completed |
 | AUD-S101 Local Snapshot View | completed |
-| AUD-S102 SourceSnapshot seal | pending |
+| AUD-S102 SourceSnapshot seal | completed |
 | AUD-S200 File Inventory and Scope | pending |
 | AUD-S201 Detector registry and runner | pending |
 | AUD-S202 Built-in security rules | pending |
@@ -2196,8 +2196,82 @@ individual operation families.
   - SnapshotStore/View/coordinator regression: `31 passed`;
   - full repository suite: `4857 passed, 5 skipped, 12 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `ba799cdc feat(code-audit): add local snapshot view`.
 - Next unblocked task: `AUD-S102 — SourceSnapshot seal`.
+
+### AUD-S102 — SourceSnapshot Seal
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/local_materializer.py`
+  - `src/riftx/audit/source_manifest.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/domain/audit.py`
+  - `src/riftx/domain/audit_records.py`
+  - `src/riftx/persistence/audit_repositories.py`
+  - `src/riftx/persistence/audit_snapshot.py`
+  - `src/riftx/persistence/orm.py`
+  - `src/riftx/persistence/__init__.py`
+  - `migrations/versions/d0b4e6f8a102_add_local_directory_snapshots.py`
+  - `tests/unit/audit/test_local_materializer.py`
+  - `tests/unit/domain/test_audit_persistence_domain.py`
+  - `tests/integration/persistence/test_snapshot_references.py`
+  - `tests/integration/persistence/test_local_directory_snapshot_migration.py`
+  - migration head assertions in the existing Audit/Runner migration tests
+  - this ledger
+- Outcome:
+  - added honest `directory` Project, Manifest and SourceSnapshot kinds with no fake Git
+    commit, branch or working-tree metadata;
+  - assigned the local-directory materializer its own schema identity so Git and
+    ordinary-directory Snapshot digests cannot collide accidentally;
+  - added a descriptor-safe local materializer that never invokes Git or any target
+    command, traverses in byte-sorted order, never follows symlinks, skips `.git`,
+    bounds path depth/count/file/repository bytes and records explicit exclusions;
+  - copied only verified regular text and symlink targets into private staging,
+    deferred special files, hardlinks, invalid UTF-8, LFS pointers and oversized data,
+    and re-enumerated/rehashed the admitted source before accepting the Manifest;
+  - added deterministic Manifest/CAS replay and a strict builder from published CAS
+    facts to the durable SourceSnapshot record;
+  - added a serialized persistence unit of work that atomically creates or reuses the
+    SourceSnapshot, creates its primary SnapshotReference and immutably binds the
+    AuditScan in one database transaction;
+  - made exact and concurrent retries converge on the same Snapshot, reference and
+    Audit state, with rollback on owner or existing-binding conflicts;
+  - preserved historical Git rows and all earlier downgrade loss guards while adding
+    a guarded upgrade/downgrade migration for nullable directory commits.
+- Schema/migration impact:
+  - new Alembic head `d0b4e6f8a102`;
+  - `audit_projects.vcs_kind` now permits `directory` and `git`;
+  - `source_snapshots.source_kind` now permits `directory`, and `commit_sha` is nullable
+    only for directory snapshots;
+  - downgrade is rejected while directory facts exist and still runs lower-revision
+    static-effect, Snapshot-reference, Preflight and Runner loss guards before DDL.
+- Security boundary impact:
+  - ordinary and Git-marked folders are captured entirely on the current machine;
+  - no Docker, Linux VM, remote Runner, another host, Git subprocess, package manager,
+    target hook, build, test or plugin is used;
+  - source/output overlap, symlink traversal, TOCTOU mutation, special-file reads and
+    path leakage fail closed with stable path-free errors.
+- Tests run:
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/domain/test_audit_persistence_domain.py tests/unit/audit/test_local_materializer.py tests/unit/audit/test_source_materializer.py tests/integration/persistence/test_snapshot_references.py tests/integration/persistence/test_local_directory_snapshot_migration.py`
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/audit tests/unit/domain/test_audit_persistence_domain.py tests/unit/persistence/test_audit_mappers.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_audit_repositories.py tests/integration/persistence/test_snapshot_references.py tests/integration/persistence/test_audit_migration.py tests/integration/persistence/test_local_directory_snapshot_migration.py`
+  - `conda run --no-capture-output -n agent ruff check src tests migrations/versions/d0b4e6f8a102_add_local_directory_snapshots.py`
+  - `conda run --no-capture-output -n agent pytest -q`
+  - `git diff --check`
+- Test results:
+  - focused Snapshot seal suite: `223 passed`;
+  - broad Audit/Snapshot/persistence regression: `502 passed, 10 warnings`;
+  - full repository suite: `4867 passed, 5 skipped, 11 warnings`;
+  - Ruff and whitespace checks passed.
+- Manual verification:
+  - ordinary folder, Git-marked folder, executable file, symlink, FIFO, vendor
+    exclusion, source mutation, CAS replay, concurrent retry, restart readback and
+    migration round-trip are covered by executable tests.
+- Known limitations:
+  - S102 seals the immutable local Snapshot foundation only; file Inventory,
+    detectors, Findings and user-facing job wiring begin in S2 and later milestones.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S200 — File Inventory and Scope`.
 
 ## Design Deviations and ADRs
 

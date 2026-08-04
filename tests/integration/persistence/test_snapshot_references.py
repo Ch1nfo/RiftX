@@ -16,11 +16,14 @@ from tests.integration.persistence.test_audit_repositories import (
 
 from riftx.application.errors import RepositoryConflictError, RepositoryIntegrityError
 from riftx.audit import SnapshotReference, SnapshotReferenceRole
+from riftx.domain import AuditVcsKind, SourceTargetKind
 from riftx.persistence import (
     Database,
     SQLAlchemyAuditProjectRepository,
+    SQLAlchemyAuditRepository,
     SQLAlchemySnapshotReferenceRepository,
     SQLAlchemySnapshotRepository,
+    SQLAlchemySourceSnapshotSealUnitOfWork,
 )
 
 
@@ -41,6 +44,28 @@ def _reference(**updates: object) -> SnapshotReference:
     }
     payload.update(updates)
     return SnapshotReference(**payload)  # type: ignore[arg-type]
+
+
+def _directory_project():
+    project = _project()
+    return type(project).model_validate(
+        {
+            **project.model_dump(mode="python"),
+            "vcs_kind": AuditVcsKind.DIRECTORY,
+            "default_branch": None,
+        }
+    )
+
+
+def _directory_snapshot(snapshot_id: str):
+    snapshot = _snapshot(snapshot_id)
+    return type(snapshot).model_validate(
+        {
+            **snapshot.model_dump(mode="python"),
+            "source_kind": SourceTargetKind.DIRECTORY,
+            "commit_sha": None,
+        }
+    )
 
 
 async def test_snapshot_reference_add_replay_list_release_and_restart(
@@ -130,4 +155,68 @@ async def test_snapshot_reference_corrupt_digest_is_not_returned(tmp_path: Path)
         await references.list_for_snapshot("snapshot-1", project_id="project-1")
     assert captured.value.entity == "SnapshotReference"
     assert "snapshot-1" not in str(captured.value.__cause__)
+    await database.dispose()
+
+
+async def test_source_snapshot_seal_is_atomic_replayable_concurrent_and_restart_safe(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'snapshot-seal.db'}"
+    database = Database(database_url)
+    await database.create_schema()
+    await _create_engagement(database, "engagement-1")
+    await SQLAlchemyAuditProjectRepository(database.session_factory).create(
+        _directory_project()
+    )
+    await _create_audit(database, snapshot_id=None)
+    snapshot = _directory_snapshot("snapshot-local")
+    seals = SQLAlchemySourceSnapshotSealUnitOfWork(database.session_factory)
+
+    first, replay = await asyncio.gather(
+        seals.seal_primary(audit_id="audit-1", snapshot=snapshot),
+        seals.seal_primary(audit_id="audit-1", snapshot=snapshot),
+    )
+    assert first == replay
+    assert first.snapshot == snapshot
+    assert first.reference.snapshot_id == snapshot.id
+    assert first.audit.value.snapshot_id == snapshot.id
+    assert first.audit.state_version == 2
+    await database.dispose()
+
+    reopened = Database(database_url)
+    audit = await SQLAlchemyAuditRepository(reopened.session_factory).get(
+        "audit-1",
+        project_id="project-1",
+    )
+    references = SQLAlchemySnapshotReferenceRepository(reopened.session_factory)
+    assert audit == first.audit
+    assert await references.list_for_snapshot(
+        snapshot.id,
+        project_id="project-1",
+    ) == (first.reference,)
+    assert await SQLAlchemySourceSnapshotSealUnitOfWork(
+        reopened.session_factory
+    ).seal_primary(audit_id="audit-1", snapshot=snapshot) == first
+    await reopened.dispose()
+
+
+async def test_source_snapshot_seal_rolls_back_snapshot_and_reference_on_binding_conflict(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'snapshot-seal-rollback.db'}")
+    await database.create_schema()
+    await _seed(database)
+    conflicting = _snapshot("snapshot-conflicting")
+    seals = SQLAlchemySourceSnapshotSealUnitOfWork(database.session_factory)
+
+    with pytest.raises(RepositoryConflictError):
+        await seals.seal_primary(audit_id="audit-1", snapshot=conflicting)
+
+    assert await SQLAlchemySnapshotRepository(database.session_factory).get(
+        "project-1",
+        conflicting.id,
+    ) is None
+    assert await SQLAlchemySnapshotReferenceRepository(
+        database.session_factory
+    ).list_for_snapshot(conflicting.id, project_id="project-1") == ()
     await database.dispose()

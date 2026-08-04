@@ -280,6 +280,7 @@ class AuditStrictModel(DomainModel):
 
 
 class SourceTargetKind(StrEnum):
+    DIRECTORY = "directory"
     REVISION = "revision"
     WORKING_TREE = "working_tree"
 
