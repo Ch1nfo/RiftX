@@ -1,8 +1,8 @@
-"""Descriptor-safe POSIX source-root admission for Code Audit Preflight.
+"""Descriptor-safe POSIX local-source admission for Code Audit.
 
-This module deliberately stops at path authorization.  It never discovers Git
-administrative paths, reads repository content, or starts an external process.
-The SourceIngest Capsule owns those later and less-trusted operations.
+This module deliberately stops at path authorization and a no-follow Git-marker
+classification. It never reads Git configuration or repository content and never
+starts an external process.
 """
 
 from __future__ import annotations
@@ -24,10 +24,13 @@ DEFAULT_SOURCE_PATH_POLICY_VERSION = "riftx.audit-source-path-policy/v1"
 SOURCE_ROOT_IDENTITY_DIGEST_DOMAIN = "riftx.audit-source-root-identity/v1"
 REPOSITORY_DESCRIPTOR_CHAIN_DIGEST_DOMAIN = "riftx.audit-repository-descriptor-chain/v1"
 REPOSITORY_IDENTITY_DIGEST_DOMAIN = "riftx.audit-repository-descriptor-identity/v1"
+LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN = "riftx.audit-local-source-identity/v1"
 
 DEFAULT_MAX_REPOSITORY_FILTER_PATHS = 512
 DEFAULT_MAX_REPOSITORY_FILTER_PATH_BYTES = 4096
 DEFAULT_MAX_REPOSITORY_FILTER_TOTAL_BYTES = 64 * 1024
+DEFAULT_MAX_SOURCE_PATH_BYTES = 4096
+DEFAULT_MAX_SOURCE_DIRECTORY_DEPTH = 256
 
 _OPEN_SUPPORTS_DIR_FD = os.open in os.supports_dir_fd
 _STAT_SUPPORTS_DIR_FD = os.stat in os.supports_dir_fd
@@ -48,6 +51,9 @@ class SourcePathFailure(StrEnum):
     SOURCE_NOT_DIRECTORY = "audit_source_not_directory"
     SOURCE_UNAVAILABLE = "audit_source_unavailable"
     SOURCE_CHANGED = "audit_source_path_changed"
+    SOURCE_LIMIT_EXCEEDED = "audit_source_path_limit_exceeded"
+    SOURCE_PROTECTED_PATH_OVERLAP = "audit_source_protected_path_overlap"
+    SOURCE_GIT_MARKER_UNSAFE = "audit_source_git_marker_unsafe"
     DESCRIPTOR_CLOSED = "audit_source_descriptor_closed"
 
 
@@ -80,6 +86,27 @@ class SourceDirectoryIdentity:
     mode: int
     owner_uid: int
     owner_gid: int
+    identity_digest: str
+
+
+class LocalSourceKind(StrEnum):
+    """A bounded local-source classification that does not invoke Git."""
+
+    DIRECTORY = "directory"
+    GIT_DIRECTORY = "git_directory"
+
+
+@dataclass(frozen=True, slots=True)
+class LocalSourceIdentity:
+    """Stable admission identity for an ordinary or Git-marked local directory."""
+
+    schema_version: str
+    source_kind: LocalSourceKind
+    policy_version: str
+    root_relative_path: str
+    source_root_identity_digest: str
+    descriptor_chain_digest: str
+    directory_identity_digest: str
     identity_digest: str
 
 
@@ -287,6 +314,63 @@ class AuthorizedSourceRepository:
         except (NotImplementedError, OSError) as exc:
             _close_fd(duplicate)
             raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_UNAVAILABLE) from exc
+
+
+class AuthorizedLocalSource:
+    """Authorized local source directory with filters and a stable public identity."""
+
+    def __init__(
+        self,
+        *,
+        directory: AuthorizedSourceRepository,
+        filters: RepositoryPathFilters,
+        identity: LocalSourceIdentity,
+    ) -> None:
+        self._directory = directory
+        self.filters = filters
+        self.identity = identity
+
+    @property
+    def closed(self) -> bool:
+        return self._directory.closed
+
+    @property
+    def canonical_source(self) -> str:
+        return self._directory.canonical_repository
+
+    @property
+    def source_fd(self) -> int:
+        return self._directory.repository_fd
+
+    @property
+    def source_identity_digest(self) -> str:
+        return self.identity.identity_digest
+
+    @property
+    def source_kind(self) -> LocalSourceKind:
+        return self.identity.source_kind
+
+    def duplicate_source_fd(self) -> int:
+        return self._directory.duplicate_repository_fd()
+
+    def verify_unchanged(self) -> None:
+        self._directory.verify_unchanged()
+        if _detect_local_source_kind(self._directory.repository_fd) is not self.source_kind:
+            raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_CHANGED)
+
+    def close(self) -> None:
+        self._directory.close()
+
+    def __enter__(self) -> Self:
+        try:
+            self.verify_unchanged()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def validate_posix_absolute_path(path: str | os.PathLike[str]) -> str:
@@ -516,6 +600,63 @@ def open_authorized_source_repository(
         _close_fd(root_fd)
 
 
+def open_authorized_local_source(
+    source_path: str | os.PathLike[str],
+    *,
+    allowed_roots: Iterable[str | os.PathLike[str]],
+    protected_paths: Iterable[str | os.PathLike[str]] = (),
+    include_paths: Iterable[str | os.PathLike[str]] = (),
+    exclude_paths: Iterable[str | os.PathLike[str]] = (),
+    policy_version: str = DEFAULT_SOURCE_PATH_POLICY_VERSION,
+    max_source_path_bytes: int = DEFAULT_MAX_SOURCE_PATH_BYTES,
+    max_source_directory_depth: int = DEFAULT_MAX_SOURCE_DIRECTORY_DEPTH,
+) -> AuthorizedLocalSource:
+    """Authorize one ordinary or Git-marked directory on the current machine.
+
+    Git classification only inspects the type of the immediate ``.git`` entry with
+    ``follow_symlinks=False``. No Git command, hook, config, filter, or helper runs.
+    """
+
+    _validate_positive_limit(max_source_path_bytes, "max_source_path_bytes")
+    _validate_positive_limit(max_source_directory_depth, "max_source_directory_depth")
+    canonical_source = validate_posix_absolute_path(source_path)
+    if len(canonical_source.encode("utf-8")) > max_source_path_bytes:
+        raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_LIMIT_EXCEEDED)
+
+    _reject_protected_path_overlap(canonical_source, protected_paths)
+    filters = validate_repository_filters(
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+    )
+    directory = open_authorized_source_repository(
+        canonical_source,
+        allowed_roots=allowed_roots,
+        policy_version=policy_version,
+    )
+    try:
+        if (
+            len(_relative_components(directory.repository_relative_path))
+            > max_source_directory_depth
+        ):
+            raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_LIMIT_EXCEEDED)
+        source_kind = _detect_local_source_kind(directory.repository_fd)
+        identity = _build_local_source_identity(
+            source_kind=source_kind,
+            policy_version=policy_version,
+            directory=directory,
+        )
+        result = AuthorizedLocalSource(
+            directory=directory,
+            filters=filters,
+            identity=identity,
+        )
+        result.verify_unchanged()
+        return result
+    except (SourcePathAuthorizationError, NotImplementedError, OSError, ValueError):
+        directory.close()
+        raise
+
+
 def _canonical_allowed_roots(
     allowed_roots: Iterable[str | os.PathLike[str]],
 ) -> tuple[str, ...]:
@@ -528,6 +669,91 @@ def _canonical_allowed_roots(
     if not roots:
         raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_ROOTS_EMPTY)
     return tuple(dict.fromkeys(roots))
+
+
+def _reject_protected_path_overlap(
+    canonical_source: str,
+    protected_paths: Iterable[str | os.PathLike[str]],
+) -> None:
+    if isinstance(protected_paths, (str, bytes, os.PathLike)):
+        raise SourcePathAuthorizationError(SourcePathFailure.INVALID_ABSOLUTE_PATH)
+    try:
+        raw_paths = tuple(protected_paths)
+    except TypeError as exc:
+        raise SourcePathAuthorizationError(SourcePathFailure.INVALID_ABSOLUTE_PATH) from exc
+
+    source_candidates = {
+        canonical_source,
+        validate_posix_absolute_path(os.path.realpath(canonical_source)),
+    }
+    for raw_path in raw_paths:
+        canonical_protected = validate_posix_absolute_path(raw_path)
+        protected_candidates = {
+            canonical_protected,
+            validate_posix_absolute_path(os.path.realpath(canonical_protected)),
+        }
+        if any(
+            _posix_paths_overlap(source, protected)
+            for source in source_candidates
+            for protected in protected_candidates
+        ):
+            raise SourcePathAuthorizationError(
+                SourcePathFailure.SOURCE_PROTECTED_PATH_OVERLAP
+            )
+
+
+def _posix_paths_overlap(left: str, right: str) -> bool:
+    left_path = PurePosixPath(left)
+    right_path = PurePosixPath(right)
+    return (
+        left_path == right_path
+        or left_path.is_relative_to(right_path)
+        or right_path.is_relative_to(left_path)
+    )
+
+
+def _detect_local_source_kind(source_fd: int) -> LocalSourceKind:
+    try:
+        marker = os.stat(".git", dir_fd=source_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return LocalSourceKind.DIRECTORY
+    except NotImplementedError as exc:
+        raise SourcePathAuthorizationError(SourcePathFailure.PLATFORM_UNSUPPORTED) from exc
+    except OSError as exc:
+        raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_UNAVAILABLE) from exc
+    if stat.S_ISDIR(marker.st_mode) or stat.S_ISREG(marker.st_mode):
+        return LocalSourceKind.GIT_DIRECTORY
+    raise SourcePathAuthorizationError(SourcePathFailure.SOURCE_GIT_MARKER_UNSAFE)
+
+
+def _build_local_source_identity(
+    *,
+    source_kind: LocalSourceKind,
+    policy_version: str,
+    directory: AuthorizedSourceRepository,
+) -> LocalSourceIdentity:
+    payload: dict[str, object] = {
+        "descriptor_chain_digest": directory.descriptor_chain_digest,
+        "directory_identity_digest": directory.repository_identity_digest,
+        "policy_version": policy_version,
+        "root_relative_path": directory.repository_relative_path,
+        "schema_version": LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN,
+        "source_kind": source_kind.value,
+        "source_root_identity_digest": directory.source_root_identity_digest,
+    }
+    return LocalSourceIdentity(
+        schema_version=LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN,
+        source_kind=source_kind,
+        policy_version=policy_version,
+        root_relative_path=directory.repository_relative_path,
+        source_root_identity_digest=directory.source_root_identity_digest,
+        descriptor_chain_digest=directory.descriptor_chain_digest,
+        directory_identity_digest=directory.repository_identity_digest,
+        identity_digest=_domain_separated_digest(
+            LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN,
+            payload,
+        ),
+    )
 
 
 def _open_absolute_directory(

@@ -91,6 +91,8 @@ audit:
   max_repository_bytes: 2147483648
   max_file_bytes: 5242880
   max_files: 200000
+  max_path_bytes: 4096
+  max_directory_depth: 256
   max_artifact_bytes: 67108864
   max_total_artifact_bytes: 268435456
   workers:

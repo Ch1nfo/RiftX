@@ -31,21 +31,21 @@
 
 ## Current Wave
 
-- Milestone: `S0 — Scope cleanup` is `completed`.
-- Completed task: `AUD-S001 — retire Docker Snapshot mount production path`.
+- Milestone: `S1 — Local folder and Snapshot` is `in_progress`.
+- Completed task: `AUD-S100 — local ordinary-directory and Git-directory admission`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S100 — local ordinary-directory and Git-directory admission`.
+- Next task: `AUD-S101 — Local Snapshot View`.
 
 ## Milestone Status
 
 | Milestone | Status | Exit evidence |
 | --- | --- | --- |
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
-| S1 Local folder and Snapshot | pending | AUD-S100 through AUD-S102 not started |
+| S1 Local folder and Snapshot | in_progress | AUD-S100 completed; AUD-S101 and AUD-S102 pending |
 | S2 Inventory and Detector | pending | AUD-S200 through AUD-S202 not started |
 | S3 Findings and reports | pending | AUD-S300 through AUD-S301 not started |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
@@ -56,7 +56,7 @@
 | Task | Status |
 | --- | --- |
 | AUD-S001 Retire Docker runtime, qualification and release path | completed |
-| AUD-S100 Local folder admission | pending |
+| AUD-S100 Local folder admission | completed |
 | AUD-S101 Local Snapshot View | pending |
 | AUD-S102 SourceSnapshot seal | pending |
 | AUD-S200 File Inventory and Scope | pending |
@@ -2112,8 +2112,52 @@ individual operation families.
   - targeted Docker-retirement/Snapshot/migration regression: `75 passed`;
   - full repository suite: `4830 passed, 5 skipped, 11 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `292cd2a9 refactor(code-audit): retire Docker snapshot mount path`.
 - Next unblocked task: `AUD-S100 — local folder admission`.
+
+### AUD-S100 — Local Folder Admission
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/paths.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/config.py`
+  - `configs/riftx.example.yaml`
+  - `tests/unit/audit/test_paths.py`
+  - `tests/unit/test_audit_config.py`
+  - this ledger
+- Outcome:
+  - added `open_authorized_local_source` for both ordinary directories and directories
+    with a no-follow `.git` directory/file marker;
+  - added a path-free, domain-separated `LocalSourceIdentity` bound to allowed-root,
+    descriptor-chain, directory, policy and source-kind identity;
+  - retained held descriptor and named-chain TOCTOU verification without invoking Git
+    or reading Git config, hooks, filters or helpers;
+  - rejected source/parent symlinks, unsafe `.git` symlinks, outside-root paths and
+    overlap in either direction with protected RiftX paths, including existing symlink
+    aliases;
+  - added bounded source path bytes and allowed-root-relative source nesting depth with
+    stable path-free failure codes;
+  - added `audit.max_path_bytes` and `audit.max_directory_depth` configuration,
+    environment mappings and safe defaults.
+- Schema/migration impact: none.
+- API/Runner/Temporal surface: none opened; this is a reusable local admission
+  primitive for the later local Audit Job.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_paths.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_paths.py tests/unit/test_audit_config.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_source_ingest_backend.py tests/integration/api/test_audit_preflight.py tests/unit/test_api_runtime.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `git diff --check`
+- Test results:
+  - local path admission unit suite: `64 passed`;
+  - path/config targeted suite: `190 passed`;
+  - legacy Preflight/API compatibility suite: `36 passed`;
+  - full repository suite: `4844 passed, 5 skipped, 11 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S101 — Local Snapshot View`.
 
 ## Design Deviations and ADRs
 
@@ -2174,9 +2218,9 @@ individual operation families.
 - The simplified end-to-end local scan is not implemented yet. Existing RunKind,
   domain, persistence, SnapshotStore/CAS and source materializer foundations are not
   by themselves a user-visible scanner.
-- `AUD-S100` must reconcile the older Git-only admission contract with the new
-  requirement to accept both ordinary directories and Git directories without
-  executing repository hooks, filters, helpers or project commands.
+- `AUD-S101` must provide bounded owner-bound Snapshot reads without exposing raw CAS
+  locators or host paths. Ordinary-directory materialization remains for `AUD-S102`;
+  the existing materializer is still primarily Git commit/working-tree oriented.
 - Historical mount authority rows may exist in upgraded databases. They must remain
   readable/downgrade-protected but inert in the new local-static workflow.
 - Local static reading still requires strict path, symlink, owner, digest, file-count,

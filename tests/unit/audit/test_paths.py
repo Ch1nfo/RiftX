@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 
 from riftx.audit import (
+    LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN,
     REPOSITORY_DESCRIPTOR_CHAIN_DIGEST_DOMAIN,
     REPOSITORY_IDENTITY_DIGEST_DOMAIN,
     SOURCE_ROOT_IDENTITY_DIGEST_DOMAIN,
+    LocalSourceKind,
     SourcePathAuthorizationError,
     SourcePathFailure,
+    open_authorized_local_source,
     open_authorized_source_repository,
     validate_posix_absolute_path,
     validate_repository_filters,
@@ -174,6 +177,164 @@ def test_outside_allowed_root_is_rejected_before_descriptor_walk(
 
     assert captured.value.failure is SourcePathFailure.SOURCE_OUTSIDE_ROOT
     assert open_calls == 0
+
+
+def test_ordinary_local_directory_has_stable_path_free_identity(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    source = root / "ordinary"
+    source.mkdir(parents=True)
+
+    with open_authorized_local_source(
+        source,
+        allowed_roots=(root,),
+        include_paths=("src",),
+        exclude_paths=("vendor",),
+    ) as first:
+        identity = first.identity
+        assert first.source_kind is LocalSourceKind.DIRECTORY
+        assert identity.schema_version == LOCAL_SOURCE_IDENTITY_DIGEST_DOMAIN
+        assert identity.root_relative_path == "ordinary"
+        assert first.filters.include_paths == ("src",)
+        assert first.filters.exclude_paths == ("vendor",)
+        assert not hasattr(identity, "canonical_path")
+        first.verify_unchanged()
+
+    with open_authorized_local_source(source, allowed_roots=(root,)) as replay:
+        assert replay.source_identity_digest == identity.identity_digest
+        assert replay.identity == identity
+
+
+@pytest.mark.parametrize("marker_kind", ["directory", "file"])
+def test_git_marked_local_directory_is_admitted_without_invoking_git(
+    tmp_path: Path,
+    marker_kind: str,
+) -> None:
+    root = tmp_path / "source"
+    source = root / "repository"
+    source.mkdir(parents=True)
+    marker = source / ".git"
+    if marker_kind == "directory":
+        marker.mkdir()
+    else:
+        marker.write_text("gitdir: ../metadata\n", encoding="utf-8")
+
+    with open_authorized_local_source(source, allowed_roots=(root,)) as admitted:
+        assert admitted.source_kind is LocalSourceKind.GIT_DIRECTORY
+        assert len(admitted.source_identity_digest) == 64
+        admitted.verify_unchanged()
+
+
+def test_local_source_rejects_unsafe_git_marker_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    source = root / "repository"
+    metadata = tmp_path / "metadata"
+    source.mkdir(parents=True)
+    metadata.mkdir()
+    (source / ".git").symlink_to(metadata, target_is_directory=True)
+
+    with pytest.raises(SourcePathAuthorizationError) as captured:
+        open_authorized_local_source(source, allowed_roots=(root,))
+
+    assert captured.value.failure is SourcePathFailure.SOURCE_GIT_MARKER_UNSAFE
+
+
+def test_local_source_identity_detects_git_marker_kind_change(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    source = root / "repository"
+    source.mkdir(parents=True)
+    admitted = open_authorized_local_source(source, allowed_roots=(root,))
+    try:
+        (source / ".git").mkdir()
+        with pytest.raises(SourcePathAuthorizationError) as captured:
+            admitted.verify_unchanged()
+        assert captured.value.failure is SourcePathFailure.SOURCE_CHANGED
+    finally:
+        admitted.close()
+
+
+@pytest.mark.parametrize("placement", ["source_inside", "protected_inside", "equal"])
+def test_local_source_rejects_protected_path_overlap(
+    tmp_path: Path,
+    placement: str,
+) -> None:
+    root = tmp_path / "allowed"
+    root.mkdir()
+    if placement == "source_inside":
+        protected = root / "state"
+        source = protected / "source"
+        source.mkdir(parents=True)
+    elif placement == "protected_inside":
+        source = root / "source"
+        source.mkdir()
+        protected = source / ".riftx-state"
+    else:
+        source = root / "source"
+        source.mkdir()
+        protected = source
+
+    with pytest.raises(SourcePathAuthorizationError) as captured:
+        open_authorized_local_source(
+            source,
+            allowed_roots=(root,),
+            protected_paths=(protected,),
+        )
+
+    assert captured.value.failure is SourcePathFailure.SOURCE_PROTECTED_PATH_OVERLAP
+
+
+def test_local_source_protected_overlap_follows_existing_symlink_alias(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "allowed"
+    source = root / "source"
+    source.mkdir(parents=True)
+    alias = tmp_path / "source-alias"
+    alias.symlink_to(source, target_is_directory=True)
+
+    with pytest.raises(SourcePathAuthorizationError) as captured:
+        open_authorized_local_source(
+            source,
+            allowed_roots=(root,),
+            protected_paths=(alias,),
+        )
+
+    assert captured.value.failure is SourcePathFailure.SOURCE_PROTECTED_PATH_OVERLAP
+
+
+def test_local_source_path_and_depth_limits_are_enforced(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    source = root / "nested" / "repository"
+    source.mkdir(parents=True)
+
+    with pytest.raises(SourcePathAuthorizationError) as path_error:
+        open_authorized_local_source(
+            source,
+            allowed_roots=(root,),
+            max_source_path_bytes=len(str(source).encode("utf-8")) - 1,
+        )
+    assert path_error.value.failure is SourcePathFailure.SOURCE_LIMIT_EXCEEDED
+
+    with pytest.raises(SourcePathAuthorizationError) as depth_error:
+        open_authorized_local_source(
+            source,
+            allowed_roots=(root,),
+            max_source_directory_depth=1,
+        )
+    assert depth_error.value.failure is SourcePathFailure.SOURCE_LIMIT_EXCEEDED
+
+
+def test_local_source_context_entry_failure_closes_descriptors(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    source = root / "repository"
+    source.mkdir(parents=True)
+    admitted = open_authorized_local_source(source, allowed_roots=(root,))
+    (source / ".git").mkdir()
+
+    with pytest.raises(SourcePathAuthorizationError):
+        with admitted:
+            raise AssertionError("unreachable")
+
+    assert admitted.closed is True
 
 
 def test_authorized_repository_holds_root_and_repository_descriptors(

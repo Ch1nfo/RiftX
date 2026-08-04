@@ -156,6 +156,8 @@ def test_example_config_contains_the_complete_safe_audit_defaults(tmp_path: Path
     assert config.audit.source_ingest.policy_version == (
         "riftx.audit-source-ingest-policy/v1"
     )
+    assert config.audit.max_path_bytes == 4096
+    assert config.audit.max_directory_depth == 256
     assert config.audit.model_egress.default_mode == "local_only"
     assert config.audit.model_egress.allow_remote_origins == ()
     assert config.audit.validation.default_policy == "static_only"
@@ -204,6 +206,8 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
         "RIFTX_AUDIT_MAX_REPOSITORY_BYTES": "1000000",
         "RIFTX_AUDIT_MAX_FILE_BYTES": "100000",
         "RIFTX_AUDIT_MAX_FILES": "1000",
+        "RIFTX_AUDIT_MAX_PATH_BYTES": "2048",
+        "RIFTX_AUDIT_MAX_DIRECTORY_DEPTH": "64",
         "RIFTX_AUDIT_MAX_ARTIFACT_BYTES": "1000",
         "RIFTX_AUDIT_MAX_TOTAL_ARTIFACT_BYTES": "2000",
         "RIFTX_AUDIT_WORKERS_MAX_PARALLEL": "2",
@@ -241,6 +245,8 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
     assert audit.max_repository_bytes == 1_000_000
     assert audit.max_file_bytes == 100_000
     assert audit.max_files == 1_000
+    assert audit.max_path_bytes == 2_048
+    assert audit.max_directory_depth == 64
     assert audit.max_artifact_bytes == 1_000
     assert audit.max_total_artifact_bytes == 2_000
     assert audit.workers.model_dump() == {
@@ -277,6 +283,8 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
         (("max_repository_bytes",), 2_147_483_648),
         (("max_file_bytes",), 5_242_880),
         (("max_files",), 200_000),
+        (("max_path_bytes",), 4_096),
+        (("max_directory_depth",), 256),
         (("max_artifact_bytes",), 67_108_864),
         (("max_total_artifact_bytes",), 268_435_456),
         (("workers", "max_parallel"), 4),

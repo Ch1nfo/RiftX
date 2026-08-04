@@ -94,6 +94,8 @@ AUDIT_SOURCE_INGEST_POLICY_VERSION = "riftx.audit-source-ingest-policy/v1"
 _MAX_AUDIT_REPOSITORY_BYTES = 2_147_483_648
 _MAX_AUDIT_FILE_BYTES = 5_242_880
 _MAX_AUDIT_FILES = 200_000
+_MAX_AUDIT_PATH_BYTES = 4_096
+_MAX_AUDIT_DIRECTORY_DEPTH = 256
 _MAX_AUDIT_ARTIFACT_BYTES = 67_108_864
 _MAX_AUDIT_TOTAL_ARTIFACT_BYTES = 268_435_456
 _MAX_AUDIT_PARALLEL_WORKERS = 4
@@ -469,6 +471,16 @@ class AuditConfig(_AuditConfigModel):
         default=_MAX_AUDIT_FILES,
         ge=1,
         le=_MAX_AUDIT_FILES,
+    )
+    max_path_bytes: AuditInteger = Field(
+        default=_MAX_AUDIT_PATH_BYTES,
+        ge=1,
+        le=_MAX_AUDIT_PATH_BYTES,
+    )
+    max_directory_depth: AuditInteger = Field(
+        default=_MAX_AUDIT_DIRECTORY_DEPTH,
+        ge=1,
+        le=_MAX_AUDIT_DIRECTORY_DEPTH,
     )
     max_artifact_bytes: AuditInteger = Field(
         default=_MAX_AUDIT_ARTIFACT_BYTES,
@@ -918,6 +930,8 @@ _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AUDIT_MAX_REPOSITORY_BYTES": ("audit", "max_repository_bytes"),
     "RIFTX_AUDIT_MAX_FILE_BYTES": ("audit", "max_file_bytes"),
     "RIFTX_AUDIT_MAX_FILES": ("audit", "max_files"),
+    "RIFTX_AUDIT_MAX_PATH_BYTES": ("audit", "max_path_bytes"),
+    "RIFTX_AUDIT_MAX_DIRECTORY_DEPTH": ("audit", "max_directory_depth"),
     "RIFTX_AUDIT_MAX_ARTIFACT_BYTES": ("audit", "max_artifact_bytes"),
     "RIFTX_AUDIT_MAX_TOTAL_ARTIFACT_BYTES": (
         "audit",
