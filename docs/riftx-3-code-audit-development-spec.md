@@ -864,6 +864,25 @@ update/save。`parent_snapshot_id`、`base_tree_digest`、`patch_digest` 必须 
 9. Snapshot 根目录权限只读；输出目录必须在其外部。
 10. Audit 完成前后都计算原仓库 digest 抽样或完整校验，测试中必须证明未修改。
 
+AUD-202B 按 ADR-0010 冻结 `riftx.source-manifest/v1` 与
+`riftx.source-capture-policy/v1`。Manifest entry 按原始 path bytes 排序且唯一；可规范化为 NFC
+UTF-8、无 control character、无 `.git` component 且不超过 4096 bytes 的路径保存
+`relative_path`，其他合法 Git path 只保存 canonical base64、path digest 与明确 deferred reason，不能
+猜测替代文件名。每个 entry 固定 `origin/object_type/mode/size/sha256/git_blob_id/language/
+classification/decision/reason`；`tree_digest` 冻结完整 capture-tree record，但不得包含 Audit Scope
+priority、Detector、模型、Run、时间或 storage locator。
+
+commit blob 只能经 SourceIngest 内固定 `cat-file blob <lower-hex-id>` 读取；普通 Git command
+allowlist 不开放 `cat-file` 参数面，禁止 `--filters`、textconv、driver 或 object expression。working-tree
+capture 使用 source-root dirfd 逐组件 no-follow 打开，在同一 fd 上完成 fingerprint、bounded read/hash
+与 final fstat，并在全部 entry 结束后重新验证 fingerprint、index/status、tracked/untracked/ignored/
+filesystem leaf 集合及 Git admin/object guard。任何漂移整次 fail closed，partial staging 不得发布。
+
+v1 决议固定为：symlink 保存 link-target bytes且不 follow；hardlink/special/非法 UTF-8 content/超大文件/
+总量预算后的 entry/LFS pointer 为 deferred；submodule 与 ignored 为 excluded；untracked、generated、
+vendor 由冻结 policy 决定 included/excluded。Manifest 作为独立、Project-bound CAS tree 保存，不混入
+扫描根目录或 Run Artifact。
+
 #### 8.3.1 SnapshotStore 与生命周期
 
 Snapshot 内容不能存成首个 Run 所属 Artifact，也不能只保存 Manifest 后假设能从原 dirty tree 重建。新增独立 `SnapshotStore` Port，后端为 RiftX 管理、位于所有 source root 之外的内容寻址只读 CAS：
@@ -4143,8 +4162,8 @@ M1 Exit：
 
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
-实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A 已
-`completed`；下一项为 AUD-202B。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A/B 已
+`completed`；下一项为 AUD-202C。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
 Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
@@ -4220,11 +4239,14 @@ SourceSnapshot seal UoW、mount/pin、GC、API、Start、Runner/Temporal 或 Sca
 
 #### AUD-202B：Commit 与 Working-tree Materializer
 
-依赖 AUD-202A。实现 commit、staged/unstaged/dirty/untracked 的确定性 materializer 与版本化 Manifest，
-处理 concurrent identical capture、内容变化、失败清理和 retry。原仓库保持只读；symlink、hardlink、
-submodule、LFS pointer、special file、invalid UTF-8、超大文件、ignored/untracked 和 TOCTOU 必须有成对
-fixture 与明确 Manifest 决议。Snapshot 内容不归首个 Run Artifact，其他 Audit 即使知道 digest/path
-也不能读取。
+状态：`completed`（2026-08-04）。依赖 AUD-202A。按 ADR-0010 实现 commit 与 working-tree 的
+确定性 SourceIngest-only materializer、`riftx.source-manifest/v1`、冻结 Capture Policy、opaque path
+encoding、逐 entry capture decision、固定 blob reader、dirfd/no-follow 工作树复制、全链 TOCTOU
+revalidation、private staging orphan cleanup，以及 content/Manifest 双 owner-bound CAS publish。commit、
+staged/unstaged/dirty/untracked、ignored、symlink、hardlink、submodule、LFS pointer、special file、invalid
+UTF-8 path/content、超限、内容变化、并发 identical capture、cleanup failure 与 retry 均有 fixture。原仓库
+保持只读；Snapshot/Manifest 不归首个 Run Artifact，locator 不进入普通 API。退出范围不含
+SourceSnapshot seal UoW、Audit reference、mount/pin、Start、Runner static effect、Scope/Scanner 或模型。
 
 #### AUD-202C：Same-node Mount、Pin 与 Static Ownership
 

@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202A SnapshotStore/CAS and durable
-> reference boundary synchronized
+> Specification revision: 2026-08-04 / AUD-202B Source Manifest and deterministic
+> materializer boundary synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,11 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed task: `AUD-202A — SnapshotStore and CAS foundation`.
-- Completed AUD-202A scope: owner-bound CAS descriptor/locator, private
-  same-filesystem staging, fsync/atomic publish, full verify/bounded open,
-  quarantine/crash cleanup, and durable Audit/Project/Snapshot references.
-- Next unblocked task: `AUD-202B — Commit/working-tree materializer`, as a
+- Completed task: `AUD-202B — Commit/working-tree materializer`.
+- Completed AUD-202B scope: versioned Source Manifest/Capture Policy, safe commit
+  blob and descriptor-bound working-tree capture, explicit deferred/excluded
+  decisions, TOCTOU revalidation, private cleanup/retry, and owner-bound content plus
+  Manifest CAS publication.
+- Next unblocked task: `AUD-202C — Same-node mount, pin, and static ownership`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
   descriptor/mount and Capsule-denial evidence is recorded.
@@ -47,7 +48,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, and AUD-202A completed; AUD-202B is next |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, and AUD-202A/B completed; AUD-202C is next |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -92,7 +93,7 @@ individual operation families.
 | AUD-200 Source root and Git preflight | completed |
 | AUD-201 Signed preflight token | completed |
 | AUD-202A SnapshotStore and CAS foundation | completed |
-| AUD-202B Commit/working-tree materializer | pending |
+| AUD-202B Commit/working-tree materializer | completed |
 | AUD-202C Same-node mount, pin, and static ownership | pending |
 | AUD-206 Content Sandbox and safety stop | pending |
 | AUD-203 Inventory and Scope | pending |
@@ -1556,8 +1557,7 @@ individual operation families.
   - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
     dependency, test, or generated artifact was used. The implementation and
     protocol are RiftX-owned.
-- Commit: this AUD-202A local commit; its hash is backfilled by the next ledger update
-  because a commit cannot contain its own hash.
+- Commit: `7abf1fce feat(code-audit): add snapshot store CAS foundation`.
 - Known limitations / production qualification:
   - The CAS index freezes only storage-level blob metadata and the future Manifest
     digest; AUD-202B still owns deterministic Git/working-tree materialization and
@@ -1566,6 +1566,98 @@ individual operation families.
     mandatory real local-Linux SourceIngest descriptor/mount/Capsule deny smoke;
     production release qualification remains disabled.
 - Next unblocked task: AUD-202B, as a separately committed work unit.
+
+### AUD-202B — Commit/Working-tree Materializer
+
+- Status: completed.
+- Depends on: AUD-202A (`7abf1fce`).
+- Exact modules/files:
+  - `src/riftx/audit/source_manifest.py`
+  - `src/riftx/audit_worker/materializer.py`
+  - `src/riftx/audit_worker/preflight.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_source_materializer.py`
+  - `docs/architecture/decisions/0010-riftx-code-audit-source-materializer-and-manifest.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Accepted ADR-0010 and added `riftx.source-manifest/v1`,
+    `riftx.source-materializer/v1`, and `riftx.source-capture-policy/v1`.
+    Manifest entries use unique raw-byte ordering, canonical POSIX UTF-8 paths where
+    representable, and opaque base64 plus path digest for legal non-UTF-8/noncanonical
+    Git paths. Every entry freezes origin, object type, mode, size, SHA-256, Git object
+    identity, language, classification, decision, and reason.
+  - Commit capture reuses the reviewed AUD-200 Git structure/config/object-store
+    snapshot. It resolves a commit, enumerates `ls-tree`, and reads only eligible blobs
+    through fixed `cat-file blob <lower-hex-id>` argv with exact size bounds. The
+    general SafeGitAdapter command allowlist does not expose `cat-file`, filters,
+    textconv, drivers, or arbitrary object expressions.
+  - Working-tree capture combines stage-0 index, porcelain status, tracked/untracked/
+    ignored inventories, and a descriptor-bound filesystem leaf walk. regular files
+    use one no-follow fd for initial/final fingerprint and bounded read; symlink targets
+    are copied as bytes and never followed. Final publication requires unchanged
+    fingerprints, candidate sets, status, Git admin/object guard, and strict fsck.
+  - Capture decisions are explicit: hardlink, special file, invalid UTF-8 content/path,
+    oversized/budget-limited file, and LFS pointer are deferred; submodule and ignored
+    input are excluded; untracked/generated/vendor inclusion is policy-bound. No
+    deferred/excluded bytes enter the content tree.
+  - Source content and canonical Manifest publish as separate Project/Snapshot/
+    Manifest-bound CAS trees. Both locators remain opaque and outside Run Artifact
+    ownership; Manifest bytes do not appear in the analysis source root.
+  - Concurrent identical captures exact-replay both CAS objects. Content changes create
+    new tree/Snapshot/Manifest identities. Partial materialization is removed on error;
+    cleanup failure leaves only a private, prefix-bounded orphan supporting dry-run
+    cleanup and retry.
+- API surface: none. No ordinary API, CLI, WebUI, Event, Artifact, Start, Runner static
+  effect, Temporal, Scanner, or model surface receives Snapshot bytes or CAS locators.
+- Fail-closed conditions:
+  - invalid request/policy/path/Manifest shape, unmerged index, Git tree/index/blob
+    mismatch, Git admin/object drift, candidate/status/fingerprint TOCTOU, path escape,
+    source/output overlap, staging write failure, Manifest entry limit, owner binding
+    mismatch, and cleanup failure all reject with typed/path-free errors.
+- Explicit non-goals:
+  - `SourceSnapshot` insert-is-seal UoW, Audit reference creation, mount/pin/static
+    effect ownership, remote hydration, recursive submodule/LFS materialization,
+    retention/GC, Scope Ledger/reader, Artifact/API projection, Start/Workflow,
+    Detector/Scanner/model remain absent.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_source_materializer.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_source_materializer.py tests/unit/audit/test_source_ingest_worker.py tests/unit/audit/test_snapshot_store.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_source_ingest_backend.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Materializer/Manifest decision, TOCTOU, concurrency, cleanup, retry, and owner-bound
+    publication matrix: `16 passed` in `5.42s`.
+  - Materializer plus SafeGit/Preflight/SnapshotStore regression matrix: `65 passed`
+    in `15.30s`.
+  - Complete Audit unit package: `141 passed` in `13.66s`.
+  - SourceSnapshot domain plus durable reference regression matrix: `197 passed` in
+    `1.22s`.
+  - SourceIngest backend regression matrix: `21 passed` in `0.28s`.
+  - Final full repository suite: `4804 passed, 5 skipped, 11 warnings` in `430.39s`.
+  - Repository Ruff and `compileall` passed; `git diff --check` passed with no output.
+  - The independence boundary reported `ready=true`, scanned 507 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+- Provenance:
+  - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
+    dependency, test, or generated artifact was used. The implementation and protocol
+    are RiftX-owned.
+- Commit: this AUD-202B local commit; its hash is backfilled by the next ledger update
+  because a commit cannot contain its own hash.
+- Known limitations / production qualification:
+  - The materializer is SourceIngest-only and has no product dispatch surface in this
+    task. Production enablement still requires the real local-Linux descriptor/mount/
+    Capsule denial and staging-to-CAS round-trip evidence; macOS fixtures do not
+    qualify the backend.
+  - Audit-bound mount/read authorization is AUD-202C; the current CAS remains private,
+    opaque, and unavailable to ordinary API callers.
+- Next unblocked task: AUD-202C, as a separately committed work unit.
 
 ## Design Deviations and ADRs
 
@@ -1605,6 +1697,10 @@ individual operation families.
   staging/fsync/atomic publish, full verify and bounded open, corrupt-object
   quarantine, staging crash cleanup, and durable composite Snapshot references
   implemented by AUD-202A.
+- `ADR-0010`: freezes versioned Source Manifest/Capture Policy identity, fixed commit
+  blob reads, descriptor-bound working-tree capture, explicit capture decisions,
+  TOCTOU revalidation, private staging cleanup/retry, and dual content/Manifest CAS
+  publication implemented by AUD-202B.
 
 ## Current Risks
 
@@ -1612,9 +1708,9 @@ individual operation families.
   M10 SBOM, licensing, similarity, and human copyright review.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
   current `preflight_bound_draft` v2 wire remain permanently non-startable. The
-  SnapshotStore/CAS foundation exists but has no Git materializer, sealed
-  `SourceSnapshot`, mount/pin, Scope Inventory, or Start-ready Contract; deterministic
-  scanning remains unavailable.
+  SnapshotStore/CAS and Git/working-tree materializer exist but have no sealed
+  `SourceSnapshot` UoW, mount/pin, Scope Inventory, or Start-ready Contract;
+  deterministic scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,
   Snapshot/CAS producers, and the final restricted WebUI cache lifecycle remain

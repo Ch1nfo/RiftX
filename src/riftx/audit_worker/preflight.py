@@ -59,6 +59,7 @@ _DANGEROUS_CONFIG_PREFIXES = (
 )
 _DANGEROUS_CONFIG_KEYS = {
     "core.askpass",
+    "core.excludesfile",
     "core.fsmonitor",
     "core.hookspath",
     "core.sshcommand",
@@ -321,6 +322,26 @@ class SafeGitAdapter:
             (*self._repository_base, subcommand, *arguments),
             pass_fds=self._repository_descriptors,
         )
+
+    def read_blob(self, object_id: str, *, expected_size: int) -> bytes:
+        if (
+            not isinstance(object_id, str)
+            or len(object_id) not in {40, 64}
+            or any(character not in "0123456789abcdef" for character in object_id)
+            or not isinstance(expected_size, int)
+            or not 0 <= expected_size <= self.maximum_output_bytes
+        ):
+            raise WorkerFailed("audit_git_blob_request_invalid")
+        if self._repository_base is None:
+            raise WorkerFailed("audit_git_repository_unbound")
+        output = self._run_raw(
+            (*self._repository_base, "cat-file", "blob", object_id),
+            maximum_bytes=max(1, expected_size),
+            pass_fds=self._repository_descriptors,
+        )
+        if len(output) != expected_size:
+            raise WorkerRejected("audit_git_blob_invalid")
+        return output
 
     def verify_object_integrity(self) -> None:
         if self._repository_base is None:
