@@ -32,13 +32,13 @@
 ## Current Wave
 
 - Milestone: `S3 — Findings and reports` is `in_progress`.
-- Completed task: `AUD-S300 — Signal normalization and Finding`.
+- Completed task: `AUD-S301 — JSON/Markdown Report`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S301 — JSON/Markdown Report`.
+- Next task: `AUD-S400 — Local Audit Job`.
 
 ## Milestone Status
 
@@ -47,7 +47,7 @@
 | S0 Scope cleanup | completed | Docker Snapshot runtime/gates removed; Docker SourceIngest product wiring disabled; full regression passed |
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
-| S3 Findings and reports | in_progress | stable deduplicated Findings with severity, confidence, location and redacted evidence completed; reports remain |
+| S3 Findings and reports | completed | stable redacted Findings and deterministic JSON/Markdown reports completed with full regression evidence |
 | S4 Local product wiring | pending | AUD-S400 through AUD-S402 not started |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
 
@@ -63,7 +63,7 @@
 | AUD-S201 Detector registry and runner | completed |
 | AUD-S202 Built-in security rules | completed |
 | AUD-S300 Signal normalization and Finding | completed |
-| AUD-S301 JSON/Markdown Report | pending |
+| AUD-S301 JSON/Markdown Report | completed |
 | AUD-S400 Local Audit Job | pending |
 | AUD-S401 Minimal API and CLI | pending |
 | AUD-S402 Minimal WebUI | pending |
@@ -2452,8 +2452,41 @@ individual operation families.
   - Audit/Finding/persistence regression: `233 passed`;
   - full repository suite: `4892 passed, 5 skipped, 11 warnings`;
   - Ruff and whitespace checks passed.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `64f78f2b feat(code-audit): normalize detector findings`.
 - Next unblocked task: `AUD-S301 — JSON/Markdown Report`.
+
+### AUD-S301 — JSON/Markdown Report
+
+- Status: completed.
+- Exact modules/files:
+  - `src/riftx/audit/reporting.py`
+  - `src/riftx/audit/__init__.py`
+  - `tests/unit/audit/test_reporting.py`
+  - this ledger
+- Outcome:
+  - added canonical JSON and deterministic Markdown reports bound to exact Inventory
+    and Detector run digests;
+  - reports file/byte and severity summaries, ordered Findings with confidence and
+    redacted evidence, capture skips, unsupported/failed files, per-rule failures and
+    immutable rule versions/implementation digests;
+  - produces stable JSON, Markdown and combined report digests for later local-job
+    persistence and restart readback;
+  - rejects cross-Inventory input and keeps absolute paths, CAS locators, source
+    content and repair guidance out of report metadata.
+- Schema/migration impact: none; report rendering is an audit-owned pure projection.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s301-unit tests/unit/audit/test_reporting.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s301-audit tests/unit/audit`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s301-full-final`
+  - `git diff --check`
+- Test results:
+  - focused report suite: `2 passed`;
+  - Audit unit regression: `202 passed`;
+  - full repository suite: `4894 passed, 5 skipped, 12 warnings`;
+  - Ruff and whitespace checks passed.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S400 — Local Audit Job`.
 
 ## Design Deviations and ADRs
 

@@ -82,6 +82,11 @@ from .paths import (
     validate_repository_relative_path,
     validate_repository_relative_paths,
 )
+from .reporting import (
+    AUDIT_REPORT_SCHEMA_VERSION,
+    AuditReportBundle,
+    build_audit_reports,
+)
 from .snapshot import (
     SNAPSHOT_CAS_INDEX_SCHEMA_VERSION,
     SNAPSHOT_CAS_OBJECT_SCHEMA_VERSION,
@@ -186,6 +191,7 @@ __all__ = [
     "AUDIT_STATIC_EFFECT_LIMITS_SCHEMA_VERSION",
     "AUDIT_STATIC_EFFECT_PLAN_SCHEMA_VERSION",
     "AUDIT_FINDING_SCHEMA_VERSION",
+    "AUDIT_REPORT_SCHEMA_VERSION",
     "BUILTIN_DETECTOR_SET_VERSION",
     "DETECTOR_REGISTRY_SCHEMA_VERSION",
     "DETECTOR_RUNNER_SCHEMA_VERSION",
@@ -251,6 +257,7 @@ __all__ = [
     "AuditStaticEffectPlan",
     "AuditStaticOperationFamily",
     "AuditStaticReadOnlyMount",
+    "AuditReportBundle",
     "LocalSourceIdentity",
     "LocalSourceKind",
     "LocalSnapshotStore",
@@ -326,6 +333,7 @@ __all__ = [
     "audit_static_effect_plan_digest",
     "build_file_inventory",
     "build_file_scope_units",
+    "build_audit_reports",
     "builtin_detector_registry",
     "builtin_detectors",
     "build_source_snapshot",
