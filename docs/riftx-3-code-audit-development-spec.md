@@ -4163,7 +4163,8 @@ M1 Exit：
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
 实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A/B 已
-`completed`；AUD-202C C1/C2a authority/reconciliation 与 C2b1 private backend implementation 已完成，C2b2 real-Linux qualification 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+`completed`；AUD-202C C1/C2a authority/reconciliation、C2b1 private backend implementation 与
+C2b2 qualification gate 已完成，C2b2 real-Linux evidence 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
 Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
@@ -4272,8 +4273,17 @@ bytes/tree proof，inspect 重验完整 Plan/image/limits/Lease/Pin/Node/backend
 stop/remove 后必须用 ID 与确定性 name 双重证明容器缺失，才返回 affirmative evidence。并发激活若
 观察到同一 mount proof，收敛为同一 durable active authority，不能删除 CAS 赢家的 mount。
 
-C2b2 仍需在受支持的真实 local-Linux Docker daemon 与 pinned image 上执行 descriptor/tmpfs/non-root
-read/write-denial/stop/restart smoke，并记录 qualification proof；macOS mocked fixtures 不构成生产证据。
+C2b2 qualification gate 已冻结为
+`scripts/qa/audit-snapshot-mount-qualification.py --image-digest <sha256>`：只使用 local Unix socket 与
+本机已有 pinned image，固定 production allowlisted Docker client 与 `/var/run/docker.sock`，沿
+production backend 执行 availability、descriptor/tmpfs materialization、
+non-root 全树 read/hash、source create/write/chmod/rename/unlink 内核拒绝、backend restart inspect、
+affirmative stop/remove 与 post-stop absence，并输出带 evidence digest 的 path-free JSON；可选 evidence
+文件不得覆盖。gate 在非 Linux、非 local socket、非 Linux daemon、image drift、任何 proof/cleanup
+歧义时返回 `ready=false`。
+
+C2b2 仍需在受支持的真实 local-Linux Docker daemon 与 pinned image 上实际运行该 gate 并记录
+`ready=true` proof；当前 Darwin 的 fail-closed report 与 macOS mocked fixtures 均不构成生产证据。
 parent AUD-202C 在该门禁通过前保持 `in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须
 全链恒等；绝对 locator 不进入 API/Event。3.0 不实现 source Node → analysis Node 传输、mTLS CAS
 channel、远程分块上传/下载或跨 Node hydration。

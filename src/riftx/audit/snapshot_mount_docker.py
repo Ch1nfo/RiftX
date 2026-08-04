@@ -54,6 +54,7 @@ _PROOF_PATH = "/workspace/.riftx-snapshot-mount-proof.json"
 _SOURCE_PATH = "/workspace/src"
 _HOLDER_SCRIPT = "import signal; signal.pause()"
 _PROBE_SCRIPT = r"""
+import errno
 import hashlib
 import json
 import os
@@ -71,9 +72,10 @@ if root_stat.st_uid != 0 or root_stat.st_gid != 0 or stat.S_IMODE(root_stat.st_m
 
 records = []
 total_bytes = 0
+first_regular = None
 
 def walk(directory, prefix=""):
-    global total_bytes
+    global first_regular, total_bytes
     with os.scandir(directory) as entries:
         ordered = sorted(entries, key=lambda entry: entry.name)
     for entry in ordered:
@@ -109,6 +111,8 @@ def walk(directory, prefix=""):
             if size != value.st_size:
                 raise SystemExit(76)
             total_bytes += size
+            if first_regular is None:
+                first_regular = entry.path
             records.append({
                 "blob_digest": digest.hexdigest(),
                 "mode": mode,
@@ -131,6 +135,44 @@ def walk(directory, prefix=""):
         raise SystemExit(77)
 
 walk(root)
+
+denied_errnos = {errno.EACCES, errno.EPERM, errno.EROFS}
+denied_operations = 0
+
+def require_denied(operation, exit_code):
+    global denied_operations
+    try:
+        operation()
+    except OSError as error:
+        if error.errno not in denied_errnos:
+            raise SystemExit(exit_code)
+        denied_operations += 1
+        return
+    raise SystemExit(exit_code)
+
+def create_forbidden():
+    descriptor = os.open(
+        "/workspace/src/.riftx-forbidden-create",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    os.close(descriptor)
+
+require_denied(create_forbidden, 79)
+require_denied(lambda: os.chmod(root, 0o755), 80)
+if first_regular is not None:
+    def open_for_write():
+        descriptor = os.open(first_regular, os.O_WRONLY)
+        os.close(descriptor)
+
+    require_denied(open_for_write, 81)
+    require_denied(lambda: os.chmod(first_regular, 0o644), 82)
+    require_denied(
+        lambda: os.rename(first_regular, "/workspace/src/.riftx-forbidden-rename"),
+        83,
+    )
+    require_denied(lambda: os.unlink(first_regular), 84)
+
 records.sort(key=lambda item: (item["relative_path"], item["object_type"]))
 canonical = json.dumps(
     records,
@@ -145,6 +187,7 @@ with open("/workspace/.riftx-snapshot-mount-proof.json", "rb", buffering=0) as s
     proof = json.loads(stream.read(1048576))
 payload = {
     "file_count": sum(1 for item in records if item["object_type"] != "directory"),
+    "mutation_denial_count": denied_operations,
     "total_bytes": total_bytes,
     "tree_proof_digest": observed,
     "mount_proof_digest": proof.get("mount_proof_digest"),
@@ -229,6 +272,7 @@ class DockerSnapshotMountBackend:
                 "rootfs": "read_only",
                 "schema_version": DOCKER_SNAPSHOT_MOUNT_COMPONENT_VERSION,
                 "source_tree": "root_owned_read_only",
+                "source_mutation_probe": "non_root_kernel_denial",
             },
         )
 
@@ -427,6 +471,15 @@ class DockerSnapshotMountBackend:
             )
             if (
                 observed.get("file_count") != archive.file_count
+                or observed.get("mutation_denial_count")
+                != (
+                    6
+                    if any(
+                        blob.object_type is SnapshotBlobObjectType.REGULAR_FILE
+                        for blob in source.descriptor.blobs
+                    )
+                    else 2
+                )
                 or observed.get("total_bytes") != archive.total_bytes
                 or observed.get("tree_proof_digest") != archive.tree_proof_digest
                 or observed.get("mount_proof_digest")

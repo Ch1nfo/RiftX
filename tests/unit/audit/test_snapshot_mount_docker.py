@@ -95,6 +95,7 @@ class _FakeDockerSnapshotMountBackend(DockerSnapshotMountBackend):
             "inspect": None,
             "calls": [],
             "archives": [],
+            "mutation_denial_count": 6,
             "proof": None,
         }
 
@@ -138,6 +139,9 @@ class _FakeDockerSnapshotMountBackend(DockerSnapshotMountBackend):
                     {
                         "file_count": proof["file_count"],
                         "mount_proof_digest": proof["mount_proof_digest"],
+                        "mutation_denial_count": self.daemon[
+                            "mutation_denial_count"
+                        ],
                         "total_bytes": proof["total_bytes"],
                         "tree_proof_digest": proof["tree_proof_digest"],
                     },
@@ -399,6 +403,24 @@ async def test_prepare_materializes_private_root_owned_read_only_tree() -> None:
         assert archive.getmember("src/main-link").issym()
         assert archive.getmember("src/main-link").linkname == "bin/check.sh"
     assert b"/Users/" not in archives[0]
+
+
+async def test_prepare_requires_non_root_kernel_mutation_denials() -> None:
+    backend = _FakeDockerSnapshotMountBackend()
+    plan, issue, pin, source = _authority(backend)
+    backend.daemon["mutation_denial_count"] = 5
+
+    with pytest.raises(SnapshotMountBackendError) as rejected:
+        await backend.prepare(
+            plan=plan,
+            lease=issue.lease,
+            pin=pin,
+            source=source,
+            prepared_at=_EFFECT_NOW + timedelta(seconds=1),
+        )
+
+    assert rejected.value.failure is SnapshotMountFailure.BACKEND_STATE_UNKNOWN
+    assert rejected.value.outcome_unknown is True
 
 
 async def test_restart_replays_existing_proof_then_stop_proves_absence() -> None:

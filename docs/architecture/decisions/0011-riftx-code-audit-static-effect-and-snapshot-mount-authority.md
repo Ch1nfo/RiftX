@@ -2,7 +2,8 @@
 
 > 状态：Accepted
 >
-> 实施状态：AUD-202C C1/C2a/C2b1 implemented；C2b2 Linux qualification pending
+> 实施状态：AUD-202C C1/C2a/C2b1 与 C2b2 qualification gate implemented；
+> real-Linux evidence pending
 >
 > 日期：2026-08-04（Asia/Shanghai）
 >
@@ -186,11 +187,29 @@ security config 与 proof；仅 running + exact proof 返回 active。stop 只�
 请求若观察到相同 active proof，返回 exact convergence，不得执行 cleanup；不同 proof 或 owner drift
 继续 fail closed。C2b1 仍未向 Runner/API/Temporal 注册执行入口。
 
+### 2.8 C2b2 real-Linux qualification gate
+
+新增显式 `scripts/qa/audit-snapshot-mount-qualification.py`，只接受调用方提供且本机已存在的 pinned
+image digest，并固定使用 production allowlisted Docker client 与 `/var/run/docker.sock` 执行
+availability、descriptor-bound prepare、重新实例化 backend
+后的 restart inspect、affirmative stop/remove 与 post-stop absence。它不 pull image、不接受 remote
+Docker endpoint，也不把 macOS Docker Desktop、mock 或 in-process fixture 当作 Linux evidence。
+
+materialization 的 non-root probe 除完整 lstat/read/hash 外，必须由真实内核拒绝 source root create/
+chmod，以及 regular file write/chmod/rename/unlink；预期拒绝次数进入 backend 验证，component digest
+也绑定该 mutation probe。qualification 只有在上述检查与最终 cleanup 全部肯定时输出 `ready=true`，
+并生成 path-free JSON evidence digest。可选 evidence 文件采用 exclusive create，已有证据永不覆盖。
+
+当前 Darwin 开发机执行该 gate 必须输出
+`audit_snapshot_mount_linux_host_required` 与 `ready=false`。只有在受支持的真实 local-Linux host、
+local Unix socket、Linux daemon 和 exact pinned image 上得到 `ready=true` report，才完成 C2b2；gate
+代码本身通过不构成生产资格。
+
 ## 3. Explicit non-goals
 
 C1/C2a/C2b1 不实现：
 
-- 真实 local-Linux pinned-image qualification evidence 与 production scheduler/service wiring；
+- 真实 local-Linux pinned-image `ready=true` qualification evidence 与 production scheduler/service wiring；
 - analysis command admission/exec、fd broker 或对 worker 暴露宿主 mount path；
 - source Node 到 analysis Node 传输、远程 CAS、mTLS hydration；
 - Content Sandbox、content parser、Detector、Scanner、模型或动态 Execution Plan；

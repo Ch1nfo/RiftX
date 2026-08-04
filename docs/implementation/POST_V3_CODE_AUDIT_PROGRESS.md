@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202C C2b1 Docker private materialization
-> boundary synchronized
+> Specification revision: 2026-08-04 / AUD-202C C2b2 real-Linux qualification gate
+> synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,12 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed internal stage: `AUD-202C C2b1 — Docker private read-only
-  materialization`; parent AUD-202C remains `in_progress`.
-- Completed C2b1 scope: deterministic owner-labelled private tmpfs container,
-  bounded in-memory archive, root-owned read-only tree, non-root full-tree proof,
-  exact restart inspection, affirmative removal and concurrent activation convergence.
-- Next unblocked task: `AUD-202C C2b2 — Real local-Linux qualification`, as a
+- Completed internal stage: `AUD-202C C2b2a — Real-Linux qualification gate`;
+  parent AUD-202C remains `in_progress`.
+- Completed C2b2a scope: production-path QA harness, explicit pinned image/local
+  socket admission, kernel mutation-denial proof, restart inspection, affirmative
+  stop/absence, exclusive evidence output and non-Linux fail-closed behavior.
+- Next unblocked task: `AUD-202C C2b2b — Execute on real local Linux`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
   descriptor/mount and Capsule-denial evidence is recorded.
@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a/C2b1 completed; C2b2 remains |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a/C2b1/C2b2a completed; C2b2b evidence remains |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -1874,8 +1874,68 @@ individual operation families.
     found zero violations, and retained policy digest
     `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
   - The executable release gate reported `ready=true`; every registered gate passed.
-- Commit: this C2b1 local commit; its hash will be backfilled by the next ledger update.
+- Commit: `c552d9ca feat(code-audit): add private Docker mount backend`.
 - Next unblocked task: AUD-202C C2b2 real local-Linux qualification and evidence.
+
+### AUD-202C C2b2a — Real-Linux Snapshot Mount Qualification Gate
+
+- Status: completed qualification-gate implementation stage; parent AUD-202C remains
+  in progress until the gate records `ready=true` on a supported real local-Linux
+  host.
+- Depends on: AUD-202C C2b1 (`c552d9ca`).
+- Exact modules/files:
+  - `src/riftx/audit/snapshot_mount_docker.py`
+  - `scripts/qa/audit-snapshot-mount-qualification.py`
+  - `tests/unit/audit/test_snapshot_mount_docker.py`
+  - `tests/unit/audit/test_snapshot_mount_qualification_script.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Extended the production non-root materialization probe to require real kernel
+    denial of source-root create/chmod and regular-file write/chmod/rename/unlink.
+    The exact expected denial count is checked before prepare can succeed, and the
+    backend component digest now binds this mutation-probe capability.
+  - Added an explicit QA command that accepts only a caller-supplied, locally present
+    pinned image digest and fixes the production allowlisted Docker client plus
+    `/var/run/docker.sock`. It performs the real availability probe, descriptor-bound
+    private tmpfs prepare, full-tree read and mutation denial, backend
+    re-instantiation/restart inspection, affirmative stop/remove, and post-stop
+    absence.
+  - Added a path-free JSON evidence schema and digest. `ready=true` requires every
+    check plus affirmative cleanup; an optional evidence path is exclusive-create and
+    never overwrites an existing report.
+  - Non-Linux hosts, non-local/missing sockets, non-Linux daemons, missing or drifting
+    pinned images, proof drift, ambiguous effects and unproven cleanup remain
+    fail-closed. The script never pulls an image and has no mock/fallback mode.
+- API surface: none. This is an explicit operator QA gate, not a product CLI/API,
+  Runner family, enqueue path, Event, Temporal activity or analysis executor.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_docker.py tests/unit/audit/test_snapshot_mount_qualification_script.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests scripts/qa`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/audit-snapshot-mount-qualification.py --image-digest 0000000000000000000000000000000000000000000000000000000000000000`
+  - `git diff --check`
+- Test results:
+  - Snapshot mount/CAS/static authority/repository/migration regression: `124 passed`
+    in `55.31s`.
+  - Final full repository suite: `4844 passed, 5 skipped, 11 warnings` in
+    `440.60s`.
+  - Repository Ruff, `compileall` and `git diff --check` passed.
+  - The independence boundary reported `ready=true`, scanned 512 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+  - The qualification command on this Darwin host correctly returned exit 1,
+    `ready=false` and `audit_snapshot_mount_linux_host_required`; this is fail-closed
+    platform evidence only and is not production qualification.
+- Commit: this C2b2a local commit; its hash will be backfilled by the next ledger
+  update.
+- Next unblocked task: AUD-202C C2b2b execute the gate with the exact production image
+  on a supported same-host Linux Docker environment and record its `ready=true`
+  evidence.
 
 ## Design Deviations and ADRs
 
@@ -1923,7 +1983,8 @@ individual operation families.
   key digests, same-node Lease/Pin/Runner-generation ownership, strict lifecycle CAS,
   affirmative Stop Proof, durable authority persistence, trusted CAS source,
   path-free backend proof contract, restart reconciliation and Docker private tmpfs
-  implementation for AUD-202C C1/C2a/C2b1; real Linux qualification remains C2b2.
+  implementation for AUD-202C C1/C2a/C2b1, plus the C2b2a production-path
+  qualification gate; real Linux `ready=true` evidence remains C2b2b.
 
 ## Current Risks
 
