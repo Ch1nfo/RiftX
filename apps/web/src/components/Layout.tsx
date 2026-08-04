@@ -12,7 +12,7 @@ const navigation: Array<{
   end?: boolean;
 }> = [
   { to: "/", label: "Dashboard", icon: "graph", end: true },
-  { to: "/runs/new", label: "New run", icon: "run" },
+  { to: "/audits/new", label: "Code audit", icon: "shield" },
   { to: "/nodes", label: "Nodes", icon: "node" },
   { to: "/tools", label: "Tools", icon: "terminal" },
   { to: "/settings/models", label: "Models", icon: "shield" },
@@ -21,6 +21,7 @@ const navigation: Array<{
 const titles: Record<string, { sector: string; title: string }> = {
   "/": { sector: "Control plane", title: "Operations dashboard" },
   "/runs/new": { sector: "Run configuration", title: "Launch a durable run" },
+  "/audits/new": { sector: "Code audit", title: "Audit a local folder" },
   "/nodes": { sector: "Runner fleet", title: "Execution nodes" },
   "/tools": { sector: "Execution environment", title: "Tool registry" },
   "/settings/models": { sector: "Agent configuration", title: "Model profiles" },
@@ -30,9 +31,11 @@ export function Layout() {
   const { language, t, toggleLanguage } = useI18n();
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
-  const current = location.pathname.startsWith("/runs/") && location.pathname !== "/runs/new"
-    ? { sector: "Active operation", title: "Run conversation" }
-    : (titles[location.pathname] ?? titles["/"]);
+  const current = location.pathname.startsWith("/audits/") && location.pathname !== "/audits/new"
+    ? { sector: "Code audit", title: "Local audit findings" }
+    : location.pathname.startsWith("/runs/") && location.pathname !== "/runs/new"
+      ? { sector: "Active operation", title: "Run conversation" }
+      : (titles[location.pathname] ?? titles["/"]);
 
   return (
     <div className="app-shell">
@@ -53,7 +56,12 @@ export function Layout() {
               key={to}
               to={to}
               end={end}
-              className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+              className={({ isActive }) =>
+                isActive ||
+                (to === "/audits/new" && location.pathname.startsWith("/audits/"))
+                  ? "nav-link active"
+                  : "nav-link"
+              }
             >
               <PixelIcon name={icon} />
               <span>{t(label)}</span>

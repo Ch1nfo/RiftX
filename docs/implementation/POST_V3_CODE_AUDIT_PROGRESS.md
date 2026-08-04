@@ -31,14 +31,14 @@
 
 ## Current Wave
 
-- Milestone: `S4 — Local product wiring` is `in_progress`.
-- Completed task: `AUD-S401 — Minimal API and CLI`.
+- Milestone: `S4 — Local product wiring` is `completed`.
+- Completed task: `AUD-S402 — Minimal WebUI`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S402 — Minimal WebUI`.
+- Next task: `AUD-S500 — Local-folder end-to-end acceptance`.
 
 ## Milestone Status
 
@@ -48,7 +48,7 @@
 | S1 Local folder and Snapshot | completed | ordinary/Git-marked local folders admit, materialize, publish, view and seal without Docker, another host or target execution |
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
 | S3 Findings and reports | completed | stable redacted Findings and deterministic JSON/Markdown reports completed with full regression evidence |
-| S4 Local product wiring | in_progress | durable single-machine Audit Job and minimal API/CLI are complete; minimal WebUI remains |
+| S4 Local product wiring | completed | durable single-machine Audit Job plus minimal API, CLI and WebUI are complete |
 | S5 End-to-end acceptance | pending | AUD-S500 not started |
 
 ## Task Status
@@ -66,7 +66,7 @@
 | AUD-S301 JSON/Markdown Report | completed |
 | AUD-S400 Local Audit Job | completed |
 | AUD-S401 Minimal API and CLI | completed |
-| AUD-S402 Minimal WebUI | pending |
+| AUD-S402 Minimal WebUI | completed |
 | AUD-S500 Local-folder end-to-end acceptance | pending |
 
 ## Historical Task Status (pre-simplification)
@@ -2601,8 +2601,71 @@ individual operation families.
   - API and CLI regression: `332 passed`;
   - full repository suite: `4904 passed, 5 skipped, 11 warnings`;
   - Ruff passed; whitespace check is run immediately before commit.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `a82ee94d` (`feat(code-audit): expose local audit API and CLI`).
 - Next unblocked task: `AUD-S402 — Minimal WebUI`.
+
+### AUD-S402 — Minimal WebUI
+
+- Status: completed.
+- Exact modules/files:
+  - `apps/web/src/App.tsx`
+  - `apps/web/src/api/client.ts`
+  - `apps/web/src/api/client.test.ts`
+  - `apps/web/src/api/types.ts`
+  - `apps/web/src/components/Layout.tsx`
+  - `apps/web/src/components/Layout.test.tsx`
+  - `apps/web/src/hooks/queries.ts`
+  - `apps/web/src/hooks/queries.test.tsx`
+  - `apps/web/src/i18n/index.tsx`
+  - `apps/web/src/pages/NewLocalAuditPage.tsx`
+  - `apps/web/src/pages/NewLocalAuditPage.test.tsx`
+  - `apps/web/src/pages/LocalAuditDetailPage.tsx`
+  - `apps/web/src/pages/LocalAuditDetailPage.test.tsx`
+  - `apps/web/src/pixel-dense.css`
+  - this ledger
+- Outcome:
+  - added `/audits/new` for selecting an absolute folder on the machine running RiftX,
+    with explicit read-only, same-machine and no-execution boundary language;
+  - creates and starts the simplified local Job, then opens `/audits/:auditId` without
+    introducing advanced filters, report management, fixes, validation or release UI;
+  - added durable status polling, terminal-state convergence, non-terminal cancellation,
+    completed Finding list/detail and stable failed, cancelled and zero-Finding states;
+  - displays only relative Finding locations and redacted evidence; the absolute source
+    path is not present in Job types or rendered detail DOM;
+  - preserved the five-item desktop/mobile navigation by replacing the standalone New Run
+    entry with Code audit while leaving ordinary Run creation available from Dashboard;
+  - reused the existing Blue Team Cartridge tokens, panels, controls, status components
+    and detail-sidebar pattern; no new design-system primitive or DESIGN.md change was
+    required.
+- Schema/migration impact: None; AUD-S402 is a typed projection of the AUD-S401 API.
+- Security boundary impact:
+  - the browser submits the selected path only to the loopback local Control Plane;
+  - UI copy makes clear that RiftX does not run builds, tests, package managers, Git
+    helpers, plugins, containers or remote machines;
+  - the detail view does not render the selected absolute path and reads Findings only
+    after the Job reaches `completed`.
+- Tests and checks run:
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck`
+  - `conda run --no-capture-output -n agent pnpm exec vitest run src/api/client.test.ts src/hooks/queries.test.tsx src/pages/NewLocalAuditPage.test.tsx src/pages/LocalAuditDetailPage.test.tsx src/components/Layout.test.tsx`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web test`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web build`
+  - `conda run --no-capture-output -n agent node /Users/chinfowang/.codex/skills/impeccable/scripts/detect.mjs --json apps/web/src/App.tsx apps/web/src/components/Layout.tsx apps/web/src/pages/NewLocalAuditPage.tsx apps/web/src/pages/LocalAuditDetailPage.tsx`
+  - desktop `1440x1000` and mobile `390x844` browser checks against the live local API,
+    including a real read-only scan of `tests/unit/audit`.
+  - `git diff --check`
+- Test results:
+  - focused API/query/page/layout suite: `52 passed`;
+  - Web suite: `270 passed`;
+  - production build passed; the existing oversized `RunDetailPage` chunk warning remains
+    outside this task;
+  - Impeccable TSX detector returned `[]`; the shared CSS detector reported only existing
+    advisory findings outside the new local-Audit style block;
+  - live local scan completed with `14 / 14` files and `8` redacted Findings; desktop and
+    mobile layouts had no horizontal overflow and the absolute source path was absent;
+  - finish review found no blocking issue, and design documentation review confirmed that
+    `apps/web/DESIGN.md` should remain unchanged.
+- Commit: pending; the next ledger update will backfill the local commit hash.
+- Next unblocked task: `AUD-S500 — Local-folder end-to-end acceptance`.
 
 ## Design Deviations and ADRs
 
@@ -2660,7 +2723,8 @@ individual operation families.
 
 ## Current Risks
 
-- The local Job is available through API and CLI; the minimal WebUI remains in AUD-S402.
+- Local Job, API, CLI and WebUI wiring are complete; cross-surface acceptance remains in
+  AUD-S500.
 - Product configuration must supply explicit allowed source roots and disjoint private
   staging/Snapshot paths before local scans can start.
 - Historical mount authority rows may exist in upgraded databases. They must remain
