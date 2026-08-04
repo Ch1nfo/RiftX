@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202C C2b2 real-Linux qualification gate
-> synchronized
+> Specification revision: 2026-08-04 / AUD-202C C2b2 pinned runtime image and release
+> qualification pipeline synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,11 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed internal stage: `AUD-202C C2b2a — Real-Linux qualification gate`;
+- Completed internal stage: `AUD-202C C2b2a — Pinned runtime image and real-Linux
+  qualification pipeline`;
   parent AUD-202C remains `in_progress`.
-- Completed C2b2a scope: production-path QA harness, explicit pinned image/local
-  socket admission, kernel mutation-denial proof, restart inspection, affirmative
-  stop/absence, exclusive evidence output and non-Linux fail-closed behavior.
+- Completed C2b2a scope: production-path QA harness, digest-locked minimal runtime,
+  fixed local build/inspect/smoke orchestration, kernel mutation-denial proof, restart
+  inspection, affirmative stop/absence and exclusive combined evidence output.
 - Next unblocked task: `AUD-202C C2b2b — Execute on real local Linux`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
@@ -1931,11 +1932,83 @@ individual operation families.
   - The qualification command on this Darwin host correctly returned exit 1,
     `ready=false` and `audit_snapshot_mount_linux_host_required`; this is fail-closed
     platform evidence only and is not production qualification.
-- Commit: this C2b2a local commit; its hash will be backfilled by the next ledger
-  update.
+- Commit: `a616dff8 feat(code-audit): add snapshot mount qualification gate`.
 - Next unblocked task: AUD-202C C2b2b execute the gate with the exact production image
   on a supported same-host Linux Docker environment and record its `ready=true`
   evidence.
+
+### AUD-202C C2b2a.2 — Pinned Runtime Image and Release Pipeline
+
+- Status: completed internal image-contract and release-orchestration step; parent
+  AUD-202C remains in progress until the combined gate records `ready=true` on real
+  local Linux.
+- Depends on: AUD-202C C2b2a qualification gate (`a616dff8`).
+- Exact modules/files:
+  - `packaging/audit/snapshot_mount/Dockerfile`
+  - `packaging/audit/snapshot_mount/image-lock.json`
+  - `scripts/qa/audit-snapshot-mount-release-qualification.py`
+  - `tests/unit/audit/test_snapshot_mount_image_contract.py`
+  - `tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Froze the exact production runtime on Python `3.12.13` Bookworm index digest
+    `d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b`,
+    with explicit Linux amd64/arm64 platform manifest digests, UID/GID, Python path,
+    image schema/version and `SOURCE_DATE_EPOCH`.
+  - Added a no-network-install multi-stage Dockerfile. It creates the required
+    `/usr/bin/python3`, removes pip/setuptools/wheel, then copies the trimmed rootfs
+    into a `scratch` final stage so inherited Python-image environment and credentials
+    cannot enter the runtime Config.
+  - Added a Linux-only release wrapper that fixes `/var/run/docker.sock`, uses an
+    empty temporary Docker config, pulls only the exact locked base digest, performs a
+    no-cache/network-none build, and validates the local image ID, zero default Env,
+    exact labels/user/entrypoint/Cmd/rootfs/size.
+  - Added a hardened non-root image smoke with network none, read-only rootfs, all
+    capabilities dropped and no-new-privileges. It proves Python identity, absence of
+    pip, numeric UID/GID and root write denial before invoking the lower-level Snapshot
+    mount qualification gate with the built image ID.
+  - Combined path-free evidence binds the lock, Dockerfile, platform manifest, image
+    Config, smoke and nested mount qualification proofs. Any unavailable, drifted or
+    ambiguous step returns `ready=false`; evidence output remains exclusive-create.
+- API surface: none. The image and scripts are operator release assets only; no
+  Runner family/enqueue, API, Event, Temporal activity, static analysis command or
+  product capability was opened.
+- Verification boundary:
+  - lock/Dockerfile contract, orchestration, drift rejection and non-Linux fail-closed
+    behavior are executable on this development host;
+  - actual image build/smoke and nested mount execution are deliberately not claimed
+    from Darwin or Docker Desktop and remain C2b2b real-Linux evidence.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py tests/unit/audit/test_snapshot_mount_docker.py tests/unit/audit/test_snapshot_mount_qualification_script.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m ruff check scripts/qa/audit-snapshot-mount-release-qualification.py tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python -m ruff format --check scripts/qa/audit-snapshot-mount-release-qualification.py tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python -m compileall -q scripts/qa/audit-snapshot-mount-release-qualification.py tests/unit/audit/test_snapshot_mount_image_contract.py tests/unit/audit/test_snapshot_mount_release_qualification_script.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/audit-snapshot-mount-release-qualification.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - image contract and release-wrapper unit matrix: `6 passed` in `0.08s`.
+  - Snapshot mount/image/CAS/static authority/repository/migration regression:
+    `130 passed` in `53.89s`.
+  - Final full repository suite: `4850 passed, 5 skipped, 12 warnings` in
+    `440.29s`.
+  - Ruff, format check, `compileall` and `git diff --check` passed.
+  - The independence boundary reported `ready=true`, scanned 512 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+  - The combined release command on this Darwin host correctly returned exit 1,
+    `ready=false` and `audit_snapshot_mount_release_linux_host_required` before any
+    pull, build or container effect.
+- Commit: this C2b2a.2 local commit; its hash will be backfilled by the next ledger
+  update.
+- Next unblocked task: AUD-202C C2b2b run the combined command on supported same-host
+  Linux and commit its exclusive `ready=true` evidence digest/reference.
 
 ## Design Deviations and ADRs
 
@@ -1984,7 +2057,8 @@ individual operation families.
   affirmative Stop Proof, durable authority persistence, trusted CAS source,
   path-free backend proof contract, restart reconciliation and Docker private tmpfs
   implementation for AUD-202C C1/C2a/C2b1, plus the C2b2a production-path
-  qualification gate; real Linux `ready=true` evidence remains C2b2b.
+  qualification gate, pinned runtime image and combined release pipeline; real Linux
+  `ready=true` evidence remains C2b2b.
 
 ## Current Risks
 
@@ -1993,8 +2067,9 @@ individual operation families.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
   current `preflight_bound_draft` v2 wire remain permanently non-startable. The
   SnapshotStore/CAS, Git/working-tree materializer, static mount authority, mount
-  coordinator/restart state machine and private Docker backend implementation now
-  exist, but the backend is not yet qualified on real local Linux. There is also no
+  coordinator/restart state machine, private Docker backend, pinned runtime image and
+  release pipeline now exist, but the backend is not yet built and qualified on real
+  local Linux. There is also no
   sealed `SourceSnapshot` UoW, Scope Inventory, or Start-ready Contract;
   deterministic scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor

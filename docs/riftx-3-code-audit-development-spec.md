@@ -4282,6 +4282,18 @@ affirmative stop/remove 与 post-stop absence，并输出带 evidence digest 的
 文件不得覆盖。gate 在非 Linux、非 local socket、非 Linux daemon、image drift、任何 proof/cleanup
 歧义时返回 `ready=false`。
 
+exact production image 由 `packaging/audit/snapshot_mount/Dockerfile` 与 `image-lock.json` 冻结：base
+为 digest-pinned Python `3.12.13` Bookworm multi-architecture index，lock 同时绑定 amd64/arm64 platform
+manifest、UID/GID、Python path 与 `SOURCE_DATE_EPOCH`。final image 从 `scratch` 复制已裁剪 rootfs，
+不得继承 base environment，不安装网络依赖，删除 pip/setuptools/wheel，并固定 non-root user 与
+`/usr/bin/python3 -I -B` default contract。
+
+真实 release 命令为 `scripts/qa/audit-snapshot-mount-release-qualification.py --evidence <new.json>`；
+它仅在 Linux + exact local socket 上 pull locked digest，随后 network-none/no-cache build，验证 image
+Config/labels/rootfs/size、non-root read-only/no-network smoke，再以生成的本机 image ID 调用上述底层
+qualification gate。combined report 的 build/config/smoke/materialization/restart/stop/cleanup 任一项
+不肯定均返回 `ready=false`，evidence 文件不得覆盖。
+
 C2b2 仍需在受支持的真实 local-Linux Docker daemon 与 pinned image 上实际运行该 gate 并记录
 `ready=true` proof；当前 Darwin 的 fail-closed report 与 macOS mocked fixtures 均不构成生产证据。
 parent AUD-202C 在该门禁通过前保持 `in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须

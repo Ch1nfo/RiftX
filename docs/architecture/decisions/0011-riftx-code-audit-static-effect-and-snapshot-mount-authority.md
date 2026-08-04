@@ -200,6 +200,20 @@ chmod，以及 regular file write/chmod/rename/unlink；预期拒绝次数进入
 也绑定该 mutation probe。qualification 只有在上述检查与最终 cleanup 全部肯定时输出 `ready=true`，
 并生成 path-free JSON evidence digest。可选 evidence 文件采用 exclusive create，已有证据永不覆盖。
 
+生产 Snapshot mount runtime 固定在
+`packaging/audit/snapshot_mount/{Dockerfile,image-lock.json}`。lock 绑定 Python `3.12.13` Bookworm
+multi-architecture index digest、Linux amd64/arm64 platform manifest、runtime UID/GID、Python path 与
+`SOURCE_DATE_EPOCH`。Dockerfile 不执行网络包安装，以 digest-pinned Python rootfs 为 build stage，删除
+pip/setuptools/wheel 后复制到 `scratch` final stage，避免继承 base image 默认 environment；final
+Config 固定 non-root `65532:65532`、`/usr/bin/python3` 与 isolated/no-bytecode default command。
+
+新增 `scripts/qa/audit-snapshot-mount-release-qualification.py` 作为 production release wrapper。它只在
+真实 Linux 与 `/var/run/docker.sock` 上继续，先 pull exact locked digest，再以 `--network=none`、empty
+temporary Docker config、no-cache build 生成本机 image ID；随后重验 zero-default-env Config、labels、
+entrypoint、UID/GID、rootfs/size，执行 non-root/no-network/read-only/cap-drop smoke，最后把 image ID 传给
+底层 mount qualification gate。combined report 只有 build、image contract、smoke、mount/stop/restart
+与 cleanup 全部肯定才为 `ready=true`。
+
 当前 Darwin 开发机执行该 gate 必须输出
 `audit_snapshot_mount_linux_host_required` 与 `ready=false`。只有在受支持的真实 local-Linux host、
 local Unix socket、Linux daemon 和 exact pinned image 上得到 `ready=true` report，才完成 C2b2；gate
