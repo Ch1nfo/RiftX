@@ -256,6 +256,7 @@ def runner_daemon(
                 require_containment=config.execution.require_containment,
                 payload_uid=config.execution.payload_uid,
                 payload_gid=config.execution.payload_gid,
+                audit=config.audit,
             )
         )
     )

@@ -13,8 +13,10 @@ from riftx.api import APISettings
 from riftx.api import runtime as api_runtime
 from riftx.config import (
     AuditConfig,
+    AuditSourceIngestConfig,
     RiftXConfigError,
     audit_config_digest,
+    audit_source_ingest_policy_digest,
     load_riftx_config,
 )
 
@@ -117,6 +119,8 @@ def test_audit_defaults_are_backward_compatible_deny_all_and_side_effect_free(
     settings = APISettings.from_config(config)
 
     assert config.audit.enabled is False
+    assert config.audit.node_mode == "local_same_node"
+    assert config.audit.allowed_node_ids == ("local",)
     assert config.audit.source_roots == ()
     assert Path.cwd() not in config.audit.source_roots
     assert settings.audit == config.audit
@@ -144,6 +148,12 @@ def test_example_config_contains_the_complete_safe_audit_defaults(tmp_path: Path
     assert config.audit.fix_root == Path("/var/lib/riftx/audit/fixes").resolve()
     assert config.audit.default_mode == "standard"
     assert config.audit.default_analysis_profile == "deterministic"
+    assert config.audit.source_ingest.backend_id == "linux_container"
+    assert config.audit.source_ingest.runtime == "docker"
+    assert config.audit.source_ingest.image_digest is None
+    assert config.audit.source_ingest.policy_version == (
+        "riftx.audit-source-ingest-policy/v1"
+    )
     assert config.audit.model_egress.default_mode == "local_only"
     assert config.audit.model_egress.allow_remote_origins == ()
     assert config.audit.validation.default_policy == "static_only"
@@ -642,6 +652,25 @@ def test_audit_config_digest_is_versioned_stable_and_keys_sensitive_paths(
     assert first != audit_config_digest(config, path_digest_key=b"z" * 32)
     with pytest.raises(ValueError, match="at least 32 bytes"):
         audit_config_digest(config, path_digest_key=b"short")
+
+
+def test_source_ingest_config_is_same_node_digest_pinned_and_versioned() -> None:
+    image_digest = "a" * 64
+    source_ingest = AuditSourceIngestConfig(image_digest=image_digest)
+
+    digest = audit_source_ingest_policy_digest(source_ingest)
+
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert digest == audit_source_ingest_policy_digest(source_ingest)
+    assert digest != audit_source_ingest_policy_digest(
+        AuditSourceIngestConfig(image_digest="b" * 64)
+    )
+    with pytest.raises(ValidationError):
+        AuditSourceIngestConfig(image_digest="latest")
+    with pytest.raises(ValidationError):
+        AuditConfig(allowed_node_ids=())
+    with pytest.raises(ValidationError):
+        AuditConfig(allowed_node_ids=("remote",))
 
 
 def test_api_runtime_rejects_direct_settings_path_overlap_before_side_effect(

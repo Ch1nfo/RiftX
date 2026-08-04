@@ -322,6 +322,410 @@ def test_global_and_run_operations_never_fallback_across_owner_roots() -> None:
         assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
 
 
+def test_preflight_routes_and_services_use_only_their_exact_independent_owner() -> None:
+    create_operations = (
+        (
+            RunEffectOperation.CREATE_AUDIT_PREFLIGHT,
+            EffectOrigin.LOCAL_OPERATOR_API,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CREATE,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+    )
+    for operation, origin in create_operations:
+        policy = require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=_GLOBAL_OWNER,
+            effect=OperationEffect.HOST_EXECUTION,
+            mode=EffectMode.GLOBAL,
+        )
+        assert policy.family is RunEffectFamily.RUN_LIFECYCLE
+        assert policy.owner_kind is EffectOwnerKind.GLOBAL
+        assert policy.allowed_run_kinds == frozenset()
+        assert policy.ownership_resolver is OwnershipResolverKind.NONE
+        assert not policy.required_claims.intersection(
+            {
+                OwnershipClaim.RUN_ID,
+                OwnershipClaim.RUN_KIND,
+                OwnershipClaim.AUDIT_ID,
+                OwnershipClaim.PLAN_DIGEST,
+            }
+        )
+        assert policy.audit_alternative.disposition is AuditAlternativeDisposition.NOT_RUN_SCOPED
+        for wrong_owner in (_preflight_owner(), _run_owner(RunKind.CODE_AUDIT)):
+            with pytest.raises(RunKindEffectPolicyDenied) as captured:
+                require_run_kind_effect_policy(
+                    operation,
+                    origin,
+                    ownership=wrong_owner,
+                    effect=OperationEffect.HOST_EXECUTION,
+                    mode=EffectMode.GLOBAL,
+                )
+            assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+
+    owned_operations = (
+        (
+            RunEffectOperation.GET_AUDIT_PREFLIGHT,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.READ_ONLY,
+            EffectMode.READ_ONLY,
+        ),
+        (
+            RunEffectOperation.CANCEL_AUDIT_PREFLIGHT,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.HOST_CONTROL,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_GET,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.READ_ONLY,
+            EffectMode.READ_ONLY,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.HOST_CONTROL,
+            EffectMode.NORMAL,
+        ),
+    )
+    for operation, origin, effect, mode in owned_operations:
+        policy = require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=_preflight_owner(),
+            effect=effect,
+            mode=mode,
+        )
+        assert policy.family is RunEffectFamily.RUN_LIFECYCLE
+        assert policy.owner_kind is EffectOwnerKind.PREFLIGHT_JOB
+        assert policy.allowed_run_kinds == frozenset()
+        assert policy.ownership_resolver is OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE
+        assert not policy.required_claims.intersection(
+            {
+                OwnershipClaim.RUN_ID,
+                OwnershipClaim.RUN_KIND,
+                OwnershipClaim.AUDIT_ID,
+                OwnershipClaim.PLAN_DIGEST,
+            }
+        )
+        assert policy.audit_alternative.disposition is AuditAlternativeDisposition.NOT_RUN_SCOPED
+        for wrong_owner in (_GLOBAL_OWNER, _run_owner(RunKind.CODE_AUDIT)):
+            with pytest.raises(RunKindEffectPolicyDenied) as captured:
+                require_run_kind_effect_policy(
+                    operation,
+                    origin,
+                    ownership=wrong_owner,
+                    effect=effect,
+                    mode=mode,
+                )
+            assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+
+    assert API_ROUTE_EFFECT_BINDINGS["create_audit_preflight"].operation is (
+        RunEffectOperation.CREATE_AUDIT_PREFLIGHT
+    )
+    assert API_ROUTE_EFFECT_BINDINGS["get_audit_preflight"].operation is (
+        RunEffectOperation.GET_AUDIT_PREFLIGHT
+    )
+    assert API_ROUTE_EFFECT_BINDINGS["cancel_audit_preflight"].operation is (
+        RunEffectOperation.CANCEL_AUDIT_PREFLIGHT
+    )
+    managed = {
+        (entrypoint.qualified_name, entrypoint.operation, entrypoint.origin)
+        for entrypoint in MANAGED_EFFECT_ENTRYPOINTS
+    }
+    assert {
+        (
+            "riftx.application.services.audit_preflight:"
+            "AuditPreflightApplicationService.create_authorized",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CREATE,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight:"
+            "AuditPreflightApplicationService.get_authorized",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_GET,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight:"
+            "AuditPreflightApplicationService.cancel_authorized",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+    } <= managed
+
+
+def test_preflight_runner_repository_and_reconciler_effects_are_exactly_owned() -> None:
+    callback_operations = (
+        (
+            RunEffectOperation.POLL_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.RENEW_AUDIT_PREFLIGHT_LEASE,
+            EffectOrigin.RUNNER_API,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.START_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.FINISH_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.STOP_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            RunEffectFamily.SAFETY_STOP,
+            EffectMode.STOP_PROOF,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL,
+            EffectOrigin.APPLICATION_SERVICE,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW,
+            EffectOrigin.APPLICATION_SERVICE,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_START,
+            EffectOrigin.APPLICATION_SERVICE,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_FINISH,
+            EffectOrigin.APPLICATION_SERVICE,
+            RunEffectFamily.RUNNER_COMMAND,
+            EffectMode.OWNERSHIP_CALLBACK,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP,
+            EffectOrigin.APPLICATION_SERVICE,
+            RunEffectFamily.SAFETY_STOP,
+            EffectMode.STOP_PROOF,
+        ),
+    )
+    for operation, origin, family, mode in callback_operations:
+        policy = require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=_preflight_owner(),
+            effect=OperationEffect.RUNNER_CALLBACK,
+            mode=mode,
+        )
+        assert policy.family is family
+        assert policy.owner_kind is EffectOwnerKind.PREFLIGHT_JOB
+        assert policy.allowed_run_kinds == frozenset()
+        assert policy.ownership_resolver is OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE
+        assert policy.audit_alternative.disposition is AuditAlternativeDisposition.NOT_RUN_SCOPED
+        for wrong_owner in (_GLOBAL_OWNER, _run_owner(RunKind.CODE_AUDIT)):
+            with pytest.raises(RunKindEffectPolicyDenied) as captured:
+                require_run_kind_effect_policy(
+                    operation,
+                    origin,
+                    ownership=wrong_owner,
+                    effect=OperationEffect.RUNNER_CALLBACK,
+                    mode=mode,
+                )
+            assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+
+    mutation_operations = (
+        (
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+            EffectOrigin.APPLICATION_SERVICE,
+            EffectMode.NORMAL,
+            RunEffectFamily.RUN_LIFECYCLE,
+        ),
+        (
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+            EffectMode.RECONCILE,
+            RunEffectFamily.SAFETY_STOP,
+        ),
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RECONCILE,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+            EffectMode.RECONCILE,
+            RunEffectFamily.SAFETY_STOP,
+        ),
+        (
+            RunEffectOperation.CONTROL_PLANE_AUDIT_PREFLIGHT_RECONCILE,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+            EffectMode.RECONCILE,
+            RunEffectFamily.SAFETY_STOP,
+        ),
+    )
+    for operation, origin, mode, family in mutation_operations:
+        policy = require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=_preflight_owner(),
+            effect=OperationEffect.DURABLE_WRITE,
+            mode=mode,
+        )
+        assert policy.family is family
+        assert policy.owner_kind is EffectOwnerKind.PREFLIGHT_JOB
+        assert policy.allowed_run_kinds == frozenset()
+        assert policy.ownership_resolver is OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE
+        assert policy.audit_alternative.disposition is AuditAlternativeDisposition.NOT_RUN_SCOPED
+        for wrong_owner in (_GLOBAL_OWNER, _run_owner(RunKind.CODE_AUDIT)):
+            with pytest.raises(RunKindEffectPolicyDenied) as captured:
+                require_run_kind_effect_policy(
+                    operation,
+                    origin,
+                    ownership=wrong_owner,
+                    effect=OperationEffect.DURABLE_WRITE,
+                    mode=mode,
+                )
+            assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+
+    with pytest.raises(RunKindEffectPolicyDenied) as effect_mismatch:
+        require_run_kind_effect_policy(
+            RunEffectOperation.START_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            ownership=_preflight_owner(),
+            effect=OperationEffect.HOST_EXECUTION,
+            mode=EffectMode.OWNERSHIP_CALLBACK,
+        )
+    assert effect_mismatch.value.reason is PolicyDenialReason.EFFECT_MISMATCH
+
+    with pytest.raises(RunKindEffectPolicyDenied) as mode_mismatch:
+        require_run_kind_effect_policy(
+            RunEffectOperation.STOP_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.RUNNER_API,
+            ownership=_preflight_owner(),
+            effect=OperationEffect.RUNNER_CALLBACK,
+            mode=EffectMode.OWNERSHIP_CALLBACK,
+        )
+    assert mode_mismatch.value.reason is PolicyDenialReason.MODE_MISMATCH
+
+    with pytest.raises(RunKindEffectPolicyDenied) as origin_mismatch:
+        resolve_run_kind_effect_policy(
+            RunEffectOperation.POLL_AUDIT_PREFLIGHT_JOB,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+    assert origin_mismatch.value.reason is PolicyDenialReason.UNREGISTERED_OPERATION_ORIGIN
+
+
+def test_preflight_effect_inventory_covers_runner_repository_and_reconciler() -> None:
+    route_operations = {
+        "poll_audit_preflight_job": RunEffectOperation.POLL_AUDIT_PREFLIGHT_JOB,
+        "renew_audit_preflight_lease": RunEffectOperation.RENEW_AUDIT_PREFLIGHT_LEASE,
+        "start_audit_preflight_job": RunEffectOperation.START_AUDIT_PREFLIGHT_JOB,
+        "finish_audit_preflight_job": RunEffectOperation.FINISH_AUDIT_PREFLIGHT_JOB,
+        "stop_audit_preflight_job": RunEffectOperation.STOP_AUDIT_PREFLIGHT_JOB,
+    }
+    for route_name, operation in route_operations.items():
+        binding = API_ROUTE_EFFECT_BINDINGS[route_name]
+        assert binding.operation is operation
+        assert binding.origin is EffectOrigin.RUNNER_API
+
+    expected_entrypoints = {
+        (
+            "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService.poll",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight_runner:"
+            "AuditPreflightRunnerService.renew_lease",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService.start",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_START,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService.finish",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_FINISH,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService.stop",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP,
+            EffectOrigin.APPLICATION_SERVICE,
+        ),
+        (
+            "riftx.api.runtime:ControlPlane._reconcile_audit_preflight_jobs",
+            RunEffectOperation.CONTROL_PLANE_AUDIT_PREFLIGHT_RECONCILE,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+        ),
+    }
+    expected_entrypoints.update(
+        (
+            "riftx.application.services.audit_preflight_runner:"
+            f"AuditPreflightRunnerService.{method}",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RECONCILE,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+        )
+        for method in (
+            "reconcile_batch",
+            "mark_expired_outcome_unknown",
+            "expire_pending_never_created",
+            "converge_finish_receipt",
+            "converge_stop_receipt",
+        )
+    )
+    expected_entrypoints.update(
+        (
+            f"riftx.persistence.audit_preflight:SQLAlchemyAuditPreflightRepository.{method}",
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+        for method in ("create", "claim_next", "compare_and_set")
+    )
+    expected_entrypoints.add(
+        (
+            "riftx.persistence.audit_preflight:"
+            "SQLAlchemyAuditPreflightRepository.compare_and_set_reconciliation",
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+        )
+    )
+    actual_entrypoints = {
+        (entrypoint.qualified_name, entrypoint.operation, entrypoint.origin)
+        for entrypoint in MANAGED_EFFECT_ENTRYPOINTS
+    }
+    assert expected_entrypoints <= actual_entrypoints
+
+    managed_types = {item.qualified_name: item for item in MANAGED_EFFECT_TYPES}
+    runner_type = managed_types[
+        "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService"
+    ]
+    assert runner_type.read_only_methods == frozenset({"authenticate"})
+    repository_type = managed_types[
+        "riftx.persistence.audit_preflight:SQLAlchemyAuditPreflightRepository"
+    ]
+    assert repository_type.read_only_methods == frozenset(
+        {
+            "get_owner_binding",
+            "get_idempotency_binding",
+            "get",
+            "get_reconciliation_candidate",
+            "get_replayable_claim",
+            "list_reconciliation_candidates",
+        }
+    )
+
+
 def test_preflight_owner_is_independent_and_never_resolves_run_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -547,10 +951,7 @@ def test_generic_cleanup_cannot_dispatch_code_audit_workflow_finalization() -> N
         mode=EffectMode.SAFETY_REDUCE_ONLY,
     )
     assert generic.allowed_run_kinds == frozenset({RunKind.GENERAL})
-    assert (
-        generic.audit_alternative.operation
-        is RunEffectOperation.SERVICE_AUDIT_RECONCILE
-    )
+    assert generic.audit_alternative.operation is RunEffectOperation.SERVICE_AUDIT_RECONCILE
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
         require_run_kind_effect_policy(

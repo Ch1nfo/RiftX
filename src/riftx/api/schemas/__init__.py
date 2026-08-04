@@ -7,6 +7,19 @@ from .artifacts import (
     ArtifactResponse,
     RegisterArtifactRequest,
 )
+from .audit_preflight import (
+    AuditPreflightCreateResponse,
+    AuditPreflightJobResponse,
+    AuditPreflightResultResponse,
+    CreateAuditPreflightRequest,
+)
+from .audit_preflight_runner import (
+    AuditPreflightRunnerPollResponse,
+    FinishAuditPreflightRequest,
+    RenewAuditPreflightLeaseRequest,
+    StartAuditPreflightRequest,
+    StopAuditPreflightRequest,
+)
 from .audits import (
     AuditContractDraftRequest,
     AuditDraftResponse,
@@ -112,6 +125,10 @@ __all__ = [
     "ArtifactResponse",
     "AuditContractDraftRequest",
     "AuditDraftResponse",
+    "AuditPreflightCreateResponse",
+    "AuditPreflightJobResponse",
+    "AuditPreflightResultResponse",
+    "AuditPreflightRunnerPollResponse",
     "AuditListQuery",
     "AuditListResponse",
     "AuditProjectSummaryResponse",
@@ -125,6 +142,7 @@ __all__ = [
     "ConnectorWebUIResponse",
     "CodeAuditExecutionResponse",
     "CreateRunRequest",
+    "CreateAuditPreflightRequest",
     "CreateAuditDraftRequest",
     "CreateMemoryRequest",
     "CompactRunRequest",
@@ -139,6 +157,7 @@ __all__ = [
     "ExecutionResponse",
     "ExecutionWaitResponse",
     "FindingListResponse",
+    "FinishAuditPreflightRequest",
     "GraphViewPage",
     "GraphViewQuery",
     "MemoryListResponse",
@@ -164,6 +183,7 @@ __all__ = [
     "LegacyFinishRunnerCommandRequest",
     "RenewRunnerCommandLeaseRequest",
     "RenewRunnerCommandLeaseResponse",
+    "RenewAuditPreflightLeaseRequest",
     "RunnerCommandResponse",
     "RunnerCommandOutputReportRequest",
     "RunnerPollResponse",
@@ -184,6 +204,8 @@ __all__ = [
     "SuccessCriterionRequest",
     "SetDefaultModelProfileRequest",
     "SwitchRunModelRequest",
+    "StartAuditPreflightRequest",
+    "StopAuditPreflightRequest",
     "ToolRegistryResponse",
     "ToolDefinitionSummaryResponse",
     "ToolRegistrySummaryResponse",

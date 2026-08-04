@@ -15,6 +15,12 @@ from .artifacts import (
     RegisterArtifactContent,
 )
 from .audit_controls import AuditControlApplicationService, AuditRunStateProjector
+from .audit_preflight import (
+    AuditPreflightApplicationService,
+    AuditPreflightAvailabilityCheck,
+    AuditPreflightCreationResult,
+)
+from .audit_preflight_runner import AuditPreflightRunnerService
 from .audits import (
     AuditApplicationService,
     AuditContractBlueprint,
@@ -81,6 +87,10 @@ __all__ = [
     "ArtifactApplicationService",
     "ArtifactContentSlice",
     "AuditApplicationService",
+    "AuditPreflightApplicationService",
+    "AuditPreflightAvailabilityCheck",
+    "AuditPreflightCreationResult",
+    "AuditPreflightRunnerService",
     "AuditControlApplicationService",
     "AuditContractBlueprint",
     "AuditControlAction",

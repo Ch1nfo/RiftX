@@ -32,7 +32,7 @@ from riftx.persistence import Database
 from riftx.persistence.orm import Base
 
 REQUEST_REVISION = "7c4e1a9b2d06"
-HEAD_REVISION = "4f9a6c1d2e30"
+HEAD_REVISION = "2b7d9e4a6c10"
 REQUEST_TABLE = "audit_client_requests"
 
 

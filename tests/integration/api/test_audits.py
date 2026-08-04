@@ -115,8 +115,7 @@ def _service(
     return AuditApplicationService(
         creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
         aggregate_repository=(
-            aggregate_repository
-            or SQLAlchemyAuditAggregateReadRepository(database.session_factory)
+            aggregate_repository or SQLAlchemyAuditAggregateReadRepository(database.session_factory)
         ),
         feature_enabled=enabled,
         workspace_root=settings.audit.temp_root,
@@ -281,9 +280,7 @@ async def test_m1_code_audit_runner_enqueue_count_remains_zero(
         assert cancelled.status_code == 200, cancelled.text
 
         async with database.engine.connect() as connection:
-            enqueue_count = await connection.scalar(
-                text("SELECT count(*) FROM runner_commands")
-            )
+            enqueue_count = await connection.scalar(text("SELECT count(*) FROM runner_commands"))
         assert int(enqueue_count or 0) == 0
 
 
@@ -341,8 +338,7 @@ async def test_audit_body_validation_redacts_the_entire_sensitive_input(
         assert "RIFTX_BODY_CANARY_MUST_NOT_LEAK" not in response.text
         assert "RIFTX_AUTH_CANARY_MUST_NOT_LEAK" not in response.text
         assert all(
-            item.get("input") == "[redacted]"
-            for item in response.json()["error"]["details"]
+            item.get("input") == "[redacted]" for item in response.json()["error"]["details"]
         )
         assert (await _counts(database))["audit_scans"] == 0
 
@@ -664,45 +660,45 @@ async def test_openapi_exposes_the_audit_and_read_only_artifact_surfaces_safely(
             "/api/v1/audits/{audit_id}/artifacts",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
+            "/api/v1/audits/preflight",
+            "/api/v1/audits/preflight/{job_id}",
+            "/api/v1/audits/preflight/{job_id}/cancel",
         }
         assert set(paths["/api/v1/audits"]) == {"get", "post"}
         assert set(paths["/api/v1/audits/{audit_id}"]) == {"get"}
         for control in ("pause", "resume", "cancel"):
             assert set(paths[f"/api/v1/audits/{{audit_id}}/{control}"]) == {"post"}
         assert set(paths["/api/v1/audits/{audit_id}/artifacts"]) == {"get"}
-        assert set(paths["/api/v1/audits/{audit_id}/artifacts/{artifact_id}"]) == {
-            "get"
-        }
-        assert set(
-            paths[
-                "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content"
-            ]
-        ) == {"get"}
+        assert set(paths["/api/v1/audits/{audit_id}/artifacts/{artifact_id}"]) == {"get"}
+        assert set(paths["/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content"]) == {"get"}
+        assert set(paths["/api/v1/audits/preflight"]) == {"post"}
+        assert set(paths["/api/v1/audits/preflight/{job_id}"]) == {"get"}
+        assert set(paths["/api/v1/audits/preflight/{job_id}/cancel"]) == {"post"}
         for artifact_path in (
             "/api/v1/audits/{audit_id}/artifacts",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
             "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
         ):
             responses = paths[artifact_path]["get"]["responses"]
-            assert {"200", "401", "403", "404", "409", "422", "503"} <= set(
-                responses
-            )
-        assert "preflight" not in str(paths)
+            assert {"200", "401", "403", "404", "409", "422", "503"} <= set(responses)
         assert "/start" not in str(paths)
         serialized = str(paths)
         for forbidden in (
             "authorization_reference",
             "canonical_contract_json",
-            "request_digest",
             "workspace_path",
             "temporal_workflow_id",
             "storage_key",
             "ingest_provenance",
         ):
             assert forbidden not in serialized
-        artifact_properties = openapi["components"]["schemas"]["ArtifactResponse"][
-            "properties"
-        ]
-        assert {"path", "storage_key", "ingest_provenance"}.isdisjoint(
-            artifact_properties
-        )
+        artifact_properties = openapi["components"]["schemas"]["ArtifactResponse"]["properties"]
+        assert {"path", "storage_key", "ingest_provenance"}.isdisjoint(artifact_properties)
+        audit_properties = openapi["components"]["schemas"]["AuditResponse"]["properties"]
+        assert {
+            "authorization_reference",
+            "canonical_contract_json",
+            "request_digest",
+            "workspace_path",
+            "temporal_workflow_id",
+        }.isdisjoint(audit_properties)

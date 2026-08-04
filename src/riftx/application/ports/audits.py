@@ -124,6 +124,13 @@ class AuditObjectAuthorizer(Protocol):
         capability: OperatorCapability,
     ) -> str: ...
 
+    def preflight_authorization_scope_digest(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str: ...
+
 
 @dataclass(frozen=True, slots=True)
 class StoredAuditEntity[T]:

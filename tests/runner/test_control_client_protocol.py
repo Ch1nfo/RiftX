@@ -10,6 +10,7 @@ import pytest
 
 from riftx.application.services import NodeRegistration
 from riftx.domain import (
+    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     ExecutionStatus,
     RunKind,
@@ -219,9 +220,16 @@ async def test_valid_stored_credential_reconnects_without_registration(tmp_path:
     )
 
     assert await client.connect(_registration()) == "stored-token"
+    assert client.can_enable_protocol_capability(RUNNER_COMMAND_OWNERSHIP_CAPABILITY)
+    assert not client.can_enable_protocol_capability(
+        AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
+    )
     assert len(requests) == 1
     assert requests[0].headers["X-RiftX-Runner-Instance-ID"] == "runner-instance-a"
     assert requests[0].headers["X-RiftX-Runner-Epoch"] == "7"
+    heartbeat = json.loads(requests[0].read())
+    assert heartbeat["capabilities"] == [RUNNER_COMMAND_OWNERSHIP_CAPABILITY]
+    assert heartbeat["runner_version"] == "unknown"
     await http.aclose()
 
 

@@ -327,6 +327,7 @@ class RunEffectOperation(StrEnum):
     CONNECTOR_EVENTS = "connector_events"
     CONNECTOR_WEBUI = "connector_webui"
     CREATE_AUDIT = "create_audit"
+    CREATE_AUDIT_PREFLIGHT = "create_audit_preflight"
     CREATE_FINDING = "create_finding"
     CREATE_MEMORY = "create_memory"
     CREATE_RUN = "create_run"
@@ -337,6 +338,7 @@ class RunEffectOperation(StrEnum):
     GENERATE_REPORTS = "generate_reports"
     GET_ARTIFACT = "get_artifact"
     GET_AUDIT = "get_audit"
+    GET_AUDIT_PREFLIGHT = "get_audit_preflight"
     GET_AUDIT_ARTIFACT = "get_audit_artifact"
     GET_BROWSER = "get_browser"
     GET_CONTEXT_COMPILATION = "get_context_compilation"
@@ -389,6 +391,7 @@ class RunEffectOperation(StrEnum):
     TAKEOVER_BROWSER = "takeover_browser"
     TERMINAL_WEBSOCKET = "terminal_websocket"
     CANCEL_AUDIT = "cancel_audit"
+    CANCEL_AUDIT_PREFLIGHT = "cancel_audit_preflight"
     UPDATE_FINDING = "update_finding"
     UPDATE_MEMORY = "update_memory"
     WAIT_EXECUTION = "wait_execution"
@@ -407,13 +410,18 @@ class RunEffectOperation(StrEnum):
     # Runner API routes.
     FINISH_RUNNER_COMMAND = "finish_runner_command"
     FINISH_LEGACY_RUNNER_COMMAND = "finish_legacy_runner_command"
+    FINISH_AUDIT_PREFLIGHT_JOB = "finish_audit_preflight_job"
     HEARTBEAT_NODE = "heartbeat_node"
+    POLL_AUDIT_PREFLIGHT_JOB = "poll_audit_preflight_job"
     POLL_RUNNER_COMMAND = "poll_runner_command"
     REGISTER_NODE = "register_node"
+    RENEW_AUDIT_PREFLIGHT_LEASE = "renew_audit_preflight_lease"
     RENEW_RUNNER_COMMAND_LEASE = "renew_runner_command_lease"
     REPORT_EXECUTION_OUTPUT = "report_execution_output"
     REPORT_EXECUTION_STATUS = "report_execution_status"
     REPORT_RUNNER_COMMAND_OUTPUT = "report_runner_command_output"
+    START_AUDIT_PREFLIGHT_JOB = "start_audit_preflight_job"
+    STOP_AUDIT_PREFLIGHT_JOB = "stop_audit_preflight_job"
 
     # Application service entrypoints.
     SERVICE_RUN_CREATE = "service.run.create"
@@ -426,6 +434,16 @@ class RunEffectOperation(StrEnum):
     SERVICE_RUN_APPEND_MESSAGE = "service.run.append_message"
     SERVICE_RUN_CLEANUP = "service.run.cleanup"
     SERVICE_AUDIT_CREATE_DRAFT = "service.audit.create_draft"
+    SERVICE_AUDIT_PREFLIGHT_CREATE = "service.audit_preflight.create"
+    SERVICE_AUDIT_PREFLIGHT_GET = "service.audit_preflight.get"
+    SERVICE_AUDIT_PREFLIGHT_CANCEL = "service.audit_preflight.cancel"
+    SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL = "service.audit_preflight_runner.poll"
+    SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW = "service.audit_preflight_runner.renew"
+    SERVICE_AUDIT_PREFLIGHT_RUNNER_START = "service.audit_preflight_runner.start"
+    SERVICE_AUDIT_PREFLIGHT_RUNNER_FINISH = "service.audit_preflight_runner.finish"
+    SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP = "service.audit_preflight_runner.stop"
+    SERVICE_AUDIT_PREFLIGHT_RECONCILE = "service.audit_preflight.reconcile"
+    PERSIST_AUDIT_PREFLIGHT_MUTATION = "persistence.audit_preflight.mutation"
     SERVICE_AUDIT_PAUSE = "service.audit.pause"
     SERVICE_AUDIT_RESUME = "service.audit.resume"
     SERVICE_AUDIT_CANCEL = "service.audit.cancel"
@@ -516,6 +534,7 @@ class RunEffectOperation(StrEnum):
     CONTROL_PLANE_CLEANUP_RECONCILE = "reconcile.control_plane_cleanup"
     WORKER_CLEANUP_RECONCILE = "reconcile.worker_cleanup"
     CONTROL_PLANE_RUNNER_RECONCILE = "reconcile.control_plane_runner"
+    CONTROL_PLANE_AUDIT_PREFLIGHT_RECONCILE = "reconcile.control_plane_audit_preflight"
     WORKER_RUNNER_RECONCILE = "reconcile.worker_runner"
     WORKFLOW_SIGNAL_DISPATCH = "workflow_signal.dispatch"
     WORKFLOW_SIGNAL_RECONCILE = "workflow_signal.reconcile"
@@ -633,10 +652,7 @@ class RunKindEffectPolicy:
                 if self.effect_mode is EffectMode.GLOBAL:
                     raise ValueError("Preflight operations cannot use global mode")
             else:
-                if (
-                    self.ownership_resolver
-                    is not OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE
-                ):
+                if self.ownership_resolver is not OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE:
                     raise ValueError(
                         "legacy Runner operations require the original stop lease resolver"
                     )
@@ -655,12 +671,14 @@ class RunKindEffectPolicy:
             OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
             OwnershipResolverKind.EXECUTION_OWNERSHIP_ENVELOPE,
             OwnershipResolverKind.AUDIT_OWNERSHIP_ENVELOPE,
+            OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
         }:
             raise ValueError("ownership callbacks require an immutable ownership envelope")
         if self.effect_mode is EffectMode.STOP_PROOF and self.ownership_resolver not in {
             OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
             OwnershipResolverKind.EXECUTION_OWNERSHIP_ENVELOPE,
             OwnershipResolverKind.AUDIT_OWNERSHIP_ENVELOPE,
+            OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
             OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE,
         }:
             raise ValueError("stop proof requires an immutable ownership envelope")
@@ -1056,6 +1074,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         _SAME,
     ),
     _rule(
+        RunEffectOperation.GET_AUDIT_PREFLIGHT,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.READ_ONLY,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.READ_ONLY,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
         RunEffectOperation.LIST_AUDIT_ARTIFACTS,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.ARTIFACT,
@@ -1292,6 +1321,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
+        RunEffectOperation.CREATE_AUDIT_PREFLIGHT,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
         RunEffectOperation.PAUSE_RUN,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.WORKFLOW_CONTROL,
@@ -1350,6 +1390,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OwnershipResolverKind.AUDIT_ID,
         EffectMode.NORMAL,
         _SAME,
+    ),
+    _rule(
+        RunEffectOperation.CANCEL_AUDIT_PREFLIGHT,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.HOST_CONTROL,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
     ),
     *_rules(
         (
@@ -1605,6 +1656,33 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.OWNERSHIP_CALLBACK,
         _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
+    *_rules(
+        (
+            RunEffectOperation.POLL_AUDIT_PREFLIGHT_JOB,
+            RunEffectOperation.RENEW_AUDIT_PREFLIGHT_LEASE,
+            RunEffectOperation.START_AUDIT_PREFLIGHT_JOB,
+            RunEffectOperation.FINISH_AUDIT_PREFLIGHT_JOB,
+        ),
+        EffectOrigin.RUNNER_API,
+        RunEffectFamily.RUNNER_COMMAND,
+        _NO_RUN_KIND,
+        OperationEffect.RUNNER_CALLBACK,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.OWNERSHIP_CALLBACK,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.STOP_AUDIT_PREFLIGHT_JOB,
+        EffectOrigin.RUNNER_API,
+        RunEffectFamily.SAFETY_STOP,
+        _NO_RUN_KIND,
+        OperationEffect.RUNNER_CALLBACK,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.STOP_PROOF,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
     _rule(
         RunEffectOperation.FINISH_LEGACY_RUNNER_COMMAND,
         EffectOrigin.RUNNER_API,
@@ -1654,6 +1732,77 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.GLOBAL,
         _SAME,
         owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CREATE,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_GET,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.READ_ONLY,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.READ_ONLY,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.HOST_CONTROL,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    *_rules(
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL,
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW,
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_START,
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_FINISH,
+        ),
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUNNER_COMMAND,
+        _NO_RUN_KIND,
+        OperationEffect.RUNNER_CALLBACK,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.OWNERSHIP_CALLBACK,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.SAFETY_STOP,
+        _NO_RUN_KIND,
+        OperationEffect.RUNNER_CALLBACK,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.STOP_PROOF,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.NORMAL,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
     ),
     _rule(
         RunEffectOperation.SERVICE_RUN_PAUSE,
@@ -2326,6 +2475,31 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.SAFETY_REDUCE_ONLY,
         _SAME,
     ),
+    *_rules(
+        (
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RECONCILE,
+            RunEffectOperation.CONTROL_PLANE_AUDIT_PREFLIGHT_RECONCILE,
+        ),
+        EffectOrigin.CONTROL_PLANE_RECONCILER,
+        RunEffectFamily.SAFETY_STOP,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.RECONCILE,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
+    _rule(
+        RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+        EffectOrigin.CONTROL_PLANE_RECONCILER,
+        RunEffectFamily.SAFETY_STOP,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
+        EffectMode.RECONCILE,
+        _NOT_RUN_SCOPED,
+        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
+    ),
     _rule(
         RunEffectOperation.WORKER_RUNNER_RECONCILE,
         EffectOrigin.WORKER_RECONCILER,
@@ -2584,8 +2758,7 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(
-        "riftx.persistence.audit_control_uow:"
-        "SQLAlchemyAuditControlUnitOfWork.converge_cleanup",
+        "riftx.persistence.audit_control_uow:SQLAlchemyAuditControlUnitOfWork.converge_cleanup",
         RunEffectOperation.PERSIST_AUDIT_CLEANUP_CONVERGENCE,
         EffectOrigin.SAFETY_RECONCILER,
     ),
@@ -2598,6 +2771,68 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         "riftx.application.services.audits:AuditApplicationService.create_draft_authorized",
         RunEffectOperation.SERVICE_AUDIT_CREATE_DRAFT,
         EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.application.services.audit_preflight:"
+        "AuditPreflightApplicationService.create_authorized",
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CREATE,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.application.services.audit_preflight:"
+        "AuditPreflightApplicationService.get_authorized",
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_GET,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.application.services.audit_preflight:"
+        "AuditPreflightApplicationService.cancel_authorized",
+        RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_CANCEL,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    *(
+        _entry(
+            f"riftx.application.services.audit_preflight_runner:"
+            f"AuditPreflightRunnerService.{method}",
+            operation,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+        for method, operation in (
+            ("poll", RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_POLL),
+            ("renew_lease", RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_RENEW),
+            ("start", RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_START),
+            ("finish", RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_FINISH),
+            ("stop", RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RUNNER_STOP),
+        )
+    ),
+    *(
+        _entry(
+            f"riftx.application.services.audit_preflight_runner:"
+            f"AuditPreflightRunnerService.{method}",
+            RunEffectOperation.SERVICE_AUDIT_PREFLIGHT_RECONCILE,
+            EffectOrigin.CONTROL_PLANE_RECONCILER,
+        )
+        for method in (
+            "reconcile_batch",
+            "mark_expired_outcome_unknown",
+            "expire_pending_never_created",
+            "converge_finish_receipt",
+            "converge_stop_receipt",
+        )
+    ),
+    *(
+        _entry(
+            f"riftx.persistence.audit_preflight:SQLAlchemyAuditPreflightRepository.{method}",
+            RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+        for method in ("create", "claim_next", "compare_and_set")
+    ),
+    _entry(
+        "riftx.persistence.audit_preflight:"
+        "SQLAlchemyAuditPreflightRepository.compare_and_set_reconciliation",
+        RunEffectOperation.PERSIST_AUDIT_PREFLIGHT_MUTATION,
+        EffectOrigin.CONTROL_PLANE_RECONCILER,
     ),
     _entry(
         "riftx.application.services.audit_controls:AuditControlApplicationService.pause",
@@ -2992,6 +3227,11 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         EffectOrigin.CONTROL_PLANE_RECONCILER,
     ),
     _entry(
+        "riftx.api.runtime:ControlPlane._reconcile_audit_preflight_jobs",
+        RunEffectOperation.CONTROL_PLANE_AUDIT_PREFLIGHT_RECONCILE,
+        EffectOrigin.CONTROL_PLANE_RECONCILER,
+    ),
+    _entry(
         "riftx.api.runtime:ControlPlane._reconcile_workflow_signals",
         RunEffectOperation.CONTROL_PLANE_WORKFLOW_SIGNAL_RECONCILE,
         EffectOrigin.CONTROL_PLANE_RECONCILER,
@@ -3078,6 +3318,24 @@ MANAGED_EFFECT_TYPES: tuple[ManagedEffectType, ...] = (
             "list_authorized",
             "pause",
             "resume",
+        ),
+    ),
+    _managed_type(
+        "riftx.application.services.audit_preflight:AuditPreflightApplicationService",
+    ),
+    _managed_type(
+        "riftx.application.services.audit_preflight_runner:AuditPreflightRunnerService",
+        read_only=("authenticate",),
+    ),
+    _managed_type(
+        "riftx.persistence.audit_preflight:SQLAlchemyAuditPreflightRepository",
+        read_only=(
+            "get_owner_binding",
+            "get_idempotency_binding",
+            "get",
+            "get_reconciliation_candidate",
+            "get_replayable_claim",
+            "list_reconciliation_candidates",
         ),
     ),
     _managed_type(

@@ -14,6 +14,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from .dependencies import (
     authorize_admin,
+    authorize_audit_preflight_runner,
     authorize_local_operator,
     authorize_runner,
     authorize_runner_bootstrap,
@@ -86,6 +87,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "get_run",
                 "list_audits",
                 "get_audit",
+                "get_audit_preflight",
                 "list_run_actions",
                 "get_run_action",
                 "get_run_graph",
@@ -169,7 +171,13 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
     ),
     (
         _policy(RouteAuthorization.LOCAL_OPERATOR, RouteEffect.HOST_EXECUTION),
-        frozenset({"create_terminal", "open_browser"}),
+        frozenset(
+            {
+                "create_audit_preflight",
+                "create_terminal",
+                "open_browser",
+            }
+        ),
     ),
     (
         _policy(RouteAuthorization.LOCAL_OPERATOR, RouteEffect.HOST_CONTROL),
@@ -177,6 +185,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
             {
                 "close_terminal",
                 "cancel_audit",
+                "cancel_audit_preflight",
                 "terminal_websocket",
                 "close_browser",
                 "act_browser",
@@ -222,6 +231,11 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "heartbeat_node",
+                "poll_audit_preflight_job",
+                "renew_audit_preflight_lease",
+                "start_audit_preflight_job",
+                "finish_audit_preflight_job",
+                "stop_audit_preflight_job",
                 "poll_runner_command",
                 "finish_legacy_runner_command",
                 "finish_runner_command",
@@ -254,6 +268,7 @@ _AUTHENTICATION_DEPENDENCIES = (
     authorize_local_operator,
     authorize_admin,
     authorize_runner_bootstrap,
+    authorize_audit_preflight_runner,
     authorize_runner,
     authorize_runner_node,
 )
@@ -268,6 +283,14 @@ def _expected_authentication_dependency(
     if authorization is RouteAuthorization.RUNNER_BOOTSTRAP_TOKEN:
         return authorize_runner_bootstrap
     if authorization is RouteAuthorization.RUNNER_TOKEN:
+        if route_name in {
+            "poll_audit_preflight_job",
+            "renew_audit_preflight_lease",
+            "start_audit_preflight_job",
+            "finish_audit_preflight_job",
+            "stop_audit_preflight_job",
+        }:
+            return authorize_audit_preflight_runner
         return authorize_runner_node if route_name == "heartbeat_node" else authorize_runner
     if authorization is RouteAuthorization.LOCAL_OPERATOR:
         return authorize_local_operator

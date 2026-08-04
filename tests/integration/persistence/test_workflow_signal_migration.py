@@ -195,7 +195,7 @@ async def test_metadata_bootstrap_registers_outbox_and_refuses_partial_upgrade(
         await managed.create_schema()
     await managed.dispose()
 
-    await asyncio.to_thread(run_alembic, managed_path, SIGNAL_REVISION)
+    await asyncio.to_thread(run_alembic, managed_path, "head")
     current = Database(f"sqlite+aiosqlite:///{managed_path}")
     await current.create_schema()
     await current.dispose()

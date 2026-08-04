@@ -33,6 +33,9 @@ from riftx.application.services import (
     ToolApplicationService,
     TrafficMetadataApplicationService,
 )
+from riftx.application.services.audit_preflight_runner import (
+    AuditPreflightRunnerService,
+)
 from riftx.application.services.graphs import GraphApplicationService
 from riftx.application.traffic import TrafficMetadataCapability
 from riftx.browser.service import BrowserApplicationService
@@ -60,6 +63,7 @@ class RunnerAuthorization:
     node_id: str
     token: str
     principal: RunnerPrincipal
+    protocol_capabilities: tuple[str, ...] = ()
 
 
 class _GraphObjectAuthorizer:
@@ -216,6 +220,21 @@ def get_runner_control_service(request: Request) -> RunnerControlService:
     return request.app.state.control_plane.runner_control_service
 
 
+def get_audit_preflight_runner_service(request: Request) -> AuditPreflightRunnerService:
+    control_plane = getattr(request.app.state, "control_plane", None)
+    service = getattr(
+        control_plane,
+        "audit_preflight_runner_service",
+        None,
+    )
+    if not isinstance(service, AuditPreflightRunnerService):
+        raise ServiceUnavailableError(
+            "audit_preflight_runner_unavailable",
+            "RiftX Code Audit Preflight Runner transport is temporarily unavailable",
+        )
+    return service
+
+
 def get_report_service(request: Request) -> ReportApplicationService:
     return request.app.state.control_plane.report_service
 
@@ -290,6 +309,10 @@ NodeServiceDependency = Annotated[NodeApplicationService, Depends(get_node_servi
 ReportServiceDependency = Annotated[ReportApplicationService, Depends(get_report_service)]
 RunnerControlServiceDependency = Annotated[
     RunnerControlService, Depends(get_runner_control_service)
+]
+AuditPreflightRunnerServiceDependency = Annotated[
+    AuditPreflightRunnerService,
+    Depends(get_audit_preflight_runner_service),
 ]
 ToolServiceDependency = Annotated[ToolApplicationService, Depends(get_tool_service)]
 ApprovalServiceDependency = Annotated[
@@ -502,7 +525,39 @@ async def authorize_runner(
     principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
     credential = await service.authenticate(node_id, token)
     _require_matching_runner_principal(credential.principal, principal)
-    return RunnerAuthorization(node_id=node_id, token=token, principal=principal)
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
+
+
+async def authorize_audit_preflight_runner(
+    service: AuditPreflightRunnerServiceDependency,
+    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
+    runner_instance_id: Annotated[
+        str,
+        Header(alias="X-RiftX-Runner-Instance-ID", min_length=1, max_length=64),
+    ],
+    runner_epoch: Annotated[int, Header(alias="X-RiftX-Runner-Epoch", ge=1)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> RunnerAuthorization:
+    """Authenticate the dedicated Preflight credential and immutable capability."""
+
+    token = bearer_token(authorization)
+    principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
+    credential = await service.authenticate(
+        node_id,
+        token,
+        declared_principal=principal,
+    )
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
 
 
 async def authorize_runner_node(
@@ -521,7 +576,12 @@ async def authorize_runner_node(
     principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
     credential = await service.authenticate(node_id, token)
     _require_matching_runner_principal(credential.principal, principal)
-    return RunnerAuthorization(node_id=node_id, token=token, principal=principal)
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
 
 
 def _require_matching_runner_principal(
@@ -550,6 +610,10 @@ RunnerBootstrapDependency = Annotated[
 RunnerDependency = Annotated[
     RunnerAuthorization,
     Depends(authorize_runner),
+]
+AuditPreflightRunnerDependency = Annotated[
+    RunnerAuthorization,
+    Depends(authorize_audit_preflight_runner),
 ]
 RunnerNodeDependency = Annotated[
     RunnerAuthorization,

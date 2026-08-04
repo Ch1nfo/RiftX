@@ -70,6 +70,9 @@ workspace:
 # an empty list is deny-all and never falls back to the current directory.
 audit:
   enabled: false
+  # RiftX 3.0 is deliberately same-node only.
+  node_mode: local_same_node
+  allowed_node_ids: [local]
   source_roots: []
   # Keep every Audit storage root absolute, persistent, and outside source_roots.
   snapshot_root: /var/lib/riftx/audit/snapshots
@@ -98,6 +101,20 @@ audit:
     max_output_tokens: 200000
     max_worker_jobs: 64
     max_candidates: 1000
+  # Real repository Preflight remains unavailable until an operator supplies
+  # a reviewed, immutable image digest for the local Linux SourceIngest worker.
+  source_ingest:
+    backend_id: linux_container
+    runtime: docker
+    image_digest: null
+    policy_version: riftx.audit-source-ingest-policy/v1
+    max_wall_seconds: 120
+    max_memory_mib: 512
+    max_pids: 32
+    max_result_bytes: 262144
+    max_output_bytes: 1048576
+    lease_seconds: 120
+    job_ttl_seconds: 3600
   validation:
     default_policy: static_only
     require_sandbox: true

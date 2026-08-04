@@ -1075,9 +1075,24 @@ def test_audit_profile_a_scope_and_server_domain_reference_are_stable(tmp_path: 
         second_security.principal,
         capability=OperatorCapability.WRITE,
     )
+    first_preflight_scope = first_authorizer.preflight_authorization_scope_digest(
+        first_security.principal,
+        capability=OperatorCapability.HOST_EXECUTE,
+    )
+    read_preflight_scope = first_authorizer.preflight_authorization_scope_digest(
+        first_security.principal,
+        capability=OperatorCapability.READ,
+    )
+    second_preflight_scope = second_authorizer.preflight_authorization_scope_digest(
+        second_security.principal,
+        capability=OperatorCapability.HOST_CONTROL,
+    )
 
     assert scope.all_engagements is True
     assert scope.engagement_ids == frozenset()
     assert scope.can_create_engagement is True
     assert first_reference == second_reference
     assert len(first_reference) == 64
+    assert first_preflight_scope == read_preflight_scope == second_preflight_scope
+    assert len(first_preflight_scope) == 64
+    assert first_preflight_scope != first_reference

@@ -88,7 +88,8 @@ class _AuditConfigModel(_ConfigModel):
     )
 
 
-AUDIT_CONFIG_DIGEST_VERSION = "riftx.audit-config/v1"
+AUDIT_CONFIG_DIGEST_VERSION = "riftx.audit-config/v2"
+AUDIT_SOURCE_INGEST_POLICY_VERSION = "riftx.audit-source-ingest-policy/v1"
 _MAX_AUDIT_REPOSITORY_BYTES = 2_147_483_648
 _MAX_AUDIT_FILE_BYTES = 5_242_880
 _MAX_AUDIT_FILES = 200_000
@@ -108,6 +109,13 @@ _MAX_AUDIT_MODEL_BYTES_PER_AUDIT = 16_777_216
 _MAX_AUDIT_VALIDATION_WALL_SECONDS = 900
 _MAX_AUDIT_VALIDATION_MEMORY_MIB = 2_048
 _MAX_AUDIT_VALIDATION_PIDS = 128
+_MAX_AUDIT_PREFLIGHT_WALL_SECONDS = 120
+_MAX_AUDIT_PREFLIGHT_MEMORY_MIB = 512
+_MAX_AUDIT_PREFLIGHT_PIDS = 32
+_MAX_AUDIT_PREFLIGHT_RESULT_BYTES = 262_144
+_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES = 1_048_576
+_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS = 120
+_MAX_AUDIT_PREFLIGHT_TTL_SECONDS = 3_600
 _DECIMAL_INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 _DNS_ORIGIN_LABEL_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
@@ -368,8 +376,61 @@ class AuditSandboxConfig(_AuditConfigModel):
 AuditValidationConfig = AuditSandboxConfig
 
 
+class AuditSourceIngestConfig(_AuditConfigModel):
+    """Production SourceIngest policy; a missing image is explicitly unavailable."""
+
+    backend_id: Literal["linux_container"] = "linux_container"
+    runtime: Literal["docker"] = "docker"
+    image_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    policy_version: Literal["riftx.audit-source-ingest-policy/v1"] = (
+        AUDIT_SOURCE_INGEST_POLICY_VERSION
+    )
+    max_wall_seconds: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_WALL_SECONDS,
+        ge=1,
+        le=_MAX_AUDIT_PREFLIGHT_WALL_SECONDS,
+    )
+    max_memory_mib: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_MEMORY_MIB,
+        ge=64,
+        le=_MAX_AUDIT_PREFLIGHT_MEMORY_MIB,
+    )
+    max_pids: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_PIDS,
+        ge=1,
+        le=_MAX_AUDIT_PREFLIGHT_PIDS,
+    )
+    max_result_bytes: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_RESULT_BYTES,
+        ge=1_024,
+        le=_MAX_AUDIT_PREFLIGHT_RESULT_BYTES,
+    )
+    max_output_bytes: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES,
+        ge=1_024,
+        le=_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES,
+    )
+    lease_seconds: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS,
+        ge=5,
+        le=_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS,
+    )
+    job_ttl_seconds: AuditInteger = Field(
+        default=_MAX_AUDIT_PREFLIGHT_TTL_SECONDS,
+        ge=60,
+        le=_MAX_AUDIT_PREFLIGHT_TTL_SECONDS,
+    )
+
+
 class AuditConfig(_AuditConfigModel):
     enabled: AuditBoolean = False
+    node_mode: Literal["local_same_node"] = "local_same_node"
+    allowed_node_ids: tuple[Literal["local"], ...] = ("local",)
     source_roots: tuple[Path, ...] = Field(default_factory=tuple, repr=False)
     snapshot_root: Path = Path("/var/lib/riftx/audit/snapshots")
     temp_root: Path = Path("/var/lib/riftx/audit/tmp")
@@ -406,7 +467,20 @@ class AuditConfig(_AuditConfigModel):
     )
     workers: AuditWorkersConfig = Field(default_factory=AuditWorkersConfig)
     budget: AuditBudgetConfig = Field(default_factory=AuditBudgetConfig)
+    source_ingest: AuditSourceIngestConfig = Field(
+        default_factory=AuditSourceIngestConfig
+    )
     validation: AuditSandboxConfig = Field(default_factory=AuditSandboxConfig)
+
+    @field_validator("allowed_node_ids")
+    @classmethod
+    def validate_allowed_node_ids(
+        cls,
+        values: tuple[Literal["local"], ...],
+    ) -> tuple[Literal["local"], ...]:
+        if values != ("local",):
+            raise ValueError("RiftX 3.0 Audit requires allowed_node_ids=[local]")
+        return values
 
     @field_validator("source_roots")
     @classmethod
@@ -471,6 +545,20 @@ def audit_config_digest(config: AuditConfig, *, path_digest_key: bytes) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def audit_source_ingest_policy_digest(config: AuditSourceIngestConfig) -> str:
+    """Digest the non-secret, fixed SourceIngest containment policy."""
+
+    encoded = json.dumps(
+        config.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(
+        AUDIT_SOURCE_INGEST_POLICY_VERSION.encode("ascii") + b"\0" + encoded
+    ).hexdigest()
 
 
 class ServerConfig(_ConfigModel):
@@ -755,6 +843,8 @@ class RiftXConfig(_ConfigModel):
 
 _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AUDIT_ENABLED": ("audit", "enabled"),
+    "RIFTX_AUDIT_NODE_MODE": ("audit", "node_mode"),
+    "RIFTX_AUDIT_ALLOWED_NODE_IDS": ("audit", "allowed_node_ids"),
     "RIFTX_AUDIT_SOURCE_ROOTS": ("audit", "source_roots"),
     "RIFTX_AUDIT_SNAPSHOT_ROOT": ("audit", "snapshot_root"),
     "RIFTX_AUDIT_TEMP_ROOT": ("audit", "temp_root"),
@@ -829,6 +919,61 @@ _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
         "budget",
         "max_candidates",
     ),
+    "RIFTX_AUDIT_SOURCE_INGEST_BACKEND_ID": (
+        "audit",
+        "source_ingest",
+        "backend_id",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_RUNTIME": (
+        "audit",
+        "source_ingest",
+        "runtime",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_IMAGE_DIGEST": (
+        "audit",
+        "source_ingest",
+        "image_digest",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_POLICY_VERSION": (
+        "audit",
+        "source_ingest",
+        "policy_version",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_MAX_WALL_SECONDS": (
+        "audit",
+        "source_ingest",
+        "max_wall_seconds",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_MAX_MEMORY_MIB": (
+        "audit",
+        "source_ingest",
+        "max_memory_mib",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_MAX_PIDS": (
+        "audit",
+        "source_ingest",
+        "max_pids",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_MAX_RESULT_BYTES": (
+        "audit",
+        "source_ingest",
+        "max_result_bytes",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_MAX_OUTPUT_BYTES": (
+        "audit",
+        "source_ingest",
+        "max_output_bytes",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_LEASE_SECONDS": (
+        "audit",
+        "source_ingest",
+        "lease_seconds",
+    ),
+    "RIFTX_AUDIT_SOURCE_INGEST_JOB_TTL_SECONDS": (
+        "audit",
+        "source_ingest",
+        "job_ttl_seconds",
+    ),
     "RIFTX_AUDIT_VALIDATION_DEFAULT_POLICY": (
         "audit",
         "validation",
@@ -862,6 +1007,7 @@ _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
 }
 _AUDIT_JSON_LIST_ENVIRONMENT = frozenset(
     {
+        "RIFTX_AUDIT_ALLOWED_NODE_IDS",
         "RIFTX_AUDIT_SOURCE_ROOTS",
         "RIFTX_AUDIT_MODEL_EGRESS_ALLOW_REMOTE_ORIGINS",
     }

@@ -1,6 +1,8 @@
+from riftx.persistence.audit_preflight import AuditPreflightJobRecord
 from riftx.persistence.orm import Base
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
+assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
@@ -16,6 +18,11 @@ EXPECTED_TABLES = {
     "audit_contracts",
     "audit_client_requests",
     "audit_phase_runs",
+    "audit_preflight_exit_receipts",
+    "audit_preflight_job_requests",
+    "audit_preflight_jobs",
+    "audit_preflight_results",
+    "audit_preflight_stop_receipts",
     "audit_projects",
     "audit_scans",
     "audit_scope_units",

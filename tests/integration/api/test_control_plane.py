@@ -51,6 +51,7 @@ from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
     AuditApplicationService,
+    AuditPreflightApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -2112,6 +2113,7 @@ models:
 
     runtime = await build_control_plane(settings)
     assert isinstance(runtime.audit_service, AuditApplicationService)
+    assert isinstance(runtime.audit_preflight_service, AuditPreflightApplicationService)
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
@@ -2122,6 +2124,27 @@ models:
         assert cleanup_reconciler is not None and not cleanup_reconciler.done()
         assert connection_attempts == []
         async for client in _client(runtime):
+            disabled_preflight = await client.post(
+                "/api/v1/audits/preflight",
+                json={
+                    "repository_path": "/RIFTX-PREFLIGHT-CANARY",
+                    "unknown": "RIFTX-PREFLIGHT-CANARY",
+                },
+            )
+            assert disabled_preflight.status_code == 503
+            assert disabled_preflight.json()["error"]["code"] == "audit_feature_disabled"
+            assert "RIFTX-PREFLIGHT-CANARY" not in disabled_preflight.text
+            missing_preflight = await client.get(
+                "/api/v1/audits/preflight/missing-preflight-job"
+            )
+            missing_preflight_cancel = await client.post(
+                "/api/v1/audits/preflight/missing-preflight-job/cancel"
+            )
+            assert missing_preflight.status_code == 404
+            assert missing_preflight_cancel.status_code == 404
+            assert missing_preflight.json()["error"]["code"] == "resource_not_accessible"
+            assert missing_preflight_cancel.json() == missing_preflight.json()
+
             created = await client.post(
                 "/api/v1/runs",
                 json={"objective": "Wait for an explicit instruction"},

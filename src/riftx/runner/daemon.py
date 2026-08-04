@@ -8,7 +8,7 @@ import logging
 import os
 import platform as platform_module
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Protocol, TypedDict, cast
@@ -22,7 +22,14 @@ from riftx.browser import (
     BrowserOperation,
     BrowserSessionCommand,
 )
+from riftx.config import (
+    AuditConfig,
+    RiftXConfigError,
+    audit_source_ingest_policy_digest,
+    load_riftx_config,
+)
 from riftx.domain import (
+    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
     RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
     BrowserSessionStatus,
     Execution,
@@ -52,6 +59,7 @@ from riftx.target_http.models import (
     TargetHttpRunnerStopOutcome,
 )
 
+from .audit_preflight import AuditPreflightRunner, DockerAuditPreflightCapsuleBackend
 from .browser import BrowserRunner, RunnerBrowserManager, execute_browser_command
 from .control_client import (
     LeasedRunnerCommand,
@@ -63,6 +71,7 @@ from .control_client import (
 )
 from .models import ExecutionLaunchRequest, TerminalLaunchRequest
 from .paths import RunnerPaths
+from .preflight import AuditPreflightRunnerJournal, AuditPreflightRunnerJournalError
 from .protocols import EffectGuard, ExecutionRunner
 from .state import FileExecutionRepository, FileTerminalRepository
 from .supervisor import ProcessSupervisor
@@ -108,6 +117,15 @@ _SAFETY_COMMAND_KINDS = frozenset(
         RunnerCommandKind.TERMINAL_CLOSE,
     }
 )
+_AUDIT_READINESS_LABELS = frozenset(
+    {
+        "audit_source_ingest_available",
+        "audit_source_ingest_backend_id",
+        "audit_source_ingest_image_digest",
+        "audit_source_ingest_policy_digest",
+    }
+)
+
 
 class _ExecutionCallbackKwargs(TypedDict):
     runner_command_id: str
@@ -145,6 +163,12 @@ def _default_capabilities() -> tuple[str, ...]:
     return tuple(capabilities)
 
 
+def _default_audit_config() -> AuditConfig:
+    # Re-validate explicit default values so platform path aliases (for
+    # example macOS /var -> /private/var) match the shared config loader.
+    return AuditConfig.model_validate(AuditConfig().model_dump(mode="python"))
+
+
 @dataclass(frozen=True, slots=True)
 class RunnerDaemonConfig:
     server_url: str
@@ -168,6 +192,8 @@ class RunnerDaemonConfig:
     require_containment: bool = True
     payload_uid: int | None = None
     payload_gid: int | None = None
+    audit: AuditConfig = field(default_factory=_default_audit_config)
+    audit_preflight_ready: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         validate_runner_registration_credential(self.registration_token)
@@ -179,6 +205,12 @@ class RunnerDaemonConfig:
             raise ValueError("Runner resource stop timeout must be positive")
         if (self.payload_uid is None) != (self.payload_gid is None):
             raise ValueError("payload_uid and payload_gid must be configured together")
+        if self.audit.enabled and self.node_id != "local":
+            raise ValueError("RiftX Code Audit requires the local Runner node")
+        if self.audit_preflight_ready and (
+            not self.audit.enabled or self.audit.source_ingest.image_digest is None
+        ):
+            raise ValueError("Audit Preflight readiness requires enabled Audit and a pinned image")
         for field_name, value in (
             ("payload_uid", self.payload_uid),
             ("payload_gid", self.payload_gid),
@@ -188,20 +220,41 @@ class RunnerDaemonConfig:
 
     @property
     def registration(self) -> NodeRegistration:
+        capabilities = set(self.capabilities)
+        capabilities.discard(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        configured_labels = {
+            key: value
+            for key, value in (self.labels or {}).items()
+            if key not in _AUDIT_READINESS_LABELS
+        }
         labels = {
             "mode": "remote",
             "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
             "working_directory": str(Path.cwd()),
             "tool_count": "0",
-            **(self.labels or {}),
+            **configured_labels,
         }
+        if self.audit_preflight_ready:
+            image_digest = self.audit.source_ingest.image_digest
+            assert image_digest is not None
+            capabilities.add(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+            labels.update(
+                {
+                    "audit_source_ingest_available": "true",
+                    "audit_source_ingest_backend_id": (self.audit.source_ingest.backend_id),
+                    "audit_source_ingest_image_digest": image_digest,
+                    "audit_source_ingest_policy_digest": (
+                        audit_source_ingest_policy_digest(self.audit.source_ingest)
+                    ),
+                }
+            )
         return NodeRegistration(
             node_id=self.node_id,
             name=self.name,
             platform=self.platform,
             architecture=self.architecture,
             runner_version=self.runner_version,
-            capabilities=self.capabilities,
+            capabilities=tuple(sorted(capabilities)),
             labels=labels,
         )
 
@@ -219,6 +272,7 @@ class RunnerDaemon:
         terminal_handler: TerminalCommandHandler | None = None,
         target_http_handler: TargetHttpRunner | None = None,
         browser_handler: BrowserRunner | None = None,
+        audit_preflight_runner: AuditPreflightRunner | None = None,
         execution_cancellation_journal: OperationJournal | None = None,
         target_http_cancellation_journal: OperationJournal | None = None,
         target_http_delivery_journal: OperationJournal | None = None,
@@ -232,6 +286,7 @@ class RunnerDaemon:
         self._terminal_handler = terminal_handler
         self._target_http_handler = target_http_handler
         self._browser_handler = browser_handler
+        self._audit_preflight_runner = audit_preflight_runner
         self._execution_cancellations = execution_cancellation_journal or OperationJournal(
             config.state_path / "execution-cancellations.json",
             # Pre-ownership journals stored arbitrary execution_key strings.
@@ -285,6 +340,8 @@ class RunnerDaemon:
         while not self._closed:
             try:
                 await self._client.connect(self.config.registration)
+                if self._audit_preflight_runner is not None:
+                    await self._audit_preflight_runner.start()
                 await self.resume_active()
                 delay = self.config.reconnect_initial_seconds
                 safety_only = (
@@ -855,27 +912,24 @@ class RunnerDaemon:
             cancellation_key = _target_http_cancellation_key(run_id, tool_call_id)
             try:
                 resource_tombstone = None
-                existing = (
-                    await self._target_http_cancellations.get_resource_attempt_exact(
-                        cancellation_key,
-                        journal_identity,
-                    )
+                existing = await self._target_http_cancellations.get_resource_attempt_exact(
+                    cancellation_key,
+                    journal_identity,
                 )
                 if existing is None:
-                    _, resource_tombstone = (
-                        await self._target_http_cancellations.claim_resource(
-                            cancellation_key,
-                            journal_identity,
-                            outcome={"state": "cancellation_requested"},
-                        )
+                    _, resource_tombstone = await self._target_http_cancellations.claim_resource(
+                        cancellation_key,
+                        journal_identity,
+                        outcome={"state": "cancellation_requested"},
                     )
                 else:
                     resource_tombstone = await self._target_http_cancellations.get_resource(
                         cancellation_key
                     )
-                if existing is not None and existing.outcome.get(
-                    "state"
-                ) == "physical_stop_confirmed":
+                if (
+                    existing is not None
+                    and existing.outcome.get("state") == "physical_stop_confirmed"
+                ):
                     previously_confirmed.add(tool_call_id)
                 elif existing is not None and existing.outcome != {
                     "state": "cancellation_requested"
@@ -883,8 +937,7 @@ class RunnerDaemon:
                     raise OperationJournalConflict(cancellation_key)
                 elif (
                     resource_tombstone is not None
-                    and resource_tombstone.outcome.get("state")
-                    == "physical_stop_confirmed"
+                    and resource_tombstone.outcome.get("state") == "physical_stop_confirmed"
                 ):
                     durable_result = resource_tombstone.outcome.get("result")
                     if not isinstance(durable_result, dict):
@@ -912,9 +965,7 @@ class RunnerDaemon:
             # safety attempt. The pre-existing resource tombstone remains the
             # no-restart fence; reject before touching the physical resource.
             conflicting_id = next(iter(sorted(journal_conflicts)))
-            raise OperationJournalConflict(
-                _target_http_cancellation_key(run_id, conflicting_id)
-            )
+            raise OperationJournalConflict(_target_http_cancellation_key(run_id, conflicting_id))
 
         for tool_call_id in tool_call_ids:
             if (
@@ -1058,9 +1109,7 @@ class RunnerDaemon:
         confirmation_key: str,
     ) -> bool:
         try:
-            tombstone = await self._target_http_stop_confirmations.get_resource(
-                confirmation_key
-            )
+            tombstone = await self._target_http_stop_confirmations.get_resource(confirmation_key)
             return tombstone is not None and tombstone.outcome.get("state") == (
                 "physical_stop_confirmed"
             )
@@ -1156,9 +1205,7 @@ class RunnerDaemon:
                 resource_tombstone = await self._browser_cancellations.get_resource(
                     cancellation_key
                 )
-            if existing is not None and existing.outcome.get(
-                "state"
-            ) == "physical_stop_confirmed":
+            if existing is not None and existing.outcome.get("state") == "physical_stop_confirmed":
                 durable_result = existing.outcome.get("result")
                 if not isinstance(durable_result, dict):
                     raise RuntimeError("Browser cancellation journal has an invalid outcome")
@@ -1166,14 +1213,11 @@ class RunnerDaemon:
                     durable_result,
                     operation="browser_close_replay",
                 )
-            if existing is not None and existing.outcome != {
-                "state": "cancellation_requested"
-            }:
+            if existing is not None and existing.outcome != {"state": "cancellation_requested"}:
                 raise OperationJournalConflict(cancellation_key)
             if (
                 resource_tombstone is not None
-                and resource_tombstone.outcome.get("state")
-                == "physical_stop_confirmed"
+                and resource_tombstone.outcome.get("state") == "physical_stop_confirmed"
             ):
                 durable_result = resource_tombstone.outcome.get("result")
                 if not isinstance(durable_result, dict):
@@ -1228,9 +1272,7 @@ class RunnerDaemon:
             ) from exc
         if exchange.result.session.status is not BrowserSessionStatus.CLOSED:
             raise RuntimeError("Browser Runner did not confirm a closed session")
-        result: dict[str, object] = {
-            "result": exchange.result.model_dump(mode="json")
-        }
+        result: dict[str, object] = {"result": exchange.result.model_dump(mode="json")}
         if journal_error is not None:
             raise RuntimeError(
                 "Browser closed locally, but its cancellation tombstone could not be "
@@ -1315,6 +1357,15 @@ class RunnerDaemon:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+        audit_results: list[object] = []
+        if self._audit_preflight_runner is not None:
+            audit_results = list(
+                await asyncio.gather(
+                    self._audit_preflight_runner.close(),
+                    return_exceptions=True,
+                )
+            )
+
         # Start independent resource-family shutdowns together. A failed
         # process stop must not starve terminal or browser cleanup.
         resource_stops: list[asyncio.Task[object]] = []
@@ -1346,7 +1397,7 @@ class RunnerDaemon:
         client_results = await asyncio.gather(self._client.close(), return_exceptions=True)
         errors = [
             result
-            for result in (*stop_results, *client_results)
+            for result in (*audit_results, *stop_results, *client_results)
             if isinstance(result, BaseException)
         ]
         if errors:
@@ -1597,27 +1648,24 @@ class RunnerDaemon:
         if journal_identity is not None:
             try:
                 resource_tombstone = None
-                existing_attempt = (
-                    await self._execution_cancellations.get_resource_attempt_exact(
-                        journal_key,
-                        journal_identity,
-                    )
+                existing_attempt = await self._execution_cancellations.get_resource_attempt_exact(
+                    journal_key,
+                    journal_identity,
                 )
                 if existing_attempt is None:
-                    _, resource_tombstone = (
-                        await self._execution_cancellations.claim_resource(
-                            journal_key,
-                            journal_identity,
-                            outcome={"state": "cancellation_requested"},
-                        )
+                    _, resource_tombstone = await self._execution_cancellations.claim_resource(
+                        journal_key,
+                        journal_identity,
+                        outcome={"state": "cancellation_requested"},
                     )
                 else:
                     resource_tombstone = await self._execution_cancellations.get_resource(
                         journal_key
                     )
-                if existing_attempt is not None and existing_attempt.outcome.get(
-                    "state"
-                ) == "physical_stop_confirmed":
+                if (
+                    existing_attempt is not None
+                    and existing_attempt.outcome.get("state") == "physical_stop_confirmed"
+                ):
                     durable_result = existing_attempt.outcome.get("result")
                     if not isinstance(durable_result, dict):
                         raise RuntimeError(
@@ -1633,8 +1681,7 @@ class RunnerDaemon:
                     raise OperationJournalConflict(journal_key)
                 if (
                     resource_tombstone is not None
-                    and resource_tombstone.outcome.get("state")
-                    == "physical_stop_confirmed"
+                    and resource_tombstone.outcome.get("state") == "physical_stop_confirmed"
                 ):
                     durable_result = resource_tombstone.outcome.get("result")
                     if not isinstance(durable_result, dict):
@@ -1887,18 +1934,12 @@ class RunnerDaemon:
             or command.output_contract != ownership.output_contract
             or ownership.payload_digest != runner_payload_digest(command.payload)
         ):
-            raise RuntimeError(
-                f"Runner command {command.id!r} has an inconsistent effect binding"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} has an inconsistent effect binding")
         protocol = runner_command_protocol(command.kind)
         if ownership.operation_family is not protocol.operation_family:
-            raise RuntimeError(
-                f"Runner command {command.id!r} uses an invalid operation family"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} uses an invalid operation family")
         if binding.resource_kind is not protocol.resource_kind:
-            raise RuntimeError(
-                f"Runner command {command.id!r} uses an invalid resource kind"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} uses an invalid resource kind")
         if (
             binding.run_kind is not RunKind.GENERAL
             or binding.audit_id is not None
@@ -1919,9 +1960,7 @@ class RunnerDaemon:
             else frozenset({RunnerCommandOrigin.APPLICATION_SERVICE})
         )
         if binding.origin not in allowed_origins:
-            raise RuntimeError(
-                f"Runner command {command.id!r} uses an invalid effect origin"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} uses an invalid effect origin")
         contract = ownership.output_contract
         if ownership.operation_family is RunnerOperationFamily.SAFETY_STOP:
             if contract.stop_ack_schema != protocol.stop_ack_schema:
@@ -1933,27 +1972,22 @@ class RunnerDaemon:
                 f"Runner command {command.id!r} attaches a stop ACK to a non-safety effect"
             )
         if contract.result_schema != protocol.result_schema:
-            raise RuntimeError(
-                f"Runner command {command.id!r} has an invalid result schema"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} has an invalid result schema")
         if protocol.output_mode == "command":
-            valid_output_contract = (
-                contract.max_output_bytes > 0
-                and contract.allowed_streams == ("command",)
+            valid_output_contract = contract.max_output_bytes > 0 and contract.allowed_streams == (
+                "command",
             )
         elif protocol.output_mode == "execution":
-            valid_output_contract = (
-                contract.max_output_bytes > 0
-                and contract.allowed_streams == ("stderr", "stdout")
+            valid_output_contract = contract.max_output_bytes > 0 and contract.allowed_streams == (
+                "stderr",
+                "stdout",
             )
         else:
             valid_output_contract = (
                 contract.max_output_bytes == 0 and contract.allowed_streams == ()
             )
         if not valid_output_contract:
-            raise RuntimeError(
-                f"Runner command {command.id!r} has an invalid output contract"
-            )
+            raise RuntimeError(f"Runner command {command.id!r} has an invalid output contract")
         invalid_fields = runner_command_payload_binding_invalid_fields(
             command.kind,
             binding,
@@ -1994,12 +2028,11 @@ class RunnerDaemon:
             or binding.binding_digest != command.binding_digest
             or ownership.envelope_digest != command.envelope_digest
         ):
-            raise RuntimeError(
-                f"Runner command {command.id!r} has an inconsistent launch binding"
-            )
-        if not {"stdout", "stderr"}.issubset(
-            ownership.output_contract.allowed_streams
-        ) or ownership.output_contract.max_output_bytes <= 0:
+            raise RuntimeError(f"Runner command {command.id!r} has an inconsistent launch binding")
+        if (
+            not {"stdout", "stderr"}.issubset(ownership.output_contract.allowed_streams)
+            or ownership.output_contract.max_output_bytes <= 0
+        ):
             raise RuntimeError(
                 f"Runner command {command.id!r} omitted its execution output contract"
             )
@@ -2018,8 +2051,7 @@ class RunnerDaemon:
         mismatched = [
             field_name
             for field_name, expected_value in expected.items()
-            if (provided := getattr(request, field_name)) is not None
-            and provided != expected_value
+            if (provided := getattr(request, field_name)) is not None and provided != expected_value
         ]
         if mismatched:
             raise RuntimeError(
@@ -2563,6 +2595,101 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         credentials=RunnerCredentialStore(config.credential_path),
         registration_token=config.registration_token,
     )
+    config, audit_preflight_runner = await _configure_audit_preflight(
+        config,
+        client,
+    )
+    await _run_configured_runner_daemon(
+        config,
+        client=client,
+        executions=executions,
+        terminals=terminals,
+        runner_paths=runner_paths,
+        process_executor=process_executor,
+        supervisor=supervisor,
+        audit_preflight_runner=audit_preflight_runner,
+    )
+
+
+async def _configure_audit_preflight(
+    config: RunnerDaemonConfig,
+    client: RunnerControlClient,
+) -> tuple[RunnerDaemonConfig, AuditPreflightRunner | None]:
+    # Readiness is derived from a fresh local probe. Callers cannot make a
+    # credential advertise Preflight authority merely by setting config data.
+    config = replace(config, audit_preflight_ready=False)
+    audit_preflight_runner: AuditPreflightRunner | None = None
+    candidate = DockerAuditPreflightCapsuleBackend(
+        audit=config.audit,
+        state_root=config.state_path,
+    )
+    try:
+        await candidate.reconcile_mount_probe()
+    except Exception:
+        logger.exception("RiftX Code Audit SourceIngest readiness-probe recovery failed")
+        raise
+    if config.audit.enabled:
+        try:
+            availability = await candidate.probe_availability()
+        except Exception:
+            logger.exception("RiftX Code Audit SourceIngest readiness probe failed")
+            availability = None
+        capability_can_be_enabled = client.can_enable_protocol_capability(
+            AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
+        )
+        if availability is not None and availability.available and capability_can_be_enabled:
+            journal = AuditPreflightRunnerJournal(
+                config.state_path / "audit-preflight-journal.json"
+            )
+            # Validate existing recovery state before advertising an immutable
+            # credential capability. Corruption must not create a false-ready
+            # Runner identity.
+            try:
+                await journal.list_records()
+            except AuditPreflightRunnerJournalError:
+                logger.exception(
+                    "RiftX Code Audit recovery journal is unavailable; "
+                    "Preflight capability will not be advertised"
+                )
+            else:
+                config = replace(config, audit_preflight_ready=True)
+                audit_preflight_runner = AuditPreflightRunner(
+                    client=client,
+                    journal=journal,
+                    backend=candidate,
+                    reconnect_seconds=config.reconnect_initial_seconds,
+                )
+        elif availability is not None and availability.available:
+            logger.warning(
+                "RiftX Code Audit SourceIngest is ready, but the current Runner "
+                "credential lacks %s and no bootstrap token is available; the "
+                "ordinary Runner will continue without Preflight authority",
+                AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
+            )
+        else:
+            logger.warning(
+                "RiftX Code Audit SourceIngest is unavailable on this Runner: %s",
+                (
+                    availability.reason_code
+                    if availability is not None
+                    else "audit_sandbox_unavailable"
+                )
+                or "audit_sandbox_unavailable",
+            )
+    return config, audit_preflight_runner
+
+
+async def _run_configured_runner_daemon(
+    config: RunnerDaemonConfig,
+    *,
+    client: RunnerControlClient,
+    executions: FileExecutionRepository,
+    terminals: FileTerminalRepository,
+    runner_paths: RunnerPaths,
+    process_executor: DirectProcessExecutor,
+    supervisor: ProcessSupervisor,
+    audit_preflight_runner: AuditPreflightRunner | None,
+) -> None:
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminals,
         execution_repository=executions,
@@ -2593,6 +2720,7 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         terminal_handler=terminal_manager,
         target_http_handler=RunnerTargetHttpClient(node_id=config.node_id),
         browser_handler=browser_manager,
+        audit_preflight_runner=audit_preflight_runner,
     )
     try:
         await daemon.run_forever()
@@ -2602,6 +2730,14 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
 
 @app.command()
 def serve(
+    config_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            envvar="RIFTX_CONFIG",
+            help="Shared RiftX config used to enable Code Audit on this Runner.",
+        ),
+    ] = None,
     server_url: Annotated[
         str, typer.Option(envvar="RIFTX_SERVER_URL", help="RiftX Control Plane URL.")
     ] = "http://127.0.0.1:8787",
@@ -2647,6 +2783,12 @@ def serve(
 ) -> None:
     """Connect to a Control Plane and execute commands on this host."""
 
+    audit = AuditConfig()
+    if config_path is not None:
+        try:
+            audit = load_riftx_config(explicit_path=config_path).audit
+        except RiftXConfigError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--config") from exc
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
         run_runner_daemon(
@@ -2660,6 +2802,7 @@ def serve(
                 require_containment=require_containment,
                 payload_uid=payload_uid,
                 payload_gid=payload_gid,
+                audit=audit,
             )
         )
     )

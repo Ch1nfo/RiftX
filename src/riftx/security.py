@@ -800,6 +800,31 @@ class LocalObjectAuthorizer:
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
+    def preflight_authorization_scope_digest(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str:
+        """Bind Preflight ownership to the current server-issued operator scope."""
+
+        self._security.require_capability(principal, capability)
+        canonical = json.dumps(
+            {
+                "capabilities": sorted(item.value for item in principal.capabilities),
+                "namespace_id": principal.namespace_id,
+                "principal_id": principal.id,
+                "profile": principal.profile.value,
+                "schema_version": "riftx.audit-preflight-authorization-scope/v1",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        return hashlib.sha256(
+            b"riftx.audit-preflight-authorization-scope/v1\0" + canonical
+        ).hexdigest()
+
 
 def _constant_time_tuple_equal(
     left: tuple[str, ...],

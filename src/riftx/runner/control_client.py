@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
 from riftx.domain import (
@@ -27,6 +27,20 @@ from riftx.domain import (
     RunnerOutputContract,
     RunnerPrincipal,
     runner_payload_digest,
+)
+from riftx.domain.audit_preflight import (
+    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
+    AuditPreflightExitReceipt,
+    AuditPreflightJobStatus,
+    AuditPreflightLeaseEnvelope,
+    AuditPreflightResult,
+    AuditPreflightStopReceipt,
+)
+from riftx.domain.audit_preflight_wire import (
+    AuditPreflightCallbackAck,
+    AuditPreflightDispatchEnvelope,
+    AuditPreflightLeaseGrant,
+    AuditPreflightStartGrant,
 )
 
 
@@ -218,15 +232,22 @@ class RunnerControlClient:
             capabilities=capabilities,
             labels=registration.labels,
         )
-        if (
-            self._credential is not None
-            and RUNNER_COMMAND_OWNERSHIP_CAPABILITY
-            not in self._credential.protocol_capabilities
+        required_capabilities = {RUNNER_COMMAND_OWNERSHIP_CAPABILITY}
+        if AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY in capabilities:
+            required_capabilities.add(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        if self._credential is not None and not required_capabilities.issubset(
+            self._credential.protocol_capabilities
         ):
             self.invalidate_credentials()
         if self._credential is not None:
             try:
-                await self.heartbeat()
+                await self.heartbeat(
+                    NodeHeartbeat(
+                        capabilities=registration.capabilities,
+                        labels=registration.labels,
+                        runner_version=registration.runner_version,
+                    )
+                )
                 return self._credential.token
             except RunnerControlClientError as exc:
                 if exc.status_code != 401:
@@ -278,6 +299,15 @@ class RunnerControlClient:
         )
         self._credential = credential
         return token
+
+    def can_enable_protocol_capability(self, capability: str) -> bool:
+        """Whether startup can authenticate an immutable protocol capability."""
+
+        credential = self._credential
+        return (
+            credential is not None
+            and capability in credential.protocol_capabilities
+        ) or self._registration_token is not None
 
     async def heartbeat(self, heartbeat: NodeHeartbeat | None = None) -> None:
         item = heartbeat or NodeHeartbeat()
@@ -377,6 +407,228 @@ class RunnerControlClient:
             output_contract=output_contract,
             lease_expires_at=datetime.fromisoformat(str(raw["lease_expires_at"])),
             lease_duration_seconds=lease_duration,
+        )
+
+    async def poll_audit_preflight(
+        self,
+        *,
+        wait_seconds: float = 0,
+    ) -> AuditPreflightDispatchEnvelope | None:
+        """Claim one Job only through the dedicated Preflight wire family."""
+
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        payload = await self._request(
+            "GET",
+            "/api/v1/runner/audit-preflight/next",
+            params={"wait_seconds": wait_seconds},
+        )
+        raw = payload.get("dispatch")
+        if raw is None:
+            return None
+        dispatch = _parse_preflight_model(
+            AuditPreflightDispatchEnvelope,
+            raw,
+            code="audit_preflight_invalid_dispatch",
+            message="Control Plane returned an invalid Audit Preflight dispatch",
+        )
+        credential = self._credential
+        if (
+            credential is None
+            or dispatch.owner.source_node_id != self.node_id
+            or dispatch.lease.runner_principal != credential.principal
+        ):
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_principal_mismatch",
+                "Control Plane returned an Audit Preflight Job for another owner",
+            )
+        return dispatch
+
+    async def renew_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+    ) -> AuditPreflightLeaseGrant:
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/lease",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-renew-request/v1",
+            },
+        )
+        grant = _parse_preflight_model(
+            AuditPreflightLeaseGrant,
+            payload,
+            code="audit_preflight_invalid_lease_grant",
+            message="Control Plane returned an invalid Audit Preflight lease grant",
+        )
+        if (
+            grant.job_id != dispatch.owner.job_id
+            or grant.state_version <= state_version
+            or grant.lease_expires_at < lease.lease_expires_at
+        ):
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned inconsistent Audit Preflight lease facts",
+            )
+        try:
+            renewed = AuditPreflightLeaseEnvelope(
+                owner=dispatch.owner,
+                runner_principal=lease.runner_principal,
+                lease_id=lease.lease_id,
+                lease_expires_at=grant.lease_expires_at,
+                expected_state_version=grant.state_version,
+                output_contract_digest=lease.output_contract_digest,
+                lease_envelope_digest=grant.lease_envelope_digest,
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned an unverifiable Audit Preflight lease",
+            ) from exc
+        if renewed.lease_envelope_digest != grant.lease_envelope_digest:
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned an unverifiable Audit Preflight lease",
+            )
+        return grant
+
+    async def start_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        capsule_prepare_proof_digest: str,
+    ) -> AuditPreflightStartGrant:
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/start",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-start-request/v1",
+                "capsule_prepare_proof_digest": capsule_prepare_proof_digest,
+            },
+        )
+        grant = _parse_preflight_model(
+            AuditPreflightStartGrant,
+            payload,
+            code="audit_preflight_invalid_start_grant",
+            message="Control Plane returned an invalid Audit Preflight start grant",
+        )
+        if (
+            grant.job_id != dispatch.owner.job_id
+            or grant.capsule_id != dispatch.capsule_id
+            or grant.state_version <= state_version
+        ):
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_start_grant",
+                "Control Plane returned inconsistent Audit Preflight start facts",
+            )
+        return grant
+
+    async def finish_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        status: AuditPreflightJobStatus,
+        result: AuditPreflightResult | None,
+        safe_error_code: str | None,
+        exit_receipt: AuditPreflightExitReceipt,
+    ) -> AuditPreflightCallbackAck:
+        if status not in {
+            AuditPreflightJobStatus.SUCCEEDED,
+            AuditPreflightJobStatus.REJECTED,
+            AuditPreflightJobStatus.FAILED,
+        }:
+            raise ValueError("Audit Preflight finish status is invalid")
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/finish",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-finish-request/v1",
+                "status": status.value,
+                "result": result.model_dump(mode="json") if result is not None else None,
+                "safe_error_code": safe_error_code,
+                "exit_receipt": exit_receipt.model_dump(mode="json"),
+            },
+        )
+        return _require_preflight_callback_ack(
+            payload,
+            dispatch=dispatch,
+            expected_status=status,
+            minimum_state_version=state_version,
+        )
+
+    async def stop_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        status: AuditPreflightJobStatus,
+        safe_error_code: str | None,
+        stop_receipt: AuditPreflightStopReceipt,
+    ) -> AuditPreflightCallbackAck:
+        if status not in {
+            AuditPreflightJobStatus.CANCELLED,
+            AuditPreflightJobStatus.FAILED,
+        }:
+            raise ValueError("Audit Preflight stop status is invalid")
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/stop",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-stop-request/v1",
+                "status": status.value,
+                "safe_error_code": safe_error_code,
+                "stop_receipt": stop_receipt.model_dump(mode="json"),
+            },
+        )
+        return _require_preflight_callback_ack(
+            payload,
+            dispatch=dispatch,
+            expected_status=status,
+            minimum_state_version=state_version,
         )
 
     async def renew(self, command: LeasedRunnerCommand) -> LeasedRunnerCommand:
@@ -576,6 +828,43 @@ class RunnerControlClient:
     def _command_lock(self, command_id: str) -> asyncio.Lock:
         return self._command_locks.setdefault(command_id, asyncio.Lock())
 
+    def _require_protocol_capability(self, capability: str) -> None:
+        credential = self._credential
+        if credential is None:
+            raise RunnerControlClientError(
+                401,
+                "runner_not_connected",
+                "Runner has not authenticated with the Control Plane",
+            )
+        if capability not in credential.protocol_capabilities:
+            raise RunnerControlClientError(
+                409,
+                "runner_protocol_capability_missing",
+                "Runner credential does not carry the required protocol capability",
+                details={"required_capability": capability},
+            )
+
+    def _require_audit_preflight_principal(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        lease: AuditPreflightLeaseEnvelope,
+    ) -> RunnerPrincipal:
+        credential = self._credential
+        if (
+            credential is None
+            or dispatch.owner.source_node_id != self.node_id
+            or lease.owner != dispatch.owner
+            or lease.runner_principal != credential.principal
+            or lease.lease_id != dispatch.lease.lease_id
+            or lease.output_contract_digest != dispatch.lease.output_contract_digest
+        ):
+            raise RunnerControlClientError(
+                409,
+                "audit_preflight_principal_mismatch",
+                "Audit Preflight Job belongs to another owner generation",
+            )
+        return credential.principal
+
     def _require_callback_principal(
         self,
         command: LeasedRunnerCommand,
@@ -638,6 +927,77 @@ class RunnerControlClient:
                 "Control Plane returned a command for a different owner generation",
             )
         return target
+
+
+def _audit_preflight_callback_identity(
+    dispatch: AuditPreflightDispatchEnvelope,
+    *,
+    lease: AuditPreflightLeaseEnvelope,
+    state_version: int,
+) -> dict[str, object]:
+    if not isinstance(state_version, int) or isinstance(state_version, bool) or state_version < 1:
+        raise ValueError("Audit Preflight state_version must be a positive integer")
+    if (
+        lease.owner != dispatch.owner
+        or lease.lease_id != dispatch.lease.lease_id
+        or lease.runner_principal != dispatch.lease.runner_principal
+        or lease.output_contract_digest != dispatch.lease.output_contract_digest
+    ):
+        raise ValueError("Audit Preflight callback lease does not bind the dispatch")
+    return {
+        "owner_kind": "preflight_job",
+        "owner": dispatch.owner.model_dump(mode="json"),
+        "lease": lease.model_dump(mode="json"),
+        "state_version": state_version,
+        "capsule_id": dispatch.capsule_id,
+    }
+
+
+def _parse_preflight_model[T: BaseModel](
+    model_type: type[T],
+    raw: object,
+    *,
+    code: str,
+    message: str,
+) -> T:
+    try:
+        encoded = json.dumps(
+            raw,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        return model_type.model_validate_json(encoded)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise RunnerControlClientError(500, code, message) from exc
+
+
+def _require_preflight_callback_ack(
+    payload: dict[str, object],
+    *,
+    dispatch: AuditPreflightDispatchEnvelope,
+    expected_status: AuditPreflightJobStatus,
+    minimum_state_version: int,
+) -> AuditPreflightCallbackAck:
+    ack = _parse_preflight_model(
+        AuditPreflightCallbackAck,
+        payload,
+        code="audit_preflight_invalid_callback_ack",
+        message="Control Plane returned an invalid Audit Preflight callback ACK",
+    )
+    if (
+        ack.job_id != dispatch.owner.job_id
+        or ack.status is not expected_status
+        or ack.state_version <= minimum_state_version
+        or ack.finished_at is None
+    ):
+        raise RunnerControlClientError(
+            500,
+            "audit_preflight_invalid_callback_ack",
+            "Control Plane returned inconsistent Audit Preflight terminal facts",
+        )
+    return ack
 
 
 def _required_command_target(command: LeasedRunnerCommand) -> RunnerPrincipal:

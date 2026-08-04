@@ -1,5 +1,11 @@
 """Interfaces implemented by RiftX infrastructure adapters."""
 
+from .audit_preflight import (
+    AuditPreflightDispatch,
+    AuditPreflightOwnerBinding,
+    AuditPreflightReconciliationCandidate,
+    AuditPreflightRepository,
+)
 from .audits import (
     AuditAggregate,
     AuditAggregateReadRepository,
@@ -52,6 +58,10 @@ __all__ = [
     "ActionReadRepository",
     "AuditAggregate",
     "AuditAggregateReadRepository",
+    "AuditPreflightDispatch",
+    "AuditPreflightOwnerBinding",
+    "AuditPreflightReconciliationCandidate",
+    "AuditPreflightRepository",
     "AuditAuthorizationBinding",
     "AuditBindingAuthorizer",
     "AuditCreationUnitOfWork",

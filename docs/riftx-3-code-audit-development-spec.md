@@ -12,8 +12,8 @@
 >
 > 规格版本：riftx.code-audit-development-spec/v2
 >
-> 规格修订：2026-08-03 / M1 effect routing、Runner ownership/legacy proof、执行所有权、
-> 安全上下文版本化、Closure 恢复、阶段依赖与产品表面收口
+> 规格修订：2026-08-04 / M2 Preflight Job、staged result、独立 Runner transport、
+> SourceIngest 隔离与 AUD-201/202/206/209 边界收口
 
 ## 0. 文档用途
 
@@ -323,8 +323,9 @@ Code Audit 的宿主效果不是一种统一的“允许执行命令”。3.0 �
 绑定 `job_id + operator_principal + authorization_scope_digest + source_node_id + source_root_identity +
 request_digest + backend/image/policy_digest + lease/expiry`。若通过 Runner transport 执行，M2 必须
 发布显式 `preflight_job_owner` protocol capability；不支持该 capability 的 Runner 不得接收任务。
-Preflight timeout、客户端断线或 Control Plane 重启后由持久 job reconciler 继续 cancel/stop/projection，
-不能留下无 owner Capsule。
+Preflight timeout、客户端断线或重启后，Control Plane expiry fencing、dedicated receipt replay 与
+Runner journal/backend recovery 共同收敛；任一未知结果保持 `outcome_unknown`，不能留下无 owner
+Capsule，也不能伪造终态。
 
 `AuditStaticEffectPlan` 与 `AuditExecutionPlan` 都使用 domain-separated canonical JSON 和服务端计算的
 plan digest，绑定 operation family、Audit/Run/Snapshot、Node/backend、只读/可写 mount、固定 image/
@@ -762,32 +763,35 @@ request_digest
 backend_id/image_digest/policy_digest
 security_context_input_id/security_context_input_digest
 status: pending | claimed | running | succeeded | rejected | failed | cancelling | cancelled | outcome_unknown
-lease_owner/lease_expires_at
-capsule_id/effect_owner_digest
-result_plan_id/result_plan_digest
-result_context_bundle_id/result_context_bundle_digest
-stop_receipt_digest
-expires_at
-created_at/finished_at/state_version
+lease_id/lease_owner/lease_expires_at/lease_envelope_digest
+capsule_id/effect_owner_digest/capsule_prepare_proof_digest
+result_schema_version/result_digest
+canonical_empty_context_id/canonical_empty_context_digest
+never_created_proof_digest/stop_receipt_digest
+expires_at/created_at/updated_at/started_at/finished_at/state_version
 ~~~
 
-同一 `operator_principal + client_request_id + request_digest` 精确重放返回同一 job；同键异请求拒绝。
+同一 `operator_principal + client_request_id` 下，authorization scope、request schema 与 request digest
+精确重放返回同一 job；同键异请求拒绝。
 API 可以在短任务内等待结果，但 wire contract 必须返回 `job_id/status`，并提供 status/cancel；HTTP
-断线不取消 job。所有 claim/renew/finish/cancel 使用 state_version CAS。timeout、Runner/Control Plane
-重启或 outcome_unknown 由 reconciler 先查询 Capsule/Node 权威状态，禁止盲目重跑可能已经开始的
-解析。只有 stop receipt 肯定或证明从未产生 Capsule 时才能进入 cancelled/failed terminal。
+断线不取消 job。所有 claim/renew/finish/cancel 使用 state-version CAS。Control Plane expiry
+reconciler 只用 bounded DB projection：pending 的 DB never-created proof 可取消，active lease expiry
+只 fence 为 `outcome_unknown`。Capsule/Node 权威探测、create/start/stop/orphan recovery 由 Runner
+journal 与 SourceIngest backend 完成；终态只接受精确 owner/lease/state/capsule 绑定的 exit/stop
+receipt，禁止 blind rerun。
 
-Preflight Job 的成功结果是短期 `AuditPreflightPlan`，不是 AuditContract，也不是执行授权。Plan
-冻结规范化 target/Scope、same-node selection、NodeAuditPolicy、backend/image/policy/capability proof、
-repository/content identity、MinimumFeasibleBudget、`security_context_bundle_id/digest` 和 expiry；
-服务端只持久 token hash。没有选择上下文时也必须绑定版本化 canonical empty bundle，而不是使用
-null/当前默认值。Create draft 只能消费/预留该 plan，不能让客户端 body 伪造 proof 或替换 Bundle。
-Preflight 原始路径、token、Git stderr、Context 原文和 Capsule locator 不进入 Event、普通日志或
-响应投影。
+按 ADR-0007，AUD-200 的成功结果是不可变 `AuditPreflightResult/v1`，不是 AuditContract、
+`AuditPreflightPlan` 或执行授权。Result 冻结规范化 target、same-node selection、
+NodeAuditPolicy、backend/image/policy/capability proof、repository/content identity、初步
+MinimumFeasibleBudget、版本化 canonical empty-context 常量和 expiry；它只包含本阶段可在 Git
+元数据边界内安全证明的事实。AUD-201 才从未过期 Result 创建可预留/消费的
+`AuditPreflightPlan`、持久 token hash 并接入 Create v2。Create body 不能伪造 proof 或替换
+context binding。Preflight 原始路径、token、Git stderr、Context 原文和 Capsule locator 不进入
+Event、普通日志或响应投影。
 
 本地 Git 仓库、object pack、index 和 config 本身也不可信。Control Plane 可信层只做 source-root/realpath/dirfd 授权、大小上限和 opaque job 调度；不得在带数据库、Temporal、模型或云凭据的进程里 import Git parser、解压 object 或启动 `git`。
 
-Preflight 与 Snapshot 在 M2 的 `SourceIngestCapsule` 中执行：只读挂载目标 repo，独立 Snapshot staging/out，无网络/凭据/socket，非 root，限制 CPU/memory/pids/time/input/output；经过安全评审的 object/index reader 以 raw blob 方式读取，不解释 repository/system/global Git config，不运行 hook、fsmonitor、textconv、diff driver、clean/smudge filter、credential helper、URL rewrite、submodule helper或 LFS 命令。必须验证 `.git` file、gitdir/commondir、object alternates 和 worktree admin path；逃出允许 root 的 external gitdir/alternate 默认拒绝。Capsule 只返回 bounded metadata、digest、CAS ingest handle 和 stop proof。3.0 中 source/analysis node 必须相同；不同 Node 请求在创建 Job 前拒绝。
+Preflight 与 Snapshot 在 M2 的 `SourceIngestCapsule` 中执行：只读挂载目标 repo，独立 Snapshot staging/out，无网络/凭据/socket，非 root，限制 CPU/memory/pids/time/input/output；经过安全评审的 object/index reader 以 raw blob 方式读取，不解释 repository/system/global Git config，不运行 hook、fsmonitor、textconv、diff driver、clean/smudge filter、credential helper、URL rewrite、submodule helper或 LFS 命令。必须验证 `.git` file、gitdir/commondir、object alternates 和 worktree admin path；逃出允许 root 的 external gitdir/alternate 默认拒绝。AUD-200 Capsule 只返回 bounded Git metadata、identity/capability digest 与 stop proof；Snapshot/CAS ingest handle 从 AUD-202A/B 开始引入。3.0 中 source/analysis node 必须相同；不同 Node 请求在创建 Job 前拒绝。
 
 若某个只读操作必须调用 `git` CLI，集中 `SafeGitAdapter` 也只能存在于 SourceIngestCapsule 内，使用固定 argv allowlist、clean env、超时与输出上限，并显式禁用 optional locks、prompt、replace refs、hooks、fsmonitor、external diff/textconv、filters、网络协议与 system/global config；不能调用 checkout、submodule update、LFS materialize 或任何会解释目标 repo driver 的命令。无法证明安全的路径标记 capability unavailable。恶意 object/index/config、压缩炸弹、include、hooks、fsmonitor、attributes filter/textconv、credential helper、alternate 与 replace-ref fixtures必须证明宿主零解析、零额外进程、零网络、零仓库写入，并受资源上限终止。
 
@@ -2468,7 +2472,9 @@ base_revision；revision target 禁止 include_untracked。repository_path 必�
 `security_context.input_id` 只能引用同一 principal/authorization scope 下尚未过期的 bounded input；
 `repository_paths` 必须是规范化仓库相对路径，数量、总字节和允许文档类型有上限。`discover_defaults`
 只启用版本化、可在 Review 展示的 filename policy，不能遍历任意文档或采用仓库内指令。任一字段变化
-都改变 Preflight request digest；AUD-209 未启用时只接受空 input/paths 与 canonical empty bundle。
+都改变 Preflight request digest；AUD-209 未启用时只接受
+`input_id=null, repository_paths=[], discover_defaults=false`，并绑定 ADR-0007 的固定版本化
+empty-context ID/digest，不提前创建 Bundle/Binding 表。
 
 绝对路径是 node-local，不能在未选 Node 时解释。Operator 必须指定
 `source_execution_target`，或先调用服务端确定性 eligible-node selection 并把结果放入请求。
@@ -2730,14 +2736,12 @@ Node、Tool、Model profile 与 Security Profile 不属于 Run-scoped read，不
 
 ### 17.1 Event
 
-使用关联 Run 的 RunEventRepository，不建立独立 AuditEvent 表。首次 draft 创建在同一
+Audit/Run 创建之后使用关联 Run 的 RunEventRepository，不建立独立 AuditEvent 表。首次 draft 创建在同一
 aggregate transaction 中先写 `run.created`（sequence 1），再写
 `audit.created`（sequence 2）；exact create replay 不追加 Event。其余事件命名：
 
 ~~~text
 audit.created
-audit.preflight_job_started
-audit.preflight_completed
 audit.start_queued
 audit.started
 audit.snapshot_started
@@ -2785,9 +2789,11 @@ audit.failed
 audit.cancelled
 ~~~
 
-每个事件使用版本化 typed payload schema，并在 Event projection 层有 positive allowlist。Event payload
-只允许 ID、枚举、计数、digest 摘要和安全状态；PreflightJob 事件不得带 repository path/token，
-cleanup/stop 事件只带 resource counts/reason code/proof digest。不得写源代码、完整路径、Scanner
+Audit/Run 之前的 `AuditPreflightJob` 不写 RunEvent；其状态、`state_version`、Result、error code 与
+stop receipt 由独立 Job ledger 持久化，并通过 Preflight status API 安全投影。每个 Run event 使用
+版本化 typed payload schema，并在 Event projection 层有 positive allowlist。Event payload
+只允许 ID、枚举、计数、digest 摘要和安全状态；cleanup/stop 事件只带 resource
+counts/reason code/proof digest。不得写源代码、完整路径、Scanner
 输出、Prompt、模型回复、命令/env 或 Artifact locator。未知 event version 不进入普通 UI reducer。
 
 ### 17.2 Artifact 分类
@@ -4096,6 +4102,9 @@ M1 Exit：
 
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
+实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200 已 `completed`；下一项为 AUD-201。
+AUD-200 的完成不等于 M2 Exit，也不开放 Snapshot、Content Sandbox、Detector 或产品扫描表面。
+
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
 AUD-203/AUD-204 -> AUD-205/AUD-202D/AUD-207/AUD-208/AUD-209`。AUD-203 的 language/dependency/
 configuration content parsing 在生产 Content Sandbox 完成前不得开始；可以提前编写纯路径/manifest
@@ -4103,10 +4112,14 @@ planner contract 和 synthetic unit fixture，但不能解析真实仓库字节�
 
 #### AUD-200：Source Root 与 Git Preflight
 
+状态：`completed`（2026-08-04）。本状态表示 AUD-200 代码、协议、迁移、恢复与当前环境回归收口；
+生产 local-Linux backend qualification 仍受下述真实 descriptor/mount smoke 门禁约束。
+
 本任务先交付第 8.2/4.5 节 `AuditPreflightJob` owner、Repository/migration、幂等 request digest、
 lease、status/cancel API、preflight Runner protocol capability、stop receipt 和 reconciler；在该 owner
 链未通过测试前不得启动 SourceIngestCapsule。随后实现 local Node/backend 选择、Control Plane 与
-Node 的双端 source-root 校验，再实现 audit/snapshot.py 的宿主路径授权与 Capsule 内 Git 元数据读取：
+Node 的双端 source-root 校验，再在 `riftx.audit.source_ingest`、Runner preflight coordinator 与独立
+`audit_worker/preflight.py` 中实现宿主路径授权、Capsule 生命周期和 Git 元数据读取：
 
 - allowed_source_roots；
 - realpath 二次校验；
@@ -4117,11 +4130,22 @@ Node 的双端 source-root 校验，再实现 audit/snapshot.py 的宿主路径�
 - capability warnings。
 - versioned capability matrix、proof digest 与 mode/profile feasibility。
 
+AUD-200 按 ADR-0007 只生成不可变 `AuditPreflightResult/v1` 与固定 empty-context binding，不创建
+`AuditPreflightPlan`、opaque token、Snapshot/CAS handle、Context Bundle、Audit、Run、StartIntent 或
+Workflow。Preflight 使用独立 `preflight_job_owner_v1` credential capability、wire、lease 与 receipt；
+不得复用或放宽 Run-scoped `RunnerCommandOwnership`。Job 无关联 Run，因此不写 RunEvent；已有 Job
+在 `audit.enabled=false` 时仍可 GET/cancel/reconcile。
+
 3.0 只接受 `node_id=local` 且 source/analysis 同 Node。不得把“argv、不使用 shell”当成 Git 安全
 边界。`SafeGitAdapter`/object reader 只在无凭据 SourceIngestCapsule，禁用 repository-controlled
 config、hook、fsmonitor、textconv/filter/helper/alternate 逃逸；stderr 作为受限诊断。增加恶意
 object/index/`.git/config`、压缩炸弹、客户端断线、job timeout、Control Plane/Runner 重启、
 outcome_unknown、orphan Capsule 与外部程序 canary 测试。
+
+平台验证记录：本次 AUD-200 完成复核运行于 macOS，未执行真实 local-Linux Docker
+`/proc/<pid>/fd/<descriptor>` bind/identity/stop round-trip smoke。非 Linux backend 继续明确 unavailable；
+该未执行项不作为 macOS 支持证据，也不能由 fake/unit tests 替代。它仍是启用或声明生产 Linux
+SourceIngest 资格前的 mandatory release gate。因此 M2 保持 `in_progress`，下一项仅为 AUD-201。
 
 #### AUD-201：Signed Preflight Token
 
