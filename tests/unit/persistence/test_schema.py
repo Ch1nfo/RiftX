@@ -2,11 +2,21 @@ from sqlalchemy import UniqueConstraint
 
 from riftx.persistence.audit_preflight import AuditPreflightJobRecord
 from riftx.persistence.audit_preflight_plan import AuditPreflightPlanRecord
+from riftx.persistence.audit_static_effect import (
+    AuditStaticEffectPlanRecord,
+    SnapshotMountLeaseRecord,
+    SnapshotMountPinRecord,
+    SnapshotMountStopProofRecord,
+)
 from riftx.persistence.orm import Base
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
 assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
 assert AuditPreflightPlanRecord.__table__.metadata is Base.metadata
+assert AuditStaticEffectPlanRecord.__table__.metadata is Base.metadata
+assert SnapshotMountLeaseRecord.__table__.metadata is Base.metadata
+assert SnapshotMountPinRecord.__table__.metadata is Base.metadata
+assert SnapshotMountStopProofRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
@@ -33,6 +43,7 @@ EXPECTED_TABLES = {
     "audit_security_context_bindings",
     "audit_scope_units",
     "audit_start_intents",
+    "audit_static_effect_plans",
     "audit_work_items",
     "browser_actions",
     "browser_observations",
@@ -63,6 +74,9 @@ EXPECTED_TABLES = {
     "runs",
     "source_snapshots",
     "snapshot_references",
+    "snapshot_mount_leases",
+    "snapshot_mount_pins",
+    "snapshot_mount_stop_proofs",
     "source_references",
     "target_http_requests",
     "terminal_sessions",

@@ -204,8 +204,18 @@ def _load_additive_metadata_models() -> None:
 
     from .audit_preflight import AuditPreflightJobRecord  # noqa: PLC0415
     from .audit_preflight_plan import AuditPreflightPlanRecord  # noqa: PLC0415
+    from .audit_static_effect import (  # noqa: PLC0415
+        AuditStaticEffectPlanRecord,
+        SnapshotMountLeaseRecord,
+        SnapshotMountPinRecord,
+        SnapshotMountStopProofRecord,
+    )
     from .workflow_signals import WorkflowSignalIntentRecord  # noqa: PLC0415
 
     assert AuditPreflightJobRecord.__tablename__ in Base.metadata.tables
     assert AuditPreflightPlanRecord.__tablename__ in Base.metadata.tables
+    assert AuditStaticEffectPlanRecord.__tablename__ in Base.metadata.tables
+    assert SnapshotMountLeaseRecord.__tablename__ in Base.metadata.tables
+    assert SnapshotMountPinRecord.__tablename__ in Base.metadata.tables
+    assert SnapshotMountStopProofRecord.__tablename__ in Base.metadata.tables
     assert WorkflowSignalIntentRecord.__tablename__ in Base.metadata.tables

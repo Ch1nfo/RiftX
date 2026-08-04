@@ -1648,8 +1648,7 @@ individual operation families.
   - No Codex Security Provider, code, Prompt, Schema, Skill, runtime, endpoint,
     dependency, test, or generated artifact was used. The implementation and protocol
     are RiftX-owned.
-- Commit: this AUD-202B local commit; its hash is backfilled by the next ledger update
-  because a commit cannot contain its own hash.
+- Commit: `173c8053 feat(code-audit): add deterministic source materializer`.
 - Known limitations / production qualification:
   - The materializer is SourceIngest-only and has no product dispatch surface in this
     task. Production enablement still requires the real local-Linux descriptor/mount/
@@ -1658,6 +1657,85 @@ individual operation families.
   - Audit-bound mount/read authorization is AUD-202C; the current CAS remains private,
     opaque, and unavailable to ordinary API callers.
 - Next unblocked task: AUD-202C, as a separately committed work unit.
+
+### AUD-202C C1 — Static Effect and Snapshot Mount Authority
+
+- Status: completed internal stage; parent AUD-202C remains in progress.
+- Depends on: AUD-202B (`173c8053`).
+- Exact modules/files:
+  - `src/riftx/audit/static_effect.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/persistence/audit_static_effect.py`
+  - `src/riftx/persistence/__init__.py`
+  - `src/riftx/persistence/database.py`
+  - `migrations/versions/9c2e4f6a8b10_add_audit_static_effect_authority.py`
+  - `tests/unit/audit/test_static_effect.py`
+  - `tests/integration/persistence/test_audit_static_effect_repository.py`
+  - `tests/integration/persistence/test_audit_static_effect_migration.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Accepted ADR-0011 and added canonical `AuditStaticEffectPlan/v1`, static resource
+    limits, exactly one read-only primary Snapshot mount, resolved Node identity,
+    private-materialization backend binding, network none, clean environment, bounded
+    output, policy ownership, and role-separated opaque storage-key digests.
+  - Added `SnapshotMountLease/v1`, one-time nonce issue/hash verification,
+    `SnapshotMountPin/v1`, immutable plan/effect/Audit/Run/Snapshot/Manifest/Node/backend/
+    Runner-generation binding, sorted blob allowlist, byte cap, expiry and strict
+    lifecycle versions. Internal transitions rebuild and validate the full Pydantic
+    model rather than relying on unvalidated `model_copy(update=...)` semantics.
+  - Added `SnapshotMountStopProof/v1`, requiring zero active fds/processes, unmounted
+    namespace, backend Lease and Pin revocation, and inaccessible worker path. Proofs
+    bind Lease/Pin/Plan digests, effect execution, all owner facts, principal,
+    mount-key digest, disposition and stopped time.
+  - Added durable Plan/Lease/Pin/StopProof tables and a strict repository. Plan creation
+    validates Audit/Run/Snapshot/reference/Node/storage facts and supports exact replay;
+    Lease+Pin issue is atomic and accepts only the current Runner generation; pair CAS
+    is consecutive and idempotent; proof insert plus terminal Lease/Pin transition is
+    one transaction. Old Runner generations remain readable for later revocation.
+  - Synchronized Alembic head to `9c2e4f6a8b10`. Nonempty C1 facts block downgrade, and
+    lower Snapshot/Preflight irreversible-fact guards run before C1 DDL on a
+    cross-boundary downgrade.
+- API surface: none. No Runner command family, enqueue admission, Temporal activity,
+  ordinary API, Event, CLI or WebUI was added; raw CAS locators and mount keys remain
+  absent from external schemas.
+- Fail-closed conditions:
+  - canonical/digest tampering, multiple or writable mounts, Audit/Run/Snapshot/
+    reference/Node/storage drift, foreign or stale issuance principal, cross-node
+    binding, unordered blob allowlist, timestamp/version/state drift, stale CAS,
+    partial Lease/Pin rows, corrupt canonical JSON, incomplete stop proof and lossy
+    downgrade all reject.
+- Explicit non-goals:
+  - private filesystem materialization, mount namespace, real read broker, unmount,
+    deletion, expiry scheduler, stopper and restart backend reconciliation remain C2;
+    remote hydration, Content Sandbox, Scope/reader/GC, Artifact/API, Start/Workflow,
+    Detector/Scanner/model remain absent.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - Static Plan/Lease/Pin/StopProof domain and authority repository matrix:
+    `14 passed` in `1.26s`.
+  - New migration plus historical head/no-partial-DDL compatibility matrix:
+    `62 passed` in `36.79s`.
+  - Final metadata/head migration regression: `32 passed` in `14.34s`.
+  - Final full repository suite: `4821 passed, 5 skipped, 12 warnings` in
+    `414.94s`.
+  - Repository Ruff and `compileall` passed; `git diff --check` passed with no output.
+  - The independence boundary reported `ready=true`, scanned 510 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+- Commit: this C1 local commit; its hash will be backfilled by the next ledger update.
+- Next unblocked task: AUD-202C C2 private read-only materialization, expiry/revocation
+  stopper and restart reconciliation.
 
 ## Design Deviations and ADRs
 
@@ -1701,6 +1779,10 @@ individual operation families.
   blob reads, descriptor-bound working-tree capture, explicit capture decisions,
   TOCTOU revalidation, private staging cleanup/retry, and dual content/Manifest CAS
   publication implemented by AUD-202B.
+- `ADR-0011`: freezes policy-owned Static Plan identity, role-separated opaque storage
+  key digests, same-node Lease/Pin/Runner-generation ownership, strict lifecycle CAS,
+  affirmative Stop Proof, durable authority persistence and cross-boundary lossless
+  downgrade for AUD-202C C1; the filesystem backend and reconciler remain C2.
 
 ## Current Risks
 
@@ -1708,8 +1790,9 @@ individual operation families.
   M10 SBOM, licensing, similarity, and human copyright review.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
   current `preflight_bound_draft` v2 wire remain permanently non-startable. The
-  SnapshotStore/CAS and Git/working-tree materializer exist but have no sealed
-  `SourceSnapshot` UoW, mount/pin, Scope Inventory, or Start-ready Contract;
+  SnapshotStore/CAS, Git/working-tree materializer and static mount authority exist,
+  but there is no private filesystem mount backend/reconciler, sealed `SourceSnapshot`
+  UoW, Scope Inventory, or Start-ready Contract;
   deterministic scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,

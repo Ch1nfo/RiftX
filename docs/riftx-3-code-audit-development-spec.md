@@ -4163,7 +4163,7 @@ M1 Exit：
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
 实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A/B 已
-`completed`；下一项为 AUD-202C。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+`completed`；AUD-202C C1 authority 已完成、C2 backend/reconciliation 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
 Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
@@ -4250,7 +4250,14 @@ SourceSnapshot seal UoW、Audit reference、mount/pin、Start、Runner static ef
 
 #### AUD-202C：Same-node Mount、Pin 与 Static Ownership
 
-依赖 AUD-202B。实现 same-node
+状态：`in_progress`（2026-08-04）。依赖 AUD-202B。C1 已按 ADR-0011 完成
+`AuditStaticEffectPlan(snapshot_materialize|snapshot_mount)`、SnapshotMountLease/Pin/StopProof 的
+canonical domain contract、resolved Node 与当前 Runner generation 绑定、Plan insert-only replay、
+Lease+Pin 原子签发、连续版本 CAS、terminal Stop Proof 原子提交、reconciliation listing 与
+`9c2e4f6a8b10` migration。C1 不新增 Runner family/enqueue、API/Event 或实际 filesystem capability，
+因此 parent task 不标记 completed。
+
+C2 继续实现 same-node
 `AuditStaticEffectPlan(snapshot_materialize|snapshot_mount)`、SnapshotMountLease、私有 read-only
 mount/pin、Runner ownership、lease expiry、卸载撤权、stop proof 与重启 reconciliation。plan、mount、
 Audit/Run/Snapshot/Node/backend 必须全链恒等；绝对 locator 不进入 API/Event。3.0 不实现 source Node →
