@@ -1,6 +1,6 @@
 # RiftX 3.0 Code Audit Implementation Progress
 
-> Status: active
+> Status: completed
 >
 > Started: 2026-08-02 (Asia/Shanghai)
 >
@@ -31,14 +31,14 @@
 
 ## Current Wave
 
-- Milestone: `S4 — Local product wiring` is `completed`.
-- Completed task: `AUD-S402 — Minimal WebUI`.
+- Milestone: `S5 — End-to-end acceptance` is `completed`.
+- Completed task: `AUD-S500 — Local-folder end-to-end acceptance`.
 - Product boundary: audit a user-selected folder on the machine running RiftX by
   bounded, read-only static analysis. The core path must not require Docker, a Linux
   VM, a remote Runner, another host, target builds/tests, dynamic execution or fixes.
 - Historical mount authority tables and migrations remain inert for database
   compatibility; new product code must not depend on them.
-- Next task: `AUD-S500 — Local-folder end-to-end acceptance`.
+- Next task: none; the simplified RiftX 3.0 local-static Code Audit scope is complete.
 
 ## Milestone Status
 
@@ -49,7 +49,7 @@
 | S2 Inventory and Detector | completed | Inventory, Scope, bounded runner and five built-in local-static rule families completed with full regression evidence |
 | S3 Findings and reports | completed | stable redacted Findings and deterministic JSON/Markdown reports completed with full regression evidence |
 | S4 Local product wiring | completed | durable single-machine Audit Job plus minimal API, CLI and WebUI are complete |
-| S5 End-to-end acceptance | pending | AUD-S500 not started |
+| S5 End-to-end acceptance | completed | ordinary/Git-marked safe and vulnerable folders pass same-machine, no-execution, read-only acceptance across API, CLI and WebUI |
 
 ## Task Status
 
@@ -67,7 +67,7 @@
 | AUD-S400 Local Audit Job | completed |
 | AUD-S401 Minimal API and CLI | completed |
 | AUD-S402 Minimal WebUI | completed |
-| AUD-S500 Local-folder end-to-end acceptance | pending |
+| AUD-S500 Local-folder end-to-end acceptance | completed |
 
 ## Historical Task Status (pre-simplification)
 
@@ -2664,8 +2664,68 @@ individual operation families.
     mobile layouts had no horizontal overflow and the absolute source path was absent;
   - finish review found no blocking issue, and design documentation review confirmed that
     `apps/web/DESIGN.md` should remain unchanged.
-- Commit: pending; the next ledger update will backfill the local commit hash.
+- Commit: `4b11630e` (`feat(code-audit): add local audit web UI`).
 - Next unblocked task: `AUD-S500 — Local-folder end-to-end acceptance`.
+
+### AUD-S500 — Local-folder end-to-end acceptance
+
+- Status: completed.
+- Exact modules/files:
+  - `tests/e2e/test_local_code_audit.py`
+  - this ledger
+- Outcome:
+  - added a four-case Darwin/Linux × ordinary/Git-marked local-folder acceptance matrix;
+  - seeded vulnerable fixtures exercise all five required rule families while the safe
+    fixture produces no corresponding Findings;
+  - hostile Git hooks and every common synchronous/asynchronous subprocess entrypoint are
+    fenced to fail the test if the scanner attempts Docker, Git, a package manager, a
+    build/test command, a plugin or any target-controlled process;
+  - source-tree digests, including Git marker bytes and executable mode, remain identical
+    before and after scanning;
+  - deterministic JSON/Markdown reports, redacted evidence, Snapshot/Inventory/Detector
+    digests and completed Jobs survive database restart;
+  - existing focused cancellation tests prove that cancellation publishes no late
+    Finding, and API restart tests prove reports remain readable;
+  - a live same-database acceptance read confirmed WebUI, API and CLI expose the same
+    completed Job, `14 / 14` scanned files, `8` Findings and Markdown report.
+- Schema/migration impact: None; AUD-S500 adds acceptance coverage only.
+- Security boundary impact:
+  - the acceptance test makes any subprocess or shell launch an immediate failure;
+  - `.git` metadata and hooks are treated as inert source metadata and are never run;
+  - only explicit local source roots and disjoint RiftX-owned state paths are used;
+  - no Docker daemon, Linux VM, remote Runner, other host, target build/test or repair
+    path is needed by the completed product.
+- Tests and checks run:
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s500-e2e tests/e2e/test_local_code_audit.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s500-targeted tests/e2e/test_local_code_audit.py tests/integration/api/test_local_audits.py tests/integration/persistence/test_local_audit_job_repository.py tests/unit/cli/test_app.py -k 'local_audit or cancel_race'`
+  - `conda run --no-capture-output -n agent python -m ruff check tests/e2e/test_local_code_audit.py`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m pytest -q --basetemp=/private/tmp/riftx-s500-full`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web test`
+  - `conda run --no-capture-output -n agent pnpm --filter @riftx/web build`
+  - live local `riftx audit status`, `findings` and Markdown `report` reads against the
+    same Audit previously rendered by the WebUI.
+  - `git diff --check`
+- Test results:
+  - end-to-end matrix: `4 passed`;
+  - focused local Audit/API/CLI/cancel suite: `7 passed, 59 deselected`;
+  - Web suite: `270 passed`;
+  - full repository suite: `4908 passed, 5 skipped, 11 warnings`;
+  - focused and full Ruff checks passed; production Web build passed with only the
+    pre-existing oversized `RunDetailPage` chunk warning;
+  - live CLI readback matched the WebUI/API result exactly: completed, `14 / 14` files,
+    `8` Findings and report digest `7d5f52aba44f2f7e2402d38c091241dc367d62c2f2fe78341d98e602069c44a6`.
+- Manual verification:
+  - desktop `1440x1000` and mobile `390x844` WebUI checks used the live local Control
+    Plane and the same persisted Audit subsequently read by the CLI;
+  - neither the Web detail DOM nor API/CLI read models exposed the absolute source path.
+- Known limitations:
+  - the scanner reports issues found by the five built-in deterministic rule families;
+    completion does not claim that audited code is absolutely safe;
+  - explicit allowed source roots and private disjoint state paths remain required
+    deployment configuration.
+- Commit: pending; this ledger cannot contain its own commit hash.
+- Next unblocked task: none; simplified RiftX 3.0 Code Audit is complete.
 
 ## Design Deviations and ADRs
 
@@ -2723,8 +2783,9 @@ individual operation families.
 
 ## Current Risks
 
-- Local Job, API, CLI and WebUI wiring are complete; cross-surface acceptance remains in
-  AUD-S500.
+- The simplified local-static 3.0 scope is complete; future work must not reintroduce
+  repair, validation, release, Docker, remote Runner or multi-host requirements without
+  an explicit specification change.
 - Product configuration must supply explicit allowed source roots and disjoint private
   staging/Snapshot paths before local scans can start.
 - Historical mount authority rows may exist in upgraded databases. They must remain
