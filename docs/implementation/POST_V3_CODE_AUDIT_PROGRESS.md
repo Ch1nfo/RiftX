@@ -10,8 +10,8 @@
 >
 > Specification version: `riftx.code-audit-development-spec/v2`
 >
-> Specification revision: 2026-08-04 / AUD-202B Source Manifest and deterministic
-> materializer boundary synchronized
+> Specification revision: 2026-08-04 / AUD-202C C2a mount coordination and restart
+> reconciliation boundary synchronized
 >
 > Specification baseline commit: `9a9b0e4d` (original committed baseline; later
 > authoritative revisions are tracked by this ledger and Git history)
@@ -32,12 +32,12 @@
 ## Current Wave
 
 - Milestone: `M2 — Preflight, Snapshot, and Scope Ledger` remains `in_progress`.
-- Completed task: `AUD-202B — Commit/working-tree materializer`.
-- Completed AUD-202B scope: versioned Source Manifest/Capture Policy, safe commit
-  blob and descriptor-bound working-tree capture, explicit deferred/excluded
-  decisions, TOCTOU revalidation, private cleanup/retry, and owner-bound content plus
-  Manifest CAS publication.
-- Next unblocked task: `AUD-202C — Same-node mount, pin, and static ownership`, as a
+- Completed internal stage: `AUD-202C C2a — Mount coordination and restart
+  reconciliation`; parent AUD-202C remains `in_progress`.
+- Completed C2a scope: trusted owner-bound Snapshot source resolution, backend proof
+  contracts, authenticated activation, affirmative stop/expiry convergence, exact
+  terminal replay, and bounded same-node restart reconciliation.
+- Next unblocked task: `AUD-202C C2b — Docker private read-only materialization`, as a
   separately committed work unit.
 - Production qualification remains disabled until the mandatory real-Linux
   descriptor/mount and Capsule-denial evidence is recorded.
@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | M0 Contract and development guardrails | completed | AUD-000 through AUD-002, full test suite, independence boundary, and release gate passed |
 | M1 Run kind, domain, and persistence | completed | AUD-100 through AUD-106 complete; full repository and release gates passed |
-| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, and AUD-202A/B completed; AUD-202C is next |
+| M2 Preflight, Snapshot, and Scope Ledger | in_progress | AUD-200, AUD-201, AUD-202A/B, and AUD-202C C1/C2a completed; C2b remains |
 | M3 Deterministic vertical slice | pending | Not started |
 | M4 Typed Agent and Standard workflow | pending | Not started |
 | M5 Evidence, Finding, Baseline, Closure, reports | pending | Not started |
@@ -94,7 +94,7 @@ individual operation families.
 | AUD-201 Signed preflight token | completed |
 | AUD-202A SnapshotStore and CAS foundation | completed |
 | AUD-202B Commit/working-tree materializer | completed |
-| AUD-202C Same-node mount, pin, and static ownership | pending |
+| AUD-202C Same-node mount, pin, and static ownership | in_progress |
 | AUD-206 Content Sandbox and safety stop | pending |
 | AUD-203 Inventory and Scope | pending |
 | AUD-204 Snapshot reader | pending |
@@ -1733,9 +1733,77 @@ individual operation families.
     found zero violations, and retained policy digest
     `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
   - The executable release gate reported `ready=true`; every registered gate passed.
-- Commit: this C1 local commit; its hash will be backfilled by the next ledger update.
-- Next unblocked task: AUD-202C C2 private read-only materialization, expiry/revocation
-  stopper and restart reconciliation.
+- Commit: `415b0e78 feat(code-audit): add static mount authority`.
+- Next unblocked task: AUD-202C C2a trusted source, mount coordination and restart
+  reconciliation.
+
+### AUD-202C C2a — Mount Coordination and Restart Reconciliation
+
+- Status: completed internal stage; parent AUD-202C remains in progress.
+- Depends on: AUD-202C C1 (`415b0e78`).
+- Exact modules/files:
+  - `src/riftx/audit/snapshot_mount.py`
+  - `src/riftx/audit/snapshot.py`
+  - `src/riftx/audit/snapshot_store.py`
+  - `src/riftx/audit/static_effect.py`
+  - `src/riftx/audit/__init__.py`
+  - `src/riftx/persistence/audit_static_effect.py`
+  - `src/riftx/persistence/__init__.py`
+  - `tests/unit/audit/test_snapshot_store.py`
+  - `tests/integration/persistence/test_snapshot_mount_coordinator.py`
+  - `docs/architecture/decisions/0011-riftx-code-audit-static-effect-and-snapshot-mount-authority.md`
+  - `docs/riftx-3-code-audit-development-spec.md`
+- Outcome:
+  - Added trusted, owner-bound `SnapshotStore.describe` and SQL source resolution.
+    Raw content locators remain confined to the persistence/mount boundary; Plan,
+    Lease, descriptor, storage-key digest, blob allowlist and file/byte caps must all
+    agree before backend I/O.
+  - Added path-free prepare/inspection/stop contracts and `SnapshotMountCoordinator`.
+    Activation validates same-node selection, nonce, exact Runner generation and
+    expiry before source/backend access, then commits Lease+Pin active state by CAS.
+  - Added affirmative revocation/expiry convergence and durable terminal proof replay.
+    Incomplete stop evidence keeps the Pin conservatively active or
+    revocation-pending and moves the Lease to `outcome_unknown`; it never fabricates a
+    revoked/expired result.
+  - Added bounded restart reconciliation for retained active mounts, expiry stop,
+    issued backend orphans, missing/drifted active objects, backend inspection failure
+    and existing unknown outcomes. Runner generation rotation preserves authority to
+    reconcile the older mount.
+- API surface: none. No Runner family/command/enqueue, Temporal activity, ordinary API,
+  Event, CLI or WebUI was added. Cross-node activation/reconciliation returns
+  `audit_cross_node_not_supported`; no transport or locator fallback exists.
+- Fail-closed conditions:
+  - unauthenticated/stale/foreign principal, nonce or Node fails before source/backend
+    I/O;
+  - source owner/storage key/descriptor/allowlist/limit drift rejects;
+  - prepare/inspection/stop owner or timestamp drift, missing active objects,
+    inspection failure and non-affirmative stop converge to durable unknown state;
+  - terminal replay requires the exact persisted Stop Proof.
+- Explicit non-goals:
+  - real Docker/private mount namespace, filesystem materialization, non-root read
+    probe, unmount/delete proof and production scheduler wiring remain C2b;
+  - remote hydration, Content Sandbox, Scope/reader/GC, Artifact/API, Start/Workflow,
+    Detector/Scanner/model remain absent.
+- Tests run:
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/audit/test_snapshot_store.py tests/unit/audit/test_static_effect.py tests/integration/persistence/test_audit_static_effect_repository.py tests/integration/persistence/test_snapshot_mount_coordinator.py tests/integration/persistence/test_audit_static_effect_migration.py tests/integration/persistence/test_audit_preflight_migration.py tests/integration/persistence/test_audit_creation_migration.py tests/integration/persistence/test_audit_preflight_plan_migration.py tests/integration/persistence/test_runner_ownership_migration.py tests/integration/persistence/test_snapshot_reference_migration.py tests/unit/persistence/test_schema.py tests/integration/persistence/test_migrations.py`
+  - `conda run --no-capture-output -n agent python -m pytest -q`
+  - `conda run --no-capture-output -n agent python -m ruff check src tests migrations scripts/qa`
+  - `conda run --no-capture-output -n agent python -m compileall -q src/riftx tests`
+  - `conda run --no-capture-output -n agent python scripts/qa/code-audit-boundary-gate.py`
+  - `conda run --no-capture-output -n agent python scripts/qa/release-gate.py`
+  - `git diff --check`
+- Test results:
+  - C1/C2a domain, coordinator, repository and migration regression: `112 passed` in
+    `58.66s`.
+  - Final full repository suite: `4832 passed, 5 skipped, 11 warnings` in `441.05s`.
+  - Repository Ruff, `compileall` and `git diff --check` passed.
+  - The independence boundary reported `ready=true`, scanned 511 production files,
+    found zero violations, and retained policy digest
+    `bb8405b8a1c809a726c5675ebefb2f7c92a8bfa5881131815cd061f36b04bae8`.
+  - The executable release gate reported `ready=true`; every registered gate passed.
+- Commit: this C2a local commit; its hash will be backfilled by the next ledger update.
+- Next unblocked task: AUD-202C C2b real Docker private read-only materialization and
+  local-Linux qualification.
 
 ## Design Deviations and ADRs
 
@@ -1781,8 +1849,9 @@ individual operation families.
   publication implemented by AUD-202B.
 - `ADR-0011`: freezes policy-owned Static Plan identity, role-separated opaque storage
   key digests, same-node Lease/Pin/Runner-generation ownership, strict lifecycle CAS,
-  affirmative Stop Proof, durable authority persistence and cross-boundary lossless
-  downgrade for AUD-202C C1; the filesystem backend and reconciler remain C2.
+  affirmative Stop Proof, durable authority persistence, trusted CAS source,
+  path-free backend proof contract and restart reconciliation for AUD-202C C1/C2a;
+  the real private filesystem backend remains C2b.
 
 ## Current Risks
 
@@ -1790,9 +1859,10 @@ individual operation families.
   M10 SBOM, licensing, similarity, and human copyright review.
 - Production new-draft admission is now Plan-bound Create v2. The legacy v1 wire and
   current `preflight_bound_draft` v2 wire remain permanently non-startable. The
-  SnapshotStore/CAS, Git/working-tree materializer and static mount authority exist,
-  but there is no private filesystem mount backend/reconciler, sealed `SourceSnapshot`
-  UoW, Scope Inventory, or Start-ready Contract;
+  SnapshotStore/CAS, Git/working-tree materializer, static mount authority and mount
+  coordinator/restart state machine now exist, but there is no real private
+  filesystem mount backend, sealed `SourceSnapshot` UoW, Scope Inventory, or
+  Start-ready Contract;
   deterministic scanning remains unavailable.
 - Restricted Artifact metadata and content now have the ADR-0005 access and descriptor
   foundation. Authenticated Runner upload, atomic Audit aggregate byte limits,

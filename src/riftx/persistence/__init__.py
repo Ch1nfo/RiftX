@@ -21,7 +21,10 @@ from .audit_repositories import (
     load_validated_audit_scan,
 )
 from .audit_snapshot import SQLAlchemySnapshotReferenceRepository
-from .audit_static_effect import SQLAlchemyAuditStaticEffectAuthorityRepository
+from .audit_static_effect import (
+    SQLAlchemyAuditStaticEffectAuthorityRepository,
+    SQLAlchemySnapshotMountSourceResolver,
+)
 from .audit_uow import (
     AuditCreationFailpoint,
     SQLAlchemyAuditAggregateReadRepository,
@@ -75,6 +78,7 @@ __all__ = [
     "SQLAlchemyAuditScopeRepository",
     "SQLAlchemyAuditStartIntentRepository",
     "SQLAlchemyAuditStaticEffectAuthorityRepository",
+    "SQLAlchemySnapshotMountSourceResolver",
     "SQLAlchemyAuditWorkRepository",
     "SQLAlchemyAgentCycleRepository",
     "SQLAlchemyAgentSessionRepository",

@@ -26,6 +26,12 @@ from riftx.application.errors import (
     RepositoryIntegrityError,
     RepositoryUnavailableError,
 )
+from riftx.audit.snapshot import SnapshotStore
+from riftx.audit.snapshot_mount import (
+    SnapshotMountError,
+    SnapshotMountFailure,
+    SnapshotMountSource,
+)
 from riftx.audit.static_effect import (
     AUDIT_STATIC_EFFECT_PLAN_SCHEMA_VERSION,
     SNAPSHOT_MOUNT_BACKEND_ID,
@@ -524,6 +530,27 @@ class SQLAlchemyAuditStaticEffectAuthorityRepository:
         except SQLAlchemyError as exc:
             raise RepositoryUnavailableError("Snapshot mount lookup is unavailable") from exc
 
+    async def get_stop_proof(self, lease_id: str) -> SnapshotMountStopProof | None:
+        try:
+            async with self._session_factory() as session:
+                proof = await _load_stop_proof_for_lease(session, lease_id)
+                mount = await _load_mount(session, lease_id)
+                if proof is None:
+                    if mount is not None and mount[0].status in _TERMINAL_LEASE_STATUSES:
+                        raise RepositoryIntegrityError("SnapshotMountLease", lease_id)
+                    return None
+                if (
+                    mount is None
+                    or mount[0].status not in _TERMINAL_LEASE_STATUSES
+                    or mount[0].stop_proof_digest != proof.proof_digest
+                ):
+                    raise RepositoryIntegrityError("SnapshotMountStopProof", proof.id)
+                return proof
+        except RepositoryIntegrityError:
+            raise
+        except SQLAlchemyError as exc:
+            raise RepositoryUnavailableError("Snapshot mount stop proof lookup failed") from exc
+
     async def compare_and_set_mount(
         self,
         *,
@@ -651,6 +678,42 @@ class SQLAlchemyAuditStaticEffectAuthorityRepository:
             raise
         except SQLAlchemyError as exc:
             raise RepositoryUnavailableError("Snapshot mount reconciliation lookup failed") from exc
+
+
+class SQLAlchemySnapshotMountSourceResolver:
+    """Resolve the raw CAS locator only inside the trusted mount boundary."""
+
+    def __init__(self, session_factory: SessionFactory, store: SnapshotStore) -> None:
+        self._session_factory = session_factory
+        self._store = store
+
+    async def resolve(
+        self,
+        *,
+        plan: AuditStaticEffectPlan,
+        lease: SnapshotMountLease,
+    ) -> SnapshotMountSource:
+        SnapshotMountSource.require_authority(plan=plan, lease=lease)
+        try:
+            async with self._session_factory() as session:
+                snapshot = await session.get(SourceSnapshotRecord, plan.snapshot_id)
+        except SQLAlchemyError as exc:
+            raise RepositoryUnavailableError(
+                "Snapshot mount source lookup is unavailable"
+            ) from exc
+        if (
+            snapshot is None
+            or snapshot.project_id != plan.project_id
+            or snapshot.snapshot_digest != plan.snapshot_digest
+            or snapshot.manifest_digest != plan.manifest_digest
+        ):
+            raise SnapshotMountError(SnapshotMountFailure.SOURCE_INTEGRITY)
+        return SnapshotMountSource.resolve(
+            plan=plan,
+            lease=lease,
+            content_storage_key=snapshot.content_storage_key,
+            store=self._store,
+        )
 
 
 async def _require_authoritative_plan_binding(
@@ -1115,6 +1178,7 @@ async def _cas_mount_records(
 __all__ = [
     "AuditStaticEffectPlanRecord",
     "SQLAlchemyAuditStaticEffectAuthorityRepository",
+    "SQLAlchemySnapshotMountSourceResolver",
     "SnapshotMountLeaseRecord",
     "SnapshotMountPinRecord",
     "SnapshotMountStopProofRecord",

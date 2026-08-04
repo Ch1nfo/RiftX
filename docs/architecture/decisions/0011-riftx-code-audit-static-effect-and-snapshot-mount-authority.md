@@ -2,7 +2,7 @@
 
 > 状态：Accepted
 >
-> 实施状态：AUD-202C C1 implemented；C2 backend/reconciliation pending
+> 实施状态：AUD-202C C1/C2a implemented；C2b private backend pending
 >
 > 日期：2026-08-04（Asia/Shanghai）
 >
@@ -14,14 +14,15 @@ AUD-202A/B 已能把 commit 或 working tree 冻结为 Project-bound content/Man
 执行仍不能安全消费这些 bytes。直接向 worker 返回 CAS locator、宿主绝对路径或共享目录会绕过
 Audit/Run/Snapshot/Node owner 校验，也无法在取消、过期或 Runner 重启后证明访问权已经撤销。
 
-AUD-202C 因此拆成两个可独立验证的内部阶段：
+AUD-202C 因此拆成三个可独立验证的内部阶段：
 
 1. C1 冻结 Static Plan、Lease、Pin、Stop Proof 与持久事务权威；
-2. C2 实现每 effect execution 私有的只读 materialization/mount backend、expiry/revocation stopper 与
-   restart reconciler。
+2. C2a 实现 trusted CAS source、backend proof contract、expiry/revocation coordinator 与 restart
+   reconciler；
+3. C2b 实现每 effect execution 私有的只读 materialization/mount backend 与真实 Linux proof。
 
-本 ADR 冻结完整 C1 合同，并限定 C2 必须在同一合同上实现。C1 完成不代表存在可用的 mount backend，
-也不开放 Runner enqueue、API、Event、Temporal 或产品扫描能力。
+本 ADR 冻结 C1/C2a 合同，并限定 C2b 必须在同一合同上实现。C2a 完成不代表存在可用的 mount
+backend，也不开放 Runner enqueue、API、Event、Temporal 或产品扫描能力。
 
 ## 2. Decision
 
@@ -130,30 +131,53 @@ C1 表再被旧迁移拦截。
 ### 2.5 Capability boundary
 
 C1 不增加 `RunnerOperationFamily`、`RunnerResourceKind`、Runner command protocol 或 enqueue allowlist。
-现有 Code Audit Runner command 继续 deny-all。`target_runner_principal` 是未来 C2 backend session 的
+现有 Code Audit Runner command 继续 deny-all。`target_runner_principal` 是未来 C2b backend session 的
 owner generation，不是已开放的通用 Runner command grant。
 
-C2 必须消费本 ADR 的 Plan/Lease/Pin authority，实现每 effect execution 私有只读 materialization，
+C2b 必须消费本 ADR 的 Plan/Lease/Pin authority，实现每 effect execution 私有只读 materialization，
 并在 backend I/O 前验证 nonce、principal、Node、expiry、Manifest/blob allowlist 和剩余 bytes。请求
 另一 Node 必须返回 `audit_cross_node_not_supported`；不得回退 NFS、SMB、共享宿主路径、临时 HTTP、
 明文复制或扩展 local locator。
 
+### 2.6 C2a trusted source、backend proof 与 reconciliation
+
+C2a 在产品 dispatch 之外新增内部 `SnapshotMountCoordinator`。激活前依次验证 Lease 存在、backend
+owner、same-node 请求、nonce、Runner generation 与 expiry；认证失败之前不得读取 raw CAS locator
+或调用 backend。trusted SQL resolver 只从 authoritative `source_snapshots` 行取 opaque content key，
+再由 `SnapshotStore.describe` 重新验证 Project/Snapshot/Manifest、storage-key digest、完整 blob
+allowlist、file/byte limit 与 descriptor identity。resolver 返回值仍由 coordinator 二次校验，内部 port
+不能仅靠实现自证可信。
+
+backend 的 prepare/inspect/stop 结果均为 path-free typed proof，并绑定 Lease/Pin digest、Node、backend
+digest 与原 Runner principal。prepare proof 还必须精确匹配 CAS descriptor digest/file count/bytes 与
+请求时间；任何 absent/live inspection 在进入状态分支前都先做完整 owner 校验，不能用伪造 absent
+绕过清理。stop 只有在零 fd/process、namespace unmounted、Lease/Pin revoked 和 worker path
+inaccessible 全部肯定时，才原子写入 terminal Stop Proof；terminal 调用读取并返回同一 durable proof，
+不重复执行 backend stop。
+
+restart reconciler 只枚举本 Node 的 bounded nonterminal authority。仍活跃且未过期的 mount 保留；过期
+mount 走同一 stop/Stop Proof 路径；issued orphan 尝试 cleanup 后进入 `outcome_unknown`；active 对象
+缺失、owner drift 或 inspection 不可用均进入 `outcome_unknown`。无法肯定撤权时 Pin 不被乐观 revoke。
+Runner credential 轮换不妨碍旧 generation authority 的检查与撤权。C2a 没有引入新的 Runner family、
+enqueue、API/Event、Temporal 或跨 Node hydration。
+
 ## 3. Explicit non-goals
 
-C1 不实现：
+C1/C2a 不实现：
 
-- 实际目录 materialization、mount namespace、fd broker、unmount、目录删除或 filesystem proof；
-- expiry scheduler、stopper、Runner restart backend inspection/reconciliation；
+- 实际目录 materialization、mount namespace、fd broker、真实 unmount、目录删除或 filesystem proof；
+- production scheduler/service wiring 与真实 backend inspection/reconciliation；
 - source Node 到 analysis Node 传输、远程 CAS、mTLS hydration；
 - Content Sandbox、content parser、Detector、Scanner、模型或动态 Execution Plan；
 - Snapshot reader、Retention/GC、Artifact、API、CLI、WebUI、Event、Start 或 Temporal dispatch。
 
-因此 AUD-202C 仍为 `in_progress`，只有 C2 在真实 backend 上证明 private read-only mount、撤权和重启
+因此 AUD-202C 仍为 `in_progress`，只有 C2b 在真实 backend 上证明 private read-only mount、撤权和重启
 收敛后才能标记 completed。
 
 ## 4. Consequences
 
-- C2 不需要再发明 owner schema，可以围绕 durable Lease/Pin state machine 实现 backend。
+- C2b 不需要再发明 owner 或 reconciliation schema，可以围绕 durable Lease/Pin state machine 实现
+  backend。
 - Runner generation 轮换后仍可读取旧 authority 进行撤权；新 mount 签发只接受当前 principal。
 - raw CAS locator 不进入 authority envelope，知道 digest、relative path 或同 UID 宿主身份都不足以访问
   Snapshot。

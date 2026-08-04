@@ -367,6 +367,12 @@ class SnapshotStore(Protocol):
         max_bytes: int,
     ) -> OpenedSnapshotBlob: ...
 
+    def describe(
+        self,
+        binding: SnapshotCASBinding,
+        content_storage_key: str,
+    ) -> SnapshotCASDescriptor: ...
+
     def verify(
         self,
         binding: SnapshotCASBinding,

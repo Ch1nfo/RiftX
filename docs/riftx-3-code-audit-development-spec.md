@@ -4163,7 +4163,7 @@ M1 Exit：
 目标：从允许的本地 Git 仓库产生不可变、可复现 Snapshot，不运行模型或 Scanner。
 
 实施进度（2026-08-04）：M2 为 `in_progress`；AUD-200、AUD-201 与 AUD-202A/B 已
-`completed`；AUD-202C C1 authority 已完成、C2 backend/reconciliation 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
+`completed`；AUD-202C C1/C2a authority/reconciliation 已完成、C2b private backend 仍在进行。已完成子任务不等于 M2 Exit，也不开放 Content Sandbox、
 Detector、产品扫描表面或 Start。
 
 M2 的安全执行顺序不是简单按编号递增：`AUD-200 -> AUD-201 -> AUD-202A/B/C -> AUD-206 ->
@@ -4257,11 +4257,18 @@ Lease+Pin 原子签发、连续版本 CAS、terminal Stop Proof 原子提交、r
 `9c2e4f6a8b10` migration。C1 不新增 Runner family/enqueue、API/Event 或实际 filesystem capability，
 因此 parent task 不标记 completed。
 
-C2 继续实现 same-node
-`AuditStaticEffectPlan(snapshot_materialize|snapshot_mount)`、SnapshotMountLease、私有 read-only
-mount/pin、Runner ownership、lease expiry、卸载撤权、stop proof 与重启 reconciliation。plan、mount、
-Audit/Run/Snapshot/Node/backend 必须全链恒等；绝对 locator 不进入 API/Event。3.0 不实现 source Node →
-analysis Node 传输、mTLS CAS channel、远程分块上传/下载或跨 Node hydration。
+C2a 已完成 trusted CAS descriptor/source resolver、nonce/principal/Node/expiry 前置认证、backend
+prepare/inspect/stop owner-proof contract、Lease/Pin 激活与撤权协调、terminal Stop Proof exact replay、
+expiry/revocation stopper 及 bounded restart reconciliation。任何 absent/live/stop 观察都必须绑定完整
+Lease/Pin/Node/backend digest/Runner generation；inspection 不可用、对象缺失/漂移、非肯定 stop 或
+prepare commit 歧义均 fail closed 到 durable `outcome_unknown`，Pin 保持最保守的未撤权状态。
+
+C2b 继续实现真实 same-node 私有 read-only materialization backend：每 effect execution 独立 mount
+namespace/capsule、root-owned sealed tree、非 root readability proof、无网络/无宿主共享明文路径、真实
+inspect/unmount/revoke/delete 与 local-Linux qualification smoke。parent AUD-202C 在 C2b 完成前仍为
+`in_progress`。plan、mount、Audit/Run/Snapshot/Node/backend 必须全链恒等；绝对 locator 不进入
+API/Event。3.0 不实现 source Node → analysis Node 传输、mTLS CAS channel、远程分块上传/下载或跨
+Node hydration。
 
 #### AUD-202D：Retention、Eviction 与 GC Receipt
 

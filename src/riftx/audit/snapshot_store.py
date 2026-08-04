@@ -276,6 +276,26 @@ class LocalSnapshotStore:
             )
         return self._open_verified_regular(blob_path, metadata)
 
+    def describe(
+        self,
+        binding: SnapshotCASBinding,
+        content_storage_key: str,
+    ) -> SnapshotCASDescriptor:
+        """Return owner-bound metadata to trusted mount/materialization code only."""
+
+        if not isinstance(binding, SnapshotCASBinding):
+            raise SnapshotStoreError(SnapshotStoreFailure.REQUEST_INVALID)
+        try:
+            descriptor = self._verify_object(
+                self._path_for_key(content_storage_key),
+                expected_key=content_storage_key,
+            )
+        except ValueError as exc:
+            raise SnapshotStoreError(SnapshotStoreFailure.REQUEST_INVALID) from exc
+        if not binding.accepts(descriptor):
+            raise SnapshotStoreError(SnapshotStoreFailure.OWNER_MISMATCH)
+        return descriptor
+
     def verify(
         self,
         binding: SnapshotCASBinding,

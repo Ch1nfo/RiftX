@@ -123,6 +123,16 @@ def test_local_snapshot_store_seals_reuses_verifies_and_opens_bounded_blobs(
     assert integrity.valid is True
     assert integrity.file_count == 3
     assert integrity.total_bytes == staged.descriptor.total_bytes
+    assert store.describe(_binding(staged), created.content_storage_key) == staged.descriptor
+
+    foreign_binding = SnapshotCASBinding(
+        project_id="foreign-project",
+        snapshot_digest=staged.descriptor.snapshot_digest,
+        manifest_digest=staged.descriptor.manifest_digest,
+    )
+    with pytest.raises(SnapshotStoreError) as foreign_description:
+        store.describe(foreign_binding, created.content_storage_key)
+    assert foreign_description.value.failure is SnapshotStoreFailure.OWNER_MISMATCH
 
     with store.open_blob(
         _binding(staged),

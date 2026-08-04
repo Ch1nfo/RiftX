@@ -477,11 +477,25 @@ class SnapshotMountLease(_StrictModel):
         node_id: str,
         observed_at: datetime,
     ) -> bool:
+        return self.status is SnapshotMountLeaseStatus.ACTIVE and self.authenticates(
+            nonce=nonce,
+            principal=principal,
+            node_id=node_id,
+            observed_at=observed_at,
+        )
+
+    def authenticates(
+        self,
+        *,
+        nonce: str,
+        principal: RunnerPrincipal,
+        node_id: str,
+        observed_at: datetime,
+    ) -> bool:
         if (
             not isinstance(observed_at, datetime)
             or observed_at.tzinfo is None
             or observed_at.utcoffset() is None
-            or self.activated_at is None
         ):
             return False
         try:
@@ -489,9 +503,9 @@ class SnapshotMountLease(_StrictModel):
         except ValueError:
             return False
         return (
-            self.status is SnapshotMountLeaseStatus.ACTIVE
-            and self.activated_at <= observed_at
-            and observed_at < self.expires_at
+            self.status in {SnapshotMountLeaseStatus.ISSUED, SnapshotMountLeaseStatus.ACTIVE}
+            and self.created_at <= observed_at < self.expires_at
+            and (self.activated_at is None or self.activated_at <= observed_at)
             and principal == self.target_runner_principal
             and node_id == self.target_node_id
             and hmac.compare_digest(self.nonce_hash, nonce_hash)
