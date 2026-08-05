@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
+from riftx.code import CodeEntry, CodeListResult, CodeReadResult
 from riftx.domain import Artifact, Execution, ExecutorType
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
@@ -98,6 +99,32 @@ class FakeArtifacts:
         )
 
 
+class FakeCode:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def list_files(self, run_id: str, **kwargs: object) -> CodeListResult:
+        self.calls.append(("list_files", run_id, kwargs))
+        return CodeListResult(
+            source="workspace",
+            path=str(kwargs.get("path") or ""),
+            entries=[CodeEntry(path="src/app.py", type="file", size=7)],
+        )
+
+    async def read_file(self, run_id: str, **kwargs: object) -> CodeReadResult:
+        self.calls.append(("read_file", run_id, kwargs))
+        return CodeReadResult(
+            source="workspace",
+            path=str(kwargs["path"]),
+            size=7,
+            offset=int(kwargs["offset"]),
+            next_offset=7,
+            eof=True,
+            encoding="utf-8",
+            content="content",
+        )
+
+
 def execution(
     execution_id: str = "execution-1",
     *,
@@ -123,6 +150,7 @@ def service(
     executions: FakeExecutions | None = None,
     artifacts: FakeArtifacts | None = None,
     skills: ProgressiveSkillContextManager | None = None,
+    code: FakeCode | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
     transcript = FakeTranscript()
@@ -134,6 +162,7 @@ def service(
         events=events,
         transcript=transcript,  # type: ignore[arg-type]
         skills=skills,
+        code=code,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
 
@@ -402,3 +431,55 @@ Preserve errors.
         ["skill://http-validation"],
         ["skill://http-validation"],
     ]
+
+
+async def test_native_code_control_tools_use_exact_run_scope_and_source_refs() -> None:
+    code = FakeCode()
+    control, _, transcript, _ = service(code=code)
+
+    listed = await control(
+        SCOPE,
+        "list_files",
+        {"path": "src", "recursive": True, "max_entries": 10},
+        "call-list-files",
+    )
+    read = await control(
+        SCOPE,
+        "read_file",
+        {"path": "src/app.py", "offset": 0, "max_bytes": 64},
+        "call-read-file",
+    )
+
+    assert listed["entries"][0]["path"] == "src/app.py"
+    assert read["content"] == "content"
+    assert code.calls == [
+        (
+            "list_files",
+            "run-1",
+            {"path": "src", "recursive": True, "max_entries": 10},
+        ),
+        (
+            "read_file",
+            "run-1",
+            {"path": "src/app.py", "offset": 0, "max_bytes": 64},
+        ),
+    ]
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["code://src"],
+        ["code://src/app.py"],
+    ]
+
+
+async def test_native_code_argument_limits_fail_before_source_read() -> None:
+    code = FakeCode()
+    control, _, _, _ = service(code=code)
+
+    with pytest.raises(ValidationError):
+        await control(
+            SCOPE,
+            "read_file",
+            {"path": "src/app.py", "max_bytes": 64 * 1024 + 1},
+            "call-unbounded-code-read",
+        )
+
+    assert code.calls == []

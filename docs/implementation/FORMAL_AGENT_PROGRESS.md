@@ -29,13 +29,14 @@
 ## 2. Current wave
 
 - Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-100 — 接通生产 Progressive Skill`
-- Status：`completed`
+- Current task：`CAP-101 — 原生代码工具`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
-- Product behavior：当前将既有 file-backed Progressive Skill 接入生产 Worker，不改变 Skill 的工具执行权限。
-- Next task after completion：`CAP-101 — 原生代码工具`。
+- Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
+- Product behavior：当前建立 Code Workspace/Snapshot 内的原生只读工具，不用通用 Shell 替代代码导航。
+- Next task after completion：`CAP-102 — Browser/Web/Traffic Tool 闭环`。
 
 ## 3. 研究与实现基线
 
@@ -111,8 +112,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-000 | none | completed | `a15e8e94` |
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
-| CAP-100 | CAP-001 | completed | pending backfill |
-| CAP-101 | CAP-001 | pending | — |
+| CAP-100 | CAP-001 | completed | `bb1b3b03` |
+| CAP-101 | CAP-001 | in_progress | pending |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -233,7 +234,30 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - Subagent 恢复修复后关联回归：`340 passed`。
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4940 passed, 5 skipped, 11 warnings`。
   - `git diff --check`：passed。
-- Implementation commit：pending backfill。
+- Implementation commit：`bb1b3b03`。
+
+### CAP-101：原生代码工具
+
+- Status：in_progress
+- Started：2026-08-05
+- Inputs：CAP-001、Code Audit Snapshot 边界、Artifact 限额读取、Runtime control tools 和现有 LSP/Scanner 模块。
+- First delivery slice：
+  - 已建立 Workspace/Snapshot owner-bound 代码读取服务；
+  - 已将 `list_files`、`read_file`、`read_many_files`、`grep`、`glob` 接入生产 Worker、Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool；
+  - General Run 从绝对 Workspace Root 开始逐级 `O_NOFOLLOW` 打开目录，读取期间用 FD 和文件指纹锚定对象；
+  - Code Audit Run 不读取可变输出 Workspace，而是验证 `Run → AuditScan → SourceSnapshot → SnapshotStore` owner binding 后读取不可变源码；
+  - 结果具有文件数、读取字节、扫描条目、扫描字节、匹配数、单行长度和最终 Runtime JSON 字节上限；
+  - 拒绝绝对路径、非规范路径、`..`、Symlink 读取、FIFO/Socket/设备等特殊文件和跨 Run Root；
+  - 二进制内容以 bounded base64 Preview 返回；所有代码工具保持只读，不调用 Shell、项目 Hook、构建、测试或安装脚本。
+- Artifact boundary：现有 `ArtifactApplicationService.register*()` 仅允许 General Run；本切片不通过放宽 RunKind 防线伪造 Code Audit Artifact。大文件 Artifact 发布将在 CAP-101 后续切片建立 Audit owner-bound 注册接口后接入。
+- Checks：
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/code/test_workspace.py`：`9 passed`；
+  - Agent/Runtime/Context/Subagent 关联回归：`337 passed`；
+  - Snapshot View/Store/Reference/Mount 关联回归：`36 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4951 passed, 5 skipped, 11 warnings`；
+  - 跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件；警告为既有 Python 3.12 SQLite datetime adapter 弃用提示。
+- Later slices：Git 只读导航、符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
+- Implementation commit：pending。
 
 ## 9. Known pre-existing worktree state
 

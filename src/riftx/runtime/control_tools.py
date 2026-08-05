@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from riftx.application.errors import ApplicationConflictError, ApplicationServiceError
 from riftx.application.services import ArtifactApplicationService
+from riftx.code import CodeWorkspaceService
 from riftx.domain import (
     AgentMessage,
     Execution,
@@ -108,6 +109,38 @@ class _CompleteRunArguments(_Arguments):
     run_summary: str = Field(min_length=1, max_length=16_384)
 
 
+class _ListFilesArguments(_Arguments):
+    path: str = ""
+    recursive: bool = False
+    max_entries: int = Field(default=200, ge=1, le=1000)
+
+
+class _ReadFileArguments(_Arguments):
+    path: str = Field(min_length=1, max_length=4096)
+    offset: int = Field(default=0, ge=0)
+    max_bytes: int = Field(default=64 * 1024, ge=1, le=64 * 1024)
+
+
+class _ReadManyFilesArguments(_Arguments):
+    paths: list[str] = Field(min_length=1, max_length=20)
+    max_bytes_per_file: int = Field(default=32 * 1024, ge=1, le=64 * 1024)
+    max_total_bytes: int = Field(default=128 * 1024, ge=1, le=128 * 1024)
+
+
+class _GlobArguments(_Arguments):
+    pattern: str = Field(min_length=1, max_length=4096)
+    path: str = ""
+    max_results: int = Field(default=200, ge=1, le=1000)
+
+
+class _GrepArguments(_Arguments):
+    query: str = Field(min_length=1, max_length=4096)
+    path: str = ""
+    file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
+    case_sensitive: bool = True
+    max_matches: int = Field(default=100, ge=1, le=200)
+
+
 class RuntimeControlToolService:
     """Execute resident control tools without crossing the Runner command path.
 
@@ -126,6 +159,7 @@ class RuntimeControlToolService:
         events: RunEventWriter,
         transcript: TranscriptWriter,
         skills: ProgressiveSkillContextManager | None = None,
+        code: CodeWorkspaceService | None = None,
     ) -> None:
         self._tools = tools
         self._executions = executions
@@ -133,6 +167,7 @@ class RuntimeControlToolService:
         self._events = events
         self._transcript = transcript
         self._skills = skills
+        self._code = code
 
     async def __call__(
         self,
@@ -305,6 +340,63 @@ class RuntimeControlToolService:
                 agent_id=scope.agent_id,
             )
             return {"skill_id": skill_arguments.skill_id, "active": False}
+        if tool_name == "list_files":
+            code = self._require_code()
+            code_arguments = _ListFilesArguments.model_validate(raw_arguments)
+            return (
+                await code.list_files(
+                    scope.run_id,
+                    path=code_arguments.path,
+                    recursive=code_arguments.recursive,
+                    max_entries=code_arguments.max_entries,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "read_file":
+            code = self._require_code()
+            code_arguments = _ReadFileArguments.model_validate(raw_arguments)
+            return (
+                await code.read_file(
+                    scope.run_id,
+                    path=code_arguments.path,
+                    offset=code_arguments.offset,
+                    max_bytes=code_arguments.max_bytes,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "read_many_files":
+            code = self._require_code()
+            code_arguments = _ReadManyFilesArguments.model_validate(raw_arguments)
+            return (
+                await code.read_many_files(
+                    scope.run_id,
+                    paths=code_arguments.paths,
+                    max_bytes_per_file=code_arguments.max_bytes_per_file,
+                    max_total_bytes=code_arguments.max_total_bytes,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "glob":
+            code = self._require_code()
+            code_arguments = _GlobArguments.model_validate(raw_arguments)
+            return (
+                await code.glob(
+                    scope.run_id,
+                    pattern=code_arguments.pattern,
+                    path=code_arguments.path,
+                    max_results=code_arguments.max_results,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "grep":
+            code = self._require_code()
+            code_arguments = _GrepArguments.model_validate(raw_arguments)
+            return (
+                await code.grep(
+                    scope.run_id,
+                    query=code_arguments.query,
+                    path=code_arguments.path,
+                    file_glob=code_arguments.file_glob,
+                    case_sensitive=code_arguments.case_sensitive,
+                    max_matches=code_arguments.max_matches,
+                )
+            ).model_dump(mode="json")
         if tool_name == "get_execution":
             execution_arguments = _ExecutionArguments.model_validate(raw_arguments)
             execution = await self._execution_for_scope(
@@ -393,6 +485,11 @@ class RuntimeControlToolService:
             raise RuntimeError("Progressive Skill context is not configured")
         return self._skills
 
+    def _require_code(self) -> CodeWorkspaceService:
+        if self._code is None:
+            raise RuntimeError("Native code workspace is not configured")
+        return self._code
+
     async def _execution_for_scope(
         self,
         scope: RuntimeToolScope,
@@ -471,6 +568,11 @@ def _source_refs(tool_name: str, arguments: dict[str, object]) -> list[str]:
         return [f"tool://{tool_id}"]
     if skill_id := _string_argument(arguments, "skill_id"):
         return [f"skill://{skill_id}"]
+    if path := _string_argument(arguments, "path"):
+        return [f"code://{path}"]
+    paths = arguments.get("paths")
+    if isinstance(paths, list):
+        return [f"code://{path}" for path in paths if isinstance(path, str) and path]
     return [f"runtime-tool://{tool_name}"]
 
 

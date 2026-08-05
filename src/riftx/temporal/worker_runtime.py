@@ -40,7 +40,9 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalReconciler,
 )
 from riftx.application.workflow_router import RunWorkflowControlRouter
+from riftx.audit import LocalSnapshotStore
 from riftx.browser.service import BrowserApplicationService
+from riftx.code import CodeWorkspaceService
 from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
     ContextApplicationService,
@@ -98,6 +100,7 @@ from riftx.persistence import (
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemySkillSelectionStore,
+    SQLAlchemySnapshotRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
@@ -965,6 +968,21 @@ async def build_temporal_worker(
             skill_registry,
             SQLAlchemySkillSelectionStore(database.session_factory),
         )
+        code_workspace = CodeWorkspaceService(
+            runs=run_repository,
+            audits=audit_aggregate_repository,
+            snapshots=SQLAlchemySnapshotRepository(database.session_factory),
+            snapshot_store=(
+                LocalSnapshotStore(
+                    config.audit.snapshot_root.expanduser(),
+                    max_blob_bytes=config.audit.max_file_bytes,
+                    max_tree_bytes=config.audit.max_repository_bytes,
+                )
+                if config.audit.enabled
+                else None
+            ),
+            max_snapshot_file_bytes=config.audit.max_file_bytes,
+        )
         model_registry = ModelProfileRegistry(
             config.models.path.expanduser(),
             config.models.secrets_path.expanduser(),
@@ -1035,6 +1053,7 @@ async def build_temporal_worker(
             events=event_repository,
             transcript=transcript_repository,
             skills=skill_context,
+            code=code_workspace,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,

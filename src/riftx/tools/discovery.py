@@ -22,6 +22,11 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "load_skill",
     "load_skill_references",
     "unload_skill",
+    "list_files",
+    "read_file",
+    "read_many_files",
+    "grep",
+    "glob",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -40,6 +45,11 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "load_skill",
     "load_skill_references",
     "unload_skill",
+    "list_files",
+    "read_file",
+    "read_many_files",
+    "grep",
+    "glob",
     "run_registered_tool",
     "get_execution",
     "wait_execution",
@@ -557,6 +567,11 @@ def _resident_schema(
         "load_skill": "Pin and load one versioned Skill procedure for this Session.",
         "load_skill_references": "Load references for an already selected Skill.",
         "unload_skill": "Remove one selected Skill from the active model context.",
+        "list_files": "List bounded entries in the current code source without following links.",
+        "read_file": "Read a bounded preview from one regular file in the current code source.",
+        "read_many_files": "Read bounded previews from several regular code files.",
+        "grep": "Search literal text across bounded regular files in the current code source.",
+        "glob": "Find bounded regular files by a relative glob pattern.",
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -604,6 +619,59 @@ def _resident_schema(
     elif tool_id in {"load_skill_references", "unload_skill"}:
         properties = {"skill_id": {"type": "string"}}
         required = ["skill_id"]
+    elif tool_id == "list_files":
+        properties = {
+            "path": {"type": "string", "maxLength": 4096},
+            "recursive": {"type": "boolean"},
+            "max_entries": {"type": "integer", "minimum": 1, "maximum": 1000},
+        }
+    elif tool_id == "read_file":
+        properties = {
+            "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "offset": {"type": "integer", "minimum": 0},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        }
+        required = ["path"]
+    elif tool_id == "read_many_files":
+        properties = {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "minItems": 1,
+                "maxItems": 20,
+            },
+            "max_bytes_per_file": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65536,
+            },
+            "max_total_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 131072,
+            },
+        }
+        required = ["paths"]
+    elif tool_id == "glob":
+        properties = {
+            "pattern": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "path": {"type": "string", "maxLength": 4096},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+        }
+        required = ["pattern"]
+    elif tool_id == "grep":
+        properties = {
+            "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "path": {"type": "string", "maxLength": 4096},
+            "file_glob": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
+            "case_sensitive": {"type": "boolean"},
+            "max_matches": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+        required = ["query"]
     elif tool_id == "run_registered_tool":
         properties = {
             "tool_id": {"type": "string"},
