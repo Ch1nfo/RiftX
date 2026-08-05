@@ -29,11 +29,11 @@
 ## 2. Current wave
 
 - Stage：`S0 — 规格、基线与评测骨架`
-- Completed task：`SEC-000 — 正式版 ADR 与实施账本`
+- Completed task：`SEC-001 — Security Capability Evaluation 骨架`
 - Status：`completed`
-- Product behavior：不变；SEC-000 只冻结边界、依赖、迁移顺序和研发记录。
-- Next task：`SEC-001 — Security Capability Evaluation 骨架`。
-- Also eligible：CAP-001；SEC-001 与 CAP-001 都依赖 SEC-000。
+- Completed predecessor：SEC-000，implementation commit `a15e8e94`。
+- Product behavior：不接触真实目标；当前 Harness 只消费本地不可变 Fixture 和提交结果。
+- Next task：`CAP-001 — Capability Domain 与持久化`。
 
 ## 3. 研究与实现基线
 
@@ -92,7 +92,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 | Stage | Status | Exit condition |
 | --- | --- | --- |
-| S0 规格、基线与评测骨架 | in_progress | ADR/账本完成；Evaluation schema 可重复运行代码审计和 Web 案例 |
+| S0 规格、基线与评测骨架 | in_progress | ADR/账本和 Evaluation 骨架完成；Capability Domain foundation 完成 |
 | S1 生产 Capability Plane | pending | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
 | S2 认知运行时 | pending | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
@@ -106,8 +106,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 | Task | Dependency | Status | Implementation commit |
 | --- | --- | --- | --- |
-| SEC-000 | none | completed | pending backfill |
-| SEC-001 | SEC-000 | pending | — |
+| SEC-000 | none | completed | `a15e8e94` |
+| SEC-001 | SEC-000 | completed | pending backfill |
 | CAP-001 | SEC-000 | pending | — |
 | CAP-100 | CAP-001 | pending | — |
 | CAP-101 | CAP-001 | pending | — |
@@ -165,6 +165,24 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check tests/docs/test_formal_agent_docs.py`：passed。
   - `conda run --no-capture-output -n agent python -m pytest -q tests/docs/test_formal_agent_docs.py`：`4 passed`。
   - `git diff --check`：passed。
+- Implementation commit：`a15e8e94`。
+
+### SEC-001：Security Capability Evaluation 骨架
+
+- Status：completed
+- Started：2026-08-05
+- Inputs：SEC-000、ADR-0012、现有 `src/riftx/evaluation/` 契约。
+- Deliverables：
+  - Scenario、Target、Reset、Budget、Run、Trajectory、Evidence Replay 和 Judge schema；
+  - root-bound YAML loader、immutable fixture reset 和 canonical JSON；
+  - 代码审计与静态 Web transcript 开发场景；
+  - Memory isolation、预算、证据状态和版本/配置对照 Harness；
+  - 目标和关联 Evaluation 回归测试。
+- Safety boundary：Fixture 只能读取，测试不得导入目标源码、发起网络请求或执行外部工具。
+- Checks：
+  - `conda run --no-capture-output -n agent ruff check src/riftx/evaluation/__init__.py src/riftx/evaluation/security_agent tests/evaluation/security_agent`：passed。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/evaluation/security_agent`：`9 passed`。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/evaluation tests/docs/test_formal_agent_docs.py`：`99 passed`。
 - Implementation commit：pending backfill。
 
 ## 9. Known pre-existing worktree state
