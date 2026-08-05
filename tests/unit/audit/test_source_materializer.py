@@ -524,11 +524,16 @@ def test_failed_cleanup_leaves_private_orphan_for_bounded_cleanup_and_retry(
             policy=SourceCapturePolicy(),
         )
     assert error.value.code == SourceMaterializationFailure.CLEANUP_FAILED.value
-    assert len(tuple((tmp_path / "materialized").iterdir())) == 1
+    materialized_orphans = tuple((tmp_path / "materialized").iterdir())
+    assert len(materialized_orphans) == 1
+    cleanup_cutoff = datetime.fromtimestamp(
+        materialized_orphans[0].lstat().st_mtime,
+        UTC,
+    ) + timedelta(seconds=1)
 
     retry = _materializer(tmp_path, repository, monkeypatch)
-    dry_run = retry.cleanup_orphans(older_than=NOW + timedelta(days=1), dry_run=True)
-    cleaned = retry.cleanup_orphans(older_than=NOW + timedelta(days=1), dry_run=False)
+    dry_run = retry.cleanup_orphans(older_than=cleanup_cutoff, dry_run=True)
+    cleaned = retry.cleanup_orphans(older_than=cleanup_cutoff, dry_run=False)
     assert (dry_run.examined, dry_run.eligible, dry_run.removed) == (1, 1, 0)
     assert (cleaned.examined, cleaned.eligible, cleaned.removed) == (1, 1, 1)
     result = retry.materialize(
