@@ -29,16 +29,16 @@
 ## 2. Current wave
 
 - Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-102 — Browser/Web/Traffic Tool 闭环`
-- Status：`completed`
+- Current task：`CAP-103 — MCP 生产接入`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，逐次批准后执行匿名 Public Fetch、联合 Web Search、只引用 canonical Source 的 Web Research 和 Scope-bound Target HTTP Request，并可查询脱敏 HTTP Traffic、读取 Exchange 及其原文 Artifact；General 与 Code Audit Run 均可使用公网研究，其中 Code Audit 原文、规范化正文、Search Response 和 Research Packet 精确进入 `AUDIT_INTERNAL` Artifact；Scope/SSRF、Run 状态、Approval、Stop Proof、Artifact、Source 与 Transcript 继续复用既有权威服务。
-- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`、`27fec108`、`e7fc3461`。
-- Next delivery slice：开始 `CAP-103 — MCP 生产接入`。
+- Product behavior：生产 Worker 启动时会发现 operator-owned Streamable HTTP MCP Server，将安全、脱敏且有界的 Tool metadata 与 JSON Schema 投影到只读 MCP Tool Index；单 Server 的缺失 Secret、连接失败、超时或恶意 Schema 只降级对应 Server，不阻塞其他 Server 或 Worker。当前尚未向模型开放 MCP 调用，也未开放 stdio MCP；所有发现结果固定标记为外部不可信内容和显式批准策略。
+- Current implementation commits：`2c784d8d`。
+- Next delivery slice：将 MCP Tool 调用接入 durable ToolCall/Execution identity、Tool Policy、逐次 Approval、Artifact 和 Transcript；继续禁止绕过 Runner/RunKind 安全边界的 stdio MCP。
 
 ## 3. 研究与实现基线
 
@@ -117,7 +117,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
-| CAP-103 | CAP-001 | pending | — |
+| CAP-103 | CAP-001 | in_progress | `2c784d8d` |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
@@ -454,6 +454,28 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5053 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Fifth delivery implementation commit：`e7fc3461`。
+
+### CAP-103：MCP 生产接入
+
+- Status：in_progress
+- Started：2026-08-06
+- Inputs：CAP-001、既有 `GovernedMCPAdapter`、生产 Temporal Worker、`openai-agents 0.19.0` 和 `mcp 1.29.0` 的 Streamable HTTP 契约。
+- First delivery slice：
+  - 新增 operator-owned MCP Server Registry 配置；首切片只允许远程 `streamable_http`，URL 禁止 Credential、Query 和 Fragment，HTTP Secret 只能通过环境变量名引用；
+  - 生产 Worker 启动时并发连接已启用 Server，执行有总量/单 Server 并发限制、熔断与 discovery timeout 的 `tools/list`，并在关闭或构建失败时清理已连接 Client；
+  - 单 Server 使用独立连接锁；缺失 Secret、连接失败、超时、非法 Tool 列表或工具数量超限只生成对应 Server 的 typed unavailable snapshot，不阻塞其他 Server 或 Worker；
+  - Discovery 结果投影为稳定 qualified Tool ID、可搜索的有界 Tool Index 和按 generation 读取的完整 Schema；allow/block filter 在投影前执行；
+  - Tool 名称、标题、描述和 JSON Schema 具有长度、结构、嵌套深度与总字节上限；配置 URL、已解析 Header Secret、POSIX/Windows/file URI 绝对路径不会进入 Snapshot 或模型可见 Schema；
+  - Schema 固定携带 `execution_type=mcp`、`approval_policy=explicit` 和 `content_trust=UNTRUSTED_EXTERNAL_CONTENT`；MCP annotations 只保存为不可信 hint，不参与授权或批准决策；
+  - Worker Node label 只记录 MCP Server/Tool 数量，不记录 URL、Header、环境变量引用或 Secret；
+  - 当前 Adapter 只允许 `tools/list`，没有模型调用入口，不创建 durable ToolCall/Execution，不启动 stdio MCP。完整调用闭环留给后续 CAP-103 切片。
+- First delivery checks：
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/mcp tests/unit/test_runtime_config.py tests/unit/temporal/test_worker_runtime.py`：`50 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/mcp src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 5 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5058 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- First delivery implementation commit：`2c784d8d`。
 
 ## 9. Known pre-existing worktree state
 
