@@ -24,7 +24,7 @@
 - 设计偏离必须更新权威计划；改变核心边界时必须新增或 supersede ADR。
 - 所有 Agent 相关测试与运行使用 conda `agent` 环境。
 - 用户无关的工作树改动不得进入任务提交。
-- 评测用于回归、复现和能力演进，不以量化证明超过通用 Agent 为完成条件。
+- 评测用于 RiftX 自身的回归、复现、发布检查和能力演进。
 
 ## 2. Current wave
 
@@ -45,7 +45,7 @@
 | 输入 | 基线 | 用途 |
 | --- | --- | --- |
 | RiftX | `e40af267` | 正式版计划开始前的产品代码基线 |
-| 正式版计划 | `84c657e1` | S0-S8 权威开发计划及评测定位修订 |
+| 正式版计划 | `84c657e1` | S0-S8 权威开发计划 |
 | LuaN1aoAgent | `51af327c29c2` | Task/Reasoning/Operation Graph、Planner/Executor/Observer |
 | CyberStrikeAI | `f7ba7070ca74` | Tool Search、Progressive Skill、验证与负结果 |
 | OpenAI Codex | `757c151a0e92` | 原生代码工具、Sandbox、Approval、Skill/Plugin/MCP |
@@ -76,7 +76,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Agent 评测命令通过 `conda run --no-capture-output -n agent ...` 执行；
 - 开发集与未公开回归集隔离；
 - 不同 Run 默认不共享 Operator/Organization/Engagement Memory；
-- 评测只服务于 RiftX 自身的质量、安全和能力演进，不用于量化证明超过通用 Agent；
+- 评测只服务于 RiftX 自身的质量、安全、回归检查和能力演进；
 - 允许定性复盘与定量指标并存，不强迫所有专业能力压缩成单一分数。
 
 ## 5. 数据迁移顺序
@@ -104,7 +104,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
 | S5 渗透测试完全体 | pending | Attack Surface、状态 Web、验证规划、Research、Attack Chain 闭环 |
 | S6 学习飞轮 | pending | Trajectory 到 Candidate/Replay/Promotion/Curator 闭环 |
-| S7 专业能力评测与回归保障 | pending | 专业案例、对照 Harness 与质量安全发布检查可用 |
+| S7 专业能力评测与回归保障 | pending | 专业案例、回归 Harness 与质量安全发布检查可用 |
 | S8 Pack 生态与正式版运维 | pending | SDK、签名供应链、Gateway 和持续运维可用 |
 
 ## 7. Task status
