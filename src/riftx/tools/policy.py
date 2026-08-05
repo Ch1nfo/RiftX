@@ -113,6 +113,11 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolAuthorization.DYNAMIC_APPROVAL,
             approval_required=True,
         ),
+        "revert_patch": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
         "git_status": AgentToolPolicy(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,

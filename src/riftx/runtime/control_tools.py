@@ -192,6 +192,15 @@ class _DiagnosticsArguments(_Arguments):
     max_results: int = Field(default=100, ge=1, le=200)
 
 
+class _ApplyPatchArguments(_Arguments):
+    patch: str = Field(min_length=1, max_length=262_144)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class _RevertPatchArguments(_Arguments):
+    receipt_artifact_id: str = Field(min_length=1)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -309,13 +318,19 @@ class RuntimeControlToolService:
                 succeeded=True,
             )
 
+        result_artifact_id = (
+            _string_argument(result, "receipt_artifact_id")
+            if isinstance(result, dict)
+            else None
+        )
+        argument_artifact_id = _string_argument(arguments, "artifact_id")
         content = {
             "type": "tool_result",
             "tool": tool_name,
             "tool_call_id": call_id,
             "status": "completed",
             "content": result,
-            "source_refs": _source_refs(tool_name, arguments),
+            "source_refs": _source_refs(tool_name, arguments, result=result),
         }
         await self._transcript.append(
             scope.session_id,
@@ -326,10 +341,12 @@ class RuntimeControlToolService:
                 structured_content=content,
                 tool_call_id=call_id,
                 execution_id=_string_argument(arguments, "execution_id"),
-                artifact_ids=(
-                    [artifact_id]
-                    if (artifact_id := _string_argument(arguments, "artifact_id")) is not None
-                    else []
+                artifact_ids=list(
+                    dict.fromkeys(
+                        artifact_id
+                        for artifact_id in (argument_artifact_id, result_artifact_id)
+                        if artifact_id is not None
+                    )
                 ),
                 visibility=MessageVisibility.AGENT_ONLY,
             ),
@@ -551,6 +568,25 @@ class RuntimeControlToolService:
                     max_results=diagnostic_arguments.max_results,
                 )
             ).model_dump(mode="json")
+        if tool_name == "apply_patch":
+            code = self._require_code()
+            patch_arguments = _ApplyPatchArguments.model_validate(raw_arguments)
+            return (
+                await code.apply_patch(
+                    scope.run_id,
+                    patch=patch_arguments.patch,
+                    expected_sha256=patch_arguments.expected_sha256,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "revert_patch":
+            code = self._require_code()
+            revert_arguments = _RevertPatchArguments.model_validate(raw_arguments)
+            return (
+                await code.revert_patch(
+                    scope.run_id,
+                    receipt_artifact_id=revert_arguments.receipt_artifact_id,
+                )
+            ).model_dump(mode="json")
         if tool_name == "git_status":
             git = self._require_git()
             git_arguments = _GitStatusArguments.model_validate(raw_arguments)
@@ -767,7 +803,20 @@ def _artifact_content(mime_type: str, data: bytes) -> tuple[str, str]:
         return "base64", base64.b64encode(data).decode("ascii")
 
 
-def _source_refs(tool_name: str, arguments: dict[str, object]) -> list[str]:
+def _source_refs(
+    tool_name: str,
+    arguments: dict[str, object],
+    *,
+    result: object | None = None,
+) -> list[str]:
+    if tool_name in {"apply_patch", "revert_patch"} and isinstance(result, dict):
+        refs: list[str] = []
+        if path := _string_argument(result, "path"):
+            refs.append(f"code://{path}")
+        if receipt_id := _string_argument(result, "receipt_artifact_id"):
+            refs.append(f"artifact://{receipt_id}")
+        if refs:
+            return refs
     if execution_id := _string_argument(arguments, "execution_id"):
         return [f"execution://{execution_id}"]
     if artifact_id := _string_argument(arguments, "artifact_id"):

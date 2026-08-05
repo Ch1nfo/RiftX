@@ -16,6 +16,7 @@ from riftx.code import (
     CodeDiagnosticsResult,
     CodeEntry,
     CodeListResult,
+    CodePatchResult,
     CodeReadResult,
     CodeReference,
     CodeReferenceSearchResult,
@@ -294,6 +295,51 @@ class FakeCode:
             parse_errors=1,
         )
 
+    async def apply_patch(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodePatchResult:
+        self.calls.append(("apply_patch", run_id, kwargs))
+        return CodePatchResult(
+            action="applied",
+            operation="update",
+            path="src/app.py",
+            original_sha256="1" * 64,
+            result_sha256="2" * 64,
+            receipt_artifact_id="patch-receipt-1",
+            diff="diff",
+        )
+
+    async def revert_patch(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodePatchResult:
+        self.calls.append(("revert_patch", run_id, kwargs))
+        return CodePatchResult(
+            action="reverted",
+            operation="update",
+            path="src/app.py",
+            original_sha256="2" * 64,
+            result_sha256="1" * 64,
+            receipt_artifact_id=str(kwargs["receipt_artifact_id"]),
+            diff="reverse diff",
+        )
+
+
+class FakeControlIntents:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def begin_control_intent(self, **kwargs: object) -> bool:
+        self.calls.append(("begin", str(kwargs["engine_call_id"])))
+        return True
+
+    async def finish_control_intent(self, **kwargs: object) -> None:
+        outcome = "success" if kwargs["succeeded"] else "failed"
+        self.calls.append((outcome, str(kwargs["engine_call_id"])))
+
 
 class FakeGit:
     def __init__(self) -> None:
@@ -363,6 +409,7 @@ def service(
     skills: ProgressiveSkillContextManager | None = None,
     code: FakeCode | None = None,
     git: FakeGit | None = None,
+    control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
     transcript = FakeTranscript()
@@ -376,6 +423,7 @@ def service(
         skills=skills,
         code=code,  # type: ignore[arg-type]
         git=git,  # type: ignore[arg-type]
+        control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
 
@@ -397,6 +445,62 @@ async def test_effectful_control_tool_fails_closed_without_approved_intent() -> 
     assert captured.value.code == "control_tool_approval_missing"
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+async def test_approved_patch_and_revert_are_receipt_bound_and_transcripted() -> None:
+    code = FakeCode()
+    tracker = FakeControlIntents()
+    control, _, transcript, _ = service(code=code, control_intents=tracker)
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: src/app.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch"
+    )
+
+    applied = await control(
+        SCOPE,
+        "apply_patch",
+        {"patch": patch, "expected_sha256": "1" * 64},
+        "patch-call",
+    )
+    reverted = await control(
+        SCOPE,
+        "revert_patch",
+        {"receipt_artifact_id": "patch-receipt-1"},
+        "revert-call",
+    )
+
+    assert applied["receipt_artifact_id"] == "patch-receipt-1"
+    assert reverted["action"] == "reverted"
+    assert code.calls == [
+        (
+            "apply_patch",
+            "run-1",
+            {"patch": patch, "expected_sha256": "1" * 64},
+        ),
+        (
+            "revert_patch",
+            "run-1",
+            {"receipt_artifact_id": "patch-receipt-1"},
+        ),
+    ]
+    assert tracker.calls == [
+        ("begin", "patch-call"),
+        ("success", "patch-call"),
+        ("begin", "revert-call"),
+        ("success", "revert-call"),
+    ]
+    assert [row[1].artifact_ids for row in transcript.rows] == [
+        ["patch-receipt-1"],
+        ["patch-receipt-1"],
+    ]
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["code://src/app.py", "artifact://patch-receipt-1"],
+        ["code://src/app.py", "artifact://patch-receipt-1"],
+    ]
 
 
 async def test_execution_controls_are_owned_by_exact_agent_session() -> None:

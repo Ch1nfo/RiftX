@@ -93,6 +93,23 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "file_glob",
         "max_results",
     }
+    patch_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "apply_patch"
+    )
+    assert patch_schema["parameters"]["required"] == ["patch"]
+    assert patch_schema["x-riftx"]["approval_policy"] == "explicit"
+    revert_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "revert_patch"
+    )
+    assert revert_schema["parameters"]["required"] == ["receipt_artifact_id"]
+    assert {
+        tool.name for tool in agent.tools if tool.name in {"apply_patch", "revert_patch"}
+    } == {"apply_patch", "revert_patch"}
+    assert all(
+        tool.needs_approval is True
+        for tool in agent.tools
+        if tool.name in {"apply_patch", "revert_patch"}
+    )
     assert {
         "search_tools",
         "list_tools",
@@ -106,6 +123,8 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "find_references",
         "call_hierarchy",
         "diagnostics",
+        "apply_patch",
+        "revert_patch",
         "git_status",
         "git_diff",
         "git_log",

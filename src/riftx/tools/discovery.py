@@ -31,6 +31,8 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "find_references",
     "call_hierarchy",
     "diagnostics",
+    "apply_patch",
+    "revert_patch",
     "git_status",
     "git_diff",
     "git_log",
@@ -596,6 +598,12 @@ def _resident_schema(
         "diagnostics": (
             "Read bounded built-in syntax and lexical diagnostics without starting project tools."
         ),
+        "apply_patch": (
+            "Apply one explicitly approved digest-bound code patch and save a revert receipt."
+        ),
+        "revert_patch": (
+            "Revert one explicitly approved patch when the current digest matches its receipt."
+        ),
         "git_status": "Read bounded Git worktree and index status without refreshing the index.",
         "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
         "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
@@ -752,6 +760,28 @@ def _resident_schema(
             },
             "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
         }
+    elif tool_id == "apply_patch":
+        properties = {
+            "patch": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 262_144,
+                "description": (
+                    "One-file *** Begin Patch document using Add, Update, or Delete File."
+                ),
+            },
+            "expected_sha256": {
+                "type": ["string", "null"],
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "Required for Update/Delete; null for Add.",
+            },
+        }
+        required = ["patch"]
+    elif tool_id == "revert_patch":
+        properties = {
+            "receipt_artifact_id": {"type": "string", "minLength": 1},
+        }
+        required = ["receipt_artifact_id"]
     elif tool_id == "git_diff":
         properties = {
             "path": {
@@ -874,6 +904,17 @@ def _resident_schema(
             }
         }
         required = ["run_summary"]
+    metadata: dict[str, object] = {
+        "resident": True,
+        "execution_policy": execution_policy.value,
+    }
+    if tool_id in {"apply_patch", "revert_patch"}:
+        metadata.update(
+            {
+                "approval_level": "always",
+                "approval_policy": "explicit",
+            }
+        )
     return {
         "type": "function",
         "name": tool_id,
@@ -884,10 +925,7 @@ def _resident_schema(
             "required": required,
             "additionalProperties": False,
         },
-        "x-riftx": {
-            "resident": True,
-            "execution_policy": execution_policy.value,
-        },
+        "x-riftx": metadata,
     }
 
 

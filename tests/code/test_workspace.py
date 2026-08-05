@@ -14,7 +14,7 @@ from riftx.audit import (
     SnapshotCASDescriptor,
     SnapshotStagedTree,
 )
-from riftx.code import CodeWorkspaceService
+from riftx.code import CodePatchReceipt, CodeWorkspaceService
 from riftx.domain import Objective, Run, RunKind
 
 
@@ -80,10 +80,35 @@ class _Snapshots:
 class _ArtifactPublisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.receipts: dict[str, CodePatchReceipt] = {}
+        self.on_publish_patch: object | None = None
+        self.publish_patch_error: Exception | None = None
 
     async def publish(self, run_id: str, **kwargs: object) -> str:
         self.calls.append({"run_id": run_id, **kwargs})
         return f"artifact-{len(self.calls)}"
+
+    async def publish_patch_receipt(
+        self,
+        run_id: str,
+        receipt: CodePatchReceipt,
+    ) -> str:
+        if self.publish_patch_error is not None:
+            raise self.publish_patch_error
+        artifact_id = f"patch-receipt-{len(self.receipts) + 1}"
+        self.receipts[artifact_id] = receipt
+        if callable(self.on_publish_patch):
+            self.on_publish_patch()
+        return artifact_id
+
+    async def load_patch_receipt(
+        self,
+        run_id: str,
+        artifact_id: str,
+    ) -> CodePatchReceipt:
+        receipt = self.receipts[artifact_id]
+        assert receipt.run_id == run_id
+        return receipt
 
 
 def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
@@ -97,14 +122,162 @@ def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
     )
 
 
-def _general_service(*runs: Run) -> CodeWorkspaceService:
+def _general_service(
+    *runs: Run,
+    artifacts: _ArtifactPublisher | None = None,
+) -> CodeWorkspaceService:
     return CodeWorkspaceService(
         runs=_Runs(*runs),  # type: ignore[arg-type]
         audits=_UnusedAudits(),  # type: ignore[arg-type]
         snapshots=_UnusedSnapshots(),  # type: ignore[arg-type]
         snapshot_store=None,
         max_snapshot_file_bytes=5 * 1024 * 1024,
+        artifacts=artifacts,
     )
+
+
+async def test_apply_patch_is_digest_bound_atomic_and_revertible(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    target = root / "src" / "app.py"
+    target.write_text("def value():\n    return 1\n")
+    target.chmod(0o640)
+    artifacts = _ArtifactPublisher()
+    service = _general_service(_run("run-1", root), artifacts=artifacts)
+    original = await service.read_file("run-1", path="src/app.py")
+    assert original.content_digest is not None
+
+    applied = await service.apply_patch(
+        "run-1",
+        patch=(
+            "*** Begin Patch\n"
+            "*** Update File: src/app.py\n"
+            "@@ def value():\n"
+            "-    return 1\n"
+            "+    return 2\n"
+            "*** End Patch"
+        ),
+        expected_sha256=original.content_digest,
+    )
+
+    assert applied.action == "applied"
+    assert applied.operation == "update"
+    assert target.read_text() == "def value():\n    return 2\n"
+    assert target.stat().st_mode & 0o777 == 0o640
+    assert applied.receipt_artifact_id in artifacts.receipts
+    assert "-    return 1" in applied.diff
+    assert "+    return 2" in applied.diff
+
+    target.write_text("external drift\n")
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.revert_patch(
+            "run-1",
+            receipt_artifact_id=applied.receipt_artifact_id,
+        )
+    assert captured.value.code == "code_patch_revert_digest_mismatch"
+
+    target.write_text("def value():\n    return 2\n")
+    reverted = await service.revert_patch(
+        "run-1",
+        receipt_artifact_id=applied.receipt_artifact_id,
+    )
+    assert reverted.action == "reverted"
+    assert target.read_text() == "def value():\n    return 1\n"
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+async def test_apply_patch_add_delete_and_precommit_drift_fail_closed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    artifacts = _ArtifactPublisher()
+    service = _general_service(_run("run-1", root), artifacts=artifacts)
+
+    artifacts.publish_patch_error = RuntimeError("receipt unavailable")
+    with pytest.raises(RuntimeError, match="receipt unavailable"):
+        await service.apply_patch(
+            "run-1",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Add File: not-written.txt\n"
+                "+content\n"
+                "*** End Patch"
+            ),
+        )
+    assert not (root / "not-written.txt").exists()
+    artifacts.publish_patch_error = None
+
+    added = await service.apply_patch(
+        "run-1",
+        patch=(
+            "*** Begin Patch\n"
+            "*** Add File: added.txt\n"
+            "+hello\n"
+            "*** End Patch"
+        ),
+    )
+    assert (root / "added.txt").read_text() == "hello\n"
+    await service.revert_patch("run-1", receipt_artifact_id=added.receipt_artifact_id)
+    assert not (root / "added.txt").exists()
+
+    target = root / "gone.txt"
+    target.write_text("remove me\n")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    deleted = await service.apply_patch(
+        "run-1",
+        patch=(
+            "*** Begin Patch\n"
+            "*** Delete File: gone.txt\n"
+            "*** End Patch"
+        ),
+        expected_sha256=digest,
+    )
+    assert not target.exists()
+    await service.revert_patch("run-1", receipt_artifact_id=deleted.receipt_artifact_id)
+    assert target.read_text() == "remove me\n"
+
+    drift = root / "drift.txt"
+    drift.write_text("before\n")
+    expected = hashlib.sha256(drift.read_bytes()).hexdigest()
+    artifacts.on_publish_patch = lambda: drift.write_text("raced\n")
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.apply_patch(
+            "run-1",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: drift.txt\n"
+                "@@\n"
+                "-before\n"
+                "+after\n"
+                "*** End Patch"
+            ),
+            expected_sha256=expected,
+        )
+    assert captured.value.code == "code_patch_digest_mismatch"
+    assert drift.read_text() == "raced\n"
+
+
+async def test_code_audit_patch_is_read_only(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    artifacts = _ArtifactPublisher()
+    service = _general_service(
+        _run("audit-run", root, kind=RunKind.CODE_AUDIT),
+        artifacts=artifacts,
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.apply_patch(
+            "audit-run",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Add File: denied.txt\n"
+                "+denied\n"
+                "*** End Patch"
+            ),
+        )
+    assert captured.value.code == "code_workspace_read_only"
 
 
 async def test_workspace_tools_list_read_glob_and_literal_grep(tmp_path: Path) -> None:

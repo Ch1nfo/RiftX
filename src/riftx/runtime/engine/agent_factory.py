@@ -33,6 +33,7 @@ _CONTROL_TOOL_NAMES = {
     "call_hierarchy",
     "diagnostics",
     "apply_patch",
+    "revert_patch",
     "git_status",
     "git_diff",
     "git_log",

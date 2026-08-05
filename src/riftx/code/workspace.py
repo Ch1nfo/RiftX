@@ -6,12 +6,15 @@ import asyncio
 import base64
 import errno
 import fnmatch
+import hashlib
+import hmac
 import os
+import secrets
 import stat
 from collections import deque
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, Self
 
@@ -46,12 +49,21 @@ from .models import (
     CodeGrepMatch,
     CodeGrepResult,
     CodeListResult,
+    CodePatchReceipt,
+    CodePatchResult,
     CodeReadManyResult,
     CodeReadResult,
     CodeReference,
     CodeReferenceSearchResult,
     CodeSymbol,
     CodeSymbolSearchResult,
+)
+from .patch import (
+    PatchFileState,
+    parse_code_patch,
+    prepare_code_patch,
+    reverse_patch_diff,
+    validate_patch_receipt_content,
 )
 from .symbols import (
     extract_call_graph,
@@ -81,6 +93,7 @@ _MAX_CALLS_SCANNED = 20_000
 _MAX_CALL_RESULTS = 200
 _MAX_DIAGNOSTICS_SCANNED = 20_000
 _MAX_DIAGNOSTIC_RESULTS = 200
+_MAX_PATCH_FILE_BYTES = 1024 * 1024
 
 
 class _Source(Protocol):
@@ -115,6 +128,18 @@ class CodeArtifactPublisher(Protocol):
         content: bytes,
         source_digest: str | None,
     ) -> str: ...
+
+    async def publish_patch_receipt(
+        self,
+        run_id: str,
+        receipt: CodePatchReceipt,
+    ) -> str: ...
+
+    async def load_patch_receipt(
+        self,
+        run_id: str,
+        artifact_id: str,
+    ) -> CodePatchReceipt: ...
 
 
 @dataclass(slots=True)
@@ -293,6 +318,146 @@ class CodeWorkspaceService:
             files=results,
             total_bytes=total,
             truncated=len(results) < len(normalized),
+        )
+
+    async def apply_patch(
+        self,
+        run_id: str,
+        *,
+        patch: str,
+        expected_sha256: str | None = None,
+    ) -> CodePatchResult:
+        if self._artifacts is None:
+            raise _conflict(
+                "code_patch_receipt_unavailable",
+                "Patch receipt storage is not configured",
+            )
+        parsed = parse_code_patch(patch)
+        parsed = replace(parsed, path=_relative_path(parsed.path))
+        source = await self._resolve_writable(run_id)
+        with source as opened:
+            original = await asyncio.to_thread(opened.patch_state, parsed.path)
+            prepared = prepare_code_patch(
+                parsed,
+                expected_sha256=expected_sha256,
+                original=original,
+            )
+            receipt = CodePatchReceipt(
+                run_id=run_id,
+                operation=prepared.operation,
+                path=prepared.path,
+                original_sha256=(
+                    prepared.original.sha256 if prepared.original is not None else None
+                ),
+                result_sha256=prepared.result_sha256,
+                original_mode=(
+                    prepared.original.mode if prepared.original is not None else None
+                ),
+                original_content_base64=(
+                    base64.b64encode(prepared.original.content).decode("ascii")
+                    if prepared.original is not None
+                    else None
+                ),
+                patch=prepared.patch,
+                patch_sha256=prepared.patch_sha256,
+            )
+            receipt_artifact_id = await self._artifacts.publish_patch_receipt(
+                run_id,
+                receipt,
+            )
+            await asyncio.to_thread(
+                opened.commit_patch,
+                prepared.path,
+                expected_sha256=(
+                    prepared.original.sha256 if prepared.original is not None else None
+                ),
+                content=prepared.result_content,
+                mode=(prepared.original.mode if prepared.original is not None else 0o644),
+            )
+        return CodePatchResult(
+            action="applied",
+            operation=prepared.operation,
+            path=prepared.path,
+            original_sha256=(
+                prepared.original.sha256 if prepared.original is not None else None
+            ),
+            result_sha256=prepared.result_sha256,
+            receipt_artifact_id=receipt_artifact_id,
+            diff=prepared.diff,
+            diff_truncated=prepared.diff_truncated,
+        )
+
+    async def revert_patch(
+        self,
+        run_id: str,
+        *,
+        receipt_artifact_id: str,
+    ) -> CodePatchResult:
+        if self._artifacts is None:
+            raise _conflict(
+                "code_patch_receipt_unavailable",
+                "Patch receipt storage is not configured",
+            )
+        receipt = await self._artifacts.load_patch_receipt(run_id, receipt_artifact_id)
+        path = _relative_path(receipt.path)
+        try:
+            restored = (
+                base64.b64decode(receipt.original_content_base64, validate=True)
+                if receipt.original_content_base64 is not None
+                else None
+            )
+        except ValueError:
+            raise _conflict(
+                "code_patch_receipt_invalid",
+                "Patch receipt original content is invalid",
+            ) from None
+        if restored is not None:
+            validate_patch_receipt_content(
+                content=restored,
+                expected_sha256=receipt.original_sha256,
+            )
+        source = await self._resolve_writable(run_id)
+        with source as opened:
+            current = await asyncio.to_thread(opened.patch_state, path)
+            if receipt.result_sha256 is None:
+                if current is not None:
+                    raise _conflict(
+                        "code_patch_revert_digest_mismatch",
+                        "Patch result path no longer matches the receipt",
+                    )
+            elif current is None or not hmac.compare_digest(
+                current.sha256,
+                receipt.result_sha256,
+            ):
+                raise _conflict(
+                    "code_patch_revert_digest_mismatch",
+                    "Patch result path no longer matches the receipt",
+                )
+            diff, diff_truncated = reverse_patch_diff(
+                path,
+                current=current.content if current is not None else None,
+                restored=restored,
+            )
+            await asyncio.to_thread(
+                opened.commit_patch,
+                path,
+                expected_sha256=(current.sha256 if current is not None else None),
+                content=restored,
+                mode=(
+                    receipt.original_mode
+                    if receipt.original_mode is not None
+                    else 0o644
+                ),
+            )
+        return CodePatchResult(
+            action="reverted",
+            operation=receipt.operation,
+            path=path,
+            original_sha256=(current.sha256 if current is not None else None),
+            result_sha256=receipt.original_sha256,
+            receipt_artifact_id=receipt_artifact_id,
+            diff=diff,
+            diff_truncated=diff_truncated,
         )
 
     async def _publish_partial(
@@ -889,6 +1054,19 @@ class CodeWorkspaceService:
             max_file_bytes=self._max_snapshot_file_bytes,
         )
 
+    async def _resolve_writable(self, run_id: str) -> _FilesystemSource:
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.kind is not RunKind.GENERAL:
+            raise _conflict(
+                "code_workspace_read_only",
+                "Native code mutation is available only to General Runs",
+            )
+        if not run.workspace_path:
+            raise _conflict("code_workspace_invalid", "Run workspace is not configured")
+        return _FilesystemSource(Path(run.workspace_path))
+
 
 class _FilesystemSource(AbstractContextManager[_Source]):
     kind: Literal["workspace"] = "workspace"
@@ -1031,7 +1209,8 @@ class _FilesystemSource(AbstractContextManager[_Source]):
                     "code_source_changed",
                     "Workspace file changed during read",
                 )
-            return bytes(content), before.st_size, None
+            data = bytes(content)
+            return data, before.st_size, hashlib.sha256(data).hexdigest()
         except ApplicationConflictError:
             raise
         except OSError as exc:
@@ -1039,6 +1218,69 @@ class _FilesystemSource(AbstractContextManager[_Source]):
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
+            os.close(parent_fd)
+
+    def patch_state(self, path: str) -> PatchFileState | None:
+        parent_fd, name = self._open_parent(path)
+        try:
+            return _read_optional_patch_state(parent_fd, name)
+        finally:
+            os.close(parent_fd)
+
+    def commit_patch(
+        self,
+        path: str,
+        *,
+        expected_sha256: str | None,
+        content: bytes | None,
+        mode: int,
+    ) -> None:
+        self.verify_path_binding()
+        parent_fd, name = self._open_parent(path)
+        temp_name: str | None = None
+        try:
+            current = _read_optional_patch_state(parent_fd, name)
+            _require_patch_state(current, expected_sha256)
+            if content is None:
+                os.unlink(name, dir_fd=parent_fd)
+            else:
+                temp_name = _write_patch_temp(parent_fd, content, mode=mode)
+                latest = _read_optional_patch_state(parent_fd, name)
+                _require_patch_state(latest, expected_sha256)
+                if latest is None:
+                    os.link(
+                        temp_name,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                else:
+                    os.replace(
+                        temp_name,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                temp_name = None
+            os.fsync(parent_fd)
+            committed = _read_optional_patch_state(parent_fd, name)
+            committed_sha256 = (
+                hashlib.sha256(content).hexdigest() if content is not None else None
+            )
+            _require_patch_state(committed, committed_sha256)
+            self.verify_path_binding()
+        except ApplicationConflictError:
+            raise
+        except OSError as exc:
+            raise _path_error(exc, "Workspace patch commit failed") from None
+        finally:
+            if temp_name is not None:
+                try:
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
             os.close(parent_fd)
 
     def _open_directory(self, path: str) -> int:
@@ -1209,6 +1451,112 @@ def _glob_pattern(value: str | None) -> str:
     if candidate.is_absolute():
         raise _conflict("code_glob_invalid", "Glob pattern must be relative")
     return value
+
+
+def _read_optional_patch_state(parent_fd: int, name: str) -> PatchFileState | None:
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            return None
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise _conflict(
+                "code_entry_type_unsupported",
+                "Patch tools only mutate regular files",
+            )
+        if before.st_size > _MAX_PATCH_FILE_BYTES:
+            raise _conflict(
+                "code_patch_file_too_large",
+                "Patch target exceeds the bounded limit",
+            )
+        content = bytearray()
+        while chunk := os.read(
+            descriptor,
+            min(64 * 1024, _MAX_PATCH_FILE_BYTES - len(content) + 1),
+        ):
+            content.extend(chunk)
+            if len(content) > _MAX_PATCH_FILE_BYTES:
+                raise _conflict(
+                    "code_patch_file_too_large",
+                    "Patch target exceeds the bounded limit",
+                )
+        after = os.fstat(descriptor)
+        if _fingerprint(before) != _fingerprint(after) or len(content) != before.st_size:
+            raise _conflict("code_source_changed", "Patch target changed during read")
+        data = bytes(content)
+        return PatchFileState(
+            content=data,
+            sha256=hashlib.sha256(data).hexdigest(),
+            mode=stat.S_IMODE(before.st_mode),
+        )
+    except ApplicationConflictError:
+        raise
+    except OSError as exc:
+        raise _path_error(exc, "Workspace patch target is unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _require_patch_state(
+    state: PatchFileState | None,
+    expected_sha256: str | None,
+) -> None:
+    if expected_sha256 is None:
+        if state is not None:
+            raise _conflict("code_patch_target_exists", "Patch target unexpectedly exists")
+        return
+    if state is None or not hmac.compare_digest(state.sha256, expected_sha256):
+        raise _conflict(
+            "code_patch_digest_mismatch",
+            "Patch target changed after preview",
+        )
+
+
+def _write_patch_temp(parent_fd: int, content: bytes, *, mode: int) -> str:
+    for _ in range(16):
+        name = f".riftx-patch-{secrets.token_hex(12)}.tmp"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | os.O_NOFOLLOW,
+                mode & 0o7777,
+                dir_fd=parent_fd,
+            )
+        except FileExistsError:
+            continue
+        try:
+            view = memoryview(content)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "Patch temporary write made no progress")
+                view = view[written:]
+            os.fchmod(descriptor, mode & 0o7777)
+            os.fsync(descriptor)
+        except BaseException:
+            os.close(descriptor)
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        os.close(descriptor)
+        return name
+    raise _conflict(
+        "code_patch_temp_unavailable",
+        "Could not reserve a patch temporary file",
+    )
 
 
 def _bounded(value: int, *, maximum: int, label: str) -> None:

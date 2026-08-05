@@ -228,7 +228,11 @@ async def test_wave_c_thirty_tool_call_context_gate(tmp_path: Path) -> None:
             "item_count"
         ] == len(RESIDENT_TOOL_IDS)
     assert len(compiled_calls[-1].context_manifest["instruction_paths"]) == 4
-    assert len(compiled_calls[-1].context_manifest["selected_context_item_ids"]) < 50
+    selected_ids = compiled_calls[-1].context_manifest["selected_context_item_ids"]
+    non_tool_schema_ids = [
+        item_id for item_id in selected_ids if not item_id.startswith("tool-schema:")
+    ]
+    assert len(non_tool_schema_ids) < 22
 
     with pytest.raises(DuplicateAttemptError, match="already failed"):
         WorkingMemoryReducer().reduce(

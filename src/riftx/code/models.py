@@ -212,6 +212,36 @@ class CodeDiagnosticsResult(BaseModel):
     truncated: bool = False
 
 
+class CodePatchReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["riftx.code-patch-receipt/v1"] = (
+        "riftx.code-patch-receipt/v1"
+    )
+    run_id: str = Field(min_length=1, max_length=64)
+    operation: Literal["add", "update", "delete"]
+    path: str = Field(min_length=1, max_length=4096)
+    original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    original_mode: int | None = Field(default=None, ge=0, le=0o7777)
+    original_content_base64: str | None = None
+    patch: str = Field(min_length=1, max_length=262_144)
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodePatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["applied", "reverted"]
+    operation: Literal["add", "update", "delete"]
+    path: str = Field(min_length=1, max_length=4096)
+    original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    receipt_artifact_id: str = Field(min_length=1)
+    diff: str
+    diff_truncated: bool = False
+
+
 class GitStatusEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -263,6 +293,8 @@ __all__ = [
     "CodeCallHierarchyResult",
     "CodeDiagnostic",
     "CodeDiagnosticsResult",
+    "CodePatchReceipt",
+    "CodePatchResult",
     "CodeGrepMatch",
     "CodeGrepResult",
     "CodeListResult",
