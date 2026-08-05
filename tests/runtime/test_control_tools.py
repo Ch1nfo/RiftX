@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
+from riftx.browser.service import ActBrowser, BrowserView, OpenBrowser
 from riftx.code import (
     CodeCall,
     CodeCallHierarchyResult,
@@ -33,8 +34,19 @@ from riftx.domain import (
     ArtifactAccessClass,
     ArtifactIngestMethod,
     ArtifactIngestProvenance,
+    BrowserAction,
+    BrowserActionStatus,
+    BrowserMode,
+    BrowserObservation,
+    BrowserPage,
+    BrowserSession,
+    BrowserSessionStatus,
     Execution,
     ExecutorType,
+    FormFieldSummary,
+    FormSummary,
+    InteractiveElement,
+    NetworkEventSummary,
 )
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
@@ -382,6 +394,167 @@ class FakeGit:
             ],
         )
 
+
+class FakeBrowser:
+    def __init__(self, *, agent_session_id: str = "session-1") -> None:
+        self.calls: list[tuple[str, object]] = []
+        self.session = BrowserSession(
+            id="browser-1",
+            run_id="run-1",
+            agent_session_id=agent_session_id,
+            node_id="local",
+            mode=BrowserMode.MANAGED_EPHEMERAL,
+            status=BrowserSessionStatus.ACTIVE,
+            current_page_id="page-1",
+            page_ids=["page-1"],
+        )
+
+    def _view(
+        self,
+        *,
+        version: int,
+        action: BrowserAction | None = None,
+    ) -> BrowserView:
+        return BrowserView(
+            session=self.session,
+            pages=[
+                BrowserPage(
+                    id="page-1",
+                    browser_session_id=self.session.id,
+                    url="https://example.test/",
+                    title="Example",
+                    last_observation_version=version,
+                )
+            ],
+            observation=(
+                BrowserObservation(
+                    id=f"observation-{version}",
+                    browser_session_id=self.session.id,
+                    page_id="page-1",
+                    url="https://example.test/",
+                    title="Example",
+                    visible_text_excerpt="Untrusted page content",
+                    screenshot_artifact_id="screenshot-1",
+                    network_artifact_id="network-1",
+                    observation_version=version,
+                )
+                if self.session.status is BrowserSessionStatus.ACTIVE
+                else None
+            ),
+            action=action,
+        )
+
+    async def open(self, command: OpenBrowser) -> BrowserView:
+        self.calls.append(("open", command))
+        return self._view(version=1)
+
+    async def get(
+        self,
+        session_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> BrowserView:
+        self.calls.append(("get", (session_id, expected_run_id)))
+        assert session_id == self.session.id
+        assert expected_run_id == self.session.run_id
+        return self._view(version=1)
+
+    async def observe(self, session_id: str, **kwargs: object) -> BrowserView:
+        self.calls.append(("observe", (session_id, kwargs)))
+        return self._view(version=2)
+
+    async def act(self, session_id: str, command: ActBrowser) -> BrowserView:
+        self.calls.append(("act", (session_id, command)))
+        return self._view(
+            version=2,
+            action=BrowserAction(
+                action_key=command.action_key,
+                browser_session_id=session_id,
+                page_id=command.page_id,
+                observation_version=command.observation_version,
+                action=command.action,
+                element_ref=command.element_ref,
+                value=command.value,
+                url=command.url,
+                options=command.options or {},
+                status=BrowserActionStatus.COMPLETED,
+                result_observation_id="observation-2",
+            ),
+        )
+
+    async def close(self, session_id: str) -> BrowserView:
+        self.calls.append(("close", session_id))
+        self.session = self.session.model_copy(
+            update={"status": BrowserSessionStatus.CLOSED}
+        )
+        return self._view(version=2)
+
+
+class LargeFakeBrowser(FakeBrowser):
+    def _view(
+        self,
+        *,
+        version: int,
+        action: BrowserAction | None = None,
+    ) -> BrowserView:
+        view = super()._view(version=version, action=action)
+        assert view.observation is not None
+        long_text = "x" * 8192
+        long_url = f"https://example.test/{'x' * 8100}"
+        fields = [
+            FormFieldSummary(
+                ref=f"field-{index}",
+                name=long_text[:255],
+                label=long_text[:1000],
+                input_type=long_text[:128],
+            )
+            for index in range(100)
+        ]
+        observation = view.observation.model_copy(
+            update={
+                "headings": [long_text] * 100,
+                "interactive_elements": [
+                    InteractiveElement(
+                        ref=f"e-{index + 1}",
+                        role=long_text[:128],
+                        name=long_text[:1000],
+                        text=long_text[:1000],
+                        input_type=long_text[:128],
+                        href=long_url,
+                        frame_id=long_text[:255],
+                    )
+                    for index in range(300)
+                ],
+                "forms": [
+                    FormSummary(
+                        ref=f"form-{index}",
+                        action=long_url,
+                        method="POST",
+                        fields=fields,
+                    )
+                    for index in range(50)
+                ],
+                "alerts": [long_text] * 50,
+                "console_errors": [long_text] * 100,
+                "recent_network_summary": [
+                    NetworkEventSummary(
+                        sequence=index + 1,
+                        method="GET",
+                        url=long_url,
+                        failed=True,
+                        failure_text=long_text[:2000],
+                    )
+                    for index in range(100)
+                ],
+            }
+        )
+        return BrowserView(
+            session=view.session,
+            pages=view.pages,
+            observation=observation,
+            action=view.action,
+        )
+
 def execution(
     execution_id: str = "execution-1",
     *,
@@ -409,6 +582,7 @@ def service(
     skills: ProgressiveSkillContextManager | None = None,
     code: FakeCode | None = None,
     git: FakeGit | None = None,
+    browser: FakeBrowser | None = None,
     control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -423,6 +597,7 @@ def service(
         skills=skills,
         code=code,  # type: ignore[arg-type]
         git=git,  # type: ignore[arg-type]
+        browser=browser,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
@@ -443,6 +618,38 @@ async def test_effectful_control_tool_fails_closed_without_approved_intent() -> 
         )
 
     assert captured.value.code == "control_tool_approval_missing"
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("open_browser", {"url": "https://example.test/"}),
+        (
+            "act_browser",
+            {
+                "browser_session_id": "browser-1",
+                "page_id": "page-1",
+                "observation_version": 1,
+                "action": "click",
+                "element_ref": "e-1",
+            },
+        ),
+    ],
+)
+async def test_effectful_browser_tools_have_no_side_effect_without_approval(
+    tool_name: str,
+    arguments: dict[str, object],
+) -> None:
+    browser = FakeBrowser()
+    control, events, transcript, _ = service(browser=browser)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(SCOPE, tool_name, arguments, f"{tool_name}-call")
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert browser.calls == []
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
 
@@ -501,6 +708,117 @@ async def test_approved_patch_and_revert_are_receipt_bound_and_transcripted() ->
         ["code://src/app.py", "artifact://patch-receipt-1"],
         ["code://src/app.py", "artifact://patch-receipt-1"],
     ]
+
+
+async def test_managed_browser_is_approved_scoped_bounded_and_transcripted() -> None:
+    browser = FakeBrowser()
+    tracker = FakeControlIntents()
+    control, _, transcript, _ = service(browser=browser, control_intents=tracker)
+
+    opened = await control(
+        SCOPE,
+        "open_browser",
+        {"url": "https://example.test/"},
+        "browser-open-call",
+    )
+    observed = await control(
+        SCOPE,
+        "observe_browser",
+        {"browser_session_id": "browser-1"},
+        "browser-observe-call",
+    )
+    acted = await control(
+        SCOPE,
+        "act_browser",
+        {
+            "browser_session_id": "browser-1",
+            "page_id": "page-1",
+            "observation_version": 2,
+            "action": "click",
+            "element_ref": "e-1",
+        },
+        "browser-act-call",
+    )
+    closed = await control(
+        SCOPE,
+        "close_browser",
+        {"browser_session_id": "browser-1"},
+        "browser-close-call",
+    )
+
+    assert opened["observation"]["content_trust"] == "UNTRUSTED_EXTERNAL_CONTENT"
+    assert observed["observation"]["observation_version"] == 2
+    assert acted["action"]["action_key"] == "browser-act-call"
+    assert closed["session"]["status"] == "closed"
+    open_command = browser.calls[0][1]
+    assert isinstance(open_command, OpenBrowser)
+    assert open_command.run_id == "run-1"
+    assert open_command.agent_session_id == "session-1"
+    assert open_command.headless is True
+    act_call = next(item for item in browser.calls if item[0] == "act")[1]
+    assert isinstance(act_call, tuple)
+    act_command = act_call[1]
+    assert isinstance(act_command, ActBrowser)
+    assert act_command.action_key == "browser-act-call"
+    assert tracker.calls == [
+        ("begin", "browser-open-call"),
+        ("success", "browser-open-call"),
+        ("begin", "browser-act-call"),
+        ("success", "browser-act-call"),
+    ]
+    assert [set(row[1].artifact_ids) for row in transcript.rows] == [
+        {"screenshot-1", "network-1"},
+        {"screenshot-1", "network-1"},
+        {"screenshot-1", "network-1"},
+        set(),
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == [
+        "browser://browser-1",
+        "browser-page://page-1",
+        "artifact://network-1",
+        "artifact://screenshot-1",
+    ]
+
+
+async def test_managed_browser_rejects_sibling_agent_session() -> None:
+    browser = FakeBrowser(agent_session_id="session-sibling")
+    control, events, transcript, _ = service(browser=browser)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "observe_browser",
+            {"browser_session_id": "browser-1"},
+            "browser-scope-call",
+        )
+
+    assert captured.value.code == "browser_scope_mismatch"
+    assert [item[0] for item in browser.calls] == ["get"]
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "browser_scope_mismatch"
+
+
+async def test_managed_browser_compacts_maximal_observation_before_transcript() -> None:
+    control, events, transcript, _ = service(browser=LargeFakeBrowser())
+
+    result = await control(
+        SCOPE,
+        "observe_browser",
+        {"browser_session_id": "browser-1"},
+        "browser-large-observe-call",
+    )
+
+    observation = result["observation"]
+    assert len(observation["headings"]) == 30
+    assert len(observation["interactive_elements"]) == 30
+    assert len(observation["forms"]) == 5
+    assert len(observation["forms"][0]["fields"]) == 10
+    assert len(observation["recent_network_summary"]) == 15
+    assert all(observation["truncated"].values())
+    assert len(json.dumps(result).encode()) < 256 * 1024
+    assert transcript.rows[0][1].structured_content["content"] == result
+    assert events.rows[-1][1] == "runtime.control_tool_completed"
+    assert events.rows[-1][2]["result_bytes"] < 256 * 1024
 
 
 async def test_execution_controls_are_owned_by_exact_agent_session() -> None:

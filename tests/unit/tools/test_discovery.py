@@ -13,6 +13,7 @@ from riftx.runtime.lifecycle import (
 )
 from riftx.tools import (
     RESIDENT_TOOL_IDS,
+    SUBAGENT_RESIDENT_TOOL_IDS,
     ExecutionPolicy,
     ToolContextManager,
     ToolNotFoundError,
@@ -236,6 +237,23 @@ async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> N
     assert primary.dynamically_loaded_tools == ["netexec-smb"]
     assert subagent.dynamically_loaded_tools == []
     assert "netexec-smb" in subagent.hidden_available_tools
+    manager.restrict_tools(
+        list(SUBAGENT_RESIDENT_TOOL_IDS),
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="subagent:recon",
+    )
+    production_subagent = manager.visibility(
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="subagent:recon",
+    )
+    assert {
+        "open_browser",
+        "observe_browser",
+        "act_browser",
+        "close_browser",
+    }.isdisjoint(production_subagent.always_visible_tools)
 
 
 async def test_subagent_tool_allowlist_hides_and_rejects_unassigned_tools(

@@ -130,6 +130,24 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "open_browser": AgentToolPolicy(
+            AgentToolEffect.HOST_EXECUTION,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
+        "observe_browser": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "act_browser": AgentToolPolicy(
+            AgentToolEffect.HOST_CONTROL,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
+        "close_browser": AgentToolPolicy(
+            AgentToolEffect.HOST_CONTROL,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "run_registered_tool": AgentToolPolicy(
             AgentToolEffect.HOST_EXECUTION,
             AgentToolAuthorization.DYNAMIC_APPROVAL,

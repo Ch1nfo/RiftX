@@ -45,6 +45,11 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
         AGENT_TOOL_POLICIES["send_terminal_input"].authorization
         is AgentToolAuthorization.RUN_TERMINAL
     )
+    assert AGENT_TOOL_POLICIES["open_browser"].approval_required is True
+    assert AGENT_TOOL_POLICIES["act_browser"].effect is AgentToolEffect.HOST_CONTROL
+    assert AGENT_TOOL_POLICIES["act_browser"].approval_required is True
+    assert AGENT_TOOL_POLICIES["observe_browser"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["close_browser"].approval_required is False
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 

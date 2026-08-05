@@ -110,6 +110,41 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         for tool in agent.tools
         if tool.name in {"apply_patch", "revert_patch"}
     )
+    open_browser_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "open_browser"
+    )
+    assert open_browser_schema["parameters"]["required"] == ["url"]
+    assert open_browser_schema["x-riftx"]["approval_policy"] == "explicit"
+    act_browser_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "act_browser"
+    )
+    assert act_browser_schema["parameters"]["required"] == [
+        "browser_session_id",
+        "page_id",
+        "observation_version",
+        "action",
+    ]
+    assert "evaluate" not in act_browser_schema["parameters"]["properties"]["action"][
+        "enum"
+    ]
+    assert "upload" not in act_browser_schema["parameters"]["properties"]["action"]["enum"]
+    assert {
+        tool.name
+        for tool in agent.tools
+        if tool.name
+        in {"open_browser", "observe_browser", "act_browser", "close_browser"}
+    } == {"open_browser", "observe_browser", "act_browser", "close_browser"}
+    assert {
+        tool.name: tool.needs_approval
+        for tool in agent.tools
+        if tool.name
+        in {"open_browser", "observe_browser", "act_browser", "close_browser"}
+    } == {
+        "open_browser": True,
+        "observe_browser": False,
+        "act_browser": True,
+        "close_browser": False,
+    }
     assert {
         "search_tools",
         "list_tools",
@@ -128,6 +163,10 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "git_status",
         "git_diff",
         "git_log",
+        "open_browser",
+        "observe_browser",
+        "act_browser",
+        "close_browser",
         "get_execution",
         "wait_execution",
         "cancel_execution",

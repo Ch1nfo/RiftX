@@ -36,6 +36,10 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "git_status",
     "git_diff",
     "git_log",
+    "open_browser",
+    "observe_browser",
+    "act_browser",
+    "close_browser",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -607,6 +611,16 @@ def _resident_schema(
         "git_status": "Read bounded Git worktree and index status without refreshing the index.",
         "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
         "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
+        "open_browser": (
+            "Open one managed ephemeral browser at an authorized URL after explicit approval."
+        ),
+        "observe_browser": (
+            "Read a bounded untrusted observation from this Agent Session's browser."
+        ),
+        "act_browser": (
+            "Perform one explicitly approved scoped browser action against a fresh observation."
+        ),
+        "close_browser": "Close this Agent Session's managed browser.",
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -782,6 +796,89 @@ def _resident_schema(
             "receipt_artifact_id": {"type": "string", "minLength": 1},
         }
         required = ["receipt_artifact_id"]
+    elif tool_id == "open_browser":
+        properties = {
+            "url": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "include_screenshot": {"type": "boolean", "default": True},
+        }
+        required = ["url"]
+    elif tool_id == "observe_browser":
+        properties = {
+            "browser_session_id": {"type": "string", "minLength": 1},
+            "page_id": {"type": ["string", "null"], "minLength": 1},
+            "include_screenshot": {"type": "boolean", "default": False},
+            "include_network": {"type": "boolean", "default": True},
+        }
+        required = ["browser_session_id"]
+    elif tool_id == "act_browser":
+        properties = {
+            "browser_session_id": {"type": "string", "minLength": 1},
+            "page_id": {"type": "string", "minLength": 1},
+            "observation_version": {"type": "integer", "minimum": 1},
+            "action": {
+                "type": "string",
+                "enum": [
+                    "navigate",
+                    "click",
+                    "fill",
+                    "type",
+                    "select",
+                    "press",
+                    "scroll",
+                    "download",
+                    "wait",
+                    "go_back",
+                    "reload",
+                ],
+            },
+            "element_ref": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 255,
+            },
+            "value": {"type": ["string", "null"], "maxLength": 16_384},
+            "url": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 8192,
+            },
+            "delay_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000,
+                "default": 0,
+            },
+            "scroll_delta_x": {
+                "type": "integer",
+                "minimum": -10_000,
+                "maximum": 10_000,
+                "default": 0,
+            },
+            "scroll_delta_y": {
+                "type": "integer",
+                "minimum": -10_000,
+                "maximum": 10_000,
+                "default": 700,
+            },
+            "wait_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10_000,
+                "default": 500,
+            },
+            "include_screenshot": {"type": "boolean", "default": True},
+        }
+        required = [
+            "browser_session_id",
+            "page_id",
+            "observation_version",
+            "action",
+        ]
+    elif tool_id == "close_browser":
+        properties = {
+            "browser_session_id": {"type": "string", "minLength": 1},
+        }
+        required = ["browser_session_id"]
     elif tool_id == "git_diff":
         properties = {
             "path": {
@@ -908,7 +1005,7 @@ def _resident_schema(
         "resident": True,
         "execution_policy": execution_policy.value,
     }
-    if tool_id in {"apply_patch", "revert_patch"}:
+    if tool_id in {"apply_patch", "revert_patch", "open_browser", "act_browser"}:
         metadata.update(
             {
                 "approval_level": "always",

@@ -7,14 +7,16 @@ import hashlib
 import json
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from riftx.application.errors import ApplicationConflictError, ApplicationServiceError
 from riftx.application.services import ArtifactApplicationService
+from riftx.browser.service import ActBrowser, BrowserApplicationService, BrowserView, OpenBrowser
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.domain import (
     AgentMessage,
     ArtifactAccessClass,
+    BrowserActionType,
     Execution,
     MessageRole,
     MessageType,
@@ -201,6 +203,49 @@ class _RevertPatchArguments(_Arguments):
     receipt_artifact_id: str = Field(min_length=1)
 
 
+class _OpenBrowserArguments(_Arguments):
+    url: str = Field(min_length=1, max_length=8192)
+    include_screenshot: bool = True
+
+
+class _ObserveBrowserArguments(_Arguments):
+    browser_session_id: str = Field(min_length=1)
+    page_id: str | None = Field(default=None, min_length=1)
+    include_screenshot: bool = False
+    include_network: bool = True
+
+
+class _ActBrowserArguments(_Arguments):
+    browser_session_id: str = Field(min_length=1)
+    page_id: str = Field(min_length=1)
+    observation_version: int = Field(ge=1)
+    action: Literal[
+        "navigate",
+        "click",
+        "fill",
+        "type",
+        "select",
+        "press",
+        "scroll",
+        "download",
+        "wait",
+        "go_back",
+        "reload",
+    ]
+    element_ref: str | None = Field(default=None, min_length=1, max_length=255)
+    value: str | None = Field(default=None, max_length=16_384)
+    url: str | None = Field(default=None, min_length=1, max_length=8192)
+    delay_ms: int = Field(default=0, ge=0, le=1000)
+    scroll_delta_x: int = Field(default=0, ge=-10_000, le=10_000)
+    scroll_delta_y: int = Field(default=700, ge=-10_000, le=10_000)
+    wait_ms: int = Field(default=500, ge=0, le=10_000)
+    include_screenshot: bool = True
+
+
+class _CloseBrowserArguments(_Arguments):
+    browser_session_id: str = Field(min_length=1)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -237,6 +282,7 @@ class RuntimeControlToolService:
         skills: ProgressiveSkillContextManager | None = None,
         code: CodeWorkspaceService | None = None,
         git: GitWorkspaceService | None = None,
+        browser: BrowserApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
@@ -247,6 +293,7 @@ class RuntimeControlToolService:
         self._skills = skills
         self._code = code
         self._git = git
+        self._browser = browser
         self._control_intents = control_intents
 
     async def __call__(
@@ -283,7 +330,12 @@ class RuntimeControlToolService:
                         "Control Tool mutation lacks an approved durable intent",
                     )
                 approval_claimed = True
-            result = await self._invoke(scope, tool_name, arguments)
+            result = await self._invoke(
+                scope,
+                tool_name,
+                arguments,
+                call_id=call_id,
+            )
             result = _bounded_result(result)
         except Exception as exc:
             if approval_claimed:
@@ -318,11 +370,6 @@ class RuntimeControlToolService:
                 succeeded=True,
             )
 
-        result_artifact_id = (
-            _string_argument(result, "receipt_artifact_id")
-            if isinstance(result, dict)
-            else None
-        )
         argument_artifact_id = _string_argument(arguments, "artifact_id")
         content = {
             "type": "tool_result",
@@ -344,7 +391,10 @@ class RuntimeControlToolService:
                 artifact_ids=list(
                     dict.fromkeys(
                         artifact_id
-                        for artifact_id in (argument_artifact_id, result_artifact_id)
+                        for artifact_id in (
+                            argument_artifact_id,
+                            *_result_artifact_ids(result),
+                        )
                         if artifact_id is not None
                     )
                 ),
@@ -377,6 +427,8 @@ class RuntimeControlToolService:
         scope: RuntimeToolScope,
         tool_name: str,
         raw_arguments: dict[str, object],
+        *,
+        call_id: str,
     ) -> object:
         if tool_name == "search_tools":
             search_arguments = _SearchArguments.model_validate(raw_arguments)
@@ -587,6 +639,81 @@ class RuntimeControlToolService:
                     receipt_artifact_id=revert_arguments.receipt_artifact_id,
                 )
             ).model_dump(mode="json")
+        if tool_name == "open_browser":
+            browser = self._require_browser()
+            browser_arguments = _OpenBrowserArguments.model_validate(raw_arguments)
+            return _browser_payload(
+                await browser.open(
+                    OpenBrowser(
+                        run_id=scope.run_id,
+                        agent_session_id=scope.session_id,
+                        url=browser_arguments.url,
+                        headless=True,
+                        include_screenshot=browser_arguments.include_screenshot,
+                    )
+                )
+            )
+        if tool_name == "observe_browser":
+            browser = self._require_browser()
+            browser_arguments = _ObserveBrowserArguments.model_validate(raw_arguments)
+            await self._require_browser_scope(
+                scope,
+                browser_arguments.browser_session_id,
+            )
+            return _browser_payload(
+                await browser.observe(
+                    browser_arguments.browser_session_id,
+                    page_id=browser_arguments.page_id,
+                    include_screenshot=browser_arguments.include_screenshot,
+                    include_network=browser_arguments.include_network,
+                )
+            )
+        if tool_name == "act_browser":
+            browser = self._require_browser()
+            browser_arguments = _ActBrowserArguments.model_validate(raw_arguments)
+            await self._require_browser_scope(
+                scope,
+                browser_arguments.browser_session_id,
+            )
+            action = BrowserActionType(browser_arguments.action)
+            options: dict[str, JsonValue] = {}
+            if action is BrowserActionType.TYPE:
+                options["delay_ms"] = browser_arguments.delay_ms
+            elif action is BrowserActionType.SCROLL:
+                options.update(
+                    {
+                        "delta_x": browser_arguments.scroll_delta_x,
+                        "delta_y": browser_arguments.scroll_delta_y,
+                    }
+                )
+            elif action is BrowserActionType.WAIT:
+                options["milliseconds"] = browser_arguments.wait_ms
+            return _browser_payload(
+                await browser.act(
+                    browser_arguments.browser_session_id,
+                    ActBrowser(
+                        page_id=browser_arguments.page_id,
+                        observation_version=browser_arguments.observation_version,
+                        action=action,
+                        action_key=call_id,
+                        element_ref=browser_arguments.element_ref,
+                        value=browser_arguments.value,
+                        url=browser_arguments.url,
+                        options=options,
+                        include_screenshot=browser_arguments.include_screenshot,
+                    ),
+                )
+            )
+        if tool_name == "close_browser":
+            browser = self._require_browser()
+            browser_arguments = _CloseBrowserArguments.model_validate(raw_arguments)
+            await self._require_browser_scope(
+                scope,
+                browser_arguments.browser_session_id,
+            )
+            return _browser_payload(
+                await browser.close(browser_arguments.browser_session_id)
+            )
         if tool_name == "git_status":
             git = self._require_git()
             git_arguments = _GitStatusArguments.model_validate(raw_arguments)
@@ -734,6 +861,26 @@ class RuntimeControlToolService:
             raise RuntimeError("Native Git workspace is not configured")
         return self._git
 
+    def _require_browser(self) -> BrowserApplicationService:
+        if self._browser is None:
+            raise RuntimeError("Managed browser service is not configured")
+        return self._browser
+
+    async def _require_browser_scope(
+        self,
+        scope: RuntimeToolScope,
+        browser_session_id: str,
+    ) -> None:
+        view = await self._require_browser().get(
+            browser_session_id,
+            expected_run_id=scope.run_id,
+        )
+        if view.session.agent_session_id != scope.session_id:
+            raise ApplicationConflictError(
+                "browser_scope_mismatch",
+                "Browser session is not available to this Agent Session",
+            )
+
     async def _execution_for_scope(
         self,
         scope: RuntimeToolScope,
@@ -803,12 +950,166 @@ def _artifact_content(mime_type: str, data: bytes) -> tuple[str, str]:
         return "base64", base64.b64encode(data).decode("ascii")
 
 
+def _browser_payload(view: BrowserView) -> dict[str, object]:
+    pages = [
+        {
+            "id": page.id,
+            "url": _truncated(page.url, 2048),
+            "title": _truncated(page.title, 500),
+            "status": page.status.value,
+            "last_observation_version": page.last_observation_version,
+        }
+        for page in list(view.pages)[:10]
+    ]
+    observation = view.observation
+    action = view.action
+    return {
+        "session": {
+            "id": view.session.id,
+            "status": view.session.status.value,
+            "owner": view.session.owner.value,
+            "current_page_id": view.session.current_page_id,
+            "page_ids": view.session.page_ids[:20],
+        },
+        "pages": pages,
+        "pages_truncated": len(view.pages) > len(pages),
+        "observation": (
+            {
+                "id": observation.id,
+                "page_id": observation.page_id,
+                "url": _truncated(observation.url, 2048),
+                "title": _truncated(observation.title, 500),
+                "visible_text_excerpt": observation.visible_text_excerpt[:20_000],
+                "headings": [
+                    _truncated(item, 500) for item in observation.headings[:30]
+                ],
+                "interactive_elements": [
+                    {
+                        "ref": item.ref,
+                        "role": _truncated(item.role, 128),
+                        "name": _truncated(item.name, 300),
+                        "text": _truncated(item.text, 300),
+                        "input_type": _truncated(item.input_type, 128),
+                        "disabled": item.disabled,
+                        "href": _truncated(item.href, 1000),
+                        "frame_id": _truncated(item.frame_id, 255),
+                    }
+                    for item in observation.interactive_elements[:30]
+                ],
+                "forms": [
+                    {
+                        "ref": form.ref,
+                        "action": _truncated(form.action, 1000),
+                        "method": _truncated(form.method, 32),
+                        "fields": [
+                            {
+                                "ref": _truncated(field.ref, 128),
+                                "name": _truncated(field.name, 128),
+                                "label": _truncated(field.label, 200),
+                                "input_type": _truncated(field.input_type, 64),
+                                "required": field.required,
+                            }
+                            for field in form.fields[:10]
+                        ],
+                        "fields_truncated": len(form.fields) > 10,
+                    }
+                    for form in observation.forms[:5]
+                ],
+                "alerts": [_truncated(item, 500) for item in observation.alerts[:10]],
+                "console_errors": [
+                    _truncated(item, 500) for item in observation.console_errors[:10]
+                ],
+                "recent_network_summary": [
+                    {
+                        "sequence": item.sequence,
+                        "method": item.method,
+                        "url": _truncated(item.url, 1500),
+                        "resource_type": _truncated(item.resource_type, 128),
+                        "status_code": item.status_code,
+                        "failed": item.failed,
+                        "failure_text": _truncated(item.failure_text, 500),
+                    }
+                    for item in observation.recent_network_summary[:15]
+                ],
+                "screenshot_artifact_id": observation.screenshot_artifact_id,
+                "network_artifact_id": observation.network_artifact_id,
+                "dom_artifact_id": observation.dom_artifact_id,
+                "observation_version": observation.observation_version,
+                "content_trust": observation.content_trust,
+                "truncated": {
+                    "headings": len(observation.headings) > 30,
+                    "interactive_elements": len(observation.interactive_elements) > 30,
+                    "forms": len(observation.forms) > 5,
+                    "alerts": len(observation.alerts) > 10,
+                    "console_errors": len(observation.console_errors) > 10,
+                    "network": len(observation.recent_network_summary) > 15,
+                },
+            }
+            if observation is not None
+            else None
+        ),
+        "action": (
+            {
+                "id": action.id,
+                "action_key": action.action_key,
+                "page_id": action.page_id,
+                "observation_version": action.observation_version,
+                "action": action.action.value,
+                "status": action.status.value,
+                "result_observation_id": action.result_observation_id,
+                "download_artifact_id": action.download_artifact_id,
+                "error": _truncated(action.error, 2000),
+            }
+            if action is not None
+            else None
+        ),
+    }
+
+
+def _result_artifact_ids(result: object) -> list[str]:
+    artifact_ids: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key.endswith("artifact_id") and isinstance(item, str) and item:
+                    artifact_ids.append(item)
+                else:
+                    collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    collect(result)
+    return list(dict.fromkeys(artifact_ids))
+
+
+def _truncated(value: str | None, maximum: int) -> str | None:
+    return value[:maximum] if value is not None else None
+
+
 def _source_refs(
     tool_name: str,
     arguments: dict[str, object],
     *,
     result: object | None = None,
 ) -> list[str]:
+    if tool_name in {
+        "open_browser",
+        "observe_browser",
+        "act_browser",
+        "close_browser",
+    } and isinstance(result, dict):
+        refs: list[str] = []
+        session = result.get("session")
+        if isinstance(session, dict) and isinstance(session.get("id"), str):
+            refs.append(f"browser://{session['id']}")
+        observation = result.get("observation")
+        if isinstance(observation, dict) and isinstance(observation.get("page_id"), str):
+            refs.append(f"browser-page://{observation['page_id']}")
+        refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
+        if refs:
+            return list(dict.fromkeys(refs))
     if tool_name in {"apply_patch", "revert_patch"} and isinstance(result, dict):
         refs: list[str] = []
         if path := _string_argument(result, "path"):
