@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
 
 import riftx.runner.daemon as daemon_module
+from riftx.config import AuditConfig, AuditSourceIngestConfig
+from riftx.domain import AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
+from riftx.runner.control_client import RunnerControlClient
 
 runner = CliRunner()
+
+
+def _enabled_audit(tmp_path: Path) -> AuditConfig:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    state_root = tmp_path / "audit-state"
+    state_root.mkdir()
+    return AuditConfig(
+        enabled=True,
+        source_roots=(source_root,),
+        snapshot_root=state_root / "snapshots",
+        temp_root=state_root / "tmp",
+        fix_root=state_root / "fixes",
+        source_ingest=AuditSourceIngestConfig(image_digest="a" * 64),
+    )
 
 
 def test_standalone_runner_help_omits_registration_token_option() -> None:
@@ -74,4 +93,147 @@ def test_standalone_runner_reads_exact_bootstrap_token_from_environment(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0].registration_token == bootstrap_token
+    assert calls[0].audit.enabled is False
     assert bootstrap_token not in repr(calls[0])
+
+
+def test_standalone_runner_loads_audit_from_explicit_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[daemon_module.RunnerDaemonConfig] = []
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text("audit:\n  default_mode: diff\n", encoding="utf-8")
+
+    async def fake_run(config: daemon_module.RunnerDaemonConfig) -> None:
+        calls.append(config)
+
+    monkeypatch.setattr(daemon_module, "run_runner_daemon", fake_run)
+    result = runner.invoke(
+        daemon_module.app,
+        ["serve", "--config", str(config_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0].audit.default_mode == "diff"
+
+
+def test_registration_advertises_audit_only_after_exact_readiness_probe(
+    tmp_path: Path,
+) -> None:
+    audit = _enabled_audit(tmp_path)
+    base = daemon_module.RunnerDaemonConfig(
+        server_url="http://control.invalid",
+        node_id="local",
+        name="Local Runner",
+        state_path=tmp_path / "runner",
+        audit=audit,
+        capabilities=(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY, "process"),
+        labels={
+            "audit_source_ingest_available": "spoofed",
+            "audit_source_ingest_policy_digest": "spoofed",
+        },
+    )
+
+    unavailable = base.registration
+    assert AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY not in unavailable.capabilities
+    assert not {key for key in unavailable.labels or {} if key.startswith("audit_source_ingest_")}
+
+    ready = daemon_module.replace(base, audit_preflight_ready=True).registration
+    assert AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY in ready.capabilities
+    assert ready.labels is not None
+    assert ready.labels["audit_source_ingest_available"] == "true"
+    assert ready.labels["audit_source_ingest_backend_id"] == "linux_container"
+    assert ready.labels["audit_source_ingest_image_digest"] == "a" * 64
+    assert ready.labels["audit_source_ingest_policy_digest"] != "spoofed"
+
+
+@pytest.mark.asyncio
+async def test_configure_audit_preflight_never_enables_legacy_docker_source_ingest(
+    tmp_path: Path,
+) -> None:
+    audit = _enabled_audit(tmp_path)
+    config = daemon_module.RunnerDaemonConfig(
+        server_url="http://control.invalid",
+        node_id="local",
+        name="Local Runner",
+        state_path=tmp_path / "runner",
+        audit=audit,
+    )
+    config.state_path.mkdir()
+
+    class FakeClient:
+        def can_enable_protocol_capability(self, _capability: str) -> bool:
+            raise AssertionError("retired SourceIngest capability must not be queried")
+
+    configured, audit_runner = await daemon_module._configure_audit_preflight(
+        config,
+        cast(RunnerControlClient, FakeClient()),
+    )
+
+    assert configured.audit_preflight_ready is False
+    assert audit_runner is None
+    assert AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY not in configured.registration.capabilities
+
+
+@pytest.mark.asyncio
+async def test_daemon_starts_audit_only_after_auth_and_closes_it_before_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+    holder: dict[str, daemon_module.RunnerDaemon] = {}
+
+    class FakeClient:
+        async def connect(self, _: object) -> str:
+            order.append("connect")
+            return "token"
+
+        async def poll(self, **_: object) -> None:
+            order.append("ordinary_poll")
+            holder["daemon"]._closed = True
+
+        async def close(self) -> None:
+            order.append("client_close")
+
+    class FakeAuditRunner:
+        async def start(self) -> None:
+            order.append("audit_start")
+
+        async def close(self) -> None:
+            order.append("audit_close")
+
+    daemon = daemon_module.RunnerDaemon(
+        config=daemon_module.RunnerDaemonConfig(
+            server_url="http://control.invalid",
+            node_id="local",
+            name="Local Runner",
+            state_path=tmp_path / "runner",
+        ),
+        client=cast(RunnerControlClient, FakeClient()),
+        supervisor=cast(daemon_module.ExecutionRunner, object()),
+        executions=cast(daemon_module.ExecutionRepository, object()),
+        audit_preflight_runner=cast(
+            daemon_module.AuditPreflightRunner,
+            FakeAuditRunner(),
+        ),
+    )
+    holder["daemon"] = daemon
+
+    async def fake_resume_active() -> None:
+        order.append("resume_active")
+
+    monkeypatch.setattr(daemon, "resume_active", fake_resume_active)
+
+    await daemon.run_forever()
+    await daemon.close()
+
+    assert order == [
+        "connect",
+        "audit_start",
+        "resume_active",
+        "ordinary_poll",
+        "audit_close",
+        "client_close",
+    ]

@@ -40,7 +40,7 @@ const statusColors: Record<RunStatus, string> = {
 
 export function DashboardPage() {
   const { t } = useI18n();
-  const runs = useRuns();
+  const runs = useRuns(undefined, "general");
   const tools = useTools("local");
 
   if (runs.isLoading) {

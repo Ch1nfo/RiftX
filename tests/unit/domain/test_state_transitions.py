@@ -20,6 +20,7 @@ from riftx.domain import (
 
 def make_run() -> Run:
     return Run(
+        kind="general",
         engagement_id="engagement-1",
         node_id="node-1",
         objective=Objective(description="Map the authorized target"),

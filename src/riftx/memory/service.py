@@ -10,17 +10,25 @@ from typing import Protocol
 
 from pydantic import AwareDatetime, ValidationError
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    resource_not_accessible,
+)
+from riftx.application.ports import RunRepository
+from riftx.application.services.runs import require_general_run_operation
 from riftx.domain.base import utc_now
 
 from .models import (
     MemoryRecord,
     MemoryRetrievalScope,
+    MemoryScope,
     MemoryScopeType,
     MemoryStatus,
     MemoryType,
 )
 
+_MemoryRecords = list[MemoryRecord]
 _WORD = re.compile(r"[\w.-]+", re.UNICODE)
 _EDITABLE_FIELDS = {
     "memory_type",
@@ -43,9 +51,22 @@ class MemoryRepository(Protocol):
 
     async def get(self, memory_id: str) -> MemoryRecord | None: ...
 
+    async def get_scope(self, memory_id: str) -> MemoryScope | None: ...
+
     async def save(self, memory: MemoryRecord) -> MemoryRecord: ...
 
     async def list_all(self) -> list[MemoryRecord]: ...
+
+    async def list_scope(
+        self,
+        scope_type: MemoryScopeType,
+        scope_id: str,
+    ) -> list[MemoryRecord]: ...
+
+    async def list_for_retrieval_scope(
+        self,
+        scope: MemoryRetrievalScope,
+    ) -> list[MemoryRecord]: ...
 
     async def supersede(self, memory: MemoryRecord) -> MemoryRecord: ...
 
@@ -69,8 +90,14 @@ class CreateMemory:
 
 
 class MemoryService:
-    def __init__(self, repository: MemoryRepository) -> None:
+    def __init__(
+        self,
+        repository: MemoryRepository,
+        *,
+        run_repository: RunRepository | None = None,
+    ) -> None:
         self._repository = repository
+        self._runs = run_repository
 
     async def create(self, command: CreateMemory) -> MemoryRecord:
         try:
@@ -81,7 +108,10 @@ class MemoryService:
                 "Memory content, Scope, source, or validity window is invalid",
                 details={"validation": exc.errors(include_url=False)},
             ) from exc
+        await self._require_general_run_scope(memory)
         if memory.supersedes is not None:
+            superseded = await self.get(memory.supersedes)
+            await self._require_general_run_scope(superseded)
             return await self._repository.supersede(memory)
         return await self._repository.create(memory)
 
@@ -91,12 +121,19 @@ class MemoryService:
             raise EntityNotFoundError("Memory", memory_id)
         return memory
 
+    async def resolve_scope(self, memory_id: str) -> MemoryScope:
+        scope = await self._repository.get_scope(memory_id)
+        if scope is None:
+            raise resource_not_accessible()
+        return scope
+
     async def update(
         self,
         memory_id: str,
         changes: Mapping[str, object],
     ) -> MemoryRecord:
         memory = await self.get(memory_id)
+        await self._require_general_run_scope(memory)
         if memory.status is not MemoryStatus.ACTIVE:
             raise ApplicationConflictError(
                 "memory_not_active",
@@ -119,10 +156,12 @@ class MemoryService:
                 "Memory update is invalid",
                 details={"validation": exc.errors(include_url=False)},
             ) from exc
+        await self._require_general_run_scope(candidate)
         return await self._repository.save(candidate)
 
     async def delete(self, memory_id: str) -> MemoryRecord:
         memory = await self.get(memory_id)
+        await self._require_general_run_scope(memory)
         if memory.status is MemoryStatus.DELETED:
             return memory
         memory.status = MemoryStatus.DELETED
@@ -131,6 +170,7 @@ class MemoryService:
 
     async def pin(self, memory_id: str, *, pinned: bool = True) -> MemoryRecord:
         memory = await self.get(memory_id)
+        await self._require_general_run_scope(memory)
         if memory.status is not MemoryStatus.ACTIVE:
             raise ApplicationConflictError(
                 "memory_not_active",
@@ -140,16 +180,31 @@ class MemoryService:
         memory.pinned = pinned
         return await self._repository.save(memory)
 
+    async def _require_general_run_scope(self, memory: MemoryRecord) -> None:
+        if memory.scope_type is not MemoryScopeType.RUN:
+            return
+        if self._runs is None:
+            raise ApplicationConflictError(
+                "run_kind_policy_unavailable",
+                "Run-scoped Memory mutation policy is unavailable",
+            )
+        run = await self._runs.get(memory.scope_id)
+        if run is None:
+            raise EntityNotFoundError("Run", memory.scope_id)
+        require_general_run_operation(run)
+
     async def list(
         self,
         *,
         scope: MemoryRetrievalScope | None = None,
         include_inactive: bool = False,
         at: AwareDatetime | None = None,
-    ) -> list[MemoryRecord]:
-        memories = await self._repository.list_all()
-        if scope is not None:
-            memories = [item for item in memories if scope.allows(item)]
+    ) -> _MemoryRecords:
+        memories = (
+            await self._repository.list_all()
+            if scope is None
+            else await self._repository.list_for_retrieval_scope(scope)
+        )
         if not include_inactive:
             memories = [item for item in memories if item.is_current(at=at)]
         return memories
@@ -161,19 +216,16 @@ class MemoryService:
         scope_id: str | None = None,
         include_inactive: bool = False,
         at: AwareDatetime | None = None,
-    ) -> list[MemoryRecord]:
+    ) -> _MemoryRecords:
         if (scope_type is None) != (scope_id is None):
             raise ApplicationConflictError(
                 "invalid_memory_scope",
                 "scope_type and scope_id must be provided together",
             )
-        memories = await self._repository.list_all()
         if scope_type is not None and scope_id is not None:
-            memories = [
-                item
-                for item in memories
-                if item.scope_type is scope_type and item.scope_id == scope_id
-            ]
+            memories = await self._repository.list_scope(scope_type, scope_id)
+        else:
+            memories = await self._repository.list_all()
         if not include_inactive:
             memories = [item for item in memories if item.is_current(at=at)]
         return memories
@@ -185,7 +237,7 @@ class MemoryService:
         scope: MemoryRetrievalScope,
         limit: int = 10,
         at: AwareDatetime | None = None,
-    ) -> list[MemoryRecord]:
+    ) -> _MemoryRecords:
         if limit < 1 or limit > 100:
             raise ValueError("limit must be between 1 and 100")
         try:

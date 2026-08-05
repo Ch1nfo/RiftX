@@ -1,5 +1,12 @@
 """System evaluation contracts."""
 
+from .independence import (
+    INDEPENDENCE_POLICY_VERSION,
+    IndependenceBoundaryReport,
+    IndependenceBoundaryScanner,
+    IndependenceBoundaryViolation,
+    IndependenceInputKind,
+)
 from .long_horizon import (
     InjectedRecoveryFault,
     LongHorizonEvaluationReport,
@@ -18,6 +25,11 @@ from .release import (
 )
 
 __all__ = [
+    "INDEPENDENCE_POLICY_VERSION",
+    "IndependenceBoundaryReport",
+    "IndependenceBoundaryScanner",
+    "IndependenceBoundaryViolation",
+    "IndependenceInputKind",
     "InjectedRecoveryFault",
     "LongHorizonEvaluationReport",
     "LongHorizonEvaluator",

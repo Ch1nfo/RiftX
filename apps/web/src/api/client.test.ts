@@ -494,6 +494,23 @@ describe("RiftX API client", () => {
     );
   });
 
+  it("filters Run lists by status and kind", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], limit: 100, offset: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.listRuns("running", "code_audit");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs?status=running&kind=code_audit",
+      expect.any(Object),
+    );
+  });
+
   it("emergency-stops the entire Run through the Run cancellation route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -699,6 +716,63 @@ describe("RiftX API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/v1/runs/run-1/reports",
+      expect.any(Object),
+    );
+  });
+
+  it("uses the bounded same-machine Audit endpoints and encodes identifiers", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ audit_id: "audit/1", items: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    globalThis.fetch = fetchMock;
+
+    await api.createLocalAudit({ source_path: "/Users/operator/source" });
+    await api.startLocalAudit("audit/1");
+    await api.getLocalAudit("audit/1");
+    await api.cancelLocalAudit("audit/1");
+    await api.listLocalAuditFindings("audit/1", {
+      limit: 25,
+      offset: 50,
+      severity: "high",
+    });
+    await api.getLocalAuditFinding("audit/1", "finding/1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/audits",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ source_path: "/Users/operator/source" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/audits/audit%2F1/start",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/v1/audits/audit%2F1",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/v1/audits/audit%2F1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "/api/v1/audits/audit%2F1/findings?limit=25&offset=50&severity=high",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "/api/v1/audits/audit%2F1/findings/finding%2F1",
       expect.any(Object),
     );
   });

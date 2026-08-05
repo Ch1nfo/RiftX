@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
+from riftx.application.errors import ApplicationConflictError
 from riftx.runtime.lifecycle import RunCycleRequest, RunCycleResult
 from riftx.runtime.types import YieldReason
 from riftx.temporal.models import RunAgentCycleActivityInput, RuntimeYieldReason
@@ -11,6 +14,21 @@ from riftx.temporal.runtime_activity import RuntimeCycleActivities
 @dataclass
 class FakeCoordinator:
     requests: list[RunCycleRequest] = field(default_factory=list)
+    admissions: list[tuple[str, str, bool, bool]] = field(default_factory=list)
+    denial: ApplicationConflictError | None = None
+
+    async def _require_agent_cycle_admission(
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        allow_missing_session: bool = False,
+        activity: bool = False,
+    ) -> object:
+        self.admissions.append((run_id, session_id, allow_missing_session, activity))
+        if self.denial is not None:
+            raise self.denial
+        return object()
 
     async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult:
         self.requests.append(request)
@@ -118,6 +136,44 @@ async def test_runtime_cycle_activity_maps_only_durable_identifiers() -> None:
     assert result.yield_reason is RuntimeYieldReason.TOOL_RUNNING
     assert result.waiting_object_id == "execution-1"
     assert result.checkpoint_id == "provider-state-1"
+    assert coordinator.admissions == [("run-1", "session-1", True, True)]
     assert initializer.calls == [("run-1", "session-1")]
     assert user_input_resolver.calls == [("run-1", "session-1", "user-input-event-1")]
     assert execution_input_resolver.calls == [("run-1", "execution-0")]
+
+
+async def test_runtime_cycle_activity_denial_precedes_all_initializers_and_resolvers() -> None:
+    coordinator = FakeCoordinator(
+        denial=ApplicationConflictError(
+            "run_kind_operation_unsupported",
+            "Code Audit cannot enter the generic Runtime Activity",
+        )
+    )
+    initializer = FakeInitializer()
+    user_input_resolver = FakeUserInputResolver()
+    execution_input_resolver = FakeExecutionInputResolver()
+    activities = RuntimeCycleActivities(
+        coordinator,
+        worker_id="worker-local",
+        session_initializer=initializer,
+        user_input_resolver=user_input_resolver,
+        execution_input_resolver=execution_input_resolver,
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await activities.run_agent_cycle_activity(
+            RunAgentCycleActivityInput(
+                run_id="run-audit",
+                session_id="session-audit",
+                cycle_id="cycle-audit",
+                latest_user_message_id="user-input-audit",
+                completed_execution_id="execution-audit",
+            )
+        )
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert coordinator.admissions == [("run-audit", "session-audit", True, True)]
+    assert coordinator.requests == []
+    assert initializer.calls == []
+    assert user_input_resolver.calls == []
+    assert execution_input_resolver.calls == []

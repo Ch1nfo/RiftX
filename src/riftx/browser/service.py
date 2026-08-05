@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -15,11 +16,13 @@ from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
     ServiceUnavailableError,
+    resource_not_accessible,
 )
 from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
+from riftx.application.services.runs import require_general_run_operation
 from riftx.browser.models import (
     BrowserActCommand,
     BrowserObserveCommand,
@@ -28,6 +31,7 @@ from riftx.browser.models import (
     BrowserSessionCommand,
 )
 from riftx.domain import (
+    ArtifactContentTrust,
     BrowserAction,
     BrowserActionStatus,
     BrowserActionType,
@@ -82,6 +86,8 @@ class RunEventRepository(Protocol):
 
 class BrowserRepository(Protocol):
     async def create_session(self, item: BrowserSession) -> BrowserSession: ...
+
+    async def get_run_id(self, session_id: str) -> str | None: ...
 
     async def get_session(self, session_id: str) -> BrowserSession | None: ...
 
@@ -274,11 +280,25 @@ class BrowserApplicationService:
         )
         return view
 
-    async def get(self, session_id: str) -> BrowserView:
-        session = await self._require_session(session_id)
+    async def get(
+        self,
+        session_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> BrowserView:
+        session = await self._require_session(
+            session_id,
+            expected_run_id=expected_run_id,
+        )
         pages = await self._repository.list_pages(session_id)
         observation = await self._repository.latest_observation(session_id)
         return BrowserView(session=session, pages=pages, observation=observation)
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        run_id = await self._repository.get_run_id(session_id)
+        if run_id is None:
+            raise resource_not_accessible()
+        return run_id
 
     async def list_for_run(self, run_id: str) -> Sequence[BrowserSession]:
         await self._require_run(run_id)
@@ -351,9 +371,12 @@ class BrowserApplicationService:
     ) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_active_session(session_id)
+            await self._require_general_run_operation(session.run_id)
         exchange = await self._runner.observe(
             BrowserObserveCommand(
                 session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
                 page_id=page_id,
                 include_screenshot=include_screenshot,
                 include_network=include_network,
@@ -446,6 +469,8 @@ class BrowserApplicationService:
                 exchange = await self._runner.act(
                     BrowserActCommand(
                         session_id=session_id,
+                        run_id=session.run_id,
+                        node_id=session.node_id,
                         action=candidate,
                         include_screenshot=command.include_screenshot,
                     )
@@ -493,7 +518,13 @@ class BrowserApplicationService:
     async def takeover(self, session_id: str) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_effect_session(session_id)
-        exchange = await self._runner.takeover(BrowserSessionCommand(session_id=session.id))
+        exchange = await self._runner.takeover(
+            BrowserSessionCommand(
+                session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
+            )
+        )
         async with self._session_lock(session_id):
             await self._require_post_runner_effect_allowed(session.id, session.run_id)
             view = await self._persist_exchange(exchange, persist_observation=False)
@@ -515,7 +546,13 @@ class BrowserApplicationService:
                 raise ApplicationConflictError(
                     "browser_not_taken_over", "Browser is not under user takeover"
                 )
-        exchange = await self._runner.release(BrowserSessionCommand(session_id=session.id))
+        exchange = await self._runner.release(
+            BrowserSessionCommand(
+                session_id=session.id,
+                run_id=session.run_id,
+                node_id=session.node_id,
+            )
+        )
         async with self._session_lock(session_id):
             await self._require_post_runner_effect_allowed(session.id, session.run_id)
             view = await self._persist_exchange(exchange)
@@ -536,6 +573,7 @@ class BrowserApplicationService:
     async def close(self, session_id: str) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_session(session_id)
+            await self._require_general_run_operation(session.run_id)
             if session.status is BrowserSessionStatus.CLOSED:
                 return await self.get(session_id)
             view = await self._close_locked(session.id)
@@ -549,7 +587,8 @@ class BrowserApplicationService:
     async def observations_after(
         self, session_id: str, version: int, *, limit: int = 100
     ) -> Sequence[BrowserObservation]:
-        await self._require_session(session_id)
+        session = await self._require_session(session_id)
+        await self._require_general_run_operation(session.run_id)
         return await self._repository.observations_after(session_id, version, limit=limit)
 
     async def _persist_exchange(
@@ -586,6 +625,7 @@ class BrowserApplicationService:
                     ),
                     mime_type="application/json",
                     description="Managed browser network activity summary",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             observation = observation.model_copy(
@@ -599,6 +639,7 @@ class BrowserApplicationService:
                     name=result.attachment.name,
                     mime_type=result.attachment.mime_type,
                     description=result.attachment.description,
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             if result.attachment.kind == "screenshot" and observation is not None:
@@ -679,7 +720,10 @@ class BrowserApplicationService:
 
     async def _attempt_stop_close(self, session_id: str) -> str | None:
         try:
-            await asyncio.wait_for(self.close(session_id), timeout=self._stop_timeout_seconds)
+            await asyncio.wait_for(
+                self._close_for_run_safety(session_id),
+                timeout=self._stop_timeout_seconds,
+            )
             return None
         except TimeoutError:
             failure = "TimeoutError: Runner did not confirm browser close before the stop deadline"
@@ -695,6 +739,26 @@ class BrowserApplicationService:
         except Exception as exc:
             failure = f"{failure}; reconcile failed: {type(exc).__name__}: {exc}"
         return failure
+
+    async def _close_for_run_safety(self, session_id: str) -> BrowserView:
+        """Close a possibly-live session without opening the public mutation path.
+
+        Run safety and reconciliation must remain able to converge resources for
+        every Run kind.  The public ``close`` method is general-Run-only; this
+        private path is deliberately reachable only from ``stop_run``.
+        """
+
+        async with self._session_lock(session_id):
+            session = await self._require_session(session_id)
+            if session.status is BrowserSessionStatus.CLOSED:
+                return await self.get(session_id)
+            view = await self._close_locked(session.id)
+        await self._event(
+            session.run_id,
+            "browser.session_closed",
+            {"browser_session_id": session.id},
+        )
+        return view
 
     async def _cleanup_failed_open(self, session_id: str) -> None:
         async with self._session_lock(session_id):
@@ -721,6 +785,8 @@ class BrowserApplicationService:
             exchange = await self._runner.close(
                 BrowserSessionCommand(
                     session_id=session_id,
+                    run_id=before.run_id,
+                    node_id=before.node_id,
                     session=before.model_copy(deep=True),
                 )
             )
@@ -813,10 +879,13 @@ class BrowserApplicationService:
         return run if run.status in _BROWSER_EFFECT_BLOCKED_RUN_STATUSES else None
 
     async def _require_effects_allowed(self, run_id: str) -> Run:
-        run = await self._require_run(run_id)
+        run = await self._require_general_run_operation(run_id)
         if run.status in _BROWSER_EFFECT_BLOCKED_RUN_STATUSES:
             raise self._effect_blocked_error(run)
         return run
+
+    async def _require_general_run_operation(self, run_id: str) -> Run:
+        return require_general_run_operation(await self._require_run(run_id))
 
     async def _require_effect_session(self, session_id: str) -> BrowserSession:
         session = await self._require_active_session(session_id)
@@ -884,10 +953,20 @@ class BrowserApplicationService:
             details={"run_id": run.id, "status": run.status.value},
         )
 
-    async def _require_session(self, session_id: str) -> BrowserSession:
+    async def _require_session(
+        self,
+        session_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> BrowserSession:
         session = await self._repository.get_session(session_id)
         if session is None:
             raise EntityNotFoundError("BrowserSession", session_id)
+        if expected_run_id is not None and not secrets.compare_digest(
+            expected_run_id,
+            session.run_id,
+        ):
+            raise resource_not_accessible()
         self._bind(session.id, session.node_id)
         return session
 

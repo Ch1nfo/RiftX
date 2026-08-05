@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import sys
 from datetime import UTC, datetime, timedelta
@@ -10,25 +12,53 @@ import pytest
 
 import riftx.runner.daemon as daemon_module
 from riftx.application.services.run_safety import RunSafetyStopService
-from riftx.browser import BrowserRuntimeExchange, BrowserRuntimeResult, BrowserSessionCommand
+from riftx.browser import (
+    BrowserOperation,
+    BrowserRuntimeExchange,
+    BrowserRuntimeResult,
+    BrowserSessionCommand,
+)
 from riftx.domain import (
+    RUNNER_STOP_ACK_BROWSER_SCHEMA,
+    RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+    RUNNER_STOP_ACK_TARGET_HTTP_SCHEMA,
+    RUNNER_STOP_ACK_TERMINAL_SCHEMA,
     BrowserMode,
     BrowserSession,
     BrowserSessionStatus,
     Execution,
     ExecutionStatus,
     ExecutorType,
+    RunKind,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
     Scope,
+    runner_payload_digest,
 )
-from riftx.runner.control_client import LeasedRunnerCommand, RunnerControlClientError
+from riftx.runner.control_client import (
+    LeasedRunnerCommand,
+    OutputLimitExceeded,
+    OutputOffsetMismatch,
+    RunnerControlClientError,
+)
 from riftx.runner.daemon import RunnerDaemon, RunnerDaemonConfig
-from riftx.runner.models import ExecutionLaunchRequest
+from riftx.runner.models import ExecutionLaunchRequest, ExecutionOutput, OutputSlice
 from riftx.runner.paths import RunnerPaths
 from riftx.runner.state import FileExecutionRepository
 from riftx.runner.supervisor import ProcessSupervisor
-from riftx.runner.terminal_manager import OperationJournal
+from riftx.runner.terminal_manager import (
+    OperationJournal,
+    OperationJournalConflict,
+    OperationJournalIdentity,
+    OperationJournalRecord,
+    ResourceTombstone,
+)
 from riftx.target_http.models import (
     TargetHttpExchange,
     TargetHttpRequest,
@@ -37,33 +67,274 @@ from riftx.target_http.models import (
 )
 
 _OWNER = RunnerPrincipal(instance_id="runner-instance-a", epoch=1)
+_EXECUTION_CALLBACK_FIELDS = (
+    "runner_command_id",
+    "runner_effect_binding_id",
+    "runner_binding_digest",
+    "runner_envelope_digest",
+)
+
+
+def _bind_execution_from_launch_request(
+    execution: Execution,
+    request: object,
+) -> None:
+    assert isinstance(request, ExecutionLaunchRequest)
+    for field_name in _EXECUTION_CALLBACK_FIELDS:
+        value = getattr(request, field_name)
+        assert isinstance(value, str) and value
+        # These fakes stand in for a supervisor constructing a new Execution
+        # from the already-bound launch request. Update the prepared fixture in
+        # place so concurrent test tasks retain the same object reference.
+        object.__setattr__(execution, field_name, value)
+
+
+def _bind_execution_from_terminal_payload(
+    execution: Execution,
+    payload: dict[str, object],
+) -> None:
+    raw_request = payload.get("request")
+    assert isinstance(raw_request, dict)
+    for field_name in _EXECUTION_CALLBACK_FIELDS:
+        value = raw_request.get(field_name)
+        assert isinstance(value, str) and value
+        object.__setattr__(execution, field_name, value)
 
 
 class _FailingCancellationJournal:
-    async def add(self, operation_id: str) -> None:
+    async def get_exact(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        del operation_id, identity
+        return None
+
+    async def add(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> None:
+        del identity, outcome
         raise OSError(f"cannot persist {operation_id}")
 
     async def contains(self, operation_id: str) -> bool:
         return False
 
+    async def get_resource(self, resource_key: str) -> ResourceTombstone | None:
+        del resource_key
+        return None
+
+    async def get_legacy_resource(self, resource_key: str) -> ResourceTombstone | None:
+        del resource_key
+        return None
+
+    async def get_resource_attempt_exact(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        del resource_key, identity
+        return None
+
+    async def claim_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        del identity, outcome
+        raise OSError(f"cannot persist {resource_key}")
+
 
 class _FailingConfirmationJournal:
-    async def add(self, operation_id: str) -> None:
+    async def get_exact(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        del identity
+        raise OSError(f"cannot read confirmation {operation_id}")
+
+    async def add(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> None:
+        del identity, outcome
         raise OSError(f"cannot persist confirmation {operation_id}")
 
     async def contains(self, operation_id: str) -> bool:
         raise OSError(f"cannot read confirmation {operation_id}")
 
+    async def get_resource(self, resource_key: str) -> ResourceTombstone | None:
+        raise OSError(f"cannot read confirmation {resource_key}")
+
+    async def claim_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        del identity, outcome
+        raise OSError(f"cannot persist confirmation {resource_key}")
+
 
 class _CancellationJournal:
-    def __init__(self, operations: set[str] | None = None) -> None:
-        self.operations = operations or set()
+    def __init__(self, legacy_operations: set[str] | None = None) -> None:
+        self.operations: set[str] = set()
+        self.legacy_operations = legacy_operations or set()
+        self.records: dict[
+            str,
+            tuple[OperationJournalIdentity, dict[str, object]],
+        ] = {}
+        self.resource_outcomes: dict[str, dict[str, object]] = {}
+        self.legacy_resource_outcomes: dict[str, dict[str, object]] = {
+            operation: {"state": "legacy_unbound"}
+            for operation in self.legacy_operations
+        }
 
-    async def add(self, operation_id: str) -> None:
+    async def get_exact(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        stored = self.records.get(operation_id)
+        if stored is None:
+            if operation_id in self.operations:
+                raise OperationJournalConflict(operation_id)
+            return None
+        stored_identity, outcome = stored
+        if stored_identity != identity:
+            raise OperationJournalConflict(operation_id)
+        return OperationJournalRecord(
+            operation_key=operation_id,
+            command_id=identity.command_id,
+            binding_digest=identity.binding_digest,
+            envelope_digest=identity.envelope_digest,
+            outcome=dict(outcome),
+        )
+
+    async def add(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> None:
+        existing = await self.get_exact(operation_id, identity)
+        if existing is not None:
+            if existing.outcome != outcome:
+                raise OperationJournalConflict(operation_id)
+            return
         self.operations.add(operation_id)
+        self.records[operation_id] = (identity, dict(outcome))
+
+    async def transition(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        existing = await self.get_exact(operation_id, identity)
+        if existing is None or (
+            existing.outcome != expected_outcome and existing.outcome != outcome
+        ):
+            raise OperationJournalConflict(operation_id)
+        self.records[operation_id] = (identity, dict(outcome))
+        return OperationJournalRecord(
+            operation_key=operation_id,
+            command_id=identity.command_id,
+            binding_digest=identity.binding_digest,
+            envelope_digest=identity.envelope_digest,
+            outcome=dict(outcome),
+        )
 
     async def contains(self, operation_id: str) -> bool:
         return operation_id in self.operations
+
+    async def get_resource(
+        self,
+        resource_key: str,
+    ) -> ResourceTombstone | None:
+        outcome = self.resource_outcomes.get(resource_key)
+        if outcome is None:
+            return None
+        return ResourceTombstone(resource_key=resource_key, outcome=dict(outcome))
+
+    async def get_legacy_resource(
+        self,
+        resource_key: str,
+    ) -> ResourceTombstone | None:
+        outcome = self.legacy_resource_outcomes.get(resource_key)
+        if outcome is None:
+            return None
+        return ResourceTombstone(resource_key=resource_key, outcome=dict(outcome))
+
+    async def get_resource_attempt_exact(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+    ) -> OperationJournalRecord | None:
+        return await self.get_exact(
+            f"{resource_key}:command:{identity.command_id}",
+            identity,
+        )
+
+    async def claim_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        attempt_key = f"{resource_key}:command:{identity.command_id}"
+        existing = await self.get_exact(attempt_key, identity)
+        claimed = existing is None
+        if existing is None:
+            self.records[attempt_key] = (identity, dict(outcome))
+        elif existing.outcome != outcome:
+            raise OperationJournalConflict(resource_key)
+        self.operations.add(resource_key)
+        self.resource_outcomes.setdefault(
+            resource_key,
+            {"state": "cancellation_requested"},
+        )
+        tombstone = await self.get_resource(resource_key)
+        assert tombstone is not None
+        return claimed, tombstone
+
+    async def transition_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        expected_outcome: dict[str, object],
+        outcome: dict[str, object],
+        resource_outcome: dict[str, object],
+    ) -> OperationJournalRecord:
+        attempt_key = f"{resource_key}:command:{identity.command_id}"
+        existing = await self.get_exact(attempt_key, identity)
+        if existing is None or (
+            existing.outcome != expected_outcome and existing.outcome != outcome
+        ):
+            raise OperationJournalConflict(resource_key)
+        self.records[attempt_key] = (identity, dict(outcome))
+        if self.resource_outcomes.get(resource_key, {}).get("state") != (
+            "physical_stop_confirmed"
+        ):
+            self.resource_outcomes[resource_key] = dict(resource_outcome)
+        record = await self.get_exact(attempt_key, identity)
+        assert record is not None
+        return record
 
 
 class _SignallingCancellationJournal(_CancellationJournal):
@@ -71,9 +342,30 @@ class _SignallingCancellationJournal(_CancellationJournal):
         super().__init__()
         self.added = asyncio.Event()
 
-    async def add(self, operation_id: str) -> None:
-        await super().add(operation_id)
+    async def add(
+        self,
+        operation_id: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> None:
+        await super().add(operation_id, identity, outcome=outcome)
         self.added.set()
+
+    async def claim_resource(
+        self,
+        resource_key: str,
+        identity: OperationJournalIdentity,
+        *,
+        outcome: dict[str, object],
+    ) -> tuple[bool, ResourceTombstone]:
+        result = await super().claim_resource(
+            resource_key,
+            identity,
+            outcome=outcome,
+        )
+        self.added.set()
+        return result
 
 
 class _PreSpawnGuardJournal(_SignallingCancellationJournal):
@@ -81,16 +373,16 @@ class _PreSpawnGuardJournal(_SignallingCancellationJournal):
 
     def __init__(self) -> None:
         super().__init__()
-        self.contains_calls = 0
+        self.resource_reads = 0
         self.guard_entered = asyncio.Event()
         self.release_guard = asyncio.Event()
 
-    async def contains(self, operation_id: str) -> bool:
-        self.contains_calls += 1
-        if self.contains_calls == 2:
+    async def get_resource(self, resource_key: str) -> ResourceTombstone | None:
+        self.resource_reads += 1
+        if self.resource_reads == 2:
             self.guard_entered.set()
             await self.release_guard.wait()
-        return await super().contains(operation_id)
+        return await super().get_resource(resource_key)
 
 
 class _ExecutionRepository:
@@ -184,6 +476,48 @@ class _Supervisor:
         return None
 
 
+class _OutputSupervisor(_Supervisor):
+    def __init__(
+        self,
+        execution: Execution,
+        *,
+        stdout: bytes,
+        stderr: bytes,
+    ) -> None:
+        super().__init__(execution)
+        self.stdout = stdout
+        self.stderr = stderr
+
+    async def reconcile(self, execution_id: str) -> Execution:
+        assert execution_id == self.execution.id
+        return self.execution
+
+    async def read_output(
+        self,
+        execution_id: str,
+        *,
+        stdout_cursor: int,
+        stderr_cursor: int,
+        max_bytes: int,
+    ) -> ExecutionOutput:
+        assert execution_id == self.execution.id
+
+        def output_slice(content: bytes, cursor: int) -> OutputSlice:
+            data = content[cursor : cursor + max_bytes]
+            next_cursor = cursor + len(data)
+            return OutputSlice(
+                data=data,
+                cursor=cursor,
+                next_cursor=next_cursor,
+                eof=next_cursor >= len(content),
+            )
+
+        return ExecutionOutput(
+            stdout=output_slice(self.stdout, stdout_cursor),
+            stderr=output_slice(self.stderr, stderr_cursor),
+        )
+
+
 class _FailingSupervisor(_Supervisor):
     async def cancel(self, execution_id: str) -> Execution:
         self.cancel_calls.append(execution_id)
@@ -200,6 +534,7 @@ class _BarrierStartSupervisor(_Supervisor):
         self.spawned = False
 
     async def start(self, request: object, *, effect_guard=None) -> Execution:
+        _bind_execution_from_launch_request(self.execution, request)
         self.repository.execution = self.execution
         if effect_guard is not None:
             await effect_guard()
@@ -222,6 +557,7 @@ class _PreSpawnGuardSupervisor(_Supervisor):
         self.spawned = False
 
     async def start(self, request: object, *, effect_guard=None) -> Execution:
+        _bind_execution_from_launch_request(self.execution, request)
         self.repository.execution = self.execution
         if effect_guard is not None:
             await effect_guard()
@@ -237,6 +573,7 @@ class _ImmediateStartBlockingCancelSupervisor(_Supervisor):
         self.release_cancel = asyncio.Event()
 
     async def start(self, request: object, *, effect_guard=None) -> Execution:
+        _bind_execution_from_launch_request(self.execution, request)
         self.repository.execution = self.execution
         if effect_guard is not None:
             await effect_guard()
@@ -289,6 +626,43 @@ class _RunnerClient:
 
     async def close(self) -> None:
         return None
+
+
+class _CappedOutputRunnerClient(_RunnerClient):
+    def __init__(self, *, max_output_bytes: int) -> None:
+        super().__init__()
+        self.max_output_bytes = max_output_bytes
+        self.output = {"stdout": bytearray(b"ab"), "stderr": bytearray()}
+        self.output_attempts: list[tuple[str, int, bytes]] = []
+
+    async def report_output(
+        self,
+        execution_id: str,
+        *,
+        stream: str,
+        offset: int,
+        data: bytes,
+        **callback: object,
+    ) -> int:
+        del execution_id, callback
+        self.output_attempts.append((stream, offset, data))
+        if offset + len(data) > self.max_output_bytes:
+            raise OutputLimitExceeded(
+                409,
+                "runner_execution_output_too_large",
+                "output exceeds immutable contract",
+                details={"max_output_bytes": self.max_output_bytes},
+            )
+        expected_offset = len(self.output[stream])
+        if offset != expected_offset:
+            raise OutputOffsetMismatch(
+                409,
+                "runner_output_offset_mismatch",
+                "output offset mismatch",
+                details={"expected_offset": expected_offset},
+            )
+        self.output[stream].extend(data)
+        return len(self.output[stream])
 
 
 class _FailFirstStatusRunnerClient(_RunnerClient):
@@ -488,9 +862,11 @@ class _TerminalHandler:
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
         self.calls.append((kind, payload))
@@ -503,7 +879,9 @@ class _TerminalHandler:
         if self.execution is None:
             raise RuntimeError("no terminal execution configured")
         if self.journal is not None:
-            assert await self.journal.contains(self.execution.execution_key)
+            assert await self.journal.contains(
+                f"execution:{self.execution.id}"
+            ) or await self.journal.contains(self.execution.execution_key)
         if self.execution.status is ExecutionStatus.RUNNING:
             self.execution.transition_to(ExecutionStatus.CANCELLED)
         if self.execution.status is ExecutionStatus.CANCELLED:
@@ -522,9 +900,11 @@ class _BlockingTerminalHandler(_TerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
         self.entered.set()
@@ -545,6 +925,7 @@ class _CancellationAwareBlockingTerminalHandler(_BlockingTerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
@@ -552,6 +933,7 @@ class _CancellationAwareBlockingTerminalHandler(_BlockingTerminalHandler):
             result = await super().handle(
                 kind,
                 payload,
+                journal_identity=journal_identity,
                 effect_guard=effect_guard,
                 on_admitted=on_admitted,
             )
@@ -573,6 +955,7 @@ class _CancellationTransformingTerminalHandler(_BlockingTerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
@@ -580,6 +963,7 @@ class _CancellationTransformingTerminalHandler(_BlockingTerminalHandler):
             return await super().handle(
                 kind,
                 payload,
+                journal_identity=journal_identity,
                 effect_guard=effect_guard,
                 on_admitted=on_admitted,
             )
@@ -609,14 +993,17 @@ class _BarrierTerminalStartHandler(_TerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
         self.calls.append((kind, payload))
         self.start_entered.set()
         await self.release_start.wait()
+        _bind_execution_from_terminal_payload(self.execution, payload)
         self.repository.execution = self.execution
         self.spawned = True
         if effect_guard is not None:
@@ -642,12 +1029,15 @@ class _ReportingTerminalStartHandler(_TerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
         self.calls.append((kind, payload))
+        _bind_execution_from_terminal_payload(self.execution, payload)
         self.repository.execution = self.execution
         if effect_guard is not None:
             await effect_guard()
@@ -670,12 +1060,15 @@ class _PersistThenFailTerminalStartHandler(_TerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
         self.calls.append((kind, payload))
+        _bind_execution_from_terminal_payload(self.execution, payload)
         self.repository.execution = self.execution
         if on_admitted is not None:
             on_admitted()
@@ -698,11 +1091,14 @@ class _BlockingReportTerminalStartHandler(_TerminalHandler):
         kind: RunnerCommandKind,
         payload: dict[str, object],
         *,
+        journal_identity=None,
         effect_guard=None,
         on_admitted=None,
     ) -> dict[str, object]:
+        del journal_identity
         if effect_guard is not None:
             await effect_guard()
+        _bind_execution_from_terminal_payload(self.execution, payload)
         self.repository.execution = self.execution
         if effect_guard is not None:
             await effect_guard()
@@ -828,6 +1224,18 @@ class _BlockingBrowserRunner:
 
     async def close_all(self) -> None:
         return None
+
+
+class _LeaseBlockingBrowserRunner(_BlockingBrowserRunner):
+    def __init__(self, session: BrowserSession) -> None:
+        super().__init__(session)
+        self.close_entered = asyncio.Event()
+        self.release_close = asyncio.Event()
+
+    async def close(self, command: BrowserSessionCommand) -> BrowserRuntimeExchange:
+        self.close_entered.set()
+        await self.release_close.wait()
+        return await super().close(command)
 
 
 class _MissingBrowserRunner:
@@ -1219,7 +1627,7 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
     repository_path = state_path / "executions.json"
     repository = FileExecutionRepository(repository_path)
     supervisor = ProcessSupervisor(repository, RunnerPaths(state_path))
-    request = ExecutionLaunchRequest(
+    raw_request = ExecutionLaunchRequest(
         execution_id="execution-process-row-restart",
         execution_key="process-row-restart-key",
         run_id="run-1",
@@ -1229,6 +1637,24 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
         cwd=tmp_path,
         argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
+    marker = tmp_path / "unsafe-process-restart"
+    delayed_execute = _command(
+        "delayed-process-row-restart",
+        RunnerCommandKind.EXECUTE,
+        {
+            "execution_id": raw_request.execution_id,
+            "request": raw_request.model_copy(
+                update={
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        (f"from pathlib import Path; Path({str(marker)!r}).write_text('unsafe')"),
+                    ]
+                }
+            ).model_dump(mode="json"),
+        },
+    )
+    request = raw_request.model_copy(update=_command_callback_binding(delayed_execute))
     execution = await supervisor.start(request)
     first_client = _RunnerClient()
     first_daemon = RunnerDaemon(
@@ -1252,7 +1678,6 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
     assert first_client.finished[0][1] is True
     await first_daemon.close()
 
-    marker = tmp_path / "unsafe-process-restart"
     reopened_repository = FileExecutionRepository(repository_path)
     reopened_supervisor = ProcessSupervisor(
         reopened_repository,
@@ -1270,22 +1695,6 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
         supervisor=reopened_supervisor,
         executions=reopened_repository,
     )
-    delayed_execute = _command(
-        "delayed-process-row-restart",
-        RunnerCommandKind.EXECUTE,
-        {
-            "execution_id": execution.id,
-            "request": request.model_copy(
-                update={
-                    "argv": [
-                        sys.executable,
-                        "-c",
-                        (f"from pathlib import Path; Path({str(marker)!r}).write_text('unsafe')"),
-                    ]
-                }
-            ).model_dump(mode="json"),
-        },
-    )
     try:
         await reopened_daemon.handle_command(delayed_execute)
 
@@ -1299,6 +1708,663 @@ async def test_process_durable_stop_row_blocks_same_key_spawn_after_runner_resta
         assert not marker.exists()
     finally:
         await reopened_daemon.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_cancel_journal_distinguishes_exact_fresh_and_divergent_replay(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path).model_copy(
+        update={
+            "runner_command_id": "launch-command",
+            "runner_effect_binding_id": "launch-binding",
+            "runner_binding_digest": "1" * 64,
+            "runner_envelope_digest": "2" * 64,
+        }
+    )
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+    )
+    payload = {
+        "execution_id": execution.id,
+        "execution_key": execution.execution_key,
+    }
+    first = _command("cancel-journal-replay", RunnerCommandKind.CANCEL, payload)
+    await daemon.handle_command(first)
+    assert client.finished[-1][0:2] == (first.id, True)
+    assert supervisor.cancel_calls == [execution.id]
+
+    exact = _command(first.id, first.kind, first.payload)
+    await daemon.handle_command(exact)
+    assert client.finished[-1][0:2] == (exact.id, True)
+    assert supervisor.cancel_calls == [execution.id]
+
+    fresh = _command("cancel-journal-fresh", first.kind, first.payload)
+    await daemon.handle_command(fresh)
+    assert client.finished[-1][0:2] == (fresh.id, True)
+    assert supervisor.cancel_calls == [execution.id]
+
+    divergent = _command(
+        first.id,
+        first.kind,
+        first.payload,
+        binding_id="binding-cancel-journal-divergent",
+    )
+    await daemon.handle_command(divergent)
+    assert client.finished[-1][0:2] == (divergent.id, False)
+    assert "conflicts with its durable journal record" in client.finished[-1][3]
+    assert supervisor.cancel_calls == [execution.id]
+    assert await OperationJournal(
+        tmp_path / "runner" / "execution-cancellations.json"
+    ).contains(f"execution:{execution.id}")
+    await daemon.close()
+
+
+@pytest.mark.asyncio
+async def test_verified_replacement_cancel_acks_legacy_execution_without_launch_binding(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path, legacy=True)
+    assert all(getattr(execution, field_name) is None for field_name in _EXECUTION_CALLBACK_FIELDS)
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+    )
+    command = _command(
+        "verified-legacy-replacement-cancel",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        },
+    )
+
+    await daemon.handle_command(command)
+
+    assert supervisor.cancel_calls == [execution.id]
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    # A pre-fencing launch cannot authenticate an execution-status callback.
+    # The verified replacement command's typed stop ACK is the only projector.
+    assert client.statuses == []
+    assert client.finished[0][0:2] == (command.id, True)
+    assert client.finished[0][2]["physical_stop_confirmed"] is True
+    journal = OperationJournal(tmp_path / "runner" / "execution-cancellations.json")
+    tombstone = await journal.get_resource(f"execution:{execution.id}")
+    assert tombstone is not None
+    assert tombstone.outcome.get("state") == "physical_stop_confirmed"
+    await daemon.close()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        RunnerCommandKind.CANCEL,
+        RunnerCommandKind.TERMINAL_CLOSE,
+        RunnerCommandKind.TARGET_HTTP_CANCEL,
+        RunnerCommandKind.BROWSER_CLOSE,
+    ],
+)
+@pytest.mark.asyncio
+async def test_resource_binding_payload_mismatch_fails_before_journal_or_handler_io(
+    tmp_path: Path,
+    kind: RunnerCommandKind,
+) -> None:
+    execution = _execution(tmp_path)
+    client = _RunnerClient()
+    supervisor = _Supervisor(execution)
+    execution_journal = _CancellationJournal()
+    target_journal = _CancellationJournal()
+    browser_journal = _CancellationJournal()
+    terminal_handler: _TerminalHandler | None = None
+    target_handler: _BlockingTargetHttpRunner | None = None
+    browser_handler: _BlockingBrowserRunner | None = None
+
+    if kind is RunnerCommandKind.CANCEL:
+        payload: dict[str, object] = {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        }
+        command = _rebind_command(
+            _command("mismatched-execution-binding", kind, payload),
+            binding_updates={
+                "resource_id": "binding-execution-a",
+                "execution_id": "binding-execution-a",
+            },
+        )
+    elif kind is RunnerCommandKind.TERMINAL_CLOSE:
+        execution.executor_type = ExecutorType.PTY
+        execution.session_id = "payload-terminal-b"
+        execution.execution_key = "terminal:payload-terminal-b"
+        terminal_handler = _TerminalHandler(execution)
+        payload = {
+            "session_id": "payload-terminal-b",
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        }
+        command = _rebind_command(
+            _command("mismatched-terminal-binding", kind, payload),
+            binding_updates={"resource_id": "binding-terminal-a"},
+        )
+    elif kind is RunnerCommandKind.TARGET_HTTP_CANCEL:
+        target_handler = _BlockingTargetHttpRunner()
+        payload = {"run_id": "run-1", "tool_call_ids": ["payload-intent-b"]}
+        command = _rebind_command(
+            _command("mismatched-target-http-binding", kind, payload),
+            binding_updates={"resource_id": "binding-intent-a"},
+        )
+    else:
+        session = _browser_session()
+        browser_handler = _BlockingBrowserRunner(session)
+        payload = {
+            "operation": BrowserOperation.CLOSE.value,
+            "command": BrowserSessionCommand(
+                session_id=session.id,
+                session=session,
+            ).model_dump(mode="json"),
+        }
+        command = _rebind_command(
+            _command("mismatched-browser-binding", kind, payload),
+            binding_updates={"resource_id": "binding-browser-a"},
+        )
+
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+        journal=execution_journal,
+        terminal_handler=terminal_handler,
+        target_http_handler=target_handler,
+        target_http_journal=target_journal,
+        target_http_confirmation_journal=_CancellationJournal(),
+        browser_handler=browser_handler,
+        browser_journal=browser_journal,
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert "payload conflicts with its effect binding" in client.finished[-1][3]
+    assert supervisor.cancel_calls == []
+    assert execution_journal.operations == set()
+    assert target_journal.operations == set()
+    assert browser_journal.operations == set()
+    if terminal_handler is not None:
+        assert terminal_handler.cancel_calls == []
+    if target_handler is not None:
+        assert target_handler.stop_calls == []
+    if browser_handler is not None:
+        assert browser_handler.close_calls == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["family", "resource", "code_audit", "origin"],
+)
+@pytest.mark.asyncio
+async def test_self_consistent_disallowed_effect_metadata_fails_before_local_io(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    execution = _execution(tmp_path)
+    payload = {
+        "execution_id": execution.id,
+        "execution_key": execution.execution_key,
+    }
+    base = _command(f"disallowed-{mutation}", RunnerCommandKind.CANCEL, payload)
+    if mutation == "family":
+        command = _rebind_command(
+            base,
+            binding_updates={"operation_family": RunnerOperationFamily.EXECUTION},
+            operation_family=RunnerOperationFamily.EXECUTION,
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1"
+            ),
+        )
+    elif mutation == "resource":
+        command = _rebind_command(
+            base,
+            binding_updates={
+                "resource_kind": RunnerResourceKind.BROWSER_SESSION,
+                "resource_id": "browser-wrong-family",
+                "execution_id": None,
+            },
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1",
+                stop_ack_schema=RUNNER_STOP_ACK_BROWSER_SCHEMA,
+            ),
+        )
+    elif mutation == "code_audit":
+        command = _rebind_command(
+            base,
+            binding_updates={
+                "run_kind": RunKind.CODE_AUDIT,
+                "audit_id": "audit-forged",
+                "plan_digest": "c" * 64,
+            },
+        )
+    else:
+        command = _rebind_command(
+            base,
+            binding_updates={"origin": RunnerCommandOrigin.TEMPORAL_WORKER},
+        )
+    journal = _CancellationJournal()
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+        journal=journal,
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert supervisor.cancel_calls == []
+    assert journal.operations == set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_non_authoritative_execution_key_before_tombstone(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path)
+    journal = _CancellationJournal()
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+        journal=journal,
+    )
+    command = _command(
+        "cancel-wrong-execution-key",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": "different-resource-key",
+        },
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert "execution key" in client.finished[-1][3]
+    assert supervisor.cancel_calls == []
+    assert journal.operations == set()
+
+
+@pytest.mark.asyncio
+async def test_absent_execution_cancel_uses_typed_tombstone_not_payload_key(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path, execution_key="authoritative-delayed-key")
+    repository = _ExecutionRepository(None)
+    supervisor = _PreSpawnGuardSupervisor(execution, repository)
+    journal = _CancellationJournal()
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=repository,
+        journal=journal,
+    )
+    cancel = _command(
+        "cancel-absent-with-untrusted-key",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": "payload-controlled-key",
+        },
+    )
+
+    await daemon.handle_command(cancel)
+
+    assert client.finished[-1][0:2] == (cancel.id, False)
+    assert journal.operations == {f"execution:{execution.id}"}
+    assert not await journal.contains("payload-controlled-key")
+    assert supervisor.cancel_calls == []
+
+    delayed_execute = _command(
+        "execute-after-typed-cancellation",
+        RunnerCommandKind.EXECUTE,
+        {
+            "execution_id": execution.id,
+            "request": {
+                "execution_key": execution.execution_key,
+                "run_id": execution.run_id,
+                "node_id": execution.node_id,
+                "executor_type": ExecutorType.PROCESS.value,
+                "cwd": str(tmp_path),
+                "argv": ["echo", "must-not-spawn"],
+            },
+        },
+    )
+    await daemon.handle_command(delayed_execute)
+
+    assert supervisor.spawned is False
+    assert client.finished[-1][0:2] == (delayed_execute.id, True)
+    assert client.finished[-1][2]["suppressed_by_cancellation"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_execution_key_matching_typed_id_does_not_suppress_other_execution(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path, execution_key="authoritative-execution-key")
+    execution.status = ExecutionStatus.STARTING
+    repository = _ExecutionRepository(None)
+    supervisor = _PreSpawnGuardSupervisor(execution, repository)
+    client = _RunnerClient()
+    journal_path = tmp_path / "runner" / "execution-cancellations.json"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path.write_text(
+        json.dumps([f"execution:{execution.id}"]),
+        encoding="utf-8",
+    )
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=repository,
+    )
+    daemon._start_monitor = lambda *_: None  # type: ignore[method-assign]
+    execute = _command(
+        "execute-after-colliding-legacy-key",
+        RunnerCommandKind.EXECUTE,
+        {
+            "execution_id": execution.id,
+            "request": {
+                "execution_key": execution.execution_key,
+                "run_id": execution.run_id,
+                "node_id": execution.node_id,
+                "executor_type": ExecutorType.PROCESS.value,
+                "cwd": str(tmp_path),
+                "argv": ["echo", "must-spawn"],
+            },
+        },
+    )
+
+    await daemon.handle_command(execute)
+
+    assert supervisor.spawned is True
+    assert client.finished[-1][0:2] == (execute.id, True)
+    assert client.finished[-1][2].get("suppressed_by_cancellation") is not True
+    journal = OperationJournal(journal_path, legacy_list_resources=True)
+    assert await journal.get_resource(f"execution:{execution.id}") is None
+    assert await journal.get_legacy_resource(f"execution:{execution.id}") is not None
+
+
+@pytest.mark.asyncio
+async def test_legacy_key_matching_typed_attempt_cannot_block_verified_stop(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path)
+    repository = _ExecutionRepository(execution)
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    cancel = _command(
+        "cancel-after-colliding-legacy-attempt",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        },
+    )
+    typed_key = f"execution:{execution.id}"
+    attempt_key = (
+        f"{typed_key}:command:"
+        f"{hashlib.sha256(cancel.id.encode('utf-8')).hexdigest()}"
+    )
+    journal_path = tmp_path / "runner" / "execution-cancellations.json"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path.write_text(json.dumps([attempt_key]), encoding="utf-8")
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=repository,
+    )
+
+    await daemon.handle_command(cancel)
+
+    assert supervisor.cancel_calls == [execution.id]
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert execution.physical_stop_confirmed_at is not None
+    assert client.finished[-1][0:2] == (cancel.id, True)
+    journal = OperationJournal(journal_path, legacy_list_resources=True)
+    typed_tombstone = await journal.get_resource(typed_key)
+    assert typed_tombstone is not None
+    assert typed_tombstone.outcome.get("state") == "physical_stop_confirmed"
+    legacy_attempt = await journal.get_legacy_resource(attempt_key)
+    assert legacy_attempt is not None
+    assert legacy_attempt.outcome == {"state": "legacy_unbound"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_binding_run_drift_before_tombstone_or_stop(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path)
+    journal = _CancellationJournal()
+    supervisor = _Supervisor(execution)
+    client = _RunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=_ExecutionRepository(execution),
+        journal=journal,
+    )
+    command = _command(
+        "cancel-wrong-binding-run",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        },
+        run_id="foreign-run",
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert "run_id" in client.finished[-1][3]
+    assert supervisor.cancel_calls == []
+    assert journal.operations == set()
+
+
+@pytest.mark.asyncio
+async def test_execution_monitor_truncates_at_immutable_cap_and_reports_terminal_status(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path)
+    execution.transition_to(ExecutionStatus.EXITED, exit_code=0)
+    execution.physical_stop_confirmed_at = datetime.now(UTC)
+    supervisor = _OutputSupervisor(
+        execution,
+        stdout=b"abcdefgh",
+        stderr=b"XYZ",
+    )
+    client = _CappedOutputRunnerClient(max_output_bytes=5)
+    daemon = RunnerDaemon(
+        config=RunnerDaemonConfig(
+            server_url="http://control.invalid",
+            node_id="runner-a",
+            name="Runner A",
+            state_path=tmp_path / "runner",
+            output_poll_seconds=0.001,
+        ),
+        client=client,  # type: ignore[arg-type]
+        supervisor=supervisor,  # type: ignore[arg-type]
+        executions=_ExecutionRepository(execution),  # type: ignore[arg-type]
+    )
+
+    try:
+        await asyncio.wait_for(
+            daemon._monitor_execution(execution.id, execution.id),
+            timeout=1,
+        )
+    finally:
+        await daemon.close()
+
+    assert bytes(client.output["stdout"]) == b"abcde"
+    assert bytes(client.output["stderr"]) == b"XYZ"
+    assert client.statuses == [(execution.id, ExecutionStatus.EXITED)]
+    assert [attempt for attempt in client.output_attempts if attempt[0] == "stdout"] == [
+        ("stdout", 0, b"abcdefgh"),
+        ("stdout", 0, b"abcde"),
+        ("stdout", 2, b"cde"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_zero_output_contract_cannot_admit_target_http_effect(
+    tmp_path: Path,
+) -> None:
+    runner = _BlockingTargetHttpRunner()
+    delivery_journal = _CancellationJournal()
+    base = _command(
+        "target-http-zero-output-contract",
+        RunnerCommandKind.TARGET_HTTP,
+        _target_http_payload(),
+    )
+    command = _rebind_command(
+        base,
+        binding_updates={},
+        output_contract=RunnerOutputContract(
+            result_schema="riftx.runner-result/target-http/v1"
+        ),
+    )
+    execution = _execution(tmp_path)
+    client = _RunnerClient()
+    daemon = RunnerDaemon(
+        config=RunnerDaemonConfig(
+            server_url="http://control.invalid",
+            node_id="runner-a",
+            name="Runner A",
+            state_path=tmp_path / "runner",
+        ),
+        client=client,  # type: ignore[arg-type]
+        supervisor=_Supervisor(execution),  # type: ignore[arg-type]
+        executions=_ExecutionRepository(None),  # type: ignore[arg-type]
+        target_http_handler=runner,  # type: ignore[arg-type]
+        target_http_delivery_journal=delivery_journal,  # type: ignore[arg-type]
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert "invalid output contract" in client.finished[-1][3]
+    assert runner.execute_calls == 0
+    assert delivery_journal.operations == set()
+
+
+@pytest.mark.asyncio
+async def test_browser_close_cannot_use_normal_browser_operation_kind(
+    tmp_path: Path,
+) -> None:
+    session = _browser_session()
+    runner = _BlockingBrowserRunner(session)
+    journal = _CancellationJournal()
+    client = _RunnerClient()
+    execution = _execution(tmp_path)
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=_Supervisor(execution),
+        repository=_ExecutionRepository(None),
+        browser_handler=runner,
+        browser_journal=journal,
+    )
+    command = _command(
+        "browser-close-with-normal-kind",
+        RunnerCommandKind.BROWSER,
+        {
+            "operation": BrowserOperation.CLOSE.value,
+            "command": BrowserSessionCommand(
+                session_id=session.id,
+                session=session,
+            ).model_dump(mode="json"),
+        },
+    )
+
+    await daemon.handle_command(command)
+
+    assert client.finished[-1][0:2] == (command.id, False)
+    assert "operation" in client.finished[-1][3]
+    assert runner.close_calls == 0
+    assert journal.operations == set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_lease_loss_cannot_remove_resource_tombstone_or_abort_stop(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path).model_copy(
+        update={
+            "runner_command_id": "launch-command",
+            "runner_effect_binding_id": "launch-binding",
+            "runner_binding_digest": "3" * 64,
+            "runner_envelope_digest": "4" * 64,
+        }
+    )
+    repository = _ExecutionRepository(execution)
+    supervisor = _ImmediateStartBlockingCancelSupervisor(execution, repository)
+    client = _FailingRenewRunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=supervisor,
+        repository=repository,
+    )
+    command = _command(
+        "cancel-short-lease-journal",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        },
+        lease_duration_seconds=0.03,
+    )
+
+    lease_task = asyncio.create_task(daemon._run_leased_command(command))
+    await asyncio.wait_for(supervisor.cancel_entered.wait(), timeout=1)
+    await asyncio.wait_for(lease_task, timeout=1)
+
+    journal = OperationJournal(tmp_path / "runner" / "execution-cancellations.json")
+    assert await journal.contains(f"execution:{execution.id}")
+    assert execution.status is ExecutionStatus.RUNNING
+    assert daemon._execution_stop_tasks
+
+    supervisor.release_cancel.set()
+    await asyncio.wait_for(supervisor.cancelled.wait(), timeout=1)
+    for _ in range(100):
+        if not daemon._execution_stop_tasks:
+            break
+        await asyncio.sleep(0.001)
+
+    assert execution.status is ExecutionStatus.CANCELLED
+    assert command.id not in {item[0] for item in client.finished}
+    tombstone = await journal.get_resource(f"execution:{execution.id}")
+    assert tombstone is not None
+    assert tombstone.outcome.get("state") == "physical_stop_confirmed"
+    await daemon.close()
 
 
 @pytest.mark.parametrize(
@@ -1481,7 +2547,7 @@ async def test_cancel_rejects_cloned_same_identity_owned_by_different_runner(
 async def test_cancel_rejects_legacy_ownerless_execution_before_stop(
     tmp_path: Path,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _execution(tmp_path, legacy=True)
     execution.owner = None
     repository = _ExecutionRepository(execution)
     supervisor = _Supervisor(execution)
@@ -1540,7 +2606,7 @@ async def test_cancel_rechecks_owner_after_tombstone_before_physical_stop(
     assert repository.get_by_key_calls == 2
     assert supervisor.cancel_calls == []
     assert cloned.status is ExecutionStatus.RUNNING
-    assert journal.operations == {owned.execution_key}
+    assert journal.operations == {f"execution:{owned.id}"}
     assert client.statuses == []
     assert client.finished[0][0:2] == (command.id, False)
     assert "owner mismatch" in client.finished[0][3]
@@ -1665,7 +2731,7 @@ async def test_replacement_runner_cannot_ack_cancel_for_process_owned_by_split_b
         assert replacement_client.finished[0][0:2] == (command.id, False)
         assert "physical termination could not be confirmed" in replacement_client.finished[0][3]
         assert await OperationJournal(replacement_state / "execution-cancellations.json").contains(
-            execution.execution_key
+            f"execution:{execution.id}"
         )
 
         suppressed_marker = tmp_path / "split-brain-replacement-started"
@@ -1768,7 +2834,7 @@ async def test_replacement_runner_terminal_close_cannot_ack_pty_owned_by_peer(
         assert replacement_client.finished[0][0:2] == (command.id, False)
         assert "physical termination could not be confirmed" in replacement_client.finished[0][3]
         assert await OperationJournal(replacement_state / "execution-cancellations.json").contains(
-            execution.execution_key
+            "execution:server-terminal-execution"
         )
 
         delayed_start = _command(
@@ -1777,7 +2843,7 @@ async def test_replacement_runner_terminal_close_cannot_ack_pty_owned_by_peer(
             {
                 "session_id": "split-brain-terminal",
                 "execution_id": "server-terminal-execution",
-                "request": {},
+                "request": _terminal_start_request(tmp_path),
             },
         )
         await replacement_daemon.handle_command(delayed_start)
@@ -2069,17 +3135,15 @@ async def test_cancel_short_lease_cannot_abort_cleanup_while_execute_status_uplo
             },
         },
     )
-    cancel = LeasedRunnerCommand(
-        id="cancel-short-lease",
-        kind=RunnerCommandKind.CANCEL,
-        payload={
+    cancel = _command(
+        "cancel-short-lease",
+        RunnerCommandKind.CANCEL,
+        {
             "execution_id": execution.id,
             "execution_key": execution.execution_key,
         },
         lease_id="lease-cancel-short",
-        attempts=1,
         lease_expires_at=datetime.now(UTC) + timedelta(seconds=0.03),
-        target=_OWNER,
     )
 
     execute_task = asyncio.create_task(daemon.handle_command(execute))
@@ -2132,7 +3196,7 @@ async def test_terminal_admission_releases_lock_before_blocked_status_upload(
         {
             "session_id": "terminal-blocked-status",
             "execution_id": execution.id,
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
     cancel = _command(
@@ -2254,7 +3318,7 @@ async def test_cancel_waits_for_terminal_registration_then_stops_spawned_pty(
         {
             "session_id": "terminal-racing-cancel",
             "execution_id": "server-terminal-execution-1",
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
     cancel = _command(
@@ -2311,7 +3375,7 @@ async def test_delayed_terminal_start_is_suppressed_by_cancellation_tombstone(
         {
             "session_id": "terminal-1",
             "execution_id": "server-terminal-execution-1",
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
 
@@ -2362,7 +3426,7 @@ async def test_cancel_routes_pty_through_terminal_after_persisting_tombstone(
 
     await daemon.handle_command(command)
 
-    assert journal.operations == {execution.execution_key}
+    assert journal.operations == {f"execution:{execution.id}"}
     assert terminal_handler.cancel_calls == [execution.id]
     assert supervisor.cancel_calls == []
     assert execution.status is ExecutionStatus.CANCELLED
@@ -2420,6 +3484,7 @@ async def test_legacy_terminal_close_also_uses_durable_pty_cancellation(
         tmp_path,
         executor_type=ExecutorType.PTY,
         execution_key="terminal:terminal-legacy",
+        legacy=True,
     )
     execution.id = "server-terminal-execution-legacy"
     repository = _ExecutionRepository(execution)
@@ -2447,11 +3512,12 @@ async def test_legacy_terminal_close_also_uses_durable_pty_cancellation(
 
     await daemon.handle_command(command)
 
-    assert journal.operations == {"terminal:terminal-legacy"}
+    assert journal.operations == {f"execution:{execution.id}"}
     assert terminal_handler.cancel_calls == [execution.id]
     assert supervisor.cancel_calls == []
-    assert client.statuses == [("server-terminal-execution-legacy", ExecutionStatus.CANCELLED)]
+    assert client.statuses == []
     assert client.finished[0][0:2] == (command.id, True)
+    assert client.finished[0][2]["session_id"] == "terminal-legacy"
 
 
 @pytest.mark.asyncio
@@ -2482,7 +3548,7 @@ async def test_persisted_terminal_cancellation_suppresses_out_of_order_start_aft
     await first_daemon.handle_command(cancel)
 
     reloaded_journal = OperationJournal(journal_path)
-    assert await reloaded_journal.contains("terminal:terminal-reconnect")
+    assert await reloaded_journal.contains("execution:server-terminal-execution-1")
     second_client = _RunnerClient()
     terminal_handler = _TerminalHandler()
     reconnected_daemon = _daemon(
@@ -2499,7 +3565,7 @@ async def test_persisted_terminal_cancellation_suppresses_out_of_order_start_aft
         {
             "session_id": "terminal-reconnect",
             "execution_id": "server-terminal-execution-1",
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
 
@@ -2531,14 +3597,12 @@ async def test_target_http_short_lease_replay_never_sends_non_idempotent_request
         target_http_handler=runner,
     )
     payload = _target_http_payload()
-    first_lease = LeasedRunnerCommand(
-        id="target-http-short-lease",
-        kind=RunnerCommandKind.TARGET_HTTP,
-        payload=payload,
+    first_lease = _command(
+        "target-http-short-lease",
+        RunnerCommandKind.TARGET_HTTP,
+        payload,
         lease_id="lease-target-http-short-lease-1",
-        attempts=1,
         lease_duration_seconds=0.05,
-        target=_OWNER,
     )
 
     first_delivery = asyncio.create_task(daemon._run_leased_command(first_lease))
@@ -2546,14 +3610,13 @@ async def test_target_http_short_lease_replay_never_sends_non_idempotent_request
     await asyncio.wait_for(first_delivery, timeout=1)
     assert client.finished == []
 
-    replayed_lease = LeasedRunnerCommand(
-        id=first_lease.id,
-        kind=first_lease.kind,
-        payload=first_lease.payload,
+    replayed_lease = _command(
+        first_lease.id,
+        first_lease.kind,
+        first_lease.payload,
         lease_id="lease-target-http-short-lease-2",
         attempts=2,
         lease_duration_seconds=0.05,
-        target=_OWNER,
     )
     await asyncio.wait_for(daemon._run_leased_command(replayed_lease), timeout=1)
 
@@ -2566,6 +3629,17 @@ async def test_target_http_short_lease_replay_never_sends_non_idempotent_request
     assert await OperationJournal(tmp_path / "runner" / "target-http-deliveries.json").contains(
         "target-http:run-1:tool-call-1"
     )
+
+    divergent_replay = _command(
+        first_lease.id,
+        first_lease.kind,
+        first_lease.payload,
+        binding_id="binding-target-http-divergent",
+    )
+    await daemon.handle_command(divergent_replay)
+    assert runner.send_count == 1
+    assert client.finished[-1][0:2] == (divergent_replay.id, False)
+    assert "conflicts with its durable journal record" in client.finished[-1][3]
     await daemon.close()
 
 
@@ -2685,6 +3759,26 @@ async def test_target_http_late_cancel_ack_retry_reuses_durable_physical_confirm
         repository=_ExecutionRepository(None),
         target_http_handler=retry_runner,
     )
+    exact_replay = _command(
+        first_cancel.id,
+        first_cancel.kind,
+        first_cancel.payload,
+    )
+    await retry_daemon.handle_command(exact_replay)
+    assert retry_client.finished[-1][0:2] == (exact_replay.id, True)
+    assert retry_runner.stop_calls == []
+
+    divergent_replay = _command(
+        first_cancel.id,
+        first_cancel.kind,
+        first_cancel.payload,
+        binding_id="binding-target-http-cancel-divergent",
+    )
+    await retry_daemon.handle_command(divergent_replay)
+    assert retry_client.finished[-1][0:2] == (divergent_replay.id, False)
+    assert "conflicts with its durable journal record" in retry_client.finished[-1][3]
+    assert retry_runner.stop_calls == []
+
     retry = _command(
         "target-http-cancel-late-ack-retry",
         RunnerCommandKind.TARGET_HTTP_CANCEL,
@@ -2692,7 +3786,8 @@ async def test_target_http_late_cancel_ack_retry_reuses_durable_physical_confirm
     )
     await retry_daemon.handle_command(retry)
 
-    retry_outcome = retry_client.finished[0][2]["outcomes"][0]  # type: ignore[index]
+    retry_finish = next(item for item in retry_client.finished if item[0] == retry.id)
+    retry_outcome = retry_finish[2]["outcomes"][0]  # type: ignore[index]
     assert retry_outcome == {
         "tool_call_id": "tool-call-1",
         "confirmed": True,
@@ -2890,7 +3985,11 @@ async def test_browser_close_preempts_inflight_operation_and_persists_tombstone(
         RunnerCommandKind.BROWSER,
         {
             "operation": "observe",
-            "command": {"session_id": session.id},
+            "command": {
+                "session_id": session.id,
+                "run_id": session.run_id,
+                "node_id": session.node_id,
+            },
         },
     )
     running = asyncio.create_task(daemon.handle_command(observe))
@@ -2921,6 +4020,35 @@ async def test_browser_close_preempts_inflight_operation_and_persists_tombstone(
     assert observe_finish[1] is False
     assert runner.close_calls == 1
 
+    exact_replay = _command(
+        close.id,
+        close.kind,
+        close.payload,
+    )
+    await daemon.handle_command(exact_replay)
+    assert client.finished[-1][0:2] == (exact_replay.id, True)
+    assert runner.close_calls == 1
+
+    fresh_retry = _command(
+        "browser-close-fresh-retry",
+        close.kind,
+        close.payload,
+    )
+    await daemon.handle_command(fresh_retry)
+    assert client.finished[-1][0:2] == (fresh_retry.id, True)
+    assert runner.close_calls == 1
+
+    divergent_replay = _command(
+        close.id,
+        close.kind,
+        close.payload,
+        binding_id="binding-browser-close-divergent",
+    )
+    await daemon.handle_command(divergent_replay)
+    assert client.finished[-1][0:2] == (divergent_replay.id, False)
+    assert "conflicts with its durable journal record" in client.finished[-1][3]
+    assert runner.close_calls == 1
+
     reconnected_client = _RunnerClient()
     reconnected = _daemon(
         tmp_path,
@@ -2932,12 +4060,70 @@ async def test_browser_close_preempts_inflight_operation_and_persists_tombstone(
     delayed = _command(
         "browser-delayed-open",
         RunnerCommandKind.BROWSER,
-        {"operation": "open", "command": {"session_id": session.id}},
+        {
+            "operation": "open",
+            "command": {
+                "session_id": session.id,
+                "run_id": session.run_id,
+                "node_id": session.node_id,
+            },
+        },
     )
     await reconnected.handle_command(delayed)
 
     assert reconnected_client.finished[0][1] is False
     assert "cancelled on this Runner" in reconnected_client.finished[0][3]
+
+
+@pytest.mark.asyncio
+async def test_browser_close_survives_command_lease_loss_after_tombstone(
+    tmp_path: Path,
+) -> None:
+    execution = _execution(tmp_path)
+    session = _browser_session()
+    runner = _LeaseBlockingBrowserRunner(session)
+    client = _FailingRenewRunnerClient()
+    daemon = _daemon(
+        tmp_path,
+        client=client,
+        supervisor=_Supervisor(execution),
+        repository=_ExecutionRepository(None),
+        browser_handler=runner,
+    )
+    command = _command(
+        "browser-close-short-lease",
+        RunnerCommandKind.BROWSER_CLOSE,
+        {
+            "operation": "close",
+            "command": BrowserSessionCommand(
+                session_id=session.id,
+                session=session,
+            ).model_dump(mode="json"),
+        },
+        lease_duration_seconds=0.03,
+    )
+
+    lease_task = asyncio.create_task(daemon._run_leased_command(command))
+    await asyncio.wait_for(runner.close_entered.wait(), timeout=1)
+    await asyncio.wait_for(lease_task, timeout=1)
+
+    journal = OperationJournal(tmp_path / "runner" / "browser-cancellations.json")
+    assert await journal.contains(f"browser:{session.id}")
+    assert daemon._resource_stop_tasks
+    assert runner.session.status is BrowserSessionStatus.ACTIVE
+
+    runner.release_close.set()
+    for _ in range(100):
+        if not daemon._resource_stop_tasks:
+            break
+        await asyncio.sleep(0.001)
+
+    assert runner.session.status is BrowserSessionStatus.CLOSED
+    assert command.id not in {item[0] for item in client.finished}
+    tombstone = await journal.get_resource(f"browser:{session.id}")
+    assert tombstone is not None
+    assert tombstone.outcome.get("state") == "physical_stop_confirmed"
+    await daemon.close()
 
 
 @pytest.mark.asyncio
@@ -2983,7 +4169,14 @@ async def test_browser_close_without_local_session_remains_unconfirmed(
         _command(
             "browser-open-after-unconfirmed-close",
             RunnerCommandKind.BROWSER,
-            {"operation": "open", "command": {"session_id": session.id}},
+            {
+                "operation": "open",
+                "command": {
+                    "session_id": session.id,
+                    "run_id": session.run_id,
+                    "node_id": session.node_id,
+                },
+            },
         )
     )
     assert runner.open_calls == 0
@@ -3001,7 +4194,14 @@ async def test_run_loop_keeps_safety_poll_channel_open_at_regular_capacity(
     observe = _command(
         "browser-observe-running",
         RunnerCommandKind.BROWSER,
-        {"operation": "observe", "command": {"session_id": session.id}},
+        {
+            "operation": "observe",
+            "command": {
+                "session_id": session.id,
+                "run_id": session.run_id,
+                "node_id": session.node_id,
+            },
+        },
     )
     close = _command(
         "browser-close",
@@ -3044,7 +4244,7 @@ async def test_run_loop_keeps_safety_poll_channel_open_at_regular_capacity(
 async def test_long_runner_command_renews_lease_until_handler_finishes(
     tmp_path: Path,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-long")
     repository = _ExecutionRepository(execution)
     supervisor = _Supervisor(execution)
     client = _RenewingRunnerClient()
@@ -3061,16 +4261,19 @@ async def test_long_runner_command_renews_lease_until_handler_finishes(
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id="terminal-write-long",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-1"},
+    command = _command(
+        "terminal-write-long",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-1",
+            "data": "eA==",
+        },
         lease_id="lease-terminal-write-long",
-        attempts=1,
         # The Control Plane may use a shorter lease than the Runner's local
         # default. Renewal must honor the leased command's actual expiry.
         lease_expires_at=datetime.now(UTC) + timedelta(seconds=0.06),
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3087,7 +4290,7 @@ async def test_long_runner_command_renews_lease_until_handler_finishes(
 async def test_blocked_renewal_cancels_handler_at_current_lease_deadline(
     tmp_path: Path,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-blocked")
     repository = _ExecutionRepository(execution)
     client = _BlockingRenewRunnerClient()
     terminal = _CancellationAwareBlockingTerminalHandler()
@@ -3103,14 +4306,17 @@ async def test_blocked_renewal_cancels_handler_at_current_lease_deadline(
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id="terminal-write-blocked-renewal",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-blocked-renewal"},
+    command = _command(
+        "terminal-write-blocked-renewal",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-blocked-renewal",
+            "data": "eA==",
+        },
         lease_id="lease-terminal-write-blocked-renewal",
-        attempts=1,
         lease_duration_seconds=0.03,
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3131,7 +4337,7 @@ async def test_blocked_renewal_cancels_handler_at_current_lease_deadline(
 
 @pytest.mark.asyncio
 async def test_natural_lease_expiry_cancels_handler_without_finish(tmp_path: Path) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-natural-expiry")
     repository = _ExecutionRepository(execution)
     client = _RenewingRunnerClient()
     terminal = _CancellationAwareBlockingTerminalHandler()
@@ -3147,16 +4353,19 @@ async def test_natural_lease_expiry_cancels_handler_without_finish(tmp_path: Pat
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id="terminal-write-natural-lease-expiry",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-natural-expiry"},
+    command = _command(
+        "terminal-write-natural-lease-expiry",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-natural-expiry",
+            "data": "eA==",
+        },
         lease_id="lease-terminal-write-natural-expiry",
-        attempts=1,
         # Shorter than the minimum renewal interval, forcing the local
         # deadline to expire before the first renewal attempt.
         lease_duration_seconds=0.005,
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3179,7 +4388,7 @@ async def test_retryable_renewal_failures_reaching_deadline_cancel_without_finis
     tmp_path: Path,
     status_code: int | None,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-renew-failure")
     repository = _ExecutionRepository(execution)
     client = (
         _FailingRenewRunnerClient()
@@ -3199,14 +4408,17 @@ async def test_retryable_renewal_failures_reaching_deadline_cancel_without_finis
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id="terminal-write-failed-renewals",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-failed-renewals"},
+    command = _command(
+        "terminal-write-failed-renewals",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-failed-renewals",
+            "data": "eA==",
+        },
         lease_id="lease-terminal-write-failed-renewals",
-        attempts=1,
         lease_duration_seconds=0.03,
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3225,7 +4437,7 @@ async def test_rejected_renewal_immediately_cancels_handler_without_finish(
     tmp_path: Path,
     status_code: int,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-rejected")
     repository = _ExecutionRepository(execution)
     client = _RejectedRenewRunnerClient(status_code)
     terminal = _CancellationAwareBlockingTerminalHandler()
@@ -3241,14 +4453,17 @@ async def test_rejected_renewal_immediately_cancels_handler_without_finish(
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id=f"terminal-write-rejected-lease-{status_code}",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-reclaimed-lease"},
+    command = _command(
+        f"terminal-write-rejected-lease-{status_code}",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-reclaimed-lease",
+            "data": "eA==",
+        },
         lease_id=f"lease-terminal-write-rejected-{status_code}",
-        attempts=1,
         lease_duration_seconds=0.3,
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3270,7 +4485,7 @@ async def test_lease_loss_suppresses_all_finish_paths_when_handler_transforms_ca
     tmp_path: Path,
     raise_after_cancel: bool,
 ) -> None:
-    execution = _execution(tmp_path)
+    execution = _terminal_execution(tmp_path, "terminal-lease-transformed")
     repository = _ExecutionRepository(execution)
     client = _BlockingRenewRunnerClient()
     terminal = _CancellationTransformingTerminalHandler(
@@ -3288,14 +4503,17 @@ async def test_lease_loss_suppresses_all_finish_paths_when_handler_transforms_ca
         executions=repository,  # type: ignore[arg-type]
         terminal_handler=terminal,  # type: ignore[arg-type]
     )
-    command = LeasedRunnerCommand(
-        id=f"terminal-write-transformed-cancel-{raise_after_cancel}",
-        kind=RunnerCommandKind.TERMINAL_WRITE,
-        payload={"execution_id": execution.id, "operation_id": "write-transform-cancel"},
+    command = _command(
+        f"terminal-write-transformed-cancel-{raise_after_cancel}",
+        RunnerCommandKind.TERMINAL_WRITE,
+        {
+            "session_id": execution.session_id,
+            "execution_id": execution.id,
+            "operation_id": "write-transform-cancel",
+            "data": "eA==",
+        },
         lease_id=f"lease-terminal-write-transformed-cancel-{raise_after_cancel}",
-        attempts=1,
         lease_duration_seconds=0.03,
-        target=_OWNER,
     )
 
     task = asyncio.create_task(daemon._run_leased_command(command))
@@ -3334,7 +4552,7 @@ async def test_terminal_start_status_upload_failure_retries_durable_running_stat
         {
             "session_id": "terminal-status-retry",
             "execution_id": execution.id,
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
 
@@ -3377,7 +4595,7 @@ async def test_terminal_start_failure_reports_only_durable_pre_spawn_failed_stat
         {
             "session_id": "terminal-pre-spawn-failure",
             "execution_id": execution.id,
-            "request": {},
+            "request": _terminal_start_request(tmp_path),
         },
     )
 
@@ -3422,12 +4640,40 @@ def _daemon(
     )
 
 
+def _terminal_start_request(tmp_path: Path) -> dict[str, object]:
+    return {
+        "run_id": "run-1",
+        "node_id": "runner-a",
+        "cwd": str(tmp_path),
+        "argv": ["test-shell"],
+    }
+
+
+def _terminal_execution(tmp_path: Path, session_id: str) -> Execution:
+    execution = _execution(
+        tmp_path,
+        executor_type=ExecutorType.PTY,
+        execution_key=f"terminal:{session_id}",
+    )
+    execution.session_id = session_id
+    return execution
+
+
 def _execution(
     tmp_path: Path,
     *,
     executor_type: ExecutorType = ExecutorType.PROCESS,
     execution_key: str = "execution-key-1",
+    legacy: bool = False,
 ) -> Execution:
+    callback_binding: dict[str, str] = {}
+    if not legacy:
+        callback_binding = {
+            "runner_command_id": "verified-launch-command",
+            "runner_effect_binding_id": "verified-launch-binding",
+            "runner_binding_digest": "a" * 64,
+            "runner_envelope_digest": "b" * 64,
+        }
     return Execution(
         id="server-execution-1",
         execution_key=execution_key,
@@ -3439,6 +4685,60 @@ def _execution(
         stdout_path=str(tmp_path / "stdout"),
         stderr_path=str(tmp_path / "stderr"),
         status=ExecutionStatus.RUNNING,
+        **callback_binding,
+    )
+
+
+def _command_callback_binding(command: LeasedRunnerCommand) -> dict[str, str]:
+    ownership = command.ownership
+    assert ownership is not None
+    return {
+        "runner_command_id": command.id,
+        "runner_effect_binding_id": ownership.effect_binding.id,
+        "runner_binding_digest": ownership.effect_binding.binding_digest,
+        "runner_envelope_digest": ownership.envelope_digest,
+    }
+
+
+def _rebind_command(
+    command: LeasedRunnerCommand,
+    *,
+    binding_updates: dict[str, object],
+    operation_family: RunnerOperationFamily | None = None,
+    output_contract: RunnerOutputContract | None = None,
+) -> LeasedRunnerCommand:
+    ownership = command.ownership
+    assert ownership is not None
+    raw_binding = ownership.effect_binding.model_dump(mode="python")
+    raw_binding.update(binding_updates)
+    raw_binding["binding_digest"] = ""
+    binding = RunnerEffectBinding.model_validate(raw_binding)
+    family = operation_family or binding.operation_family
+    contract = output_contract or ownership.output_contract
+    rebound_ownership = RunnerCommandOwnership(
+        command_id=command.id,
+        effect_binding=binding,
+        operation=command.kind,
+        operation_family=family,
+        payload_digest=runner_payload_digest(command.payload),
+        output_contract=contract,
+    )
+    return LeasedRunnerCommand(
+        id=command.id,
+        kind=command.kind,
+        payload=command.payload,
+        lease_id=command.lease_id,
+        attempts=command.attempts,
+        target=binding.target,
+        ownership=rebound_ownership,
+        effect_binding_id=binding.id,
+        binding_digest=binding.binding_digest,
+        envelope_digest=rebound_ownership.envelope_digest,
+        state_version=command.state_version,
+        operation_family=family,
+        output_contract=contract,
+        lease_expires_at=command.lease_expires_at,
+        lease_duration_seconds=command.lease_duration_seconds,
     )
 
 
@@ -3446,6 +4746,13 @@ def _command(
     command_id: str,
     kind: RunnerCommandKind,
     payload: dict[str, object],
+    *,
+    lease_id: str | None = None,
+    attempts: int = 1,
+    lease_expires_at: datetime | None = None,
+    lease_duration_seconds: float | None = None,
+    run_id: str = "run-1",
+    binding_id: str | None = None,
 ) -> LeasedRunnerCommand:
     if kind in {RunnerCommandKind.EXECUTE, RunnerCommandKind.TERMINAL_START}:
         raw_request = payload.get("request")
@@ -3457,13 +4764,135 @@ def _command(
                     "runner_principal": _OWNER.model_dump(mode="json"),
                 },
             }
+    execution_id = payload.get("execution_id")
+    typed_execution_id = execution_id if isinstance(execution_id, str) else None
+    if kind is RunnerCommandKind.EXECUTE:
+        operation_family = RunnerOperationFamily.EXECUTION
+        resource_kind = RunnerResourceKind.EXECUTION
+        resource_id = str(execution_id)
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/execution-start/v1",
+        )
+    elif kind is RunnerCommandKind.TERMINAL_START:
+        operation_family = RunnerOperationFamily.TERMINAL
+        resource_kind = RunnerResourceKind.TERMINAL_SESSION
+        resource_id = str(payload.get("session_id"))
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/terminal-start/v1",
+        )
+    elif kind in {
+        RunnerCommandKind.CANCEL,
+        RunnerCommandKind.TERMINAL_CLOSE,
+        RunnerCommandKind.TARGET_HTTP_CANCEL,
+        RunnerCommandKind.BROWSER_CLOSE,
+    }:
+        operation_family = RunnerOperationFamily.SAFETY_STOP
+        if kind is RunnerCommandKind.TARGET_HTTP_CANCEL:
+            resource_kind = RunnerResourceKind.TARGET_HTTP_INTENT
+            raw_ids = payload.get("tool_call_ids")
+            resource_id = str(raw_ids[0] if isinstance(raw_ids, list) and raw_ids else "missing")
+        elif kind is RunnerCommandKind.BROWSER_CLOSE:
+            resource_kind = RunnerResourceKind.BROWSER_SESSION
+            raw_command = payload.get("command")
+            resource_id = str(
+                raw_command.get("session_id") if isinstance(raw_command, dict) else "missing"
+            )
+        elif kind is RunnerCommandKind.TERMINAL_CLOSE:
+            resource_kind = RunnerResourceKind.TERMINAL_SESSION
+            resource_id = str(payload.get("session_id"))
+        else:
+            resource_kind = RunnerResourceKind.EXECUTION
+            resource_id = str(execution_id)
+        stop_ack_schemas = {
+            RunnerResourceKind.EXECUTION: RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+            RunnerResourceKind.TERMINAL_SESSION: RUNNER_STOP_ACK_TERMINAL_SCHEMA,
+            RunnerResourceKind.TARGET_HTTP_INTENT: RUNNER_STOP_ACK_TARGET_HTTP_SCHEMA,
+            RunnerResourceKind.BROWSER_SESSION: RUNNER_STOP_ACK_BROWSER_SCHEMA,
+        }
+        stop_result_schemas = {
+            RunnerCommandKind.CANCEL: "riftx.runner-result/execution-stop/v1",
+            RunnerCommandKind.TERMINAL_CLOSE: "riftx.runner-result/terminal-stop/v1",
+            RunnerCommandKind.TARGET_HTTP_CANCEL: (
+                "riftx.runner-result/target-http-stop/v1"
+            ),
+            RunnerCommandKind.BROWSER_CLOSE: "riftx.runner-result/browser-stop/v1",
+        }
+        output_contract = RunnerOutputContract(
+            result_schema=stop_result_schemas[kind],
+            stop_ack_schema=stop_ack_schemas[resource_kind],
+        )
+    elif kind is RunnerCommandKind.TARGET_HTTP:
+        operation_family = RunnerOperationFamily.TARGET_HTTP
+        resource_kind = RunnerResourceKind.TARGET_HTTP_INTENT
+        raw_launch = payload.get("launch")
+        resource_id = str(
+            raw_launch.get("tool_call_id") if isinstance(raw_launch, dict) else "missing"
+        )
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("command",),
+            result_schema="riftx.runner-result/target-http/v1",
+        )
+    elif kind in {
+        RunnerCommandKind.BROWSER,
+    }:
+        operation_family = RunnerOperationFamily.BROWSER
+        resource_kind = RunnerResourceKind.BROWSER_SESSION
+        raw_command = payload.get("command")
+        resource_id = str(
+            raw_command.get("session_id") if isinstance(raw_command, dict) else "missing"
+        )
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("command",),
+            result_schema="riftx.runner-result/browser/v1",
+        )
+    else:
+        operation_family = RunnerOperationFamily.TERMINAL
+        resource_kind = RunnerResourceKind.TERMINAL_SESSION
+        resource_id = str(payload.get("session_id") or execution_id or "missing")
+        output_contract = RunnerOutputContract(
+            result_schema="riftx.runner-result/terminal-operation/v1",
+        )
+    binding = RunnerEffectBinding(
+        id=binding_id or f"binding-{command_id}",
+        run_id=run_id,
+        run_kind=RunKind.GENERAL,
+        node_id="runner-a",
+        target=_OWNER,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=operation_family,
+        execution_id=typed_execution_id,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract,
+    )
     return LeasedRunnerCommand(
         id=command_id,
         kind=kind,
         payload=payload,
-        lease_id=f"lease-{command_id}",
-        attempts=1,
+        lease_id=lease_id or f"lease-{command_id}",
+        attempts=attempts,
         target=_OWNER,
+        ownership=ownership,
+        effect_binding_id=binding.id,
+        binding_digest=binding.binding_digest,
+        envelope_digest=ownership.envelope_digest,
+        operation_family=operation_family,
+        output_contract=output_contract,
+        lease_expires_at=lease_expires_at,
+        lease_duration_seconds=lease_duration_seconds,
     )
 
 

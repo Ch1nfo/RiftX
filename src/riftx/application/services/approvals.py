@@ -10,11 +10,9 @@ from typing import Protocol
 
 from riftx.application.errors import (
     ApplicationConflictError,
-    ApplicationServiceError,
     EntityNotFoundError,
     RepositoryConflictError,
     RepositoryDecisionConflictError,
-    ServiceUnavailableError,
 )
 from riftx.application.ports import ApprovalRepository, RunEventRepository, RunRepository
 from riftx.domain import Approval, ApprovalStatus, Run, RunStatus, ToolCall
@@ -28,6 +26,8 @@ from riftx.runtime.types import (
 )
 from riftx.tools import ToolRegistry
 
+from .runs import require_general_run_operation
+
 _APPROVAL_BLOCKED_RUN_STATUSES = frozenset(
     {
         RunStatus.PAUSING,
@@ -38,12 +38,6 @@ _APPROVAL_BLOCKED_RUN_STATUSES = frozenset(
         RunStatus.CANCELLED,
     }
 )
-
-
-class ApprovalWorkflowClient(Protocol):
-    async def approve(self, run_id: str, approval_id: str) -> None: ...
-
-    async def reject(self, run_id: str, approval_id: str) -> None: ...
 
 
 class RuntimeApprovalRepository(Protocol):
@@ -287,13 +281,11 @@ class ApprovalApplicationService:
         approval_repository: ApprovalRepository,
         run_repository: RunRepository,
         event_repository: RunEventRepository,
-        workflow_client: ApprovalWorkflowClient,
         runtime_approval_repository: RuntimeApprovalRepository | None = None,
     ) -> None:
         self._approval_repository = approval_repository
         self._run_repository = run_repository
         self._event_repository = event_repository
-        self._workflow_client = workflow_client
         self._runtime_approvals = runtime_approval_repository
 
     async def list(
@@ -305,6 +297,12 @@ class ApprovalApplicationService:
         if await self._run_repository.get(run_id) is None:
             raise EntityNotFoundError("Run", run_id)
         return list(await self._approval_repository.list(run_id, status=status))
+
+    async def get(self, approval_id: str) -> Approval:
+        approval = await self._approval_repository.get(approval_id)
+        if approval is None:
+            raise EntityNotFoundError("Approval", approval_id)
+        return approval
 
     async def approve(self, approval_id: str, command: DecideApproval) -> Approval:
         return await self._decide(approval_id, ApprovalStatus.APPROVED, command)
@@ -323,12 +321,11 @@ class ApprovalApplicationService:
         target: ApprovalStatus,
         command: DecideApproval,
     ) -> Approval:
-        approval = await self._approval_repository.get(approval_id)
-        if approval is None:
-            raise EntityNotFoundError("Approval", approval_id)
+        approval = await self.get(approval_id)
         run = await self._run_repository.get(approval.run_id)
         if run is None:
             raise EntityNotFoundError("Run", approval.run_id)
+        require_general_run_operation(run)
         self._raise_if_approval_not_actionable(approval, run)
         decision = _runtime_decision(target, command)
         try:
@@ -362,36 +359,6 @@ class ApprovalApplicationService:
         if current is None:
             raise EntityNotFoundError("Run", approval.run_id)
         self._raise_if_approval_not_actionable(approval, current, approval_saved=True)
-
-        try:
-            if target is ApprovalStatus.APPROVED:
-                await self._workflow_client.approve(approval.run_id, approval.id)
-            else:
-                await self._workflow_client.reject(approval.run_id, approval.id)
-        except ApplicationServiceError as exc:
-            raise type(exc)(
-                exc.code,
-                f"Approval was saved, but the durable workflow could not be signaled: "
-                f"{exc.message}",
-                details={
-                    **exc.details,
-                    "approval_id": approval.id,
-                    "run_id": approval.run_id,
-                    "approval_saved": True,
-                },
-            ) from exc
-        except Exception as exc:
-            raise ServiceUnavailableError(
-                "temporal_unavailable",
-                "Approval was saved but the durable workflow could not be signaled",
-                details={
-                    "approval_id": approval.id,
-                    "run_id": approval.run_id,
-                    "approval_saved": True,
-                    "error_type": type(exc).__name__,
-                    "reason": str(exc),
-                },
-            ) from exc
         return approval
 
     @staticmethod

@@ -25,7 +25,7 @@ from riftx.config import (
     ToolsConfig,
     WorkspaceConfig,
 )
-from riftx.domain import Engagement, Objective, Run, RunStatus
+from riftx.domain import Engagement, Objective, Run, RunKind, RunStatus
 from riftx.models import ModelAPI, ModelProfile, ModelProfileRegistry
 from riftx.persistence import (
     Database,
@@ -162,6 +162,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert len(captured["runtime_cycle_activities"].registered()) == 1
     assert runtime.run_repository is not None
     assert runtime.safety_stopper is not None
+    assert runtime.runner_control_service is not None
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
@@ -312,6 +313,7 @@ async def test_worker_session_initializer_reloads_effective_default_profile(
         runs = SQLAlchemyRunRepository(runtime.database.session_factory)
         await runs.create(
             Run(
+                kind="general",
                 id="run-default",
                 engagement_id="engagement-default",
                 node_id="worker-local",
@@ -418,7 +420,7 @@ async def test_worker_safety_reconciler_recovers_after_list_failure() -> None:
             raise RuntimeError("transient safety scan failure")
         if status is RunStatus.PAUSING and not returned_run:
             returned_run = True
-            return [SimpleNamespace(id="run-retry")]
+            return [SimpleNamespace(id="run-retry", kind=RunKind.GENERAL)]
         return []
 
     async def stop_run(run_id: str, *, drain: bool) -> SimpleNamespace:
@@ -458,11 +460,57 @@ async def test_worker_safety_reconciler_recovers_after_list_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_worker_runner_reconciler_retries_and_runs_both_paths() -> None:
+    runner_control = AsyncMock()
+    stop_attempts = 0
+    reconciled = asyncio.Event()
+
+    async def reconcile_stop_receipts() -> int:
+        nonlocal stop_attempts
+        stop_attempts += 1
+        if stop_attempts == 1:
+            raise RuntimeError("transient stop receipt failure")
+        return 1
+
+    async def reconcile_quarantined_commands() -> int:
+        reconciled.set()
+        return 1
+
+    runner_control.reconcile_stop_receipts.side_effect = reconcile_stop_receipts
+    runner_control.reconcile_quarantined_commands.side_effect = (
+        reconcile_quarantined_commands
+    )
+    runtime = TemporalWorkerRuntime(
+        worker=AsyncMock(),
+        database=AsyncMock(),
+        process_supervisor=AsyncMock(),
+        terminal_supervisor=AsyncMock(),
+        model_provider=AsyncMock(),
+        node_service=AsyncMock(),
+        node_id="worker-local",
+        heartbeat_interval_seconds=0.01,
+        runner_control_service=runner_control,
+    )
+
+    task = asyncio.create_task(runtime._runner_reconciliation_loop())
+    try:
+        await asyncio.wait_for(reconciled.wait(), timeout=1)
+        assert not task.done()
+        assert stop_attempts >= 2
+        assert runner_control.reconcile_quarantined_commands.await_count >= 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_worker_safety_reconciler_keyset_scan_does_not_skip_mutated_pages() -> None:
     created = datetime(2025, 1, 1, tzinfo=UTC)
     remaining = {
         f"run-{index:03d}": SimpleNamespace(
             id=f"run-{index:03d}",
+            kind=RunKind.GENERAL,
             created_at=created + timedelta(microseconds=index),
         )
         for index in range(205)
@@ -532,6 +580,61 @@ async def test_worker_safety_reconciler_keyset_scan_does_not_skip_mutated_pages(
             await task
 
 
+@pytest.mark.asyncio
+async def test_worker_routes_code_audit_cleanup_to_dedicated_reconciler() -> None:
+    delivered = False
+    reconciled = asyncio.Event()
+
+    async def list_runs(**filters: object) -> list[SimpleNamespace]:
+        nonlocal delivered
+        if filters["status"] is RunStatus.CANCELLING and not delivered:
+            delivered = True
+            return [
+                SimpleNamespace(
+                    id="audit-run-1",
+                    kind=RunKind.CODE_AUDIT,
+                    created_at=datetime.now(UTC),
+                )
+            ]
+        return []
+
+    run_repository = AsyncMock()
+    run_repository.list_for_reconciliation.side_effect = list_runs
+    safety_stopper = AsyncMock()
+    audit_reconciler = AsyncMock()
+
+    async def reconcile_run(run_id: str) -> SimpleNamespace:
+        assert run_id == "audit-run-1"
+        reconciled.set()
+        return SimpleNamespace(succeeded=True, failed_resource_types=())
+
+    audit_reconciler.reconcile_run.side_effect = reconcile_run
+    runtime = TemporalWorkerRuntime(
+        worker=AsyncMock(),
+        database=AsyncMock(),
+        process_supervisor=AsyncMock(),
+        terminal_supervisor=AsyncMock(),
+        model_provider=AsyncMock(),
+        node_service=AsyncMock(),
+        node_id="worker-local",
+        heartbeat_interval_seconds=0.01,
+        run_repository=run_repository,
+        safety_stopper=safety_stopper,
+        audit_cleanup_reconciler=audit_reconciler,
+    )
+
+    task = asyncio.create_task(runtime._safety_reconciler_loop())
+    try:
+        await asyncio.wait_for(reconciled.wait(), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    safety_stopper.stop_run.assert_not_awaited()
+    audit_reconciler.reconcile_run.assert_awaited_once_with("audit-run-1")
+
+
 @pytest.mark.parametrize(
     ("target", "defer_cleanup_event"),
     [
@@ -554,6 +657,7 @@ async def test_worker_reconciler_terminalizes_durable_finalization_intent(
     events = SQLAlchemyRunEventRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-finalization",
             engagement_id="engagement-1",
             node_id="worker-local",
@@ -601,7 +705,14 @@ async def test_worker_reconciler_terminalizes_durable_finalization_intent(
             await asyncio.sleep(0.01)
         assert finalized is not None and finalized.status is target
         assert not task.done()
-        timeline = await events.list_after("run-finalization")
+        timeline = []
+        for _ in range(100):
+            timeline = list(await events.list_after("run-finalization"))
+            if any(
+                event.event_type == "run.cleanup_reconciled" for event in timeline
+            ):
+                break
+            await asyncio.sleep(0.01)
         cleaned = [event for event in timeline if event.event_type == "run.cleaned_up"]
         assert len(cleaned) == (0 if defer_cleanup_event else 1)
         reconciled = [event for event in timeline if event.event_type == "run.cleanup_reconciled"]
@@ -630,6 +741,7 @@ async def test_user_input_resolver_moves_event_content_to_transcript_once(
         runs = SQLAlchemyRunRepository(runtime.database.session_factory)
         await runs.create(
             Run(
+                kind="general",
                 id="run-1",
                 engagement_id="engagement-1",
                 node_id="worker-local",

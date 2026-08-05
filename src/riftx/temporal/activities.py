@@ -42,7 +42,7 @@ from riftx.context.compaction import (
     ContextCompactionManager,
     SwitchModelCommand,
 )
-from riftx.domain import InvalidStateTransitionError, ReportFormat, Run, RunStatus
+from riftx.domain import InvalidStateTransitionError, ReportFormat, Run, RunKind, RunStatus
 from riftx.tools import ToolRegistry
 
 from .models import (
@@ -579,6 +579,12 @@ class RiftXActivities:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ApplicationError(f"run {run_id!r} was not found", non_retryable=True)
+        if run.kind is not RunKind.GENERAL:
+            raise ApplicationError(
+                "General RiftX Activities cannot operate on a Code Audit Run",
+                type="run_kind_operation_unsupported",
+                non_retryable=True,
+            )
         return run
 
     async def _finalize_compat_run(self, run_id: str, target: RunStatus) -> bool:

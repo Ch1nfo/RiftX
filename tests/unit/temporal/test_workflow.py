@@ -1297,6 +1297,7 @@ async def test_pre_patch_cleanup_exhaustion_keeps_intent_for_worker_recovery(
     run_id = "run-legacy-cleanup-exhaustion"
     await runs.create(
         Run(
+            kind="general",
             id=run_id,
             engagement_id="engagement-1",
             node_id="worker-local",
@@ -1375,10 +1376,14 @@ async def test_pre_patch_cleanup_exhaustion_keeps_intent_for_worker_recovery(
     )
     reconciler = asyncio.create_task(runtime._safety_reconciler_loop())
     try:
-        for _ in range(100):
+        for _ in range(200):
             recovered = await runs.get(run_id)
             if recovered is not None and recovered.status is RunStatus.FAILED:
-                break
+                timeline = await events.list_after(run_id)
+                if any(
+                    event.event_type == "run.cleanup_reconciled" for event in timeline
+                ):
+                    break
             await asyncio.sleep(0.01)
         assert recovered is not None and recovered.status is RunStatus.FAILED
     finally:

@@ -5,11 +5,23 @@ from riftx.domain import (
     BrowserMode,
     BrowserSession,
     BrowserSessionStatus,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
+    runner_payload_digest,
 )
 from riftx.runner.browser import RemoteBrowserClient
+
+_OWNER = RunnerPrincipal(instance_id="runner-browser-a", epoch=1)
 
 
 class _CompletedBrowserCloseControl:
@@ -24,6 +36,14 @@ class _CompletedBrowserCloseControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         raw_command = payload["command"]
@@ -32,11 +52,37 @@ class _CompletedBrowserCloseControl:
         assert close.session is not None
         session = close.session.model_copy(deep=True)
         session.transition_to(BrowserSessionStatus.CLOSED)
-        command = RunnerCommand(
-            id=f"close-{len(self.enqueued)}",
+        command_id = f"close-{len(self.enqueued)}"
+        resolved_target = target or _OWNER
+        binding = RunnerEffectBinding(
+            id=f"binding-{len(self.enqueued)}",
+            run_id=run_id,
+            run_kind=RunKind.GENERAL,
             node_id=node_id,
+            target=resolved_target,
+            origin=origin,
+            operation_family=operation_family,
+            execution_id=execution_id,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+        )
+        ownership = RunnerCommandOwnership(
+            command_id=command_id,
+            effect_binding=binding,
+            operation=kind,
+            operation_family=operation_family,
+            payload_digest=runner_payload_digest(payload),
+            output_contract=output_contract or RunnerOutputContract(),
+        )
+        command = RunnerCommand(
+            id=command_id,
+            node_id=node_id,
+            target=resolved_target,
             kind=kind,
             idempotency_key=idempotency_key,
+            ownership=ownership,
+            ownership_state=RunnerCommandOwnershipState.VERIFIED,
+            quarantine_reason="",
             payload=payload,
             status=RunnerCommandStatus.COMPLETED,
             result={"result": BrowserRuntimeResult(session=session).model_dump(mode="json")},

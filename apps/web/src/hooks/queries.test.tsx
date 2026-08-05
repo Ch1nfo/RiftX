@@ -9,6 +9,7 @@ import {
   flattenRunActionPages,
   mergeRunEventLists,
   queryKeys,
+  useCreateLocalAudit,
   useRunAction,
   useRunActions,
   useRunControl,
@@ -17,9 +18,12 @@ import {
 
 const mocks = vi.hoisted(() => ({
   cancelRun: vi.fn(),
+  createLocalAudit: vi.fn(),
   getRunAction: vi.fn(),
   listRunActions: vi.fn(),
   listEvents: vi.fn(),
+  listLocalAuditFindings: vi.fn(),
+  startLocalAudit: vi.fn(),
 }));
 
 vi.mock("../api/client", async (importOriginal) => {
@@ -29,9 +33,12 @@ vi.mock("../api/client", async (importOriginal) => {
     api: {
       ...actual.api,
       cancelRun: mocks.cancelRun,
+      createLocalAudit: mocks.createLocalAudit,
       getRunAction: mocks.getRunAction,
       listRunActions: mocks.listRunActions,
       listEvents: mocks.listEvents,
+      listLocalAuditFindings: mocks.listLocalAuditFindings,
+      startLocalAudit: mocks.startLocalAudit,
     },
   };
 });
@@ -46,6 +53,48 @@ function event(sequence: number, eventType: string): RunEvent {
     created_at: `2026-07-31T00:00:0${sequence}Z`,
   };
 }
+
+describe("local Audit queries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates the draft before starting that exact Audit", async () => {
+    mocks.createLocalAudit.mockResolvedValue({
+      audit_id: "audit/1",
+      status: "draft",
+    });
+    mocks.startLocalAudit.mockResolvedValue({
+      audit_id: "audit/1",
+      status: "queued",
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useCreateLocalAudit(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({ source_path: "/Users/operator/source" });
+    });
+
+    expect(mocks.createLocalAudit).toHaveBeenCalledWith({
+      source_path: "/Users/operator/source",
+    });
+    expect(mocks.startLocalAudit).toHaveBeenCalledWith("audit/1");
+    expect(mocks.createLocalAudit.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.startLocalAudit.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(queryKeys.localAuditFinding("audit/1", "finding/1")).not.toEqual(
+      queryKeys.localAuditFinding("audit/1", "finding/2"),
+    );
+    expect(queryKeys.localAudit("audit/1")).not.toEqual(
+      queryKeys.localAudit("audit/2"),
+    );
+  });
+});
 
 describe("useRunEvents", () => {
   beforeEach(() => {

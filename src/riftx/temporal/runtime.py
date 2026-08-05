@@ -36,62 +36,116 @@ class TemporalRunClient:
         self._client = client
         self._config = config
 
-    async def start_run(self, run_id: str) -> WorkflowHandle[RiftXRunWorkflow, RunWorkflowResult]:
+    async def start_run(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> WorkflowHandle[RiftXRunWorkflow, RunWorkflowResult]:
+        target_workflow_id = self._resolve_workflow_id(run_id, workflow_id)
         return await self._invoke(
             run_id,
             "start",
             lambda: self._client.start_workflow(
                 RiftXRunWorkflow.run,
                 RunWorkflowInput(run_id=run_id, await_initial_instruction=True),
-                id=self.workflow_id(run_id),
+                id=target_workflow_id,
                 task_queue=self._config.task_queue,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                 id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
             ),
+            workflow_id=target_workflow_id,
         )
 
-    def get_handle(self, run_id: str) -> WorkflowHandle[RiftXRunWorkflow, RunWorkflowResult]:
-        return self._client.get_workflow_handle(self.workflow_id(run_id))
+    def get_handle(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> WorkflowHandle[RiftXRunWorkflow, RunWorkflowResult]:
+        return self._client.get_workflow_handle(
+            self._resolve_workflow_id(run_id, workflow_id)
+        )
 
-    async def pause(self, run_id: str) -> None:
+    async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None:
         await self._invoke(
             run_id,
             "pause",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.pause),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.pause
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def resume(self, run_id: str) -> None:
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
         await self._invoke(
             run_id,
             "resume",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.resume),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.resume
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def approve(self, run_id: str, approval_id: str) -> None:
+    async def approve(
+        self,
+        run_id: str,
+        approval_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "approve",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.approve, approval_id),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.approve,
+                approval_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def reject(self, run_id: str, approval_id: str) -> None:
+    async def reject(
+        self,
+        run_id: str,
+        approval_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "reject",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.reject, approval_id),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.reject,
+                approval_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def execution_completed(self, run_id: str, execution_id: str) -> None:
+    async def execution_completed(
+        self,
+        run_id: str,
+        execution_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "report execution completion",
-            lambda: self.get_handle(run_id).signal(
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
                 RiftXRunWorkflow.execution_completed,
                 execution_id,
             ),
+            workflow_id=workflow_id,
         )
 
-    async def user_input(self, run_id: str, message_id: str) -> None:
+    async def user_input(
+        self,
+        run_id: str,
+        message_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        target_workflow_id = self._resolve_workflow_id(run_id, workflow_id)
         await self._invoke(
             run_id,
             "send user input",
@@ -103,51 +157,101 @@ class TemporalRunClient:
             lambda: self._client.start_workflow(
                 RiftXRunWorkflow.run,
                 RunWorkflowInput(run_id=run_id, await_initial_instruction=True),
-                id=self.workflow_id(run_id),
+                id=target_workflow_id,
                 task_queue=self._config.task_queue,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                 id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
                 start_signal="user_input",
                 start_signal_args=[message_id],
             ),
+            workflow_id=target_workflow_id,
         )
 
-    async def cancel_current_execution(self, run_id: str) -> None:
+    async def cancel_current_execution(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "cancel current execution",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.cancel_current_execution),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.cancel_current_execution
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def cancel(self, run_id: str) -> None:
+    async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
         await self._invoke(
             run_id,
             "cancel",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.cancel),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.cancel
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+    async def compact(
+        self,
+        run_id: str,
+        max_history_items: int = 100,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "compact",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.compact, max_history_items),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.compact,
+                max_history_items,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def switch_model(self, run_id: str, model_profile: str) -> None:
+    async def switch_model(
+        self,
+        run_id: str,
+        model_profile: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "switch model",
-            lambda: self.get_handle(run_id).signal(RiftXRunWorkflow.switch_model, model_profile),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).signal(
+                RiftXRunWorkflow.switch_model,
+                model_profile,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def append_user_message(self, run_id: str, message_id: str) -> None:
-        await self.user_input(run_id, message_id)
+    async def append_user_message(
+        self,
+        run_id: str,
+        message_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        await self.user_input(
+            run_id,
+            message_id,
+            workflow_id=workflow_id,
+        )
 
-    async def status(self, run_id: str) -> RunWorkflowStatus:
+    async def status(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> RunWorkflowStatus:
         return await self._invoke(
             run_id,
             "query status",
-            lambda: self.get_handle(run_id).query(RiftXRunWorkflow.get_status),
+            lambda: self.get_handle(run_id, workflow_id=workflow_id).query(
+                RiftXRunWorkflow.get_status
+            ),
+            workflow_id=workflow_id,
         )
 
     def workflow_id(self, run_id: str) -> str:
@@ -158,7 +262,10 @@ class TemporalRunClient:
         run_id: str,
         action: str,
         operation: Callable[[], Awaitable[ResultT]],
+        *,
+        workflow_id: str | None = None,
     ) -> ResultT:
+        target_workflow_id = self._resolve_workflow_id(run_id, workflow_id)
         try:
             return await operation()
         except WorkflowAlreadyStartedError as exc:
@@ -167,14 +274,14 @@ class TemporalRunClient:
                 f"Could not {action} because this Run's Workflow has already closed",
                 details={
                     "run_id": run_id,
-                    "workflow_id": self.workflow_id(run_id),
+                    "workflow_id": target_workflow_id,
                     "temporal_run_id": exc.run_id,
                 },
             ) from exc
         except RPCError as exc:
             details: dict[str, object] = {
                 "run_id": run_id,
-                "workflow_id": self.workflow_id(run_id),
+                "workflow_id": target_workflow_id,
                 "rpc_status": exc.status.name.lower(),
                 "reason": exc.message,
             }
@@ -199,6 +306,13 @@ class TemporalRunClient:
                 details=details,
             ) from exc
 
+    def _resolve_workflow_id(self, run_id: str, workflow_id: str | None) -> str:
+        if workflow_id is None:
+            return self.workflow_id(run_id)
+        if not workflow_id:
+            raise ValueError("workflow_id must be non-empty")
+        return workflow_id
+
 
 class LazyTemporalRunClient:
     """Connect on first control request and retry after connection outages.
@@ -218,75 +332,191 @@ class LazyTemporalRunClient:
         self._client: TemporalRunClient | None = None
         self._connect_lock = asyncio.Lock()
 
-    async def start_run(self, run_id: str) -> object:
-        return await self._invoke(run_id, "start", lambda client: client.start_run(run_id))
+    async def start_run(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> object:
+        return await self._invoke(
+            run_id,
+            "start",
+            lambda client: client.start_run(run_id, workflow_id=workflow_id),
+            workflow_id=workflow_id,
+        )
 
-    async def pause(self, run_id: str) -> None:
-        await self._invoke(run_id, "pause", lambda client: client.pause(run_id))
+    async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._invoke(
+            run_id,
+            "pause",
+            lambda client: client.pause(run_id, workflow_id=workflow_id),
+            workflow_id=workflow_id,
+        )
 
-    async def resume(self, run_id: str) -> None:
-        await self._invoke(run_id, "resume", lambda client: client.resume(run_id))
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._invoke(
+            run_id,
+            "resume",
+            lambda client: client.resume(run_id, workflow_id=workflow_id),
+            workflow_id=workflow_id,
+        )
 
-    async def approve(self, run_id: str, approval_id: str) -> None:
+    async def approve(
+        self,
+        run_id: str,
+        approval_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "approve",
-            lambda client: client.approve(run_id, approval_id),
+            lambda client: client.approve(
+                run_id,
+                approval_id,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def reject(self, run_id: str, approval_id: str) -> None:
+    async def reject(
+        self,
+        run_id: str,
+        approval_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "reject",
-            lambda client: client.reject(run_id, approval_id),
+            lambda client: client.reject(
+                run_id,
+                approval_id,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def execution_completed(self, run_id: str, execution_id: str) -> None:
+    async def execution_completed(
+        self,
+        run_id: str,
+        execution_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "report execution completion",
-            lambda client: client.execution_completed(run_id, execution_id),
+            lambda client: client.execution_completed(
+                run_id,
+                execution_id,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def user_input(self, run_id: str, message_id: str) -> None:
+    async def user_input(
+        self,
+        run_id: str,
+        message_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "send user input",
-            lambda client: client.user_input(run_id, message_id),
+            lambda client: client.user_input(
+                run_id,
+                message_id,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def cancel_current_execution(self, run_id: str) -> None:
+    async def cancel_current_execution(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "cancel current execution",
-            lambda client: client.cancel_current_execution(run_id),
+            lambda client: client.cancel_current_execution(
+                run_id,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def cancel(self, run_id: str) -> None:
-        await self._invoke(run_id, "cancel", lambda client: client.cancel(run_id))
+    async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        await self._invoke(
+            run_id,
+            "cancel",
+            lambda client: client.cancel(run_id, workflow_id=workflow_id),
+            workflow_id=workflow_id,
+        )
 
-    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
+    async def compact(
+        self,
+        run_id: str,
+        max_history_items: int = 100,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "compact",
-            lambda client: client.compact(run_id, max_history_items),
+            lambda client: client.compact(
+                run_id,
+                max_history_items,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def switch_model(self, run_id: str, model_profile: str) -> None:
+    async def switch_model(
+        self,
+        run_id: str,
+        model_profile: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         await self._invoke(
             run_id,
             "switch model",
-            lambda client: client.switch_model(run_id, model_profile),
+            lambda client: client.switch_model(
+                run_id,
+                model_profile,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
         )
 
-    async def append_user_message(self, run_id: str, message_id: str) -> None:
-        await self.user_input(run_id, message_id)
+    async def append_user_message(
+        self,
+        run_id: str,
+        message_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        await self.user_input(
+            run_id,
+            message_id,
+            workflow_id=workflow_id,
+        )
 
-    async def status(self, run_id: str) -> RunWorkflowStatus:
+    async def status(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> RunWorkflowStatus:
         return await self._invoke(
             run_id,
             "query status",
-            lambda client: client.status(run_id),
+            lambda client: client.status(run_id, workflow_id=workflow_id),
+            workflow_id=workflow_id,
         )
 
     def workflow_id(self, run_id: str) -> str:
@@ -297,8 +527,10 @@ class LazyTemporalRunClient:
         run_id: str,
         action: str,
         operation: Callable[[TemporalRunClient], Awaitable[ResultT]],
+        *,
+        workflow_id: str | None = None,
     ) -> ResultT:
-        client = await self._get_client(run_id, action)
+        client = await self._get_client(run_id, action, workflow_id=workflow_id)
         try:
             return await operation(client)
         except ServiceUnavailableError:
@@ -312,7 +544,13 @@ class LazyTemporalRunClient:
                     self._client = None
             raise
 
-    async def _get_client(self, run_id: str, action: str) -> TemporalRunClient:
+    async def _get_client(
+        self,
+        run_id: str,
+        action: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> TemporalRunClient:
         if self._client is not None:
             return self._client
         async with self._connect_lock:
@@ -321,12 +559,13 @@ class LazyTemporalRunClient:
             try:
                 temporal_client = await self._connector()
             except Exception as exc:
+                target_workflow_id = workflow_id or self.workflow_id(run_id)
                 raise ServiceUnavailableError(
                     "temporal_unavailable",
                     f"Could not {action} because Temporal is unavailable",
                     details={
                         "run_id": run_id,
-                        "workflow_id": self.workflow_id(run_id),
+                        "workflow_id": target_workflow_id,
                         "error_type": type(exc).__name__,
                         "reason": str(exc),
                     },

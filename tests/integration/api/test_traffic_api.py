@@ -14,7 +14,7 @@ import pytest
 from fastapi import FastAPI
 
 from riftx.api import APISettings, create_app
-from riftx.api.dependencies import get_traffic_metadata_service
+from riftx.api.dependencies import authorize_run_read, get_traffic_metadata_service
 from riftx.api.policy import RouteAuthorization, RouteEffect
 from riftx.application.errors import AuthorizationError, ResourceNotAccessibleError
 from riftx.application.traffic import (
@@ -24,12 +24,16 @@ from riftx.application.traffic import (
     TrafficExchangePage,
     TrafficStatusClass,
 )
-from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
+from riftx.domain import LocalPrincipal, OperatorCapability, RunKind, TrustProfile
 
 FIXTURES = Path(__file__).parents[2] / "fixtures"
 LIST_FIXTURE = json.loads((FIXTURES / "traffic_metadata_list.json").read_text())
 DETAIL_FIXTURE = json.loads((FIXTURES / "traffic_metadata_detail.json").read_text())
 LOCAL_TOKEN = "test-only-traffic-api-local-operator-token-0001"
+
+
+async def _allow_general_run_read() -> object:
+    return SimpleNamespace(kind=RunKind.GENERAL)
 
 
 @dataclass(slots=True)
@@ -108,6 +112,7 @@ async def _traffic_api(
     )
     app = create_app(control_plane=SimpleNamespace(settings=settings))  # type: ignore[arg-type]
     app.dependency_overrides[get_traffic_metadata_service] = lambda: service
+    app.dependency_overrides[authorize_run_read] = _allow_general_run_read
     headers = {"Authorization": f"Bearer {LOCAL_TOKEN}"} if authenticated else {}
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(

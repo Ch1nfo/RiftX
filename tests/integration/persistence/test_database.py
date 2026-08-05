@@ -10,6 +10,7 @@ from riftx.persistence.orm import EngagementRecord
 async def test_sqlite_round_trip_preserves_aware_utc_timestamps(tmp_path: Path) -> None:
     database_path = tmp_path / "riftx.db"
     database = Database(f"sqlite+aiosqlite:///{database_path}")
+    assert database.engine.sync_engine.hide_parameters is True
     await database.create_schema()
     created_at = datetime(2026, 7, 29, 4, 0, tzinfo=UTC)
 

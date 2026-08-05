@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +52,74 @@ class SQLAlchemyBrowserRepository:
         async with self._session_factory() as session:
             row = await session.get(BrowserSessionRecord, session_id)
         return _session_from_record(row) if row is not None else None
+
+    async def list_active_sessions(self, *, node_id: str) -> Sequence[BrowserSession]:
+        statement = (
+            select(BrowserSessionRecord)
+            .where(
+                BrowserSessionRecord.node_id == node_id,
+                BrowserSessionRecord.status.in_(
+                    (
+                        BrowserSessionStatus.CREATED.value,
+                        BrowserSessionStatus.STARTING.value,
+                        BrowserSessionStatus.ACTIVE.value,
+                        BrowserSessionStatus.LOST.value,
+                    )
+                ),
+            )
+            .order_by(BrowserSessionRecord.created_at, BrowserSessionRecord.id)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.scalars(statement)).all()
+        return [_session_from_record(row) for row in rows]
+
+    async def close_session_if_active(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        node_id: str,
+        closed_at: datetime,
+    ) -> tuple[BrowserSession, bool]:
+        """CAS a Runner-owned session to CLOSED without overwriting other metadata."""
+
+        async with self._session_factory() as session, session.begin():
+            row = await session.get(
+                BrowserSessionRecord,
+                session_id,
+                with_for_update=True,
+            )
+            if row is None:
+                raise EntityNotFoundError("BrowserSession", session_id)
+            if row.run_id != run_id or row.node_id != node_id:
+                raise RepositoryConflictError(
+                    "Browser session stop projection does not match its immutable owner"
+                )
+            current = _session_from_record(row)
+            if current.status is BrowserSessionStatus.CLOSED:
+                return current, False
+            if current.status not in {
+                BrowserSessionStatus.CREATED,
+                BrowserSessionStatus.STARTING,
+                BrowserSessionStatus.ACTIVE,
+                BrowserSessionStatus.LOST,
+            }:
+                raise RepositoryConflictError(
+                    f"Browser session {session_id!r} cannot be projected closed from "
+                    f"{current.status.value!r}"
+                )
+            row.status = BrowserSessionStatus.CLOSED.value
+            row.closed_at = closed_at
+            await session.flush()
+            return _session_from_record(row), True
+
+    async def get_run_id(self, session_id: str) -> str | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(BrowserSessionRecord.run_id).where(
+                    BrowserSessionRecord.id == session_id
+                )
+            )
 
     async def save_session(self, item: BrowserSession) -> BrowserSession:
         async with self._session_factory() as session, session.begin():

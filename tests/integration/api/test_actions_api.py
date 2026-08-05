@@ -15,8 +15,9 @@ from fastapi import FastAPI
 from sqlalchemy import event
 
 from riftx.api import APISettings, build_control_plane, create_app
+from riftx.api.dependencies import authorize_run_read
 from riftx.application.services import ActionApplicationService
-from riftx.domain import OperatorCapability, TrustProfile
+from riftx.domain import OperatorCapability, RunKind, TrustProfile
 from riftx.persistence import Database, SQLAlchemyActionReadRepository
 from riftx.persistence.orm import (
     AgentCycleRecord,
@@ -38,6 +39,10 @@ from riftx.security import LocalObjectAuthorizer
 
 NOW = datetime(2026, 8, 2, 9, tzinfo=UTC)
 LOCAL_TOKEN = "test-only-action-api-local-operator-token-0001"
+
+
+async def _allow_general_run_read() -> object:
+    return SimpleNamespace(kind=RunKind.GENERAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +110,7 @@ async def _action_api(
     )
     control_plane = SimpleNamespace(settings=settings, action_service=action_service)
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
+    app.dependency_overrides[authorize_run_read] = _allow_general_run_read
     headers = {"Authorization": f"Bearer {LOCAL_TOKEN}"}
     harness = _APIHarness(
         app=app,
@@ -138,6 +144,7 @@ async def _seed_foundation(database: Database, *run_ids: str) -> None:
         )
         session.add_all(
             RunRecord(
+                kind="general",
                 id=run_id,
                 engagement_id="engagement-action-api",
                 node_id=f"node-{run_id}",

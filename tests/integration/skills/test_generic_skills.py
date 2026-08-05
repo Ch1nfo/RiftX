@@ -70,6 +70,7 @@ async def make_context(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -181,6 +182,7 @@ async def test_registered_tool_parses_machine_output_and_falls_back_on_failure(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-adapter",
             node_id="node-1",
@@ -256,6 +258,7 @@ async def test_port_scan_skill_enforces_scope_and_builds_machine_output_args(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-port-scan",
             node_id="node-1",

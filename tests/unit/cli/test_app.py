@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -44,6 +45,30 @@ class FakeAPIClient:
             "workspace_path": payload.get("workspace_path", "/tmp/run-1"),
             "temporal_workflow_id": "workflow-run-1",
         }
+
+    def create_local_audit(self, source_path: str) -> dict[str, Any]:
+        self.calls.append(("create_local_audit", source_path))
+        return {"audit_id": "audit-1", "status": "draft"}
+
+    def start_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("start_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "queued"}
+
+    def get_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("get_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "completed"}
+
+    def list_local_audit_findings(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("list_local_audit_findings", audit_id))
+        return {"items": [], "total": 0, "limit": 100, "offset": 0}
+
+    def get_local_audit_report(self, audit_id: str, *, format: str = "json") -> str:
+        self.calls.append(("get_local_audit_report", (audit_id, format)))
+        return "# Local Audit\n" if format == "markdown" else '{"findings":[]}\n'
+
+    def cancel_local_audit(self, audit_id: str) -> dict[str, Any]:
+        self.calls.append(("cancel_local_audit", audit_id))
+        return {"audit_id": audit_id, "status": "cancelled"}
 
     def list_runs(self, **kwargs: object) -> dict[str, Any]:
         self.calls.append(("list_runs", kwargs))
@@ -410,6 +435,41 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "APIClient", FakeAPIClient)
 
 
+def test_local_audit_commands_delegate_to_minimal_api(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    scan = runner.invoke(cli_module.app, ["audit", str(project)])
+    status = runner.invoke(cli_module.app, ["audit", "status", "audit-1"])
+    findings = runner.invoke(cli_module.app, ["audit", "findings", "audit-1"])
+    report = runner.invoke(
+        cli_module.app,
+        ["audit", "report", "audit-1", "--format", "markdown"],
+    )
+    cancel = runner.invoke(cli_module.app, ["audit", "cancel", "audit-1"])
+
+    for result in (scan, status, findings, report, cancel):
+        assert result.exit_code == 0, result.output
+    assert "queued" in scan.output
+    assert "completed" in status.output
+    assert "Local Audit" in report.output
+    assert "cancelled" in cancel.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("create_local_audit", str(project.resolve())),
+        ("start_local_audit", "audit-1"),
+    ]
+    assert FakeAPIClient.instances[1].calls == [("get_local_audit", "audit-1")]
+    assert FakeAPIClient.instances[2].calls == [
+        ("list_local_audit_findings", "audit-1")
+    ]
+    assert FakeAPIClient.instances[3].calls == [
+        ("get_local_audit_report", ("audit-1", "markdown"))
+    ]
+    assert FakeAPIClient.instances[4].calls == [("cancel_local_audit", "audit-1")]
+
+
 def test_run_create_builds_api_payload() -> None:
     result = runner.invoke(
         cli_module.app,
@@ -452,6 +512,45 @@ def test_run_create_builds_api_payload() -> None:
             },
         )
     ]
+
+
+def test_run_list_forwards_status_and_kind_filters() -> None:
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            "list",
+            "--status",
+            "running",
+            "--kind",
+            "code_audit",
+            "--limit",
+            "25",
+            "--offset",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "list_runs",
+            {
+                "status": "running",
+                "kind": "code_audit",
+                "limit": 25,
+                "offset": 5,
+            },
+        )
+    ]
+
+
+def test_run_list_rejects_unknown_kind_before_contacting_api() -> None:
+    result = runner.invoke(cli_module.app, ["run", "list", "--kind", "audit"])
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert FakeAPIClient.instances == []
 
 
 def test_api_error_produces_nonzero_exit() -> None:
@@ -1319,6 +1418,65 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
             registration_token=bootstrap_token,
         )
     ]
+
+
+@pytest.mark.parametrize("option", ["--state-path", "--credential-path"])
+def test_runner_path_override_is_rejected_when_audit_sources_are_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+) -> None:
+    calls: list[cli_module.RunnerDaemonConfig] = []
+
+    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+        calls.append(config)
+
+    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    source = tmp_path / "source"
+    source.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "database": {
+                    "url": f"sqlite+aiosqlite:///{state / 'riftx.db'}",
+                },
+                "workspace": {"root": str(state / "workspaces")},
+                "runner": {
+                    "state_path": str(state / "runner"),
+                    "credential_path": str(state / "runner-credentials.json"),
+                },
+                "models": {"secrets_path": str(state / "models.json")},
+                "security": {"local_principal_path": str(state / "principal.json")},
+                "audit": {
+                    "source_roots": [str(source)],
+                    "snapshot_root": str(state / "snapshots"),
+                    "temp_root": str(state / "tmp"),
+                    "fix_root": str(state / "fixes"),
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "--config",
+            str(config_path),
+            "runner",
+            option,
+            str(source / "forbidden-storage"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "deployment-owned when Audit source roots are configured" in result.output
+    assert str(source) not in result.output
+    assert calls == []
 
 
 def test_web_command_prints_and_optionally_opens_url(

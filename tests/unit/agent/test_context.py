@@ -31,6 +31,7 @@ async def test_agent_context_contains_only_available_node_tools(tmp_path: Path) 
     registry = ToolRegistry(config, node_id="node-1")
     await registry.refresh()
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",

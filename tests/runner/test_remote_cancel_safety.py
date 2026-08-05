@@ -9,10 +9,19 @@ from riftx.domain import (
     Execution,
     ExecutionStatus,
     ExecutorType,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
+    runner_payload_digest,
 )
 from riftx.runner.paths import RunnerPaths
 from riftx.runner.remote import RemoteExecutionSupervisor
@@ -35,15 +44,47 @@ class FakeControlService:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
         target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
+        assert target is not None
+        command_id = f"command-{len(self.enqueued)}"
+        binding = RunnerEffectBinding(
+            id=f"binding-{len(self.enqueued)}",
+            run_id=run_id,
+            run_kind=RunKind.GENERAL,
+            node_id=node_id,
+            target=target,
+            origin=origin,
+            operation_family=operation_family,
+            execution_id=execution_id,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+        )
+        ownership = RunnerCommandOwnership(
+            command_id=command_id,
+            effect_binding=binding,
+            operation=kind,
+            operation_family=operation_family,
+            payload_digest=runner_payload_digest(payload),
+            output_contract=output_contract or RunnerOutputContract(),
+        )
         command = RunnerCommand(
-            id=f"command-{len(self.enqueued)}",
+            id=command_id,
             node_id=node_id,
             target=target,
             kind=kind,
             idempotency_key=idempotency_key,
+            ownership=ownership,
+            ownership_state=RunnerCommandOwnershipState.VERIFIED,
+            quarantine_reason="",
             payload=payload,
         )
         self.commands[command.id] = command

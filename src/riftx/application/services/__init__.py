@@ -5,14 +5,40 @@ from .approvals import (
     ApprovalApplicationService,
     ApprovalInterruption,
     ApprovalRequestRecorder,
-    ApprovalWorkflowClient,
     DecideApproval,
     RuntimeApprovalRequestRecorder,
 )
 from .artifacts import (
     ArtifactApplicationService,
+    ArtifactContentSlice,
     RegisterArtifact,
     RegisterArtifactContent,
+)
+from .audit_controls import AuditControlApplicationService, AuditRunStateProjector
+from .audit_preflight import (
+    AuditPreflightApplicationService,
+    AuditPreflightAvailabilityCheck,
+    AuditPreflightCreationResult,
+)
+from .audit_preflight_plan import (
+    AuditPreflightPlanApplicationService,
+    AuditPreflightPlanClock,
+    AuditPreflightPlanIdFactory,
+    AuditPreflightPlanIssuanceResult,
+)
+from .audit_preflight_runner import AuditPreflightRunnerService
+from .audit_start import AuditStartApplicationService, StartAudit
+from .audits import (
+    AuditApplicationService,
+    AuditContractBlueprint,
+    AuditControlAction,
+    AuditControlDisposition,
+    AuditControlEffect,
+    AuditControlPlan,
+    AuditDraftResult,
+    AuditRunStateMappingPolicy,
+    CreateAuditDraft,
+    CreateAuditDraftV2,
 )
 from .events import EventApplicationService
 from .executions import ExecutionApplicationService
@@ -45,17 +71,53 @@ from .runs import CreateEngagement, CreateRun, RunApplicationService, RunWorkflo
 from .terminals import CreateTerminal, TerminalApplicationService, TerminalView
 from .tools import RegisteredToolView, ToolApplicationService, ToolRegistryView
 from .traffic import TrafficMetadataApplicationService
+from .workflow_signals import (
+    WorkflowSignalBatchResult,
+    WorkflowSignalDefinitelyNotDelivered,
+    WorkflowSignalDispatcher,
+    WorkflowSignalObservation,
+    WorkflowSignalObservationState,
+    WorkflowSignalOutboxApplicationService,
+    WorkflowSignalOutcomeProbe,
+    WorkflowSignalOutcomeUnknown,
+    WorkflowSignalReconciler,
+    WorkflowSignalTerminallyRejected,
+    WorkflowSignalTransport,
+    WorkflowSignalTransportReceipt,
+)
 
 __all__ = [
     "ActionApplicationService",
     "ApprovalApplicationService",
     "ApprovalInterruption",
     "ApprovalRequestRecorder",
-    "ApprovalWorkflowClient",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
+    "ArtifactContentSlice",
+    "AuditApplicationService",
+    "AuditPreflightApplicationService",
+    "AuditPreflightAvailabilityCheck",
+    "AuditPreflightCreationResult",
+    "AuditPreflightPlanApplicationService",
+    "AuditPreflightPlanClock",
+    "AuditPreflightPlanIdFactory",
+    "AuditPreflightPlanIssuanceResult",
+    "AuditPreflightRunnerService",
+    "AuditStartApplicationService",
+    "AuditControlApplicationService",
+    "AuditContractBlueprint",
+    "AuditControlAction",
+    "AuditControlDisposition",
+    "AuditControlEffect",
+    "AuditControlPlan",
+    "AuditDraftResult",
+    "AuditRunStateMappingPolicy",
+    "AuditRunStateProjector",
     "CreateEngagement",
+    "CreateAuditDraft",
+    "CreateAuditDraftV2",
     "CreateRun",
+    "StartAudit",
     "DecideApproval",
     "EventApplicationService",
     "ExecutionApplicationService",
@@ -95,4 +157,16 @@ __all__ = [
     "TerminalApplicationService",
     "TerminalView",
     "TrafficMetadataApplicationService",
+    "WorkflowSignalBatchResult",
+    "WorkflowSignalDefinitelyNotDelivered",
+    "WorkflowSignalDispatcher",
+    "WorkflowSignalObservation",
+    "WorkflowSignalObservationState",
+    "WorkflowSignalOutcomeProbe",
+    "WorkflowSignalOutcomeUnknown",
+    "WorkflowSignalOutboxApplicationService",
+    "WorkflowSignalReconciler",
+    "WorkflowSignalTerminallyRejected",
+    "WorkflowSignalTransport",
+    "WorkflowSignalTransportReceipt",
 ]

@@ -25,6 +25,30 @@ class ExecutionLaunchRequest(BaseModel):
     # Local launches leave this unset. Remote admission binds the exact Runner
     # generation before dispatch so a cloned node ID cannot adopt the effect.
     runner_principal: RunnerPrincipal | None = None
+    # The Control Plane does not place these facts in the immutable command
+    # payload because the command ID is allocated during enqueue.  The Runner
+    # daemon injects the leased command's verified ownership immediately
+    # before local durable admission.  They are intentionally excluded from
+    # ``launch_fingerprint``: the fingerprint describes launch semantics,
+    # while these fields prove which immutable transport envelope admitted it.
+    runner_command_id: str | None = Field(default=None, min_length=1, max_length=64)
+    runner_effect_binding_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
+    runner_binding_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    runner_envelope_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     executor_type: ExecutorType
     cwd: Path
     argv: list[str] = Field(default_factory=list)
@@ -39,6 +63,7 @@ class ExecutionLaunchRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_executor_payload(self) -> ExecutionLaunchRequest:
+        _validate_runner_callback_binding(self)
         if not self.cwd.is_dir():
             raise ValueError(f"cwd does not exist or is not a directory: {self.cwd}")
         if self.executor_type is ExecutorType.PROCESS:
@@ -117,6 +142,24 @@ class TerminalLaunchRequest(BaseModel):
     run_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
     runner_principal: RunnerPrincipal | None = None
+    runner_command_id: str | None = Field(default=None, min_length=1, max_length=64)
+    runner_effect_binding_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
+    runner_binding_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    runner_envelope_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     cwd: Path
     argv: list[str]
     tool_id: str | None = Field(default=None, min_length=1)
@@ -129,6 +172,7 @@ class TerminalLaunchRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> TerminalLaunchRequest:
+        _validate_runner_callback_binding(self)
         if not self.cwd.is_dir():
             raise ValueError(f"cwd does not exist or is not a directory: {self.cwd}")
         if not self.argv or any(not item for item in self.argv):
@@ -176,6 +220,19 @@ class TerminalLaunchRequest(BaseModel):
 
 def _canonical_path(path: Path) -> str:
     return str(path.expanduser().resolve())
+
+
+def _validate_runner_callback_binding(
+    request: ExecutionLaunchRequest | TerminalLaunchRequest,
+) -> None:
+    binding = (
+        request.runner_command_id,
+        request.runner_effect_binding_id,
+        request.runner_binding_digest,
+        request.runner_envelope_digest,
+    )
+    if any(item is None for item in binding) and any(item is not None for item in binding):
+        raise ValueError("Runner callback binding must be all absent or all present")
 
 
 def _launch_fingerprint(kind: str, payload: dict[str, object]) -> str:

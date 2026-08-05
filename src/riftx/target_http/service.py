@@ -17,7 +17,8 @@ from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
-from riftx.domain import Run, RunStatus
+from riftx.application.services.runs import require_general_run_operation
+from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.execution import build_execution_key
 from riftx.persistence.repositories import SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import SQLAlchemyToolCallIntentRepository
@@ -156,6 +157,12 @@ class TargetHttpApplicationService:
         self._lock_users[request.execution_key] = self._lock_users.get(request.execution_key, 0) + 1
         async with lock:
             try:
+                # RunKind admission deliberately precedes idempotent replay.
+                # Generic execution results must never become an alternate
+                # read/mutation surface for Code Audit Runs.
+                run = require_general_run_operation(
+                    await self._require_run(submission.run_id)
+                )
                 existing = await self._requests.get_by_execution_key(request.execution_key)
                 if existing is not None:
                     if existing.request_hash != request.fingerprint:
@@ -164,7 +171,6 @@ class TargetHttpApplicationService:
                             "Target HTTP execution key was already used for another request",
                         )
                     return existing
-                run = await self._require_run(submission.run_id)
                 self._raise_if_run_blocks_effect(run)
                 if run.node_id != submission.node_id:
                     raise ApplicationConflictError(
@@ -248,6 +254,21 @@ class TargetHttpApplicationService:
                         submission,
                         exc.stop_outcome,
                     )
+                    raise
+                except ApplicationConflictError as exc:
+                    if exc.code == "run_kind_operation_unsupported":
+                        raise
+                    _, failed = await self._tool_calls.compare_and_set_status(
+                        intent.id,
+                        expected={ToolCallStatus.EXECUTING},
+                        target=ToolCallStatus.FAILED,
+                    )
+                    if failed:
+                        await self._event(
+                            submission.run_id,
+                            "target_http.request_failed",
+                            {"failure_recorded": True, "category": "request_failed"},
+                        )
                     raise
                 except Exception:
                     _, failed = await self._tool_calls.compare_and_set_status(
@@ -401,6 +422,7 @@ class TargetHttpApplicationService:
 
     async def _require_effect_allowed(self, run_id: str, intent_id: str) -> None:
         run = await self._require_run(run_id)
+        require_general_run_operation(run)
         if run.status in _EFFECT_BLOCKED_RUN_STATUSES:
             await self._cancel_intent_if_active(intent_id)
             raise self._run_effect_blocked_error(run)
@@ -541,6 +563,7 @@ class TargetHttpApplicationService:
                     name=f"target-http-{result.request_id}-request.json",
                     mime_type="application/json",
                     description="Immutable Target HTTP request",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                 ),
             )
             request_artifact_id = artifact.id
@@ -552,6 +575,7 @@ class TargetHttpApplicationService:
                     name=f"target-http-{result.request_id}-response.bin",
                     mime_type=result.content_type or "application/octet-stream",
                     description="Immutable Target HTTP response body",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
                 ),
             )
             response_artifact_id = artifact.id

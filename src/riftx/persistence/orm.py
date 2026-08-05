@@ -12,19 +12,213 @@ from sqlalchemy import (
     CheckConstraint,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    column,
 )
+from sqlalchemy.exc import CompileError
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.sql.functions import FunctionElement
 
 from .types import UTCDateTime
 
 ID_LENGTH = 64
+AUDIT_ID_LENGTH = 128
+AUDIT_TOKEN_LENGTH = 256
 TOOL_CALL_INTENT_ID_LENGTH = 128
 STATUS_LENGTH = 32
+
+
+def _lower_hex_digest_check(column: str) -> str:
+    """Return a portable CHECK expression for one lowercase SHA-256 digest."""
+
+    remainder = column
+    for character in "0123456789abcdef":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return f"length({column}) = 64 AND length({remainder}) = 0"
+
+
+def _optional_lower_hex_digest_check(column: str) -> str:
+    return f"{column} IS NULL OR ({_lower_hex_digest_check(column)})"
+
+
+def _git_object_id_check(column: str) -> str:
+    remainder = column
+    for character in "0123456789abcdef":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return f"length({column}) IN (40, 64) AND length({remainder}) = 0"
+
+
+def _optional_git_object_id_check(column: str) -> str:
+    return f"{column} IS NULL OR ({_git_object_id_check(column)})"
+
+
+def _canonical_uuid_check(column: str) -> str:
+    remainder = column
+    for character in "0123456789abcdef-":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return (
+        f"length({column}) = 36 AND substr({column}, 9, 1) = '-' "
+        f"AND substr({column}, 14, 1) = '-' AND substr({column}, 19, 1) = '-' "
+        f"AND substr({column}, 24, 1) = '-' "
+        f"AND length(replace({column}, '-', '')) = 32 "
+        f"AND length({remainder}) = 0 "
+        f"AND {column} <> '00000000-0000-0000-0000-000000000000'"
+    )
+
+
+def _default_artifact_storage_key(context: Any) -> str:
+    values = context.get_current_parameters()
+    return (
+        f"runs/{values['run_id']}/artifacts/{values['id']}/{values['name']}"
+    )
+
+
+def _default_artifact_access_class(context: Any) -> str:
+    if context.get_current_parameters().get("audit_id") is not None:
+        raise ValueError("Audit-owned Artifacts require an explicit access class")
+    return "public_export"
+
+
+def _default_artifact_ingest_provenance(context: Any) -> dict[str, Any]:
+    if context.get_current_parameters().get("audit_id") is not None:
+        raise ValueError("Audit-owned Artifacts require explicit ingest provenance")
+    return {
+        "schema_version": "riftx.artifact-ingest-provenance/v1",
+        "method": "legacy_migrated",
+        "producer_node_id": None,
+        "producer_execution_id": None,
+    }
+
+
+class _ArtifactStorageComponentsAreSafe(FunctionElement):
+    """Dialect-portable storage component predicate used by Artifact DDL."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+class _ArtifactMimeTypeIsSafe(FunctionElement):
+    """Dialect-portable printable-ASCII HTTP media type predicate."""
+
+    type = Boolean()
+    inherit_cache = True
+
+
+def _compiled_artifact_columns(
+    element: _ArtifactStorageComponentsAreSafe | _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> tuple[str, ...]:
+    return tuple(compiler.process(clause, **kwargs) for clause in element.clauses)
+
+
+@compiles(_ArtifactStorageComponentsAreSafe, "sqlite")
+def _compile_safe_artifact_components_sqlite(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    def safe(component: str, max_length: int) -> str:
+        return (
+            f"length({component}) BETWEEN 1 AND {max_length} "
+            f"AND {component} NOT IN ('.', '..') "
+            f"AND instr({component}, '/') = 0 AND instr({component}, '\\') = 0 "
+            f"AND instr({component}, char(0)) = 0 "
+            f"AND {component} NOT GLOB '*[^ -~]*'"
+        )
+
+    return " AND ".join(
+        f"({safe(component, max_length)})"
+        for component, max_length in zip(
+            _compiled_artifact_columns(element, compiler, **kwargs),
+            (64, 64, 255),
+            strict=True,
+        )
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe, "sqlite")
+def _compile_safe_artifact_mime_type_sqlite(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    (mime_type,) = _compiled_artifact_columns(element, compiler, **kwargs)
+    return (
+        f"length({mime_type}) BETWEEN 1 AND 255 "
+        f"AND {mime_type} = trim({mime_type}) "
+        f"AND instr({mime_type}, char(0)) = 0 "
+        f"AND {mime_type} NOT GLOB '*[^ -~]*'"
+    )
+
+
+@compiles(_ArtifactStorageComponentsAreSafe, "postgresql")
+def _compile_safe_artifact_components_postgresql(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    def safe(component: str, max_length: int) -> str:
+        return (
+            f"length({component}) BETWEEN 1 AND {max_length} "
+            f"AND {component} NOT IN ('.', '..') "
+            f"AND position('/' in {component}) = 0 "
+            f"AND position(chr(92) in {component}) = 0 "
+            f"AND {component} !~ '[^ -~]'"
+        )
+
+    return " AND ".join(
+        f"({safe(component, max_length)})"
+        for component, max_length in zip(
+            _compiled_artifact_columns(element, compiler, **kwargs),
+            (64, 64, 255),
+            strict=True,
+        )
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe, "postgresql")
+def _compile_safe_artifact_mime_type_postgresql(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    (mime_type,) = _compiled_artifact_columns(element, compiler, **kwargs)
+    return (
+        f"length({mime_type}) BETWEEN 1 AND 255 "
+        f"AND {mime_type} = btrim({mime_type}) "
+        f"AND {mime_type} !~ '[^ -~]'"
+    )
+
+
+@compiles(_ArtifactStorageComponentsAreSafe)
+def _compile_safe_artifact_components_default(
+    element: _ArtifactStorageComponentsAreSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    del element, compiler, kwargs
+    raise CompileError(
+        "Artifact storage safety checks are unsupported for this database dialect"
+    )
+
+
+@compiles(_ArtifactMimeTypeIsSafe)
+def _compile_safe_artifact_mime_type_default(
+    element: _ArtifactMimeTypeIsSafe,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    del element, compiler, kwargs
+    raise CompileError(
+        "Artifact MIME safety checks are unsupported for this database dialect"
+    )
 
 
 class Base(DeclarativeBase):
@@ -42,13 +236,140 @@ class EngagementRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class LocalAuditJobRecord(Base):
+    __tablename__ = "local_audit_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'queued', 'scanning', 'completed', 'failed', 'cancelled')",
+            name="ck_local_audit_jobs_status",
+        ),
+        CheckConstraint(
+            "state_version >= 1",
+            name="ck_local_audit_jobs_state_version",
+        ),
+        CheckConstraint(
+            "total_files >= 0 AND scanned_files >= 0 AND finding_count >= 0 "
+            "AND scanned_files <= total_files",
+            name="ck_local_audit_jobs_nonnegative_counts",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("source_identity_digest"),
+            name="ck_local_audit_jobs_source_identity_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("snapshot_digest"),
+            name="ck_local_audit_jobs_snapshot_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("manifest_digest"),
+            name="ck_local_audit_jobs_manifest_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("inventory_digest"),
+            name="ck_local_audit_jobs_inventory_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("detector_run_digest"),
+            name="ck_local_audit_jobs_detector_run_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("report_digest"),
+            name="ck_local_audit_jobs_report_digest",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND source_identity_digest IS NOT NULL "
+            "AND snapshot_digest IS NOT NULL AND manifest_digest IS NOT NULL "
+            "AND inventory_digest IS NOT NULL AND detector_run_digest IS NOT NULL "
+            "AND report_digest IS NOT NULL AND json_report IS NOT NULL "
+            "AND markdown_report IS NOT NULL AND scanned_files = total_files "
+            "AND failure_code IS NULL AND finished_at IS NOT NULL) OR status <> 'completed'",
+            name="ck_local_audit_jobs_completed_result",
+        ),
+        CheckConstraint(
+            "(status = 'failed' AND failure_code IS NOT NULL AND finished_at IS NOT NULL) "
+            "OR status <> 'failed'",
+            name="ck_local_audit_jobs_failed_result",
+        ),
+        CheckConstraint(
+            "(status = 'cancelled' AND finished_at IS NOT NULL) OR status <> 'cancelled'",
+            name="ck_local_audit_jobs_cancelled_result",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_local_audit_jobs_timestamp_order",
+        ),
+        Index(
+            "ix_local_audit_jobs_status_created_id",
+            "status",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    include_paths_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    exclude_paths_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    failure_code: Mapped[str | None] = mapped_column(String(128))
+    source_identity_digest: Mapped[str | None] = mapped_column(String(64))
+    snapshot_digest: Mapped[str | None] = mapped_column(String(64))
+    manifest_digest: Mapped[str | None] = mapped_column(String(64))
+    inventory_digest: Mapped[str | None] = mapped_column(String(64))
+    detector_run_digest: Mapped[str | None] = mapped_column(String(64))
+    report_digest: Mapped[str | None] = mapped_column(String(64))
+    total_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanned_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    json_report: Mapped[str | None] = mapped_column(Text)
+    markdown_report: Mapped[str | None] = mapped_column(Text)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class RunRecord(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('general', 'code_audit')",
+            name="ck_runs_kind",
+        ),
+        Index(
+            "uq_runs_id_engagement_kind",
+            "id",
+            "engagement_id",
+            "kind",
+            unique=True,
+        ),
+        Index(
+            "uq_runs_id_engagement_kind_node",
+            "id",
+            "engagement_id",
+            "kind",
+            "node_id",
+            unique=True,
+        ),
+        Index(
+            "uq_runs_id_status",
+            "id",
+            "status",
+            unique=True,
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     engagement_id: Mapped[str] = mapped_column(
         ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    kind: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     success_criteria_json: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -66,6 +387,1267 @@ class RunRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditProjectRecord(Base):
+    __tablename__ = "audit_projects"
+    __table_args__ = (
+        CheckConstraint(
+            "vcs_kind IN ('directory', 'git')",
+            name="ck_audit_projects_vcs_kind",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("repository_identity_digest"),
+            name="ck_audit_projects_repository_digest",
+        ),
+        CheckConstraint("state_version >= 1", name="ck_audit_projects_state_version"),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_audit_projects_timestamp_order",
+        ),
+        UniqueConstraint(
+            "repository_identity_digest",
+            name="uq_audit_projects_repository_digest",
+        ),
+        UniqueConstraint(
+            "id",
+            "engagement_id",
+            name="uq_audit_projects_id_engagement",
+        ),
+        Index(
+            "ix_audit_projects_engagement_created_id",
+            "engagement_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(
+        ForeignKey("engagements.id", ondelete="RESTRICT"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    vcs_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    repository_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    default_branch: Mapped[str | None] = mapped_column(String(1024))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SourceSnapshotRecord(Base):
+    __tablename__ = "source_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["parent_snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_source_snapshots_parent_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "source_kind IN ('directory', 'revision', 'working_tree')",
+            name="ck_source_snapshots_source_kind",
+        ),
+        CheckConstraint(
+            "(source_kind IN ('directory', 'revision') "
+            "AND working_tree_digest IS NULL) OR "
+            "(source_kind = 'working_tree' AND working_tree_digest IS NOT NULL)",
+            name="ck_source_snapshots_working_tree_digest",
+        ),
+        CheckConstraint(
+            "(parent_snapshot_id IS NULL AND base_tree_digest IS NULL "
+            "AND patch_digest IS NULL) OR "
+            "(parent_snapshot_id IS NOT NULL AND base_tree_digest IS NOT NULL "
+            "AND patch_digest IS NOT NULL)",
+            name="ck_source_snapshots_retest_fields",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("base_tree_digest"),
+            name="ck_source_snapshots_base_tree_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("patch_digest"),
+            name="ck_source_snapshots_patch_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("working_tree_digest"),
+            name="ck_source_snapshots_working_tree_sha256",
+        ),
+        CheckConstraint(
+            "(source_kind = 'directory' AND commit_sha IS NULL) OR "
+            "(source_kind IN ('revision', 'working_tree') AND commit_sha IS NOT NULL)",
+            name="ck_source_snapshots_commit_presence",
+        ),
+        CheckConstraint(
+            _optional_git_object_id_check("commit_sha"),
+            name="ck_source_snapshots_commit_sha",
+        ),
+        CheckConstraint(
+            _optional_git_object_id_check("base_commit_sha"),
+            name="ck_source_snapshots_base_commit_sha",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("tree_digest"),
+            name="ck_source_snapshots_tree_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("capture_policy_digest"),
+            name="ck_source_snapshots_capture_policy_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("snapshot_digest"),
+            name="ck_source_snapshots_snapshot_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("manifest_digest"),
+            name="ck_source_snapshots_manifest_digest",
+        ),
+        CheckConstraint(
+            "file_count >= 0 AND total_bytes >= 0",
+            name="ck_source_snapshots_nonnegative_counts",
+        ),
+        CheckConstraint(
+            "sealed_at >= created_at",
+            name="ck_source_snapshots_timestamp_order",
+        ),
+        CheckConstraint(
+            "parent_snapshot_id IS NULL OR parent_snapshot_id <> id",
+            name="ck_source_snapshots_distinct_parent",
+        ),
+        CheckConstraint(
+            "length(content_storage_key) BETWEEN 1 AND 4096 AND "
+            "length(manifest_storage_key) BETWEEN 1 AND 4096",
+            name="ck_source_snapshots_storage_keys",
+        ),
+        UniqueConstraint(
+            "id",
+            "project_id",
+            name="uq_source_snapshots_id_project",
+        ),
+        UniqueConstraint(
+            "project_id",
+            "snapshot_digest",
+            name="uq_source_snapshots_project_digest",
+        ),
+        Index(
+            "ix_source_snapshots_project_created_id",
+            "project_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_source_snapshots_parent",
+            "parent_snapshot_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("audit_projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_snapshot_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    base_tree_digest: Mapped[str | None] = mapped_column(String(64))
+    patch_digest: Mapped[str | None] = mapped_column(String(64))
+    commit_sha: Mapped[str | None] = mapped_column(String(128))
+    base_commit_sha: Mapped[str | None] = mapped_column(String(128))
+    working_tree_digest: Mapped[str | None] = mapped_column(String(64))
+    tree_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    capture_policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    materializer_schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_store_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest_storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    sealed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SnapshotReferenceRecord(Base):
+    __tablename__ = "snapshot_references"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_snapshot_references_audit_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_snapshot_references_snapshot_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "schema_version = 'riftx.snapshot-reference/v1'",
+            name="ck_snapshot_references_schema_version",
+        ),
+        CheckConstraint(
+            "role IN ('primary', 'base', 'baseline', 'finding_evidence', "
+            "'retest_parent', 'distribution_revision')",
+            name="ck_snapshot_references_role",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("reference_digest"),
+            name="ck_snapshot_references_digest",
+        ),
+        Index(
+            "ix_snapshot_references_snapshot_project_created",
+            "snapshot_id",
+            "project_id",
+            "created_at",
+        ),
+        Index(
+            "ix_snapshot_references_audit_created",
+            "audit_id",
+            "created_at",
+        ),
+    )
+
+    audit_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        primary_key=True,
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    reference_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AuditContractRecord(Base):
+    __tablename__ = "audit_contracts"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version IN ('riftx.audit-contract/v1', 'riftx.audit-contract/v2')",
+            name="ck_audit_contracts_schema_version",
+        ),
+        CheckConstraint(
+            "length(canonical_contract_json) BETWEEN 2 AND 262144",
+            name="ck_audit_contracts_canonical_size",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("contract_digest"),
+            name="ck_audit_contracts_contract_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("source_target_digest"),
+            name="ck_audit_contracts_source_target_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("source_ingest_backend_digest"),
+            name="ck_audit_contracts_source_backend_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("source_prepare_proof_digest"),
+            name="ck_audit_contracts_source_proof_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("snapshot_hydration_policy_digest"),
+            name="ck_audit_contracts_hydration_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_contracts_preflight_plan_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("security_context_bundle_digest"),
+            name="ck_audit_contracts_security_context_digest",
+        ),
+        CheckConstraint(
+            "(schema_version = 'riftx.audit-contract/v1' "
+            "AND selected_node_id IS NOT NULL AND required_backend_id IS NOT NULL "
+            "AND snapshot_hydration_policy_digest IS NOT NULL "
+            "AND preflight_plan_id IS NULL AND preflight_plan_digest IS NULL "
+            "AND security_context_bundle_id IS NULL "
+            "AND security_context_bundle_digest IS NULL) OR "
+            "(schema_version = 'riftx.audit-contract/v2' "
+            "AND selected_node_id IS NULL AND required_backend_id IS NULL "
+            "AND snapshot_hydration_policy_digest IS NULL "
+            "AND preflight_plan_id IS NOT NULL AND preflight_plan_digest IS NOT NULL "
+            "AND security_context_bundle_id = 'riftx.audit-empty-security-context/v1' "
+            "AND security_context_bundle_digest IS NOT NULL)",
+            name="ck_audit_contracts_version_shape",
+        ),
+        CheckConstraint(
+            "sealed_at IS NULL OR sealed_at >= created_at",
+            name="ck_audit_contracts_timestamp_order",
+        ),
+        CheckConstraint(
+            "state_version >= 1",
+            name="ck_audit_contracts_state_version",
+        ),
+        UniqueConstraint("audit_id", name="uq_audit_contracts_audit"),
+        UniqueConstraint(
+            "contract_id",
+            "audit_id",
+            "contract_digest",
+            name="uq_audit_contracts_binding",
+        ),
+        Index("ix_audit_contracts_digest", "contract_digest"),
+    )
+
+    contract_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_contract_json: Mapped[str] = mapped_column(Text, nullable=False)
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_target_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    source_ingest_backend_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_prepare_proof_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    selected_node_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    required_backend_id: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    snapshot_hydration_policy_digest: Mapped[str | None] = mapped_column(String(64))
+    preflight_plan_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    preflight_plan_digest: Mapped[str | None] = mapped_column(String(64))
+    security_context_bundle_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    security_context_bundle_digest: Mapped[str | None] = mapped_column(String(64))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    sealed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditScanRecord(Base):
+    __tablename__ = "audit_scans"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "engagement_id", "run_kind", "selected_node_id"],
+            ["runs.id", "runs.engagement_id", "runs.kind", "runs.node_id"],
+            name="fk_audit_scans_run_owner_kind_node",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "run_terminal_status"],
+            ["runs.id", "runs.status"],
+            name="fk_audit_scans_run_terminal_status",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "engagement_id"],
+            ["audit_projects.id", "audit_projects.engagement_id"],
+            name="fk_audit_scans_project_owner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["contract_id", "id", "contract_digest"],
+            [
+                "audit_contracts.contract_id",
+                "audit_contracts.audit_id",
+                "audit_contracts.contract_digest",
+            ],
+            name="fk_audit_scans_contract_binding",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_audit_scans_snapshot_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["base_snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_audit_scans_base_snapshot_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["baseline_audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_audit_scans_baseline_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["parent_audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_audit_scans_parent_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "run_kind = 'code_audit'",
+            name="ck_audit_scans_run_kind",
+        ),
+        CheckConstraint(
+            "purpose IN ('primary', 'validation_followup', 'retest')",
+            name="ck_audit_scans_purpose",
+        ),
+        CheckConstraint(
+            "mode IN ('standard', 'deep', 'diff')",
+            name="ck_audit_scans_mode",
+        ),
+        CheckConstraint(
+            "analysis_profile IN ('deterministic', 'hybrid')",
+            name="ck_audit_scans_analysis_profile",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN ('draft', 'queued', 'preflighting', 'snapshotting', "
+            "'running', 'waiting_approval', 'pausing', 'paused', 'finalizing', "
+            "'cancelling', 'failing', 'cleaning', 'sealing_core', 'reporting', "
+            "'packaging', 'completed', 'completed_partial', 'failed', 'cancelled')",
+            name="ck_audit_scans_lifecycle_status",
+        ),
+        CheckConstraint(
+            "current_phase IN ('authorize_and_freeze', 'map_scope', "
+            "'deterministic_probe', 'threat_model', 'agent_hunt', 'reconcile', "
+            "'prove', 'compose_risk', 'compare_baseline', 'validate_closure', "
+            "'cleanup', 'seal_core', 'generate_reports', 'package_and_publish')",
+            name="ck_audit_scans_current_phase",
+        ),
+        CheckConstraint(
+            "terminal_outcome IS NULL OR terminal_outcome IN "
+            "('complete', 'partial', 'failed', 'cancelled')",
+            name="ck_audit_scans_terminal_outcome",
+        ),
+        CheckConstraint(
+            "closure_status IS NULL OR closure_status IN "
+            "('complete_under_declared_scope', 'complete_with_policy_exclusions', "
+            "'partial_capability', 'partial_budget', 'failed', 'cancelled')",
+            name="ck_audit_scans_closure_status",
+        ),
+        CheckConstraint(
+            "publication_status IN ('not_started', 'sealing_core', 'report_pending', "
+            "'reporting', 'packaging', 'published', 'seal_failed', 'report_failed', "
+            "'package_failed')",
+            name="ck_audit_scans_publication_status",
+        ),
+        CheckConstraint(
+            "run_terminal_status IS NULL OR run_terminal_status IN "
+            "('completed', 'failed', 'cancelled')",
+            name="ck_audit_scans_run_terminal_status",
+        ),
+        CheckConstraint(
+            "mode <> 'deep' OR analysis_profile = 'hybrid'",
+            name="ck_audit_scans_deep_profile",
+        ),
+        CheckConstraint(
+            "(purpose = 'primary' AND parent_audit_id IS NULL) OR "
+            "(purpose <> 'primary' AND parent_audit_id IS NOT NULL "
+            "AND parent_audit_id <> id)",
+            name="ck_audit_scans_parent_purpose",
+        ),
+        CheckConstraint(
+            "baseline_audit_id IS NULL OR baseline_audit_id <> id",
+            name="ck_audit_scans_distinct_baseline",
+        ),
+        CheckConstraint(
+            "(mode = 'diff' AND ((snapshot_id IS NULL AND base_snapshot_id IS NULL) OR "
+            "(snapshot_id IS NOT NULL AND base_snapshot_id IS NOT NULL "
+            "AND snapshot_id <> base_snapshot_id))) OR "
+            "(mode <> 'diff' AND base_snapshot_id IS NULL)",
+            name="ck_audit_scans_snapshot_mode",
+        ),
+        CheckConstraint(
+            "terminal_outcome NOT IN ('complete', 'partial') OR snapshot_id IS NOT NULL",
+            name="ck_audit_scans_outcome_snapshot",
+        ),
+        CheckConstraint(
+            "(cleanup_proof_digest IS NULL AND run_terminal_status IS NULL) OR "
+            "(cleanup_proof_digest IS NOT NULL AND run_terminal_status IS NOT NULL)",
+            name="ck_audit_scans_cleanup_pair",
+        ),
+        CheckConstraint(
+            "cleanup_proof_digest IS NULL OR "
+            "(terminal_outcome IN ('complete', 'partial') "
+            "AND run_terminal_status = 'completed') OR "
+            "(terminal_outcome = 'failed' AND run_terminal_status = 'failed') OR "
+            "(terminal_outcome = 'cancelled' AND run_terminal_status = 'cancelled')",
+            name="ck_audit_scans_cleanup_outcome",
+        ),
+        CheckConstraint(
+            "closure_status IS NULL OR cleanup_proof_digest IS NOT NULL",
+            name="ck_audit_scans_closure_cleanup",
+        ),
+        CheckConstraint(
+            "(core_seal_root IS NULL AND sealed_at IS NULL) OR "
+            "(core_seal_root IS NOT NULL AND sealed_at IS NOT NULL)",
+            name="ck_audit_scans_core_seal_pair",
+        ),
+        CheckConstraint(
+            "(publication_status IN ('not_started', 'sealing_core', 'seal_failed') "
+            "AND core_seal_root IS NULL) OR "
+            "(publication_status NOT IN ('not_started', 'sealing_core', 'seal_failed') "
+            "AND core_seal_root IS NOT NULL)",
+            name="ck_audit_scans_publication_core",
+        ),
+        CheckConstraint(
+            "(initial_distribution_revision_id IS NULL "
+            "AND latest_distribution_revision_id IS NULL "
+            "AND publication_finished_at IS NULL) OR "
+            "(initial_distribution_revision_id IS NOT NULL "
+            "AND latest_distribution_revision_id IS NOT NULL "
+            "AND publication_finished_at IS NOT NULL)",
+            name="ck_audit_scans_distribution_pair",
+        ),
+        CheckConstraint(
+            "(publication_status = 'published' "
+            "AND initial_distribution_revision_id IS NOT NULL) OR "
+            "(publication_status <> 'published' "
+            "AND initial_distribution_revision_id IS NULL)",
+            name="ck_audit_scans_published_revision",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("cleanup_proof_digest"),
+            name="ck_audit_scans_cleanup_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("core_seal_root"),
+            name="ck_audit_scans_core_seal_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("policy_digest"),
+            name="ck_audit_scans_policy_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("budget_digest"),
+            name="ck_audit_scans_budget_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("config_digest"),
+            name="ck_audit_scans_config_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("contract_digest"),
+            name="ck_audit_scans_contract_digest",
+        ),
+        CheckConstraint("state_version >= 1", name="ck_audit_scans_state_version"),
+        CheckConstraint(
+            "started_at IS NULL OR started_at >= created_at",
+            name="ck_audit_scans_started_order",
+        ),
+        CheckConstraint(
+            "analysis_finished_at IS NULL OR analysis_finished_at >= created_at",
+            name="ck_audit_scans_analysis_order",
+        ),
+        CheckConstraint(
+            "analysis_finished_at IS NULL OR started_at IS NULL "
+            "OR analysis_finished_at >= started_at",
+            name="ck_audit_scans_analysis_started_order",
+        ),
+        CheckConstraint(
+            "sealed_at IS NULL OR analysis_finished_at IS NULL "
+            "OR sealed_at >= analysis_finished_at",
+            name="ck_audit_scans_sealed_order",
+        ),
+        CheckConstraint(
+            "publication_finished_at IS NULL OR sealed_at IS NULL "
+            "OR publication_finished_at >= sealed_at",
+            name="ck_audit_scans_publication_order",
+        ),
+        UniqueConstraint("run_id", name="uq_audit_scans_run"),
+        UniqueConstraint(
+            "temporal_workflow_id",
+            name="uq_audit_scans_temporal_workflow",
+        ),
+        UniqueConstraint(
+            "id",
+            "project_id",
+            name="uq_audit_scans_id_project",
+        ),
+        UniqueConstraint(
+            "id",
+            "run_id",
+            "contract_digest",
+            "temporal_workflow_id",
+            name="uq_audit_scans_start_binding",
+        ),
+        Index(
+            "ix_audit_scans_project_lifecycle_created_id",
+            "project_id",
+            "lifecycle_status",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_audit_scans_lifecycle_phase_created_id",
+            "lifecycle_status",
+            "current_phase",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_audit_scans_publication_created_id",
+            "publication_status",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    engagement_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    run_kind: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    contract_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    snapshot_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    base_snapshot_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    baseline_audit_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_audit_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    analysis_profile: Mapped[str] = mapped_column(String(32), nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    terminal_outcome: Mapped[str | None] = mapped_column(String(32))
+    cleanup_proof_digest: Mapped[str | None] = mapped_column(String(64))
+    run_terminal_status: Mapped[str | None] = mapped_column(String(32))
+    closure_status: Mapped[str | None] = mapped_column(String(64))
+    publication_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    core_seal_root: Mapped[str | None] = mapped_column(String(64))
+    initial_distribution_revision_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    latest_distribution_revision_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    model_profile: Mapped[str | None] = mapped_column(String(255))
+    selected_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    required_backend_id: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    policy_digest: Mapped[str | None] = mapped_column(String(64))
+    budget_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_digest: Mapped[str | None] = mapped_column(String(64))
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    analysis_finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    publication_finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sealed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditClientRequestRecord(Base):
+    __tablename__ = "audit_client_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "run_id", "contract_digest", "temporal_workflow_id"],
+            [
+                "audit_scans.id",
+                "audit_scans.run_id",
+                "audit_scans.contract_digest",
+                "audit_scans.temporal_workflow_id",
+            ],
+            name="fk_audit_client_requests_scan_start_binding",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_audit_client_requests_scan_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "engagement_id"],
+            ["audit_projects.id", "audit_projects.engagement_id"],
+            name="fk_audit_client_requests_project_owner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["contract_id", "audit_id", "contract_digest"],
+            [
+                "audit_contracts.contract_id",
+                "audit_contracts.audit_id",
+                "audit_contracts.contract_digest",
+            ],
+            name="fk_audit_client_requests_contract_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            _canonical_uuid_check("client_request_id"),
+            name="ck_audit_client_requests_canonical_id",
+        ),
+        CheckConstraint(
+            "operation = 'create_draft'",
+            name="ck_audit_client_requests_operation",
+        ),
+        CheckConstraint(
+            "request_schema_version IN ('riftx.audit-create-draft-request/v1', "
+            "'riftx.audit-create-draft-request/v2')",
+            name="ck_audit_client_requests_schema",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("request_digest"),
+            name="ck_audit_client_requests_request_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("contract_digest"),
+            name="ck_audit_client_requests_contract_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_client_requests_preflight_plan_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("security_context_digest"),
+            name="ck_audit_client_requests_security_context_digest",
+        ),
+        CheckConstraint(
+            "(request_schema_version = 'riftx.audit-create-draft-request/v1' "
+            "AND preflight_plan_id IS NULL AND preflight_plan_digest IS NULL "
+            "AND security_context_id IS NULL AND security_context_digest IS NULL "
+            "AND contract_stage IS NULL) OR "
+            "(request_schema_version = 'riftx.audit-create-draft-request/v2' "
+            "AND preflight_plan_id IS NOT NULL AND preflight_plan_digest IS NOT NULL "
+            "AND security_context_id = 'riftx.audit-empty-security-context/v1' "
+            "AND security_context_digest IS NOT NULL "
+            "AND contract_stage = 'preflight_bound_draft')",
+            name="ck_audit_client_requests_version_shape",
+        ),
+        UniqueConstraint("audit_id", name="uq_audit_client_requests_audit"),
+        UniqueConstraint("run_id", name="uq_audit_client_requests_run"),
+        UniqueConstraint("contract_id", name="uq_audit_client_requests_contract"),
+        Index(
+            "ix_audit_client_requests_project_created_id",
+            "project_id",
+            "created_at",
+            "client_request_id",
+        ),
+    )
+
+    client_request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    preflight_plan_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    preflight_plan_digest: Mapped[str | None] = mapped_column(String(64))
+    security_context_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    security_context_digest: Mapped[str | None] = mapped_column(String(64))
+    contract_stage: Mapped[str | None] = mapped_column(String(64))
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    engagement_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    contract_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    temporal_workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AuditSecurityContextBindingRecord(Base):
+    __tablename__ = "audit_security_context_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id"],
+            ["audit_scans.id"],
+            name="fk_audit_security_context_bindings_audit",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "preflight_plan_id",
+                "preflight_plan_digest",
+                "operator_principal_id",
+                "authorization_scope_digest",
+                "security_context_bundle_id",
+                "security_context_bundle_digest",
+                "audit_id",
+            ],
+            [
+                "audit_preflight_plans.id",
+                "audit_preflight_plans.plan_digest",
+                "audit_preflight_plans.operator_principal_id",
+                "audit_preflight_plans.authorization_scope_digest",
+                "audit_preflight_plans.security_context_id",
+                "audit_preflight_plans.security_context_digest",
+                "audit_preflight_plans.reserved_audit_id",
+            ],
+            name="fk_audit_security_context_bindings_plan",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "schema_version = 'riftx.audit-security-context-binding/v2'",
+            name="ck_audit_security_context_bindings_schema",
+        ),
+        CheckConstraint(
+            "security_context_bundle_id = 'riftx.audit-empty-security-context/v1'",
+            name="ck_audit_security_context_bindings_empty_context",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("preflight_plan_digest"),
+            name="ck_audit_security_context_bindings_plan_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("authorization_scope_digest"),
+            name="ck_audit_security_context_bindings_authorization_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("security_context_bundle_digest"),
+            name="ck_audit_security_context_bindings_context_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("binding_digest"),
+            name="ck_audit_security_context_bindings_binding_digest",
+        ),
+        UniqueConstraint(
+            "preflight_plan_id",
+            name="uq_audit_security_context_bindings_plan",
+        ),
+    )
+
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    preflight_plan_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    preflight_plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operator_principal_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    authorization_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    security_context_bundle_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH), nullable=False
+    )
+    security_context_bundle_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AuditStartIntentRecord(Base):
+    __tablename__ = "audit_start_intents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "run_id", "contract_digest", "workflow_id"],
+            [
+                "audit_scans.id",
+                "audit_scans.run_id",
+                "audit_scans.contract_digest",
+                "audit_scans.temporal_workflow_id",
+            ],
+            name="fk_audit_start_intents_scan_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'started', 'retryable', "
+            "'outcome_unknown', 'cancelled')",
+            name="ck_audit_start_intents_status",
+        ),
+        CheckConstraint(
+            "attempt >= 0 AND state_version >= 1",
+            name="ck_audit_start_intents_counters",
+        ),
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_expires_at IS NULL) OR "
+            "(lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="ck_audit_start_intents_lease_pair",
+        ),
+        CheckConstraint(
+            "(status = 'claimed' AND lease_owner IS NOT NULL) OR "
+            "(status <> 'claimed' AND lease_owner IS NULL)",
+            name="ck_audit_start_intents_claim_lease",
+        ),
+        CheckConstraint(
+            "(status = 'retryable' AND next_attempt_at IS NOT NULL) OR "
+            "status IN ('pending', 'outcome_unknown') OR "
+            "(status NOT IN ('retryable', 'pending', 'outcome_unknown') "
+            "AND next_attempt_at IS NULL)",
+            name="ck_audit_start_intents_retry_time",
+        ),
+        CheckConstraint(
+            "(status = 'started' AND started_at IS NOT NULL) OR "
+            "(status <> 'started' AND started_at IS NULL)",
+            name="ck_audit_start_intents_started_time",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("contract_digest"),
+            name="ck_audit_start_intents_contract_digest",
+        ),
+        CheckConstraint(
+            "status NOT IN ('claimed', 'started', 'retryable', 'outcome_unknown') OR attempt >= 1",
+            name="ck_audit_start_intents_attempted_status",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_audit_start_intents_timestamp_order",
+        ),
+        CheckConstraint(
+            "lease_expires_at IS NULL OR lease_expires_at > updated_at",
+            name="ck_audit_start_intents_lease_order",
+        ),
+        CheckConstraint(
+            "next_attempt_at IS NULL OR next_attempt_at >= updated_at",
+            name="ck_audit_start_intents_retry_order",
+        ),
+        CheckConstraint(
+            "started_at IS NULL OR (started_at >= created_at AND started_at <= updated_at)",
+            name="ck_audit_start_intents_started_order",
+        ),
+        UniqueConstraint("audit_id", name="uq_audit_start_intents_audit"),
+        UniqueConstraint(
+            "start_request_id",
+            name="uq_audit_start_intents_start_request",
+        ),
+        UniqueConstraint("workflow_id", name="uq_audit_start_intents_workflow"),
+        Index(
+            "ix_audit_start_intents_dispatch",
+            "status",
+            "next_attempt_at",
+            "lease_expires_at",
+            "created_at",
+            "intent_id",
+        ),
+    )
+
+    intent_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    start_request_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    workflow_id: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    task_queue: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_code: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditPhaseRunRecord(Base):
+    __tablename__ = "audit_phase_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('authorize_and_freeze', 'map_scope', 'deterministic_probe', "
+            "'threat_model', 'agent_hunt', 'reconcile', 'prove', 'compose_risk', "
+            "'compare_baseline', 'validate_closure', 'cleanup', 'seal_core', "
+            "'generate_reports', 'package_and_publish')",
+            name="ck_audit_phase_runs_phase",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'deferred', "
+            "'cancelled', 'not_applicable')",
+            name="ck_audit_phase_runs_status",
+        ),
+        CheckConstraint(
+            "attempt >= 1 AND state_version >= 1",
+            name="ck_audit_phase_runs_counters",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("input_digest"),
+            name="ck_audit_phase_runs_input_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("config_digest"),
+            name="ck_audit_phase_runs_config_digest",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_audit_phase_runs_timestamp_order",
+        ),
+        CheckConstraint(
+            "started_at IS NULL OR (started_at >= created_at AND started_at <= updated_at)",
+            name="ck_audit_phase_runs_started_order",
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR (finished_at >= created_at AND finished_at <= updated_at)",
+            name="ck_audit_phase_runs_finished_order",
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="ck_audit_phase_runs_runtime_order",
+        ),
+        CheckConstraint(
+            "(error_code IS NULL AND error_summary IS NULL) OR "
+            "(error_code IS NOT NULL AND error_summary IS NOT NULL)",
+            name="ck_audit_phase_runs_error_pair",
+        ),
+        CheckConstraint(
+            "error_summary IS NULL OR length(error_summary) BETWEEN 1 AND 4096",
+            name="ck_audit_phase_runs_error_summary_size",
+        ),
+        CheckConstraint(
+            "(status = 'queued' AND started_at IS NULL AND finished_at IS NULL) OR "
+            "(status = 'running' AND started_at IS NOT NULL AND finished_at IS NULL) OR "
+            "(status NOT IN ('queued', 'running') AND finished_at IS NOT NULL)",
+            name="ck_audit_phase_runs_status_time",
+        ),
+        CheckConstraint(
+            "status NOT IN ('queued', 'running') OR "
+            "(json_array_length(output_artifact_ids_json) = 0 AND "
+            "json_array_length(summary_counts_json) = 0)",
+            name="ck_audit_phase_runs_active_outputs",
+        ),
+        CheckConstraint(
+            "status <> 'completed' OR started_at IS NOT NULL",
+            name="ck_audit_phase_runs_completed_start",
+        ),
+        CheckConstraint(
+            "(status IN ('failed', 'deferred', 'not_applicable') "
+            "AND error_code IS NOT NULL) OR "
+            "(status NOT IN ('failed', 'deferred', 'not_applicable'))",
+            name="ck_audit_phase_runs_error_status",
+        ),
+        CheckConstraint(
+            "status NOT IN ('queued', 'running', 'completed') OR error_code IS NULL",
+            name="ck_audit_phase_runs_nonerror_status",
+        ),
+        UniqueConstraint(
+            "audit_id",
+            "phase",
+            "idempotency_key",
+            name="uq_audit_phase_runs_idempotency",
+        ),
+        Index(
+            "ix_audit_phase_runs_audit_phase_status_created_id",
+            "audit_id",
+            "phase",
+            "status",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audit_scans.id", ondelete="RESTRICT"), nullable=False
+    )
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    output_artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    summary_counts_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    error_code: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AuditScopeUnitRecord(Base):
+    __tablename__ = "audit_scope_units"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["audit_id", "project_id"],
+            ["audit_scans.id", "audit_scans.project_id"],
+            name="fk_audit_scope_units_audit_project",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "project_id"],
+            ["source_snapshots.id", "source_snapshots.project_id"],
+            name="fk_audit_scope_units_snapshot_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "kind IN ('file', 'symbol', 'diff_hunk', 'dependency', 'endpoint', "
+            "'configuration', 'trust_boundary')",
+            name="ck_audit_scope_units_kind",
+        ),
+        CheckConstraint(
+            "risk_tier IN ('low', 'medium', 'high', 'critical')",
+            name="ck_audit_scope_units_risk_tier",
+        ),
+        CheckConstraint(
+            "status IN ('included', 'analyzed', 'excluded', 'deferred', 'failed')",
+            name="ck_audit_scope_units_status",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("stable_key"),
+            name="ck_audit_scope_units_stable_key",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("blob_digest"),
+            name="ck_audit_scope_units_blob_digest",
+        ),
+        CheckConstraint(
+            "receipt_count >= 0 AND state_version >= 1",
+            name="ck_audit_scope_units_counters",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_audit_scope_units_timestamp_order",
+        ),
+        CheckConstraint(
+            "(closure_code IS NULL AND closure_reason IS NULL) OR "
+            "(closure_code IS NOT NULL AND closure_reason IS NOT NULL)",
+            name="ck_audit_scope_units_closure_pair",
+        ),
+        CheckConstraint(
+            "relative_path IS NULL OR length(relative_path) BETWEEN 1 AND 4096",
+            name="ck_audit_scope_units_relative_path_size",
+        ),
+        CheckConstraint(
+            "closure_reason IS NULL OR length(closure_reason) BETWEEN 1 AND 4096",
+            name="ck_audit_scope_units_closure_reason_size",
+        ),
+        CheckConstraint(
+            "(status = 'included' AND closure_code IS NULL) OR "
+            "(status <> 'included' AND closure_code IS NOT NULL)",
+            name="ck_audit_scope_units_status_closure",
+        ),
+        CheckConstraint(
+            "kind NOT IN ('file', 'symbol', 'diff_hunk', 'configuration') "
+            "OR relative_path IS NOT NULL",
+            name="ck_audit_scope_units_path_kind",
+        ),
+        CheckConstraint(
+            "kind <> 'symbol' OR symbol_anchor IS NOT NULL",
+            name="ck_audit_scope_units_symbol_anchor",
+        ),
+        UniqueConstraint(
+            "id",
+            "audit_id",
+            name="uq_audit_scope_units_id_audit",
+        ),
+        UniqueConstraint(
+            "audit_id",
+            "snapshot_id",
+            "kind",
+            "stable_key",
+            name="uq_audit_scope_units_stable_key",
+        ),
+        Index(
+            "ix_audit_scope_units_audit_kind_status_risk_id",
+            "audit_id",
+            "kind",
+            "status",
+            "risk_tier",
+            "id",
+        ),
+        Index(
+            "ix_audit_scope_units_audit_snapshot_path",
+            "audit_id",
+            "snapshot_id",
+            "relative_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    snapshot_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path: Mapped[str | None] = mapped_column(Text)
+    blob_digest: Mapped[str | None] = mapped_column(String(64))
+    symbol_anchor: Mapped[str | None] = mapped_column(String(2048))
+    risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    required_analyses_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    closure_code: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    closure_reason: Mapped[str | None] = mapped_column(Text)
+    receipt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AuditWorkItemRecord(Base):
+    __tablename__ = "audit_work_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["primary_scope_unit_id", "audit_id"],
+            ["audit_scope_units.id", "audit_scope_units.audit_id"],
+            name="fk_audit_work_items_primary_scope",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "phase IN ('authorize_and_freeze', 'map_scope', 'deterministic_probe', "
+            "'threat_model', 'agent_hunt', 'reconcile', 'prove', 'compose_risk', "
+            "'compare_baseline', 'validate_closure', 'cleanup', 'seal_core', "
+            "'generate_reports', 'package_and_publish')",
+            name="ck_audit_work_items_phase",
+        ),
+        CheckConstraint(
+            "risk_tier IN ('low', 'medium', 'high', 'critical')",
+            name="ck_audit_work_items_risk_tier",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'leased', 'running', 'completed', 'failed', "
+            "'deferred', 'cancelled', 'outcome_unknown')",
+            name="ck_audit_work_items_status",
+        ),
+        CheckConstraint(
+            "epoch >= 0 AND attempt >= 0 AND state_version >= 1",
+            name="ck_audit_work_items_counters",
+        ),
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_expires_at IS NULL) OR "
+            "(lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="ck_audit_work_items_lease_pair",
+        ),
+        CheckConstraint(
+            "(status IN ('leased', 'running') AND lease_owner IS NOT NULL) OR "
+            "(status NOT IN ('leased', 'running') AND lease_owner IS NULL)",
+            name="ck_audit_work_items_active_lease",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("input_digest"),
+            name="ck_audit_work_items_input_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("required_coverage_plan_digest"),
+            name="ck_audit_work_items_plan_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("stable_key"),
+            name="ck_audit_work_items_stable_key",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_audit_work_items_timestamp_order",
+        ),
+        CheckConstraint(
+            "status NOT IN ('leased', 'running', 'completed', 'failed', "
+            "'outcome_unknown') OR attempt >= 1",
+            name="ck_audit_work_items_attempted_status",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND receipt_id IS NOT NULL) OR "
+            "(status <> 'completed' AND receipt_id IS NULL)",
+            name="ck_audit_work_items_receipt_status",
+        ),
+        CheckConstraint(
+            "lease_expires_at IS NULL OR lease_expires_at > updated_at",
+            name="ck_audit_work_items_lease_order",
+        ),
+        UniqueConstraint(
+            "audit_id",
+            "phase",
+            "epoch",
+            "stable_key",
+            name="uq_audit_work_items_stable_key",
+        ),
+        Index(
+            "ix_audit_work_items_audit_phase_status_lease_epoch_id",
+            "audit_id",
+            "phase",
+            "status",
+            "lease_expires_at",
+            "epoch",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), primary_key=True)
+    audit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    primary_scope_unit_id: Mapped[str] = mapped_column(String(AUDIT_ID_LENGTH), nullable=False)
+    strategy: Mapped[str] = mapped_column(String(AUDIT_TOKEN_LENGTH), nullable=False)
+    stable_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(AUDIT_TOKEN_LENGTH))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    required_coverage_plan_artifact_id: Mapped[str] = mapped_column(
+        String(AUDIT_ID_LENGTH), nullable=False
+    )
+    required_coverage_plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str | None] = mapped_column(String(AUDIT_ID_LENGTH))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class AgentMessageRecord(Base):
@@ -134,6 +1716,31 @@ class ToolCallRecord(Base):
 class ExecutionRecord(Base):
     __tablename__ = "executions"
     __table_args__ = (
+        CheckConstraint(
+            "(audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
+            name="ck_executions_audit_plan_pair",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("plan_digest"),
+            name="ck_executions_plan_digest",
+        ),
+        CheckConstraint(
+            "(runner_command_id IS NULL AND runner_effect_binding_id IS NULL "
+            "AND runner_binding_digest IS NULL AND runner_envelope_digest IS NULL) OR "
+            "(runner_command_id IS NOT NULL AND runner_effect_binding_id IS NOT NULL "
+            "AND runner_binding_digest IS NOT NULL AND runner_envelope_digest IS NOT NULL)",
+            name="ck_executions_runner_binding_shape",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("runner_binding_digest"),
+            name="ck_executions_runner_binding_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("runner_envelope_digest"),
+            name="ck_executions_runner_envelope_digest",
+        ),
+        UniqueConstraint("runner_command_id", name="uq_executions_runner_command"),
         Index(
             "ix_executions_run_tool_created_id",
             "run_id",
@@ -149,6 +1756,12 @@ class ExecutionRecord(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey("audit_scans.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    plan_digest: Mapped[str | None] = mapped_column(String(64))
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_sessions.id", ondelete="SET NULL"), index=True
     )
@@ -157,6 +1770,18 @@ class ExecutionRecord(Base):
     node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
     owner_runner_instance_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
     owner_runner_epoch: Mapped[int | None] = mapped_column(BigInteger)
+    runner_command_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    runner_effect_binding_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    runner_binding_digest: Mapped[str | None] = mapped_column(String(64))
+    runner_envelope_digest: Mapped[str | None] = mapped_column(String(64))
     executor_type: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
     argv_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     command_text: Mapped[str | None] = mapped_column(Text)
@@ -266,16 +1891,101 @@ class RunEventRecord(Base):
 
 class ArtifactRecord(Base):
     __tablename__ = "artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "access_class IN ('public_export', 'audit_internal', "
+            "'restricted_sensitive')",
+            name="ck_artifacts_access_class",
+        ),
+        CheckConstraint(
+            "content_trust IN ('generated', 'untrusted_source', "
+            "'untrusted_tool_output')",
+            name="ck_artifacts_content_trust",
+        ),
+        CheckConstraint(
+            "audit_id IS NOT NULL OR access_class = 'public_export'",
+            name="ck_artifacts_owner_access",
+        ),
+        CheckConstraint(
+            "storage_key = 'runs/' || run_id || '/artifacts/' || id || '/' || name",
+            name="ck_artifacts_canonical_storage_key",
+        ),
+        CheckConstraint(
+            _ArtifactStorageComponentsAreSafe(
+                column("run_id"),
+                column("id"),
+                column("name"),
+            ),
+            name="ck_artifacts_safe_storage_components",
+        ),
+        CheckConstraint(
+            _ArtifactMimeTypeIsSafe(column("mime_type")),
+            name="ck_artifacts_safe_mime_type",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("sha256"),
+            name="ck_artifacts_sha256",
+        ),
+        CheckConstraint("size >= 0", name="ck_artifacts_nonnegative_size"),
+        Index(
+            "ix_artifacts_public_run_created_id",
+            "run_id",
+            "access_class",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_artifacts_audit_run_execution_created_id",
+            "audit_id",
+            "run_id",
+            "execution_id",
+            "created_at",
+            "id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     execution_id: Mapped[str | None] = mapped_column(
-        ForeignKey("executions.id", ondelete="SET NULL"), index=True
+        ForeignKey(
+            "executions.id",
+            name="fk_artifacts_execution",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey(
+            "audit_scans.id",
+            name="fk_artifacts_audit",
+            ondelete="RESTRICT",
+        ),
+    )
+    access_class: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=_default_artifact_access_class,
+    )
+    content_trust: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="untrusted_tool_output",
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_key: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=_default_artifact_storage_key,
+    )
+    ingest_provenance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=_default_artifact_ingest_provenance,
+    )
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -358,6 +2068,11 @@ class RunnerCredentialRecord(Base):
     runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    protocol_capabilities_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     rotated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -366,6 +2081,7 @@ class RunnerCredentialRecord(Base):
 class RunnerCommandRecord(Base):
     __tablename__ = "runner_commands"
     __table_args__ = (
+        CheckConstraint("state_version >= 0", name="ck_runner_commands_state_version"),
         UniqueConstraint(
             "node_id",
             "idempotency_key",
@@ -396,9 +2112,252 @@ class RunnerCommandRecord(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class RunnerEffectBindingRecord(Base):
+    __tablename__ = "runner_effect_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.runner-effect-binding/v1'",
+            name="ck_runner_effect_bindings_schema",
+        ),
+        CheckConstraint(
+            "run_kind IN ('general', 'code_audit')",
+            name="ck_runner_effect_bindings_run_kind",
+        ),
+        CheckConstraint(
+            "origin IN "
+            "('application_service', 'temporal_worker', "
+            "'control_plane_reconciler', 'worker_reconciler', 'safety_reconciler')",
+            name="ck_runner_effect_bindings_origin",
+        ),
+        CheckConstraint(
+            "operation_family IN "
+            "('execution', 'terminal', 'browser', 'target_http', 'connector', "
+            "'safety_stop')",
+            name="ck_runner_effect_bindings_family",
+        ),
+        CheckConstraint(
+            "resource_kind IN "
+            "('execution', 'terminal_session', 'browser_session', "
+            "'target_http_intent', 'connector_session')",
+            name="ck_runner_effect_bindings_resource_kind",
+        ),
+        CheckConstraint(
+            "(run_kind = 'general' AND audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
+            name="ck_runner_effect_bindings_run_owner_shape",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("plan_digest"),
+            name="ck_runner_effect_bindings_plan_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_digest_check("binding_digest"),
+            name="ck_runner_effect_bindings_binding_digest",
+        ),
+        CheckConstraint(
+            "resource_kind <> 'execution' OR "
+            "(execution_id IS NOT NULL AND resource_id = execution_id)",
+            name="ck_runner_effect_bindings_execution_identity",
+        ),
+        Index(
+            "ix_runner_effect_bindings_family_resource",
+            "operation_family",
+            "resource_kind",
+            "resource_id",
+        ),
+        Index(
+            "ix_runner_effect_bindings_run_execution",
+            "run_id",
+            "execution_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    run_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    node_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("nodes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    target_runner_instance_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_credentials.runner_instance_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    target_runner_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    audit_id: Mapped[str | None] = mapped_column(
+        String(AUDIT_ID_LENGTH),
+        ForeignKey("audit_scans.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    plan_digest: Mapped[str | None] = mapped_column(String(64))
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerCommandOwnershipRecord(Base):
+    __tablename__ = "runner_command_ownerships"
+    __table_args__ = (
+        CheckConstraint(
+            "verification_state IN ('verified', 'quarantined')",
+            name="ck_runner_command_ownerships_state",
+        ),
+        CheckConstraint(
+            "operation_family IS NULL OR operation_family IN "
+            "('execution', 'terminal', 'browser', 'target_http', 'connector', "
+            "'safety_stop')",
+            name="ck_runner_command_ownerships_family",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("payload_digest"),
+            name="ck_runner_command_ownerships_payload_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("output_contract_digest"),
+            name="ck_runner_command_ownerships_output_contract_digest",
+        ),
+        CheckConstraint(
+            _optional_lower_hex_digest_check("envelope_digest"),
+            name="ck_runner_command_ownerships_envelope_digest",
+        ),
+        CheckConstraint(
+            "(verification_state = 'verified' "
+            "AND schema_version = 'riftx.runner-command-ownership/v1' "
+            "AND effect_binding_id IS NOT NULL AND operation IS NOT NULL "
+            "AND operation_family IS NOT NULL AND payload_digest IS NOT NULL "
+            "AND output_contract_json IS NOT NULL AND output_contract_digest IS NOT NULL "
+            "AND envelope_digest IS NOT NULL AND quarantine_reason IS NULL "
+            "AND quarantined_at IS NULL AND reconciliation_state IS NULL) OR "
+            "(verification_state = 'quarantined' AND quarantine_reason IS NOT NULL "
+            "AND quarantined_at IS NOT NULL AND reconciliation_state IN "
+            "('untouched', 'pending', 'replaced', 'manual'))",
+            name="ck_runner_command_ownerships_verification_shape",
+        ),
+        Index(
+            "ix_runner_command_ownerships_state_family",
+            "verification_state",
+            "operation_family",
+        ),
+        Index(
+            "ix_runner_command_ownerships_reconciliation",
+            "reconciliation_state",
+            "quarantined_at",
+        ),
+        UniqueConstraint(
+            "effect_binding_id",
+            name="uq_runner_command_ownerships_effect_binding",
+        ),
+    )
+
+    command_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    verification_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[str | None] = mapped_column(String(64))
+    effect_binding_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    operation: Mapped[str | None] = mapped_column(String(32))
+    operation_family: Mapped[str | None] = mapped_column(String(32))
+    payload_digest: Mapped[str | None] = mapped_column(String(64))
+    output_contract_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    output_contract_digest: Mapped[str | None] = mapped_column(String(64))
+    envelope_digest: Mapped[str | None] = mapped_column(String(64), index=True)
+    quarantine_reason: Mapped[str | None] = mapped_column(String(255))
+    quarantined_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    reconciliation_state: Mapped[str | None] = mapped_column(String(32), index=True)
+    replacement_command_id: Mapped[str | None] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerStopReceiptRecord(Base):
+    __tablename__ = "runner_stop_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.runner-stop-receipt/v1'",
+            name="ck_runner_stop_receipts_schema",
+        ),
+        CheckConstraint(_lower_hex_digest_check("envelope_digest"), name="ck_stop_envelope"),
+        CheckConstraint(_lower_hex_digest_check("binding_digest"), name="ck_stop_binding"),
+        CheckConstraint(_lower_hex_digest_check("ack_digest"), name="ck_stop_ack"),
+        UniqueConstraint("command_id", name="uq_runner_stop_receipts_command"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_commands.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    effect_binding_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_effect_bindings.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    envelope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    principal_instance_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    principal_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ack_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ack_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class RunnerStopProjectionRecord(Base):
+    __tablename__ = "runner_stop_projections"
+    __table_args__ = (
+        CheckConstraint(
+            "projection_state IN ('pending', 'applied', 'manual')",
+            name="ck_runner_stop_projections_state",
+        ),
+        CheckConstraint("state_version >= 0", name="ck_runner_stop_projections_version"),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("runner_stop_receipts.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    projection_state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class ToolStateRecord(Base):

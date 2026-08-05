@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 import riftx.security as security_module
 from riftx.api import APISettings, create_app
 from riftx.application.errors import AuthenticationError
+from riftx.application.ports import AuditAuthorizationBinding
 from riftx.browser.service import BrowserView
 from riftx.domain import (
     BrowserMode,
@@ -22,6 +23,7 @@ from riftx.domain import (
     BrowserSession,
     BrowserSessionStatus,
     OperatorCapability,
+    RunKind,
     TrustProfile,
 )
 from riftx.security import (
@@ -730,10 +732,20 @@ class _BrowserSpy:
             pages=[],
         )
 
-    async def get(self, session_id: str) -> object:
+    async def get(
+        self,
+        session_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> object:
         assert session_id == "browser-1"
+        assert expected_run_id == "run-1"
         self.calls += 1
         return self.view
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        assert session_id == "browser-1"
+        return "run-1"
 
     async def observations_after(
         self,
@@ -752,12 +764,24 @@ class _ControlPlaneSpy:
     def __init__(self, settings: APISettings, browser: _BrowserSpy) -> None:
         self.settings = settings
         self.browser_service = browser
+        self.run_service = _GeneralRunSpy()
+        self.audit_service = object()
         self.terminal_service_accesses = 0
 
     @property
     def terminal_service(self) -> object:
         self.terminal_service_accesses += 1
         raise AssertionError("terminal service reached before authentication")
+
+
+class _GeneralRunSpy:
+    async def resolve_kind(self, run_id: str) -> RunKind:
+        assert run_id == "run-1"
+        return RunKind.GENERAL
+
+    async def get_run(self, run_id: str) -> object:
+        assert run_id == "run-1"
+        return SimpleNamespace(kind=RunKind.GENERAL)
 
 
 def test_websocket_rejects_before_object_access_and_never_echoes_credential(
@@ -950,3 +974,125 @@ def test_parent_run_authorizer_masks_mismatch_and_unavailable_resource(tmp_path:
 
     assert mismatch.value.code == unavailable.value.code == "resource_not_accessible"
     assert mismatch.value.message == unavailable.value.message
+
+
+def _valid_audit_binding() -> AuditAuthorizationBinding:
+    return AuditAuthorizationBinding(
+        requested_audit_id="audit-1",
+        audit_id="audit-1",
+        scan_run_id="run-1",
+        scan_project_id="project-1",
+        scan_engagement_id="engagement-1",
+        scan_contract_id="contract-1",
+        scan_contract_digest="a" * 64,
+        run_id="run-1",
+        run_engagement_id="engagement-1",
+        run_kind="code_audit",
+        project_id="project-1",
+        project_engagement_id="engagement-1",
+        engagement_id="engagement-1",
+        contract_id="contract-1",
+        contract_audit_id="audit-1",
+        contract_digest="a" * 64,
+        request_audit_id="audit-1",
+        request_run_id="run-1",
+        request_project_id="project-1",
+        request_engagement_id="engagement-1",
+        request_contract_id="contract-1",
+        request_contract_digest="a" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "requested_audit_id",
+        "audit_id",
+        "scan_run_id",
+        "scan_project_id",
+        "scan_engagement_id",
+        "scan_contract_id",
+        "scan_contract_digest",
+        "run_id",
+        "run_engagement_id",
+        "run_kind",
+        "project_id",
+        "project_engagement_id",
+        "engagement_id",
+        "contract_id",
+        "contract_audit_id",
+        "contract_digest",
+        "request_audit_id",
+        "request_run_id",
+        "request_project_id",
+        "request_engagement_id",
+        "request_contract_id",
+        "request_contract_digest",
+    ],
+)
+def test_audit_authorizer_rejects_every_cross_object_binding(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    security = app.state.local_operator_security
+    authorizer = LocalObjectAuthorizer(security)
+    valid = _valid_audit_binding()
+
+    authorizer.require_audit_binding(
+        security.principal,
+        valid,
+        capability=OperatorCapability.READ,
+    )
+    with pytest.raises(ResourceNotAccessibleError) as captured:
+        authorizer.require_audit_binding(
+            security.principal,
+            replace(valid, **{field: "tampered-binding"}),
+            capability=OperatorCapability.READ,
+        )
+
+    assert captured.value.code == "resource_not_accessible"
+    assert captured.value.message == "The requested resource was not found"
+
+
+def test_audit_profile_a_scope_and_server_domain_reference_are_stable(tmp_path: Path) -> None:
+    first = create_app(settings=_settings(tmp_path))
+    second = create_app(settings=_settings(tmp_path))
+    first_security = first.state.local_operator_security
+    second_security = second.state.local_operator_security
+    first_authorizer = LocalObjectAuthorizer(first_security)
+    second_authorizer = LocalObjectAuthorizer(second_security)
+
+    scope = first_authorizer.authorized_engagement_scope(
+        first_security.principal,
+        capability=OperatorCapability.READ,
+    )
+    first_reference = first_authorizer.draft_authorization_reference(
+        first_security.principal,
+        capability=OperatorCapability.WRITE,
+    )
+    second_reference = second_authorizer.draft_authorization_reference(
+        second_security.principal,
+        capability=OperatorCapability.WRITE,
+    )
+    first_preflight_scope = first_authorizer.preflight_authorization_scope_digest(
+        first_security.principal,
+        capability=OperatorCapability.HOST_EXECUTE,
+    )
+    read_preflight_scope = first_authorizer.preflight_authorization_scope_digest(
+        first_security.principal,
+        capability=OperatorCapability.READ,
+    )
+    second_preflight_scope = second_authorizer.preflight_authorization_scope_digest(
+        second_security.principal,
+        capability=OperatorCapability.HOST_CONTROL,
+    )
+
+    assert scope.all_engagements is True
+    assert scope.engagement_ids == frozenset()
+    assert scope.can_create_engagement is True
+    assert first_reference == second_reference
+    assert len(first_reference) == 64
+    assert first_preflight_scope == read_preflight_scope == second_preflight_scope
+    assert len(first_preflight_scope) == 64
+    assert first_preflight_scope != first_reference

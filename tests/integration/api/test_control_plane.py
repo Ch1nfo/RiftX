@@ -27,7 +27,7 @@ from openai.types.responses import (
     ResponseOutputMessage,
     ResponseOutputText,
 )
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from temporalio.client import Client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from temporalio.testing import WorkflowEnvironment
@@ -50,6 +50,8 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ApprovalRequestRecorder,
     ArtifactApplicationService,
+    AuditApplicationService,
+    AuditPreflightApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -63,25 +65,44 @@ from riftx.application.services import (
     RunSafetyStopService,
     TerminalApplicationService,
     ToolApplicationService,
+    WorkflowSignalDispatcher,
+    WorkflowSignalObservation,
+    WorkflowSignalObservationState,
+    WorkflowSignalReconciler,
 )
 from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
+from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
 from riftx.context import ContextApplicationService
 from riftx.domain import (
+    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+    RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+    RUNNER_STOP_ACK_TERMINAL_SCHEMA,
     Approval,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Finding,
     FindingSeverity,
+    Objective,
+    Run,
+    RunKind,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnershipState,
+    RunnerCommandStatus,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
     RunStatus,
     TerminalSession,
     TerminalStatus,
     ToolCall,
     TrustProfile,
+    runner_stop_ack_digest,
 )
+from riftx.domain.workflow_signal import WorkflowSignalIntent, WorkflowSignalKind
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
@@ -94,6 +115,8 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
+    SQLAlchemyAuditAggregateReadRepository,
+    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
@@ -108,17 +131,25 @@ from riftx.persistence import (
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyWorkflowSignalIntentRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.observability_repository import (
     SQLAlchemyRuntimeObservabilityRepository,
 )
-from riftx.persistence.orm import ArtifactRecord, TargetHttpRequestRecord
+from riftx.persistence.orm import (
+    ArtifactRecord,
+    RunnerCommandOwnershipRecord,
+    RunnerCommandRecord,
+    RunnerStopProjectionRecord,
+    TargetHttpRequestRecord,
+)
 from riftx.persistence.target_http_repositories import (
     SQLAlchemyTargetHttpRequestRepository,
     SQLAlchemyTrafficMetadataReadRepository,
 )
+from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 from riftx.runner import (
     ExecutionLaunchRequest,
     ProcessSupervisor,
@@ -127,7 +158,11 @@ from riftx.runner import (
     RunnerTargetHttpClient,
     TerminalSupervisor,
 )
+from riftx.runner.control_client import RunnerControlClient, RunnerCredentialStore
+from riftx.runner.daemon import RunnerDaemon, RunnerDaemonConfig
 from riftx.runner.remote_terminal import NodeTerminalRouter, RemoteTerminalSupervisor
+from riftx.runner.state import FileExecutionRepository, FileTerminalRepository
+from riftx.runner.terminal_manager import OperationJournal
 from riftx.runtime import AgentCycle as RuntimeAgentCycle
 from riftx.runtime import (
     AgentSession,
@@ -147,11 +182,126 @@ from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
 from riftx.temporal.activities import RiftXActivities
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
+from riftx.temporal.workflow_signal_transport import RoutedWorkflowSignalTransport
 from riftx.tools import ToolRegistry
 
 FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
 PROCESS_TREE_FIXTURE = Path(__file__).parents[2] / "runner" / "fixtures" / "fake_process.py"
 RUNNER_BOOTSTRAP_TOKEN = "test-only-runner-bootstrap-token-0003"
+
+
+def _runner_execution_callback_fields(command: dict[str, object]) -> dict[str, object]:
+    effect_binding = command["effect_binding"]
+    assert isinstance(effect_binding, dict)
+    return {
+        "command_id": command["id"],
+        "effect_binding_id": effect_binding["id"],
+        "envelope_digest": command["envelope_digest"],
+        "binding_digest": effect_binding["binding_digest"],
+    }
+
+
+def _runner_command_callback_fields(command: dict[str, object]) -> dict[str, object]:
+    effect_binding = command["effect_binding"]
+    assert isinstance(effect_binding, dict)
+    return {
+        "state_version": command["state_version"],
+        "envelope_digest": command["envelope_digest"],
+        "binding_digest": effect_binding["binding_digest"],
+    }
+
+
+async def _lease_and_finish_runner_command(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    command_id: str,
+) -> dict[str, object]:
+    leased = await client.get("/api/v1/runner/commands/next", headers=headers)
+    assert leased.status_code == 200, leased.text
+    command = leased.json()["command"]
+    assert command is not None
+    assert command["id"] == command_id
+    payload = command["payload"]
+    if command["kind"] == RunnerCommandKind.EXECUTE.value:
+        request = payload["request"]
+        result: dict[str, object] = {
+            "execution_id": payload["execution_id"],
+            "local_execution_id": payload["execution_id"],
+            "execution_key": request["execution_key"],
+            "owner": command["target"],
+            "status": "running",
+        }
+    elif command["kind"] == RunnerCommandKind.TERMINAL_START.value:
+        result = {
+            "result": {
+                "session_id": payload["session_id"],
+                "execution_id": payload["execution_id"],
+                "status": "open",
+                "duplicate": False,
+            }
+        }
+    else:  # pragma: no cover - helper is intentionally launch-only
+        raise AssertionError(f"unsupported launch helper command kind: {command['kind']!r}")
+    finished = await client.post(
+        f"/api/v1/runner/commands/{command_id}/finish-owned",
+        headers=headers,
+        json={
+            "lease_id": command["lease_id"],
+            **_runner_command_callback_fields(command),
+            "succeeded": True,
+            "result": result,
+        },
+    )
+    assert finished.status_code == 200, finished.text
+    return command
+
+
+async def _bind_test_terminal_launch(
+    runtime: RuntimeFixture,
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    *,
+    run_id: str,
+    node_id: str,
+    terminal_id: str,
+    execution_id: str,
+) -> dict[str, object]:
+    execution = await runtime.execution_repository.get(execution_id)
+    assert execution is not None
+    principal = {
+        "instance_id": headers["X-RiftX-Runner-Instance-ID"],
+        "epoch": int(headers["X-RiftX-Runner-Epoch"]),
+    }
+    command, created = await runtime.control_plane.runner_control_service.enqueue(
+        node_id,
+        kind=RunnerCommandKind.TERMINAL_START,
+        idempotency_key=f"terminal-start:{terminal_id}",
+        run_id=run_id,
+        origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+        operation_family=RunnerOperationFamily.TERMINAL,
+        resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+        resource_id=terminal_id,
+        execution_id=execution_id,
+        output_contract=RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("stderr", "stdout"),
+            result_schema="riftx.runner-result/terminal-start/v1",
+        ),
+        payload={
+            "session_id": terminal_id,
+            "execution_id": execution_id,
+            "request": {
+                "run_id": run_id,
+                "node_id": node_id,
+                "session_id": terminal_id,
+                "execution_id": execution_id,
+                "execution_key": execution.execution_key,
+                "runner_principal": principal,
+            },
+        },
+    )
+    assert created is True
+    return await _lease_and_finish_runner_command(client, headers, command.id)
 
 
 class FullRunModel(Model):
@@ -270,48 +420,141 @@ def _e2e_message(output: AgentCycleOutput) -> list[Any]:
 class FakeWorkflowClient:
     fail: bool = False
     error: Exception | None = None
+    workflow_id_prefix: str = "test-workflow"
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)
+    workflow_ids: list[tuple[str, str, str | None]] = field(default_factory=list)
 
-    async def start_run(self, run_id: str) -> object:
-        self._record("start", run_id)
+    async def start_run(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> object:
+        self._record("start", run_id, workflow_id=workflow_id)
         return object()
 
-    async def pause(self, run_id: str) -> None:
-        self._record("pause", run_id)
+    async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        self._record("pause", run_id, workflow_id=workflow_id)
 
-    async def resume(self, run_id: str) -> None:
-        self._record("resume", run_id)
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        self._record("resume", run_id, workflow_id=workflow_id)
 
-    async def approve(self, run_id: str, call_id: str) -> None:
-        self._record("approve", run_id, call_id)
+    async def approve(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record("approve", run_id, call_id, workflow_id=workflow_id)
 
-    async def reject(self, run_id: str, call_id: str) -> None:
-        self._record("reject", run_id, call_id)
+    async def reject(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record("reject", run_id, call_id, workflow_id=workflow_id)
 
-    async def cancel_current_execution(self, run_id: str) -> None:
-        self._record("cancel_current_execution", run_id)
+    async def execution_completed(
+        self,
+        run_id: str,
+        execution_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record(
+            "execution_completed",
+            run_id,
+            execution_id,
+            workflow_id=workflow_id,
+        )
 
-    async def cancel(self, run_id: str) -> None:
-        self._record("cancel", run_id)
+    async def cancel_current_execution(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record("cancel_current_execution", run_id, workflow_id=workflow_id)
 
-    async def compact(self, run_id: str, max_history_items: int = 100) -> None:
-        self._record("compact", run_id, str(max_history_items))
+    async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        self._record("cancel", run_id, workflow_id=workflow_id)
 
-    async def switch_model(self, run_id: str, model_profile: str) -> None:
-        self._record("switch_model", run_id, model_profile)
+    async def compact(
+        self,
+        run_id: str,
+        max_history_items: int = 100,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record(
+            "compact",
+            run_id,
+            str(max_history_items),
+            workflow_id=workflow_id,
+        )
 
-    async def append_user_message(self, run_id: str, message: str) -> None:
-        self._record("message", run_id, message)
+    async def switch_model(
+        self,
+        run_id: str,
+        model_profile: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record(
+            "switch_model",
+            run_id,
+            model_profile,
+            workflow_id=workflow_id,
+        )
+
+    async def append_user_message(
+        self,
+        run_id: str,
+        message: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
+        self._record("message", run_id, message, workflow_id=workflow_id)
 
     def workflow_id(self, run_id: str) -> str:
-        return f"test-workflow-{run_id}"
+        return f"{self.workflow_id_prefix}-{run_id}"
 
-    def _record(self, action: str, run_id: str, detail: str | None = None) -> None:
+    def _record(
+        self,
+        action: str,
+        run_id: str,
+        detail: str | None = None,
+        *,
+        workflow_id: str | None = None,
+    ) -> None:
         if self.error is not None:
             raise self.error
         if self.fail:
             raise RuntimeError("Temporal test outage")
         self.calls.append((action, run_id, detail))
+        self.workflow_ids.append((action, run_id, workflow_id))
+
+
+class FakeWorkflowSignalOutcomeProbe:
+    """The Fake client fails before recording a send, so its outage is definitive."""
+
+    async def observe(
+        self,
+        intent: WorkflowSignalIntent,
+    ) -> WorkflowSignalObservation:
+        return WorkflowSignalObservation(
+            state=WorkflowSignalObservationState.NOT_DELIVERED,
+            owner_kind=intent.owner_kind,
+            workflow_protocol_version=intent.workflow_protocol_version,
+            workflow_id=intent.workflow_id,
+            signal_kind=intent.signal_kind,
+            identity_digest=intent.identity_digest,
+            payload_digest=intent.payload_digest,
+            observation_receipt=f"test-not-delivered:{intent.identity_digest}",
+        )
 
 
 class RecordingSignalWithStartClient:
@@ -346,7 +589,9 @@ class RuntimeFixture:
     report_repository: SQLAlchemyReportRepository
     run_repository: SQLAlchemyRunRepository
     execution_repository: SQLAlchemyExecutionRepository
+    event_repository: SQLAlchemyRunEventRepository
     terminal_repository: SQLAlchemyTerminalRepository
+    workflow_signal_repository: SQLAlchemyWorkflowSignalIntentRepository
 
 
 async def _build_runtime(
@@ -380,6 +625,7 @@ tools:
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
+    audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -388,6 +634,10 @@ tools:
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
+    workflow_execution_repository = SQLAlchemyExecutionRepository(
+        database.session_factory,
+        emit_workflow_signal_intents=True,
+    )
     terminal_repository = SQLAlchemyTerminalRepository(database.session_factory)
     agent_session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
     browser_repository = SQLAlchemyBrowserRepository(database.session_factory)
@@ -396,6 +646,7 @@ tools:
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
+    workflow_signal_repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
     node_service = NodeApplicationService(node_repository)
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminal_repository,
@@ -477,10 +728,14 @@ tools:
         credentials=runner_credential_repository,
         commands=runner_command_repository,
         nodes=node_service,
-        executions=execution_repository,
+        executions=workflow_execution_repository,
+        stop_projection_executions=execution_repository,
+        runs=run_repository,
         paths=runner_paths,
         registration_token=settings.runner_registration_token,
         terminals=terminal_repository,
+        browser_sessions=browser_repository,
+        tool_call_intents=tool_call_intent_repository,
         events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
     )
@@ -498,6 +753,28 @@ tools:
         local=terminal_supervisor,
         remote=remote_terminal_supervisor,
     )
+    workflow_router = RunWorkflowControlRouter(
+        runs=run_repository,
+        audits=audit_aggregate_repository,
+        general=workflow_client,
+    )
+    workflow_signal_transport = RoutedWorkflowSignalTransport(
+        workflow_router,
+        runs=run_repository,
+        sources=workflow_signal_repository,
+    )
+    workflow_signal_dispatcher = WorkflowSignalDispatcher(
+        repository=workflow_signal_repository,
+        transport=workflow_signal_transport,
+        lease_owner=f"control-plane-test-dispatch:{uuid4()}",
+        backoff=lambda attempt: timedelta(0),
+    )
+    workflow_signal_reconciler = WorkflowSignalReconciler(
+        repository=workflow_signal_repository,
+        probe=FakeWorkflowSignalOutcomeProbe(),
+        lease_owner=f"control-plane-test-probe:{uuid4()}",
+        backoff=lambda attempt: timedelta(0),
+    )
     return RuntimeFixture(
         control_plane=ControlPlane(
             settings=settings,
@@ -506,7 +783,7 @@ tools:
                 engagement_repository=engagement_repository,
                 run_repository=run_repository,
                 event_repository=event_repository,
-                workflow_client=workflow_client,
+                workflow_client=workflow_router,
                 execution_repository=execution_repository,
                 execution_runner=process_supervisor,
                 workspace_root=settings.workspace_root,
@@ -517,6 +794,13 @@ tools:
                 },
                 execution_cancel_timeout_seconds=0.2,
                 execution_cancel_poll_seconds=0.01,
+            ),
+            audit_service=AuditApplicationService(
+                creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
+                aggregate_repository=audit_aggregate_repository,
+                feature_enabled=settings.audit.enabled,
+                workspace_root=settings.audit.temp_root,
+                legacy_draft_api_enabled=True,
             ),
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),
@@ -557,12 +841,14 @@ tools:
                 approval_repository=approval_repository,
                 run_repository=run_repository,
                 event_repository=event_repository,
-                workflow_client=workflow_client,
                 runtime_approval_repository=runtime_approval_repository,
             ),
             artifact_service=artifact_service,
             context_service=ContextApplicationService(context_repository),
-            memory_service=MemoryService(memory_repository),
+            memory_service=MemoryService(
+                memory_repository,
+                run_repository=run_repository,
+            ),
             runtime_observability_service=RuntimeObservabilityService(
                 SQLAlchemyRuntimeObservabilityRepository(database.session_factory)
             ),
@@ -579,6 +865,8 @@ tools:
                 digest_key=b"test-traffic-digest-key-0000000001",
                 artifact_reference_key=b"test-traffic-artifact-key-000000001",
             ),
+            workflow_signal_dispatcher=workflow_signal_dispatcher,
+            workflow_signal_reconciler=workflow_signal_reconciler,
             browser_service=browser_service,
             browser_manager=browser_manager,
             process_supervisor=process_supervisor,
@@ -592,7 +880,9 @@ tools:
         report_repository=report_repository,
         run_repository=run_repository,
         execution_repository=execution_repository,
+        event_repository=event_repository,
         terminal_repository=terminal_repository,
+        workflow_signal_repository=workflow_signal_repository,
     )
 
 
@@ -609,6 +899,33 @@ async def _client(control_plane: ControlPlane) -> AsyncIterator[httpx.AsyncClien
             ),
         ) as client:
             yield client
+
+
+async def _reconcile_workflow_signals_once(runtime: RuntimeFixture) -> None:
+    dispatcher = runtime.control_plane.workflow_signal_dispatcher
+    reconciler = runtime.control_plane.workflow_signal_reconciler
+    assert dispatcher is not None
+    assert reconciler is not None
+    await dispatcher.dispatch_batch()
+    await reconciler.reconcile_batch()
+
+
+async def _workflow_signal_records(
+    runtime: RuntimeFixture,
+    run_id: str,
+) -> list[WorkflowSignalIntentRecord]:
+    async with runtime.control_plane.database.session_factory() as session:
+        records = (
+            await session.scalars(
+                select(WorkflowSignalIntentRecord)
+                .where(WorkflowSignalIntentRecord.run_id == run_id)
+                .order_by(
+                    WorkflowSignalIntentRecord.created_at,
+                    WorkflowSignalIntentRecord.id,
+                )
+            )
+        ).all()
+    return list(records)
 
 
 async def _create_run(client: httpx.AsyncClient) -> dict[str, object]:
@@ -634,11 +951,28 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
         async for client in _client(runtime.control_plane):
             created = await _create_run(client)
             run_id = str(created["id"])
+            assert created["kind"] == "general"
             assert created["node_id"] == "local"
             assert created["status"] == "waiting_user"
             assert created["model_profile"] == "fast"
             assert created["temporal_workflow_id"] == f"test-workflow-{run_id}"
             assert runtime.workflow.calls == []
+
+            injected_kind = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Bypass Audit admission", "kind": "code_audit"},
+            )
+            assert injected_kind.status_code == 422
+
+            audit_run = Run(
+                kind=RunKind.CODE_AUDIT,
+                id="audit-run-filter-canary",
+                engagement_id=str(created["engagement_id"]),
+                node_id="local",
+                objective=Objective(description="Audit filter canary"),
+                workspace_path=str(tmp_path / "audit-run-filter-canary"),
+            )
+            await runtime.run_repository.create(audit_run)
 
             initial_events = await client.get(f"/api/v1/runs/{run_id}/events")
             assert initial_events.status_code == 200
@@ -679,9 +1013,33 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             listed = await client.get("/api/v1/runs")
             assert listed.status_code == 200
             assert [item["id"] for item in listed.json()["items"]] == [run_id]
+            assert listed.json()["items"][0]["kind"] == "general"
+
+            listed_audits = await client.get(
+                "/api/v1/runs",
+                params={"kind": "code_audit"},
+            )
+            assert listed_audits.status_code == 200
+            # A bare code_audit Run is not an authorized Audit aggregate and
+            # must never become visible through the generic Run projection.
+            assert listed_audits.json()["items"] == []
+
+            combined_filter = await client.get(
+                "/api/v1/runs",
+                params={"kind": "code_audit", "status": "waiting_user"},
+            )
+            assert combined_filter.status_code == 200
+            assert combined_filter.json()["items"] == []
+
+            invalid_kind = await client.get(
+                "/api/v1/runs",
+                params={"kind": "unknown"},
+            )
+            assert invalid_kind.status_code == 422
 
             shown = await client.get(f"/api/v1/runs/{run_id}")
             assert shown.status_code == 200
+            assert shown.json()["kind"] == "general"
             assert shown.json()["objective"]["description"] == "Inspect the local service"
 
             metrics = await client.get(f"/api/v1/runs/{run_id}/metrics")
@@ -758,6 +1116,75 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
             )
             assert message_event["payload"]["message"] == "Focus on the HTTP endpoint"
             assert ("message", run_id, message_event["id"]) in runtime.workflow.calls
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_general_workflow_controls_keep_the_persisted_id_after_prefix_drift(
+    tmp_path: Path,
+) -> None:
+    workflow = FakeWorkflowClient(workflow_id_prefix="historical-workflow")
+    runtime = await _build_runtime(tmp_path, workflow=workflow)
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await _create_run(client)
+            run_id = str(created["id"])
+            persisted_workflow_id = f"historical-workflow-{run_id}"
+            assert created["temporal_workflow_id"] == persisted_workflow_id
+
+            workflow.workflow_id_prefix = "current-workflow"
+            assert workflow.workflow_id(run_id) == f"current-workflow-{run_id}"
+
+            message = await client.post(
+                f"/api/v1/runs/{run_id}/message",
+                json={"message": "Use the historical Workflow identity"},
+            )
+            compact = await client.post(
+                f"/api/v1/runs/{run_id}/compact",
+                json={"max_history_items": 25},
+            )
+            switched = await client.post(
+                f"/api/v1/runs/{run_id}/model",
+                json={"model_profile": "deep"},
+            )
+            tool_call = ToolCall(
+                id="tool-call-prefix-drift",
+                sdk_call_id="sdk-call-prefix-drift",
+                run_id=run_id,
+                agent_step_id="step-prefix-drift",
+                tool_id="python",
+            )
+            approval = Approval(
+                id="approval-prefix-drift",
+                run_id=run_id,
+                tool_call_id=tool_call.id,
+                tool_name="python",
+            )
+            await runtime.approval_repository.create_request(tool_call, approval)
+            approved = await client.post(
+                f"/api/v1/approvals/{approval.id}/approve",
+                json={},
+            )
+
+            assert [
+                message.status_code,
+                compact.status_code,
+                switched.status_code,
+                approved.status_code,
+            ] == [
+                202,
+                202,
+                202,
+                200,
+            ]
+            await _reconcile_workflow_signals_once(runtime)
+            assert workflow.workflow_ids == [
+                ("message", run_id, persisted_workflow_id),
+                ("compact", run_id, persisted_workflow_id),
+                ("switch_model", run_id, persisted_workflow_id),
+                ("approve", run_id, persisted_workflow_id),
+            ]
     finally:
         await runtime.control_plane.close()
 
@@ -957,6 +1384,7 @@ async def test_slow_pause_fence_rejects_ordinary_controls_until_paused(tmp_path:
                 ),
             ]
             assert [response.status_code for response in accepted] == [202, 202, 202, 200, 200]
+            await _reconcile_workflow_signals_once(runtime)
             assert [call[0] for call in runtime.workflow.calls] == [
                 "pause",
                 "message",
@@ -1556,9 +1984,9 @@ async def test_unified_errors_and_temporal_outage(tmp_path: Path) -> None:
             assert missing.status_code == 404
             assert missing.json() == {
                 "error": {
-                    "code": "run_not_found",
-                    "message": "Run 'missing' was not found",
-                    "details": {"entity": "Run", "entity_id": "missing"},
+                    "code": "resource_not_accessible",
+                    "message": "The requested resource was not found",
+                    "details": {},
                 }
             }
 
@@ -1685,6 +2113,8 @@ models:
     )
 
     runtime = await build_control_plane(settings)
+    assert isinstance(runtime.audit_service, AuditApplicationService)
+    assert isinstance(runtime.audit_preflight_service, AuditPreflightApplicationService)
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
@@ -1695,6 +2125,27 @@ models:
         assert cleanup_reconciler is not None and not cleanup_reconciler.done()
         assert connection_attempts == []
         async for client in _client(runtime):
+            disabled_preflight = await client.post(
+                "/api/v1/audits/preflight",
+                json={
+                    "repository_path": "/RIFTX-PREFLIGHT-CANARY",
+                    "unknown": "RIFTX-PREFLIGHT-CANARY",
+                },
+            )
+            assert disabled_preflight.status_code == 503
+            assert disabled_preflight.json()["error"]["code"] == "audit_feature_disabled"
+            assert "RIFTX-PREFLIGHT-CANARY" not in disabled_preflight.text
+            missing_preflight = await client.get(
+                "/api/v1/audits/preflight/missing-preflight-job"
+            )
+            missing_preflight_cancel = await client.post(
+                "/api/v1/audits/preflight/missing-preflight-job/cancel"
+            )
+            assert missing_preflight.status_code == 404
+            assert missing_preflight_cancel.status_code == 404
+            assert missing_preflight.json()["error"]["code"] == "resource_not_accessible"
+            assert missing_preflight_cancel.json() == missing_preflight.json()
+
             created = await client.post(
                 "/api/v1/runs",
                 json={"objective": "Wait for an explicit instruction"},
@@ -2156,7 +2607,20 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
         runtime_request = await runtime.runtime_approval_repository.get(approval.id)
         assert runtime_request is not None
         assert runtime_request.decided_by == principal_id
+        approval_intents = await _workflow_signal_records(runtime, str(run["id"]))
+        assert [(item.signal_kind, item.delivery_state) for item in approval_intents] == [
+            ("approve", "pending")
+        ]
+        assert approval_intents[0].workflow_id == run["temporal_workflow_id"]
+        await _reconcile_workflow_signals_once(runtime)
+        approval_intents = await _workflow_signal_records(runtime, str(run["id"]))
+        assert approval_intents[0].delivery_state == "delivered"
         assert ("approve", str(run["id"]), "approval-1") in runtime.workflow.calls
+        assert (
+            "approve",
+            str(run["id"]),
+            str(run["temporal_workflow_id"]),
+        ) in runtime.workflow.workflow_ids
         decision_events = await client.get(f"/api/v1/runs/{run['id']}/events")
         approved_event = next(
             item
@@ -2191,7 +2655,17 @@ async def test_approval_endpoints_decide_and_recover_after_restart(tmp_path: Pat
         )
         assert rejected.status_code == 200
         assert rejected.json()["reason"] == "Outside authorized scope"
+        approval_intents = await _workflow_signal_records(runtime, str(run["id"]))
+        assert [(item.signal_kind, item.delivery_state) for item in approval_intents] == [
+            ("approve", "delivered"),
+            ("reject", "pending"),
+        ]
+        await _reconcile_workflow_signals_once(runtime)
         assert ("reject", str(run["id"]), "approval-2") in runtime.workflow.calls
+        assert all(
+            item.delivery_state == "delivered"
+            for item in await _workflow_signal_records(runtime, str(run["id"]))
+        )
 
     await runtime.control_plane.close()
 
@@ -2262,8 +2736,8 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
             f"/api/v1/approvals/{approval.id}/{action}",
             json=first_payload,
         )
-        assert response.status_code == 503
-        assert response.json()["error"]["details"]["approval_saved"] is True
+        assert response.status_code == 200
+        assert response.json()["status"] == expected_status
         persisted = await runtime.approval_repository.get(approval.id)
         assert persisted is not None
         assert persisted.status.value == expected_status
@@ -2271,6 +2745,18 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
         principal_id = profile.json()["principal_id"]
         assert persisted.decided_by == principal_id
         assert persisted.reason == first_payload["reason"]
+        intents = await _workflow_signal_records(runtime, str(run["id"]))
+        assert len(intents) == 1
+        assert intents[0].signal_kind == action
+        assert intents[0].delivery_state == "pending"
+
+        await _reconcile_workflow_signals_once(runtime)
+        intents = await _workflow_signal_records(runtime, str(run["id"]))
+        assert len(intents) == 1
+        assert intents[0].delivery_state == "retryable"
+        assert intents[0].attempt == 1
+        assert intents[0].last_error_code == "reconciled_not_delivered"
+        assert not [call for call in runtime.workflow.calls if call[0] in {"approve", "reject"}]
 
         runtime.workflow.fail = False
         recovered = await client.post(
@@ -2282,9 +2768,15 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
         assert recovered.json()["status"] == expected_status
         assert recovered.json()["decided_by"] == principal_id
         assert recovered.json()["reason"] == first_payload["reason"]
+        assert len(await _workflow_signal_records(runtime, str(run["id"]))) == 1
+        await _reconcile_workflow_signals_once(runtime)
         assert [call for call in runtime.workflow.calls if call[0] in {"approve", "reject"}] == [
             (action, str(run["id"]), approval.id)
         ]
+        delivered = await _workflow_signal_records(runtime, str(run["id"]))
+        assert len(delivered) == 1
+        assert delivered[0].delivery_state == "delivered"
+        assert delivered[0].attempt == 2
         decided_events = await client.get(f"/api/v1/runs/{run['id']}/events")
         assert [
             item["event_type"]
@@ -2300,7 +2792,9 @@ async def test_approval_signal_retry_recovers_without_changing_saved_decision(
 
 
 @pytest.mark.asyncio
-async def test_approval_preserves_workflow_error_classification(tmp_path: Path) -> None:
+async def test_approval_preserves_workflow_error_classification_in_outbox(
+    tmp_path: Path,
+) -> None:
     runtime = await _build_runtime(tmp_path)
     async for client in _client(runtime.control_plane):
         run = await _create_run(client)
@@ -2329,9 +2823,23 @@ async def test_approval_preserves_workflow_error_classification(tmp_path: Path) 
             json={},
         )
 
-        assert response.status_code == 409
-        assert response.json()["error"]["code"] == "workflow_not_running"
-        assert response.json()["error"]["details"]["approval_saved"] is True
+        assert response.status_code == 200
+        assert response.json()["status"] == "approved"
+        pending = await _workflow_signal_records(runtime, str(run["id"]))
+        assert len(pending) == 1
+        assert pending[0].delivery_state == "pending"
+
+        await _reconcile_workflow_signals_once(runtime)
+
+        superseded = await _workflow_signal_records(runtime, str(run["id"]))
+        assert len(superseded) == 1
+        assert superseded[0].delivery_state == "superseded"
+        assert superseded[0].last_error_code == "workflow_not_running"
+        assert superseded[0].next_attempt_at is None
+        assert superseded[0].lease_owner is None
+        assert superseded[0].lease_expires_at is None
+        assert superseded[0].delivery_receipt_digest is None
+        assert runtime.workflow.calls == []
     await runtime.control_plane.close()
 
 
@@ -2419,7 +2927,7 @@ async def test_terminal_rest_lifecycle_and_start_failure(tmp_path: Path) -> None
 
             missing = await client.get("/api/v1/terminals/missing")
             assert missing.status_code == 404
-            assert missing.json()["error"]["code"] == "terminal_session_not_found"
+            assert missing.json()["error"]["code"] == "resource_not_accessible"
 
             failed = await client.post(
                 f"/api/v1/runs/{run['id']}/terminals",
@@ -2603,7 +3111,7 @@ def test_terminal_websocket_takeover_io_resize_interrupt_and_release(tmp_path: P
             ) as websocket:
                 error = websocket.receive_json()
                 assert error["type"] == "error"
-                assert error["code"] == "terminal_session_not_found"
+                assert error["code"] == "resource_not_accessible"
     finally:
         asyncio.run(runtime.control_plane.close())
 
@@ -3074,7 +3582,7 @@ async def test_artifact_registration_rejects_escaped_and_invalid_sources(tmp_pat
                 json={"source_path": str(symlink)},
             )
             assert linked.status_code == 409
-            assert linked.json()["error"]["code"] == "artifact_source_outside_run"
+            assert linked.json()["error"]["code"] == "artifact_source_unavailable"
 
             missing = await client.post(
                 f"/api/v1/runs/{run_id}/artifacts",
@@ -3417,7 +3925,11 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
                 "platform": "windows",
                 "architecture": "amd64",
                 "runner_version": "2.0.0",
-                "capabilities": ["powershell", "conpty"],
+                "capabilities": [
+                    "powershell",
+                    "conpty",
+                    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+                ],
                 "labels": {"zone": "internal"},
             },
         )
@@ -3438,7 +3950,7 @@ async def test_runner_registration_heartbeat_and_node_management(tmp_path: Path)
                 "platform": "windows",
                 "architecture": "amd64",
                 "runner_version": "2.0.1",
-                "capabilities": ["powershell"],
+                "capabilities": ["powershell", RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
             },
         )
         assert repeated.status_code == 200
@@ -3576,9 +4088,15 @@ async def test_every_runner_callback_rejects_invalid_credentials_with_structured
                     headers=headers,
                 ),
                 await client.post(
-                    "/api/v1/runner/commands/command-auth/finish",
+                    "/api/v1/runner/commands/command-auth/finish-owned",
                     headers=headers,
-                    json={"lease_id": "lease-auth", "succeeded": True},
+                    json={
+                        "lease_id": "lease-auth",
+                        "state_version": 0,
+                        "envelope_digest": "a" * 64,
+                        "binding_digest": "b" * 64,
+                        "succeeded": True,
+                    },
                 ),
                 await client.post(
                     "/api/v1/runner/commands/command-auth/lease",
@@ -3629,7 +4147,7 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
     invalid_field: str,
     invalid_value: object,
 ) -> None:
-    runtime = await _build_runtime(tmp_path)
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
     try:
         async for client in _client(runtime.control_plane):
             registration = await client.post(
@@ -3640,6 +4158,7 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
                     "name": "Runner Cancel ACK",
                     "platform": "linux",
                     "architecture": "x86_64",
+                    "capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
                 },
             )
             assert registration.status_code == 200
@@ -3683,6 +4202,16 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
                 "runner-cancel-ack",
                 kind=RunnerCommandKind.CANCEL,
                 idempotency_key=f"cancel-ack:{invalid_field}",
+                run_id=str(run["id"]),
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.SAFETY_STOP,
+                resource_kind=RunnerResourceKind.EXECUTION,
+                resource_id=execution.id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    result_schema="riftx.runner-result/execution-stop/v1",
+                    stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+                ),
                 payload={
                     "execution_id": "execution-cancel-ack",
                     "execution_key": "execution-key-cancel-ack",
@@ -3704,10 +4233,11 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
                 "physical_stop_confirmed": True,
             }
             wrong_lease = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": "wrong-lease",
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
                     "result": valid_ack,
                 },
@@ -3720,10 +4250,11 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
 
             invalid_ack = {**valid_ack, invalid_field: invalid_value}
             rejected = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": leased_command["lease_id"],
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
                     "result": invalid_ack,
                 },
@@ -3731,10 +4262,8 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
 
             assert rejected.status_code == 409
             assert rejected.json()["error"] == {
-                "code": "runner_cancel_ack_invalid",
-                "message": (
-                    "Runner cancellation acknowledgement did not prove the owning process stopped"
-                ),
+                "code": "runner_stop_ack_invalid",
+                "message": "Runner stop acknowledgement did not prove the owning resource stopped",
                 "details": {
                     "command_id": command.id,
                     "invalid_fields": [invalid_field],
@@ -3742,10 +4271,11 @@ async def test_runner_cancel_ack_requires_exact_execution_owner_and_physical_sto
             }
 
             accepted = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": leased_command["lease_id"],
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
                     "result": valid_ack,
                 },
@@ -3773,7 +4303,7 @@ async def test_runner_cancel_ack_preserves_confirmed_natural_execution_outcome(
     tmp_path: Path,
     status: ExecutionStatus,
 ) -> None:
-    runtime = await _build_runtime(tmp_path)
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
     try:
         async for client in _client(runtime.control_plane):
             registration = await client.post(
@@ -3784,6 +4314,7 @@ async def test_runner_cancel_ack_preserves_confirmed_natural_execution_outcome(
                     "name": "Runner Natural Outcome ACK",
                     "platform": "linux",
                     "architecture": "x86_64",
+                    "capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
                 },
             )
             assert registration.status_code == 200
@@ -3830,6 +4361,16 @@ async def test_runner_cancel_ack_preserves_confirmed_natural_execution_outcome(
                 "runner-natural-ack",
                 kind=RunnerCommandKind.CANCEL,
                 idempotency_key=f"cancel-natural:{status.value}",
+                run_id=str(run["id"]),
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.SAFETY_STOP,
+                resource_kind=RunnerResourceKind.EXECUTION,
+                resource_id=execution.id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    result_schema="riftx.runner-result/execution-stop/v1",
+                    stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+                ),
                 payload={
                     "execution_id": execution_id,
                     "execution_key": execution_key,
@@ -3839,10 +4380,11 @@ async def test_runner_cancel_ack_preserves_confirmed_natural_execution_outcome(
             leased_command = leased.json()["command"]
             assert leased_command["id"] == command.id
             acknowledged = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": leased_command["lease_id"],
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
                     "result": {
                         "execution_id": execution_id,
@@ -3876,7 +4418,7 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
     executor_type: ExecutorType,
     natural_status: ExecutionStatus,
 ) -> None:
-    runtime = await _build_runtime(tmp_path)
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
     try:
         async for client in _client(runtime.control_plane):
             registration = await client.post(
@@ -3887,6 +4429,7 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
                     "name": "Runner Starting Natural Stop",
                     "platform": "linux",
                     "architecture": "x86_64",
+                    "capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
                 },
             )
             assert registration.status_code == 200
@@ -3928,15 +4471,70 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
             )
             execution.transition_to(ExecutionStatus.STARTING)
             await runtime.execution_repository.create_if_absent(execution)
+            terminal_id = f"terminal-starting-natural-{suffix}"
             if executor_type is ExecutorType.PTY:
                 await runtime.terminal_repository.create(
                     TerminalSession(
-                        id=f"terminal-starting-natural-{suffix}",
+                        id=terminal_id,
                         run_id=str(run["id"]),
                         execution_id=execution.id,
                     )
                 )
+            launch_kind = (
+                RunnerCommandKind.TERMINAL_START
+                if executor_type is ExecutorType.PTY
+                else RunnerCommandKind.EXECUTE
+            )
+            launch_request: dict[str, object] = {
+                "run_id": str(run["id"]),
+                "node_id": "runner-starting-natural",
+                "execution_id": execution.id,
+                "execution_key": execution.execution_key,
+                "runner_principal": principal,
+            }
+            launch_payload: dict[str, object] = {
+                "execution_id": execution.id,
+                "request": launch_request,
+            }
+            if executor_type is ExecutorType.PTY:
+                launch_payload["session_id"] = terminal_id
+                launch_request["session_id"] = terminal_id
+            launch_command, _ = await runtime.control_plane.runner_control_service.enqueue(
+                "runner-starting-natural",
+                kind=launch_kind,
+                idempotency_key=f"launch-starting-natural:{suffix}",
+                run_id=str(run["id"]),
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=(
+                    RunnerOperationFamily.TERMINAL
+                    if executor_type is ExecutorType.PTY
+                    else RunnerOperationFamily.EXECUTION
+                ),
+                resource_kind=(
+                    RunnerResourceKind.TERMINAL_SESSION
+                    if executor_type is ExecutorType.PTY
+                    else RunnerResourceKind.EXECUTION
+                ),
+                resource_id=terminal_id if executor_type is ExecutorType.PTY else execution.id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    max_output_bytes=100_000_000,
+                    allowed_streams=("stderr", "stdout"),
+                    result_schema=(
+                        "riftx.runner-result/terminal-start/v1"
+                        if executor_type is ExecutorType.PTY
+                        else "riftx.runner-result/execution-start/v1"
+                    ),
+                ),
+                payload=launch_payload,
+            )
+            leased_launch = await _lease_and_finish_runner_command(
+                client,
+                headers,
+                launch_command.id,
+            )
             natural_report = {
+                **_runner_execution_callback_fields(leased_launch),
                 "status": natural_status.value,
                 "exit_code": 0,
                 "physical_stop_confirmed": True,
@@ -3959,6 +4557,16 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
                 "runner-starting-natural",
                 kind=RunnerCommandKind.CANCEL,
                 idempotency_key=f"cancel-starting-natural:{suffix}",
+                run_id=str(run["id"]),
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.SAFETY_STOP,
+                resource_kind=RunnerResourceKind.EXECUTION,
+                resource_id=execution.id,
+                execution_id=execution.id,
+                output_contract=RunnerOutputContract(
+                    result_schema="riftx.runner-result/execution-stop/v1",
+                    stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+                ),
                 payload={
                     "execution_id": execution.id,
                     "execution_key": execution.execution_key,
@@ -3975,10 +4583,11 @@ async def test_starting_execution_accepts_natural_stop_proof_and_cancel_ack(
             assert repeated.status_code == 200
             assert repeated.json()["status"] == "cancelled"
             acknowledged = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": leased_command["lease_id"],
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
                     "result": {
                         "execution_id": execution.id,
@@ -4069,6 +4678,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 "name": "Runner A",
                 "platform": "linux",
                 "architecture": "x86_64",
+                "capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
             },
         )
         token = registration.json()["runner_token"]
@@ -4087,6 +4697,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 "name": "Runner B",
                 "platform": "linux",
                 "architecture": "x86_64",
+                "capabilities": [RUNNER_COMMAND_OWNERSHIP_CAPABILITY],
             },
         )
         other_headers = {
@@ -4123,17 +4734,51 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         _, created = await runtime.execution_repository.create_if_absent(execution)
         assert created is True
 
+        launch_payload: dict[str, object] = {
+            "execution_id": execution.id,
+            "request": {
+                "run_id": execution.run_id,
+                "node_id": execution.node_id,
+                "execution_id": execution.id,
+                "execution_key": execution.execution_key,
+                "runner_principal": principal,
+                "argv": execution.argv,
+                "cwd": execution.cwd,
+            },
+        }
         command, command_created = await runtime.control_plane.runner_control_service.enqueue(
             "runner-a",
             kind=RunnerCommandKind.EXECUTE,
             idempotency_key="execute:remote-key",
-            payload={"execution_id": execution.id, "argv": execution.argv},
+            run_id=str(run["id"]),
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.EXECUTION,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=execution.id,
+            execution_id=execution.id,
+            output_contract=RunnerOutputContract(
+                max_output_bytes=100_000_000,
+                allowed_streams=("stderr", "stdout"),
+                result_schema="riftx.runner-result/execution-start/v1",
+            ),
+            payload=launch_payload,
         )
         repeated, repeated_created = await runtime.control_plane.runner_control_service.enqueue(
             "runner-a",
             kind=RunnerCommandKind.EXECUTE,
             idempotency_key="execute:remote-key",
-            payload={"execution_id": execution.id, "argv": ["ignored"]},
+            run_id=str(run["id"]),
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.EXECUTION,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=execution.id,
+            execution_id=execution.id,
+            output_contract=RunnerOutputContract(
+                max_output_bytes=100_000_000,
+                allowed_streams=("stderr", "stdout"),
+                result_schema="riftx.runner-result/execution-start/v1",
+            ),
+            payload=launch_payload,
         )
         assert command_created is True
         assert repeated_created is False
@@ -4145,11 +4790,15 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert leased_command["kind"] == "execute"
         assert leased_command["target"] == principal
         first_lease = leased_command["lease_id"]
+        execution_callback_fields = _runner_execution_callback_fields(leased_command)
 
         renewed = await client.post(
             f"/api/v1/runner/commands/{command.id}/lease",
             headers=headers,
-            json={"lease_id": first_lease},
+            json={
+                "lease_id": first_lease,
+                **_runner_command_callback_fields(leased_command),
+            },
         )
         assert renewed.status_code == 200
         renewed_payload = renewed.json()
@@ -4161,7 +4810,10 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         cross_node_renewal = await client.post(
             f"/api/v1/runner/commands/{command.id}/lease",
             headers=other_headers,
-            json={"lease_id": first_lease},
+            json={
+                "lease_id": first_lease,
+                **_runner_command_callback_fields(leased_command),
+            },
         )
         assert cross_node_renewal.status_code == 401
 
@@ -4178,21 +4830,61 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         stale_renewal = await client.post(
             f"/api/v1/runner/commands/{command.id}/lease",
             headers=headers,
-            json={"lease_id": first_lease},
+            json={
+                "lease_id": first_lease,
+                **_runner_command_callback_fields(leased_command),
+            },
         )
         assert stale_renewal.status_code == 409
 
         stale_finish = await client.post(
-            f"/api/v1/runner/commands/{command.id}/finish",
+            f"/api/v1/runner/commands/{command.id}/finish-owned",
             headers=headers,
-            json={"lease_id": first_lease, "succeeded": True},
+            json={
+                "lease_id": first_lease,
+                **_runner_command_callback_fields(leased_command),
+                "succeeded": True,
+            },
         )
         assert stale_finish.status_code == 409
+
+        oversized_result = await client.post(
+            f"/api/v1/runner/commands/{command.id}/finish-owned",
+            headers=headers,
+            json={
+                "lease_id": re_leased_command["lease_id"],
+                **_runner_command_callback_fields(re_leased_command),
+                "succeeded": True,
+                "result": {"value": "x" * (64 * 1024)},
+            },
+        )
+        assert oversized_result.status_code == 409
+        assert oversized_result.json()["error"]["code"] == "runner_result_too_large"
+
+        finished = await client.post(
+            f"/api/v1/runner/commands/{command.id}/finish-owned",
+            headers=headers,
+            json={
+                "lease_id": re_leased_command["lease_id"],
+                **_runner_command_callback_fields(re_leased_command),
+                "succeeded": True,
+                "result": {
+                    "execution_id": execution.id,
+                    "local_execution_id": execution.id,
+                    "execution_key": execution.execution_key,
+                    "owner": principal,
+                    "status": "running",
+                },
+            },
+        )
+        assert finished.status_code == 200, finished.text
+        assert finished.json()["status"] == "completed"
 
         running = await client.post(
             f"/api/v1/runner/executions/{execution.id}/status",
             headers=headers,
             json={
+                **execution_callback_fields,
                 "status": "running",
                 "pid": 4242,
                 "process_group_id": 4242,
@@ -4216,6 +4908,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 f"/api/v1/runner/executions/{execution.id}/status",
                 headers=headers,
                 json={
+                    **execution_callback_fields,
                     "status": invalid_status,
                     "physical_stop_confirmed": True,
                 },
@@ -4230,7 +4923,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         cross_node_status = await client.post(
             f"/api/v1/runner/executions/{execution.id}/status",
             headers=other_headers,
-            json={"status": "running", "pid": 4243},
+            json={**execution_callback_fields, "status": "running", "pid": 4243},
         )
         assert cross_node_status.status_code == 401
         assert cross_node_status.json()["error"]["code"] == ("runner_execution_scope_mismatch")
@@ -4238,7 +4931,12 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         output = await client.post(
             f"/api/v1/runner/executions/{execution.id}/output",
             headers=headers,
-            json={"stream": "stdout", "offset": 0, "data": "aGVsbG8K"},
+            json={
+                **execution_callback_fields,
+                "stream": "stdout",
+                "offset": 0,
+                "data": "aGVsbG8K",
+            },
         )
         assert output.status_code == 200
         assert output.json()["next_offset"] == 6
@@ -4247,7 +4945,12 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         replay = await client.post(
             f"/api/v1/runner/executions/{execution.id}/output",
             headers=headers,
-            json={"stream": "stdout", "offset": 0, "data": "aGVsbG8K"},
+            json={
+                **execution_callback_fields,
+                "stream": "stdout",
+                "offset": 0,
+                "data": "aGVsbG8K",
+            },
         )
         assert replay.status_code == 409
         assert replay.json()["error"]["code"] == "runner_output_offset_mismatch"
@@ -4255,7 +4958,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         missing_stop_proof = await client.post(
             f"/api/v1/runner/executions/{execution.id}/status",
             headers=headers,
-            json={"status": "exited", "exit_code": 0},
+            json={**execution_callback_fields, "status": "exited", "exit_code": 0},
         )
         assert missing_stop_proof.status_code == 409
         assert missing_stop_proof.json()["error"] == {
@@ -4268,6 +4971,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
             f"/api/v1/runner/executions/{execution.id}/status",
             headers=headers,
             json={
+                **execution_callback_fields,
                 "status": "exited",
                 "exit_code": 0,
                 "physical_stop_confirmed": True,
@@ -4299,6 +5003,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
             f"/api/v1/runner/executions/{legacy_terminal_execution.id}/status",
             headers=headers,
             json={
+                **execution_callback_fields,
                 "status": "exited",
                 "exit_code": 0,
                 "physical_stop_confirmed": True,
@@ -4306,12 +5011,19 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 "tool_version": "1.0",
             },
         )
-        assert legacy_terminal_reconciled.status_code == 200
-        assert legacy_terminal_reconciled.json()["status"] == "completed"
-        assert legacy_terminal_reconciled.json()["physical_stop_confirmed_at"] is not None
-        assert legacy_terminal_reconciled.json()["exit_code"] == 0
-        assert legacy_terminal_reconciled.json()["executable_path"] == "/usr/bin/legacy-tool"
-        assert legacy_terminal_reconciled.json()["tool_version"] == "1.0"
+        assert legacy_terminal_reconciled.status_code == 409
+        assert legacy_terminal_reconciled.json()["error"]["code"] == (
+            "runner_execution_callback_binding_missing"
+        )
+        persisted_legacy = await runtime.execution_repository.get(
+            legacy_terminal_execution.id
+        )
+        assert persisted_legacy is not None
+        assert persisted_legacy.status is ExecutionStatus.COMPLETED
+        assert persisted_legacy.physical_stop_confirmed_at is None
+        assert persisted_legacy.exit_code is None
+        assert persisted_legacy.executable_path == "/usr/bin/legacy-tool"
+        assert persisted_legacy.tool_version is None
 
         terminal_paths = paths.terminal(str(run["id"]), "terminal-remote")
         terminal_execution = Execution(
@@ -4335,10 +5047,25 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 execution_id=terminal_execution.id,
             )
         )
+        terminal_launch = await _bind_test_terminal_launch(
+            runtime,
+            client,
+            headers,
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            terminal_id="terminal-remote",
+            execution_id=terminal_execution.id,
+        )
+        terminal_callback_fields = _runner_execution_callback_fields(terminal_launch)
         terminal_running = await client.post(
             f"/api/v1/runner/executions/{terminal_execution.id}/status",
             headers=headers,
-            json={"status": "running", "pid": 5150, "process_group_id": 5150},
+            json={
+                **terminal_callback_fields,
+                "status": "running",
+                "pid": 5150,
+                "process_group_id": 5150,
+            },
         )
         assert terminal_running.status_code == 200
         persisted_terminal = await runtime.terminal_repository.get("terminal-remote")
@@ -4348,7 +5075,12 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         terminal_output = await client.post(
             f"/api/v1/runner/executions/{terminal_execution.id}/output",
             headers=headers,
-            json={"stream": "stdout", "offset": 0, "data": "UkVBRFkK"},
+            json={
+                **terminal_callback_fields,
+                "stream": "stdout",
+                "offset": 0,
+                "data": "UkVBRFkK",
+            },
         )
         assert terminal_output.status_code == 200
         assert terminal_paths.transcript.read_bytes() == b"READY\n"
@@ -4357,6 +5089,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
             f"/api/v1/runner/executions/{terminal_execution.id}/status",
             headers=headers,
             json={
+                **terminal_callback_fields,
                 "status": "exited",
                 "exit_code": 0,
                 "physical_stop_confirmed": True,
@@ -4390,17 +5123,32 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 execution_id=failed_execution.id,
             )
         )
+        failed_launch = await _bind_test_terminal_launch(
+            runtime,
+            client,
+            headers,
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            terminal_id="terminal-failed-projection",
+            execution_id=failed_execution.id,
+        )
+        failed_callback_fields = _runner_execution_callback_fields(failed_launch)
         assert (
             await client.post(
                 f"/api/v1/runner/executions/{failed_execution.id}/status",
                 headers=headers,
-                json={"status": "running", "pid": 5250, "process_group_id": 5250},
+                json={
+                    **failed_callback_fields,
+                    "status": "running",
+                    "pid": 5250,
+                    "process_group_id": 5250,
+                },
             )
         ).status_code == 200
         failed = await client.post(
             f"/api/v1/runner/executions/{failed_execution.id}/status",
             headers=headers,
-            json={"status": "failed", "exit_code": 1},
+            json={**failed_callback_fields, "status": "failed", "exit_code": 1},
         )
         assert failed.status_code == 200
         assert failed.json()["physical_stop_confirmed_at"] is None
@@ -4410,7 +5158,11 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         failed_reconciled = await client.post(
             f"/api/v1/runner/executions/{failed_execution.id}/status",
             headers=headers,
-            json={"status": "completed", "physical_stop_confirmed": True},
+            json={
+                **failed_callback_fields,
+                "status": "completed",
+                "physical_stop_confirmed": True,
+            },
         )
         assert failed_reconciled.status_code == 200
         assert failed_reconciled.json()["status"] == "cancelled"
@@ -4441,17 +5193,32 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 execution_id=lost_execution.id,
             )
         )
+        lost_launch = await _bind_test_terminal_launch(
+            runtime,
+            client,
+            headers,
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            terminal_id="terminal-lost-projection",
+            execution_id=lost_execution.id,
+        )
+        lost_callback_fields = _runner_execution_callback_fields(lost_launch)
         assert (
             await client.post(
                 f"/api/v1/runner/executions/{lost_execution.id}/status",
                 headers=headers,
-                json={"status": "running", "pid": 5350, "process_group_id": 5350},
+                json={
+                    **lost_callback_fields,
+                    "status": "running",
+                    "pid": 5350,
+                    "process_group_id": 5350,
+                },
             )
         ).status_code == 200
         lost = await client.post(
             f"/api/v1/runner/executions/{lost_execution.id}/status",
             headers=headers,
-            json={"status": "lost"},
+            json={**lost_callback_fields, "status": "lost"},
         )
         assert lost.status_code == 200
         lost_terminal = await runtime.terminal_repository.get("terminal-lost-projection")
@@ -4461,6 +5228,16 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
             "runner-a",
             kind=RunnerCommandKind.CANCEL,
             idempotency_key="cancel:terminal-lost-projection",
+            run_id=str(run["id"]),
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=RunnerOperationFamily.SAFETY_STOP,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=lost_execution.id,
+            execution_id=lost_execution.id,
+            output_contract=RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1",
+                stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+            ),
             payload={
                 "execution_id": lost_execution.id,
                 "execution_key": lost_execution.execution_key,
@@ -4470,6 +5247,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         leased_recovery = recovery_lease.json()["command"]
         assert leased_recovery["id"] == recovery_command.id
         natural_stop_report = {
+            **lost_callback_fields,
             "status": "completed",
             "physical_stop_confirmed": True,
             "executable_path": "/usr/bin/pwsh",
@@ -4510,10 +5288,11 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         assert reconciled_terminal is not None
         assert reconciled_terminal.status is TerminalStatus.CLOSED
         recovery_ack = await client.post(
-            f"/api/v1/runner/commands/{recovery_command.id}/finish",
+            f"/api/v1/runner/commands/{recovery_command.id}/finish-owned",
             headers=headers,
             json={
                 "lease_id": leased_recovery["lease_id"],
+                **_runner_command_callback_fields(leased_recovery),
                 "succeeded": True,
                 "result": {
                     "execution_id": lost_execution.id,
@@ -4549,16 +5328,35 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
                 execution_id=barrier_execution.id,
             )
         )
+        barrier_launch = await _bind_test_terminal_launch(
+            runtime,
+            client,
+            headers,
+            run_id=str(run["id"]),
+            node_id="runner-a",
+            terminal_id="terminal-status-barrier",
+            execution_id=barrier_execution.id,
+        )
+        barrier_callback_fields = _runner_execution_callback_fields(barrier_launch)
         running_barrier, cancelled_barrier = await asyncio.gather(
             client.post(
                 f"/api/v1/runner/executions/{barrier_execution.id}/status",
                 headers=headers,
-                json={"status": "running", "pid": 5450, "process_group_id": 5450},
+                json={
+                    **barrier_callback_fields,
+                    "status": "running",
+                    "pid": 5450,
+                    "process_group_id": 5450,
+                },
             ),
             client.post(
                 f"/api/v1/runner/executions/{barrier_execution.id}/status",
                 headers=headers,
-                json={"status": "cancelled", "physical_stop_confirmed": True},
+                json={
+                    **barrier_callback_fields,
+                    "status": "cancelled",
+                    "physical_stop_confirmed": True,
+                },
             ),
         )
         assert running_barrier.status_code in {200, 409}
@@ -4598,34 +5396,6 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
         ]
         assert barrier_event_types[-1] == "terminal.closed"
 
-        await asyncio.sleep(re_leased_command["lease_duration_seconds"] + 0.05)
-        final_lease = await client.get("/api/v1/runner/commands/next", headers=headers)
-        final_leased_command = final_lease.json()["command"]
-        assert final_leased_command["id"] == command.id
-        oversized_result = await client.post(
-            f"/api/v1/runner/commands/{command.id}/finish",
-            headers=headers,
-            json={
-                "lease_id": final_leased_command["lease_id"],
-                "succeeded": True,
-                "result": {"value": "x" * (64 * 1024)},
-            },
-        )
-        assert oversized_result.status_code == 409
-        assert oversized_result.json()["error"]["code"] == "runner_result_too_large"
-
-        finished = await client.post(
-            f"/api/v1/runner/commands/{command.id}/finish",
-            headers=headers,
-            json={
-                "lease_id": final_leased_command["lease_id"],
-                "succeeded": True,
-                "result": {"execution_id": execution.id},
-            },
-        )
-        assert finished.status_code == 200, finished.text
-        assert finished.json()["status"] == "completed"
-
         empty = await client.get(
             "/api/v1/runner/commands/next?wait_seconds=0.01",
             headers=headers,
@@ -4639,7 +5409,7 @@ async def test_remote_runner_control_channel_reconnects_and_bounds_updates(
 async def test_remote_target_http_command_uploads_bounded_response_body(
     tmp_path: Path,
 ) -> None:
-    runtime = await _build_runtime(tmp_path)
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
     try:
         async for client in _client(runtime.control_plane):
             registration = await client.post(
@@ -4650,7 +5420,10 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
                     "name": "Runner HTTP",
                     "platform": "linux",
                     "architecture": "x86_64",
-                    "capabilities": ["target_http"],
+                    "capabilities": [
+                        "target_http",
+                        RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+                    ],
                 },
             )
             headers = {
@@ -4659,21 +5432,95 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
                 "X-RiftX-Runner-Instance-ID": registration.json()["principal"]["instance_id"],
                 "X-RiftX-Runner-Epoch": str(registration.json()["principal"]["epoch"]),
             }
+            run_response = await client.post(
+                "/api/v1/runs",
+                json={
+                    "objective": "Upload a bounded remote HTTP response",
+                    "node_id": "runner-http",
+                    "engagement": {"name": "Remote Target HTTP ownership"},
+                },
+            )
+            assert run_response.status_code == 201
+            run = run_response.json()
+            database = runtime.control_plane.database
+            await SQLAlchemyAgentSessionRepository(database.session_factory).create(
+                AgentSession(
+                    id="session-target-http-control",
+                    run_id=str(run["id"]),
+                    model_profile="fast",
+                )
+            )
+            await SQLAlchemyAgentCycleRepository(database.session_factory).create(
+                RuntimeAgentCycle(
+                    id="cycle-target-http-control",
+                    run_id=str(run["id"]),
+                    session_id="session-target-http-control",
+                    sequence=1,
+                )
+            )
+            await SQLAlchemyAgentStepRepository(database.session_factory).create(
+                AgentStep(
+                    id="step-target-http-control",
+                    cycle_id="cycle-target-http-control",
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_PROPOSAL,
+                )
+            )
+            tool_call_id = "intent-target-http-control"
+            await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+                ToolCallIntent(
+                    id=tool_call_id,
+                    run_id=str(run["id"]),
+                    session_id="session-target-http-control",
+                    cycle_id="cycle-target-http-control",
+                    step_id="step-target-http-control",
+                    tool_id="target_http",
+                )
+            )
             command, created = await runtime.control_plane.runner_control_service.enqueue(
                 "runner-http",
                 kind=RunnerCommandKind.TARGET_HTTP,
                 idempotency_key="target-http:integration-key",
-                payload={"max_response_bytes": 32},
+                run_id=str(run["id"]),
+                origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+                operation_family=RunnerOperationFamily.TARGET_HTTP,
+                resource_kind=RunnerResourceKind.TARGET_HTTP_INTENT,
+                resource_id=tool_call_id,
+                output_contract=RunnerOutputContract(
+                    max_result_bytes=64 * 1024,
+                    max_output_bytes=32,
+                    allowed_streams=("command",),
+                    result_schema="riftx.runner-result/target-http/v1",
+                ),
+                payload={
+                    "launch": {
+                        "run_id": str(run["id"]),
+                        "session_id": "session-target-http-control",
+                        "tool_call_id": tool_call_id,
+                        "node_id": "runner-http",
+                        "scope": {"domains": ["example.com"]},
+                        "request": {
+                            "execution_key": "target-http:integration-key",
+                            "method": "GET",
+                            "url": "https://example.com/",
+                            "headers": {},
+                            "timeout_seconds": 5,
+                            "max_response_bytes": 32,
+                        },
+                    },
+                },
             )
             assert created is True
             leased = await client.get("/api/v1/runner/commands/next", headers=headers)
-            lease_id = leased.json()["command"]["lease_id"]
+            leased_command = leased.json()["command"]
+            lease_id = leased_command["lease_id"]
 
             uploaded = await client.post(
                 f"/api/v1/runner/commands/{command.id}/output",
                 headers=headers,
                 json={
                     "lease_id": lease_id,
+                    **_runner_command_callback_fields(leased_command),
                     "offset": 0,
                     "data": base64.b64encode(b"remote body").decode(),
                 },
@@ -4686,6 +5533,7 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
                 headers=headers,
                 json={
                     "lease_id": lease_id,
+                    **_runner_command_callback_fields(leased_command),
                     "offset": 0,
                     "data": base64.b64encode(b"remote body").decode(),
                 },
@@ -4698,6 +5546,7 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
                 headers=headers,
                 json={
                     "lease_id": lease_id,
+                    **_runner_command_callback_fields(leased_command),
                     "offset": 11,
                     "data": base64.b64encode(b"x" * 22).decode(),
                 },
@@ -4706,12 +5555,23 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
             assert oversized.json()["error"]["code"] == "runner_command_output_too_large"
 
             finished = await client.post(
-                f"/api/v1/runner/commands/{command.id}/finish",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": lease_id,
+                    **_runner_command_callback_fields(leased_command),
                     "succeeded": True,
-                    "result": {"result": {"status_code": 200}},
+                    "result": {
+                        "result": {
+                            "request_id": "request-target-http-control",
+                            "execution_key": "target-http:integration-key",
+                            "request_hash": "a" * 64,
+                            "status_code": 200,
+                            "elapsed_ms": 1,
+                            "final_url": "https://example.com/",
+                            "truncated": False,
+                        }
+                    },
                 },
             )
             assert finished.status_code == 200
@@ -4727,7 +5587,7 @@ async def test_remote_target_http_command_uploads_bounded_response_body(
 async def test_remote_terminal_api_routes_commands_and_streams_transcript(
     tmp_path: Path,
 ) -> None:
-    runtime = await _build_runtime(tmp_path)
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
     try:
         async for client in _client(runtime.control_plane):
             registration = await client.post(
@@ -4738,7 +5598,11 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
                     "name": "Windows Runner A",
                     "platform": "windows",
                     "architecture": "amd64",
-                    "capabilities": ["powershell", "conpty"],
+                    "capabilities": [
+                        "powershell",
+                        "conpty",
+                        RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+                    ],
                 },
             )
             token = registration.json()["runner_token"]
@@ -4781,15 +5645,21 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
             running = await client.post(
                 f"/api/v1/runner/executions/{terminal['execution_id']}/status",
                 headers=headers,
-                json={"status": "running", "pid": 5150, "process_group_id": 5150},
+                json={
+                    **_runner_execution_callback_fields(start_command),
+                    "status": "running",
+                    "pid": 5150,
+                    "process_group_id": 5150,
+                },
             )
             assert running.status_code == 200
             assert running.json()["pid"] == 5150
             await client.post(
-                f"/api/v1/runner/commands/{start_command['id']}/finish",
+                f"/api/v1/runner/commands/{start_command['id']}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": start_command["lease_id"],
+                    **_runner_command_callback_fields(start_command),
                     "succeeded": True,
                     "result": {"session_id": terminal["id"]},
                 },
@@ -4798,7 +5668,12 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
             uploaded = await client.post(
                 f"/api/v1/runner/executions/{terminal['execution_id']}/output",
                 headers=headers,
-                json={"stream": "stdout", "offset": 0, "data": "UkVBRFkNCg=="},
+                json={
+                    **_runner_execution_callback_fields(start_command),
+                    "stream": "stdout",
+                    "offset": 0,
+                    "data": "UkVBRFkNCg==",
+                },
             )
             assert uploaded.status_code == 200
             output = await runtime.control_plane.terminal_service.read(terminal["id"])
@@ -4820,6 +5695,7 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
                 f"/api/v1/runner/executions/{terminal['execution_id']}/status",
                 headers=headers,
                 json={
+                    **_runner_execution_callback_fields(start_command),
                     "status": "cancelled",
                     "exit_code": 130,
                     "physical_stop_confirmed": True,
@@ -4829,10 +5705,11 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
             assert cancelled.json()["exit_code"] == 130
             assert cancelled.json()["physical_stop_confirmed_at"] is not None
             close_acknowledged = await client.post(
-                f"/api/v1/runner/commands/{close_command['id']}/finish",
+                f"/api/v1/runner/commands/{close_command['id']}/finish-owned",
                 headers=headers,
                 json={
                     "lease_id": close_command["lease_id"],
+                    **_runner_command_callback_fields(close_command),
                     "succeeded": True,
                     "result": {
                         "execution_id": terminal["execution_id"],
@@ -4841,6 +5718,7 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
                         "owner": principal,
                         "status": "cancelled",
                         "physical_stop_confirmed": True,
+                        "session_id": terminal["id"],
                     },
                 },
             )
@@ -4851,6 +5729,374 @@ async def test_remote_terminal_api_routes_commands_and_streams_transcript(
             assert fetched.json()["pid"] == 5150
             assert fetched.json()["exit_code"] == 130
     finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_four_null_terminal_replacement_runs_daemon_and_projects_receipt(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path, runner_command_lease_seconds=1.0)
+    daemon: RunnerDaemon | None = None
+    try:
+        async for client in _client(runtime.control_plane):
+            node_id = "legacy-terminal-runner"
+            terminal_id = "legacy-terminal-session"
+            execution_id = "legacy-terminal-execution"
+            execution_key = f"terminal:{terminal_id}"
+            runner_state = tmp_path / "legacy-terminal-runner-state"
+            runner_client = RunnerControlClient(
+                server_url="http://test",
+                node_id=node_id,
+                credentials=RunnerCredentialStore(runner_state / "runner-credentials.json"),
+                registration_token=RUNNER_BOOTSTRAP_TOKEN,
+                client=client,
+            )
+            daemon_config = RunnerDaemonConfig(
+                server_url="http://test",
+                node_id=node_id,
+                name="Legacy Terminal Runner",
+                state_path=runner_state,
+                platform="windows",
+                architecture="amd64",
+                capabilities=("conpty",),
+                registration_token=RUNNER_BOOTSTRAP_TOKEN,
+                poll_wait_seconds=0.01,
+                require_containment=False,
+            )
+            await runner_client.connect(daemon_config.registration)
+            principal = runner_client.principal
+            assert principal is not None
+
+            run_response = await client.post(
+                "/api/v1/runs",
+                json={
+                    "objective": "Reconcile a pre-ownership remote terminal",
+                    "node_id": node_id,
+                    "engagement": {"name": "Legacy terminal replacement E2E"},
+                },
+            )
+            assert run_response.status_code == 201, run_response.text
+            run = run_response.json()
+            run_id = str(run["id"])
+
+            central_paths = RunnerPaths(runtime.control_plane.settings.runner_state_path).terminal(
+                run_id, terminal_id
+            )
+            central_execution = Execution(
+                id=execution_id,
+                execution_key=execution_key,
+                run_id=run_id,
+                node_id=node_id,
+                owner=principal,
+                executor_type=ExecutorType.PTY,
+                argv=["pwsh.exe"],
+                cwd=str(run["workspace_path"]),
+                stdout_path=str(central_paths.transcript),
+                stderr_path=str(central_paths.transcript),
+            )
+            central_execution.transition_to(ExecutionStatus.STARTING)
+            central_execution.transition_to(ExecutionStatus.RUNNING)
+            await runtime.execution_repository.create_if_absent(central_execution)
+            central_terminal = TerminalSession(
+                id=terminal_id,
+                run_id=run_id,
+                execution_id=execution_id,
+                runner_id=node_id,
+                shell="pwsh.exe",
+                cwd=str(run["workspace_path"]),
+            )
+            central_terminal.transition_to(TerminalStatus.OPEN)
+            await runtime.terminal_repository.create(central_terminal)
+
+            local_executions = FileExecutionRepository(runner_state / "executions.json")
+            local_terminals = FileTerminalRepository(runner_state / "terminals.json")
+            local_paths = RunnerPaths(runner_state).terminal(run_id, terminal_id)
+            local_execution = Execution(
+                id=execution_id,
+                execution_key=execution_key,
+                run_id=run_id,
+                node_id=node_id,
+                owner=principal,
+                executor_type=ExecutorType.PTY,
+                argv=["pwsh.exe"],
+                cwd=str(run["workspace_path"]),
+                stdout_path=str(local_paths.transcript),
+                stderr_path=str(local_paths.transcript),
+            )
+            local_execution.transition_to(ExecutionStatus.STARTING)
+            local_execution.transition_to(ExecutionStatus.RUNNING)
+            await local_executions.create_if_absent(local_execution)
+            local_terminal = TerminalSession(
+                id=terminal_id,
+                run_id=run_id,
+                execution_id=execution_id,
+                runner_id=node_id,
+                shell="pwsh.exe",
+                cwd=str(run["workspace_path"]),
+            )
+            local_terminal.transition_to(TerminalStatus.OPEN)
+            await local_terminals.create(local_terminal)
+
+            callback_fields = (
+                "runner_command_id",
+                "runner_effect_binding_id",
+                "runner_binding_digest",
+                "runner_envelope_digest",
+            )
+            assert tuple(
+                getattr(central_execution, field_name) for field_name in callback_fields
+            ) == (None, None, None, None)
+            assert tuple(
+                getattr(local_execution, field_name) for field_name in callback_fields
+            ) == (None, None, None, None)
+
+            commands = SQLAlchemyRunnerCommandRepository(
+                runtime.control_plane.database.session_factory
+            )
+            legacy_command_id = "legacy-terminal-command"
+            seeded_at = datetime.now(UTC)
+            async with (
+                runtime.control_plane.database.session_factory() as session,
+                session.begin(),
+            ):
+                session.add(
+                    RunnerCommandRecord(
+                        id=legacy_command_id,
+                        node_id=node_id,
+                        kind=RunnerCommandKind.BROWSER.value,
+                        idempotency_key="legacy:untrusted-terminal-command",
+                        target_runner_instance_id=principal.instance_id,
+                        target_runner_epoch=principal.epoch,
+                        payload_json={
+                            "execution_id": "attacker-selected-execution",
+                            "session_id": "attacker-selected-terminal",
+                        },
+                        status=RunnerCommandStatus.PENDING.value,
+                        attempts=0,
+                        lease_id=None,
+                        lease_expires_at=None,
+                        result_json={},
+                        error="",
+                        state_version=0,
+                        created_at=seeded_at,
+                        updated_at=seeded_at,
+                        completed_at=None,
+                    )
+                )
+            quarantined = await commands.quarantine(
+                legacy_command_id,
+                reason="legacy_ownership_missing",
+                quarantined_at=seeded_at,
+                expected_state_version=0,
+            )
+            assert quarantined.ownership_state is RunnerCommandOwnershipState.QUARANTINED
+
+            assert (
+                await runtime.control_plane.runner_control_service.reconcile_quarantined_commands()
+                == 1
+            )
+            async with runtime.control_plane.database.session_factory() as session:
+                quarantine_record = await session.get(
+                    RunnerCommandOwnershipRecord,
+                    legacy_command_id,
+                )
+                assert quarantine_record is not None
+                replacement_command_id = quarantine_record.replacement_command_id
+                assert quarantine_record.reconciliation_state == "replaced"
+                assert replacement_command_id is not None
+
+            replacement = await commands.get(replacement_command_id)
+            assert replacement is not None
+            assert replacement.kind is RunnerCommandKind.TERMINAL_CLOSE
+            assert replacement.status is RunnerCommandStatus.PENDING
+            assert replacement.ownership_state is RunnerCommandOwnershipState.VERIFIED
+            assert replacement.target == principal
+            assert replacement.payload == {
+                "session_id": terminal_id,
+                "execution_id": execution_id,
+                "execution_key": execution_key,
+            }
+            assert "attacker-selected" not in repr(replacement)
+            ownership = replacement.ownership
+            assert ownership is not None
+            binding = ownership.effect_binding
+            assert binding.origin is RunnerCommandOrigin.SAFETY_RECONCILER
+            assert binding.operation_family is RunnerOperationFamily.SAFETY_STOP
+            assert binding.resource_kind is RunnerResourceKind.TERMINAL_SESSION
+            assert binding.resource_id == terminal_id
+            assert binding.execution_id == execution_id
+            assert binding.target == principal
+            assert ownership.output_contract.result_schema == (
+                "riftx.runner-result/terminal-stop/v1"
+            )
+            assert ownership.output_contract.stop_ack_schema == RUNNER_STOP_ACK_TERMINAL_SCHEMA
+
+            leased = await runner_client.poll(wait_seconds=0)
+            assert leased is not None
+            assert leased.id == replacement.id
+            assert leased.kind is RunnerCommandKind.TERMINAL_CLOSE
+
+            class DurableLegacyTerminalHandler:
+                def __init__(
+                    self,
+                    *,
+                    expected_execution_id: str,
+                    expected_terminal_id: str,
+                    executions: FileExecutionRepository,
+                    terminals: FileTerminalRepository,
+                ) -> None:
+                    self.expected_execution_id = expected_execution_id
+                    self.expected_terminal_id = expected_terminal_id
+                    self.executions = executions
+                    self.terminals = terminals
+
+                async def handle(
+                    self,
+                    kind: RunnerCommandKind,
+                    payload: dict[str, object],
+                    *,
+                    journal_identity: Any = None,
+                    effect_guard: Any = None,
+                    on_admitted: Any = None,
+                ) -> object:
+                    del kind, payload, journal_identity, effect_guard, on_admitted
+                    raise AssertionError("legacy replacement must use cancel_execution")
+
+                async def cancel_execution(self, target_execution_id: str) -> Execution:
+                    assert target_execution_id == self.expected_execution_id
+                    execution = await self.executions.get(target_execution_id)
+                    assert execution is not None
+                    assert execution.executor_type is ExecutorType.PTY
+                    stopped_at = datetime.now(UTC)
+                    execution.transition_to(
+                        ExecutionStatus.CANCELLED,
+                        at=stopped_at,
+                        exit_code=130,
+                    )
+                    execution.physical_stop_confirmed_at = stopped_at
+                    execution = await self.executions.save(execution)
+                    terminal = await self.terminals.get_by_execution(target_execution_id)
+                    assert terminal is not None
+                    assert terminal.id == self.expected_terminal_id
+                    terminal.transition_to(TerminalStatus.CLOSED, at=stopped_at)
+                    await self.terminals.save(terminal)
+                    return execution
+
+                async def close(self) -> None:
+                    return None
+
+            daemon = RunnerDaemon(
+                config=daemon_config,
+                client=runner_client,
+                supervisor=ProcessSupervisor(
+                    local_executions,
+                    RunnerPaths(runner_state),
+                    termination_grace_seconds=0.01,
+                ),
+                executions=local_executions,
+                terminal_handler=DurableLegacyTerminalHandler(
+                    expected_execution_id=execution_id,
+                    expected_terminal_id=terminal_id,
+                    executions=local_executions,
+                    terminals=local_terminals,
+                ),
+            )
+            await daemon.handle_command(leased)
+
+            expected_ack = {
+                "execution_id": execution_id,
+                "local_execution_id": execution_id,
+                "execution_key": execution_key,
+                "owner": principal.model_dump(mode="json"),
+                "status": ExecutionStatus.CANCELLED.value,
+                "physical_stop_confirmed": True,
+                "session_id": terminal_id,
+            }
+            finished = await commands.get(replacement.id)
+            assert finished is not None
+            assert finished.status is RunnerCommandStatus.COMPLETED
+            assert finished.result == expected_ack
+
+            local_stopped = await local_executions.get(execution_id)
+            local_closed = await local_terminals.get(terminal_id)
+            assert local_stopped is not None
+            assert local_stopped.status is ExecutionStatus.CANCELLED
+            assert local_stopped.physical_stop_confirmed_at is not None
+            assert tuple(getattr(local_stopped, field_name) for field_name in callback_fields) == (
+                None,
+                None,
+                None,
+                None,
+            )
+            assert local_closed is not None
+            assert local_closed.status is TerminalStatus.CLOSED
+            tombstone = await OperationJournal(
+                runner_state / "execution-cancellations.json"
+            ).get_resource(f"execution:{execution_id}")
+            assert tombstone is not None
+            assert tombstone.outcome.get("state") == "physical_stop_confirmed"
+
+            projected_execution = await runtime.execution_repository.get(execution_id)
+            projected_terminal = await runtime.terminal_repository.get(terminal_id)
+            assert projected_execution is not None
+            assert projected_execution.status is ExecutionStatus.CANCELLED
+            assert projected_execution.physical_stop_confirmed_at is not None
+            assert tuple(
+                getattr(projected_execution, field_name) for field_name in callback_fields
+            ) == (None, None, None, None)
+            assert projected_terminal is not None
+            assert projected_terminal.status is TerminalStatus.CLOSED
+            assert projected_terminal.closed_at is not None
+
+            receipt = await commands.get_stop_receipt(replacement.id)
+            assert receipt is not None
+            assert receipt.command_id == replacement.id
+            assert receipt.effect_binding_id == binding.id
+            assert receipt.envelope_digest == ownership.envelope_digest
+            assert receipt.binding_digest == binding.binding_digest
+            assert receipt.operation is RunnerCommandKind.TERMINAL_CLOSE
+            assert receipt.operation_family is RunnerOperationFamily.SAFETY_STOP
+            assert receipt.resource_kind is RunnerResourceKind.TERMINAL_SESSION
+            assert receipt.resource_id == terminal_id
+            assert receipt.execution_id == execution_id
+            assert receipt.node_id == node_id
+            assert receipt.principal == principal
+            assert receipt.ack_digest == runner_stop_ack_digest(expected_ack)
+            async with runtime.control_plane.database.session_factory() as session:
+                projection = await session.get(RunnerStopProjectionRecord, receipt.id)
+                assert projection is not None
+                assert projection.projection_state == "applied"
+                assert projection.state_version == 1
+            assert await commands.list_pending_stop_receipts() == []
+
+            completion_intents = [
+                record
+                for record in await _workflow_signal_records(runtime, run_id)
+                if record.signal_kind == WorkflowSignalKind.EXECUTION_COMPLETED.value
+            ]
+            assert completion_intents == []
+            assert isinstance(runtime.workflow, FakeWorkflowClient)
+            assert not any(
+                call == ("execution_completed", run_id, execution_id)
+                for call in runtime.workflow.calls
+            )
+            terminal_events = [
+                event
+                for event in await runtime.event_repository.list_after(run_id)
+                if event.event_type == "terminal.closed"
+                and event.payload.get("session_id") == terminal_id
+            ]
+            assert len(terminal_events) == 1
+            assert terminal_events[0].payload["execution_id"] == execution_id
+            assert await runtime.control_plane.runner_control_service.reconcile_stop_receipts() == 0
+            assert (
+                await runtime.control_plane.runner_control_service.reconcile_quarantined_commands()
+                == 0
+            )
+    finally:
+        if daemon is not None:
+            await daemon.close()
         await runtime.control_plane.close()
 
 
@@ -4889,6 +6135,7 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             execution.transition_to(ExecutionStatus.RUNNING)
             execution.transition_to(ExecutionStatus.EXITED, exit_code=0)
             await runtime.execution_repository.create_if_absent(execution)
+            events_before_wait = await runtime.event_repository.list_after(run_id)
 
             listed = await client.get(f"/api/v1/runs/{run_id}/executions")
             fetched = await client.get(f"/api/v1/executions/{execution.id}")
@@ -4913,6 +6160,8 @@ async def test_execution_api_exposes_provenance_and_cursor_output(tmp_path: Path
             assert waited.json()["wait_status"] == "execution_completed"
             assert waited.json()["execution_status"] == "exited"
             assert waited.json()["partial_output"] == "hellodiagn"
+            events_after_wait = await runtime.event_repository.list_after(run_id)
+            assert events_after_wait == events_before_wait
             assert output.status_code == 200
             assert output.json()["stdout"]["data"] == "aGVsbG8="
             assert output.json()["stdout"]["next_cursor"] == 5

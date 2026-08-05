@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import codecs
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import quote, unquote
 
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.services.artifacts import ArtifactApplicationService, RegisterArtifact
 from riftx.domain import Artifact, Execution
+from riftx.runner import OpenedArtifactContent
 
 from .models import ArtifactReadResult, OutputStream, RawArtifactReference
 
@@ -19,12 +17,13 @@ _ARTIFACT_URI = re.compile(
     r"^artifact://runs/(?P<run>[^/]+)/executions/(?P<execution>[^/]+)/"
     r"(?P<stream>stdout|stderr)$"
 )
+_UNTRUSTED_OUTPUT_MIME_TYPE = "application/octet-stream"
 
 
 @dataclass(frozen=True, slots=True)
 class SpilledArtifact:
     reference: RawArtifactReference
-    content_path: Path | None
+    content_lease: OpenedArtifactContent | None
 
 
 class ExecutionArtifactStore:
@@ -40,17 +39,16 @@ class ExecutionArtifactStore:
         if existing is not None:
             return await self._existing(existing, uri, stream)
 
-        source = Path(
+        source_path = (
             execution.stdout_path if stream is OutputStream.STDOUT else execution.stderr_path
         )
-        mime_type = await asyncio.to_thread(_detect_mime_type, source)
         try:
             artifact = await self._service.register(
                 execution.run_id,
                 RegisterArtifact(
-                    source_path=str(source),
+                    source_path=source_path,
                     name=name,
-                    mime_type=mime_type,
+                    mime_type=_UNTRUSTED_OUTPUT_MIME_TYPE,
                     description=f"Immutable {stream.value} for Execution {execution.id}",
                     execution_id=execution.id,
                 ),
@@ -60,17 +58,14 @@ class ExecutionArtifactStore:
                 reference=RawArtifactReference(
                     uri=uri,
                     stream=stream,
-                    mime_type=mime_type,
+                    mime_type=_UNTRUSTED_OUTPUT_MIME_TYPE,
                     size=0,
                     available=False,
                     error=f"{exc.code}: {exc.message}",
                 ),
-                content_path=None,
+                content_lease=None,
             )
-        return SpilledArtifact(
-            reference=_reference(artifact, uri, stream),
-            content_path=Path(artifact.path),
-        )
+        return await self._existing(artifact, uri, stream)
 
     async def resolve(self, uri: str) -> RawArtifactReference:
         run_id, execution_id, stream = parse_execution_artifact_uri(uri)
@@ -78,13 +73,17 @@ class ExecutionArtifactStore:
         if artifact is None:
             raise EntityNotFoundError("Artifact", uri)
         spilled = await self._existing(artifact, uri, stream)
-        if not spilled.reference.available:
-            raise ApplicationConflictError(
-                "artifact_content_missing",
-                f"Artifact content for {uri!r} is unavailable",
-                details={"artifact_id": artifact.id, "uri": uri},
-            )
-        return spilled.reference
+        try:
+            if not spilled.reference.available:
+                raise ApplicationConflictError(
+                    "artifact_content_missing",
+                    f"Artifact content for {uri!r} is unavailable",
+                    details={"artifact_id": artifact.id, "uri": uri},
+                )
+            return spilled.reference
+        finally:
+            if spilled.content_lease is not None:
+                spilled.content_lease.close()
 
     async def read(
         self,
@@ -101,19 +100,22 @@ class ExecutionArtifactStore:
         artifact = await self._find(run_id, execution_id, f"{stream.value}.log")
         if artifact is None:
             raise EntityNotFoundError("Artifact", uri)
-        _, path = await self._service.content_path(artifact.id)
         size = artifact.size
         if offset > size:
             raise ValueError(f"artifact offset {offset} is beyond content size {size}")
-        data = await asyncio.to_thread(_read_slice, path, offset, max_bytes)
-        next_offset = offset + len(data)
+        result = await self._service.read_content_slice(
+            artifact.id,
+            expected_run_id=run_id,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
         return ArtifactReadResult(
             uri=uri,
             mime_type=artifact.mime_type,
-            data=data,
+            data=result.data,
             offset=offset,
-            next_offset=next_offset,
-            eof=next_offset >= size,
+            next_offset=result.next_offset,
+            eof=result.eof,
         )
 
     async def _find(self, run_id: str, execution_id: str, name: str) -> Artifact | None:
@@ -127,7 +129,10 @@ class ExecutionArtifactStore:
         stream: OutputStream,
     ) -> SpilledArtifact:
         try:
-            _, path = await self._service.content_path(artifact.id)
+            _, lease = await self._service.open_public_content(
+                artifact.id,
+                expected_run_id=artifact.run_id,
+            )
         except ApplicationConflictError as exc:
             return SpilledArtifact(
                 reference=RawArtifactReference(
@@ -140,11 +145,11 @@ class ExecutionArtifactStore:
                     available=False,
                     error=f"{exc.code}: {exc.message}",
                 ),
-                content_path=None,
+                content_lease=None,
             )
         return SpilledArtifact(
             reference=_reference(artifact, uri, stream),
-            content_path=path,
+            content_lease=lease,
         )
 
 
@@ -179,25 +184,3 @@ def _reference(
         size=artifact.size,
         sha256=artifact.sha256,
     )
-
-
-def _detect_mime_type(path: Path) -> str:
-    try:
-        with path.open("rb") as stream:
-            sample = stream.read(4096)
-    except OSError:
-        return "application/octet-stream"
-    if b"\x00" in sample:
-        return "application/octet-stream"
-    try:
-        decoder = codecs.getincrementaldecoder("utf-8")()
-        decoder.decode(sample, final=False)
-    except UnicodeDecodeError:
-        return "application/octet-stream"
-    return "text/plain; charset=utf-8"
-
-
-def _read_slice(path: Path, offset: int, max_bytes: int) -> bytes:
-    with path.open("rb") as stream:
-        stream.seek(offset)
-        return stream.read(max_bytes)

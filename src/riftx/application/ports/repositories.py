@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +20,7 @@ from riftx.domain import (
     ApprovalGrant,
     ApprovalStatus,
     Artifact,
+    ArtifactAccessClass,
     Engagement,
     Execution,
     ExecutionStatus,
@@ -33,10 +34,12 @@ from riftx.domain import (
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     RunnerCommand,
     RunnerCommandStatus,
     RunnerCredential,
     RunnerPrincipal,
+    RunnerStopReceipt,
     RunStatus,
     TerminalSession,
     TerminalStatus,
@@ -150,6 +153,7 @@ class RunnerCredentialRepository(Protocol):
         token_prefix: str,
         issued_at: datetime,
         instance_id: str | None = None,
+        protocol_capabilities: tuple[str, ...] = (),
     ) -> RunnerCredential: ...
 
     async def get(self, node_id: str) -> RunnerCredential | None: ...
@@ -176,6 +180,25 @@ class RunnerCommandRepository(Protocol):
 
     async def get(self, command_id: str) -> RunnerCommand | None: ...
 
+    async def list_quarantined(self, *, limit: int = 100) -> Sequence[RunnerCommand]: ...
+
+    async def quarantine(
+        self,
+        command_id: str,
+        *,
+        reason: str,
+        quarantined_at: datetime,
+        expected_state_version: int | None = None,
+    ) -> RunnerCommand: ...
+
+    async def mark_quarantine_reconciled(
+        self,
+        command_id: str,
+        *,
+        replacement_command_id: str | None,
+        reconciled_at: datetime,
+    ) -> None: ...
+
     async def lease_next(
         self,
         node_id: str,
@@ -184,6 +207,7 @@ class RunnerCommandRepository(Protocol):
         lease_id: str,
         leased_until: datetime,
         now: datetime,
+        validate_candidate: Callable[[RunnerCommand], Awaitable[str | None]],
         safety_only: bool = False,
     ) -> RunnerCommand | None: ...
 
@@ -193,6 +217,9 @@ class RunnerCommandRepository(Protocol):
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         leased_until: datetime,
         now: datetime,
     ) -> RunnerCommand: ...
@@ -203,15 +230,48 @@ class RunnerCommandRepository(Protocol):
         *,
         principal: RunnerPrincipal,
         lease_id: str,
+        state_version: int,
+        envelope_digest: str,
+        binding_digest: str,
         status: RunnerCommandStatus,
         result: dict[str, object],
         error: str,
         completed_at: datetime,
+        stop_receipt: RunnerStopReceipt | None = None,
     ) -> RunnerCommand: ...
+
+    async def record_legacy_stop_ack(
+        self,
+        command_id: str,
+        *,
+        principal: RunnerPrincipal,
+        lease_id: str,
+        expected_state_version: int,
+        ack: dict[str, object],
+        received_at: datetime,
+    ) -> RunnerCommand: ...
+
+    async def get_stop_receipt(self, command_id: str) -> RunnerStopReceipt | None: ...
+
+    async def list_pending_stop_receipts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunnerStopReceipt]: ...
+
+    async def mark_stop_receipt_projected(
+        self,
+        receipt_id: str,
+        *,
+        projected_at: datetime,
+        expected_state_version: int,
+    ) -> bool: ...
 
 
 class RunRepository(Protocol):
     async def create(self, run: Run) -> Run: ...
+
+    async def get_kind(self, run_id: str) -> RunKind | None: ...
 
     async def get(self, run_id: str) -> Run | None: ...
 
@@ -219,6 +279,7 @@ class RunRepository(Protocol):
         self,
         *,
         status: RunStatus | None = None,
+        kind: RunKind | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[Run]: ...
@@ -381,6 +442,8 @@ class ApprovalRepository(Protocol):
 class ExecutionRepository(Protocol):
     async def create_if_absent(self, execution: Execution) -> tuple[Execution, bool]: ...
 
+    async def get_run_id(self, execution_id: str) -> str | None: ...
+
     async def get(self, execution_id: str) -> Execution | None: ...
 
     async def get_by_key(self, execution_key: str) -> Execution | None: ...
@@ -510,6 +573,8 @@ class ActionReadRepository(Protocol):
 class TerminalRepository(Protocol):
     async def create(self, terminal: TerminalSession) -> TerminalSession: ...
 
+    async def get_run_id(self, session_id: str) -> str | None: ...
+
     async def get(self, session_id: str) -> TerminalSession | None: ...
 
     async def get_by_execution(self, execution_id: str) -> TerminalSession | None: ...
@@ -528,13 +593,56 @@ class TerminalRepository(Protocol):
     async def list_active(self) -> Sequence[TerminalSession]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactOwnerBinding:
+    """Bounded owner fact loaded before explicit Artifact authorization."""
+
+    artifact_id: str
+    run_id: str
+    audit_id: str | None
+    access_class: ArtifactAccessClass
+    run_kind: RunKind
+    audit_run_id: str | None
+
+
 class ArtifactRepository(Protocol):
     async def create(self, artifact: Artifact) -> Artifact: ...
 
+    async def get_run_id(self, artifact_id: str) -> str | None: ...
+
     async def get(self, artifact_id: str) -> Artifact | None: ...
+
+    async def get_for_reconciliation(self, artifact_id: str) -> Artifact | None:
+        """Load one exact row without generic visibility filtering.
+
+        This method exists only to reconcile an ambiguous create outcome before
+        deciding whether newly published bytes may be discarded.
+        """
+        ...
+
+    async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding | None:
+        """Load only bounded owner/access columns for explicit authorization."""
+        ...
+
+    async def get_for_audit(
+        self,
+        artifact_id: str,
+        audit_id: str,
+        run_id: str,
+    ) -> Artifact | None: ...
 
     async def list(
         self,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]: ...
+
+    async def list_for_audit(
+        self,
+        audit_id: str,
         run_id: str,
         *,
         execution_id: str | None = None,
@@ -549,11 +657,20 @@ class ArtifactRepository(Protocol):
         """Classify IDs by global Target HTTP association without materializing Artifacts."""
         ...
 
+    async def restricted_artifact_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]:
+        """Classify IDs whose generic metadata is not publicly visible."""
+        ...
+
 
 class FindingRepository(Protocol):
     async def create(self, finding: Finding) -> Finding:
         """Persist and return repository-owned creation and mutation timestamps."""
         ...
+
+    async def get_run_id(self, finding_id: str) -> str | None: ...
 
     async def get(self, finding_id: str) -> Finding | None: ...
 
@@ -579,6 +696,8 @@ class FindingRepository(Protocol):
 
 class ReportRepository(Protocol):
     async def create(self, report: Report) -> Report: ...
+
+    async def get_run_id(self, report_id: str) -> str | None: ...
 
     async def get(self, report_id: str) -> Report | None: ...
 

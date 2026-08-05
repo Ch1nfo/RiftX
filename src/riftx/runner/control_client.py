@@ -2,19 +2,46 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from riftx.application.services import NodeHeartbeat, NodeRegistration
-from riftx.domain import ExecutionStatus, RunnerCommandKind, RunnerPrincipal
+from riftx.domain import (
+    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+    RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
+    ExecutionStatus,
+    RunnerCommandKind,
+    RunnerCommandOwnership,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    runner_payload_digest,
+)
+from riftx.domain.audit_preflight import (
+    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
+    AuditPreflightExitReceipt,
+    AuditPreflightJobStatus,
+    AuditPreflightLeaseEnvelope,
+    AuditPreflightResult,
+    AuditPreflightStopReceipt,
+)
+from riftx.domain.audit_preflight_wire import (
+    AuditPreflightCallbackAck,
+    AuditPreflightDispatchEnvelope,
+    AuditPreflightLeaseGrant,
+    AuditPreflightStartGrant,
+)
 
 
 class RunnerControlClientError(RuntimeError):
@@ -41,7 +68,34 @@ class OutputOffsetMismatch(RunnerControlClientError):
         return value
 
 
-@dataclass(frozen=True, slots=True)
+class OutputLimitExceeded(RunnerControlClientError):
+    """The immutable output contract rejected bytes beyond its exact cap."""
+
+    @property
+    def max_output_bytes(self) -> int:
+        value = self.details.get("max_output_bytes")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise RuntimeError("output limit response omitted max_output_bytes")
+        return value
+
+
+def _required_response_int(
+    payload: Mapping[str, object],
+    field_name: str,
+    *,
+    minimum: int = 0,
+) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise RunnerControlClientError(
+            500,
+            "runner_command_invalid_response",
+            f"Control Plane returned an invalid {field_name}",
+        )
+    return value
+
+
+@dataclass(slots=True)
 class LeasedRunnerCommand:
     id: str
     kind: RunnerCommandKind
@@ -49,6 +103,14 @@ class LeasedRunnerCommand:
     lease_id: str
     attempts: int
     target: RunnerPrincipal | None = None
+    ownership: RunnerCommandOwnership | None = None
+    ownership_schema_version: str = RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION
+    effect_binding_id: str = ""
+    binding_digest: str = ""
+    envelope_digest: str = ""
+    state_version: int = 0
+    operation_family: RunnerOperationFamily | None = None
+    output_contract: RunnerOutputContract | None = None
     lease_expires_at: datetime | None = None
     lease_duration_seconds: float | None = None
 
@@ -59,6 +121,7 @@ class StoredRunnerCredential:
 
     token: str
     principal: RunnerPrincipal
+    protocol_capabilities: tuple[str, ...] = ()
 
 
 class RunnerCredentialStore:
@@ -86,9 +149,25 @@ class RunnerCredentialStore:
             # principal here would let cloned execution state impersonate a
             # server-issued owner generation.
             return None
-        return StoredRunnerCredential(token=token, principal=principal)
+        raw_capabilities = payload.get("protocol_capabilities", [])
+        if not isinstance(raw_capabilities, list) or any(
+            not isinstance(item, str) or not item for item in raw_capabilities
+        ):
+            return None
+        return StoredRunnerCredential(
+            token=token,
+            principal=principal,
+            protocol_capabilities=tuple(sorted(set(raw_capabilities))),
+        )
 
-    def save(self, node_id: str, token: str, principal: RunnerPrincipal) -> None:
+    def save(
+        self,
+        node_id: str,
+        token: str,
+        principal: RunnerPrincipal,
+        *,
+        protocol_capabilities: tuple[str, ...] = (),
+    ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
         temporary.write_text(
@@ -97,6 +176,9 @@ class RunnerCredentialStore:
                     "node_id": node_id,
                     "runner_token": token,
                     "principal": principal.model_dump(mode="json"),
+                    "protocol_capabilities": list(
+                        sorted(set(protocol_capabilities))
+                    ),
                 }
             )
         )
@@ -130,11 +212,42 @@ class RunnerControlClient:
             base_url=server_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
         )
+        self._command_locks: dict[str, asyncio.Lock] = {}
 
     async def connect(self, registration: NodeRegistration) -> str:
+        capabilities = tuple(
+            sorted(
+                {
+                    *registration.capabilities,
+                    RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
+                }
+            )
+        )
+        registration = NodeRegistration(
+            node_id=registration.node_id,
+            name=registration.name,
+            platform=registration.platform,
+            architecture=registration.architecture,
+            runner_version=registration.runner_version,
+            capabilities=capabilities,
+            labels=registration.labels,
+        )
+        required_capabilities = {RUNNER_COMMAND_OWNERSHIP_CAPABILITY}
+        if AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY in capabilities:
+            required_capabilities.add(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        if self._credential is not None and not required_capabilities.issubset(
+            self._credential.protocol_capabilities
+        ):
+            self.invalidate_credentials()
         if self._credential is not None:
             try:
-                await self.heartbeat()
+                await self.heartbeat(
+                    NodeHeartbeat(
+                        capabilities=registration.capabilities,
+                        labels=registration.labels,
+                        runner_version=registration.runner_version,
+                    )
+                )
                 return self._credential.token
             except RunnerControlClientError as exc:
                 if exc.status_code != 401:
@@ -173,10 +286,28 @@ class RunnerControlClient:
             code="runner_registration_invalid_response",
             message="Control Plane did not return a valid Runner principal",
         )
-        credential = StoredRunnerCredential(token=token, principal=principal)
-        self._credentials.save(self.node_id, token, principal)
+        credential = StoredRunnerCredential(
+            token=token,
+            principal=principal,
+            protocol_capabilities=capabilities,
+        )
+        self._credentials.save(
+            self.node_id,
+            token,
+            principal,
+            protocol_capabilities=capabilities,
+        )
         self._credential = credential
         return token
+
+    def can_enable_protocol_capability(self, capability: str) -> bool:
+        """Whether startup can authenticate an immutable protocol capability."""
+
+        credential = self._credential
+        return (
+            credential is not None
+            and capability in credential.protocol_capabilities
+        ) or self._registration_token is not None
 
     async def heartbeat(self, heartbeat: NodeHeartbeat | None = None) -> None:
         item = heartbeat or NodeHeartbeat()
@@ -222,32 +353,319 @@ class RunnerControlClient:
             and raw_lease_duration > 0
             else None
         )
+        target = self._require_polled_target(raw.get("target"))
+        if raw.get("ownership_schema_version") != RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned an unsupported ownership envelope",
+            )
+        try:
+            kind = RunnerCommandKind(str(raw["kind"]))
+            command_payload = dict(raw.get("payload") or {})
+            ownership = RunnerCommandOwnership.model_validate(raw.get("ownership"))
+            effect_binding = RunnerEffectBinding.model_validate(raw.get("effect_binding"))
+            output_contract = RunnerOutputContract.model_validate(raw.get("output_contract"))
+            operation_family = RunnerOperationFamily(str(raw["operation_family"]))
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned invalid Runner ownership metadata",
+            ) from exc
+        if (
+            ownership.schema_version != raw.get("ownership_schema_version")
+            or ownership.command_id != raw.get("id")
+            or ownership.operation is not kind
+            or ownership.operation_family is not operation_family
+            or ownership.effect_binding != effect_binding
+            or ownership.output_contract != output_contract
+            or ownership.envelope_digest != raw.get("envelope_digest")
+            or ownership.effect_binding.target != target
+            or ownership.effect_binding.node_id != self.node_id
+            or runner_payload_digest(command_payload) != ownership.payload_digest
+        ):
+            raise RunnerControlClientError(
+                500,
+                "runner_command_invalid_response",
+                "Control Plane returned inconsistent Runner ownership metadata",
+            )
         return LeasedRunnerCommand(
             id=str(raw["id"]),
-            kind=RunnerCommandKind(str(raw["kind"])),
-            payload=dict(raw.get("payload") or {}),
+            kind=kind,
+            payload=command_payload,
             lease_id=str(raw["lease_id"]),
             attempts=int(raw["attempts"]),
-            target=self._require_polled_target(raw.get("target")),
+            target=target,
+            ownership=ownership,
+            ownership_schema_version=RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
+            effect_binding_id=effect_binding.id,
+            binding_digest=effect_binding.binding_digest,
+            envelope_digest=str(raw["envelope_digest"]),
+            state_version=int(raw["state_version"]),
+            operation_family=operation_family,
+            output_contract=output_contract,
             lease_expires_at=datetime.fromisoformat(str(raw["lease_expires_at"])),
             lease_duration_seconds=lease_duration,
         )
 
-    async def renew(self, command: LeasedRunnerCommand) -> float:
+    async def poll_audit_preflight(
+        self,
+        *,
+        wait_seconds: float = 0,
+    ) -> AuditPreflightDispatchEnvelope | None:
+        """Claim one Job only through the dedicated Preflight wire family."""
+
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
         payload = await self._request(
-            "POST",
-            f"/api/v1/runner/commands/{command.id}/lease",
-            expected_principal=_required_command_target(command),
-            json={"lease_id": command.lease_id},
+            "GET",
+            "/api/v1/runner/audit-preflight/next",
+            params={"wait_seconds": wait_seconds},
         )
-        value = payload.get("lease_duration_seconds")
-        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+        raw = payload.get("dispatch")
+        if raw is None:
+            return None
+        dispatch = _parse_preflight_model(
+            AuditPreflightDispatchEnvelope,
+            raw,
+            code="audit_preflight_invalid_dispatch",
+            message="Control Plane returned an invalid Audit Preflight dispatch",
+        )
+        credential = self._credential
+        if (
+            credential is None
+            or dispatch.owner.source_node_id != self.node_id
+            or dispatch.lease.runner_principal != credential.principal
+        ):
             raise RunnerControlClientError(
                 500,
-                "runner_command_invalid_response",
-                "Control Plane omitted the renewed command lease duration",
+                "audit_preflight_principal_mismatch",
+                "Control Plane returned an Audit Preflight Job for another owner",
             )
-        return float(value)
+        return dispatch
+
+    async def renew_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+    ) -> AuditPreflightLeaseGrant:
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/lease",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-renew-request/v1",
+            },
+        )
+        grant = _parse_preflight_model(
+            AuditPreflightLeaseGrant,
+            payload,
+            code="audit_preflight_invalid_lease_grant",
+            message="Control Plane returned an invalid Audit Preflight lease grant",
+        )
+        if (
+            grant.job_id != dispatch.owner.job_id
+            or grant.state_version <= state_version
+            or grant.lease_expires_at < lease.lease_expires_at
+        ):
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned inconsistent Audit Preflight lease facts",
+            )
+        try:
+            renewed = AuditPreflightLeaseEnvelope(
+                owner=dispatch.owner,
+                runner_principal=lease.runner_principal,
+                lease_id=lease.lease_id,
+                lease_expires_at=grant.lease_expires_at,
+                expected_state_version=grant.state_version,
+                output_contract_digest=lease.output_contract_digest,
+                lease_envelope_digest=grant.lease_envelope_digest,
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned an unverifiable Audit Preflight lease",
+            ) from exc
+        if renewed.lease_envelope_digest != grant.lease_envelope_digest:
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_lease_grant",
+                "Control Plane returned an unverifiable Audit Preflight lease",
+            )
+        return grant
+
+    async def start_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        capsule_prepare_proof_digest: str,
+    ) -> AuditPreflightStartGrant:
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/start",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-start-request/v1",
+                "capsule_prepare_proof_digest": capsule_prepare_proof_digest,
+            },
+        )
+        grant = _parse_preflight_model(
+            AuditPreflightStartGrant,
+            payload,
+            code="audit_preflight_invalid_start_grant",
+            message="Control Plane returned an invalid Audit Preflight start grant",
+        )
+        if (
+            grant.job_id != dispatch.owner.job_id
+            or grant.capsule_id != dispatch.capsule_id
+            or grant.state_version <= state_version
+        ):
+            raise RunnerControlClientError(
+                500,
+                "audit_preflight_invalid_start_grant",
+                "Control Plane returned inconsistent Audit Preflight start facts",
+            )
+        return grant
+
+    async def finish_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        status: AuditPreflightJobStatus,
+        result: AuditPreflightResult | None,
+        safe_error_code: str | None,
+        exit_receipt: AuditPreflightExitReceipt,
+    ) -> AuditPreflightCallbackAck:
+        if status not in {
+            AuditPreflightJobStatus.SUCCEEDED,
+            AuditPreflightJobStatus.REJECTED,
+            AuditPreflightJobStatus.FAILED,
+        }:
+            raise ValueError("Audit Preflight finish status is invalid")
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/finish",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-finish-request/v1",
+                "status": status.value,
+                "result": result.model_dump(mode="json") if result is not None else None,
+                "safe_error_code": safe_error_code,
+                "exit_receipt": exit_receipt.model_dump(mode="json"),
+            },
+        )
+        return _require_preflight_callback_ack(
+            payload,
+            dispatch=dispatch,
+            expected_status=status,
+            minimum_state_version=state_version,
+        )
+
+    async def stop_audit_preflight(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        *,
+        lease: AuditPreflightLeaseEnvelope,
+        state_version: int,
+        status: AuditPreflightJobStatus,
+        safe_error_code: str | None,
+        stop_receipt: AuditPreflightStopReceipt,
+    ) -> AuditPreflightCallbackAck:
+        if status not in {
+            AuditPreflightJobStatus.CANCELLED,
+            AuditPreflightJobStatus.FAILED,
+        }:
+            raise ValueError("Audit Preflight stop status is invalid")
+        self._require_protocol_capability(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
+        expected_principal = self._require_audit_preflight_principal(dispatch, lease)
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runner/audit-preflight/{dispatch.owner.job_id}/stop",
+            expected_principal=expected_principal,
+            json={
+                **_audit_preflight_callback_identity(
+                    dispatch,
+                    lease=lease,
+                    state_version=state_version,
+                ),
+                "schema_version": "riftx.audit-preflight-stop-request/v1",
+                "status": status.value,
+                "safe_error_code": safe_error_code,
+                "stop_receipt": stop_receipt.model_dump(mode="json"),
+            },
+        )
+        return _require_preflight_callback_ack(
+            payload,
+            dispatch=dispatch,
+            expected_status=status,
+            minimum_state_version=state_version,
+        )
+
+    async def renew(self, command: LeasedRunnerCommand) -> LeasedRunnerCommand:
+        async with self._command_lock(command.id):
+            expected_principal = self._require_callback_principal(command)
+            payload = await self._request(
+                "POST",
+                f"/api/v1/runner/commands/{command.id}/lease",
+                expected_principal=expected_principal,
+                json=_command_callback_identity(command),
+            )
+            value = payload.get("lease_duration_seconds")
+            if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+                raise RunnerControlClientError(
+                    500,
+                    "runner_command_invalid_response",
+                    "Control Plane omitted the renewed command lease duration",
+                )
+            if (
+                payload.get("envelope_digest") != command.envelope_digest
+                or payload.get("binding_digest") != command.binding_digest
+            ):
+                raise RunnerControlClientError(
+                    500,
+                    "runner_command_invalid_response",
+                    "Control Plane changed immutable command ownership during renewal",
+                )
+            command.state_version = _required_response_int(
+                payload,
+                "state_version",
+                minimum=1,
+            )
+            command.lease_expires_at = datetime.fromisoformat(
+                str(payload["lease_expires_at"])
+            )
+            command.lease_duration_seconds = float(value)
+            return command
 
     async def finish(
         self,
@@ -257,17 +675,19 @@ class RunnerControlClient:
         result: dict[str, object] | None = None,
         error: str = "",
     ) -> None:
-        await self._request(
-            "POST",
-            f"/api/v1/runner/commands/{command.id}/finish",
-            expected_principal=_required_command_target(command),
-            json={
-                "lease_id": command.lease_id,
-                "succeeded": succeeded,
-                "result": result or {},
-                "error": error,
-            },
-        )
+        async with self._command_lock(command.id):
+            expected_principal = self._require_callback_principal(command)
+            await self._request(
+                "POST",
+                f"/api/v1/runner/commands/{command.id}/finish-owned",
+                expected_principal=expected_principal,
+                json={
+                    **_command_callback_identity(command),
+                    "succeeded": succeeded,
+                    "result": result or {},
+                    "error": error,
+                },
+            )
 
     async def report_command_output(
         self,
@@ -277,16 +697,18 @@ class RunnerControlClient:
         data: bytes,
     ) -> int:
         try:
-            payload = await self._request(
-                "POST",
-                f"/api/v1/runner/commands/{command.id}/output",
-                expected_principal=_required_command_target(command),
-                json={
-                    "lease_id": command.lease_id,
-                    "offset": offset,
-                    "data": base64.b64encode(data).decode("ascii"),
-                },
-            )
+            async with self._command_lock(command.id):
+                expected_principal = self._require_callback_principal(command)
+                payload = await self._request(
+                    "POST",
+                    f"/api/v1/runner/commands/{command.id}/output",
+                    expected_principal=expected_principal,
+                    json={
+                        **_command_callback_identity(command),
+                        "offset": offset,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                )
         except RunnerControlClientError as exc:
             if exc.code == "runner_output_offset_mismatch":
                 raise OutputOffsetMismatch(
@@ -296,13 +718,17 @@ class RunnerControlClient:
                     details=exc.details,
                 ) from exc
             raise
-        return int(payload["next_offset"])
+        return _required_response_int(payload, "next_offset")
 
     async def report_status(
         self,
         execution_id: str,
         status: ExecutionStatus,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         pid: int | None = None,
         process_group_id: int | None = None,
         exit_code: int | None = None,
@@ -319,6 +745,12 @@ class RunnerControlClient:
             "POST",
             f"/api/v1/runner/executions/{execution_id}/status",
             json={
+                **_execution_callback_identity(
+                    command_id=runner_command_id,
+                    effect_binding_id=runner_effect_binding_id,
+                    envelope_digest=runner_envelope_digest,
+                    binding_digest=runner_binding_digest,
+                ),
                 "status": status.value,
                 "pid": pid,
                 "process_group_id": process_group_id,
@@ -338,6 +770,10 @@ class RunnerControlClient:
         self,
         execution_id: str,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         stream: str,
         offset: int,
         data: bytes,
@@ -347,6 +783,12 @@ class RunnerControlClient:
                 "POST",
                 f"/api/v1/runner/executions/{execution_id}/output",
                 json={
+                    **_execution_callback_identity(
+                        command_id=runner_command_id,
+                        effect_binding_id=runner_effect_binding_id,
+                        envelope_digest=runner_envelope_digest,
+                        binding_digest=runner_binding_digest,
+                    ),
                     "stream": stream,
                     "offset": offset,
                     "data": base64.b64encode(data).decode("ascii"),
@@ -360,8 +802,15 @@ class RunnerControlClient:
                     str(exc),
                     details=exc.details,
                 ) from exc
+            if exc.code == "runner_execution_output_too_large":
+                raise OutputLimitExceeded(
+                    exc.status_code,
+                    exc.code,
+                    str(exc),
+                    details=exc.details,
+                ) from exc
             raise
-        return int(payload["next_offset"])
+        return _required_response_int(payload, "next_offset")
 
     def invalidate_credentials(self) -> None:
         self._credential = None
@@ -375,6 +824,60 @@ class RunnerControlClient:
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    def _command_lock(self, command_id: str) -> asyncio.Lock:
+        return self._command_locks.setdefault(command_id, asyncio.Lock())
+
+    def _require_protocol_capability(self, capability: str) -> None:
+        credential = self._credential
+        if credential is None:
+            raise RunnerControlClientError(
+                401,
+                "runner_not_connected",
+                "Runner has not authenticated with the Control Plane",
+            )
+        if capability not in credential.protocol_capabilities:
+            raise RunnerControlClientError(
+                409,
+                "runner_protocol_capability_missing",
+                "Runner credential does not carry the required protocol capability",
+                details={"required_capability": capability},
+            )
+
+    def _require_audit_preflight_principal(
+        self,
+        dispatch: AuditPreflightDispatchEnvelope,
+        lease: AuditPreflightLeaseEnvelope,
+    ) -> RunnerPrincipal:
+        credential = self._credential
+        if (
+            credential is None
+            or dispatch.owner.source_node_id != self.node_id
+            or lease.owner != dispatch.owner
+            or lease.runner_principal != credential.principal
+            or lease.lease_id != dispatch.lease.lease_id
+            or lease.output_contract_digest != dispatch.lease.output_contract_digest
+        ):
+            raise RunnerControlClientError(
+                409,
+                "audit_preflight_principal_mismatch",
+                "Audit Preflight Job belongs to another owner generation",
+            )
+        return credential.principal
+
+    def _require_callback_principal(
+        self,
+        command: LeasedRunnerCommand,
+    ) -> RunnerPrincipal:
+        target = _required_command_target(command)
+        credential = self._credential
+        if credential is None or credential.principal != target:
+            raise RunnerControlClientError(
+                409,
+                "runner_command_principal_mismatch",
+                "Runner command belongs to a different owner generation",
+            )
+        return target
 
     async def _request(
         self,
@@ -426,6 +929,77 @@ class RunnerControlClient:
         return target
 
 
+def _audit_preflight_callback_identity(
+    dispatch: AuditPreflightDispatchEnvelope,
+    *,
+    lease: AuditPreflightLeaseEnvelope,
+    state_version: int,
+) -> dict[str, object]:
+    if not isinstance(state_version, int) or isinstance(state_version, bool) or state_version < 1:
+        raise ValueError("Audit Preflight state_version must be a positive integer")
+    if (
+        lease.owner != dispatch.owner
+        or lease.lease_id != dispatch.lease.lease_id
+        or lease.runner_principal != dispatch.lease.runner_principal
+        or lease.output_contract_digest != dispatch.lease.output_contract_digest
+    ):
+        raise ValueError("Audit Preflight callback lease does not bind the dispatch")
+    return {
+        "owner_kind": "preflight_job",
+        "owner": dispatch.owner.model_dump(mode="json"),
+        "lease": lease.model_dump(mode="json"),
+        "state_version": state_version,
+        "capsule_id": dispatch.capsule_id,
+    }
+
+
+def _parse_preflight_model[T: BaseModel](
+    model_type: type[T],
+    raw: object,
+    *,
+    code: str,
+    message: str,
+) -> T:
+    try:
+        encoded = json.dumps(
+            raw,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        return model_type.model_validate_json(encoded)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise RunnerControlClientError(500, code, message) from exc
+
+
+def _require_preflight_callback_ack(
+    payload: dict[str, object],
+    *,
+    dispatch: AuditPreflightDispatchEnvelope,
+    expected_status: AuditPreflightJobStatus,
+    minimum_state_version: int,
+) -> AuditPreflightCallbackAck:
+    ack = _parse_preflight_model(
+        AuditPreflightCallbackAck,
+        payload,
+        code="audit_preflight_invalid_callback_ack",
+        message="Control Plane returned an invalid Audit Preflight callback ACK",
+    )
+    if (
+        ack.job_id != dispatch.owner.job_id
+        or ack.status is not expected_status
+        or ack.state_version <= minimum_state_version
+        or ack.finished_at is None
+    ):
+        raise RunnerControlClientError(
+            500,
+            "audit_preflight_invalid_callback_ack",
+            "Control Plane returned inconsistent Audit Preflight terminal facts",
+        )
+    return ack
+
+
 def _required_command_target(command: LeasedRunnerCommand) -> RunnerPrincipal:
     if command.target is None:
         raise RunnerControlClientError(
@@ -434,6 +1008,62 @@ def _required_command_target(command: LeasedRunnerCommand) -> RunnerPrincipal:
             "Runner command omitted its owner generation",
         )
     return command.target
+
+
+def _command_callback_identity(command: LeasedRunnerCommand) -> dict[str, object]:
+    if (
+        len(command.envelope_digest) != 64
+        or len(command.binding_digest) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in command.envelope_digest + command.binding_digest
+        )
+    ):
+        raise RunnerControlClientError(
+            409,
+            "runner_command_ownership_missing",
+            "Runner command omitted immutable ownership digests",
+        )
+    return {
+        "lease_id": command.lease_id,
+        "state_version": command.state_version,
+        "envelope_digest": command.envelope_digest,
+        "binding_digest": command.binding_digest,
+    }
+
+
+def _execution_callback_identity(
+    *,
+    command_id: str,
+    effect_binding_id: str,
+    envelope_digest: str,
+    binding_digest: str,
+) -> dict[str, str]:
+    if not command_id or not effect_binding_id:
+        raise RunnerControlClientError(
+            409,
+            "runner_execution_callback_binding_missing",
+            "Runner execution omitted its launch command binding",
+        )
+    if (
+        len(envelope_digest) != 64
+        or len(binding_digest) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in envelope_digest + binding_digest
+        )
+    ):
+        raise RunnerControlClientError(
+            409,
+            "runner_execution_callback_binding_missing",
+            "Runner execution omitted immutable launch ownership digests",
+        )
+    return {
+        "command_id": command_id,
+        "effect_binding_id": effect_binding_id,
+        "envelope_digest": envelope_digest,
+        "binding_digest": binding_digest,
+    }
 
 
 def _parse_runner_principal(

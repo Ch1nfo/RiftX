@@ -26,6 +26,7 @@ from riftx.runtime.types.state_machine import _STEP_TRANSITIONS as STEP_TRANSITI
 
 def make_run(status: RunStatus) -> Run:
     return Run(
+        kind="general",
         engagement_id="engagement-1",
         node_id="node-1",
         objective=Objective(description="Map the authorized target"),

@@ -8,7 +8,11 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 import riftx.persistence.repositories as repository_module
-from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.application.errors import (
+    EntityNotFoundError,
+    RepositoryConflictError,
+    RepositoryIntegrityError,
+)
 from riftx.application.finalization import cleanup_event_id, report_failure_event_id
 from riftx.domain import (
     Engagement,
@@ -18,6 +22,7 @@ from riftx.domain import (
     InvalidStateTransitionError,
     Objective,
     Run,
+    RunKind,
     RunnerPrincipal,
     RunStatus,
     TerminalSession,
@@ -33,8 +38,14 @@ from riftx.persistence import (
 )
 
 
-def make_run(*, run_id: str = "run-1", engagement_id: str = "engagement-1") -> Run:
+def make_run(
+    *,
+    run_id: str = "run-1",
+    engagement_id: str = "engagement-1",
+    kind: RunKind = RunKind.GENERAL,
+) -> Run:
     return Run(
+        kind=kind,
         id=run_id,
         engagement_id=engagement_id,
         node_id="local-node",
@@ -198,6 +209,41 @@ async def test_terminal_status_is_monotonic_across_sql_repository_instances(
     await database.dispose()
 
 
+async def test_terminal_lookup_by_execution_rejects_ambiguous_resource_binding(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'terminal-duplicate.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-1", name="Terminal duplicate binding")
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(make_run())
+    execution = make_execution(execution_id="execution-terminal-duplicate")
+    execution.executor_type = ExecutorType.PTY
+    await SQLAlchemyExecutionRepository(database.session_factory).create_if_absent(execution)
+    repository = SQLAlchemyTerminalRepository(database.session_factory)
+    await repository.create(
+        TerminalSession(
+            id="terminal-duplicate-a",
+            run_id="run-1",
+            execution_id=execution.id,
+        )
+    )
+    await repository.create(
+        TerminalSession(
+            id="terminal-duplicate-b",
+            run_id="run-1",
+            execution_id=execution.id,
+        )
+    )
+
+    with pytest.raises(RepositoryIntegrityError) as captured:
+        await repository.get_by_execution(execution.id)
+
+    assert captured.value.reason_code == "duplicate_execution_binding"
+    await database.dispose()
+
+
 async def test_terminal_projection_event_is_conditional_and_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -338,6 +384,7 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
 
     await engagements.create(Engagement(id="engagement-1", name="Test engagement"))
     await runs.create(make_run())
+    await runs.create(make_run(run_id="audit-run-1", kind=RunKind.CODE_AUDIT))
     await runs.update_status("run-1", RunStatus.PREPARING)
     running = await runs.update_status("run-1", RunStatus.RUNNING)
     message_event = await events.append("run-1", "agent.message", {"content": "started"})
@@ -351,9 +398,13 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
     reopened_events = SQLAlchemyRunEventRepository(reopened.session_factory)
 
     persisted = await reopened_runs.get("run-1")
+    persisted_audit = await reopened_runs.get("audit-run-1")
     timeline = await reopened_events.list_after("run-1")
 
     assert persisted is not None
+    assert persisted.kind is RunKind.GENERAL
+    assert persisted_audit is not None
+    assert persisted_audit.kind is RunKind.CODE_AUDIT
     assert persisted.status is RunStatus.RUNNING
     assert persisted.started_at == running.started_at
     assert [event.sequence for event in timeline] == [1, 2, 3, 4]
@@ -529,14 +580,30 @@ async def test_repository_lists_and_filters_runs(tmp_path: Path) -> None:
     runs = SQLAlchemyRunRepository(database.session_factory)
     await engagements.create(Engagement(id="engagement-1", name="Test"))
     await runs.create(make_run(run_id="run-1"))
-    await runs.create(make_run(run_id="run-2"))
+    await runs.create(make_run(run_id="run-2", kind=RunKind.CODE_AUDIT))
     await runs.update_status("run-2", RunStatus.PREPARING)
 
     created = await runs.list(status=RunStatus.CREATED)
     preparing = await runs.list(status=RunStatus.PREPARING)
+    general = await runs.list(kind=RunKind.GENERAL)
+    general_page = await runs.list(kind=RunKind.GENERAL, limit=1)
+    code_audit = await runs.list(kind=RunKind.CODE_AUDIT)
+    code_audit_preparing = await runs.list(
+        status=RunStatus.PREPARING,
+        kind=RunKind.CODE_AUDIT,
+    )
+    code_audit_created = await runs.list(
+        status=RunStatus.CREATED,
+        kind=RunKind.CODE_AUDIT,
+    )
 
     assert [run.id for run in created] == ["run-1"]
     assert [run.id for run in preparing] == ["run-2"]
+    assert [run.id for run in general] == ["run-1"]
+    assert [run.id for run in general_page] == ["run-1"]
+    assert [run.id for run in code_audit] == ["run-2"]
+    assert [run.id for run in code_audit_preparing] == ["run-2"]
+    assert code_audit_created == []
     await database.dispose()
 
 

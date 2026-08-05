@@ -57,6 +57,7 @@ async def _create_runtime_graph(database: Database, tmp_path: Path) -> None:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-clock",
             engagement_id="engagement-clock",
             node_id="node-clock",

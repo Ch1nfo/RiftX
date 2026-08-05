@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -204,51 +202,54 @@ class RuntimeControlToolService:
         raw_arguments: dict[str, object],
     ) -> object:
         if tool_name == "search_tools":
-            arguments = _SearchArguments.model_validate(raw_arguments)
+            search_arguments = _SearchArguments.model_validate(raw_arguments)
             results = self._tools.search_tools(
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
                 request=ToolSearchRequest(
-                    query=arguments.query,
-                    capability=arguments.capability,
-                    max_results=arguments.max_results,
-                    include_unavailable=arguments.include_unavailable,
+                    query=search_arguments.query,
+                    capability=search_arguments.capability,
+                    max_results=search_arguments.max_results,
+                    include_unavailable=search_arguments.include_unavailable,
                 ),
             )
             return [item.model_dump(mode="json") for item in results]
         if tool_name == "list_tools":
-            arguments = _ListArguments.model_validate(raw_arguments)
+            list_arguments = _ListArguments.model_validate(raw_arguments)
             entries = self._tools.list_tools_for_scope(
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
-                include_unavailable=arguments.include_unavailable,
-                max_results=arguments.max_results,
+                include_unavailable=list_arguments.include_unavailable,
+                max_results=list_arguments.max_results,
             )
             return [item.model_dump(mode="json") for item in entries]
         if tool_name == "get_tool":
-            arguments = _ToolArguments.model_validate(raw_arguments)
+            tool_arguments = _ToolArguments.model_validate(raw_arguments)
             return self._tools.get_tool(
-                arguments.tool_id,
+                tool_arguments.tool_id,
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
             ).model_dump(mode="json")
         if tool_name == "get_execution":
-            arguments = _ExecutionArguments.model_validate(raw_arguments)
-            execution = await self._execution_for_scope(scope, arguments.execution_id)
+            execution_arguments = _ExecutionArguments.model_validate(raw_arguments)
+            execution = await self._execution_for_scope(
+                scope,
+                execution_arguments.execution_id,
+            )
             return _execution_payload(execution)
         if tool_name == "wait_execution":
-            arguments = _WaitExecutionArguments.model_validate(raw_arguments)
-            await self._execution_for_scope(scope, arguments.execution_id)
+            wait_arguments = _WaitExecutionArguments.model_validate(raw_arguments)
+            await self._execution_for_scope(scope, wait_arguments.execution_id)
             result = await self._executions.wait(
-                arguments.execution_id,
-                timeout_seconds=arguments.timeout_seconds,
-                stdout_cursor=arguments.stdout_cursor,
-                stderr_cursor=arguments.stderr_cursor,
-                max_bytes=arguments.max_bytes,
-                next_poll_after_seconds=arguments.next_poll_after_seconds,
+                wait_arguments.execution_id,
+                timeout_seconds=wait_arguments.timeout_seconds,
+                stdout_cursor=wait_arguments.stdout_cursor,
+                stderr_cursor=wait_arguments.stderr_cursor,
+                max_bytes=wait_arguments.max_bytes,
+                next_poll_after_seconds=wait_arguments.next_poll_after_seconds,
             )
             return {
                 "wait_status": result.wait_status.value,
@@ -259,53 +260,59 @@ class RuntimeControlToolService:
                 "stderr_cursor": result.stderr_cursor,
             }
         if tool_name == "cancel_execution":
-            arguments = _CancelExecutionArguments.model_validate(raw_arguments)
-            await self._execution_for_scope(scope, arguments.execution_id)
+            cancel_arguments = _CancelExecutionArguments.model_validate(raw_arguments)
+            await self._execution_for_scope(scope, cancel_arguments.execution_id)
             return _execution_payload(
-                await self._executions.cancel(arguments.execution_id, arguments.reason)
+                await self._executions.cancel(
+                    cancel_arguments.execution_id,
+                    cancel_arguments.reason,
+                )
             )
         if tool_name == "read_artifact":
-            arguments = _ReadArtifactArguments.model_validate(raw_arguments)
-            artifact = await self._artifacts.get(arguments.artifact_id)
+            artifact_arguments = _ReadArtifactArguments.model_validate(raw_arguments)
+            artifact = await self._artifacts.get(artifact_arguments.artifact_id)
             if artifact.run_id != scope.run_id:
                 raise ApplicationConflictError(
                     "artifact_run_mismatch",
                     "Artifact is not available to this Run",
                 )
-            artifact, path = await self._artifacts.content_path(arguments.artifact_id)
-            data, eof = await asyncio.to_thread(
-                _read_slice,
-                path,
-                arguments.offset,
-                arguments.max_bytes,
+            artifact_slice = await self._artifacts.read_content_slice(
+                artifact_arguments.artifact_id,
+                expected_run_id=scope.run_id,
+                offset=artifact_arguments.offset,
+                max_bytes=artifact_arguments.max_bytes,
             )
-            encoding, content = _artifact_content(artifact.mime_type, data)
+            artifact = artifact_slice.artifact
+            encoding, content = _artifact_content(
+                artifact.mime_type,
+                artifact_slice.data,
+            )
             return {
                 "artifact_id": artifact.id,
                 "name": artifact.name,
                 "mime_type": artifact.mime_type,
                 "sha256": artifact.sha256,
                 "size": artifact.size,
-                "offset": arguments.offset,
-                "next_offset": arguments.offset + len(data),
-                "eof": eof,
+                "offset": artifact_arguments.offset,
+                "next_offset": artifact_slice.next_offset,
+                "eof": artifact_slice.eof,
                 "encoding": encoding,
                 "content": content,
             }
         if tool_name == "complete_run":
-            arguments = _CompleteRunArguments.model_validate(raw_arguments)
+            complete_arguments = _CompleteRunArguments.model_validate(raw_arguments)
             await self._events.append(
                 scope.run_id,
                 "agent.completion_requested",
                 {
                     "session_id": scope.session_id,
                     "agent_id": scope.agent_id,
-                    "run_summary": arguments.run_summary,
+                    "run_summary": complete_arguments.run_summary,
                 },
             )
             return {
                 "completion_requested": True,
-                "run_summary": arguments.run_summary,
+                "run_summary": complete_arguments.run_summary,
             }
         raise RuntimeError(f"Unclassified Runtime control tool: {tool_name!r}")
 
@@ -362,13 +369,6 @@ def _bounded_result(result: object) -> object:
             details={"result_bytes": len(encoded), "max_bytes": _MAX_CONTROL_RESULT_BYTES},
         )
     return json.loads(encoded)
-
-
-def _read_slice(path: Path, offset: int, max_bytes: int) -> tuple[bytes, bool]:
-    with path.open("rb") as stream:
-        stream.seek(offset)
-        data = stream.read(max_bytes + 1)
-    return data[:max_bytes], len(data) <= max_bytes
 
 
 def _artifact_content(mime_type: str, data: bytes) -> tuple[str, str]:

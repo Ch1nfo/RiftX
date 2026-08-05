@@ -1,4 +1,23 @@
+from sqlalchemy import UniqueConstraint
+
+from riftx.persistence.audit_preflight import AuditPreflightJobRecord
+from riftx.persistence.audit_preflight_plan import AuditPreflightPlanRecord
+from riftx.persistence.audit_static_effect import (
+    AuditStaticEffectPlanRecord,
+    SnapshotMountLeaseRecord,
+    SnapshotMountPinRecord,
+    SnapshotMountStopProofRecord,
+)
 from riftx.persistence.orm import Base
+from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
+
+assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
+assert AuditPreflightPlanRecord.__table__.metadata is Base.metadata
+assert AuditStaticEffectPlanRecord.__table__.metadata is Base.metadata
+assert SnapshotMountLeaseRecord.__table__.metadata is Base.metadata
+assert SnapshotMountPinRecord.__table__.metadata is Base.metadata
+assert SnapshotMountStopProofRecord.__table__.metadata is Base.metadata
+assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
@@ -10,6 +29,22 @@ EXPECTED_TABLES = {
     "approvals",
     "approval_grants",
     "artifacts",
+    "audit_contracts",
+    "audit_client_requests",
+    "audit_phase_runs",
+    "audit_preflight_exit_receipts",
+    "audit_preflight_job_requests",
+    "audit_preflight_jobs",
+    "audit_preflight_plans",
+    "audit_preflight_results",
+    "audit_preflight_stop_receipts",
+    "audit_projects",
+    "audit_scans",
+    "audit_security_context_bindings",
+    "audit_scope_units",
+    "audit_start_intents",
+    "audit_static_effect_plans",
+    "audit_work_items",
     "browser_actions",
     "browser_observations",
     "browser_pages",
@@ -22,6 +57,7 @@ EXPECTED_TABLES = {
     "engagement_facts",
     "executions",
     "findings",
+    "local_audit_jobs",
     "fact_relations",
     "memories",
     "nodes",
@@ -29,10 +65,19 @@ EXPECTED_TABLES = {
     "reports",
     "runtime_approval_requests",
     "runner_commands",
+    "runner_command_ownerships",
     "runner_credentials",
+    "runner_effect_bindings",
+    "runner_stop_projections",
+    "runner_stop_receipts",
     "run_events",
     "run_leases",
     "runs",
+    "source_snapshots",
+    "snapshot_references",
+    "snapshot_mount_leases",
+    "snapshot_mount_pins",
+    "snapshot_mount_stop_proofs",
     "source_references",
     "target_http_requests",
     "terminal_sessions",
@@ -47,6 +92,7 @@ EXPECTED_TABLES = {
     "web_search_queries",
     "web_search_results",
     "working_memories",
+    "workflow_signal_intents",
 }
 
 
@@ -54,10 +100,57 @@ def test_metadata_contains_v2_business_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES - {"alembic_version"}
 
 
+def test_audit_preflight_plan_table_separates_token_and_lifecycle_facts() -> None:
+    plans = Base.metadata.tables["audit_preflight_plans"]
+
+    assert {
+        "id",
+        "canonical_json",
+        "plan_digest",
+        "preflight_job_id",
+        "operator_principal_id",
+        "authorization_scope_digest",
+        "security_context_id",
+        "security_context_digest",
+        "token_verifier_schema_version",
+        "token_key_id",
+        "token_nonce",
+        "token_hash",
+        "status",
+        "state_version",
+        "reserved_audit_id",
+        "reserved_client_request_id",
+        "consumed_audit_id",
+        "consumed_start_request_id",
+    } <= set(plans.columns.keys())
+    assert "preflight_token" not in plans.columns
+    assert "raw_token" not in plans.columns
+
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in plans.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert ("preflight_job_id",) in unique_columns
+    assert ("token_hash",) in unique_columns
+    assert (
+        "id",
+        "plan_digest",
+        "operator_principal_id",
+        "authorization_scope_digest",
+        "security_context_id",
+        "security_context_digest",
+        "reserved_audit_id",
+    ) in unique_columns
+
+
 def test_run_table_matches_design_contract() -> None:
-    assert set(Base.metadata.tables["runs"].columns.keys()) == {
+    runs = Base.metadata.tables["runs"]
+
+    assert set(runs.columns.keys()) == {
         "id",
         "engagement_id",
+        "kind",
         "node_id",
         "objective",
         "success_criteria_json",
@@ -72,6 +165,16 @@ def test_run_table_matches_design_contract() -> None:
         "started_at",
         "finished_at",
     }
+    assert runs.c.kind.nullable is False
+    assert runs.c.kind.default is None
+    assert runs.c.kind.server_default is None
+    assert {index.name for index in runs.indexes} >= {"ix_runs_kind"}
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in runs.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert checks["ck_runs_kind"] == "kind IN ('general', 'code_audit')"
 
 
 def test_event_sequence_is_unique_per_run() -> None:
@@ -156,6 +259,51 @@ def test_target_http_schema_preserves_execution_identity_and_artifacts() -> None
         "request_artifact_id",
         "response_artifact_id",
     } <= set(Base.metadata.tables["target_http_requests"].columns.keys())
+
+
+def test_artifact_schema_persists_access_owner_and_ingest_integrity_facts() -> None:
+    artifacts = Base.metadata.tables["artifacts"]
+
+    assert {
+        "audit_id",
+        "access_class",
+        "content_trust",
+        "storage_key",
+        "ingest_provenance_json",
+    } <= set(artifacts.columns.keys())
+    for column_name in (
+        "access_class",
+        "content_trust",
+        "storage_key",
+        "ingest_provenance_json",
+    ):
+        assert artifacts.c[column_name].nullable is False
+        assert artifacts.c[column_name].server_default is None
+    assert artifacts.c.audit_id.nullable is True
+    assert {
+        foreign_key.target_fullname for foreign_key in artifacts.c.audit_id.foreign_keys
+    } == {"audit_scans.id"}
+    [execution_foreign_key] = artifacts.c.execution_id.foreign_keys
+    assert execution_foreign_key.target_fullname == "executions.id"
+    assert execution_foreign_key.ondelete == "RESTRICT"
+    assert {index.name for index in artifacts.indexes} >= {
+        "ix_artifacts_public_run_created_id",
+        "ix_artifacts_audit_run_execution_created_id",
+    }
+    assert {
+        constraint.name
+        for constraint in artifacts.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    } >= {
+        "ck_artifacts_access_class",
+        "ck_artifacts_content_trust",
+        "ck_artifacts_owner_access",
+        "ck_artifacts_canonical_storage_key",
+        "ck_artifacts_safe_storage_components",
+        "ck_artifacts_safe_mime_type",
+        "ck_artifacts_sha256",
+        "ck_artifacts_nonnegative_size",
+    }
 
 
 def test_browser_schema_preserves_bounded_observations_and_ownership() -> None:
@@ -283,6 +431,7 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         "runner_epoch",
         "token_hash",
         "token_prefix",
+        "protocol_capabilities_json",
         "created_at",
         "rotated_at",
         "revoked_at",
@@ -303,6 +452,7 @@ def test_runner_control_tables_match_durable_channel_contract() -> None:
         "lease_expires_at",
         "result_json",
         "error",
+        "state_version",
         "created_at",
         "updated_at",
         "completed_at",

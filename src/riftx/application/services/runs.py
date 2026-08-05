@@ -23,6 +23,18 @@ from riftx.application.ports import (
     RunEventRepository,
     RunRepository,
 )
+from riftx.application.run_kind_effects import (
+    EffectMode,
+    EffectOrigin,
+    GlobalEffectOwnership,
+    OperationEffect,
+    PolicyDenialReason,
+    RunEffectOperation,
+    RunEffectOwnership,
+    RunKindEffectPolicyDenied,
+    global_effect_ownership_for_local_principal,
+    require_run_kind_effect_policy,
+)
 from riftx.application.services.run_safety import (
     RunResourceStopper,
     RunSafetyStopService,
@@ -34,8 +46,10 @@ from riftx.domain import (
     Engagement,
     EntryPoint,
     InvalidStateTransitionError,
+    LocalPrincipal,
     Objective,
     Run,
+    RunKind,
     RunStatus,
     Scope,
     SuccessCriterion,
@@ -59,28 +73,140 @@ _SAFETY_FENCE_RUN_STATUSES = frozenset(
 )
 
 
+def require_general_run_operation(run: Run) -> Run:
+    """Fail closed while a generic Run operation lacks a kind-aware contract."""
+
+    if run.kind is not RunKind.GENERAL:
+        raise ApplicationConflictError(
+            "run_kind_operation_unsupported",
+            "The requested operation is not supported for this Run kind",
+        )
+    return run
+
+
+def require_run_kind_effect_operation(
+    run: Run,
+    *,
+    operation: RunEffectOperation,
+    origin: EffectOrigin,
+    effect: OperationEffect,
+    mode: EffectMode,
+) -> Run:
+    """Apply one exact catalog rule after resolving the authoritative Run owner."""
+
+    try:
+        require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=RunEffectOwnership(run_id=run.id, run_kind=run.kind),
+            effect=effect,
+            mode=mode,
+        )
+    except RunKindEffectPolicyDenied as exc:
+        if exc.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED:
+            raise ApplicationConflictError(
+                "run_kind_operation_unsupported",
+                "The requested operation is not supported for this Run kind",
+            ) from None
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested Run effect is not admitted for this owner",
+        ) from None
+    except (TypeError, ValueError):
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested Run effect is not admitted for this owner",
+        ) from None
+    return run
+
+
+def require_global_effect_operation(
+    ownership: GlobalEffectOwnership,
+    *,
+    operation: RunEffectOperation,
+    origin: EffectOrigin,
+    effect: OperationEffect,
+) -> GlobalEffectOwnership:
+    """Apply one exact global catalog rule to a server-resolved administrative scope."""
+
+    try:
+        require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=ownership,
+            effect=effect,
+            mode=EffectMode.GLOBAL,
+        )
+    except (RunKindEffectPolicyDenied, TypeError, ValueError):
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested global effect is not admitted for this administrative scope",
+        ) from None
+    return ownership
+
+
 class RunWorkflowClient(Protocol):
     """Small Temporal boundary consumed by the control plane."""
 
-    async def start_run(self, run_id: str) -> object: ...
+    async def start_run(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> object: ...
 
-    async def pause(self, run_id: str) -> None: ...
+    async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None: ...
 
-    async def resume(self, run_id: str) -> None: ...
+    async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None: ...
 
-    async def approve(self, run_id: str, call_id: str) -> None: ...
+    async def approve(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
-    async def reject(self, run_id: str, call_id: str) -> None: ...
+    async def reject(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
-    async def cancel_current_execution(self, run_id: str) -> None: ...
+    async def cancel_current_execution(
+        self,
+        run_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
-    async def cancel(self, run_id: str) -> None: ...
+    async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None: ...
 
-    async def compact(self, run_id: str, max_history_items: int = 100) -> None: ...
+    async def compact(
+        self,
+        run_id: str,
+        max_history_items: int = 100,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
-    async def switch_model(self, run_id: str, model_profile: str) -> None: ...
+    async def switch_model(
+        self,
+        run_id: str,
+        model_profile: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
-    async def append_user_message(self, run_id: str, user_input_id: str) -> None: ...
+    async def append_user_message(
+        self,
+        run_id: str,
+        user_input_id: str,
+        *,
+        workflow_id: str | None = None,
+    ) -> None: ...
 
     def workflow_id(self, run_id: str) -> str: ...
 
@@ -161,7 +287,18 @@ class RunApplicationService:
             require_all_resource_stoppers=False,
         )
 
-    async def create_run(self, command: CreateRun) -> Run:
+    async def create_run(
+        self,
+        command: CreateRun,
+        *,
+        principal: LocalPrincipal,
+    ) -> Run:
+        require_global_effect_operation(
+            global_effect_ownership_for_local_principal(principal),
+            operation=RunEffectOperation.SERVICE_RUN_CREATE,
+            origin=EffectOrigin.APPLICATION_SERVICE,
+            effect=OperationEffect.DURABLE_WRITE,
+        )
         model_profile = command.model_profile
         if self._model_profiles is not None:
             model_profile = await self._model_profiles.resolve_profile(model_profile)
@@ -169,6 +306,7 @@ class RunApplicationService:
         run = Run(
             engagement_id=engagement.id,
             node_id=command.node_id,
+            kind=RunKind.GENERAL,
             objective=Objective(description=command.objective),
             success_criteria=command.success_criteria,
             entry_points=command.entry_points,
@@ -219,14 +357,28 @@ class RunApplicationService:
             raise EntityNotFoundError("Run", run_id)
         return run
 
+    async def resolve_kind(self, run_id: str) -> RunKind:
+        kind = await self._run_repository.get_kind(run_id)
+        if kind is None:
+            raise EntityNotFoundError("Run", run_id)
+        return kind
+
     async def list_runs(
         self,
         *,
         status: RunStatus | None = None,
+        kind: RunKind = RunKind.GENERAL,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Run]:
-        return list(await self._run_repository.list(status=status, limit=limit, offset=offset))
+        return list(
+            await self._run_repository.list(
+                status=status,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
+        )
 
     async def list_runs_for_reconciliation(
         self,
@@ -256,7 +408,13 @@ class RunApplicationService:
         Worker independently requires the same durable stop evidence.
         """
 
-        run = await self.get_run(run_id)
+        run = await self._require_run_effect(
+            run_id,
+            operation=RunEffectOperation.SERVICE_RUN_CLEANUP,
+            origin=EffectOrigin.SAFETY_RECONCILER,
+            effect=OperationEffect.HOST_CONTROL,
+            mode=EffectMode.SAFETY_REDUCE_ONLY,
+        )
         if run.status not in {
             RunStatus.PAUSING,
             RunStatus.CANCELLING,
@@ -330,7 +488,10 @@ class RunApplicationService:
             ) from exc
 
     async def pause(self, run_id: str) -> Run:
-        run = await self._require_pauseable_run(run_id)
+        run = await self._require_pauseable_run(
+            run_id,
+            operation=RunEffectOperation.SERVICE_RUN_PAUSE,
+        )
         run = await self._transition_if_possible(run, RunStatus.PAUSING)
         stop_result = await self._stop_run_resources(run.id, drain=True)
         pause_fence_acquired = run.status in {RunStatus.PAUSING, RunStatus.PAUSED}
@@ -355,7 +516,11 @@ class RunApplicationService:
         return await self._transition_if_possible(current, RunStatus.PAUSED)
 
     async def resume(self, run_id: str) -> Run:
-        run = await self._require_safety_controllable_run(run_id, action="resume")
+        run = await self._require_safety_controllable_run(
+            run_id,
+            action="resume",
+            operation=RunEffectOperation.SERVICE_RUN_RESUME,
+        )
         if run.status is RunStatus.PAUSING:
             # PAUSING may be the durable remainder of a failed safety stop. Do
             # not turn it into PAUSED/RUNNING merely because the operator asks
@@ -535,7 +700,10 @@ class RunApplicationService:
     async def cancel_current_execution(self, run_id: str) -> Run:
         # Safety controls must remain available for a terminal Run because a
         # crashed Workflow can leave an orphaned host process behind.
-        run = await self.get_run(run_id)
+        run = await self._require_run_effect(
+            run_id,
+            operation=RunEffectOperation.SERVICE_RUN_CANCEL_CURRENT_EXECUTION,
+        )
         stop_result = await self._stop_run_resources(run.id, drain=False)
         # Releasing the Workflow's waiting Execution while its physical stop is
         # unconfirmed would let the Agent continue and produce more effects next
@@ -559,7 +727,10 @@ class RunApplicationService:
     async def cancel(self, run_id: str) -> Run:
         # Full cancellation is also an orphan-process recovery operation, so it
         # intentionally remains callable after the Workflow/Run became terminal.
-        run = await self.get_run(run_id)
+        run = await self._require_run_effect(
+            run_id,
+            operation=RunEffectOperation.SERVICE_RUN_CANCEL,
+        )
         if run.status not in {
             RunStatus.COMPLETED,
             RunStatus.FAILED,
@@ -598,11 +769,19 @@ class RunApplicationService:
         return current
 
     async def compact(self, run_id: str, *, max_history_items: int = 100) -> Run:
-        run = await self._require_controllable_run(run_id, action="compact context for")
+        run = await self._require_controllable_run(
+            run_id,
+            action="compact context for",
+            operation=RunEffectOperation.SERVICE_RUN_COMPACT,
+        )
         await self._invoke_workflow(
             run,
             "compact context",
-            lambda target: self._workflow_client.compact(target, max_history_items),
+            lambda target, *, workflow_id: self._workflow_client.compact(
+                target,
+                max_history_items,
+                workflow_id=workflow_id,
+            ),
         )
         await self._event_repository.append(
             run.id,
@@ -612,7 +791,11 @@ class RunApplicationService:
         return run
 
     async def switch_model(self, run_id: str, model_profile: str) -> Run:
-        run = await self._require_controllable_run(run_id, action="switch the model for")
+        run = await self._require_controllable_run(
+            run_id,
+            action="switch the model for",
+            operation=RunEffectOperation.SERVICE_RUN_SWITCH_MODEL,
+        )
         normalized = model_profile.strip()
         if not normalized:
             raise ApplicationConflictError(
@@ -624,7 +807,11 @@ class RunApplicationService:
         await self._invoke_workflow(
             run,
             "switch model",
-            lambda target: self._workflow_client.switch_model(target, normalized),
+            lambda target, *, workflow_id: self._workflow_client.switch_model(
+                target,
+                normalized,
+                workflow_id=workflow_id,
+            ),
         )
         await self._event_repository.append(
             run.id,
@@ -640,7 +827,11 @@ class RunApplicationService:
         *,
         message_event_id: str | None = None,
     ) -> Run:
-        run = await self._require_controllable_run(run_id, action="send a message to")
+        run = await self._require_controllable_run(
+            run_id,
+            action="send a message to",
+            operation=RunEffectOperation.SERVICE_RUN_APPEND_MESSAGE,
+        )
         if run.status in {
             RunStatus.PAUSING,
             RunStatus.COMPLETING,
@@ -710,7 +901,11 @@ class RunApplicationService:
             await self._invoke_workflow(
                 run,
                 "send a message",
-                lambda target: self._workflow_client.append_user_message(target, event.id),
+                lambda target, *, workflow_id: self._workflow_client.append_user_message(
+                    target,
+                    event.id,
+                    workflow_id=workflow_id,
+                ),
             )
         except ApplicationServiceError as exc:
             # Temporal transport errors are delivery-ambiguous: the server may
@@ -754,8 +949,14 @@ class RunApplicationService:
         )
         return await self._engagement_repository.create(engagement)
 
-    async def _require_controllable_run(self, run_id: str, *, action: str) -> Run:
-        run = await self.get_run(run_id)
+    async def _require_controllable_run(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        operation: RunEffectOperation,
+    ) -> Run:
+        run = await self._require_run_effect(run_id, operation=operation)
         if run.status in _TERMINAL_RUN_STATUSES | _SAFETY_FENCE_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_not_controllable",
@@ -764,10 +965,16 @@ class RunApplicationService:
             )
         return run
 
-    async def _require_safety_controllable_run(self, run_id: str, *, action: str) -> Run:
+    async def _require_safety_controllable_run(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        operation: RunEffectOperation,
+    ) -> Run:
         """Keep recovery controls available while an admission fence is active."""
 
-        run = await self.get_run(run_id)
+        run = await self._require_run_effect(run_id, operation=operation)
         if run.status in _TERMINAL_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_not_controllable",
@@ -776,8 +983,34 @@ class RunApplicationService:
             )
         return run
 
-    async def _require_pauseable_run(self, run_id: str) -> Run:
-        run = await self._require_safety_controllable_run(run_id, action="pause")
+    async def _require_run_effect(
+        self,
+        run_id: str,
+        *,
+        operation: RunEffectOperation,
+        origin: EffectOrigin = EffectOrigin.APPLICATION_SERVICE,
+        effect: OperationEffect = OperationEffect.WORKFLOW_CONTROL,
+        mode: EffectMode = EffectMode.NORMAL,
+    ) -> Run:
+        return require_run_kind_effect_operation(
+            await self.get_run(run_id),
+            operation=operation,
+            origin=origin,
+            effect=effect,
+            mode=mode,
+        )
+
+    async def _require_pauseable_run(
+        self,
+        run_id: str,
+        *,
+        operation: RunEffectOperation,
+    ) -> Run:
+        run = await self._require_safety_controllable_run(
+            run_id,
+            action="pause",
+            operation=operation,
+        )
         if run.status in {RunStatus.CANCELLING, RunStatus.COMPLETING}:
             raise ApplicationConflictError(
                 "run_not_controllable",
@@ -790,10 +1023,17 @@ class RunApplicationService:
         self,
         run: Run,
         action: str,
-        operation: Callable[[str], Awaitable[object]],
+        operation: Callable[..., Awaitable[object]],
     ) -> None:
+        workflow_id = run.temporal_workflow_id
+        if not workflow_id:
+            raise ApplicationConflictError(
+                "workflow_identity_missing",
+                f"Could not {action} because the Run has no authoritative Workflow identity",
+                details={"run_id": run.id},
+            )
         try:
-            await operation(run.id)
+            await operation(run.id, workflow_id=workflow_id)
         except ApplicationServiceError:
             raise
         except Exception as exc:
@@ -811,7 +1051,7 @@ class RunApplicationService:
         self,
         run: Run,
         action: str,
-        operation: Callable[[str], Awaitable[object]],
+        operation: Callable[..., Awaitable[object]],
     ) -> bool:
         try:
             # Physical effect termination is authoritative.  A disconnected
@@ -844,7 +1084,7 @@ class RunApplicationService:
         self,
         run: Run,
         action: str,
-        operation: Callable[[str], Awaitable[object]],
+        operation: Callable[..., Awaitable[object]],
     ) -> bool:
         # Before RUNNING is durably observed, local status fencing is both the
         # source of truth and the safer control path.  A signal-with-start may

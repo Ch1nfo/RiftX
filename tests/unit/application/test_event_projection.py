@@ -101,6 +101,31 @@ def test_target_http_artifact_association_hides_generic_legacy_metadata() -> Non
     assert CANARY not in repr(projected.payload)
 
 
+def test_restricted_audit_artifact_hides_generic_event_metadata() -> None:
+    event = _event(
+        "artifact.registered",
+        {
+            "artifact_id": "artifact-restricted",
+            "name": f"source-{CANARY}.json",
+            "mime_type": f"application/{CANARY}",
+            "sha256": CANARY,
+            "size": 42,
+            "access_class": "restricted_sensitive",
+        },
+    )
+
+    projected = redact_sensitive_event(
+        event,
+        restricted_artifact_ids={"artifact-restricted"},
+    )
+
+    assert projected.payload == {
+        "artifact_class": "restricted",
+        "content_restricted": True,
+    }
+    assert CANARY not in repr(projected.payload)
+
+
 def test_ordinary_artifact_event_is_unchanged() -> None:
     event = _event(
         "artifact.registered",

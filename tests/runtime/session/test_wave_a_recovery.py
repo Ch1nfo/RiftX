@@ -73,6 +73,7 @@ async def test_wave_a_three_turn_transcript_survives_process_reopen(tmp_path: Pa
     )
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

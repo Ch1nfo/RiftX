@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
+from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.domain import Artifact, Execution, ExecutorType
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
@@ -68,14 +69,32 @@ class FakeExecutions:
 class FakeArtifacts:
     def __init__(self, artifacts: list[tuple[Artifact, Path]] = []) -> None:  # noqa: B006
         self.items = {artifact.id: (artifact, path) for artifact, path in artifacts}
-        self.content_path_calls: list[str] = []
+        self.read_content_slice_calls: list[str] = []
 
     async def get(self, artifact_id: str) -> Artifact:
         return self.items[artifact_id][0]
 
-    async def content_path(self, artifact_id: str) -> tuple[Artifact, Path]:
-        self.content_path_calls.append(artifact_id)
-        return self.items[artifact_id]
+    async def read_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+        offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> ArtifactContentSlice:
+        self.read_content_slice_calls.append(artifact_id)
+        artifact, path = self.items[artifact_id]
+        assert artifact.run_id == expected_run_id
+        content = path.read_bytes()
+        data = content[offset : offset + max_bytes]
+        next_offset = offset + len(data)
+        return ArtifactContentSlice(
+            artifact=artifact,
+            data=data,
+            offset=offset,
+            next_offset=next_offset,
+            eof=next_offset >= len(content),
+        )
 
 
 def execution(
@@ -263,7 +282,7 @@ async def test_same_run_artifact_is_shareable_but_cross_run_artifact_is_denied(
             "call-other-run",
         )
     assert captured.value.code == "artifact_run_mismatch"
-    assert artifact_service.content_path_calls == [same_run.id]
+    assert artifact_service.read_content_slice_calls == [same_run.id]
 
 
 async def test_successful_control_result_is_transcripted_and_digest_audited() -> None:

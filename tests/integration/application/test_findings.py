@@ -3,8 +3,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from riftx.application.errors import ApplicationConflictError
-from riftx.application.services import FindingApplicationService, UpdateFinding
+from riftx.application.services import CreateFinding, FindingApplicationService, UpdateFinding
 from riftx.domain import (
     Engagement,
     Finding,
@@ -12,6 +14,7 @@ from riftx.domain import (
     FindingStatus,
     Objective,
     Run,
+    RunKind,
 )
 from riftx.memory import (
     MemoryCandidate,
@@ -117,6 +120,62 @@ class ReadBarrierFindingRepository:
         )
 
 
+async def test_code_audit_generic_finding_mutations_leave_no_fact_or_event(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-finding-fence.db'}")
+    await database.create_schema()
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    findings = SQLAlchemyFindingRepository(database.session_factory)
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-audit", name="Audit finding fence")
+    )
+    run = Run(
+        kind=RunKind.CODE_AUDIT,
+        id="audit-run",
+        engagement_id="engagement-audit",
+        node_id="local",
+        objective=Objective(description="Reject generic Finding"),
+        workspace_path=str(tmp_path / "audit-output"),
+    )
+    await runs.create(run)
+    existing = await findings.create(
+        Finding(
+            id="forged-existing-finding",
+            run_id=run.id,
+            title="Pre-existing corruption canary",
+            severity=FindingSeverity.LOW,
+        )
+    )
+    events = RecordingEvents()
+    memory = RecordingMemoryWriter()
+    service = FindingApplicationService(
+        run_repository=runs,
+        finding_repository=findings,
+        event_repository=events,  # type: ignore[arg-type]
+        memory_writer=memory,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ApplicationConflictError) as created:
+        await service.create_finding(
+            run.id,
+            CreateFinding(title="Forged Audit Finding", severity=FindingSeverity.CRITICAL),
+        )
+    with pytest.raises(ApplicationConflictError) as updated:
+        await service.update_finding(
+            existing.id,
+            UpdateFinding(title="Mutated Audit Finding"),
+        )
+
+    assert created.value.code == updated.value.code == "run_kind_operation_unsupported"
+    persisted = await findings.list(run.id)
+    assert [item.id for item in persisted] == [existing.id]
+    assert persisted[0].title == existing.title
+    assert events.items == []
+    assert memory.calls == 0
+    await database.dispose()
+
+
 async def _repositories(
     path: Path,
 ) -> tuple[
@@ -134,6 +193,7 @@ async def _repositories(
     )
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

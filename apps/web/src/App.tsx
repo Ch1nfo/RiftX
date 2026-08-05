@@ -23,6 +23,16 @@ const ToolsPage = lazy(() =>
 const ModelsPage = lazy(() =>
   import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })),
 );
+const NewLocalAuditPage = lazy(() =>
+  import("./pages/NewLocalAuditPage").then((module) => ({
+    default: module.NewLocalAuditPage,
+  })),
+);
+const LocalAuditDetailPage = lazy(() =>
+  import("./pages/LocalAuditDetailPage").then((module) => ({
+    default: module.LocalAuditDetailPage,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./pages/NotFoundPage").then((module) => ({ default: module.NotFoundPage })),
 );
@@ -36,6 +46,8 @@ export function App() {
             <Route index element={<DashboardPage />} />
             <Route path="runs/new" element={<NewRunPage />} />
             <Route path="runs/:runId" element={<RunDetailPage />} />
+            <Route path="audits/new" element={<NewLocalAuditPage />} />
+            <Route path="audits/:auditId" element={<LocalAuditDetailPage />} />
             <Route path="nodes" element={<NodesPage />} />
             <Route path="tools" element={<ToolsPage />} />
             <Route path="settings/models" element={<ModelsPage />} />

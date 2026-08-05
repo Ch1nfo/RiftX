@@ -8,7 +8,11 @@ from riftx.domain import (
     ExecutionStatus,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOwnership,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
 )
 from riftx.domain.base import utc_now
@@ -22,6 +26,13 @@ class RunnerCommandResponse(BaseModel):
     status: RunnerCommandStatus
     attempts: int
     target: RunnerPrincipal
+    ownership: RunnerCommandOwnership
+    ownership_schema_version: str
+    effect_binding: RunnerEffectBinding
+    operation_family: RunnerOperationFamily
+    output_contract: RunnerOutputContract
+    envelope_digest: str
+    state_version: int = Field(ge=0)
     lease_id: str
     lease_expires_at: datetime
     lease_duration_seconds: float = Field(gt=0)
@@ -32,6 +43,9 @@ class RunnerCommandResponse(BaseModel):
             raise ValueError("leased command is missing lease metadata")
         if command.target is None:
             raise ValueError("leased command is missing its target Runner principal")
+        if command.ownership is None:
+            raise ValueError("leased command is missing its ownership envelope")
+        ownership = command.ownership
         return cls(
             id=command.id,
             node_id=command.node_id,
@@ -40,6 +54,13 @@ class RunnerCommandResponse(BaseModel):
             status=command.status,
             attempts=command.attempts,
             target=command.target,
+            ownership=ownership,
+            ownership_schema_version=ownership.schema_version,
+            effect_binding=ownership.effect_binding,
+            operation_family=ownership.operation_family,
+            output_contract=ownership.output_contract,
+            envelope_digest=ownership.envelope_digest,
+            state_version=command.state_version,
             lease_id=command.lease_id,
             lease_expires_at=command.lease_expires_at,
             lease_duration_seconds=max(
@@ -53,7 +74,7 @@ class RunnerPollResponse(BaseModel):
     command: RunnerCommandResponse | None = None
 
 
-class FinishRunnerCommandRequest(BaseModel):
+class LegacyFinishRunnerCommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     lease_id: str = Field(min_length=1, max_length=64)
@@ -62,9 +83,22 @@ class FinishRunnerCommandRequest(BaseModel):
     error: str = Field(default="", max_length=8192)
 
 
+class FinishRunnerCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str = Field(min_length=1, max_length=64)
+    state_version: int = Field(ge=0)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    succeeded: bool
+    result: dict[str, object] = Field(default_factory=dict)
+    error: str = Field(default="", max_length=8192)
+
+
 class FinishRunnerCommandResponse(BaseModel):
     id: str
     status: RunnerCommandStatus
+    state_version: int = Field(ge=0)
     completed_at: datetime | None
 
 
@@ -72,10 +106,16 @@ class RenewRunnerCommandLeaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     lease_id: str = Field(min_length=1, max_length=64)
+    state_version: int = Field(ge=0)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RenewRunnerCommandLeaseResponse(BaseModel):
     id: str
+    state_version: int = Field(ge=0)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     lease_expires_at: datetime
     lease_duration_seconds: float = Field(gt=0)
 
@@ -83,6 +123,10 @@ class RenewRunnerCommandLeaseResponse(BaseModel):
 class ExecutionStatusReportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    command_id: str = Field(min_length=1, max_length=64)
+    effect_binding_id: str = Field(min_length=1, max_length=64)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: ExecutionStatus
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)
@@ -104,6 +148,10 @@ class ExecutionOutputReportRequest(BaseModel):
         val_json_bytes="base64",
     )
 
+    command_id: str = Field(min_length=1, max_length=64)
+    effect_binding_id: str = Field(min_length=1, max_length=64)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     stream: str = Field(pattern="^(stdout|stderr)$")
     offset: int = Field(ge=0)
     data: bytes = Field(max_length=256 * 1024)
@@ -121,5 +169,8 @@ class RunnerCommandOutputReportRequest(BaseModel):
     )
 
     lease_id: str = Field(min_length=1, max_length=64)
+    state_version: int = Field(ge=0)
+    envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     offset: int = Field(ge=0)
     data: bytes = Field(max_length=256 * 1024)

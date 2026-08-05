@@ -1,5 +1,12 @@
 """Local host runner and process supervision."""
 
+from .artifact_store import (
+    ArtifactContentFailure,
+    ArtifactContentStoreError,
+    LocalArtifactContentStore,
+    OpenedArtifactContent,
+    StoredArtifactContent,
+)
 from .browser import (
     BrowserRunner,
     NodeBrowserRouter,
@@ -22,6 +29,8 @@ from .target_http import (
 from .terminal import TerminalController, TerminalSupervisor
 
 __all__ = [
+    "ArtifactContentFailure",
+    "ArtifactContentStoreError",
     "BrowserRunner",
     "NodeBrowserRouter",
     "PlaywrightBrowserEngine",
@@ -34,11 +43,14 @@ __all__ = [
     "ExecutionPaths",
     "EffectGuard",
     "ExecutionRunner",
+    "LocalArtifactContentStore",
+    "OpenedArtifactContent",
     "OutputSlice",
     "ProcessIdentity",
     "ProcessInspector",
     "ProcessSupervisor",
     "RunnerPaths",
+    "StoredArtifactContent",
     "NodeTargetHttpRouter",
     "RemoteTargetHttpClient",
     "RunnerTargetHttpClient",

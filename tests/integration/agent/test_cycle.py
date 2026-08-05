@@ -109,6 +109,7 @@ async def _runtime(
         Engagement(id="engagement-1", name="Agent tests")
     )
     run = Run(
+        kind="general",
         id="run-1",
         engagement_id="engagement-1",
         node_id="node-1",
@@ -696,6 +697,22 @@ async def test_agent_base_tools_manage_artifacts_and_terminal_sessions(tmp_path:
     )
     assert artifact_payload["sha256"]
     assert artifact_payload["size"] == len("durable evidence")
+    assert set(artifact_payload) == {
+        "access_class",
+        "content_trust",
+        "created_at",
+        "description",
+        "execution_id",
+        "id",
+        "mime_type",
+        "name",
+        "run_id",
+        "sha256",
+        "size",
+    }
+    assert "path" not in artifact_payload
+    assert "storage_key" not in artifact_payload
+    assert "ingest_provenance" not in artifact_payload
     assert closed["status"] == "closed"
     await supervisor.close()
     await database.dispose()
@@ -712,6 +729,7 @@ async def test_agent_terminal_tools_reject_sessions_owned_by_another_run(
     other_workspace = tmp_path / "other-run"
     other_workspace.mkdir()
     other_run = Run(
+        kind="general",
         id="run-2",
         engagement_id="engagement-1",
         node_id="node-1",

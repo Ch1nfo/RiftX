@@ -6,6 +6,7 @@ import type {
   Artifact,
   ArtifactList,
   CreateRunPayload,
+  CreateLocalAuditPayload,
   ExecutionList,
   Finding,
   FindingList,
@@ -19,6 +20,10 @@ import type {
   ModelProfile,
   ModelProfileList,
   ModelProfileSummaryList,
+  LocalAuditFinding,
+  LocalAuditFindingList,
+  LocalAuditFindingSeverity,
+  LocalAuditJob,
   NodeList,
   NodeStatus,
   ReportList,
@@ -26,6 +31,7 @@ import type {
   RunAction,
   RunActionList,
   RunEventList,
+  RunKind,
   RunList,
   RunStatus,
   SecurityProfile,
@@ -130,8 +136,15 @@ export const api = {
     return request<SecurityProfile>("/api/v1/security/profile");
   },
 
-  listRuns(status?: RunStatus): Promise<RunList> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  listRuns(status?: RunStatus, kind?: RunKind): Promise<RunList> {
+    const params = new URLSearchParams();
+    if (status) {
+      params.set("status", status);
+    }
+    if (kind) {
+      params.set("kind", kind);
+    }
+    const query = params.size ? `?${params.toString()}` : "";
     return request<RunList>(`/api/v1/runs${query}`);
   },
 
@@ -144,6 +157,60 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  createLocalAudit(payload: CreateLocalAuditPayload): Promise<LocalAuditJob> {
+    return request<LocalAuditJob>("/api/v1/audits", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  startLocalAudit(auditId: string): Promise<LocalAuditJob> {
+    return request<LocalAuditJob>(
+      `/api/v1/audits/${encodeURIComponent(auditId)}/start`,
+      { method: "POST" },
+    );
+  },
+
+  getLocalAudit(auditId: string): Promise<LocalAuditJob> {
+    return request<LocalAuditJob>(
+      `/api/v1/audits/${encodeURIComponent(auditId)}`,
+    );
+  },
+
+  cancelLocalAudit(auditId: string): Promise<LocalAuditJob> {
+    return request<LocalAuditJob>(
+      `/api/v1/audits/${encodeURIComponent(auditId)}/cancel`,
+      { method: "POST" },
+    );
+  },
+
+  listLocalAuditFindings(
+    auditId: string,
+    options: {
+      limit?: number;
+      offset?: number;
+      severity?: LocalAuditFindingSeverity;
+    } = {},
+  ): Promise<LocalAuditFindingList> {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 100),
+      offset: String(options.offset ?? 0),
+    });
+    if (options.severity) params.set("severity", options.severity);
+    return request<LocalAuditFindingList>(
+      `/api/v1/audits/${encodeURIComponent(auditId)}/findings?${params.toString()}`,
+    );
+  },
+
+  getLocalAuditFinding(
+    auditId: string,
+    findingId: string,
+  ): Promise<LocalAuditFinding> {
+    return request<LocalAuditFinding>(
+      `/api/v1/audits/${encodeURIComponent(auditId)}/findings/${encodeURIComponent(findingId)}`,
+    );
   },
 
   pauseRun(runId: string): Promise<{ accepted: boolean; run: Run }> {

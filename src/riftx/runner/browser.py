@@ -25,6 +25,7 @@ from riftx.browser.models import (
     BrowserSessionCommand,
 )
 from riftx.domain import (
+    RUNNER_STOP_ACK_BROWSER_SCHEMA,
     BrowserAction,
     BrowserActionStatus,
     BrowserActionType,
@@ -42,7 +43,12 @@ from riftx.domain import (
     NetworkEventSummary,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
     RunnerCommandStatus,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
 )
 from riftx.domain.base import new_id, utc_now
 from riftx.scope import ScopeGuard, ScopeTargetKind, ScopeViolationError
@@ -78,6 +84,14 @@ class BrowserCommandControl(Protocol):
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]: ...
 
     async def wait_command(
@@ -157,6 +171,11 @@ class RunnerBrowserManager:
         guard.require(command.url, kind=ScopeTargetKind.URL)
         existing = self._sessions.get(command.session_id)
         if existing is not None:
+            self._require_managed_identity(
+                existing,
+                run_id=command.run_id,
+                node_id=command.node_id,
+            )
             async with existing.lock:
                 return await self._observe_exchange(
                     existing,
@@ -224,6 +243,11 @@ class RunnerBrowserManager:
 
     async def observe(self, command: BrowserObserveCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
+        self._require_managed_identity(
+            managed,
+            run_id=command.run_id,
+            node_id=command.node_id,
+        )
         async with managed.lock:
             return await self._observe_exchange(
                 managed,
@@ -234,6 +258,11 @@ class RunnerBrowserManager:
 
     async def act(self, command: BrowserActCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
+        self._require_managed_identity(
+            managed,
+            run_id=command.run_id,
+            node_id=command.node_id,
+        )
         action = command.action
         async with managed.lock:
             previous = managed.actions.get(action.action_key)
@@ -338,6 +367,11 @@ class RunnerBrowserManager:
 
     async def takeover(self, command: BrowserSessionCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
+        self._require_managed_identity(
+            managed,
+            run_id=command.run_id or (command.session.run_id if command.session else None),
+            node_id=command.node_id or (command.session.node_id if command.session else None),
+        )
         async with managed.lock:
             latest = self._latest(managed)
             if managed.session.owner is not BrowserOwner.USER:
@@ -356,6 +390,11 @@ class RunnerBrowserManager:
 
     async def release(self, command: BrowserSessionCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
+        self._require_managed_identity(
+            managed,
+            run_id=command.run_id or (command.session.run_id if command.session else None),
+            node_id=command.node_id or (command.session.node_id if command.session else None),
+        )
         async with managed.lock:
             if managed.session.owner is not BrowserOwner.USER:
                 raise ValueError("Browser session is not under user takeover")
@@ -432,6 +471,11 @@ class RunnerBrowserManager:
 
     async def close(self, command: BrowserSessionCommand) -> BrowserRuntimeExchange:
         managed = self._require(command.session_id)
+        self._require_managed_identity(
+            managed,
+            run_id=command.run_id or (command.session.run_id if command.session else None),
+            node_id=command.node_id or (command.session.node_id if command.session else None),
+        )
         async with managed.lock:
             pages = await managed.engine.pages()
             await managed.engine.close()
@@ -462,6 +506,18 @@ class RunnerBrowserManager:
             return self._sessions[session_id]
         except KeyError as exc:
             raise KeyError(f"Browser session {session_id!r} is not active on this Runner") from exc
+
+    @staticmethod
+    def _require_managed_identity(
+        managed: _ManagedBrowserSession,
+        *,
+        run_id: str | None,
+        node_id: str | None,
+    ) -> None:
+        if run_id is not None and run_id != managed.session.run_id:
+            raise RuntimeError("Browser command Run does not own the local session")
+        if node_id is not None and node_id != managed.session.node_id:
+            raise RuntimeError("Browser command node does not own the local session")
 
     async def _observe_exchange(
         self,
@@ -989,14 +1045,48 @@ class RemoteBrowserClient:
         idempotency_key: str,
         kind: RunnerCommandKind = RunnerCommandKind.BROWSER,
     ) -> BrowserRuntimeExchange:
+        run_id = command.get("run_id")
+        node_id = command.get("node_id")
+        session_id = command.get("session_id")
+        raw_session = command.get("session")
+        if run_id is None and isinstance(raw_session, dict):
+            run_id = raw_session.get("run_id")
+        if node_id is None and isinstance(raw_session, dict):
+            node_id = raw_session.get("node_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("Remote browser command is missing its authoritative Run")
+        if node_id != self._node_id:
+            raise ValueError("Remote browser command targets a different Runner node")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Remote browser command is missing its session identity")
+        is_stop = kind is RunnerCommandKind.BROWSER_CLOSE
         runner_command, _ = await self._control.enqueue(
             self._node_id,
             kind=kind,
             idempotency_key=idempotency_key,
+            run_id=run_id,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=(
+                RunnerOperationFamily.SAFETY_STOP
+                if is_stop
+                else RunnerOperationFamily.BROWSER
+            ),
+            resource_kind=RunnerResourceKind.BROWSER_SESSION,
+            resource_id=session_id,
+            output_contract=RunnerOutputContract(
+                max_result_bytes=512 * 1024,
+                max_output_bytes=0 if is_stop else 100_000_000,
+                allowed_streams=() if is_stop else ("command",),
+                result_schema=(
+                    "riftx.runner-result/browser-stop/v1"
+                    if is_stop
+                    else "riftx.runner-result/browser/v1"
+                ),
+                stop_ack_schema=RUNNER_STOP_ACK_BROWSER_SCHEMA if is_stop else None,
+            ),
             payload={
                 "operation": operation.value,
                 "command": command,
-                "max_attachment_bytes": 100_000_000,
             },
         )
         completed = await self._control.wait_command(runner_command.id, timeout_seconds=330)

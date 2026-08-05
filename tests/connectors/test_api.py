@@ -12,12 +12,13 @@ from riftx.connectors import (
     ConnectorSource,
     ConnectorSubmission,
 )
-from riftx.domain import Objective, Run, Scope, TrustProfile
+from riftx.domain import Objective, Run, RunKind, Scope, TrustProfile
 
 
 class FakeRuns:
     def __init__(self) -> None:
         self.run = Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -26,15 +27,21 @@ class FakeRuns:
             workspace_path="/tmp/run-1",
         )
         self.created_command = None
+        self.list_kwargs = None
 
     async def get_run(self, run_id: str):
         return self.run
 
-    async def create_run(self, command):
+    async def resolve_kind(self, run_id: str):
+        return self.run.kind
+
+    async def create_run(self, command, *, principal):
+        del principal
         self.created_command = command
         return self.run
 
     async def list_runs(self, **kwargs):
+        self.list_kwargs = kwargs
         return [self.run]
 
     async def cancel(self, run_id: str):
@@ -82,6 +89,7 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         settings=settings,
         connector_service=connector,
         run_service=runs,
+        audit_service=object(),
         tool_service=SimpleNamespace(node_id="local"),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
@@ -117,6 +125,16 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         assert new_run.status_code == 201
         assert new_run.json()["receipt"]["created_run"] is True
         assert runs.created_command.scope.domains == ["example.com"]
+
+        listed = client.get("/api/v1/connectors/runs")
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["kind"] == "general"
+        assert runs.list_kwargs == {
+            "status": None,
+            "kind": RunKind.GENERAL,
+            "limit": 100,
+            "offset": 0,
+        }
 
         events = client.get(
             "/api/v1/connectors/runs/run-1/events?after_sequence=7",

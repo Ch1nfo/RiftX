@@ -64,7 +64,7 @@ conda run --no-capture-output -n agent pnpm demo:dev
 
 ## 产品导览
 
-10 个界面覆盖主要操作流程；点击图片可查看完整分辨率。
+12 个界面覆盖主要操作流程；点击图片可查看完整分辨率。
 
 <table>
   <tbody>
@@ -116,6 +116,16 @@ conda run --no-capture-output -n agent pnpm demo:dev
       <td width="50%" valign="top">
         <a href="docs/assets/readme/zh/17-connectors.webp"><img src="docs/assets/readme/zh/17-connectors.webp" alt="Managed Browser Chrome 与 Burp 连接器" width="100%"></a>
         <p><strong>浏览器与连接器</strong><br>将 Managed Browser、Chrome 与 Burp 捕获接入同一证据链。</p>
+      </td>
+    </tr>
+    <tr>
+      <td width="50%" valign="top">
+        <a href="docs/assets/readme/zh/18-local-code-audit.webp"><img src="docs/assets/readme/zh/18-local-code-audit.webp" alt="启动 RiftX 只读本地代码审计" width="100%"></a>
+        <p><strong>本地代码审计</strong><br>选择同一台机器上的文件夹，扫描封存快照且不执行项目代码。</p>
+      </td>
+      <td width="50%" valign="top">
+        <a href="docs/assets/readme/zh/19-local-audit-findings.webp"><img src="docs/assets/readme/zh/19-local-audit-findings.webp" alt="查看 RiftX 本地代码审计发现项" width="100%"></a>
+        <p><strong>审计发现项</strong><br>查看严重性、置信度、相对位置、规则身份和脱敏证据。</p>
       </td>
     </tr>
   </tbody>

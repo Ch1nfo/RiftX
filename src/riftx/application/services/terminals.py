@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    resource_not_accessible,
+)
 from riftx.application.ports import RunEventRepository, RunRepository
 from riftx.domain import (
+    ArtifactContentTrust,
     DomainError,
     Execution,
     Run,
@@ -25,6 +31,7 @@ from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 from riftx.runner import EffectGuard, OutputSlice, TerminalController, TerminalLaunchRequest
 
 from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArtifactContent
+from .runs import require_general_run_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +226,7 @@ class TerminalApplicationService:
 
     @staticmethod
     def _require_execution_allowed(run: Run) -> None:
+        require_general_run_operation(run)
         if run.status not in {
             RunStatus.PAUSING,
             RunStatus.PAUSED,
@@ -235,11 +243,35 @@ class TerminalApplicationService:
             details={"run_id": run.id, "status": run.status.value},
         )
 
-    async def get(self, session_id: str) -> TerminalView:
-        return TerminalView(
-            terminal=await self._supervisor.get(session_id),
-            execution=await self._supervisor.get_execution(session_id),
-        )
+    async def get(
+        self,
+        session_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> TerminalView:
+        terminal = await self._supervisor.get(session_id)
+        if expected_run_id is not None and not secrets.compare_digest(
+            expected_run_id,
+            terminal.run_id,
+        ):
+            raise resource_not_accessible()
+        execution = await self._supervisor.get_execution(session_id)
+        if (
+            execution.id != terminal.execution_id
+            or not secrets.compare_digest(terminal.run_id, execution.run_id)
+            or (
+                expected_run_id is not None
+                and not secrets.compare_digest(expected_run_id, execution.run_id)
+            )
+        ):
+            raise resource_not_accessible()
+        return TerminalView(terminal=terminal, execution=execution)
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        try:
+            return await self._supervisor.resolve_run_id(session_id)
+        except EntityNotFoundError:
+            raise resource_not_accessible() from None
 
     async def read(
         self,
@@ -247,7 +279,15 @@ class TerminalApplicationService:
         *,
         cursor: int = 0,
         max_bytes: int = 64 * 1024,
+        expected_run_id: str | None = None,
     ) -> OutputSlice:
+        if expected_run_id is not None:
+            try:
+                actual_run_id = await self._supervisor.resolve_run_id(session_id)
+            except EntityNotFoundError:
+                raise resource_not_accessible() from None
+            if not secrets.compare_digest(expected_run_id, actual_run_id):
+                raise resource_not_accessible()
         return await self._supervisor.read(
             session_id,
             cursor=cursor,
@@ -263,6 +303,7 @@ class TerminalApplicationService:
         await self._supervisor.write(session_id, data, actor=actor)
 
     async def resize(self, session_id: str, *, cols: int, rows: int) -> TerminalView:
+        await self._require_general_terminal(session_id)
         terminal = await self._supervisor.resize(session_id, cols=cols, rows=rows)
         return TerminalView(
             terminal=terminal,
@@ -270,10 +311,11 @@ class TerminalApplicationService:
         )
 
     async def interrupt(self, session_id: str, *, actor: TerminalOwner) -> None:
+        await self._require_general_terminal(session_id)
         await self._supervisor.interrupt(session_id, actor=actor)
 
     async def take_over(self, session_id: str) -> TerminalView:
-        before = await self._supervisor.get(session_id)
+        before = await self._require_general_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_OWNER_CHANGED,
             before.run_id,
@@ -290,7 +332,7 @@ class TerminalApplicationService:
         )
 
     async def release(self, session_id: str) -> TerminalView:
-        before = await self._supervisor.get(session_id)
+        before = await self._require_general_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_OWNER_CHANGED,
             before.run_id,
@@ -315,6 +357,7 @@ class TerminalApplicationService:
                     name=(f"terminal-{terminal.id}-takeover-{started_cursor}-{ended_cursor}.log"),
                     mime_type="application/octet-stream",
                     description="Immutable terminal character stream captured during takeover.",
+                    content_trust=ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT,
                 ),
             )
             summary = TerminalTakeoverSummary(
@@ -341,7 +384,7 @@ class TerminalApplicationService:
         )
 
     async def close(self, session_id: str) -> TerminalView:
-        before = await self._supervisor.get(session_id)
+        before = await self._require_general_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_CLOSE,
             before.run_id,
@@ -376,6 +419,16 @@ class TerminalApplicationService:
             terminal=terminal,
             execution=execution,
         )
+
+    async def _require_general_terminal(self, session_id: str) -> TerminalSession:
+        """Resolve the child owner before any generic terminal effect."""
+
+        terminal = await self._supervisor.get(session_id)
+        run = await self._runs.get(terminal.run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", terminal.run_id)
+        require_general_run_operation(run)
+        return terminal
 
     async def _terminal_hook(
         self,

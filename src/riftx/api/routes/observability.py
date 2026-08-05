@@ -2,15 +2,20 @@
 
 from fastapi import APIRouter
 
+from riftx.application.services.runs import require_general_run_operation
 from riftx.observability import RuntimeMetricsSnapshot
 
-from ..dependencies import RuntimeObservabilityServiceDependency
+from ..dependencies import (
+    AuthorizedRunReadDependency,
+    RuntimeObservabilityServiceDependency,
+)
 from ..schemas import ErrorResponse
 
 router = APIRouter(tags=["observability"])
 
 _ERROR_RESPONSES = {
     404: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
 }
 
@@ -23,5 +28,7 @@ _ERROR_RESPONSES = {
 async def get_run_metrics(
     run_id: str,
     service: RuntimeObservabilityServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
 ) -> RuntimeMetricsSnapshot:
+    require_general_run_operation(authorized_run)
     return await service.snapshot(run_id)

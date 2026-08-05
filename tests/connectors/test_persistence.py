@@ -26,6 +26,7 @@ async def test_connector_submission_survives_database_restart(tmp_path: Path) ->
     await engagements.create(Engagement(id="engagement-1", name="Connector"))
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

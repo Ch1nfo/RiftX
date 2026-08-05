@@ -307,6 +307,7 @@ async def make_supervisor(
     await engagements.create(Engagement(id="engagement-1", name="Runner tests"))
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local-node",

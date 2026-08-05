@@ -9,15 +9,24 @@ import pytest
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.run_safety import RunSafetyStopService
 from riftx.domain import (
+    RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Node,
     NodeStatus,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
     RunnerPrincipal,
+    RunnerResourceKind,
+    runner_payload_digest,
 )
 from riftx.runner.control_client import LeasedRunnerCommand
 from riftx.runner.daemon import RunnerDaemon, RunnerDaemonConfig
@@ -61,6 +70,7 @@ class FakeControlService:
         idempotency_key: str,
         payload: dict[str, object],
         target: RunnerPrincipal | None = None,
+        **_: object,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         command = RunnerCommand(
@@ -159,18 +169,39 @@ class FakeRunnerClient:
         self,
         execution_id: str,
         status: ExecutionStatus,
+        *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         **_: object,
     ) -> None:
+        _assert_callback_binding(
+            runner_command_id=runner_command_id,
+            runner_effect_binding_id=runner_effect_binding_id,
+            runner_envelope_digest=runner_envelope_digest,
+            runner_binding_digest=runner_binding_digest,
+        )
         self.statuses.setdefault(execution_id, []).append(status)
 
     async def report_output(
         self,
         execution_id: str,
         *,
+        runner_command_id: str,
+        runner_effect_binding_id: str,
+        runner_envelope_digest: str,
+        runner_binding_digest: str,
         stream: str,
         offset: int,
         data: bytes,
     ) -> int:
+        _assert_callback_binding(
+            runner_command_id=runner_command_id,
+            runner_effect_binding_id=runner_effect_binding_id,
+            runner_envelope_digest=runner_envelope_digest,
+            runner_binding_digest=runner_binding_digest,
+        )
         target = self.output.setdefault((execution_id, stream), bytearray())
         assert len(target) == offset
         target.extend(data)
@@ -196,7 +227,12 @@ class FakeTerminalHandler:
     def __init__(self) -> None:
         self.calls: list[tuple[RunnerCommandKind, dict[str, object]]] = []
 
-    async def handle(self, kind: RunnerCommandKind, payload: dict[str, object]) -> object:
+    async def handle(
+        self,
+        kind: RunnerCommandKind,
+        payload: dict[str, object],
+        **_: object,
+    ) -> object:
         self.calls.append((kind, payload))
         return {"resized": True}
 
@@ -562,7 +598,7 @@ async def test_runner_daemon_executes_once_streams_output_and_handles_cancel(
     assert client.finished[0][1] is True
     assert bytes(client.output[("server-execution-1", "stdout")]) == b"remote hello\n"
 
-    await daemon.handle_command(_command("execute-duplicate", execute.kind, execute.payload))
+    await daemon.handle_command(execute)
     local = await repository.get_by_key("daemon-key")
     assert local is not None
     assert local.status is ExecutionStatus.EXITED
@@ -678,6 +714,8 @@ def _command(
     command_id: str,
     kind: RunnerCommandKind,
     payload: dict[str, object],
+    *,
+    owner: RunnerPrincipal = _OWNER,
 ) -> LeasedRunnerCommand:
     if kind in {RunnerCommandKind.EXECUTE, RunnerCommandKind.TERMINAL_START}:
         raw_request = payload.get("request")
@@ -686,17 +724,163 @@ def _command(
                 **payload,
                 "request": {
                     **raw_request,
-                    "runner_principal": _OWNER.model_dump(mode="json"),
+                    "runner_principal": owner.model_dump(mode="json"),
                 },
             }
+    if kind in {RunnerCommandKind.EXECUTE, RunnerCommandKind.CANCEL}:
+        execution_id = payload.get("execution_id")
+        assert isinstance(execution_id, str) and execution_id
+        operation_family = (
+            RunnerOperationFamily.EXECUTION
+            if kind is RunnerCommandKind.EXECUTE
+            else RunnerOperationFamily.SAFETY_STOP
+        )
+        output_contract = (
+            RunnerOutputContract(
+                max_output_bytes=100_000_000,
+                allowed_streams=("stderr", "stdout"),
+                result_schema="riftx.runner-result/execution-start/v1",
+            )
+            if kind is RunnerCommandKind.EXECUTE
+            else RunnerOutputContract(
+                result_schema="riftx.runner-result/execution-stop/v1",
+                stop_ack_schema=RUNNER_STOP_ACK_EXECUTION_SCHEMA,
+            )
+        )
+        binding = RunnerEffectBinding(
+            id=f"binding-{command_id}",
+            run_id="run-1",
+            run_kind=RunKind.GENERAL,
+            node_id="runner-a",
+            target=owner,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=operation_family,
+            execution_id=execution_id,
+            resource_kind=RunnerResourceKind.EXECUTION,
+            resource_id=execution_id,
+        )
+    elif kind in {
+        RunnerCommandKind.TERMINAL_START,
+        RunnerCommandKind.TERMINAL_WRITE,
+        RunnerCommandKind.TERMINAL_RESIZE,
+        RunnerCommandKind.TERMINAL_INTERRUPT,
+    }:
+        session_id = payload.get("session_id")
+        execution_id = payload.get("execution_id")
+        assert isinstance(session_id, str) and session_id
+        assert isinstance(execution_id, str) and execution_id
+        operation_family = RunnerOperationFamily.TERMINAL
+        output_contract = RunnerOutputContract(
+            max_output_bytes=(
+                100_000_000
+                if kind is RunnerCommandKind.TERMINAL_START
+                else 0
+            ),
+            allowed_streams=(
+                ("stderr", "stdout")
+                if kind is RunnerCommandKind.TERMINAL_START
+                else ()
+            ),
+            result_schema=(
+                "riftx.runner-result/terminal-start/v1"
+                if kind is RunnerCommandKind.TERMINAL_START
+                else "riftx.runner-result/terminal-operation/v1"
+            ),
+        )
+        binding = RunnerEffectBinding(
+            id=f"binding-{command_id}",
+            run_id="run-1",
+            run_kind=RunKind.GENERAL,
+            node_id="runner-a",
+            target=owner,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=operation_family,
+            execution_id=execution_id,
+            resource_kind=RunnerResourceKind.TERMINAL_SESSION,
+            resource_id=session_id,
+        )
+    elif kind is RunnerCommandKind.TARGET_HTTP:
+        launch = payload.get("launch")
+        assert isinstance(launch, dict)
+        resource_id = launch.get("tool_call_id")
+        assert isinstance(resource_id, str) and resource_id
+        operation_family = RunnerOperationFamily.TARGET_HTTP
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("command",),
+            result_schema="riftx.runner-result/target-http/v1",
+        )
+        binding = RunnerEffectBinding(
+            id=f"binding-{command_id}",
+            run_id="run-1",
+            run_kind=RunKind.GENERAL,
+            node_id="runner-a",
+            target=owner,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=operation_family,
+            resource_kind=RunnerResourceKind.TARGET_HTTP_INTENT,
+            resource_id=resource_id,
+        )
+    elif kind is RunnerCommandKind.BROWSER:
+        raw_command = payload.get("command")
+        assert isinstance(raw_command, dict)
+        resource_id = raw_command.get("session_id")
+        assert isinstance(resource_id, str) and resource_id
+        operation_family = RunnerOperationFamily.BROWSER
+        output_contract = RunnerOutputContract(
+            max_output_bytes=100_000_000,
+            allowed_streams=("command",),
+            result_schema="riftx.runner-result/browser/v1",
+        )
+        binding = RunnerEffectBinding(
+            id=f"binding-{command_id}",
+            run_id="run-1",
+            run_kind=RunKind.GENERAL,
+            node_id="runner-a",
+            target=owner,
+            origin=RunnerCommandOrigin.APPLICATION_SERVICE,
+            operation_family=operation_family,
+            resource_kind=RunnerResourceKind.BROWSER_SESSION,
+            resource_id=resource_id,
+        )
+    else:
+        raise AssertionError(f"Unsupported test command kind: {kind.value}")
+
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract,
+    )
     return LeasedRunnerCommand(
         id=command_id,
         kind=kind,
         payload=payload,
         lease_id=f"lease-{command_id}",
         attempts=1,
-        target=_OWNER,
+        target=owner,
+        ownership=ownership,
+        effect_binding_id=binding.id,
+        binding_digest=binding.binding_digest,
+        envelope_digest=ownership.envelope_digest,
+        operation_family=operation_family,
+        output_contract=output_contract,
     )
+
+
+def _assert_callback_binding(
+    *,
+    runner_command_id: str,
+    runner_effect_binding_id: str,
+    runner_envelope_digest: str,
+    runner_binding_digest: str,
+) -> None:
+    assert runner_command_id
+    assert runner_effect_binding_id
+    assert len(runner_envelope_digest) == 64
+    assert len(runner_binding_digest) == 64
 
 
 async def _wait_for_status(
@@ -766,7 +950,23 @@ async def test_control_client_registers_persists_and_encodes_output(tmp_path: Pa
     assert stored.principal.epoch == 7
     assert requests[0].headers["Authorization"] == "Bearer bootstrap"
 
-    next_offset = await client.report_output("execution-1", stream="stdout", offset=0, data=b"hi")
+    callback_command = _command(
+        "output-command-1",
+        RunnerCommandKind.EXECUTE,
+        {"execution_id": "execution-1"},
+        owner=stored.principal,
+    )
+    assert callback_command.ownership is not None
+    next_offset = await client.report_output(
+        "execution-1",
+        runner_command_id=callback_command.id,
+        runner_effect_binding_id=callback_command.effect_binding_id,
+        runner_envelope_digest=callback_command.envelope_digest,
+        runner_binding_digest=callback_command.binding_digest,
+        stream="stdout",
+        offset=0,
+        data=b"hi",
+    )
     assert next_offset == 2
     assert requests[-1].headers["Authorization"] == "Bearer scoped"
     assert requests[-1].headers["X-RiftX-Node-ID"] == "runner-a"
@@ -809,12 +1009,13 @@ async def test_runner_daemon_forwards_terminal_resize_commands(tmp_path: Path) -
     command = _command(
         "resize-1",
         RunnerCommandKind.TERMINAL_RESIZE,
-        {
-            "session_id": "terminal-1",
-            "execution_id": local_execution.id,
-            "cols": 160,
-            "rows": 50,
-        },
+            {
+                "session_id": "terminal-1",
+                "execution_id": local_execution.id,
+                "operation_id": "resize-1",
+                "cols": 160,
+                "rows": 50,
+            },
     )
     await daemon.handle_command(command)
     assert terminal.calls == [(RunnerCommandKind.TERMINAL_RESIZE, command.payload)]
@@ -939,12 +1140,30 @@ async def test_runner_daemon_recovers_execution_after_abrupt_restart(tmp_path: P
         RunnerPaths(tmp_path / "runner"),
         termination_grace_seconds=0.01,
     )
-    request = _request(
-        tmp_path,
-        key="reconnect-key",
-        node_id="runner-a",
-        script="import time; print('alive', flush=True); time.sleep(30)",
-    ).model_copy(update={"execution_id": "server-reconnect"})
+    launch_command = _command(
+        "execute-reconnect",
+        RunnerCommandKind.EXECUTE,
+        {
+            "execution_id": "server-reconnect",
+            "request": _request(
+                tmp_path,
+                key="reconnect-key",
+                node_id="runner-a",
+                script="import time; print('alive', flush=True); time.sleep(30)",
+            ).model_dump(mode="json"),
+        },
+    )
+    raw_request = launch_command.payload.get("request")
+    assert isinstance(raw_request, dict)
+    request = ExecutionLaunchRequest.model_validate(raw_request).model_copy(
+        update={
+            "execution_id": "server-reconnect",
+            "runner_command_id": launch_command.id,
+            "runner_effect_binding_id": launch_command.effect_binding_id,
+            "runner_binding_digest": launch_command.binding_digest,
+            "runner_envelope_digest": launch_command.envelope_digest,
+        }
+    )
     execution = await first_supervisor.start(request)
     assert execution.status is ExecutionStatus.RUNNING
     execution.owner = _OWNER

@@ -9,6 +9,7 @@ from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
     RepositoryConflictError,
+    resource_not_accessible,
 )
 from riftx.application.ports import (
     ArtifactRepository,
@@ -22,7 +23,10 @@ from riftx.domain import (
     FindingEvidence,
     FindingSeverity,
     FindingStatus,
+    Run,
 )
+
+from .runs import require_general_run_operation
 
 if TYPE_CHECKING:
     from riftx.memory import MemoryCandidateFactory, MemoryWriter
@@ -80,7 +84,7 @@ class FindingApplicationService:
             self._memory_candidates = None
 
     async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
-        await self._require_run(run_id)
+        require_general_run_operation(await self._require_run(run_id))
         finding = Finding(
             run_id=run_id,
             title=_required_text(command.title, "title"),
@@ -117,12 +121,19 @@ class FindingApplicationService:
             raise EntityNotFoundError("Finding", finding_id)
         return finding
 
+    async def resolve_run_id(self, finding_id: str) -> str:
+        run_id = await self._finding_repository.get_run_id(finding_id)
+        if run_id is None:
+            raise resource_not_accessible()
+        return run_id
+
     async def update_finding(
         self,
         finding_id: str,
         command: UpdateFinding,
     ) -> Finding:
         current = await self.get_finding(finding_id)
+        require_general_run_operation(await self._require_run(current.run_id))
         updates: dict[str, object] = {}
         if command.title is not None:
             updates["title"] = _required_text(command.title, "title")
@@ -242,9 +253,11 @@ class FindingApplicationService:
             )
         )
 
-    async def _require_run(self, run_id: str) -> None:
-        if await self._run_repository.get(run_id) is None:
+    async def _require_run(self, run_id: str) -> Run:
+        run = await self._run_repository.get(run_id)
+        if run is None:
             raise EntityNotFoundError("Run", run_id)
+        return run
 
     async def _validate_evidence(
         self,

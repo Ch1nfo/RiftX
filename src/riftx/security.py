@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import hashlib
 import ipaddress
 import json
 import os
@@ -19,6 +20,10 @@ from riftx.application.errors import (
     AuthenticationError,
     AuthorizationError,
     ResourceNotAccessibleError,
+)
+from riftx.application.ports.audits import (
+    AuditAuthorizationBinding,
+    AuditEngagementScope,
 )
 from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
 
@@ -697,11 +702,146 @@ class LocalObjectAuthorizer:
     ) -> None:
         self._security.require_capability(principal, capability)
         if resource_run_id is None or not secrets.compare_digest(parent_run_id, resource_run_id):
-            raise ResourceNotAccessibleError(
-                "resource_not_accessible",
-                "The requested resource was not found",
-                details=_localized("未找到请求的资源"),
+            raise _resource_not_accessible()
+
+    def authorized_engagement_scope(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> AuditEngagementScope:
+        """Return Profile A's explicit scope through a future-ACL-ready seam."""
+
+        self._security.require_capability(principal, capability)
+        return AuditEngagementScope.profile_a()
+
+    def require_audit_binding(
+        self,
+        principal: LocalPrincipal,
+        binding: AuditAuthorizationBinding,
+        *,
+        capability: OperatorCapability,
+    ) -> None:
+        """Prove the raw Audit graph before a Contract is loaded or parsed."""
+
+        self._security.require_capability(principal, capability)
+        expected = (
+            binding.audit_id,
+            binding.scan_run_id,
+            binding.scan_project_id,
+            binding.scan_engagement_id,
+            binding.scan_contract_id,
+            binding.scan_contract_digest,
+        )
+        actual = (
+            binding.requested_audit_id,
+            binding.run_id,
+            binding.project_id,
+            binding.engagement_id,
+            binding.contract_id,
+            binding.contract_digest,
+        )
+        request_binding = (
+            binding.request_audit_id,
+            binding.request_run_id,
+            binding.request_project_id,
+            binding.request_engagement_id,
+            binding.request_contract_id,
+            binding.request_contract_digest,
+        )
+        owner_binding = (
+            binding.audit_id,
+            binding.scan_run_id,
+            binding.scan_project_id,
+            binding.scan_engagement_id,
+            binding.scan_contract_id,
+            binding.scan_contract_digest,
+        )
+        if (
+            binding.run_kind != "code_audit"
+            or not _constant_time_tuple_equal(expected, actual)
+            or binding.contract_audit_id is None
+            or not secrets.compare_digest(binding.audit_id, binding.contract_audit_id)
+            or binding.run_engagement_id is None
+            or binding.project_engagement_id is None
+            or not secrets.compare_digest(
+                binding.scan_engagement_id,
+                binding.run_engagement_id,
             )
+            or not secrets.compare_digest(
+                binding.scan_engagement_id,
+                binding.project_engagement_id,
+            )
+            or not _constant_time_tuple_equal(owner_binding, request_binding)
+        ):
+            raise _resource_not_accessible()
+
+    def draft_authorization_reference(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str:
+        """Derive a stable server-owned Profile-A domain label.
+
+        This digest is not an ACL credential or a preflight proof. It only
+        prevents an HTTP caller from choosing the persistence domain label
+        used by the draft-only AUD-104 creation path.
+        """
+
+        self._security.require_capability(principal, capability)
+        payload = "\0".join(
+            (
+                "riftx.audit-local-authorization-reference/v1",
+                principal.profile.value,
+                principal.namespace_id,
+                principal.id,
+            )
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def preflight_authorization_scope_digest(
+        self,
+        principal: LocalPrincipal,
+        *,
+        capability: OperatorCapability,
+    ) -> str:
+        """Bind Preflight ownership to the current server-issued operator scope."""
+
+        self._security.require_capability(principal, capability)
+        canonical = json.dumps(
+            {
+                "capabilities": sorted(item.value for item in principal.capabilities),
+                "namespace_id": principal.namespace_id,
+                "principal_id": principal.id,
+                "profile": principal.profile.value,
+                "schema_version": "riftx.audit-preflight-authorization-scope/v1",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        return hashlib.sha256(
+            b"riftx.audit-preflight-authorization-scope/v1\0" + canonical
+        ).hexdigest()
+
+
+def _constant_time_tuple_equal(
+    left: tuple[str, ...],
+    right: tuple[str | None, ...],
+) -> bool:
+    return len(left) == len(right) and all(
+        candidate is not None and secrets.compare_digest(expected, candidate)
+        for expected, candidate in zip(left, right, strict=True)
+    )
+
+
+def _resource_not_accessible() -> ResourceNotAccessibleError:
+    return ResourceNotAccessibleError(
+        "resource_not_accessible",
+        "The requested resource was not found",
+        details=_localized("未找到请求的资源"),
+    )
 
 
 def _localized(message_zh: str) -> dict[str, object]:

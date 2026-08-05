@@ -25,6 +25,7 @@ from riftx.application.services.artifacts import (
     RegisterArtifactContent,
 )
 from riftx.context.token_counter import estimate_context_tokens
+from riftx.domain import ArtifactContentTrust
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -96,6 +97,7 @@ class ApplicationWebArtifactStore:
                 name=name,
                 mime_type=mime_type,
                 description=description,
+                content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
             ),
         )
         return artifact.id

@@ -37,6 +37,7 @@ async def build_manager(tmp_path: Path) -> tuple[Database, SessionManager, dict[
     for run_id in ("run-1", "run-2"):
         await runs.create(
             Run(
+                kind="general",
                 id=run_id,
                 engagement_id="engagement-1",
                 node_id="node-1",

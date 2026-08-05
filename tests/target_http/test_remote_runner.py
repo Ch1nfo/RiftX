@@ -4,7 +4,22 @@ import asyncio
 
 import pytest
 
-from riftx.domain import RunnerCommand, RunnerCommandKind, RunnerCommandStatus, Scope
+from riftx.domain import (
+    RunKind,
+    RunnerCommand,
+    RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
+    RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
+    Scope,
+    runner_payload_digest,
+)
 from riftx.runner.target_http import NodeTargetHttpRouter, RemoteTargetHttpClient
 from riftx.target_http.errors import (
     TargetHttpRunnerExecutionCancelledError,
@@ -16,6 +31,64 @@ from riftx.target_http.models import (
     TargetHttpResult,
     TargetHttpRunnerRequest,
 )
+
+_OWNER = RunnerPrincipal(instance_id="runner-target-http-a", epoch=1)
+
+
+def _verified_command(
+    *,
+    command_id: str,
+    node_id: str,
+    kind: RunnerCommandKind,
+    idempotency_key: str,
+    payload: dict[str, object],
+    run_id: str,
+    origin: RunnerCommandOrigin,
+    operation_family: RunnerOperationFamily,
+    resource_kind: RunnerResourceKind,
+    resource_id: str,
+    execution_id: str | None,
+    output_contract: RunnerOutputContract | None,
+    target: RunnerPrincipal | None,
+    status: RunnerCommandStatus = RunnerCommandStatus.PENDING,
+    result: dict[str, object] | None = None,
+    error: str = "",
+) -> RunnerCommand:
+    resolved_target = target or _OWNER
+    binding = RunnerEffectBinding(
+        id=f"binding-{command_id}",
+        run_id=run_id,
+        run_kind=RunKind.GENERAL,
+        node_id=node_id,
+        target=resolved_target,
+        origin=origin,
+        operation_family=operation_family,
+        execution_id=execution_id,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract or RunnerOutputContract(),
+    )
+    return RunnerCommand(
+        id=command_id,
+        node_id=node_id,
+        target=resolved_target,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        ownership=ownership,
+        ownership_state=RunnerCommandOwnershipState.VERIFIED,
+        quarantine_reason="",
+        payload=payload,
+        status=status,
+        result=result or {},
+        error=error,
+    )
 
 
 class CompletedTargetControl:
@@ -31,6 +104,14 @@ class CompletedTargetControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         raw_launch = payload["launch"]
@@ -46,12 +127,20 @@ class CompletedTargetControl:
             elapsed_ms=3,
             content_length=len(self.body),
         )
-        self.completed = RunnerCommand(
-            id="command-1",
+        self.completed = _verified_command(
+            command_id="command-1",
             node_id=node_id,
             kind=kind,
             idempotency_key=idempotency_key,
             payload=payload,
+            run_id=run_id,
+            origin=origin,
+            operation_family=operation_family,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            execution_id=execution_id,
+            output_contract=output_contract,
+            target=target,
             status=RunnerCommandStatus.COMPLETED,
             result={"result": result.model_dump(mode="json")},
         )
@@ -88,15 +177,31 @@ class StopTargetControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         intent_id = str(payload["tool_call_ids"][0])  # type: ignore[index]
-        command = RunnerCommand(
-            id=f"stop-{intent_id}",
+        command = _verified_command(
+            command_id=f"stop-{intent_id}",
             node_id=node_id,
             kind=kind,
             idempotency_key=idempotency_key,
             payload=payload,
+            run_id=run_id,
+            origin=origin,
+            operation_family=operation_family,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            execution_id=execution_id,
+            output_contract=output_contract,
+            target=target,
             status=RunnerCommandStatus.COMPLETED,
             result={
                 "outcomes": [
@@ -143,25 +248,49 @@ class InterruptedTargetControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind, idempotency_key, payload))
         if kind is RunnerCommandKind.TARGET_HTTP:
-            command = RunnerCommand(
-                id="execute-command",
+            command = _verified_command(
+                command_id="execute-command",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.LEASED,
             )
         else:
             intent_id = str(payload["tool_call_ids"][0])  # type: ignore[index]
-            command = RunnerCommand(
-                id="cancel-command",
+            command = _verified_command(
+                command_id="cancel-command",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.COMPLETED,
                 result={
                     "outcomes": [
@@ -211,12 +340,28 @@ class FailedTargetControl(InterruptedTargetControl):
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         command, created = await super().enqueue(
             node_id,
             kind=kind,
             idempotency_key=idempotency_key,
             payload=payload,
+            run_id=run_id,
+            origin=origin,
+            operation_family=operation_family,
+            resource_kind=resource_kind,
+            resource_id=resource_id,
+            execution_id=execution_id,
+            output_contract=output_contract,
+            target=target,
         )
         if kind is RunnerCommandKind.TARGET_HTTP:
             command = command.model_copy(

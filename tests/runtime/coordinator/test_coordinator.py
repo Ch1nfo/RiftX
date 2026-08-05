@@ -5,10 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from riftx.application.errors import RepositoryConflictError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryConflictError,
+)
 from riftx.application.services import ResourceStopDisposition, SafetyStopResult
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
-from riftx.domain import DomainError, Engagement, Objective, Run, RunStatus
+from riftx.domain import DomainError, Engagement, Objective, Run, RunKind, RunStatus
 from riftx.hooks import (
     HookBus,
     HookDecision,
@@ -146,6 +150,7 @@ async def build_runtime(
     hooks: HookBus | None = None,
     subagent_executor: object | None = None,
     with_safety_stopper: bool = True,
+    run_kind: RunKind = RunKind.GENERAL,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
@@ -155,6 +160,7 @@ async def build_runtime(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind=run_kind,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -201,6 +207,96 @@ async def build_runtime(
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_code_audit_runtime_cycle_denies_before_lease_event_state_and_model(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    runs = repos["runs"]
+    cycles = repos["cycles"]
+    events = repos["events"]
+    leases = repos["leases"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    assert isinstance(cycles, SQLAlchemyAgentCycleRepository)
+    assert isinstance(events, SQLAlchemyRunEventRepository)
+    assert isinstance(leases, SQLAlchemyRunLeaseRepository)
+    baseline_events = await events.list_after("run-1", limit=100)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await coordinator.run_cycle(
+            RunCycleRequest(
+                run_id="run-1",
+                session_id="session-1",
+                worker_id="worker-audit",
+                cycle_id="cycle-audit",
+            )
+        )
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    run = await runs.get("run-1")
+    assert run is not None and run.status is RunStatus.CREATED
+    assert await cycles.list_by_session("session-1") == []
+    assert await events.list_after("run-1", limit=100) == baseline_events
+    assert await leases.get("run-1") is None
+    assert engine.requests == []
+    assert engine.resume_requests == []
+    await database.dispose()
+
+
+async def test_code_audit_runtime_preserves_cross_owner_session_error_precedence(
+    tmp_path: Path,
+) -> None:
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    runs = repos["runs"]
+    sessions = repos["sessions"]
+    events = repos["events"]
+    leases = repos["leases"]
+    assert isinstance(runs, SQLAlchemyRunRepository)
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    assert isinstance(events, SQLAlchemyRunEventRepository)
+    assert isinstance(leases, SQLAlchemyRunLeaseRepository)
+    await runs.create(
+        Run(
+            kind=RunKind.GENERAL,
+            id="run-foreign",
+            engagement_id="engagement-1",
+            node_id="node-1",
+            objective=Objective(description="Foreign owner"),
+            workspace_path=str(tmp_path / "foreign-workspace"),
+        )
+    )
+    await sessions.create(
+        AgentSession(
+            id="session-foreign",
+            run_id="run-foreign",
+            model_profile="fake-model",
+        )
+    )
+    baseline_events = await events.list_after("run-1", limit=100)
+
+    with pytest.raises(EntityNotFoundError) as captured:
+        await coordinator.run_cycle(
+            RunCycleRequest(
+                run_id="run-1",
+                session_id="session-foreign",
+                worker_id="worker-audit",
+            )
+        )
+
+    assert captured.value.entity == "AgentSession"
+    assert await events.list_after("run-1", limit=100) == baseline_events
+    assert await leases.get("run-1") is None
+    assert engine.requests == []
+    await database.dispose()
 
 
 async def test_three_delegations_execute_as_one_batch_then_primary_continues(

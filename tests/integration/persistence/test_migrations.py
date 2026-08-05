@@ -106,6 +106,227 @@ def test_migration_logging_keeps_existing_application_loggers_enabled(
         application_logger.disabled = original_disabled
 
 
+def _insert_pre_run_kind_graph(database_path: Path) -> None:
+    now = "2026-08-02 00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO engagements "
+            "(id, name, description, authorization_reference, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("engagement-run-kind", "Run kind migration", "", None, now, now),
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id, engagement_id, node_id, objective, success_criteria_json, "
+            "entry_points_json, scope_json, status, approval_mode, model_profile, "
+            "workspace_path, temporal_workflow_id, created_at, started_at, finished_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-run-kind",
+                "engagement-run-kind",
+                "local",
+                "Existing general Run",
+                "[]",
+                "[]",
+                "{}",
+                "created",
+                "balanced",
+                None,
+                "/tmp/legacy-run-kind",
+                "workflow-legacy-run-kind",
+                now,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events "
+            "(id, run_id, sequence, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-run-kind-event",
+                "legacy-run-kind",
+                1,
+                "run.created",
+                '{"status":"created"}',
+                now,
+            ),
+        )
+        connection.commit()
+
+
+def test_run_kind_migration_backfills_without_default_and_preserves_fk_graph(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "run-kind-upgrade.db"
+    _run_alembic_with_sqlite_foreign_keys(database_path, "f7a9c1d3e526")
+    _insert_pre_run_kind_graph(database_path)
+
+    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        kind = connection.execute(
+            "SELECT kind FROM runs WHERE id = 'legacy-run-kind'"
+        ).fetchone()[0]
+        event_count = connection.execute(
+            "SELECT count(*) FROM run_events WHERE run_id = 'legacy-run-kind'"
+        ).fetchone()[0]
+        columns = {
+            row[1]: {"not_null": row[3], "default": row[4]}
+            for row in connection.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(runs)").fetchall()
+        }
+        create_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+        ).fetchone()[0]
+
+        assert kind == "general"
+        assert event_count == 1
+        assert columns["kind"] == {"not_null": 1, "default": None}
+        assert "ix_runs_kind" in indexes
+        assert "ck_runs_kind" in create_sql
+
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            connection.execute(
+                "INSERT INTO runs "
+                "(id, engagement_id, node_id, objective, success_criteria_json, "
+                "entry_points_json, scope_json, status, approval_mode, workspace_path, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "missing-run-kind",
+                    "engagement-run-kind",
+                    "local",
+                    "Must not inherit a kind",
+                    "[]",
+                    "[]",
+                    "{}",
+                    "created",
+                    "balanced",
+                    "/tmp/missing-run-kind",
+                    "2026-08-02 00:00:00+00:00",
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="ck_runs_kind"):
+            connection.execute(
+                "INSERT INTO runs "
+                "(id, engagement_id, kind, node_id, objective, success_criteria_json, "
+                "entry_points_json, scope_json, status, approval_mode, workspace_path, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "unknown-run-kind",
+                    "engagement-run-kind",
+                    "unknown",
+                    "local",
+                    "Must reject an unknown kind",
+                    "[]",
+                    "[]",
+                    "{}",
+                    "created",
+                    "balanced",
+                    "/tmp/unknown-run-kind",
+                    "2026-08-02 00:00:00+00:00",
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="ck_runs_kind"):
+            connection.execute(
+                "UPDATE runs SET kind = 'agent' WHERE id = 'legacy-run-kind'"
+            )
+        assert connection.execute(
+            "SELECT kind FROM runs WHERE id = 'legacy-run-kind'"
+        ).fetchone()[0] == "general"
+
+    _run_alembic_with_sqlite_foreign_keys(
+        database_path,
+        "f7a9c1d3e526",
+        downgrade=True,
+    )
+    with sqlite3.connect(database_path) as connection:
+        assert "kind" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        assert connection.execute(
+            "SELECT count(*) FROM runs WHERE id = 'legacy-run-kind'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT count(*) FROM run_events WHERE run_id = 'legacy-run-kind'"
+        ).fetchone()[0] == 1
+
+    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT kind FROM runs WHERE id = 'legacy-run-kind'"
+        ).fetchone()[0] == "general"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_run_kind_migration_rejects_lossy_code_audit_downgrade_before_ddl(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "run-kind-downgrade.db"
+    _run_alembic_with_sqlite_foreign_keys(database_path, "head")
+    now = "2026-08-02 00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO engagements "
+            "(id, name, description, authorization_reference, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("engagement-audit", "Audit", "", None, now, now),
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id, engagement_id, kind, node_id, objective, success_criteria_json, "
+            "entry_points_json, scope_json, status, approval_mode, workspace_path, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "code-audit-run",
+                "engagement-audit",
+                "code_audit",
+                "local",
+                "Protected Audit Run",
+                "[]",
+                "[]",
+                "{}",
+                "created",
+                "balanced",
+                "/tmp/code-audit-run",
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events "
+            "(id, run_id, sequence, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("audit-event", "code-audit-run", 1, "run.created", "{}", now),
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade Run kind"):
+        _run_alembic_with_sqlite_foreign_keys(
+            database_path,
+            "f7a9c1d3e526",
+            downgrade=True,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == (
+            "0d3a8b7c4e21"
+        )
+        assert connection.execute(
+            "SELECT kind FROM runs WHERE id = 'code-audit-run'"
+        ).fetchone()[0] == "code_audit"
+        assert connection.execute(
+            "SELECT count(*) FROM run_events WHERE run_id = 'code-audit-run'"
+        ).fetchone()[0] == 1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_run_kind_offline_downgrade_fails_closed() -> None:
+    with pytest.raises(RuntimeError, match="requires an online database"):
+        offline_downgrade_alembic("0d3a8b7c4e21:f7a9c1d3e526")
+
+
 def test_m7_migration_backfills_existing_approval_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "existing.db"
     run_alembic(database_path, "2f14cbcea74b")

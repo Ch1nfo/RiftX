@@ -88,6 +88,12 @@ class ExecutionService:
         self._events = event_repository
         self._runs = run_repository
 
+    @property
+    def run_repository(self) -> RunRepository | None:
+        """Expose the read-only Run authority used by deferred execution guards."""
+
+        return self._runs
+
     async def submit(self, request: SubmitExecutionRequest) -> Execution:
         launch = _freeze_launch_request(request.to_launch_request())
         admission = _launch_admission_identity(launch)
@@ -95,10 +101,18 @@ class ExecutionService:
         existing = await self._executions.get_by_key(admission.execution_key)
         if existing is not None:
             _require_execution_matches_admission(existing, admission)
+
+        run = await self._require_run(admission.run_id)
+        _require_execution_effect_policy(
+            run,
+            operation="service.execution.submit",
+            effect="host_execution",
+        )
+        if existing is not None:
             await self._sync_intent(intent, existing)
             return existing
 
-        await self._require_execution_allowed(admission.run_id)
+        self._require_execution_allowed(run)
         claim = await self._tool_calls.claim_execution(
             intent.id,
             execution_key=admission.execution_key,
@@ -112,7 +126,13 @@ class ExecutionService:
             )
 
         async def effect_guard() -> None:
-            await self._require_execution_allowed(admission.run_id)
+            current_run = await self._require_run(admission.run_id)
+            _require_execution_effect_policy(
+                current_run,
+                operation="service.execution.submit",
+                effect="host_execution",
+            )
+            self._require_execution_allowed(current_run)
             if not await self._tool_calls.execution_claim_is_current(
                 intent.id,
                 execution_key=admission.execution_key,
@@ -193,7 +213,15 @@ class ExecutionService:
     ) -> ToolCallIntent:
         """Project an Execution only while its exact durable claim remains current."""
 
-        return await self._sync_intent(intent, execution)
+        authoritative = await self._require_intent_execution_owners(intent, execution)
+        run = await self._require_run(authoritative.run_id)
+        _require_execution_effect_policy(
+            run,
+            operation="service.execution.mutation",
+            effect="durable_write",
+            execution_id=execution.id,
+        )
+        return await self._sync_intent(authoritative, execution)
 
     async def wait(
         self,
@@ -206,6 +234,13 @@ class ExecutionService:
         next_poll_after_seconds: int = 10,
     ) -> ExecutionWaitResult:
         execution = await self.get(execution_id)
+        run = await self._require_run(execution.run_id)
+        _require_execution_effect_policy(
+            run,
+            operation="service.execution.mutation",
+            effect="durable_write",
+            execution_id=execution.id,
+        )
         result = await wait_for_execution(
             self._runner,
             execution,
@@ -228,7 +263,14 @@ class ExecutionService:
         return result
 
     async def cancel(self, execution_id: str, reason: str | None = None) -> Execution:
-        await self.get(execution_id)
+        existing = await self.get(execution_id)
+        run = await self._require_run(existing.run_id)
+        _require_execution_effect_policy(
+            run,
+            operation="service.execution.cancel",
+            effect="workflow_control",
+            execution_id=existing.id,
+        )
         execution = await self._runner.cancel(execution_id)
         await self._sync_execution_intent(execution)
         await self._append_event(
@@ -260,17 +302,24 @@ class ExecutionService:
             )
         return intent
 
-    async def _require_execution_allowed(self, run_id: str) -> None:
-        blocked = await self._blocked_run(run_id)
-        if blocked is not None:
-            raise self._execution_blocked_error(blocked)
-
-    async def _blocked_run(self, run_id: str) -> Run | None:
+    async def _require_run(self, run_id: str) -> Run:
         if self._runs is None:
-            return None
+            raise ApplicationConflictError(
+                "run_kind_effect_policy_denied",
+                "Execution effects require an authoritative Run repository",
+            )
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
+        return run
+
+    @staticmethod
+    def _require_execution_allowed(run: Run) -> None:
+        if run.status in _EXECUTION_BLOCKED_RUN_STATUSES:
+            raise ExecutionService._execution_blocked_error(run)
+
+    async def _blocked_run(self, run_id: str) -> Run | None:
+        run = await self._require_run(run_id)
         return run if run.status in _EXECUTION_BLOCKED_RUN_STATUSES else None
 
     @staticmethod
@@ -287,6 +336,33 @@ class ExecutionService:
         intent = await self._tool_calls.get(execution.tool_call_id)
         if intent is not None:
             await self._sync_intent(intent, execution)
+
+    async def _require_intent_execution_owners(
+        self,
+        intent: ToolCallIntent,
+        execution: Execution,
+    ) -> ToolCallIntent:
+        authoritative = await self._tool_calls.get(intent.id)
+        if authoritative is None:
+            raise EntityNotFoundError("ToolCallIntent", intent.id)
+        mismatched = [
+            field_name
+            for field_name in ("run_id", "session_id", "cycle_id", "step_id")
+            if getattr(authoritative, field_name) != getattr(intent, field_name)
+        ]
+        if execution.run_id != authoritative.run_id:
+            mismatched.append("execution.run_id")
+        if execution.session_id != authoritative.session_id:
+            mismatched.append("execution.session_id")
+        if execution.tool_call_id != authoritative.id:
+            mismatched.append("execution.tool_call_id")
+        if mismatched:
+            raise ApplicationConflictError(
+                "execution_identity_mismatch",
+                "Execution and Tool Call intent do not share the same durable owner",
+                details={"mismatched_fields": sorted(mismatched)},
+            )
+        return authoritative
 
     async def _sync_intent(
         self,
@@ -470,3 +546,51 @@ def _launch_admission_identity(
 def _submitted_event_id(execution_key: str) -> str:
     digest = hashlib.sha256(execution_key.encode()).hexdigest()
     return f"execution-submitted:{digest[:44]}"
+
+
+def _require_execution_effect_policy(
+    run: Run,
+    *,
+    operation: str,
+    effect: str,
+    execution_id: str | None = None,
+) -> None:
+    """Apply the fail-closed catalog after authoritative owner resolution."""
+
+    # Lazy imports avoid the catalog's managed-entrypoint validation cycle.
+    from riftx.application.run_kind_effects import (
+        EffectMode,
+        EffectOrigin,
+        PolicyDenialReason,
+        RunEffectOwnership,
+        RunKindEffectPolicyDenied,
+        require_run_kind_effect_policy,
+    )
+
+    try:
+        require_run_kind_effect_policy(
+            operation,
+            EffectOrigin.APPLICATION_SERVICE,
+            ownership=RunEffectOwnership(
+                run_id=run.id,
+                run_kind=run.kind,
+                execution_id=execution_id,
+            ),
+            effect=effect,
+            mode=EffectMode.NORMAL,
+        )
+    except RunKindEffectPolicyDenied as exc:
+        code = (
+            "run_kind_operation_unsupported"
+            if exc.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED
+            else "run_kind_effect_policy_denied"
+        )
+        raise ApplicationConflictError(
+            code,
+            "The requested Execution effect is not admitted for this Run owner",
+        ) from None
+    except (TypeError, ValueError):
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested Execution effect is not admitted for this Run owner",
+        ) from None

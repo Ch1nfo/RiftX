@@ -53,6 +53,7 @@ async def _database(tmp_path: Path) -> Database:
         await session.flush()
         session.add(
             RunRecord(
+                kind="general",
                 id="run-traffic",
                 engagement_id="engagement-traffic",
                 node_id="node-traffic",

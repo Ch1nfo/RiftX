@@ -27,6 +27,7 @@ def redact_sensitive_event(
     event: RunEvent,
     *,
     sensitive_artifact_ids: Collection[str] = (),
+    restricted_artifact_ids: Collection[str] = (),
 ) -> RunEvent:
     """Project legacy Target HTTP Events without guessing whether values are secrets."""
 
@@ -79,6 +80,16 @@ def redact_sensitive_event(
         artifact_id = payload.get("artifact_id")
         marker_owned = isinstance(name, str) and bool(_TARGET_HTTP_ARTIFACT_NAME.fullmatch(name))
         association_owned = isinstance(artifact_id, str) and artifact_id in sensitive_artifact_ids
+        restricted_owned = isinstance(artifact_id, str) and artifact_id in restricted_artifact_ids
+        if restricted_owned:
+            return event.model_copy(
+                update={
+                    "payload": {
+                        "artifact_class": "restricted",
+                        "content_restricted": True,
+                    }
+                }
+            )
         if marker_owned or association_owned:
             return event.model_copy(
                 update={

@@ -1,6 +1,11 @@
 """Application-layer ports and errors."""
 
-from .errors import EntityNotFoundError, RepositoryConflictError, RepositoryError
+from .errors import (
+    EntityNotFoundError,
+    RepositoryConflictError,
+    RepositoryError,
+    RepositoryUnavailableError,
+)
 from .ports import FindingRepository, RunEventRepository
 
 __all__ = [
@@ -8,5 +13,6 @@ __all__ = [
     "FindingRepository",
     "RepositoryConflictError",
     "RepositoryError",
+    "RepositoryUnavailableError",
     "RunEventRepository",
 ]

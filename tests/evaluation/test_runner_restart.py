@@ -23,6 +23,7 @@ async def test_real_runner_restart_preserves_completed_output(tmp_path: Path) ->
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="qa-runner-run",
             engagement_id="qa-runner-engagement",
             node_id="local",

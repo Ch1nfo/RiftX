@@ -11,10 +11,13 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import RedirectResponse
 
 from riftx.application.errors import ServiceUnavailableError
-from riftx.domain import RunStatus, Scope
+from riftx.application.services.runs import require_general_run_operation
+from riftx.domain import RunKind, RunStatus, Scope
 
 from ..dependencies import (
+    AuthorizedRunReadDependency,
     ConnectorServiceDependency,
+    LocalPrincipalDependency,
     RunServiceDependency,
     ToolServiceDependency,
 )
@@ -46,6 +49,7 @@ async def submit_http_capture(
     connector: ConnectorServiceDependency,
     runs: RunServiceDependency,
     tools: ToolServiceDependency,
+    principal: LocalPrincipalDependency,
 ) -> ConnectorReceiptResponse:
     created = False
     run_id = payload.run_id
@@ -56,7 +60,10 @@ async def submit_http_capture(
                 command, scope=_scope_for_url(payload.capture.url, command.scope)
             )
         try:
-            run = await runs.create_run(command)
+            run = await runs.create_run(
+                command,
+                principal=principal,
+            )
         except ServiceUnavailableError as exc:
             saved_run_id = exc.details.get("run_id")
             if not isinstance(saved_run_id, str) or not saved_run_id:
@@ -65,6 +72,7 @@ async def submit_http_capture(
         run_id = run.id
         created = True
     assert run_id is not None
+    require_general_run_operation(await runs.get_run(run_id))
     receipt = await connector.ingest(run_id, payload.capture, created_run=created)
     return ConnectorReceiptResponse(receipt=receipt)
 
@@ -76,7 +84,12 @@ async def list_connector_runs(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
-    items = await runs.list_runs(status=run_status, limit=limit, offset=offset)
+    items = await runs.list_runs(
+        status=run_status,
+        kind=RunKind.GENERAL,
+        limit=limit,
+        offset=offset,
+    )
     return RunListResponse(
         items=[RunResponse.from_domain(item) for item in items],
         limit=limit,
@@ -87,10 +100,10 @@ async def list_connector_runs(
 @router.get("/runs/{run_id}/events", responses=_ERROR_RESPONSES)
 async def connector_events(
     run_id: str,
-    runs: RunServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
     after_sequence: Annotated[int, Query(ge=0)] = 0,
 ) -> RedirectResponse:
-    await runs.get_run(run_id)
+    require_general_run_operation(authorized_run)
     return RedirectResponse(
         url=(
             f"/api/v1/runs/{run_id}/events/stream?"
@@ -109,6 +122,7 @@ async def connector_events(
 async def cancel_connector_run(
     run_id: str, runs: RunServiceDependency
 ) -> RunActionResponse:
+    require_general_run_operation(await runs.get_run(run_id))
     return RunActionResponse(run=RunResponse.from_domain(await runs.cancel(run_id)))
 
 
@@ -120,9 +134,9 @@ async def cancel_connector_run(
 async def connector_webui(
     run_id: str,
     request: Request,
-    runs: RunServiceDependency,
+    authorized_run: AuthorizedRunReadDependency,
 ) -> ConnectorWebUIResponse:
-    await runs.get_run(run_id)
+    require_general_run_operation(authorized_run)
     base = str(request.base_url).rstrip("/")
     return ConnectorWebUIResponse(run_id=run_id, url=f"{base}/runs/{run_id}")
 

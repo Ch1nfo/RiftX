@@ -1,16 +1,26 @@
 """FastAPI dependency accessors for the control-plane service container."""
 
 import secrets
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header, Request, WebSocket
 
-from riftx.application.errors import AuthenticationError, ResourceNotAccessibleError
+from riftx.application.errors import (
+    AuthenticationError,
+    EntityNotFoundError,
+    ResourceNotAccessibleError,
+    ServiceUnavailableError,
+    resource_not_accessible,
+)
+from riftx.application.ports import AuditObjectAuthorizer
 from riftx.application.services import (
     ActionApplicationService,
     ApprovalApplicationService,
     ArtifactApplicationService,
+    AuditApplicationService,
+    AuditControlApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -23,12 +33,16 @@ from riftx.application.services import (
     ToolApplicationService,
     TrafficMetadataApplicationService,
 )
+from riftx.application.services.audit_preflight_runner import (
+    AuditPreflightRunnerService,
+)
 from riftx.application.services.graphs import GraphApplicationService
 from riftx.application.traffic import TrafficMetadataCapability
+from riftx.audit import LocalAuditJobService
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
-from riftx.domain import LocalPrincipal, OperatorCapability, RunnerPrincipal
+from riftx.domain import LocalPrincipal, OperatorCapability, Run, RunKind, RunnerPrincipal
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
 from riftx.security import LocalObjectAuthorizer
@@ -50,6 +64,7 @@ class RunnerAuthorization:
     node_id: str
     token: str
     principal: RunnerPrincipal
+    protocol_capabilities: tuple[str, ...] = ()
 
 
 class _GraphObjectAuthorizer:
@@ -129,6 +144,41 @@ def get_run_service(request: Request) -> RunApplicationService:
     return request.app.state.control_plane.run_service
 
 
+def get_audit_service(request: Request) -> AuditApplicationService:
+    return request.app.state.control_plane.audit_service
+
+
+def get_audit_control_service(request: Request) -> AuditControlApplicationService:
+    service = getattr(request.app.state.control_plane, "audit_control_service", None)
+    if service is None:
+        raise ServiceUnavailableError(
+            "audit_control_unavailable",
+            "RiftX Code Audit controls are temporarily unavailable",
+        )
+    return service
+
+
+def get_optional_local_audit_job_service(
+    request: Request,
+) -> LocalAuditJobService | None:
+    service = getattr(request.app.state.control_plane, "local_audit_job_service", None)
+    return service if isinstance(service, LocalAuditJobService) else None
+
+
+def get_local_audit_job_service(request: Request) -> LocalAuditJobService:
+    service = get_optional_local_audit_job_service(request)
+    if service is None:
+        raise ServiceUnavailableError(
+            "local_audit_unavailable",
+            "Local Code Audit is temporarily unavailable",
+        )
+    return service
+
+
+def get_audit_object_authorizer(request: Request) -> AuditObjectAuthorizer:
+    return request.app.state.local_object_authorizer
+
+
 def get_action_service(request: Request) -> ActionApplicationService:
     return request.app.state.control_plane.action_service
 
@@ -188,6 +238,21 @@ def get_runner_control_service(request: Request) -> RunnerControlService:
     return request.app.state.control_plane.runner_control_service
 
 
+def get_audit_preflight_runner_service(request: Request) -> AuditPreflightRunnerService:
+    control_plane = getattr(request.app.state, "control_plane", None)
+    service = getattr(
+        control_plane,
+        "audit_preflight_runner_service",
+        None,
+    )
+    if not isinstance(service, AuditPreflightRunnerService):
+        raise ServiceUnavailableError(
+            "audit_preflight_runner_unavailable",
+            "RiftX Code Audit Preflight Runner transport is temporarily unavailable",
+        )
+    return service
+
+
 def get_report_service(request: Request) -> ReportApplicationService:
     return request.app.state.control_plane.report_service
 
@@ -240,6 +305,15 @@ def authorize_admin(
 
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
+AuditServiceDependency = Annotated[AuditApplicationService, Depends(get_audit_service)]
+AuditControlServiceDependency = Annotated[
+    AuditControlApplicationService,
+    Depends(get_audit_control_service),
+]
+AuditObjectAuthorizerDependency = Annotated[
+    AuditObjectAuthorizer,
+    Depends(get_audit_object_authorizer),
+]
 ActionServiceDependency = Annotated[ActionApplicationService, Depends(get_action_service)]
 GraphServiceDependency = Annotated[GraphApplicationService, Depends(get_graph_service)]
 TrafficMetadataServiceDependency = Annotated[
@@ -253,6 +327,10 @@ NodeServiceDependency = Annotated[NodeApplicationService, Depends(get_node_servi
 ReportServiceDependency = Annotated[ReportApplicationService, Depends(get_report_service)]
 RunnerControlServiceDependency = Annotated[
     RunnerControlService, Depends(get_runner_control_service)
+]
+AuditPreflightRunnerServiceDependency = Annotated[
+    AuditPreflightRunnerService,
+    Depends(get_audit_preflight_runner_service),
 ]
 ToolServiceDependency = Annotated[ToolApplicationService, Depends(get_tool_service)]
 ApprovalServiceDependency = Annotated[
@@ -292,6 +370,158 @@ LocalPrincipalDependency = Annotated[
     LocalPrincipal,
     Depends(get_authenticated_local_principal),
 ]
+LocalAuditJobServiceDependency = Annotated[
+    LocalAuditJobService,
+    Depends(get_local_audit_job_service),
+]
+OptionalLocalAuditJobServiceDependency = Annotated[
+    LocalAuditJobService | None,
+    Depends(get_optional_local_audit_job_service),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class RunReadAuthorizationSnapshot:
+    """Frozen owner and authenticated principal for one long-lived Run read."""
+
+    run_id: str
+    run_kind: RunKind
+    engagement_id: str
+    node_id: str
+    principal: LocalPrincipal
+    audit_id: str | None = None
+    audit_project_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunReadAuthorizer:
+    run_service: RunApplicationService
+    audit_service: AuditApplicationService
+    principal: LocalPrincipal
+    audit_authorizer: AuditObjectAuthorizer
+
+    async def require(self, run_id: str) -> Run:
+        """Route an Audit-owned generic read through its Audit ACL root."""
+
+        try:
+            kind = await self.run_service.resolve_kind(run_id)
+            if kind is RunKind.CODE_AUDIT:
+                aggregate = await self.audit_service.get_by_run_authorized(
+                    run_id,
+                    principal=self.principal,
+                    authorizer=self.audit_authorizer,
+                )
+                return aggregate.run
+            return await self.run_service.get_run(run_id)
+        except (EntityNotFoundError, ResourceNotAccessibleError):
+            raise resource_not_accessible() from None
+
+    async def require_stream_snapshot(self, run_id: str) -> RunReadAuthorizationSnapshot:
+        """Authorize and freeze the owner graph used by a long-lived stream."""
+
+        try:
+            kind = await self.run_service.resolve_kind(run_id)
+            if kind is RunKind.CODE_AUDIT:
+                aggregate = await self.audit_service.get_by_run_authorized(
+                    run_id,
+                    principal=self.principal,
+                    authorizer=self.audit_authorizer,
+                )
+                run = aggregate.run
+                return RunReadAuthorizationSnapshot(
+                    run_id=run.id,
+                    run_kind=run.kind,
+                    engagement_id=run.engagement_id,
+                    node_id=run.node_id,
+                    principal=self.principal,
+                    audit_id=aggregate.audit.value.id,
+                    audit_project_id=aggregate.project.value.id,
+                )
+            run = await self.run_service.get_run(run_id)
+            return RunReadAuthorizationSnapshot(
+                run_id=run.id,
+                run_kind=run.kind,
+                engagement_id=run.engagement_id,
+                node_id=run.node_id,
+                principal=self.principal,
+            )
+        except (EntityNotFoundError, ResourceNotAccessibleError):
+            raise resource_not_accessible() from None
+
+    async def revalidate_stream_snapshot(
+        self,
+        request: Request,
+        frozen: RunReadAuthorizationSnapshot,
+    ) -> None:
+        """Reauthenticate and reauthorize the exact frozen owner before one batch."""
+
+        principal = await authorize_local_operator(request)
+        current = await RunReadAuthorizer(
+            run_service=self.run_service,
+            audit_service=self.audit_service,
+            principal=principal,
+            audit_authorizer=self.audit_authorizer,
+        ).require_stream_snapshot(frozen.run_id)
+        if current != frozen:
+            raise resource_not_accessible()
+
+
+def require_run_read_binding(expected_run_id: str, actual_run_id: str | None) -> None:
+    """Revalidate immutable child ownership after the authorized full read."""
+
+    if actual_run_id is None or not secrets.compare_digest(expected_run_id, actual_run_id):
+        raise resource_not_accessible()
+
+
+async def load_authorized_child[ReadT](awaitable: Awaitable[ReadT]) -> ReadT:
+    """Keep a post-authorization disappearance opaque to the caller."""
+
+    try:
+        return await awaitable
+    except (EntityNotFoundError, ResourceNotAccessibleError):
+        raise resource_not_accessible() from None
+
+
+def get_run_read_authorizer(
+    run_service: RunServiceDependency,
+    audit_service: AuditServiceDependency,
+    principal: LocalPrincipalDependency,
+    audit_authorizer: AuditObjectAuthorizerDependency,
+) -> RunReadAuthorizer:
+    return RunReadAuthorizer(
+        run_service=run_service,
+        audit_service=audit_service,
+        principal=principal,
+        audit_authorizer=audit_authorizer,
+    )
+
+
+RunReadAuthorizerDependency = Annotated[
+    RunReadAuthorizer,
+    Depends(get_run_read_authorizer),
+]
+
+
+def websocket_run_read_authorizer(websocket: WebSocket) -> RunReadAuthorizer:
+    """Build the same typed read authorizer after WebSocket policy authentication."""
+
+    control_plane = websocket.app.state.control_plane
+    return RunReadAuthorizer(
+        run_service=control_plane.run_service,
+        audit_service=control_plane.audit_service,
+        principal=get_authenticated_local_principal(websocket),
+        audit_authorizer=websocket.app.state.local_object_authorizer,
+    )
+
+
+async def authorize_run_read(
+    run_id: str,
+    authorizer: RunReadAuthorizerDependency,
+) -> Run:
+    return await authorizer.require(run_id)
+
+
+AuthorizedRunReadDependency = Annotated[Run, Depends(authorize_run_read)]
 
 
 async def authorize_runner_bootstrap(
@@ -321,7 +551,39 @@ async def authorize_runner(
     principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
     credential = await service.authenticate(node_id, token)
     _require_matching_runner_principal(credential.principal, principal)
-    return RunnerAuthorization(node_id=node_id, token=token, principal=principal)
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
+
+
+async def authorize_audit_preflight_runner(
+    service: AuditPreflightRunnerServiceDependency,
+    node_id: Annotated[str, Header(alias="X-RiftX-Node-ID")],
+    runner_instance_id: Annotated[
+        str,
+        Header(alias="X-RiftX-Runner-Instance-ID", min_length=1, max_length=64),
+    ],
+    runner_epoch: Annotated[int, Header(alias="X-RiftX-Runner-Epoch", ge=1)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> RunnerAuthorization:
+    """Authenticate the dedicated Preflight credential and immutable capability."""
+
+    token = bearer_token(authorization)
+    principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
+    credential = await service.authenticate(
+        node_id,
+        token,
+        declared_principal=principal,
+    )
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
 
 
 async def authorize_runner_node(
@@ -340,7 +602,12 @@ async def authorize_runner_node(
     principal = RunnerPrincipal(instance_id=runner_instance_id, epoch=runner_epoch)
     credential = await service.authenticate(node_id, token)
     _require_matching_runner_principal(credential.principal, principal)
-    return RunnerAuthorization(node_id=node_id, token=token, principal=principal)
+    return RunnerAuthorization(
+        node_id=node_id,
+        token=token,
+        principal=principal,
+        protocol_capabilities=credential.protocol_capabilities,
+    )
 
 
 def _require_matching_runner_principal(
@@ -369,6 +636,10 @@ RunnerBootstrapDependency = Annotated[
 RunnerDependency = Annotated[
     RunnerAuthorization,
     Depends(authorize_runner),
+]
+AuditPreflightRunnerDependency = Annotated[
+    RunnerAuthorization,
+    Depends(authorize_audit_preflight_runner),
 ]
 RunnerNodeDependency = Annotated[
     RunnerAuthorization,

@@ -13,11 +13,21 @@ from riftx.domain import (
     Engagement,
     Objective,
     Run,
+    RunKind,
     RunnerCommand,
     RunnerCommandKind,
+    RunnerCommandOrigin,
+    RunnerCommandOwnership,
+    RunnerCommandOwnershipState,
     RunnerCommandStatus,
+    RunnerEffectBinding,
+    RunnerOperationFamily,
+    RunnerOutputContract,
+    RunnerPrincipal,
+    RunnerResourceKind,
     RunStatus,
     Scope,
+    runner_payload_digest,
 )
 from riftx.execution import build_execution_key
 from riftx.persistence import (
@@ -275,6 +285,65 @@ class EmptyRunResourceStopper:
         )
 
 
+_REMOTE_OWNER = RunnerPrincipal(instance_id="runner-target-http-service", epoch=1)
+
+
+def _verified_remote_command(
+    *,
+    command_id: str,
+    node_id: str,
+    kind: RunnerCommandKind,
+    idempotency_key: str,
+    payload: dict[str, object],
+    run_id: str,
+    origin: RunnerCommandOrigin,
+    operation_family: RunnerOperationFamily,
+    resource_kind: RunnerResourceKind,
+    resource_id: str,
+    execution_id: str | None,
+    output_contract: RunnerOutputContract | None,
+    target: RunnerPrincipal | None,
+    status: RunnerCommandStatus,
+    result: dict[str, object] | None = None,
+    error: str = "",
+) -> RunnerCommand:
+    resolved_target = target or _REMOTE_OWNER
+    binding = RunnerEffectBinding(
+        id=f"binding-{command_id}",
+        run_id=run_id,
+        run_kind=RunKind.GENERAL,
+        node_id=node_id,
+        target=resolved_target,
+        origin=origin,
+        operation_family=operation_family,
+        execution_id=execution_id,
+        resource_kind=resource_kind,
+        resource_id=resource_id,
+    )
+    ownership = RunnerCommandOwnership(
+        command_id=command_id,
+        effect_binding=binding,
+        operation=kind,
+        operation_family=operation_family,
+        payload_digest=runner_payload_digest(payload),
+        output_contract=output_contract or RunnerOutputContract(),
+    )
+    return RunnerCommand(
+        id=command_id,
+        node_id=node_id,
+        target=resolved_target,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        ownership=ownership,
+        ownership_state=RunnerCommandOwnershipState.VERIFIED,
+        quarantine_reason="",
+        payload=payload,
+        status=status,
+        result=result or {},
+        error=error,
+    )
+
+
 class FailedDeliveryControl:
     def __init__(self, *, acknowledge_cancel: bool) -> None:
         self.acknowledge_cancel = acknowledge_cancel
@@ -289,27 +358,51 @@ class FailedDeliveryControl:
         kind: RunnerCommandKind,
         idempotency_key: str,
         payload: dict[str, object],
+        run_id: str,
+        origin: RunnerCommandOrigin,
+        operation_family: RunnerOperationFamily,
+        resource_kind: RunnerResourceKind,
+        resource_id: str,
+        execution_id: str | None = None,
+        output_contract: RunnerOutputContract | None = None,
+        target: RunnerPrincipal | None = None,
     ) -> tuple[RunnerCommand, bool]:
         self.enqueued.append((node_id, kind))
         if kind is RunnerCommandKind.TARGET_HTTP:
-            command = RunnerCommand(
-                id="failed-delivery-command",
+            command = _verified_remote_command(
+                command_id="failed-delivery-command",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.FAILED,
                 error="delivery claim replay suppressed after a possible send",
             )
         else:
             self.cancel_commands += 1
             intent_id = str(payload["tool_call_ids"][0])  # type: ignore[index]
-            command = RunnerCommand(
-                id=f"cancel-command-{self.cancel_commands}",
+            command = _verified_remote_command(
+                command_id=f"cancel-command-{self.cancel_commands}",
                 node_id=node_id,
                 kind=kind,
                 idempotency_key=idempotency_key,
                 payload=payload,
+                run_id=run_id,
+                origin=origin,
+                operation_family=operation_family,
+                resource_kind=resource_kind,
+                resource_id=resource_id,
+                execution_id=execution_id,
+                output_contract=output_contract,
+                target=target,
                 status=RunnerCommandStatus.COMPLETED,
                 result={
                     "outcomes": [
@@ -352,11 +445,29 @@ class Events:
         self.types.append((run_id, event_type, payload))
 
 
+class KindSwitchingRuns:
+    """Expose a defensive recheck that changes after initial admission."""
+
+    def __init__(self, delegate: SQLAlchemyRunRepository) -> None:
+        self.delegate = delegate
+        self.reads = 0
+
+    async def get(self, run_id: str) -> Run | None:
+        run = await self.delegate.get(run_id)
+        if run is None:
+            return None
+        self.reads += 1
+        if self.reads > 1:
+            return run.model_copy(update={"kind": RunKind.CODE_AUDIT})
+        return run
+
+
 async def build_service(
     tmp_path: Path,
     *,
     status=ToolCallStatus.READY,
     run_status=RunStatus.CREATED,
+    run_kind=RunKind.GENERAL,
     runner=None,
 ):
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'target-http.db'}")
@@ -367,6 +478,7 @@ async def build_service(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind=run_kind,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -545,6 +657,131 @@ async def test_stopped_run_status_blocks_before_target_http_effect(
 
         assert caught.value.code == "run_target_http_blocked"
         assert runner.launches == []
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_rejects_before_intent_or_external_effect(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(submission())
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.READY
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(
+            submission().request.execution_key
+        ) is None
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_rejects_before_existing_result_replay(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    request = submission()
+    replayed = TargetHttpResult(
+        request_id="existing-request",
+        execution_key=request.request.execution_key,
+        request_hash=request.request.fingerprint,
+        status_code=200,
+        elapsed_ms=1,
+        content_type="text/plain",
+        content_length=8,
+        body_excerpt="existing",
+        final_url=request.request.url,
+    )
+    await repository.create(request, replayed)
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(request)
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.READY
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(request.request.execution_key) == replayed
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_stop_run_remains_available_for_safety(
+    tmp_path: Path,
+) -> None:
+    database, service, _, _, _, tool_calls, _ = await build_service(
+        tmp_path,
+        run_kind=RunKind.CODE_AUDIT,
+    )
+    try:
+        result = await service.stop_run("run-1")
+
+        assert result.succeeded is True
+        assert result.confirmed_statuses == {"tool-call-1": "cancelled"}
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.CANCELLED
+    finally:
+        await database.dispose()
+
+
+async def test_code_audit_target_http_stop_run_can_converge_executing_intent(
+    tmp_path: Path,
+) -> None:
+    runner = UncertainExecutionRunner(execute_stop_confirmed=True)
+    database, service, _, _, _, tool_calls, _ = await build_service(
+        tmp_path,
+        status=ToolCallStatus.EXECUTING,
+        run_kind=RunKind.CODE_AUDIT,
+        runner=runner,
+    )
+    try:
+        result = await service.stop_run("run-1")
+
+        assert result.succeeded is True
+        assert result.confirmed_statuses == {"tool-call-1": "cancelled"}
+        assert runner.stop_calls == 1
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.CANCELLED
+    finally:
+        await database.dispose()
+
+
+async def test_target_http_effect_guard_rechecks_run_kind_before_event_or_runner(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, artifacts, events, tool_calls, repository = await build_service(
+        tmp_path
+    )
+    service._runs = KindSwitchingRuns(  # type: ignore[assignment]
+        SQLAlchemyRunRepository(database.session_factory)
+    )
+    try:
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(submission())
+
+        assert caught.value.code == "run_kind_operation_unsupported"
+        intent = await tool_calls.get("tool-call-1")
+        assert intent is not None and intent.status is ToolCallStatus.EXECUTING
+        assert runner.launches == []
+        assert artifacts.commands == []
+        assert events.types == []
+        assert await repository.get_by_execution_key(
+            submission().request.execution_key
+        ) is None
     finally:
         await database.dispose()
 

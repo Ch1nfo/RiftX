@@ -14,7 +14,7 @@ from riftx.evaluation import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_release_manifest_covers_all_fifteen_gates_and_existing_tests() -> None:
+def test_release_manifest_covers_every_declared_gate_and_existing_test() -> None:
     manifest = release_gate_manifest()
 
     assert set(manifest) == set(ReleaseGate)
@@ -42,7 +42,7 @@ def test_release_gate_report_requires_every_gate_to_pass() -> None:
 
     ready = ReleaseGateEvaluator().evaluate(evidence)
     assert ready.ready
-    assert len(ready.gates) == 15
+    assert len(ready.gates) == len(ReleaseGate)
 
     evidence[0].passed = False
     blocked = ReleaseGateEvaluator().evaluate(evidence)

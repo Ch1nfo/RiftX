@@ -1,27 +1,47 @@
-"""Immutable Run artifact registration and retrieval."""
+"""Immutable Run Artifact registration and descriptor-safe retrieval."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
-import os
-import shutil
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryIntegrityError,
+    RepositoryUnavailableError,
+    ServiceUnavailableError,
+    resource_not_accessible,
+)
 from riftx.application.ports import (
     ArtifactRepository,
     ExecutionRepository,
     RunEventRepository,
     RunRepository,
 )
-from riftx.domain import Artifact
+from riftx.application.ports.repositories import ArtifactOwnerBinding
+from riftx.domain import (
+    Artifact,
+    ArtifactAccessClass,
+    ArtifactContentTrust,
+    ArtifactIngestMethod,
+    ArtifactIngestProvenance,
+)
 from riftx.domain.base import new_id
-from riftx.runner import RunnerPaths
+from riftx.runner import (
+    ArtifactContentFailure,
+    ArtifactContentStoreError,
+    LocalArtifactContentStore,
+    OpenedArtifactContent,
+    RunnerPaths,
+)
 
-_COPY_CHUNK_SIZE = 1024 * 1024
+from .runs import require_general_run_operation
+
+_DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +51,7 @@ class RegisterArtifact:
     mime_type: str | None = None
     description: str = ""
     execution_id: str | None = None
+    content_trust: ArtifactContentTrust = ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +60,16 @@ class RegisterArtifactContent:
     name: str
     mime_type: str
     description: str = ""
+    content_trust: ArtifactContentTrust = ArtifactContentTrust.UNTRUSTED_TOOL_OUTPUT
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactContentSlice:
+    artifact: Artifact
+    data: bytes
+    offset: int
+    next_offset: int
+    eof: bool
 
 
 class ArtifactApplicationService:
@@ -50,17 +81,24 @@ class ArtifactApplicationService:
         artifact_repository: ArtifactRepository,
         event_repository: RunEventRepository,
         paths: RunnerPaths,
+        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
+        content_store: LocalArtifactContentStore | None = None,
     ) -> None:
         self._run_repository = run_repository
         self._execution_repository = execution_repository
         self._artifact_repository = artifact_repository
         self._event_repository = event_repository
         self._paths = paths
+        self._content_store = content_store or LocalArtifactContentStore(
+            paths,
+            max_artifact_bytes=max_artifact_bytes,
+        )
 
     async def register(self, run_id: str, command: RegisterArtifact) -> Artifact:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
+        require_general_run_operation(run)
         if command.execution_id is not None:
             execution = await self._execution_repository.get(command.execution_id)
             if execution is None:
@@ -69,59 +107,52 @@ class ArtifactApplicationService:
                 raise ApplicationConflictError(
                     "artifact_execution_mismatch",
                     "The execution does not belong to the target Run",
-                    details={
-                        "run_id": run_id,
-                        "execution_id": command.execution_id,
-                    },
                 )
 
-        source = await self._resolve_source(run_id, run.workspace_path, command.source_path)
-        name = _safe_artifact_name(command.name or source.name)
-        mime_type = command.mime_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
-        mime_type = mime_type.strip()
-        if not mime_type or len(mime_type) > 255:
-            raise ApplicationConflictError(
-                "invalid_artifact_mime_type",
-                "Artifact MIME type must contain between 1 and 255 characters",
-            )
-
+        source_name = Path(command.source_path).name
+        name = _safe_artifact_name(command.name or source_name)
+        mime_type = _safe_mime_type(
+            command.mime_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        )
         artifact_id = new_id()
         destination = self._paths.artifact(run_id, artifact_id, name)
         try:
-            sha256, size = await asyncio.to_thread(
-                _snapshot_file,
-                source,
-                destination.directory,
-                destination.content,
+            stored = await _complete_blocking_operation(
+                lambda: self._content_store.snapshot_file(
+                    command.source_path,
+                    allowed_roots=(
+                        Path(run.workspace_path).expanduser(),
+                        self._paths.run_directory(run_id),
+                    ),
+                    storage_key=destination.storage_key,
+                ),
+                on_cancel=lambda _: self._content_store.discard(destination.storage_key),
             )
-            artifact = Artifact(
-                id=artifact_id,
-                run_id=run_id,
-                execution_id=command.execution_id,
-                name=name,
-                path=str(destination.content),
-                mime_type=mime_type,
-                sha256=sha256,
-                size=size,
-                description=command.description.strip(),
-            )
-            await self._artifact_repository.create(artifact)
-        except Exception:
-            await asyncio.to_thread(shutil.rmtree, destination.directory, True)
-            raise
+        except ArtifactContentStoreError as exc:
+            raise _registration_store_error(exc) from None
 
-        await self._event_repository.append(
-            run_id,
-            "artifact.registered",
-            {
-                "artifact_id": artifact.id,
-                "execution_id": artifact.execution_id,
-                "name": artifact.name,
-                "mime_type": artifact.mime_type,
-                "sha256": artifact.sha256,
-                "size": artifact.size,
-            },
+        artifact = Artifact(
+            id=artifact_id,
+            run_id=run_id,
+            execution_id=command.execution_id,
+            audit_id=None,
+            access_class=ArtifactAccessClass.PUBLIC_EXPORT,
+            content_trust=command.content_trust,
+            name=name,
+            path=str(destination.content),
+            storage_key=destination.storage_key,
+            ingest_provenance=ArtifactIngestProvenance(
+                method=ArtifactIngestMethod.LOCAL_NOFOLLOW_FD,
+                producer_node_id=run.node_id,
+                producer_execution_id=command.execution_id,
+            ),
+            mime_type=mime_type,
+            sha256=stored.sha256,
+            size=stored.size,
+            description=command.description.strip(),
         )
+        await self._persist_or_discard(artifact)
+        await self._append_registered_event(artifact)
         return artifact
 
     async def register_content(
@@ -129,58 +160,97 @@ class ArtifactApplicationService:
         run_id: str,
         command: RegisterArtifactContent,
     ) -> Artifact:
-        if await self._run_repository.get(run_id) is None:
+        run = await self._run_repository.get(run_id)
+        if run is None:
             raise EntityNotFoundError("Run", run_id)
+        require_general_run_operation(run)
         name = _safe_artifact_name(command.name)
-        mime_type = command.mime_type.strip()
-        if not mime_type or len(mime_type) > 255:
-            raise ApplicationConflictError(
-                "invalid_artifact_mime_type",
-                "Artifact MIME type must contain between 1 and 255 characters",
-            )
-
+        mime_type = _safe_mime_type(command.mime_type)
         artifact_id = new_id()
         destination = self._paths.artifact(run_id, artifact_id, name)
         try:
-            sha256, size = await asyncio.to_thread(
-                _snapshot_bytes,
-                command.content,
-                destination.directory,
-                destination.content,
+            stored = await _complete_blocking_operation(
+                lambda: self._content_store.snapshot_bytes(
+                    command.content,
+                    storage_key=destination.storage_key,
+                ),
+                on_cancel=lambda _: self._content_store.discard(destination.storage_key),
             )
-            artifact = Artifact(
-                id=artifact_id,
-                run_id=run_id,
-                name=name,
-                path=str(destination.content),
-                mime_type=mime_type,
-                sha256=sha256,
-                size=size,
-                description=command.description.strip(),
-            )
-            await self._artifact_repository.create(artifact)
-        except Exception:
-            await asyncio.to_thread(shutil.rmtree, destination.directory, True)
-            raise
+        except ArtifactContentStoreError as exc:
+            raise _registration_store_error(exc) from None
 
-        await self._event_repository.append(
-            run_id,
-            "artifact.registered",
-            {
-                "artifact_id": artifact.id,
-                "execution_id": None,
-                "name": artifact.name,
-                "mime_type": artifact.mime_type,
-                "sha256": artifact.sha256,
-                "size": artifact.size,
-            },
+        artifact = Artifact(
+            id=artifact_id,
+            run_id=run_id,
+            audit_id=None,
+            access_class=ArtifactAccessClass.PUBLIC_EXPORT,
+            content_trust=command.content_trust,
+            name=name,
+            path=str(destination.content),
+            storage_key=destination.storage_key,
+            ingest_provenance=ArtifactIngestProvenance(
+                method=ArtifactIngestMethod.CONTROL_PLANE_BYTES,
+                producer_node_id=run.node_id,
+            ),
+            mime_type=mime_type,
+            sha256=stored.sha256,
+            size=stored.size,
+            description=command.description.strip(),
         )
+        await self._persist_or_discard(artifact)
+        await self._append_registered_event(artifact)
         return artifact
 
     async def get(self, artifact_id: str) -> Artifact:
-        artifact = await self._artifact_repository.get(artifact_id)
+        try:
+            artifact = await self._artifact_repository.get(artifact_id)
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
         if artifact is None:
             raise EntityNotFoundError("Artifact", artifact_id)
+        return artifact
+
+    async def resolve_run_id(self, artifact_id: str) -> str:
+        try:
+            run_id = await self._artifact_repository.get_run_id(artifact_id)
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        if run_id is None:
+            raise resource_not_accessible()
+        return run_id
+
+    async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding:
+        try:
+            binding = await self._artifact_repository.resolve_owner(artifact_id)
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        if binding is None:
+            raise resource_not_accessible()
+        return binding
+
+    async def get_for_audit(
+        self,
+        artifact_id: str,
+        *,
+        audit_id: str,
+        run_id: str,
+    ) -> Artifact:
+        try:
+            artifact = await self._artifact_repository.get_for_audit(
+                artifact_id,
+                audit_id,
+                run_id,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        if artifact is None:
+            raise resource_not_accessible()
+        _require_exact_owner(
+            artifact,
+            artifact_id=artifact_id,
+            run_id=run_id,
+            audit_id=audit_id,
+        )
         return artifact
 
     async def list(
@@ -193,75 +263,239 @@ class ArtifactApplicationService:
     ) -> list[Artifact]:
         if await self._run_repository.get(run_id) is None:
             raise EntityNotFoundError("Run", run_id)
-        return list(
-            await self._artifact_repository.list(
+        try:
+            artifacts = await self._artifact_repository.list(
                 run_id,
                 execution_id=execution_id,
                 limit=limit,
                 offset=offset,
             )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        return list(artifacts)
+
+    async def list_for_audit(
+        self,
+        audit_id: str,
+        run_id: str,
+        *,
+        execution_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[Artifact]:
+        try:
+            artifacts = await self._artifact_repository.list_for_audit(
+                audit_id,
+                run_id,
+                execution_id=execution_id,
+                limit=limit,
+                offset=offset,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        result = list(artifacts)
+        for artifact in result:
+            _require_exact_owner(
+                artifact,
+                artifact_id=artifact.id,
+                run_id=run_id,
+                audit_id=audit_id,
+            )
+        return result
+
+    async def open_public_content(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+    ) -> tuple[Artifact, OpenedArtifactContent]:
+        artifact = await self.get(artifact_id)
+        _require_exact_owner(
+            artifact,
+            artifact_id=artifact_id,
+            run_id=expected_run_id,
+            audit_id=artifact.audit_id,
+        )
+        if artifact.access_class is not ArtifactAccessClass.PUBLIC_EXPORT:
+            raise resource_not_accessible()
+        return artifact, await self._open_verified(artifact)
+
+    async def open_audit_content(
+        self,
+        artifact_id: str,
+        *,
+        audit_id: str,
+        run_id: str,
+    ) -> tuple[Artifact, OpenedArtifactContent]:
+        artifact = await self.get_for_audit(
+            artifact_id,
+            audit_id=audit_id,
+            run_id=run_id,
+        )
+        return artifact, await self._open_verified(artifact)
+
+    async def read_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+        offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> ArtifactContentSlice:
+        if offset < 0:
+            raise ValueError("Artifact offset must not be negative")
+        if max_bytes < 1 or max_bytes > self._content_store.max_artifact_bytes:
+            raise ValueError("Artifact read size is outside the configured bounds")
+        artifact, lease = await self.open_public_content(
+            artifact_id,
+            expected_run_id=expected_run_id,
+        )
+        try:
+            if offset > artifact.size:
+                raise ValueError("Artifact offset is beyond content size")
+            lease.seek(offset)
+            data = await _complete_blocking_operation(
+                lambda: lease.read(max_bytes) if offset < artifact.size else b"",
+                on_cancel=lambda _: lease.close(),
+            )
+            await _complete_blocking_operation(
+                lease.verify_unchanged,
+                on_cancel=lambda _: lease.close(),
+            )
+        except ArtifactContentStoreError as exc:
+            raise _download_store_error(exc) from None
+        finally:
+            lease.close()
+        next_offset = offset + len(data)
+        return ArtifactContentSlice(
+            artifact=artifact,
+            data=data,
+            offset=offset,
+            next_offset=next_offset,
+            eof=next_offset >= artifact.size,
         )
 
-    async def content_path(self, artifact_id: str) -> tuple[Artifact, Path]:
-        artifact = await self.get(artifact_id)
-        expected = self._paths.artifact(artifact.run_id, artifact.id, artifact.name).content
-        try:
-            actual = await asyncio.to_thread(Path(artifact.path).resolve, strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ApplicationConflictError(
-                "artifact_content_missing",
-                f"Artifact content for {artifact.id!r} is unavailable",
-                details={"artifact_id": artifact.id},
-            ) from exc
-        if actual != expected.resolve():
-            raise ApplicationConflictError(
-                "artifact_path_mismatch",
-                f"Artifact {artifact.id!r} does not point to its immutable storage location",
-                details={"artifact_id": artifact.id},
-            )
-        sha256, size = await asyncio.to_thread(_hash_file, actual)
-        if sha256 != artifact.sha256 or size != artifact.size:
+    async def _open_verified(self, artifact: Artifact) -> OpenedArtifactContent:
+        expected = self._paths.artifact(
+            artifact.run_id,
+            artifact.id,
+            artifact.name,
+        )
+        if expected.storage_key != artifact.storage_key:
             raise ApplicationConflictError(
                 "artifact_integrity_mismatch",
-                f"Artifact {artifact.id!r} no longer matches its registered digest",
-                details={
-                    "artifact_id": artifact.id,
-                    "expected_sha256": artifact.sha256,
-                    "actual_sha256": sha256,
-                    "expected_size": artifact.size,
-                    "actual_size": size,
-                },
+                "Artifact content failed immutable storage verification",
             )
-        return artifact, actual
-
-    async def _resolve_source(self, run_id: str, workspace_path: str, value: str) -> Path:
         try:
-            source = await asyncio.to_thread(_resolve_regular_file, value)
-        except ApplicationConflictError:
+            return await _complete_blocking_operation(
+                lambda: self._content_store.open_verified(
+                    storage_key=artifact.storage_key,
+                    expected_sha256=artifact.sha256,
+                    expected_size=artifact.size,
+                ),
+                on_cancel=lambda lease: lease.close(),
+            )
+        except ArtifactContentStoreError as exc:
+            raise _download_store_error(exc) from None
+
+    async def _persist_or_discard(self, artifact: Artifact) -> None:
+        try:
+            await self._artifact_repository.create(artifact)
+        except asyncio.CancelledError:
+            await _finish_async_cleanup_after_cancellation(
+                lambda: self._discard_unless_persisted(artifact)
+            )
             raise
-        except (OSError, RuntimeError) as exc:
-            raise ApplicationConflictError(
-                "artifact_source_unavailable",
-                f"Artifact source {value!r} is unavailable",
-                details={"source_path": value},
-            ) from exc
-        workspace, run_directory = await asyncio.to_thread(
-            lambda: (
-                Path(workspace_path).expanduser().resolve(),
-                self._paths.run_directory(run_id).resolve(),
-            )
+        except Exception:
+            await self._discard_unless_persisted(artifact)
+            raise
+
+    async def _discard_unless_persisted(self, artifact: Artifact) -> None:
+        try:
+            current = await self._artifact_repository.get_for_reconciliation(artifact.id)
+        except Exception:
+            return
+        if current == artifact:
+            return
+        await _complete_blocking_operation(
+            lambda: self._content_store.discard(artifact.storage_key)
         )
-        if not source.is_relative_to(workspace) and not source.is_relative_to(run_directory):
-            raise ApplicationConflictError(
-                "artifact_source_outside_run",
-                "Artifact sources must be inside the Run workspace or Runner state directory",
-                details={
-                    "source_path": str(source),
-                    "workspace_path": str(workspace),
-                    "runner_path": str(run_directory),
-                },
-            )
-        return source
+
+    async def _append_registered_event(self, artifact: Artifact) -> None:
+        await self._event_repository.append(
+            artifact.run_id,
+            "artifact.registered",
+            {
+                "artifact_id": artifact.id,
+                "execution_id": artifact.execution_id,
+                "name": artifact.name,
+                "mime_type": artifact.mime_type,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+                "access_class": artifact.access_class.value,
+                "content_trust": artifact.content_trust.value,
+            },
+        )
+
+
+async def _complete_blocking_operation[T](
+    operation: Callable[[], T],
+    *,
+    on_cancel: Callable[[T], None] | None = None,
+) -> T:
+    """Keep ownership until a blocking operation and cancellation cleanup settle."""
+
+    worker = asyncio.create_task(asyncio.to_thread(operation))
+    cancelled = await _wait_for_task_completion(worker)
+    try:
+        result = worker.result()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        if cancelled:
+            raise asyncio.CancelledError() from None
+        raise
+
+    if not cancelled:
+        return result
+    if on_cancel is not None:
+        cleanup = asyncio.create_task(asyncio.to_thread(on_cancel, result))
+        await _wait_for_task_completion(cleanup)
+        if not cleanup.cancelled():
+            try:
+                cleanup.result()
+            except Exception:
+                pass
+    raise asyncio.CancelledError()
+
+
+async def _finish_async_cleanup_after_cancellation(
+    operation: Callable[[], Coroutine[object, object, None]],
+) -> None:
+    """Finish an ownership cleanup even if the caller is cancelled again."""
+
+    cleanup: asyncio.Task[None] = asyncio.create_task(operation())
+    await _wait_for_task_completion(cleanup)
+    if not cleanup.cancelled():
+        try:
+            cleanup.result()
+        except Exception:
+            pass
+
+
+async def _wait_for_task_completion[T](task: asyncio.Task[T]) -> bool:
+    """Wait for one owned Task while remembering any number of cancellations."""
+
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            # The outcome is consumed by the owner after the Task is settled.
+            pass
+    return cancelled
 
 
 def _safe_artifact_name(value: str) -> str:
@@ -271,67 +505,119 @@ def _safe_artifact_name(value: str) -> str:
         or len(name) > 255
         or name in {".", ".."}
         or Path(name).name != name
-        or "\x00" in name
+        or "/" in name
+        or "\\" in name
+        or any(not 0x20 <= ord(character) <= 0x7E for character in name)
     ):
         raise ApplicationConflictError(
             "invalid_artifact_name",
             "Artifact name must be a safe single path component of at most 255 characters",
-            details={"name": value},
         )
     return name
 
 
-def _resolve_regular_file(value: str) -> Path:
-    source = Path(value).expanduser().resolve(strict=True)
-    if not source.is_file():
+def _safe_mime_type(value: str) -> str:
+    mime_type = value
+    if (
+        not mime_type
+        or len(mime_type) > 255
+        or mime_type != mime_type.strip()
+        or any(not 0x20 <= ord(character) <= 0x7E for character in mime_type)
+    ):
         raise ApplicationConflictError(
-            "artifact_source_not_file",
-            f"Artifact source {str(source)!r} is not a regular file",
-            details={"source_path": str(source)},
+            "invalid_artifact_mime_type",
+            "Artifact MIME type must contain between 1 and 255 safe characters",
         )
-    return source
+    return mime_type
 
 
-def _snapshot_file(source: Path, directory: Path, destination: Path) -> tuple[str, int]:
-    directory.mkdir(parents=True, exist_ok=False)
-    temporary = directory / ".content.partial"
-    digest = hashlib.sha256()
-    size = 0
-    try:
-        with source.open("rb") as reader, temporary.open("xb") as writer:
-            while chunk := reader.read(_COPY_CHUNK_SIZE):
-                writer.write(chunk)
-                digest.update(chunk)
-                size += len(chunk)
-            writer.flush()
-            os.fsync(writer.fileno())
-        os.replace(temporary, destination)
-        destination.chmod(0o444)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return digest.hexdigest(), size
+def _require_exact_owner(
+    artifact: Artifact,
+    *,
+    artifact_id: str,
+    run_id: str,
+    audit_id: str | None,
+) -> None:
+    pairs: Sequence[tuple[str | None, str | None]] = (
+        (artifact.id, artifact_id),
+        (artifact.run_id, run_id),
+        (artifact.audit_id, audit_id),
+    )
+    if any(actual != expected for actual, expected in pairs):
+        raise resource_not_accessible()
 
 
-def _snapshot_bytes(content: bytes, directory: Path, destination: Path) -> tuple[str, int]:
-    directory.mkdir(parents=True, exist_ok=False)
-    temporary = directory / ".content.partial"
-    try:
-        with temporary.open("xb") as writer:
-            writer.write(content)
-            writer.flush()
-            os.fsync(writer.fileno())
-        os.replace(temporary, destination)
-        destination.chmod(0o444)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return hashlib.sha256(content).hexdigest(), len(content)
+def _registration_store_error(
+    error: ArtifactContentStoreError,
+) -> ApplicationConflictError | ServiceUnavailableError:
+    if error.failure is ArtifactContentFailure.SOURCE_OUTSIDE_ROOT:
+        return ApplicationConflictError(
+            "artifact_source_outside_run",
+            "Artifact sources must be inside the Run workspace or Runner state directory",
+        )
+    if error.failure is ArtifactContentFailure.SOURCE_NOT_REGULAR:
+        return ApplicationConflictError(
+            "artifact_source_not_file",
+            "Artifact source must be a regular file",
+        )
+    if error.failure is ArtifactContentFailure.SOURCE_LINKED:
+        return ApplicationConflictError(
+            "artifact_source_linked",
+            "Artifact source has an unsafe additional filesystem link",
+        )
+    if error.failure is ArtifactContentFailure.SOURCE_CHANGED:
+        return ApplicationConflictError(
+            "artifact_source_changed",
+            "Artifact source changed while it was being ingested",
+        )
+    if error.failure is ArtifactContentFailure.SIZE_LIMIT_EXCEEDED:
+        return ApplicationConflictError(
+            "artifact_size_limit_exceeded",
+            "Artifact content exceeds the configured byte limit",
+        )
+    if error.failure in {
+        ArtifactContentFailure.SOURCE_UNAVAILABLE,
+        ArtifactContentFailure.DECLARED_CONTENT_MISMATCH,
+    }:
+        return ApplicationConflictError(
+            "artifact_source_unavailable",
+            "Artifact source is unavailable or invalid",
+        )
+    return ServiceUnavailableError(
+        "artifact_storage_unavailable",
+        "Artifact storage is temporarily unavailable",
+    )
 
 
-def _hash_file(path: Path) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as reader:
-        while chunk := reader.read(_COPY_CHUNK_SIZE):
-            digest.update(chunk)
-            size += len(chunk)
-    return digest.hexdigest(), size
+def _download_store_error(
+    error: ArtifactContentStoreError,
+) -> ApplicationConflictError | ServiceUnavailableError:
+    if error.failure is ArtifactContentFailure.STORAGE_MISSING:
+        return ApplicationConflictError(
+            "artifact_content_missing",
+            "Artifact content is unavailable",
+        )
+    if error.failure is ArtifactContentFailure.STORAGE_INTEGRITY:
+        return ApplicationConflictError(
+            "artifact_integrity_mismatch",
+            "Artifact content failed immutable storage verification",
+        )
+    return ServiceUnavailableError(
+        "artifact_storage_unavailable",
+        "Artifact storage is temporarily unavailable",
+    )
+
+
+def _artifact_persistence_unavailable() -> ServiceUnavailableError:
+    return ServiceUnavailableError(
+        "artifact_persistence_unavailable",
+        "Artifact metadata is temporarily unavailable",
+    )
+
+
+__all__ = [
+    "ArtifactApplicationService",
+    "ArtifactContentSlice",
+    "RegisterArtifact",
+    "RegisterArtifactContent",
+]

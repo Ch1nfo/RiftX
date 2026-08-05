@@ -59,6 +59,7 @@ async def test_execution_repository_claim_is_idempotent(tmp_path: Path) -> None:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -119,6 +120,7 @@ async def test_execution_repository_rejects_creation_time_replacement(tmp_path: 
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -159,6 +161,7 @@ async def test_sql_launch_fingerprint_roundtrip_and_idempotency_conflicts(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -252,6 +255,7 @@ async def test_sql_legacy_null_launch_fingerprint_replay_checks_stable_fields(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

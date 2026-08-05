@@ -23,6 +23,7 @@ async def test_runtime_execution_is_persisted_before_one_process_launch(tmp_path
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

@@ -17,11 +17,13 @@ from uuid import uuid4
 import httpx
 import typer
 import uvicorn
+from click import Command, Context
 from rich.console import Console
+from typer.core import TyperGroup
 
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
-from riftx.domain import ApprovalMode, EntryPointKind, RunStatus, TerminalOwner
+from riftx.domain import ApprovalMode, EntryPointKind, RunKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
     MAX_MODEL_TIMEOUT_SECONDS,
@@ -64,6 +66,22 @@ from .render import (
 from .terminal import attach_terminal
 
 console = Console()
+
+
+class _AuditGroup(TyperGroup):
+    """Route an unknown first token to the local folder scan command."""
+
+    def resolve_command(
+        self,
+        ctx: Context,
+        args: list[str],
+    ) -> tuple[str | None, Command | None, list[str]]:
+        if args and not args[0].startswith("-") and args[0] not in self.commands:
+            command = self.get_command(ctx, "scan")
+            return "scan", command, args
+        return super().resolve_command(ctx, args)
+
+
 app = typer.Typer(
     name="riftx",
     help="Host-native durable agent execution platform.",
@@ -80,6 +98,10 @@ artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
 model_app = typer.Typer(help="Configure model provider profiles.")
+audit_app = typer.Typer(
+    cls=_AuditGroup,
+    help="Audit a local folder with read-only static analysis.",
+)
 app.add_typer(run_app, name="run")
 app.add_typer(execution_app, name="execution")
 app.add_typer(nodes_app, name="node")
@@ -89,6 +111,7 @@ app.add_typer(artifact_app, name="artifact")
 app.add_typer(report_app, name="report")
 app.add_typer(memory_app, name="memory")
 app.add_typer(model_app, name="model")
+app.add_typer(audit_app, name="audit")
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +259,11 @@ def runner_daemon(
     """Start the outbound Runner daemon using the shared RiftX configuration."""
 
     config = _state(context).config
+    if config.audit.source_roots and (state_path is not None or credential_path is not None):
+        raise typer.BadParameter(
+            "Runner storage paths are deployment-owned when Audit source roots are configured",
+            param_hint="--state-path/--credential-path",
+        )
     resolved_node_id = node_id or config.runner.node_id
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
@@ -251,6 +279,7 @@ def runner_daemon(
                 require_containment=config.execution.require_containment,
                 payload_uid=config.execution.payload_uid,
                 payload_gid=config.execution.payload_gid,
+                audit=config.audit,
             )
         )
     )
@@ -270,6 +299,97 @@ def web(
     console.print(url)
     if open_browser:
         webbrowser.open(url)
+
+
+@audit_app.command("scan")
+def scan_local_folder(
+    context: typer.Context,
+    folder: Annotated[Path, typer.Argument(help="Local folder to audit.")],
+) -> None:
+    """Create and start a read-only static audit for a local folder."""
+
+    try:
+        source_path = folder.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise typer.BadParameter("folder does not exist", param_hint="folder") from exc
+    if not source_path.is_dir():
+        raise typer.BadParameter("folder must be a directory", param_hint="folder")
+
+    def operation(client: APIClient) -> None:
+        created = client.create_local_audit(str(source_path))
+        audit_id = str(created["audit_id"])
+        console.print_json(data=client.start_local_audit(audit_id))
+
+    _run_with_client(context, operation)
+
+
+@audit_app.command("status")
+def show_local_audit_status(
+    context: typer.Context,
+    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
+) -> None:
+    """Show local Audit status."""
+
+    _run_with_client(
+        context,
+        lambda client: console.print_json(data=client.get_local_audit(audit_id)),
+    )
+
+
+@audit_app.command("findings")
+def show_local_audit_findings(
+    context: typer.Context,
+    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
+) -> None:
+    """List local Audit Findings."""
+
+    _run_with_client(
+        context,
+        lambda client: console.print_json(
+            data=client.list_local_audit_findings(audit_id)
+        ),
+    )
+
+
+@audit_app.command("report")
+def show_local_audit_report(
+    context: typer.Context,
+    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
+    format: Annotated[
+        str,
+        typer.Option("--format", help="Report format: json or markdown."),
+    ] = "json",
+) -> None:
+    """Print a local Audit report."""
+
+    normalized = format.lower()
+    if normalized not in {"json", "markdown"}:
+        raise typer.BadParameter(
+            "format must be json or markdown",
+            param_hint="--format",
+        )
+    _run_with_client(
+        context,
+        lambda client: console.print(
+            client.get_local_audit_report(audit_id, format=normalized),
+            markup=False,
+            highlight=False,
+            end="",
+        ),
+    )
+
+
+@audit_app.command("cancel")
+def cancel_local_audit(
+    context: typer.Context,
+    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
+) -> None:
+    """Cancel a local Audit."""
+
+    _run_with_client(
+        context,
+        lambda client: console.print_json(data=client.cancel_local_audit(audit_id)),
+    )
 
 
 @app.command("approvals")
@@ -799,6 +919,10 @@ def list_runs(
         RunStatus | None,
         typer.Option("--status", case_sensitive=False, help="Filter by Run status."),
     ] = None,
+    run_kind: Annotated[
+        RunKind | None,
+        typer.Option("--kind", case_sensitive=False, help="Filter by Run kind."),
+    ] = None,
     limit: Annotated[int, typer.Option(min=1, max=1000)] = 100,
     offset: Annotated[int, typer.Option(min=0)] = 0,
 ) -> None:
@@ -807,6 +931,7 @@ def list_runs(
     def operation(client: APIClient) -> None:
         payload = client.list_runs(
             status=run_status.value if run_status else None,
+            kind=run_kind.value if run_kind else None,
             limit=limit,
             offset=offset,
         )

@@ -30,6 +30,7 @@ async def test_approval_repository_is_idempotent_and_persists_run_grants(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -111,6 +112,7 @@ async def test_approval_decision_is_atomically_blocked_by_run_safety_fence(
     runs = SQLAlchemyRunRepository(database.session_factory)
     await runs.create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",

@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import riftx.persistence.memory_repositories as memory_repository_module
+from riftx.application.errors import ApplicationConflictError
 from riftx.context import ContextCompiler
+from riftx.domain import Engagement, Objective, Run, RunKind
 from riftx.domain.base import utc_now
 from riftx.memory import (
     CreateMemory,
@@ -16,7 +19,11 @@ from riftx.memory import (
     MemoryType,
 )
 from riftx.memory.context_source import RetrievedMemoryContextSource
-from riftx.persistence import Database
+from riftx.persistence import (
+    Database,
+    SQLAlchemyEngagementRepository,
+    SQLAlchemyRunRepository,
+)
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.runtime.lifecycle import ContextCompileRequest
 
@@ -198,4 +205,163 @@ async def test_retrieved_memory_is_loaded_and_manifested(tmp_path: Path) -> None
         item.get("content", {}).get("memory_id") == created.id
         for item in compiled.input_items
     )
+    await database.dispose()
+
+
+async def test_code_audit_run_memory_mutations_fail_before_persistence(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-memory-fence.db'}")
+    await database.create_schema()
+    repository = SQLAlchemyMemoryRepository(database.session_factory)
+    audit_run = Run(
+        kind=RunKind.CODE_AUDIT,
+        id="audit-run",
+        engagement_id="engagement-1",
+        node_id="local",
+        objective=Objective(description="Audit Memory fence"),
+        workspace_path=str(tmp_path / "audit-output"),
+    )
+    general_run = audit_run.model_copy(
+        update={"id": "general-run", "kind": RunKind.GENERAL}
+    )
+
+    class _Runs:
+        async def get(self, run_id: str) -> Run | None:
+            return {audit_run.id: audit_run, general_run.id: general_run}.get(run_id)
+
+    service = MemoryService(repository, run_repository=_Runs())  # type: ignore[arg-type]
+    audit_memory = memory(
+        "audit-memory",
+        scope_type=MemoryScopeType.RUN,
+        scope_id=audit_run.id,
+    )
+    await repository.create(audit_memory)
+    general = await service.create(
+        CreateMemory(
+            memory_type=MemoryType.SEMANTIC,
+            scope_type=MemoryScopeType.RUN,
+            scope_id=general_run.id,
+            title="General memory",
+            content="Allowed only for a general Run.",
+            summary="General Run memory",
+            source_refs=["user://general"],
+        )
+    )
+    baseline = await repository.list_all()
+
+    operations = (
+        service.create(
+            CreateMemory(
+                memory_type=MemoryType.SEMANTIC,
+                scope_type=MemoryScopeType.RUN,
+                scope_id=audit_run.id,
+                title="Forged audit memory",
+                content="Must not persist.",
+                summary="Must not persist",
+                source_refs=["user://forged"],
+            )
+        ),
+        service.update(audit_memory.id, {"scope_id": general_run.id}),
+        service.update(general.id, {"scope_id": audit_run.id}),
+        service.delete(audit_memory.id),
+        service.pin(audit_memory.id, pinned=True),
+        service.create(
+            CreateMemory(
+                memory_type=MemoryType.SEMANTIC,
+                scope_type=MemoryScopeType.RUN,
+                scope_id=general_run.id,
+                title="Forbidden supersede",
+                content="Must not supersede Audit Memory.",
+                summary="Forbidden supersede",
+                source_refs=["user://forged"],
+                supersedes=audit_memory.id,
+            )
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(ApplicationConflictError) as captured:
+            await operation
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    assert await repository.list_all() == baseline
+    await database.dispose()
+
+
+async def test_default_memory_queries_filter_audit_and_orphan_run_scope_in_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-memory-read-scope.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(id="engagement-memory", name="Memory read scope")
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    general_run = Run(
+        kind=RunKind.GENERAL,
+        id="general-memory-run",
+        engagement_id="engagement-memory",
+        node_id="local",
+        objective=Objective(description="General Memory visibility"),
+        workspace_path=str(tmp_path / "general"),
+    )
+    audit_run = general_run.model_copy(
+        update={"id": "audit-memory-run", "kind": RunKind.CODE_AUDIT}
+    )
+    await runs.create(general_run)
+    await runs.create(audit_run)
+
+    repository = SQLAlchemyMemoryRepository(database.session_factory)
+    records = (
+        memory(
+            "general-run-memory",
+            scope_type=MemoryScopeType.RUN,
+            scope_id=general_run.id,
+        ),
+        memory(
+            "audit-run-memory",
+            scope_type=MemoryScopeType.RUN,
+            scope_id=audit_run.id,
+            content="RIFTX_AUDIT_MEMORY_CONTENT_CANARY",
+        ),
+        memory(
+            "orphan-run-memory",
+            scope_type=MemoryScopeType.RUN,
+            scope_id="missing-run",
+            content="RIFTX_ORPHAN_MEMORY_CONTENT_CANARY",
+        ),
+        memory(
+            "engagement-memory",
+            scope_type=MemoryScopeType.ENGAGEMENT,
+            scope_id="engagement-memory",
+        ),
+    )
+    for record in records:
+        await repository.create(record)
+
+    hydrated_ids: list[str] = []
+    original_from_record = memory_repository_module._from_record
+
+    def recording_from_record(record):
+        hydrated_ids.append(record.id)
+        return original_from_record(record)
+
+    monkeypatch.setattr(memory_repository_module, "_from_record", recording_from_record)
+    visible = await repository.list_all()
+
+    assert {item.id for item in visible} == {
+        "general-run-memory",
+        "engagement-memory",
+    }
+    assert set(hydrated_ids) == {"general-run-memory", "engagement-memory"}
+
+    hydrated_ids.clear()
+    explicit = await repository.list_scope(MemoryScopeType.RUN, audit_run.id)
+    retrieved = await repository.list_for_retrieval_scope(
+        MemoryRetrievalScope(run_id=audit_run.id)
+    )
+    assert [item.id for item in explicit] == ["audit-run-memory"]
+    assert [item.id for item in retrieved] == ["audit-run-memory"]
+    assert hydrated_ids == ["audit-run-memory", "audit-run-memory"]
     await database.dispose()

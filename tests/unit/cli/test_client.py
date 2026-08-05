@@ -49,6 +49,87 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     assert json.loads(requests[2].content) == {"max_history_items": 25}
 
 
+def test_api_client_combines_run_status_and_kind_filters() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"items": [], "limit": 25, "offset": 5})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.list_runs(
+            status="running",
+            kind="code_audit",
+            limit=25,
+            offset=5,
+        )
+
+    assert dict(requests[0].url.params) == {
+        "limit": "25",
+        "offset": "5",
+        "status": "running",
+        "kind": "code_audit",
+    }
+
+
+def test_local_audit_client_uses_minimal_job_endpoints_and_text_report() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/report"):
+            return httpx.Response(200, text="# Audit\n")
+        return httpx.Response(200, json={"audit_id": "audit-1", "items": []})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.create_local_audit(
+            "/workspace/project",
+            include_patterns=("src/**",),
+            exclude_patterns=("vendor/**",),
+        )
+        client.start_local_audit("audit-1")
+        client.get_local_audit("audit-1")
+        client.list_local_audit_findings(
+            "audit-1",
+            severity="high",
+            category="secret",
+            file="src/app.py",
+            limit=25,
+            offset=5,
+        )
+        report = client.get_local_audit_report("audit-1", format="markdown")
+        client.cancel_local_audit("audit-1")
+
+    assert report == "# Audit\n"
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/v1/audits"),
+        ("POST", "/api/v1/audits/audit-1/start"),
+        ("GET", "/api/v1/audits/audit-1"),
+        ("GET", "/api/v1/audits/audit-1/findings"),
+        ("GET", "/api/v1/audits/audit-1/report"),
+        ("POST", "/api/v1/audits/audit-1/cancel"),
+    ]
+    assert json.loads(requests[0].content) == {
+        "source_path": "/workspace/project",
+        "include_patterns": ["src/**"],
+        "exclude_patterns": ["vendor/**"],
+    }
+    assert dict(requests[3].url.params) == {
+        "limit": "25",
+        "offset": "5",
+        "severity": "high",
+        "category": "secret",
+        "file": "src/app.py",
+    }
+    assert requests[4].url.params["format"] == "markdown"
+
+
 def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
     requests: list[tuple[str, str, object, str | None]] = []
 

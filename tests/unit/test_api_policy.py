@@ -10,6 +10,7 @@ from riftx.api.app import create_app
 from riftx.api.auth import _required_admin_capability, _required_local_capability
 from riftx.api.dependencies import (
     authorize_admin,
+    authorize_audit_preflight_runner,
     authorize_local_operator,
     authorize_runner,
 )
@@ -43,12 +44,41 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert len(inventory) == len(ROUTE_POLICIES)
     assert {record.name for record in inventory} == set(ROUTE_POLICIES)
     assert ROUTE_POLICIES["cancel_run"].effect is RouteEffect.WORKFLOW_CONTROL
+    assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.DURABLE_WRITE
+    assert ROUTE_POLICIES["list_audits"].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["get_audit"].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["start_audit"].effect is RouteEffect.HOST_EXECUTION
+    for route_name in (
+        "list_local_audit_findings",
+        "get_local_audit_finding",
+        "get_local_audit_report",
+    ):
+        assert ROUTE_POLICIES[route_name].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["create_audit_preflight"].effect is RouteEffect.HOST_EXECUTION
+    assert ROUTE_POLICIES["get_audit_preflight"].effect is RouteEffect.READ_ONLY
+    assert ROUTE_POLICIES["cancel_audit_preflight"].effect is RouteEffect.HOST_CONTROL
+    for route_name in (
+        "list_audit_artifacts",
+        "get_audit_artifact",
+        "download_audit_artifact",
+    ):
+        assert ROUTE_POLICIES[route_name].authorization is RouteAuthorization.LOCAL_OPERATOR
+        assert ROUTE_POLICIES[route_name].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["observe_browser"].effect is RouteEffect.HOST_CONTROL
     assert ROUTE_POLICIES["terminal_websocket"].authorization is RouteAuthorization.LOCAL_OPERATOR
     assert ROUTE_POLICIES["upsert_model_profile"].authorization is RouteAuthorization.ADMIN_TOKEN
     assert (
         ROUTE_POLICIES["report_execution_status"].authorization is RouteAuthorization.RUNNER_TOKEN
     )
+    for route_name in (
+        "poll_audit_preflight_job",
+        "renew_audit_preflight_lease",
+        "start_audit_preflight_job",
+        "finish_audit_preflight_job",
+        "stop_audit_preflight_job",
+    ):
+        assert ROUTE_POLICIES[route_name].authorization is RouteAuthorization.RUNNER_TOKEN
+        assert ROUTE_POLICIES[route_name].effect is RouteEffect.RUNNER_CALLBACK
 
     openapi = app.openapi()
     cancel = openapi["paths"]["/api/v1/runs/{run_id}/cancel"]["post"]
@@ -57,6 +87,31 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     update_model = openapi["paths"]["/api/v1/model-profiles/{profile_name}"]["put"]
     assert update_model["x-riftx-authorization"] == "admin_token"
     assert update_model["x-riftx-effect"] == "durable_write"
+    create_audit = openapi["paths"]["/api/v1/audits"]["post"]
+    assert create_audit["x-riftx-authorization"] == "local_operator"
+    assert create_audit["x-riftx-effect"] == "durable_write"
+    assert openapi["paths"]["/api/v1/audits"]["get"]["x-riftx-effect"] == "read_only"
+    assert openapi["paths"]["/api/v1/audits/{audit_id}"]["get"]["x-riftx-effect"] == "read_only"
+    create_preflight = openapi["paths"]["/api/v1/audits/preflight"]["post"]
+    assert create_preflight["x-riftx-authorization"] == "local_operator"
+    assert create_preflight["x-riftx-effect"] == "host_execution"
+    get_preflight = openapi["paths"]["/api/v1/audits/preflight/{job_id}"]["get"]
+    assert get_preflight["x-riftx-authorization"] == "local_operator"
+    assert get_preflight["x-riftx-effect"] == "read_only"
+    cancel_preflight = openapi["paths"]["/api/v1/audits/preflight/{job_id}/cancel"]["post"]
+    assert cancel_preflight["x-riftx-authorization"] == "local_operator"
+    assert cancel_preflight["x-riftx-effect"] == "host_control"
+    issue_plan = openapi["paths"]["/api/v1/audits/preflight/{job_id}/plan"]["post"]
+    assert issue_plan["x-riftx-authorization"] == "local_operator"
+    assert issue_plan["x-riftx-effect"] == "durable_write"
+    for path in (
+        "/api/v1/audits/{audit_id}/artifacts",
+        "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
+        "/api/v1/audits/{audit_id}/artifacts/{artifact_id}/content",
+    ):
+        operation = openapi["paths"][path]["get"]
+        assert operation["x-riftx-authorization"] == "local_operator"
+        assert operation["x-riftx-effect"] == "read_only"
 
     register_parameters = {
         (parameter["in"], parameter["name"]): parameter
@@ -83,6 +138,16 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert runner_parameters[("header", "X-RiftX-Runner-Epoch")]["required"] is True
     assert runner_parameters[("header", "authorization")]["required"] is False
 
+    preflight_runner_parameters = {
+        (parameter["in"], parameter["name"]): parameter
+        for parameter in openapi["paths"]["/api/v1/runner/audit-preflight/next"]["get"][
+            "parameters"
+        ]
+    }
+    assert preflight_runner_parameters[("header", "X-RiftX-Node-ID")]["required"] is True
+    assert preflight_runner_parameters[("header", "X-RiftX-Runner-Instance-ID")]["required"] is True
+    assert preflight_runner_parameters[("header", "X-RiftX-Runner-Epoch")]["required"] is True
+
     routes = {route.name: route for route in app.routes if hasattr(route, "dependant")}
     assert _authentication_dependencies(routes["cancel_run"].dependant) == (
         authorize_local_operator,
@@ -93,6 +158,9 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert set(_authentication_dependencies(routes["report_execution_status"].dependant)) == {
         authorize_runner,
     }
+    assert _authentication_dependencies(routes["finish_audit_preflight_job"].dependant) == (
+        authorize_audit_preflight_runner,
+    )
 
 
 def test_control_plane_route_policy_inventory_rejects_unknown_route() -> None:
@@ -114,6 +182,9 @@ def test_control_plane_route_policy_inventory_rejects_unknown_route() -> None:
         ("cancel_run", OperatorCapability.CONTROL),
         ("create_terminal", OperatorCapability.HOST_EXECUTE),
         ("observe_browser", OperatorCapability.HOST_CONTROL),
+        ("create_audit_preflight", OperatorCapability.HOST_EXECUTE),
+        ("get_audit_preflight", OperatorCapability.READ),
+        ("cancel_audit_preflight", OperatorCapability.HOST_CONTROL),
     ],
 )
 def test_route_effect_maps_to_the_required_local_operator_capability(
@@ -366,6 +437,11 @@ def test_admin_policy_requires_admin_dependency() -> None:
             "heartbeat_node",
             "/api/v1/nodes/{node_id}/heartbeat",
             "authorize_runner_node",
+        ),
+        (
+            "poll_audit_preflight_job",
+            "/api/v1/runner/audit-preflight/next",
+            "authorize_audit_preflight_runner",
         ),
     ],
 )

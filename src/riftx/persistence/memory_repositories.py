@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import Select, and_, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.domain import RunKind
 from riftx.domain.base import utc_now
-from riftx.memory import MemoryRecord, MemoryStatus
+from riftx.memory import (
+    MemoryAuthor,
+    MemoryRecord,
+    MemoryRetrievalScope,
+    MemoryScope,
+    MemoryScopeType,
+    MemoryStatus,
+    MemoryType,
+)
 
-from .orm import MemoryRecordRow
+from .orm import MemoryRecordRow, RunRecord
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -33,6 +43,17 @@ class SQLAlchemyMemoryRepository:
             record = await session.get(MemoryRecordRow, memory_id)
         return _from_record(record) if record is not None else None
 
+    async def get_scope(self, memory_id: str) -> MemoryScope | None:
+        statement = select(
+            MemoryRecordRow.scope_type,
+            MemoryRecordRow.scope_id,
+        ).where(MemoryRecordRow.id == memory_id)
+        async with self._session_factory() as session:
+            row = (await session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        return MemoryScope(scope_type=row.scope_type, scope_id=row.scope_id)
+
     async def save(self, memory: MemoryRecord) -> MemoryRecord:
         memory.updated_at = utc_now()
         async with self._session_factory() as session, session.begin():
@@ -44,12 +65,44 @@ class SQLAlchemyMemoryRepository:
         return memory
 
     async def list_all(self) -> list[MemoryRecord]:
-        statement = select(MemoryRecordRow).order_by(
-            MemoryRecordRow.pinned.desc(),
-            MemoryRecordRow.importance.desc(),
-            MemoryRecordRow.updated_at.desc(),
-            MemoryRecordRow.id,
+        general_run_scope = exists(
+            select(RunRecord.id).where(
+                RunRecord.id == MemoryRecordRow.scope_id,
+                RunRecord.kind == RunKind.GENERAL.value,
+            )
         )
+        statement = _ordered_memories().where(
+            or_(
+                MemoryRecordRow.scope_type != MemoryScopeType.RUN.value,
+                general_run_scope,
+            )
+        )
+        return await self._load(statement)
+
+    async def list_scope(
+        self,
+        scope_type: MemoryScopeType,
+        scope_id: str,
+    ) -> list[MemoryRecord]:
+        statement = _ordered_memories().where(
+            MemoryRecordRow.scope_type == scope_type.value,
+            MemoryRecordRow.scope_id == scope_id,
+        )
+        return await self._load(statement)
+
+    async def list_for_retrieval_scope(
+        self,
+        scope: MemoryRetrievalScope,
+    ) -> list[MemoryRecord]:
+        predicates = _retrieval_scope_predicates(scope)
+        if not predicates:
+            return []
+        return await self._load(_ordered_memories().where(or_(*predicates)))
+
+    async def _load(
+        self,
+        statement: Select[tuple[MemoryRecordRow]],
+    ) -> list[MemoryRecord]:
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
         return [_from_record(record) for record in records]
@@ -131,8 +184,8 @@ def _apply(memory: MemoryRecord, record: MemoryRecordRow) -> None:
 def _from_record(record: MemoryRecordRow) -> MemoryRecord:
     return MemoryRecord(
         id=record.id,
-        memory_type=record.memory_type,
-        scope_type=record.scope_type,
+        memory_type=MemoryType(record.memory_type),
+        scope_type=MemoryScopeType(record.scope_type),
         scope_id=record.scope_id,
         title=record.title,
         content=record.content,
@@ -144,9 +197,53 @@ def _from_record(record: MemoryRecordRow) -> MemoryRecord:
         valid_from=record.valid_from,
         valid_until=record.valid_until,
         supersedes=record.supersedes,
-        status=record.status,
+        status=MemoryStatus(record.status),
         pinned=record.pinned,
-        created_by=record.created_by,
+        created_by=MemoryAuthor(record.created_by),
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+def _ordered_memories():
+    return select(MemoryRecordRow).order_by(
+        MemoryRecordRow.pinned.desc(),
+        MemoryRecordRow.importance.desc(),
+        MemoryRecordRow.updated_at.desc(),
+        MemoryRecordRow.id,
+    )
+
+
+def _retrieval_scope_predicates(
+    scope: MemoryRetrievalScope,
+) -> list[ColumnElement[bool]]:
+    predicates: list[ColumnElement[bool]] = []
+    singular = (
+        (MemoryScopeType.USER, scope.user_id),
+        (MemoryScopeType.NODE, scope.node_id),
+        (MemoryScopeType.WORKSPACE, scope.workspace_id),
+        (MemoryScopeType.RUN, scope.run_id),
+        (MemoryScopeType.ENGAGEMENT, scope.engagement_id),
+    )
+    for scope_type, scope_id in singular:
+        if scope_id is not None:
+            predicates.append(
+                and_(
+                    MemoryRecordRow.scope_type == scope_type.value,
+                    MemoryRecordRow.scope_id == scope_id,
+                )
+            )
+    plural = (
+        (MemoryScopeType.ASSET, scope.asset_ids),
+        (MemoryScopeType.TOOL, scope.tool_ids),
+        (MemoryScopeType.SKILL, scope.skill_ids),
+    )
+    for scope_type, scope_ids in plural:
+        if scope_ids:
+            predicates.append(
+                and_(
+                    MemoryRecordRow.scope_type == scope_type.value,
+                    MemoryRecordRow.scope_id.in_(scope_ids),
+                )
+            )
+    return predicates

@@ -61,6 +61,7 @@ async def context_harness(tmp_path: Path) -> AsyncIterator[ContextHarness]:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="local",
@@ -226,6 +227,19 @@ async def test_context_inspector_api_and_cli_output(
             actual_output_tokens=4,
         )
     )
+    runs = SQLAlchemyRunRepository(context_harness.database.session_factory)
+
+    class _RunReads:
+        async def resolve_kind(self, run_id: str):
+            kind = await runs.get_kind(run_id)
+            assert kind is not None
+            return kind
+
+        async def get_run(self, run_id: str):
+            run = await runs.get(run_id)
+            assert run is not None
+            return run
+
     control_plane = SimpleNamespace(
         settings=APISettings(
             trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
@@ -234,6 +248,8 @@ async def test_context_inspector_api_and_cli_output(
             web_dist_path=tmp_path / "missing-web",
         ),
         context_service=context_harness.service,
+        run_service=_RunReads(),
+        audit_service=object(),
     )
     with TestClient(
         create_app(control_plane=control_plane),

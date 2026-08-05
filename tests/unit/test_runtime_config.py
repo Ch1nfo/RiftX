@@ -95,6 +95,7 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert settings.workspace_root == Path("runs")
     assert settings.runner_state_path == Path("state")
     assert config.runner.credential_path == Path("private/runner-credentials.json")
+    assert settings.runner_credential_path == Path("private/runner-credentials.json")
     assert settings.temporal_address == "temporal.test:7233"
     assert settings.temporal_tls_enabled is True
     assert settings.temporal_tls_server_root_ca_path == Path("tls/server-ca.pem")
@@ -156,6 +157,7 @@ def test_runner_bootstrap_canary_reaches_auth_boundary_without_repr_or_error_lea
         commands=object(),  # type: ignore[arg-type]
         nodes=object(),  # type: ignore[arg-type]
         executions=object(),  # type: ignore[arg-type]
+        runs=object(),  # type: ignore[arg-type]
         paths=RunnerPaths(tmp_path / "runner"),
         registration_token=settings.runner_registration_token,
     )
@@ -182,6 +184,7 @@ def test_runner_bootstrap_canary_reaches_auth_boundary_without_repr_or_error_lea
             commands=object(),  # type: ignore[arg-type]
             nodes=object(),  # type: ignore[arg-type]
             executions=object(),  # type: ignore[arg-type]
+            runs=object(),  # type: ignore[arg-type]
             paths=RunnerPaths(tmp_path / "weak-runner"),
             registration_token="weak-bootstrap-token",
         )
@@ -314,6 +317,21 @@ def test_plaintext_admin_token_is_rejected_from_yaml(tmp_path: Path) -> None:
     write_yaml(config_path, {"security": {"admin_token": "do-not-store-this"}})
 
     with pytest.raises(RiftXConfigError, match="secret field 'admin_token'"):
+        load_riftx_config(
+            system_path=tmp_path / "missing-system.yaml",
+            user_path=tmp_path / "missing-user.yaml",
+            explicit_path=config_path,
+            environment={},
+        )
+
+
+def test_plaintext_audit_preflight_token_key_is_rejected_from_yaml(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    write_yaml(config_path, {"audit": {"preflight_token_key": "A" * 43}})
+
+    with pytest.raises(RiftXConfigError, match="secret field 'preflight_token_key'"):
         load_riftx_config(
             system_path=tmp_path / "missing-system.yaml",
             user_path=tmp_path / "missing-user.yaml",

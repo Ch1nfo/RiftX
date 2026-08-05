@@ -57,6 +57,8 @@ class TerminalController(Protocol):
 
     async def get(self, session_id: str) -> TerminalSession: ...
 
+    async def resolve_run_id(self, session_id: str) -> str: ...
+
     async def get_execution(self, session_id: str) -> Execution: ...
 
     async def read(
@@ -173,6 +175,10 @@ class TerminalSupervisor:
             attempt_group=request.attempt_group,
             node_id=request.node_id,
             owner=request.runner_principal,
+            runner_command_id=request.runner_command_id,
+            runner_effect_binding_id=request.runner_effect_binding_id,
+            runner_binding_digest=request.runner_binding_digest,
+            runner_envelope_digest=request.runner_envelope_digest,
             executor_type=ExecutorType.PTY,
             argv=request.argv,
             tool_id=request.tool_id,
@@ -590,6 +596,25 @@ class TerminalSupervisor:
             ("cwd", execution.cwd, str(request.cwd)),
             ("env", execution.env_diff, request.env),
         )
+        if request.runner_command_id is not None:
+            fields += (
+                ("runner_command_id", execution.runner_command_id, request.runner_command_id),
+                (
+                    "runner_effect_binding_id",
+                    execution.runner_effect_binding_id,
+                    request.runner_effect_binding_id,
+                ),
+                (
+                    "runner_binding_digest",
+                    execution.runner_binding_digest,
+                    request.runner_binding_digest,
+                ),
+                (
+                    "runner_envelope_digest",
+                    execution.runner_envelope_digest,
+                    request.runner_envelope_digest,
+                ),
+            )
         mismatched = [name for name, persisted, requested in fields if persisted != requested]
         if (
             execution.launch_fingerprint is not None
@@ -807,6 +832,12 @@ class TerminalSupervisor:
         if terminal is None:
             raise EntityNotFoundError("Terminal Session", session_id)
         return terminal
+
+    async def resolve_run_id(self, session_id: str) -> str:
+        run_id = await self._terminals.get_run_id(session_id)
+        if run_id is None:
+            raise EntityNotFoundError("Terminal Session", session_id)
+        return run_id
 
     async def get_execution(self, session_id: str) -> Execution:
         terminal = await self.get(session_id)

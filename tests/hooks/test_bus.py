@@ -171,6 +171,7 @@ async def test_hook_audit_sink_persists_digest_and_modified_fields(tmp_path) -> 
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",

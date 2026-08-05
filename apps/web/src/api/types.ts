@@ -16,6 +16,8 @@ export type RunStatus =
   | "cancelling"
   | "cancelled";
 
+export type RunKind = "general" | "code_audit";
+
 export type ApprovalMode = "auto" | "balanced" | "manual";
 
 export interface Objective {
@@ -52,6 +54,7 @@ export interface Run {
   success_criteria: SuccessCriterion[];
   entry_points: EntryPoint[];
   scope: RunScope;
+  kind: RunKind;
   status: RunStatus;
   approval_mode: ApprovalMode;
   model_profile: string | null;
@@ -82,6 +85,70 @@ export interface CreateRunPayload {
     description?: string;
     authorization_reference?: string;
   };
+}
+
+export type LocalAuditStatus =
+  | "draft"
+  | "queued"
+  | "scanning"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface LocalAuditJob {
+  audit_id: string;
+  status: LocalAuditStatus;
+  cancel_requested: boolean;
+  failure_code: string | null;
+  source_identity_digest: string | null;
+  snapshot_digest: string | null;
+  manifest_digest: string | null;
+  inventory_digest: string | null;
+  detector_run_digest: string | null;
+  report_digest: string | null;
+  total_files: number;
+  scanned_files: number;
+  finding_count: number;
+  created_at: string;
+  updated_at: string;
+  queued_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface CreateLocalAuditPayload {
+  source_path: string;
+}
+
+export type LocalAuditFindingSeverity =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low"
+  | "info";
+
+export interface LocalAuditFinding {
+  finding_id: string;
+  rule_id: string;
+  rule_version: string;
+  category: string;
+  title: string;
+  severity: LocalAuditFindingSeverity;
+  confidence: number;
+  relative_path: string;
+  blob_digest: string;
+  line: number;
+  column: number;
+  end_line: number | null;
+  end_column: number | null;
+  evidence_excerpt: string;
+}
+
+export interface LocalAuditFindingList {
+  items: LocalAuditFinding[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export type ModelProviderKind = "openai" | "openai_compatible";

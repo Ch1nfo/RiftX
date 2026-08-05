@@ -18,6 +18,11 @@ class _TargetHttpArtifactAssociationReader(Protocol):
         artifact_ids: Collection[str],
     ) -> frozenset[str]: ...
 
+    async def restricted_artifact_ids(
+        self,
+        artifact_ids: Collection[str],
+    ) -> frozenset[str]: ...
+
 
 class EventApplicationService:
     def __init__(
@@ -56,10 +61,14 @@ class EventApplicationService:
         sensitive_artifact_ids = await self._artifact_associations.target_http_sensitive_ids(
             artifact_ids
         )
+        restricted_artifact_ids = await self._artifact_associations.restricted_artifact_ids(
+            artifact_ids
+        )
         return [
             redact_sensitive_event(
                 event,
                 sensitive_artifact_ids=sensitive_artifact_ids,
+                restricted_artifact_ids=restricted_artifact_ids,
             )
             for event in events
         ]

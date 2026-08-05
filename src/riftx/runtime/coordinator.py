@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from time import monotonic
 from typing import Protocol, cast
 
-from riftx.application.errors import EntityNotFoundError
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
     CreateTerminal,
@@ -178,10 +178,36 @@ class RuntimeCoordinator:
             raise DomainError("Subagent executor is already configured")
         self._subagent_executor = executor
 
+    async def _require_agent_cycle_admission(
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        allow_missing_session: bool = False,
+        activity: bool = False,
+    ) -> tuple[Run, AgentSession | None]:
+        """Prove Session ownership and RunKind before any Runtime side effect."""
+
+        session = await self._sessions.get(session_id)
+        if session is None:
+            if not allow_missing_session:
+                raise EntityNotFoundError("AgentSession", session_id)
+        elif session.run_id != run_id:
+            # Preserve the owner-proof error precedence even for a Code Audit Run.
+            raise EntityNotFoundError("AgentSession", session_id)
+
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        _require_agent_cycle_effect_policy(run, activity=activity)
+        return run, session
+
     async def run_cycle(self, request: RunCycleRequest) -> RunCycleResult:
-        session = await self._sessions.get(request.session_id)
-        if session is None or session.run_id != request.run_id:
-            raise EntityNotFoundError("AgentSession", request.session_id)
+        run, session = await self._require_agent_cycle_admission(
+            request.run_id,
+            request.session_id,
+        )
+        assert session is not None
         if request.subagent_mode and session.parent_session_id is None:
             raise DomainError("Subagent cycle mode requires a child AgentSession")
         if not request.subagent_mode and session.parent_session_id is not None:
@@ -212,9 +238,6 @@ class RuntimeCoordinator:
                             defer_run_completion=request.defer_run_completion,
                         )
                     return completed
-            run = await self._runs.get(request.run_id)
-            if run is None:
-                raise EntityNotFoundError("Run", request.run_id)
             run = await self._ensure_run_running(run)
             await self._ensure_active_session(session)
             has_new_canonical_input = (
@@ -1414,6 +1437,46 @@ class RuntimeCoordinator:
 
     async def _append(self, run_id: str, event_type: str, payload: dict[str, object]) -> None:
         await self._events.append(run_id, event_type, payload)
+
+
+def _require_agent_cycle_effect_policy(run: Run, *, activity: bool) -> None:
+    """Apply the exact Runtime or Activity rule after authoritative Run lookup."""
+
+    # Lazy imports avoid the catalog's managed-entrypoint validation cycle.
+    from riftx.application.run_kind_effects import (
+        EffectMode,
+        EffectOrigin,
+        PolicyDenialReason,
+        RunEffectOwnership,
+        RunKindEffectPolicyDenied,
+        require_run_kind_effect_policy,
+    )
+
+    operation = "activity.agent_cycle" if activity else "runtime.agent_cycle"
+    origin = EffectOrigin.TEMPORAL_ACTIVITY if activity else EffectOrigin.APPLICATION_SERVICE
+    try:
+        require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=RunEffectOwnership(run_id=run.id, run_kind=run.kind),
+            effect="host_execution",
+            mode=EffectMode.NORMAL,
+        )
+    except RunKindEffectPolicyDenied as exc:
+        code = (
+            "run_kind_operation_unsupported"
+            if exc.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED
+            else "run_kind_effect_policy_denied"
+        )
+        raise ApplicationConflictError(
+            code,
+            "The requested Agent Runtime effect is not admitted for this Run owner",
+        ) from None
+    except (TypeError, ValueError):
+        raise ApplicationConflictError(
+            "run_kind_effect_policy_denied",
+            "The requested Agent Runtime effect is not admitted for this Run owner",
+        ) from None
 
 
 def _event_content(data: dict[str, object]) -> str:

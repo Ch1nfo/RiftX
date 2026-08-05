@@ -273,6 +273,7 @@ async def test_conpty_tree_kill_failure_does_not_persist_cancelled_and_can_retry
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-fail-closed",
             engagement_id="engagement-fail-closed",
             node_id="windows-a",
@@ -367,6 +368,7 @@ async def test_terminal_supervisor_uses_conpty_backend_and_preserves_ownership(
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-1",
             engagement_id="engagement-1",
             node_id="windows-a",
@@ -430,6 +432,7 @@ async def test_real_conpty_runs_interactive_powershell_with_utf8(tmp_path: Path)
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
+            kind="general",
             id="run-real",
             engagement_id="engagement-real",
             node_id="windows-real",
