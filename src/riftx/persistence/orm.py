@@ -2470,6 +2470,206 @@ class WorkingMemoryRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
 
 
+class TaskGraphRecord(Base):
+    __tablename__ = "task_graphs"
+    __table_args__ = (CheckConstraint("version >= 1", name="ck_task_graphs_version"),)
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class TaskRecord(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'blocked', 'completed', 'failed', 'cancelled')",
+            name="ck_tasks_status",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_tasks_sequence"),
+        CheckConstraint("version >= 1", name="ck_tasks_version"),
+        CheckConstraint("parent_task_id IS NULL OR parent_task_id <> id", name="ck_tasks_parent"),
+        CheckConstraint(
+            "(status = 'blocked' AND blocked_reason IS NOT NULL) OR status <> 'blocked'",
+            name="ck_tasks_blocked_reason",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND completion_summary IS NOT NULL "
+            "AND completed_at IS NOT NULL) "
+            "OR (status <> 'completed' AND completed_at IS NULL)",
+            name="ck_tasks_completion_shape",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "parent_task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_tasks_run_id_id"),
+        UniqueConstraint("run_id", "sequence", name="uq_tasks_run_sequence"),
+        Index("ix_tasks_run_status_sequence", "run_id", "status", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("task_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    parent_task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    input_scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    expected_output_schema_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    required_capability_ids_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    workspace_owner: Mapped[str | None] = mapped_column(String(128))
+    session_owner_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    stop_condition: Mapped[str | None] = mapped_column(Text)
+    completion_summary: Mapped[str | None] = mapped_column(Text)
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    reopen_history_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class TaskDependencyRecord(Base):
+    __tablename__ = "task_dependencies"
+    __table_args__ = (
+        CheckConstraint("task_id <> depends_on_task_id", name="ck_task_dependencies_not_self"),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "depends_on_task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    depends_on_task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskAttemptRecord(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed', 'cancelled')",
+            name="ck_task_attempts_status",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_task_attempts_sequence"),
+        CheckConstraint(
+            "retry_of_attempt_id IS NULL OR retry_of_attempt_id <> id",
+            name="ck_task_attempts_retry",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND finished_at IS NULL AND failure_summary IS NULL) OR "
+            "(status = 'failed' AND finished_at IS NOT NULL AND failure_summary IS NOT NULL) OR "
+            "(status IN ('succeeded', 'cancelled') AND finished_at IS NOT NULL "
+            "AND failure_summary IS NULL)",
+            name="ck_task_attempts_lifecycle",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id", "retry_of_attempt_id"],
+            ["task_attempts.run_id", "task_attempts.task_id", "task_attempts.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "task_id", "id", name="uq_task_attempts_owner_id"),
+        UniqueConstraint("run_id", "task_id", "sequence", name="uq_task_attempts_owner_sequence"),
+        Index("ix_task_attempts_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    retry_of_attempt_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class TaskBudgetRecord(Base):
+    __tablename__ = "task_budgets"
+    __table_args__ = (
+        CheckConstraint(
+            "max_model_calls IS NOT NULL OR max_tool_calls IS NOT NULL OR "
+            "max_tokens IS NOT NULL OR max_duration_seconds IS NOT NULL",
+            name="ck_task_budgets_nonempty",
+        ),
+        CheckConstraint(
+            "max_model_calls IS NULL OR max_model_calls >= 1",
+            name="ck_task_budgets_model_calls",
+        ),
+        CheckConstraint(
+            "max_tool_calls IS NULL OR max_tool_calls >= 1",
+            name="ck_task_budgets_tool_calls",
+        ),
+        CheckConstraint("max_tokens IS NULL OR max_tokens >= 1", name="ck_task_budgets_tokens"),
+        CheckConstraint(
+            "max_duration_seconds IS NULL OR max_duration_seconds > 0",
+            name="ck_task_budgets_duration",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    max_model_calls: Mapped[int | None] = mapped_column(Integer)
+    max_tool_calls: Mapped[int | None] = mapped_column(Integer)
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    max_duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskEvidenceRequirementRecord(Base):
+    __tablename__ = "task_evidence_requirements"
+    __table_args__ = (
+        CheckConstraint("minimum_count >= 1", name="ck_task_evidence_minimum_count"),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("run_id", "task_id", "id", name="uq_task_evidence_requirements_owner_id"),
+        Index("ix_task_evidence_requirements_run_task", "run_id", "task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    minimum_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class ContextCompilationRecord(Base):
     __tablename__ = "context_compilations"
     __table_args__ = (

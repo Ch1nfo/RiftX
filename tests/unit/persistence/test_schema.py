@@ -134,6 +134,12 @@ EXPECTED_TABLES = {
     "snapshot_mount_stop_proofs",
     "source_references",
     "target_http_requests",
+    "task_attempts",
+    "task_budgets",
+    "task_dependencies",
+    "task_evidence_requirements",
+    "task_graphs",
+    "tasks",
     "terminal_sessions",
     "tool_call_intents",
     "tool_calls",
@@ -496,6 +502,49 @@ def test_working_memory_table_is_versioned_structured_state() -> None:
         "created_at",
         "updated_at",
     }
+
+
+def test_task_graph_schema_separates_topology_attempts_budgets_and_evidence() -> None:
+    assert set(Base.metadata.tables["task_graphs"].columns.keys()) == {
+        "run_id",
+        "version",
+        "created_at",
+        "updated_at",
+    }
+    assert {
+        "run_id",
+        "parent_task_id",
+        "sequence",
+        "status",
+        "input_scope_json",
+        "expected_output_schema_json",
+        "required_capability_ids_json",
+        "workspace_owner",
+        "session_owner_id",
+        "stop_condition",
+        "reopen_history_json",
+        "version",
+    } <= set(Base.metadata.tables["tasks"].columns.keys())
+    assert set(Base.metadata.tables["task_dependencies"].primary_key.columns.keys()) == {
+        "run_id",
+        "task_id",
+        "depends_on_task_id",
+    }
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in Base.metadata.tables["task_attempts"].c.task_id.foreign_keys
+    } == {"tasks.id", "task_attempts.task_id"}
+    assert {
+        constraint.name for constraint in Base.metadata.tables["task_attempts"].constraints
+    } >= {
+        "uq_task_attempts_owner_id",
+        "uq_task_attempts_owner_sequence",
+    }
+    assert set(Base.metadata.tables["task_budgets"].primary_key.columns.keys()) == {
+        "run_id",
+        "task_id",
+    }
+    assert "evidence_refs_json" in Base.metadata.tables["task_evidence_requirements"].columns.keys()
 
 
 def test_long_term_memory_table_tracks_scope_sources_and_lifecycle() -> None:
