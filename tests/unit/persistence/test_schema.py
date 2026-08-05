@@ -8,6 +8,20 @@ from riftx.persistence.audit_static_effect import (
     SnapshotMountPinRecord,
     SnapshotMountStopProofRecord,
 )
+from riftx.persistence.capability_records import (
+    CapabilityCandidateRecord,
+    CapabilityDependencyRecord,
+    CapabilityEvaluationResultRecord,
+    CapabilityEvidenceContractRecord,
+    CapabilityPackInstallRecord,
+    CapabilityPackLockRecord,
+    CapabilityPackMemberRecord,
+    CapabilityPackRecord,
+    CapabilityPermissionRecord,
+    CapabilityPromotionRunRecord,
+    CapabilityRecord,
+    CapabilityVersionRecord,
+)
 from riftx.persistence.orm import Base
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
@@ -17,6 +31,18 @@ assert AuditStaticEffectPlanRecord.__table__.metadata is Base.metadata
 assert SnapshotMountLeaseRecord.__table__.metadata is Base.metadata
 assert SnapshotMountPinRecord.__table__.metadata is Base.metadata
 assert SnapshotMountStopProofRecord.__table__.metadata is Base.metadata
+assert CapabilityRecord.__table__.metadata is Base.metadata
+assert CapabilityVersionRecord.__table__.metadata is Base.metadata
+assert CapabilityDependencyRecord.__table__.metadata is Base.metadata
+assert CapabilityPermissionRecord.__table__.metadata is Base.metadata
+assert CapabilityEvidenceContractRecord.__table__.metadata is Base.metadata
+assert CapabilityCandidateRecord.__table__.metadata is Base.metadata
+assert CapabilityPromotionRunRecord.__table__.metadata is Base.metadata
+assert CapabilityEvaluationResultRecord.__table__.metadata is Base.metadata
+assert CapabilityPackRecord.__table__.metadata is Base.metadata
+assert CapabilityPackMemberRecord.__table__.metadata is Base.metadata
+assert CapabilityPackInstallRecord.__table__.metadata is Base.metadata
+assert CapabilityPackLockRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
@@ -50,6 +76,18 @@ EXPECTED_TABLES = {
     "browser_pages",
     "browser_sessions",
     "browser_takeover_summaries",
+    "capabilities",
+    "capability_candidates",
+    "capability_dependencies",
+    "capability_evaluation_results",
+    "capability_evidence_contracts",
+    "capability_pack_installs",
+    "capability_pack_locks",
+    "capability_pack_members",
+    "capability_packs",
+    "capability_permissions",
+    "capability_promotion_runs",
+    "capability_versions",
     "connector_submissions",
     "context_compilations",
     "context_checkpoints",
@@ -98,6 +136,28 @@ EXPECTED_TABLES = {
 
 def test_metadata_contains_v2_business_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES - {"alembic_version"}
+
+
+def test_capability_schema_separates_candidates_versions_and_locks() -> None:
+    candidates = Base.metadata.tables["capability_candidates"]
+    versions = Base.metadata.tables["capability_versions"]
+    locks = Base.metadata.tables["capability_pack_locks"]
+
+    assert "candidate_digest" in candidates.columns
+    assert "manifest_digest" in versions.columns
+    assert candidates.c.capability_id.foreign_keys == set()
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in candidates.c.promoted_version_id.foreign_keys
+    } == {"capability_versions.id"}
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in locks.c.capability_version_id.foreign_keys
+    } == {"capability_versions.id"}
+    assert {index.name for index in locks.indexes} >= {
+        "ix_capability_pack_locks_owner_active",
+        "ix_capability_pack_locks_version_active",
+    }
 
 
 def test_audit_preflight_plan_table_separates_token_and_lifecycle_facts() -> None:

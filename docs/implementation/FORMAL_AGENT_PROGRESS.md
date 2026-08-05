@@ -8,7 +8,7 @@
 >
 > 计划输入基线：`e40af267`
 >
-> 正式版计划提交：`357ed38e`
+> 正式版计划提交：`84c657e1`
 >
 > 权威计划：[RiftX 正式版开发文档](../../RiftX_正式版_开发文档.md)
 >
@@ -30,7 +30,7 @@
 
 - Stage：`S0 — 规格、基线与评测骨架`
 - Current task：`CAP-001 — Capability Domain 与持久化`
-- Status：`in_progress`
+- Status：`completed`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Product behavior：当前只建立 Capability 权威数据面，不接入生产 Agent 选择或执行。
@@ -41,7 +41,7 @@
 | 输入 | 基线 | 用途 |
 | --- | --- | --- |
 | RiftX | `e40af267` | 正式版计划开始前的产品代码基线 |
-| 正式版计划 | `357ed38e` | S0-S8 权威开发计划 |
+| 正式版计划 | `84c657e1` | S0-S8 权威开发计划及评测定位修订 |
 | LuaN1aoAgent | `51af327c29c2` | Task/Reasoning/Operation Graph、Planner/Executor/Observer |
 | CyberStrikeAI | `f7ba7070ca74` | Tool Search、Progressive Skill、验证与负结果 |
 | OpenAI Codex | `757c151a0e92` | 原生代码工具、Sandbox、Approval、Skill/Plugin/MCP |
@@ -72,7 +72,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Agent 评测命令通过 `conda run --no-capture-output -n agent ...` 执行；
 - 开发集与未公开回归集隔离；
 - 不同 Run 默认不共享 Operator/Organization/Engagement Memory；
-- 外部 Agent 结果是可选参考，不是正式版发布门；
+- 评测只服务于 RiftX 自身的质量、安全和能力演进，不用于量化证明超过通用 Agent；
 - 允许定性复盘与定量指标并存，不强迫所有专业能力压缩成单一分数。
 
 ## 5. 数据迁移顺序
@@ -93,7 +93,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 | Stage | Status | Exit condition |
 | --- | --- | --- |
-| S0 规格、基线与评测骨架 | in_progress | ADR/账本和 Evaluation 骨架完成；Capability Domain foundation 完成 |
+| S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
 | S1 生产 Capability Plane | pending | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
 | S2 认知运行时 | pending | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
@@ -109,7 +109,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | --- | --- | --- | --- |
 | SEC-000 | none | completed | `a15e8e94` |
 | SEC-001 | SEC-000 | completed | `53161141` |
-| CAP-001 | SEC-000 | in_progress | pending |
+| CAP-001 | SEC-000 | completed | pending backfill |
 | CAP-100 | CAP-001 | pending | — |
 | CAP-101 | CAP-001 | pending | — |
 | CAP-102 | CAP-001 | pending | — |
@@ -188,16 +188,28 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### CAP-001：Capability Domain 与持久化
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-05
 - Inputs：ADR-0012、SEC-001、现有 Skill/Tool/Memory/Persistence 结构。
-- Planned delivery slices：
+- Delivery slices：
   1. 领域模型、Canonical Digest、生命周期和 API Schema；
   2. ORM、Repository、Alembic Migration 和兼容性/幂等测试；
   3. Candidate/Active 物理隔离、Pack Lock 和运行中版本保护验收。
 - Product wiring：CAP-100 之前不把新 Registry 接入生产 Worker。
-- Slice 1 status：completed；领域/API 目标测试 `5 passed`。
-- Implementation commits：domain/API pending backfill；persistence pending。
+- Delivered：
+  - 版本化 Capability、Candidate、Promotion、Evaluation、Pack、Install 和 Lock 领域/API 契约；
+  - 12 张 Capability 表、SQLAlchemy Repository 和 Alembic revision `7f2c8a1d4e90`；
+  - Candidate/Version 物理隔离、Canonical Digest、Provenance 和不可覆盖版本；
+  - Pack 精确版本锁定，安装、禁用、回滚和锁释放幂等；
+  - Run Session 活跃锁阻止版本禁用、弃用和归档；
+  - Candidate 只能在候选、Promotion 均获批且 Evaluation 全部通过后原子晋升；
+  - 跨多级 downgrade 在删除 Capability DDL 前先检查 Capability 及历史权威事实。
+- Checks：
+  - `conda run --no-capture-output -n agent ruff check ...`：passed。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/capabilities tests/unit/persistence/test_schema.py tests/integration/persistence/test_capability_repository.py tests/integration/persistence/test_capability_migration.py tests/docs/test_formal_agent_docs.py`：`35 passed`。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/persistence tests/integration/persistence`：`504 passed, 10 warnings`；警告为 Python 3.12 SQLite datetime adapter 弃用提示。
+  - `git diff --check`：passed。
+- Implementation commits：domain/API `0fd20fda`；persistence pending backfill。
 
 ## 9. Known pre-existing worktree state
 

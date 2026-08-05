@@ -210,6 +210,20 @@ def _load_additive_metadata_models() -> None:
         SnapshotMountPinRecord,
         SnapshotMountStopProofRecord,
     )
+    from .capability_records import (  # noqa: PLC0415
+        CapabilityCandidateRecord,
+        CapabilityDependencyRecord,
+        CapabilityEvaluationResultRecord,
+        CapabilityEvidenceContractRecord,
+        CapabilityPackInstallRecord,
+        CapabilityPackLockRecord,
+        CapabilityPackMemberRecord,
+        CapabilityPackRecord,
+        CapabilityPermissionRecord,
+        CapabilityPromotionRunRecord,
+        CapabilityRecord,
+        CapabilityVersionRecord,
+    )
     from .workflow_signals import WorkflowSignalIntentRecord  # noqa: PLC0415
 
     assert AuditPreflightJobRecord.__tablename__ in Base.metadata.tables
@@ -218,4 +232,16 @@ def _load_additive_metadata_models() -> None:
     assert SnapshotMountLeaseRecord.__tablename__ in Base.metadata.tables
     assert SnapshotMountPinRecord.__tablename__ in Base.metadata.tables
     assert SnapshotMountStopProofRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityVersionRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityDependencyRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPermissionRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityEvidenceContractRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityCandidateRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPromotionRunRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityEvaluationResultRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPackRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPackMemberRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPackInstallRecord.__tablename__ in Base.metadata.tables
+    assert CapabilityPackLockRecord.__tablename__ in Base.metadata.tables
     assert WorkflowSignalIntentRecord.__tablename__ in Base.metadata.tables

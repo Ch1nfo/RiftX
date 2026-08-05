@@ -36,6 +36,7 @@ from .audit_uow import (
     SQLAlchemyAuditCreationUnitOfWork,
 )
 from .browser_repositories import SQLAlchemyBrowserRepository
+from .capability_repository import SQLAlchemyCapabilityRepository
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
 from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
@@ -90,6 +91,7 @@ __all__ = [
     "SQLAlchemyAgentSessionRepository",
     "SQLAlchemyAgentStepRepository",
     "SQLAlchemyBrowserRepository",
+    "SQLAlchemyCapabilityRepository",
     "SQLAlchemyConnectorSubmissionRepository",
     "Base",
     "Database",
