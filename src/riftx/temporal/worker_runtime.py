@@ -869,7 +869,11 @@ async def build_temporal_worker(
             max_artifact_bytes=config.audit.max_artifact_bytes,
             audit_repository=audit_aggregate_repository,
         )
-        web_artifact_store = ApplicationWebArtifactStore(artifact_service)
+        web_artifact_store = ApplicationWebArtifactStore(
+            artifact_service,
+            runs=run_repository,
+            audits=audit_aggregate_repository,
+        )
         web_research_repository = SQLAlchemyWebResearchRepository(database.session_factory)
         web_fetcher = PublicWebFetcher(
             runs=run_repository,

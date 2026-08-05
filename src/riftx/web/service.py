@@ -19,7 +19,6 @@ from riftx.application.run_kind_effects import (
     RunEffectOperation,
 )
 from riftx.application.services.runs import (
-    require_general_run_operation,
     require_run_kind_effect_operation,
 )
 from riftx.config import WebSearchConfig
@@ -273,7 +272,6 @@ class WebResearchApplicationService:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        require_general_run_operation(run)
         require_run_kind_effect_operation(
             run,
             operation=operation,

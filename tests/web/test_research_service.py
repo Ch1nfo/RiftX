@@ -144,23 +144,30 @@ class FakeFetcher:
         )
 
 
-def run(*, status: RunStatus = RunStatus.RUNNING) -> Run:
+def run(
+    *,
+    status: RunStatus = RunStatus.RUNNING,
+    kind: RunKind = RunKind.GENERAL,
+) -> Run:
     return Run(
         id="run-1",
         engagement_id="engagement-1",
         node_id="local",
         objective=Objective(description="Research public evidence"),
-        kind=RunKind.GENERAL,
+        kind=kind,
         status=status,
         model_profile="profile-1",
         workspace_path="/workspace",
     )
 
 
-async def test_application_search_is_run_guarded_recorded_and_untrusted() -> None:
+@pytest.mark.parametrize("kind", [RunKind.GENERAL, RunKind.CODE_AUDIT])
+async def test_application_search_is_run_guarded_recorded_and_untrusted(
+    kind: RunKind,
+) -> None:
     provider = StaticProvider()
     recorder = FakeRecorder()
-    runs = FakeRuns(run())
+    runs = FakeRuns(run(kind=kind))
     service = WebResearchApplicationService(
         runs=runs,
         providers=StaticResolver(provider),  # type: ignore[arg-type]
@@ -204,11 +211,14 @@ async def test_application_search_rechecks_run_before_each_provider_effect() -> 
     assert provider.calls == []
 
 
-async def test_application_research_promotes_only_fetched_canonical_sources() -> None:
+@pytest.mark.parametrize("kind", [RunKind.GENERAL, RunKind.CODE_AUDIT])
+async def test_application_research_promotes_only_fetched_canonical_sources(
+    kind: RunKind,
+) -> None:
     provider = StaticProvider()
     recorder = FakeRecorder()
     service = WebResearchApplicationService(
-        runs=FakeRuns(run()),
+        runs=FakeRuns(run(kind=kind)),
         providers=StaticResolver(provider),  # type: ignore[arg-type]
         fetcher=FakeFetcher(),  # type: ignore[arg-type]
         recorder=recorder,  # type: ignore[arg-type]

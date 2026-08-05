@@ -1306,6 +1306,25 @@ def test_managed_service_callback_and_reconciler_inventory_is_registered() -> No
         assert (entrypoint.operation, entrypoint.origin) in RUN_KIND_EFFECT_POLICIES
 
 
+def test_public_web_services_allow_code_audit_without_widening_target_or_browser() -> None:
+    for operation in (
+        RunEffectOperation.SERVICE_WEB_FETCH,
+        RunEffectOperation.SERVICE_WEB_SEARCH,
+        RunEffectOperation.SERVICE_WEB_RESEARCH,
+    ):
+        policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
+        assert policy.allowed_run_kinds == frozenset(RunKind)
+        assert policy.required_effect is OperationEffect.HOST_EXECUTION
+        assert policy.effect_mode is EffectMode.NORMAL
+
+    for operation in (
+        RunEffectOperation.SERVICE_BROWSER_OPEN,
+        RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
+    ):
+        policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
+        assert policy.allowed_run_kinds == frozenset({RunKind.GENERAL})
+
+
 def test_workflow_signal_outbox_inventory_covers_every_managed_boundary() -> None:
     expected = {
         (

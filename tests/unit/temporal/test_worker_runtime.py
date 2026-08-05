@@ -140,7 +140,28 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         )
         return fake_worker
 
+    real_web_artifact_store = worker_runtime.ApplicationWebArtifactStore
+
+    def capture_web_artifact_store(
+        service: object,
+        *,
+        runs: object,
+        audits: object,
+    ) -> object:
+        captured["web_artifact_runs"] = runs
+        captured["web_artifact_audits"] = audits
+        return real_web_artifact_store(  # type: ignore[arg-type]
+            service,
+            runs=runs,
+            audits=audits,
+        )
+
     monkeypatch.setattr(worker_runtime, "create_worker", fake_create_worker)
+    monkeypatch.setattr(
+        worker_runtime,
+        "ApplicationWebArtifactStore",
+        capture_web_artifact_store,
+    )
     temporal_client = object()
     config = runtime_config(tmp_path)
 
@@ -161,6 +182,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert captured["runtime_cycle_activities"] is not None
     assert len(captured["runtime_cycle_activities"].registered()) == 1
     assert runtime.run_repository is not None
+    assert captured["web_artifact_runs"] is runtime.run_repository
+    assert captured["web_artifact_audits"] is not None
     assert runtime.safety_stopper is not None
     assert runtime.runner_control_service is not None
     process_executor = runtime.process_supervisor._process_executor

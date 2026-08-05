@@ -14,20 +14,34 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryIntegrityError,
+    RepositoryUnavailableError,
+    ServiceUnavailableError,
+    resource_not_accessible,
+)
+from riftx.application.ports import AuditAggregateReadRepository, AuditAuthorizationBinding
+from riftx.application.run_kind_effects import (
+    EffectMode,
+    EffectOrigin,
+    OperationEffect,
+    RunEffectOperation,
+)
 from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_run_kind_effect_operation
 from riftx.context.token_counter import estimate_context_tokens
-from riftx.domain import ArtifactContentTrust, Run, RunStatus
+from riftx.domain import ArtifactContentTrust, Run, RunKind, RunStatus
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -95,8 +109,16 @@ class RunRepository(Protocol):
 class ApplicationWebArtifactStore:
     """Save web payloads through RiftX's immutable Run Artifact service."""
 
-    def __init__(self, service: ArtifactApplicationService) -> None:
+    def __init__(
+        self,
+        service: ArtifactApplicationService,
+        *,
+        runs: RunRepository,
+        audits: AuditAggregateReadRepository,
+    ) -> None:
         self._service = service
+        self._runs = runs
+        self._audits = audits
 
     async def save(
         self,
@@ -107,15 +129,56 @@ class ApplicationWebArtifactStore:
         content: bytes,
         description: str,
     ) -> str:
-        artifact = await self._service.register_content(
-            run_id,
-            RegisterArtifactContent(
-                content=content,
-                name=name,
-                mime_type=mime_type,
-                description=description,
-                content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
-            ),
+        command = RegisterArtifactContent(
+            content=content,
+            name=name,
+            mime_type=mime_type,
+            description=description,
+            content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
+        )
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.kind is RunKind.GENERAL:
+            artifact = await self._service.register_content(run_id, command)
+            return artifact.id
+        if run.kind is not RunKind.CODE_AUDIT:
+            raise resource_not_accessible()
+
+        audit_id: str | None = None
+
+        def authorize(binding: AuditAuthorizationBinding) -> None:
+            nonlocal audit_id
+            if (
+                binding.requested_audit_id != binding.audit_id
+                or binding.scan_run_id != run.id
+                or binding.run_id != run.id
+                or binding.run_kind != RunKind.CODE_AUDIT.value
+            ):
+                raise resource_not_accessible()
+            audit_id = binding.audit_id
+
+        try:
+            aggregate = await self._audits.get_by_run_authorized(
+                run.id,
+                authorize=authorize,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise ServiceUnavailableError(
+                "web_artifact_owner_unavailable",
+                "Code Audit Web Artifact ownership is temporarily unavailable",
+            ) from None
+        if (
+            aggregate is None
+            or audit_id is None
+            or aggregate.audit.value.id != audit_id
+            or aggregate.run.id != run.id
+        ):
+            raise resource_not_accessible()
+        artifact = await self._service.register_audit_content(
+            audit_id,
+            run.id,
+            command,
         )
         return artifact.id
 
@@ -353,7 +416,13 @@ class PublicWebFetcher:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        require_general_run_operation(run)
+        require_run_kind_effect_operation(
+            run,
+            operation=RunEffectOperation.SERVICE_WEB_FETCH,
+            origin=EffectOrigin.APPLICATION_SERVICE,
+            effect=OperationEffect.HOST_EXECUTION,
+            mode=EffectMode.NORMAL,
+        )
         if run.status in _WEB_EFFECT_BLOCKED_RUN_STATUSES:
             raise ApplicationConflictError(
                 "run_web_fetch_blocked",
@@ -392,7 +461,7 @@ async def _resolve_host(host: str, port: int) -> Sequence[str]:
         records = await asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise PublicDestinationError(f"could not resolve public destination {host!r}") from exc
-    return list(dict.fromkeys(record[4][0] for record in records))
+    return list(dict.fromkeys(cast(str, record[4][0]) for record in records))
 
 
 def normalize_public_url(value: str) -> str:
