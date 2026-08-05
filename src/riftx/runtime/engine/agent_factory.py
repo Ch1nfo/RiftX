@@ -42,6 +42,8 @@ _CONTROL_TOOL_NAMES = {
     "act_browser",
     "close_browser",
     "web_fetch",
+    "web_search",
+    "web_research",
     "get_execution",
     "wait_execution",
     "cancel_execution",
@@ -59,6 +61,7 @@ class RuntimeToolScope:
     run_id: str
     session_id: str
     agent_id: str
+    model_profile: str
 
 
 ControlToolHandler = Callable[[RuntimeToolScope, str, dict[str, object], str], Awaitable[object]]
@@ -222,4 +225,5 @@ def _runtime_tool_scope(request: AgentEngineRequest) -> RuntimeToolScope:
         run_id=run_id,
         session_id=request.session_id,
         agent_id=agent_id,
+        model_profile=request.model,
     )

@@ -34,6 +34,13 @@ from riftx.web import (
     FetchResult,
     PublicWebFetcher,
     RedirectPolicy,
+    ResearchRequest,
+    SearchFreshness,
+    SearchRequest,
+    SearchResponse,
+    SearchType,
+    WebResearchApplicationService,
+    WebResearchPacket,
 )
 
 _MAX_CONTROL_RESULT_BYTES = 256 * 1024
@@ -263,6 +270,28 @@ class _WebFetchArguments(_Arguments):
     use_browser_fallback: bool = True
 
 
+class _WebSearchArguments(_Arguments):
+    query: str = Field(min_length=1, max_length=2_000)
+    max_results: int = Field(default=10, ge=1, le=20)
+    freshness: SearchFreshness | None = None
+    allowed_domains: list[str] = Field(default_factory=list, max_length=20)
+    blocked_domains: list[str] = Field(default_factory=list, max_length=20)
+    language: str | None = Field(default=None, max_length=32)
+    region: str | None = Field(default=None, max_length=32)
+    search_type: SearchType = SearchType.GENERAL
+
+
+class _WebResearchArguments(_Arguments):
+    question: str = Field(min_length=1, max_length=4_000)
+    search_type: SearchType = SearchType.GENERAL
+    allowed_domains: list[str] = Field(default_factory=list, max_length=20)
+    blocked_domains: list[str] = Field(default_factory=list, max_length=20)
+    max_queries: int = Field(default=4, ge=1, le=4)
+    max_results_per_query: int = Field(default=10, ge=1, le=20)
+    max_total_results: int = Field(default=30, ge=1, le=50)
+    max_sources: int = Field(default=6, ge=1, le=6)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -301,6 +330,7 @@ class RuntimeControlToolService:
         git: GitWorkspaceService | None = None,
         browser: BrowserApplicationService | None = None,
         web_fetcher: PublicWebFetcher | None = None,
+        web_research: WebResearchApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
@@ -313,6 +343,7 @@ class RuntimeControlToolService:
         self._git = git
         self._browser = browser
         self._web_fetcher = web_fetcher
+        self._web_research = web_research
         self._control_intents = control_intents
 
     async def __call__(
@@ -750,6 +781,46 @@ class RuntimeControlToolService:
                     ),
                 )
             )
+        if tool_name == "web_search":
+            research = self._require_web_research()
+            web_search_arguments = _WebSearchArguments.model_validate(raw_arguments)
+            return _web_search_payload(
+                await research.search(
+                    scope.run_id,
+                    scope.session_id,
+                    scope.model_profile,
+                    SearchRequest(
+                        query=web_search_arguments.query,
+                        max_results=web_search_arguments.max_results,
+                        freshness=web_search_arguments.freshness,
+                        allowed_domains=web_search_arguments.allowed_domains,
+                        blocked_domains=web_search_arguments.blocked_domains,
+                        language=web_search_arguments.language,
+                        region=web_search_arguments.region,
+                        search_type=web_search_arguments.search_type,
+                    ),
+                )
+            )
+        if tool_name == "web_research":
+            research = self._require_web_research()
+            research_arguments = _WebResearchArguments.model_validate(raw_arguments)
+            return _web_research_payload(
+                await research.research(
+                    ResearchRequest(
+                        run_id=scope.run_id,
+                        session_id=scope.session_id,
+                        question=research_arguments.question,
+                        search_type=research_arguments.search_type,
+                        allowed_domains=research_arguments.allowed_domains,
+                        blocked_domains=research_arguments.blocked_domains,
+                        max_queries=research_arguments.max_queries,
+                        max_results_per_query=research_arguments.max_results_per_query,
+                        max_total_results=research_arguments.max_total_results,
+                        max_sources=research_arguments.max_sources,
+                    ),
+                    model_profile=scope.model_profile,
+                )
+            )
         if tool_name == "git_status":
             git = self._require_git()
             git_arguments = _GitStatusArguments.model_validate(raw_arguments)
@@ -906,6 +977,11 @@ class RuntimeControlToolService:
         if self._web_fetcher is None:
             raise RuntimeError("Public Web Fetch service is not configured")
         return self._web_fetcher
+
+    def _require_web_research(self) -> WebResearchApplicationService:
+        if self._web_research is None:
+            raise RuntimeError("Web Search and Research service is not configured")
+        return self._web_research
 
     async def _require_browser_scope(
         self,
@@ -1187,6 +1263,68 @@ def _web_fetch_payload(result: FetchResult) -> dict[str, object]:
     }
 
 
+def _web_search_payload(response: SearchResponse) -> dict[str, object]:
+    return {
+        "query_id": response.query_id,
+        "provider": response.provider,
+        "query": response.request.query,
+        "search_type": response.request.search_type.value,
+        "artifact_id": response.artifact_id,
+        "warnings": [_truncated(item, 500) for item in response.warnings[:16]],
+        "content_trust": response.content_trust,
+        "candidate_status": "DISCOVERY_ONLY_NOT_A_CANONICAL_SOURCE",
+        "results": [
+            {
+                "id": result.id,
+                "title": _truncated(result.title, 1_000),
+                "url": _truncated(str(result.url), 8_192),
+                "normalized_url": _truncated(result.normalized_url, 8_192),
+                "snippet": _truncated(result.snippet, 6_000),
+                "domain": result.domain,
+                "published_at": (
+                    result.published_at.isoformat() if result.published_at is not None else None
+                ),
+                "provider": result.provider,
+                "provider_rank": result.provider_rank,
+            }
+            for result in response.results[:20]
+        ],
+        "results_truncated": len(response.results) > 20,
+    }
+
+
+def _web_research_payload(packet: WebResearchPacket) -> dict[str, object]:
+    return {
+        "packet_id": packet.id,
+        "question": packet.question,
+        "summary": packet.summary[:4_000],
+        "key_claims": [claim.model_dump(mode="json") for claim in packet.key_claims[:6]],
+        "sources": [
+            {
+                "id": source.id,
+                "document_id": source.document_id,
+                "url": _truncated(source.url, 8_192),
+                "title": _truncated(source.title, 1_000),
+                "domain": source.domain,
+                "published_at": (
+                    source.published_at.isoformat() if source.published_at is not None else None
+                ),
+                "fetched_at": source.fetched_at.isoformat(),
+                "content_hash": source.content_hash,
+            }
+            for source in packet.sources[:6]
+        ],
+        "unresolved_questions": [
+            _truncated(item, 1_000) for item in packet.unresolved_questions[:16]
+        ],
+        "search_query_ids": packet.search_query_ids,
+        "document_ids": packet.document_ids,
+        "artifact_ids": packet.artifact_ids,
+        "canonical_sources_only": True,
+        "content_trust": packet.content_trust,
+    }
+
+
 def _result_artifact_ids(result: object) -> list[str]:
     artifact_ids: list[str] = []
 
@@ -1195,6 +1333,10 @@ def _result_artifact_ids(result: object) -> list[str]:
             for key, item in value.items():
                 if key.endswith("artifact_id") and isinstance(item, str) and item:
                     artifact_ids.append(item)
+                elif key.endswith("artifact_ids") and isinstance(item, list):
+                    artifact_ids.extend(
+                        value for value in item if isinstance(value, str) and value
+                    )
                 else:
                     collect(item)
         elif isinstance(value, list):
@@ -1215,14 +1357,27 @@ def _source_refs(
     *,
     result: object | None = None,
 ) -> list[str]:
-    if tool_name == "web_fetch" and isinstance(result, dict):
+    if tool_name in {"web_fetch", "web_search", "web_research"} and isinstance(
+        result, dict
+    ):
         refs: list[str] = []
+        if tool_name == "web_search" and isinstance(result.get("query_id"), str):
+            refs.append(f"web-search://{result['query_id']}")
+        if tool_name == "web_research" and isinstance(result.get("packet_id"), str):
+            refs.append(f"web-research://{result['packet_id']}")
         document = result.get("document")
         if isinstance(document, dict) and isinstance(document.get("id"), str):
             refs.append(f"web-document://{document['id']}")
         source = result.get("source")
         if isinstance(source, dict) and isinstance(source.get("id"), str):
             refs.append(f"web-source://{source['id']}")
+        sources = result.get("sources")
+        if isinstance(sources, list):
+            refs.extend(
+                f"web-source://{item['id']}"
+                for item in sources
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            )
         refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
         if refs:
             return list(dict.fromkeys(refs))

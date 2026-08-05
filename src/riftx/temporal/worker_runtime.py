@@ -115,6 +115,7 @@ from riftx.persistence.context_repositories import SQLAlchemyContextCompilationR
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
 from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
+from riftx.persistence.web_research_repositories import SQLAlchemyWebResearchRepository
 from riftx.persistence.workflow_signals import (
     SQLAlchemyWorkflowSignalIntentRepository,
 )
@@ -148,7 +149,13 @@ from riftx.subagents import (
 )
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
-from riftx.web import ApplicationWebArtifactStore, PublicWebFetcher
+from riftx.web import (
+    ApplicationWebArtifactStore,
+    ArtifactBackedResearchRecorder,
+    ConfiguredSearchProviderResolver,
+    PublicWebFetcher,
+    WebResearchApplicationService,
+)
 
 from .activities import RiftXActivities
 from .connection import TemporalConnectionSettings, connect_temporal
@@ -858,10 +865,12 @@ async def build_temporal_worker(
             max_artifact_bytes=config.audit.max_artifact_bytes,
             audit_repository=audit_aggregate_repository,
         )
+        web_artifact_store = ApplicationWebArtifactStore(artifact_service)
+        web_research_repository = SQLAlchemyWebResearchRepository(database.session_factory)
         web_fetcher = PublicWebFetcher(
             runs=run_repository,
             sources=SQLAlchemyWebSourceRepository(database.session_factory),
-            artifacts=ApplicationWebArtifactStore(artifact_service),
+            artifacts=web_artifact_store,
         )
         browser_manager = RunnerBrowserManager(
             node_id=config.runner.node_id,
@@ -1005,6 +1014,18 @@ async def build_temporal_worker(
             override=config.models.profile,
         )
         model_provider = RiftXModelProvider(model_registry)
+        web_research_service = WebResearchApplicationService(
+            runs=run_repository,
+            providers=ConfiguredSearchProviderResolver(
+                config.web.search,
+                model_provider,
+            ),
+            fetcher=web_fetcher,
+            recorder=ArtifactBackedResearchRecorder(
+                web_research_repository,
+                web_artifact_store,
+            ),
+        )
         agent_services = AgentRuntimeServices(
             tool_registry=registry,
             skill_registry=skill_registry,
@@ -1068,6 +1089,7 @@ async def build_temporal_worker(
             git=git_workspace,
             browser=browser_service,
             web_fetcher=web_fetcher,
+            web_research=web_research_service,
             control_intents=deferred_dispatcher,
         )
         runtime_coordinator = RuntimeCoordinator(

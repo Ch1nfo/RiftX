@@ -254,6 +254,8 @@ async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> N
         "act_browser",
         "close_browser",
         "web_fetch",
+        "web_search",
+        "web_research",
     }.isdisjoint(production_subagent.always_visible_tools)
 
 

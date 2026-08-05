@@ -88,6 +88,8 @@ async def test_search_note_and_packet_round_trip(tmp_path: Path) -> None:
         query_id="query-1",
         provider="test",
         request=search_request,
+        warnings=["secondary provider unavailable"],
+        artifact_id="artifact-search-1",
         results=[
             SearchResult(
                 id="result-1",

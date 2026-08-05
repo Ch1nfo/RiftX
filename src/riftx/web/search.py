@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -40,8 +41,8 @@ class SearchRequest(DomainModel):
     query: str = Field(min_length=1, max_length=2_000)
     max_results: int = Field(default=10, ge=1, le=50)
     freshness: SearchFreshness | None = None
-    allowed_domains: list[str] = Field(default_factory=list)
-    blocked_domains: list[str] = Field(default_factory=list)
+    allowed_domains: list[str] = Field(default_factory=list, max_length=50)
+    blocked_domains: list[str] = Field(default_factory=list, max_length=50)
     language: str | None = Field(default=None, max_length=32)
     region: str | None = Field(default=None, max_length=32)
     search_type: SearchType = SearchType.GENERAL
@@ -65,11 +66,11 @@ class SearchResult(DomainModel):
     """A discovery candidate, never a formal SourceReference."""
 
     id: str = Field(default_factory=new_id)
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=1_000)
     url: HttpUrl
     normalized_url: str = Field(min_length=1)
-    snippet: str | None = None
-    domain: str = Field(min_length=1)
+    snippet: str | None = Field(default=None, max_length=6_000)
+    domain: str = Field(min_length=1, max_length=253)
     published_at: AwareDatetime | None = None
     provider: str = Field(min_length=1)
     provider_rank: int = Field(ge=1)
@@ -88,7 +89,10 @@ class SearchResponse(DomainModel):
     query_id: str = Field(default_factory=new_id)
     provider: str = Field(min_length=1)
     request: SearchRequest
-    results: list[SearchResult] = Field(default_factory=list)
+    results: list[SearchResult] = Field(default_factory=list, max_length=50)
+    warnings: list[str] = Field(default_factory=list, max_length=16)
+    artifact_id: str | None = Field(default=None, min_length=1)
+    content_trust: Literal["UNTRUSTED_EXTERNAL_CONTENT"] = "UNTRUSTED_EXTERNAL_CONTENT"
     created_at: AwareDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -117,6 +121,76 @@ class SearchProviderError(RuntimeError):
         self.provider = provider
         self.retryable = retryable
         self.status_code = status_code
+
+
+class FederatedSearchProvider:
+    """Query configured providers concurrently and return one bounded candidate set."""
+
+    id = "federated_search"
+
+    def __init__(
+        self,
+        providers: list[SearchProvider],
+        *,
+        warnings: list[str] | None = None,
+    ) -> None:
+        if not providers:
+            raise ValueError("Federated Search requires at least one provider")
+        self._providers = list(providers)
+        self._warnings = [_bounded_text(item, 500) for item in (warnings or [])][:16]
+
+    async def search(self, request: SearchRequest) -> SearchResponse:
+        searches = await asyncio.gather(
+            *(provider.search(request) for provider in self._providers),
+            return_exceptions=True,
+        )
+        responses: list[SearchResponse] = []
+        warnings = list(self._warnings)
+        for provider, outcome in zip(self._providers, searches, strict=True):
+            if isinstance(outcome, SearchResponse):
+                responses.append(outcome)
+                warnings.extend(outcome.warnings)
+            else:
+                warnings.append(f"search provider {provider.id!r} was unavailable")
+        if not responses:
+            raise SearchProviderError(
+                self.id,
+                "all configured Web Search providers failed",
+                retryable=any(
+                    isinstance(item, SearchProviderError) and item.retryable for item in searches
+                ),
+            )
+        query_id = new_id()
+        merged: list[SearchResult] = []
+        seen: set[str] = set()
+        maximum_rank = max((len(response.results) for response in responses), default=0)
+        for provider_rank in range(maximum_rank):
+            for response in responses:
+                if provider_rank >= len(response.results):
+                    continue
+                candidate = response.results[provider_rank]
+                if candidate.normalized_url in seen:
+                    continue
+                seen.add(candidate.normalized_url)
+                merged.append(
+                    candidate.model_copy(
+                        update={
+                            "search_query_id": query_id,
+                            "provider_rank": len(merged) + 1,
+                        }
+                    )
+                )
+                if len(merged) >= request.max_results:
+                    break
+            if len(merged) >= request.max_results:
+                break
+        return SearchResponse(
+            query_id=query_id,
+            provider=self.id,
+            request=request,
+            results=merged,
+            warnings=list(dict.fromkeys(warnings))[:16],
+        )
 
 
 class SearXNGSearchProvider:
@@ -271,22 +345,26 @@ class OpenAIHostedSearchProvider:
                 retryable=status == 429 or (isinstance(status, int) and status >= 500),
                 status_code=status if isinstance(status, int) else None,
             ) from exc
-        citations = _openai_citations(response)
-        candidates = [
-            SearchResult(
-                title=item["title"] or (urlsplit(item["url"]).hostname or item["url"]),
-                url=item["url"],
-                normalized_url=normalize_public_url(item["url"]),
-                snippet=item.get("snippet"),
-                domain=(urlsplit(item["url"]).hostname or "").lower(),
-                provider=self.id,
-                provider_rank=rank,
-                provider_metadata={"response_id": getattr(response, "id", None)},
-                search_query_id=query_id,
+        candidates: list[SearchResult] = []
+        for rank, item in enumerate(_openai_citations(response), 1):
+            raw_url = item.get("url")
+            if not isinstance(raw_url, str) or not _valid_http_url(raw_url):
+                continue
+            title = item.get("title") or (urlsplit(raw_url).hostname or raw_url)
+            snippet = item.get("snippet")
+            candidates.append(
+                SearchResult(
+                    title=_bounded_text(title, 1_000),
+                    url=cast(HttpUrl, raw_url),
+                    normalized_url=normalize_public_url(raw_url),
+                    snippet=_bounded_text(snippet, 6_000) if snippet else None,
+                    domain=(urlsplit(raw_url).hostname or "").lower(),
+                    provider=self.id,
+                    provider_rank=rank,
+                    provider_metadata={"response_id": getattr(response, "id", None)},
+                    search_query_id=query_id,
+                )
             )
-            for rank, item in enumerate(citations, 1)
-            if _valid_http_url(item.get("url"))
-        ]
         return SearchResponse(
             query_id=query_id,
             provider=self.id,
@@ -311,20 +389,23 @@ def _result_from_mapping(
     normalized = normalize_public_url(raw_url)
     published = _published_at(item)
     snippet = item.get("content", item.get("snippet"))
+    normalized_title = html.unescape(_strip_markup(str(title))).strip()
+    if not normalized_title:
+        normalized_title = urlsplit(normalized).hostname or normalized
     return SearchResult(
-        title=html.unescape(_strip_markup(str(title))).strip(),
-        url=raw_url,
+        title=_bounded_text(normalized_title, 1_000),
+        url=cast(HttpUrl, raw_url),
         normalized_url=normalized,
-        snippet=html.unescape(_strip_markup(str(snippet))).strip() if snippet else None,
+        snippet=(
+            _bounded_text(html.unescape(_strip_markup(str(snippet))).strip(), 6_000)
+            if snippet
+            else None
+        ),
         domain=(urlsplit(normalized).hostname or "").lower(),
         published_at=published,
         provider=provider,
         provider_rank=rank,
-        provider_metadata={
-            key: value
-            for key, value in item.items()
-            if key not in {"title", "url", "content", "snippet"}
-        },
+        provider_metadata=_provider_metadata(item),
         search_query_id=query_id,
     )
 
@@ -359,7 +440,7 @@ def _domains(values: list[str]) -> list[str]:
         if "://" in candidate:
             candidate = urlsplit(candidate).hostname or ""
         candidate = candidate.removeprefix("*.")
-        if not candidate or "/" in candidate or " " in candidate:
+        if not candidate or len(candidate) > 253 or "/" in candidate or " " in candidate:
             raise ValueError(f"invalid search domain {value!r}")
         normalized.append(candidate)
     return list(dict.fromkeys(normalized))
@@ -418,6 +499,23 @@ def _valid_http_url(value: object) -> bool:
 
 def _strip_markup(value: str) -> str:
     return re.sub(r"<[^>]+>", " ", value)
+
+
+def _bounded_text(value: object, maximum: int) -> str:
+    return str(value)[:maximum]
+
+
+def _provider_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key, value in item.items():
+        if key in {"title", "url", "content", "snippet"} or len(metadata) >= 20:
+            continue
+        bounded_key = str(key)[:128]
+        if isinstance(value, str):
+            metadata[bounded_key] = value[:2_000]
+        elif value is None or isinstance(value, bool | int | float):
+            metadata[bounded_key] = value
+    return metadata
 
 
 _SEARXNG_CATEGORIES = {

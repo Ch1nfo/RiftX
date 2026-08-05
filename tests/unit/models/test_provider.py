@@ -13,6 +13,7 @@ from riftx.models import (
     ModelConfigurationError,
     ModelFailureCategory,
     ModelProfile,
+    ModelProviderKind,
     ModelsConfig,
     RiftXModelProvider,
     classify_model_failure,
@@ -77,6 +78,64 @@ def test_provider_requires_configured_api_key() -> None:
 
     with pytest.raises(ModelConfigurationError, match="PRIMARY_KEY"):
         provider.get_model("primary")
+
+
+def test_provider_resolves_official_openai_hosted_search_binding() -> None:
+    provider = RiftXModelProvider(
+        ModelsConfig(
+            default_profile="official",
+            models={
+                "official": ModelProfile(
+                    provider=ModelProviderKind.OPENAI,
+                    model="gpt-search-capable",
+                    api_key_env="OFFICIAL_KEY",
+                )
+            },
+        ),
+        environment={"OFFICIAL_KEY": "secret"},
+    )
+
+    binding = provider.get_openai_hosted_search("official")
+
+    assert binding.model == "gpt-search-capable"
+    assert binding.profile_name == "official"
+    assert binding.client is provider._clients["official"]
+    assert provider.get_openai_hosted_search("official").client is binding.client
+    provider.get_model("official")
+    assert provider._clients["official"] is binding.client
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ModelProfile(
+            provider=ModelProviderKind.OPENAI_COMPATIBLE,
+            model="compatible",
+            base_url="https://compatible.example/v1",
+            requires_api_key=False,
+            api_key_env=None,
+        ),
+        ModelProfile(
+            provider=ModelProviderKind.OPENAI,
+            model="custom-openai-label",
+            base_url="https://gateway.example/v1",
+            requires_api_key=False,
+            api_key_env=None,
+        ),
+    ],
+)
+def test_provider_never_grants_hosted_search_to_compatible_destination(
+    profile: ModelProfile,
+) -> None:
+    provider = RiftXModelProvider(
+        ModelsConfig(default_profile="profile", models={"profile": profile}),
+        environment={},
+    )
+
+    with pytest.raises(ModelConfigurationError, match="not eligible"):
+        provider.get_openai_hosted_search("profile")
+
+    assert provider._clients == {}
 
 
 class _UnreadableCredentialEnvironment(Mapping[str, str]):

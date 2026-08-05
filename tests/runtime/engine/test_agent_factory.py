@@ -154,6 +154,7 @@ def test_factory_marks_explicit_control_mutation_for_sdk_approval() -> None:
             run_id="run-1",
             session_id="session-1",
             agent_id="primary",
+            model_profile="test-profile",
         ),
     )
 

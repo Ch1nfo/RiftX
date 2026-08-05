@@ -54,12 +54,19 @@ from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
 from riftx.web import (
+    EvidenceSpan,
     FetchRequest,
     FetchResult,
     FetchResultStatus,
+    ResearchClaim,
+    ResearchRequest,
+    SearchRequest,
+    SearchResponse,
+    SearchResult,
     SourceReference,
     WebDocument,
     WebDocumentChunk,
+    WebResearchPacket,
 )
 
 
@@ -613,6 +620,82 @@ class FakeWebFetcher:
             source=source,
         )
 
+
+class FakeWebResearch:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def search(
+        self,
+        run_id: str,
+        session_id: str,
+        model_profile: str,
+        request: SearchRequest,
+    ) -> SearchResponse:
+        self.calls.append(("search", (run_id, session_id, model_profile, request)))
+        query_id = "query-1"
+        return SearchResponse(
+            query_id=query_id,
+            provider="fixture",
+            request=request,
+            artifact_id="search-artifact-1",
+            results=[
+                SearchResult(
+                    id="candidate-1",
+                    title="Advisory candidate",
+                    url="https://example.test/advisory",
+                    normalized_url="https://example.test/advisory",
+                    domain="example.test",
+                    snippet="untrusted candidate",
+                    provider="fixture",
+                    provider_rank=1,
+                    search_query_id=query_id,
+                )
+            ],
+        )
+
+    async def research(
+        self,
+        request: ResearchRequest,
+        *,
+        model_profile: str,
+    ) -> WebResearchPacket:
+        self.calls.append(("research", (request, model_profile)))
+        source = SourceReference(
+            id="source-1",
+            document_id="document-1",
+            url="https://example.test/advisory",
+            domain="example.test",
+            fetched_at=utc_now(),
+            content_hash="1" * 64,
+        )
+        span = EvidenceSpan(
+            source_id=source.id,
+            chunk_id="chunk-1",
+            start_offset=0,
+            end_offset=12,
+            quote="fixed in 2.0",
+        )
+        return WebResearchPacket(
+            id="packet-1",
+            run_id=request.run_id,
+            session_id=request.session_id,
+            question=request.question,
+            summary="The canonical source says it was fixed in 2.0.",
+            key_claims=[
+                ResearchClaim(
+                    statement="Fixed in 2.0",
+                    evidence=[span],
+                    confidence=0.9,
+                )
+            ],
+            sources=[source],
+            search_query_ids=["query-1"],
+            document_ids=["document-1"],
+            artifact_ids=["raw-1", "normalized-1", "research-artifact-1"],
+        )
+
+
 def execution(
     execution_id: str = "execution-1",
     *,
@@ -642,6 +725,7 @@ def service(
     git: FakeGit | None = None,
     browser: FakeBrowser | None = None,
     web_fetcher: FakeWebFetcher | None = None,
+    web_research: FakeWebResearch | None = None,
     control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -658,12 +742,18 @@ def service(
         git=git,  # type: ignore[arg-type]
         browser=browser,  # type: ignore[arg-type]
         web_fetcher=web_fetcher,  # type: ignore[arg-type]
+        web_research=web_research,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
 
 
-SCOPE = RuntimeToolScope(run_id="run-1", session_id="session-1", agent_id="primary")
+SCOPE = RuntimeToolScope(
+    run_id="run-1",
+    session_id="session-1",
+    agent_id="primary",
+    model_profile="test-profile",
+)
 
 
 async def test_effectful_control_tool_fails_closed_without_approved_intent() -> None:
@@ -728,6 +818,29 @@ async def test_public_web_fetch_has_no_network_side_effect_without_approval() ->
 
     assert captured.value.code == "control_tool_approval_missing"
     assert web_fetcher.calls == []
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("web_search", {"query": "public advisory"}),
+        ("web_research", {"question": "Which version fixed the issue?"}),
+    ],
+)
+async def test_web_search_and_research_have_no_egress_without_approval(
+    tool_name: str,
+    arguments: dict[str, object],
+) -> None:
+    web_research = FakeWebResearch()
+    control, events, transcript, _ = service(web_research=web_research)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(SCOPE, tool_name, arguments, f"{tool_name}-call")
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert web_research.calls == []
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
 
@@ -945,6 +1058,74 @@ async def test_public_web_fetch_is_approved_bounded_untrusted_and_transcripted()
         "artifact://web-raw-1",
     ]
     assert events.rows[-1][2]["result_bytes"] < 256 * 1024
+
+
+async def test_approved_web_search_returns_only_artifact_backed_untrusted_candidates() -> None:
+    web_research = FakeWebResearch()
+    tracker = FakeControlIntents()
+    control, events, transcript, _ = service(
+        web_research=web_research,
+        control_intents=tracker,
+    )
+
+    result = await control(
+        SCOPE,
+        "web_search",
+        {
+            "query": "public advisory",
+            "search_type": "security_advisory",
+            "max_results": 5,
+        },
+        "web-search-call",
+    )
+
+    assert result["candidate_status"] == "DISCOVERY_ONLY_NOT_A_CANONICAL_SOURCE"
+    assert result["content_trust"] == "UNTRUSTED_EXTERNAL_CONTENT"
+    assert result["artifact_id"] == "search-artifact-1"
+    assert result["results"][0]["id"] == "candidate-1"
+    assert web_research.calls[0][0] == "search"
+    _, (_, _, model_profile, request) = web_research.calls[0]
+    assert model_profile == "test-profile"
+    assert request.search_type.value == "security_advisory"
+    draft = transcript.rows[0][1]
+    assert draft.artifact_ids == ["search-artifact-1"]
+    assert draft.structured_content["source_refs"] == [
+        "web-search://query-1",
+        "artifact://search-artifact-1",
+    ]
+    assert tracker.calls == [("begin", "web-search-call"), ("success", "web-search-call")]
+    assert events.rows[-1][2]["result_bytes"] < 256 * 1024
+
+
+async def test_approved_web_research_returns_only_canonical_sources_and_artifacts() -> None:
+    web_research = FakeWebResearch()
+    tracker = FakeControlIntents()
+    control, _, transcript, _ = service(
+        web_research=web_research,
+        control_intents=tracker,
+    )
+
+    result = await control(
+        SCOPE,
+        "web_research",
+        {"question": "Which version fixed the issue?", "max_sources": 3},
+        "web-research-call",
+    )
+
+    assert result["canonical_sources_only"] is True
+    assert result["content_trust"] == "UNTRUSTED_EXTERNAL_CONTENT"
+    assert result["packet_id"] == "packet-1"
+    assert result["sources"][0]["id"] == "source-1"
+    assert result["key_claims"][0]["evidence"][0]["source_id"] == "source-1"
+    draft = transcript.rows[0][1]
+    assert set(draft.artifact_ids) == {"raw-1", "normalized-1", "research-artifact-1"}
+    assert draft.structured_content["source_refs"] == [
+        "web-research://packet-1",
+        "web-source://source-1",
+        "artifact://raw-1",
+        "artifact://normalized-1",
+        "artifact://research-artifact-1",
+    ]
 
 
 async def test_execution_controls_are_owned_by_exact_agent_session() -> None:

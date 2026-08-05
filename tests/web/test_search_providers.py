@@ -6,10 +6,13 @@ import httpx
 import pytest
 
 from riftx.web import (
+    FederatedSearchProvider,
     OpenAIHostedSearchProvider,
     SearchFreshness,
     SearchProviderError,
     SearchRequest,
+    SearchResponse,
+    SearchResult,
     SearXNGSearchProvider,
 )
 
@@ -176,3 +179,75 @@ def test_search_request_rejects_conflicting_domain_filters() -> None:
             allowed_domains=["EXAMPLE.com"],
             blocked_domains=["example.com"],
         )
+
+
+class _StaticProvider:
+    def __init__(self, provider_id: str, urls: list[str]) -> None:
+        self.id = provider_id
+        self.urls = urls
+
+    async def search(self, request: SearchRequest) -> SearchResponse:
+        query_id = f"query-{self.id}"
+        return SearchResponse(
+            query_id=query_id,
+            provider=self.id,
+            request=request,
+            results=[
+                SearchResult(
+                    title=f"{self.id}-{rank}",
+                    url=url,
+                    normalized_url=url,
+                    domain="placeholder.invalid",
+                    provider=self.id,
+                    provider_rank=rank,
+                    search_query_id=query_id,
+                )
+                for rank, url in enumerate(self.urls, 1)
+            ],
+        )
+
+
+class _FailedProvider:
+    id = "failed"
+
+    async def search(self, request: SearchRequest) -> SearchResponse:
+        del request
+        raise SearchProviderError(self.id, "failed", retryable=True)
+
+
+async def test_federated_search_merges_deduplicates_and_reports_provider_failure() -> None:
+    provider = FederatedSearchProvider(
+        [
+            _StaticProvider(
+                "first",
+                ["https://one.example/a", "https://shared.example/item"],
+            ),
+            _StaticProvider(
+                "second",
+                ["https://two.example/b", "https://shared.example/item"],
+            ),
+            _FailedProvider(),
+        ],
+        warnings=["profile fallback is active"],
+    )
+
+    response = await provider.search(SearchRequest(query="federated", max_results=10))
+
+    assert response.provider == "federated_search"
+    assert [result.provider for result in response.results] == ["first", "second", "first"]
+    assert [result.provider_rank for result in response.results] == [1, 2, 3]
+    assert all(result.search_query_id == response.query_id for result in response.results)
+    assert response.warnings == [
+        "profile fallback is active",
+        "search provider 'failed' was unavailable",
+    ]
+    assert response.content_trust == "UNTRUSTED_EXTERNAL_CONTENT"
+
+
+async def test_federated_search_fails_explicitly_when_every_provider_fails() -> None:
+    provider = FederatedSearchProvider([_FailedProvider()])
+
+    with pytest.raises(SearchProviderError, match="all configured") as captured:
+        await provider.search(SearchRequest(query="unavailable"))
+
+    assert captured.value.retryable is True

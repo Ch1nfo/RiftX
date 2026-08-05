@@ -733,8 +733,34 @@ class SkillsConfig(_ConfigModel):
     path: Path = Path(".riftx/skills")
 
 
+class WebSearchConfig(_ConfigModel):
+    enabled: bool = True
+    providers: tuple[Literal["openai_hosted", "searxng"], ...] = ("openai_hosted",)
+    searxng_endpoint: str | None = None
+    timeout_seconds: float = Field(default=30, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def validate_provider_configuration(self) -> WebSearchConfig:
+        if len(set(self.providers)) != len(self.providers):
+            raise ValueError("web.search.providers must not contain duplicates")
+        if self.enabled and not self.providers:
+            raise ValueError("web.search.providers must not be empty when search is enabled")
+        if "searxng" in self.providers:
+            endpoint = (self.searxng_endpoint or "").strip()
+            parsed = urlsplit(endpoint)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("web.search.searxng_endpoint must be an absolute HTTP(S) URL")
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError("web.search.searxng_endpoint must not contain credentials")
+            if parsed.query or parsed.fragment:
+                raise ValueError("web.search.searxng_endpoint must not contain a query or fragment")
+            object.__setattr__(self, "searxng_endpoint", endpoint.rstrip("/"))
+        return self
+
+
 class WebConfig(_ConfigModel):
     dist_path: Path = Path("apps/web/dist")
+    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
 class ModelsRuntimeConfig(_ConfigModel):
@@ -1114,6 +1140,10 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_DEFAULT_APPROVAL_MODE": ("approval", "default_mode"),
     "RIFTX_TOOLS_CONFIG": ("tools", "path"),
     "RIFTX_WEB_DIST": ("web", "dist_path"),
+    "RIFTX_WEB_SEARCH_ENABLED": ("web", "search", "enabled"),
+    "RIFTX_WEB_SEARCH_PROVIDERS": ("web", "search", "providers"),
+    "RIFTX_SEARXNG_ENDPOINT": ("web", "search", "searxng_endpoint"),
+    "RIFTX_WEB_SEARCH_TIMEOUT_SECONDS": ("web", "search", "timeout_seconds"),
     "RIFTX_MODELS_CONFIG": ("models", "path"),
     "RIFTX_MODEL_SECRETS": ("models", "secrets_path"),
     "RIFTX_MODEL_PROFILE": ("models", "profile"),
@@ -1236,7 +1266,7 @@ def _environment_layer(environment: Mapping[str, str]) -> dict[str, Any]:
         if raw is None:
             continue
         value: object = raw
-        if name == "RIFTX_CORS_ORIGINS":
+        if name in {"RIFTX_CORS_ORIGINS", "RIFTX_WEB_SEARCH_PROVIDERS"}:
             value = [item.strip() for item in raw.split(",") if item.strip()]
         elif name == "RIFTX_LOCAL_OPERATOR_CAPABILITIES":
             value = [item.strip() for item in raw.split(",") if item.strip()]

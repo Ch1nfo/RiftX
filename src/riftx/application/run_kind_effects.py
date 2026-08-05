@@ -494,6 +494,8 @@ class RunEffectOperation(StrEnum):
     SERVICE_BROWSER_CLOSE = "service.browser.close"
     SERVICE_BROWSER_STOP_RUN = "service.browser.stop_run"
     SERVICE_WEB_FETCH = "service.web.fetch"
+    SERVICE_WEB_SEARCH = "service.web.search"
+    SERVICE_WEB_RESEARCH = "service.web.research"
     SERVICE_TARGET_HTTP_EXECUTE = "service.target_http.execute"
     SERVICE_TARGET_HTTP_STOP_RUN = "service.target_http.stop_run"
     SERVICE_CONNECTOR_INGEST = "service.connector.ingest"
@@ -2243,6 +2245,19 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.NORMAL,
         _UNSUPPORTED,
     ),
+    *_rules(
+        (
+            RunEffectOperation.SERVICE_WEB_SEARCH,
+            RunEffectOperation.SERVICE_WEB_RESEARCH,
+        ),
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.WEB_RESEARCH,
+        _GENERAL_ONLY,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.RUN_ID,
+        EffectMode.NORMAL,
+        _UNSUPPORTED,
+    ),
     _rule(
         RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
         EffectOrigin.APPLICATION_SERVICE,
@@ -3150,6 +3165,16 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
     _entry(
         "riftx.web.fetch:PublicWebFetcher.fetch",
         RunEffectOperation.SERVICE_WEB_FETCH,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.web.service:WebResearchApplicationService.search",
+        RunEffectOperation.SERVICE_WEB_SEARCH,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.web.service:WebResearchApplicationService.research",
+        RunEffectOperation.SERVICE_WEB_RESEARCH,
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(

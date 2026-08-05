@@ -41,6 +41,8 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "act_browser",
     "close_browser",
     "web_fetch",
+    "web_search",
+    "web_research",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -626,6 +628,14 @@ def _resident_schema(
             "Fetch one anonymous public HTTP(S) document into canonical untrusted Sources "
             "and Artifacts after explicit approval."
         ),
+        "web_search": (
+            "Search configured public providers for bounded untrusted discovery candidates "
+            "after explicit approval; candidates are not canonical Sources."
+        ),
+        "web_research": (
+            "Search and fetch bounded public evidence into canonical Sources and a "
+            "citation-safe untrusted Research packet after explicit approval."
+        ),
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -918,6 +928,100 @@ def _resident_schema(
             "use_browser_fallback": {"type": "boolean", "default": True},
         }
         required = ["url"]
+    elif tool_id == "web_search":
+        properties = {
+            "query": {"type": "string", "minLength": 1, "maxLength": 2_000},
+            "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 10,
+            },
+            "freshness": {
+                "type": ["string", "null"],
+                "enum": ["day", "week", "month", "year", None],
+            },
+            "allowed_domains": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 253},
+                "maxItems": 20,
+            },
+            "blocked_domains": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 253},
+                "maxItems": 20,
+            },
+            "language": {"type": ["string", "null"], "maxLength": 32},
+            "region": {"type": ["string", "null"], "maxLength": 32},
+            "search_type": {
+                "type": "string",
+                "enum": [
+                    "general",
+                    "documentation",
+                    "security_advisory",
+                    "cve",
+                    "exploit",
+                    "source_code",
+                    "academic",
+                    "news",
+                ],
+                "default": "general",
+            },
+        }
+        required = ["query"]
+    elif tool_id == "web_research":
+        properties = {
+            "question": {"type": "string", "minLength": 1, "maxLength": 4_000},
+            "search_type": {
+                "type": "string",
+                "enum": [
+                    "general",
+                    "documentation",
+                    "security_advisory",
+                    "cve",
+                    "exploit",
+                    "source_code",
+                    "academic",
+                    "news",
+                ],
+                "default": "general",
+            },
+            "allowed_domains": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 253},
+                "maxItems": 20,
+            },
+            "blocked_domains": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 253},
+                "maxItems": 20,
+            },
+            "max_queries": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "default": 4,
+            },
+            "max_results_per_query": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 10,
+            },
+            "max_total_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 30,
+            },
+            "max_sources": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6,
+                "default": 6,
+            },
+        }
+        required = ["question"]
     elif tool_id == "git_diff":
         properties = {
             "path": {
@@ -1050,6 +1154,8 @@ def _resident_schema(
         "open_browser",
         "act_browser",
         "web_fetch",
+        "web_search",
+        "web_research",
     }:
         metadata.update(
             {

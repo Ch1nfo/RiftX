@@ -153,6 +153,16 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolAuthorization.DYNAMIC_APPROVAL,
             approval_required=True,
         ),
+        "web_search": AgentToolPolicy(
+            AgentToolEffect.HOST_EXECUTION,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
+        "web_research": AgentToolPolicy(
+            AgentToolEffect.HOST_EXECUTION,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
         "run_registered_tool": AgentToolPolicy(
             AgentToolEffect.HOST_EXECUTION,
             AgentToolAuthorization.DYNAMIC_APPROVAL,

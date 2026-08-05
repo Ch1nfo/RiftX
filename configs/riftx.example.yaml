@@ -122,6 +122,14 @@ tools:
 
 web:
   dist_path: apps/web/dist
+  search:
+    enabled: true
+    # openai_hosted uses the active Run model profile only when it is an
+    # official OpenAI profile without a custom base_url. Add searxng to
+    # federate both providers or use it as a fallback.
+    providers: [openai_hosted]
+    # searxng_endpoint: https://search.example.com
+    timeout_seconds: 30
 
 models:
   path: configs/models.yaml

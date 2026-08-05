@@ -152,6 +152,21 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
     assert web_fetch_schema["x-riftx"]["approval_policy"] == "explicit"
     web_fetch_tool = next(tool for tool in agent.tools if tool.name == "web_fetch")
     assert web_fetch_tool.needs_approval is True
+    web_search_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "web_search"
+    )
+    assert web_search_schema["parameters"]["required"] == ["query"]
+    assert web_search_schema["x-riftx"]["approval_policy"] == "explicit"
+    web_research_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "web_research"
+    )
+    assert web_research_schema["parameters"]["required"] == ["question"]
+    assert web_research_schema["x-riftx"]["approval_policy"] == "explicit"
+    assert {
+        tool.name: tool.needs_approval
+        for tool in agent.tools
+        if tool.name in {"web_search", "web_research"}
+    } == {"web_search": True, "web_research": True}
     assert {
         "search_tools",
         "list_tools",
@@ -175,6 +190,8 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "act_browser",
         "close_browser",
         "web_fetch",
+        "web_search",
+        "web_research",
         "get_execution",
         "wait_execution",
         "cancel_execution",

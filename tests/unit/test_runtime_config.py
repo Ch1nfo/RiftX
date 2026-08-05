@@ -82,6 +82,9 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
             "RIFTX_MODELS_CONFIG": "custom-models.yaml",
             "RIFTX_MODEL_SECRETS": "private/model-secrets.json",
             "RIFTX_MODEL_PROFILE": "fast",
+            "RIFTX_WEB_SEARCH_PROVIDERS": "searxng,openai_hosted",
+            "RIFTX_SEARXNG_ENDPOINT": "https://search.example.test/base",
+            "RIFTX_WEB_SEARCH_TIMEOUT_SECONDS": "45",
             "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
             "RIFTX_TRUST_PROFILE": "local_single_operator",
             "RIFTX_TRUST_PROXY_AUTH": "false",
@@ -132,6 +135,9 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert settings.models_config_path == Path("custom-models.yaml")
     assert settings.model_secrets_path == Path("private/model-secrets.json")
     assert settings.model_profile_override == "fast"
+    assert config.web.search.providers == ("searxng", "openai_hosted")
+    assert config.web.search.searxng_endpoint == "https://search.example.test/base"
+    assert config.web.search.timeout_seconds == 45
     assert settings.admin_token == "test-only-admin-operator-token-0002"
     assert config.security.trust_proxy_auth is False
     assert settings.trust_profile.value == "local_single_operator"
@@ -256,6 +262,46 @@ def test_runtime_tool_path_defaults_to_local_non_example_file(tmp_path: Path) ->
 
     assert config.tools.path == Path("configs/tools.yaml")
     assert settings.tools_config_path == Path("configs/tools.yaml")
+
+
+def test_web_search_defaults_to_official_openai_hosted_provider(tmp_path: Path) -> None:
+    config = load_riftx_config(
+        system_path=tmp_path / "missing-system.yaml",
+        user_path=tmp_path / "missing-user.yaml",
+        environment={},
+    )
+
+    assert config.web.search.enabled is True
+    assert config.web.search.providers == ("openai_hosted",)
+    assert config.web.search.searxng_endpoint is None
+
+
+@pytest.mark.parametrize(
+    "search",
+    [
+        {"enabled": True, "providers": []},
+        {"providers": ["searxng"]},
+        {
+            "providers": ["searxng"],
+            "searxng_endpoint": "https://user:secret@search.example.test",
+        },
+        {"providers": ["openai_hosted", "openai_hosted"]},
+    ],
+)
+def test_web_search_configuration_fails_closed(
+    tmp_path: Path,
+    search: dict[str, object],
+) -> None:
+    explicit = tmp_path / "riftx.yaml"
+    write_yaml(explicit, {"web": {"search": search}})
+
+    with pytest.raises(RiftXConfigError, match="web.search"):
+        load_riftx_config(
+            system_path=tmp_path / "missing-system.yaml",
+            user_path=tmp_path / "missing-user.yaml",
+            explicit_path=explicit,
+            environment={},
+        )
 
 
 def test_kernel_containment_is_required_by_default(tmp_path: Path) -> None:
