@@ -29,11 +29,12 @@
 ## 2. Current wave
 
 - Stage：`S0 — 规格、基线与评测骨架`
-- Completed task：`SEC-001 — Security Capability Evaluation 骨架`
-- Status：`completed`
+- Current task：`CAP-001 — Capability Domain 与持久化`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
-- Product behavior：不接触真实目标；当前 Harness 只消费本地不可变 Fixture 和提交结果。
-- Next task：`CAP-001 — Capability Domain 与持久化`。
+- Completed predecessor：SEC-001，implementation commit `53161141`。
+- Product behavior：当前只建立 Capability 权威数据面，不接入生产 Agent 选择或执行。
+- Next task after completion：`CAP-100 — 接通生产 Progressive Skill`。
 
 ## 3. 研究与实现基线
 
@@ -107,8 +108,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | Task | Dependency | Status | Implementation commit |
 | --- | --- | --- | --- |
 | SEC-000 | none | completed | `a15e8e94` |
-| SEC-001 | SEC-000 | completed | pending backfill |
-| CAP-001 | SEC-000 | pending | — |
+| SEC-001 | SEC-000 | completed | `53161141` |
+| CAP-001 | SEC-000 | in_progress | pending |
 | CAP-100 | CAP-001 | pending | — |
 | CAP-101 | CAP-001 | pending | — |
 | CAP-102 | CAP-001 | pending | — |
@@ -183,7 +184,20 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check src/riftx/evaluation/__init__.py src/riftx/evaluation/security_agent tests/evaluation/security_agent`：passed。
   - `conda run --no-capture-output -n agent python -m pytest -q tests/evaluation/security_agent`：`9 passed`。
   - `conda run --no-capture-output -n agent python -m pytest -q tests/evaluation tests/docs/test_formal_agent_docs.py`：`99 passed`。
-- Implementation commit：pending backfill。
+- Implementation commit：`53161141`。
+
+### CAP-001：Capability Domain 与持久化
+
+- Status：in_progress
+- Started：2026-08-05
+- Inputs：ADR-0012、SEC-001、现有 Skill/Tool/Memory/Persistence 结构。
+- Planned delivery slices：
+  1. 领域模型、Canonical Digest、生命周期和 API Schema；
+  2. ORM、Repository、Alembic Migration 和兼容性/幂等测试；
+  3. Candidate/Active 物理隔离、Pack Lock 和运行中版本保护验收。
+- Product wiring：CAP-100 之前不把新 Registry 接入生产 Worker。
+- Slice 1 status：completed；领域/API 目标测试 `5 passed`。
+- Implementation commits：domain/API pending backfill；persistence pending。
 
 ## 9. Known pre-existing worktree state
 
