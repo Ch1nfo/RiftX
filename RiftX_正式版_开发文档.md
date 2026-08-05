@@ -560,6 +560,11 @@ Planner 通过以下命令修改图：
 
 ## S0：规格、基线与评测骨架
 
+本阶段的权威设计与进度记录：
+
+- [ADR-0012：正式版安全 Agent 平台边界](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
+- [正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
+
 ### SEC-000：正式版 ADR 与实施账本
 
 **依赖**：无。
@@ -883,6 +888,8 @@ benchmarks/security_agent/
 
 ### PACK-300：基础渗透 Packs
 
+**依赖**：CAP-102、CAP-104、COG-205。
+
 首批必须包含：
 
 - `pentest-foundation`
@@ -897,6 +904,8 @@ benchmarks/security_agent/
 - `credential-handling`
 
 ### PACK-301：基础代码审计 Packs
+
+**依赖**：CAP-101、CAP-104、COG-205。
 
 首批必须包含：
 
@@ -924,6 +933,8 @@ benchmarks/security_agent/
 - 版本和变更日志。
 
 ### PACK-302：Onboard 和 Doctor
+
+**依赖**：PACK-300、PACK-301。
 
 建议命令：
 
@@ -983,6 +994,8 @@ Doctor 必须检查：
 
 ### AUD-401：Scanner Adapter
 
+**依赖**：AUD-400。
+
 支持：
 
 - Semgrep；
@@ -996,6 +1009,8 @@ Scanner 统一输出 `AuditSignal`，不得直接成为 Confirmed Finding。
 
 ### AUD-402：专业角色工作流
 
+**依赖**：AUD-400、AUD-401、COG-205、PACK-301。
+
 - Mapper；
 - Hunter；
 - Dataflow Analyst；
@@ -1007,6 +1022,8 @@ Scanner 统一输出 `AuditSignal`，不得直接成为 Confirmed Finding。
 确定性步骤使用服务或 Middleware；只有需要开放式推理的任务才创建 Subagent。
 
 ### AUD-403：代码证据模型
+
+**依赖**：COG-201、AUD-400、AUD-401。
 
 Finding 必须绑定：
 
@@ -1022,6 +1039,8 @@ Finding 必须绑定：
 
 ### AUD-404：Diff Audit 与 Variant Analysis
 
+**依赖**：AUD-400、AUD-403。
+
 支持：
 
 - Commit/PR Diff；
@@ -1033,6 +1052,8 @@ Finding 必须绑定：
 - Finding identity 跨版本保持。
 
 ### AUD-405：受控动态验证
+
+**依赖**：CAP-101、AUD-403。
 
 默认关闭，显式批准后：
 
@@ -1049,6 +1070,8 @@ Finding 必须绑定：
 
 ### PEN-500：Attack Surface Graph
 
+**依赖**：CAP-102、COG-202。
+
 节点：
 
 - Domain/IP/Service/Endpoint/Parameter；
@@ -1060,12 +1083,16 @@ Finding 必须绑定：
 
 ### PEN-501：状态化 Web 测试
 
+**依赖**：CAP-102、PEN-500。
+
 - Browser、Burp、Target HTTP 使用统一 Request Identity。
 - Cookie/Token 使用 Secret Reference，不进入普通模型文本。
 - 支持请求 Diff、响应 Diff、重放和最小化。
 - 用户接管后通过 Takeover Summary 恢复。
 
 ### PEN-502：验证规划器
+
+**依赖**：COG-203、PEN-500、PEN-501。
 
 每个 Hypothesis 生成：
 
@@ -1079,6 +1106,8 @@ Finding 必须绑定：
 
 ### PEN-503：CVE/PoC Research
 
+**依赖**：CAP-102、PEN-502。
+
 - 外部搜索仅产生线索。
 - 版本、配置、可达性分开验证。
 - 外部 PoC 不得直接执行。
@@ -1086,6 +1115,8 @@ Finding 必须绑定：
 - “公开存在 PoC”和“目标可利用”分开记录。
 
 ### PEN-504：Attack Chain
+
+**依赖**：COG-201、PEN-500、PEN-502。
 
 链条必须显示：
 
@@ -1114,6 +1145,8 @@ Finding 必须绑定：
 
 ### LEARN-601：Post-run Review
 
+**依赖**：LEARN-600。
+
 后台复盘只允许调用：
 
 - Memory Candidate API；
@@ -1123,6 +1156,8 @@ Finding 必须绑定：
 不得调用执行类工具，不得直接写正式 Skill。
 
 ### LEARN-602：Failure Taxonomy
+
+**依赖**：LEARN-601。
 
 至少覆盖：
 
@@ -1141,6 +1176,8 @@ Finding 必须绑定：
 
 ### LEARN-603：Replay Lab
 
+**依赖**：SEC-001、LEARN-601、LEARN-602。
+
 - 可复位目标。
 - Candidate A/B 对照。
 - 变体和负向案例。
@@ -1148,6 +1185,8 @@ Finding 必须绑定：
 - 失败时保存可诊断 Artifact。
 
 ### LEARN-604：Capability Curator
+
+**依赖**：CAP-001、LEARN-603。
 
 提供：
 
@@ -1164,6 +1203,8 @@ Finding 必须绑定：
 
 ### LEARN-605：Profile、导入和迁移
 
+**依赖**：LEARN-604、PACK-302。
+
 - Operator/Organization/Engagement Profile。
 - Pack、Memory、Skill 和配置导出导入。
 - Provenance 保留。
@@ -1177,6 +1218,8 @@ Finding 必须绑定：
 本阶段的目的，是建立稳定的研发反馈系统：发现能力短板、复现失败、检查版本回归、评估 Capability Pack 的实际影响。所有指标都是观察信号，不应被解释为 RiftX 是否“超过通用 Agent”的唯一结论。
 
 ### EVAL-700：代码审计语料
+
+**依赖**：SEC-001、AUD-403、AUD-404。
 
 至少包括：
 
@@ -1201,6 +1244,8 @@ Finding 必须绑定：
 
 ### EVAL-701：渗透测试靶场
 
+**依赖**：SEC-001、PEN-504。
+
 要求：
 
 - 可复位；
@@ -1223,6 +1268,8 @@ Finding 必须绑定：
 
 ### EVAL-702：版本、配置与能力包对照 Harness
 
+**依赖**：EVAL-700、EVAL-701、LEARN-603。
+
 对照对象：
 
 - RiftX 当前稳定版本；
@@ -1243,6 +1290,8 @@ Finding 必须绑定：
 
 ### EVAL-703：质量与安全发布检查
 
+**依赖**：EVAL-702、PACK-302。
+
 发布检查至少覆盖：
 
 - 核心场景不存在阻断使用的功能回归；
@@ -1261,6 +1310,8 @@ Finding 必须绑定：
 
 ### ECO-800：Pack SDK
 
+**依赖**：CAP-001、LEARN-604。
+
 建议命令：
 
 ```text
@@ -1277,6 +1328,8 @@ riftx pack rollback
 
 ### ECO-801：信任与供应链
 
+**依赖**：ECO-800。
+
 - Digest lock；
 - 签名；
 - Publisher identity；
@@ -1289,6 +1342,8 @@ riftx pack rollback
 - 撤销和下架。
 
 ### ECO-802：Gateway 与持续运行
+
+**依赖**：LEARN-605、ECO-801。
 
 借鉴 OpenClaw/Hermes：
 
