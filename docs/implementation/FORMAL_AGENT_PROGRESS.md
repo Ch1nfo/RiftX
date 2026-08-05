@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S2 — 认知运行时`
-- Current task：`COG-200 — Task Graph`
+- Current task：`COG-201 — Evidence Ledger`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -37,11 +37,12 @@
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
 - Completed predecessor：CAP-104，implementation commits `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
+- Completed predecessor：COG-200，implementation commits `20b8dc92`、`099ae428`、`cc48c32a`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Session Tool、Skill、Technique 选择统一持久化到 Session Capability Manifest，具备复合身份、Version/Digest lock、重启恢复、stale detection 与显式 reload/unload。Tool 执行使用固定 Schema、解析后 executable、环境和版本；Registry 变化不会静默替换已选版本。Technique 从 Active Capability Version 选择并与 Tool/Skill 共享同一生命周期和 Manifest。旧 Skill 数据安全回填，跨版本 downgrade 在任何 DDL 前执行数据丢失保护。
-- Current implementation commits：CAP-104 `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
-- Verification：全仓 `5077 passed, 5 skipped, 17 warnings`；全仓 Ruff、核心 Scoped mypy、Alembic 单 head 与迁移降级回归通过。
-- Next delivery slice：开始 COG-200，建立 durable Task、Dependency、TaskAttempt、TaskBudget、TaskEvidenceRequirement 与 Planner command API。
+- Product behavior：Task Graph 已成为 Primary Agent 的权威当前计划；Task、依赖、Attempt、Budget 和 Evidence Requirement 持久化并支持版本 CAS、Ready resolver、原子 claim、并行隔离、reopen/retry lineage 与 Session Attempt ownership。生产 Runtime 提供类型化 Planner control tools，Subagent 只能领取和结算自身任务，不能修改图拓扑；旧 Working Memory plan 保持兼容读取，Graph API 投影真实 Task dependency 而不猜测阻塞原因。
+- Current implementation commits：COG-200 `20b8dc92`、`099ae428`、`cc48c32a`。
+- Verification：全仓 `5096 passed, 5 skipped, 17 warnings`；全仓 Ruff、核心 Scoped mypy、Alembic 单 head 与跨版本迁移降级回归通过。
+- Next delivery slice：开始 COG-201，建立统一 Evidence Ledger、精确 Artifact Span/Code Location、Digest、Trust、Scope、Redaction 与 Replay metadata。
 
 ## 3. 研究与实现基线
 
@@ -102,7 +103,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | --- | --- | --- |
 | S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
 | S1 生产 Capability Plane | in_progress | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
-| S2 认知运行时 | pending | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
+| S2 认知运行时 | in_progress | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
 | S5 渗透测试完全体 | pending | Attack Surface、状态 Web、验证规划、Research、Attack Chain 闭环 |
@@ -122,7 +123,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
 | CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
-| COG-200 | CAP-104 | pending | — |
+| COG-200 | CAP-104 | completed | `20b8dc92`, `099ae428`, `cc48c32a` |
 | COG-201 | COG-200 | pending | — |
 | COG-202 | COG-201 | pending | — |
 | COG-203 | COG-202 | pending | — |
@@ -510,6 +511,35 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5067 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field metadata 提示。
 - Third delivery implementation commit：`483ddb81`。
 - Completion evidence：Registry、Discovery/Index、Schema、Governor/限流/熔断/超时/周期健康刷新、Tool Policy、Approval、Artifact 与 Transcript 均已接入生产 Worker；Authorization 不可由直接 service 调用绕过，Server 故障局部降级，调用具有 durable ToolCall/execution claim，Secret 与绝对路径不进入模型结果。
+
+### COG-200：Task Graph
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：CAP-104、既有 Agent Runtime/Context Compiler、Working Memory、Run Graph 与 SQLAlchemy 事务边界。
+- Persistence slice：
+  - 新增 Task、TaskDependency、TaskAttempt、TaskBudget、TaskEvidenceRequirement 和 TaskGraph 领域契约；
+  - 新增六张 durable 表、Repository 与 Alembic revision `4d7f1a8c2e90`，支持 Run 隔离、复合外键、重启恢复和非空降级保护；
+  - Task Graph migration 在任何自身 DDL 前执行既有跨版本数据丢失保护，保持 Audit Preflight、Snapshot、Capability、Workflow Signal 与 Runner ownership 的降级契约。
+- Planner slice：
+  - 新增类型化 add/update/link/block/complete/fail/reopen/cancel 命令、Ready-task resolver 和原子 `claim_ready_task`；
+  - 所有变更使用 graph version CAS，拒绝依赖环、陈旧版本、非法状态跃迁和未满足 Evidence Requirement 的完成请求；
+  - 依赖未完成的 Task 不可 claim；并发 claim 不重复；失败 Task 必须显式 reopen 后重试，新 Attempt 保留 `retry_of_attempt_id` lineage；
+  - 运行中 Attempt 绑定 Agent Session，其他 Session 不能完成、失败或取消该 Attempt。
+- Runtime and projection slice：
+  - Task Graph 成为 Primary Agent Context 的权威 current plan；存在新图时抑制旧 `working_memory.run_plan`，不存在时保持兼容读取；Subagent Delegation 不接收完整 Task Graph；
+  - 生产 Resident Tool 接入 list/add/update/link/block/claim/complete/fail/reopen/cancel；图拓扑只允许 Primary 修改，Subagent 仅可列出、领取并结算自身 Attempt；
+  - Temporal Worker 注入真实 SQLAlchemy Planner、Task Graph Context Source 和 Worker identity；Planner mutation 统一投影为 Engine `PLAN_UPDATE`；
+  - Run Graph 优先从 durable Task Graph 有界读取 Task 与 Dependency，旧计划仅作 fallback；Task node 使用真实 provenance，显式生成 `depends_on` edge，依赖缺失和 source limit 均标记 partial，不把 Dependency 猜成 blocked reason；
+  - Alembic head 常量与跨版本 downgrade regression 已同步到新 revision。
+- Checks：
+  - Context、Graph、Planner、Runtime、Tool Discovery/Policy、Engine 与 Worker 定向回归：`154 passed`；
+  - Task Graph 与跨版本迁移保护回归：`44 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/tasks src/riftx/persistence/task_repositories.py src/riftx/persistence/task_planner.py src/riftx/persistence/graph_repositories.py`：`Success: no issues found in 6 source files`；
+  - `conda run --no-capture-output -n agent alembic heads`：`4d7f1a8c2e90 (head)`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5096 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`20b8dc92`、`099ae428`、`cc48c32a`。
 
 ## 9. Known pre-existing worktree state
 
