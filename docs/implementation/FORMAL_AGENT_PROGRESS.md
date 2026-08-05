@@ -30,15 +30,15 @@
 
 - Stage：`S1 — 生产 Capability Plane`
 - Current task：`CAP-102 — Browser/Web/Traffic Tool 闭环`
-- Status：`in_progress`
+- Status：`completed`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，逐次批准后执行匿名 Public Fetch、联合 Web Search、只引用 canonical Source 的 Web Research 和 Scope-bound Target HTTP Request，并可查询脱敏 HTTP Traffic、读取 Exchange 及其原文 Artifact；Scope/SSRF、Run 状态、Approval、Stop Proof、Artifact、Source 与 Transcript 继续复用既有权威服务。
-- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`、`27fec108`。
-- Next delivery slice：完成 Code Audit 公网研究的 Audit Artifact owner 适配，收束 CAP-102。
+- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，逐次批准后执行匿名 Public Fetch、联合 Web Search、只引用 canonical Source 的 Web Research 和 Scope-bound Target HTTP Request，并可查询脱敏 HTTP Traffic、读取 Exchange 及其原文 Artifact；General 与 Code Audit Run 均可使用公网研究，其中 Code Audit 原文、规范化正文、Search Response 和 Research Packet 精确进入 `AUDIT_INTERNAL` Artifact；Scope/SSRF、Run 状态、Approval、Stop Proof、Artifact、Source 与 Transcript 继续复用既有权威服务。
+- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`、`27fec108`、`e7fc3461`。
+- Next delivery slice：开始 `CAP-103 — MCP 生产接入`。
 
 ## 3. 研究与实现基线
 
@@ -116,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
-| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108` |
+| CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
@@ -376,7 +376,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### CAP-102：Browser/Web/Traffic Tool 闭环
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-06
 - Inputs：CAP-001、既有 `BrowserApplicationService`、Runner managed browser、显式批准 control tool bridge、Scope 与 Artifact/Transcript 边界。
 - First delivery slice：
@@ -441,7 +441,19 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent pytest -q`：`5045 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Fourth delivery implementation commit：`27fec108`。
-- Remaining slice：Code Audit 公网研究 Artifact owner 适配。
+- Fifth delivery slice：
+  - `SERVICE_WEB_FETCH`、`SERVICE_WEB_SEARCH` 和 `SERVICE_WEB_RESEARCH` 允许 General 与 Code Audit Run；Browser 与 Target HTTP 的既有 RunKind 边界未放宽；
+  - Public Fetch、Search 和 Research 在 Code Audit Run 中继续执行既有逐次批准、Run 状态重读、SSRF、重定向重检、候选 canonicalize、Source trust 和 Transcript 约束；
+  - `ApplicationWebArtifactStore` 生产构造必须注入 Run 与 Audit owner Repository；General 内容继续注册为 `PUBLIC_EXPORT`，Code Audit 内容先通过 `get_by_run_authorized` 校验精确 owner，再调用 `register_audit_content` 注册为 `AUDIT_INTERNAL`；
+  - 公网原文、规范化正文、Search Response 与 Research Packet 均沿用 `UNTRUSTED_SOURCE` Artifact trust；缺失、foreign、歧义、损坏或不可用的 Audit owner 不会回退到通用 Artifact 路径；
+  - Worker 装配、Code Audit Fetch/Search/Research 成功路径、暂停状态、SSRF、Artifact owner、RunKind 策略和既有 `read_audit_content_slice` 路径均有回归覆盖。
+- Fifth delivery checks：
+  - Web、Artifact、RunKind 与 Worker Runtime 定向回归：`81 passed`；
+  - 完整 Web、Runtime Control Tool、Artifact、Agent visibility、Deferred Runtime、Worker Runtime 与 RunKind 关联回归：`196 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/web/fetch.py src/riftx/web/service.py src/riftx/application/run_kind_effects.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 4 source files`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5053 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Fifth delivery implementation commit：`e7fc3461`。
 
 ## 9. Known pre-existing worktree state
 
