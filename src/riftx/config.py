@@ -800,10 +800,91 @@ class MCPCircuitBreakerConfig(_ConfigModel):
     cooldown_seconds: float = Field(default=60, gt=0)
 
 
+class MCPServerConfig(_ConfigModel):
+    enabled: bool = True
+    transport: Literal["streamable_http"] = "streamable_http"
+    url: str
+    header_env: dict[str, str] = Field(default_factory=dict)
+    allowed_tools: tuple[str, ...] = ()
+    blocked_tools: tuple[str, ...] = ()
+    request_timeout_seconds: float = Field(default=10, gt=0, le=300)
+    read_timeout_seconds: float = Field(default=300, gt=0, le=3600)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "MCP streamable HTTP URL must be an absolute HTTP(S) URL without "
+                "credentials, query, or fragment"
+            )
+        return normalized
+
+    @field_validator("header_env")
+    @classmethod
+    def validate_header_env(cls, values: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        header_pattern = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+        env_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+        for raw_header, raw_reference in values.items():
+            header = raw_header.strip()
+            reference = raw_reference.strip()
+            if not header_pattern.fullmatch(header):
+                raise ValueError(f"invalid MCP HTTP header name: {raw_header!r}")
+            if header.lower() in {"host", "content-length"}:
+                raise ValueError(f"MCP HTTP header cannot override {header!r}")
+            if not env_pattern.fullmatch(reference):
+                raise ValueError(f"invalid MCP header environment reference: {raw_reference!r}")
+            normalized[header] = reference
+        return normalized
+
+    @field_validator("allowed_tools", "blocked_tools")
+    @classmethod
+    def validate_tool_filters(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip() for value in values)
+        if any(not value or len(value) > 256 for value in normalized):
+            raise ValueError("MCP tool filters must contain non-empty names up to 256 characters")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("MCP tool filters must not contain duplicate names")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_filter_overlap(self) -> MCPServerConfig:
+        overlap = set(self.allowed_tools) & set(self.blocked_tools)
+        if overlap:
+            raise ValueError("MCP tools cannot be both allowed and blocked")
+        return self
+
+
 class MCPConfig(_ConfigModel):
     max_concurrent_per_server: int = Field(default=2, ge=1, le=1000)
     max_concurrent_total: int = Field(default=16, ge=1, le=10_000)
+    discovery_timeout_seconds: float = Field(default=15, gt=0, le=300)
+    max_tools_per_server: int = Field(default=256, ge=1, le=4096)
+    max_schema_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
     circuit_breaker: MCPCircuitBreakerConfig = Field(default_factory=MCPCircuitBreakerConfig)
+    servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+
+    @field_validator("servers")
+    @classmethod
+    def validate_server_ids(
+        cls,
+        servers: dict[str, MCPServerConfig],
+    ) -> dict[str, MCPServerConfig]:
+        pattern = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+        for server_id in servers:
+            if not pattern.fullmatch(server_id):
+                raise ValueError(f"invalid MCP server id: {server_id!r}")
+        return servers
 
 
 def _sqlite_database_storage_path(database_url: str) -> Path | None:

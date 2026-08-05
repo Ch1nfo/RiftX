@@ -77,6 +77,7 @@ from riftx.execution import (
 )
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
+from riftx.mcp import MCPServerRegistry
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
@@ -389,6 +390,7 @@ class TemporalWorkerRuntime:
     node_id: str
     heartbeat_interval_seconds: float
     browser_manager: RunnerBrowserManager | None = None
+    mcp_registry: MCPServerRegistry | None = None
     run_repository: SQLAlchemyRunRepository | None = None
     event_repository: SQLAlchemyRunEventRepository | None = None
     safety_stopper: RunSafetyStopService | None = None
@@ -672,6 +674,8 @@ class TemporalWorkerRuntime:
             logger.exception("Unable to mark local Worker node %s offline", self.node_id)
         if self.browser_manager is not None:
             await self.browser_manager.close_all()
+        if self.mcp_registry is not None:
+            await self.mcp_registry.close()
         await self.terminal_supervisor.close_all()
         await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
@@ -691,10 +695,13 @@ async def build_temporal_worker(
     process_supervisor: ProcessSupervisor | None = None
     terminal_supervisor: TerminalSupervisor | None = None
     browser_manager: RunnerBrowserManager | None = None
+    mcp_registry: MCPServerRegistry | None = None
     try:
         await database.create_schema()
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
+        mcp_registry = MCPServerRegistry(config.mcp)
+        mcp_snapshot = await mcp_registry.refresh()
         worker_config = TemporalRuntimeConfig(
             task_queue=config.temporal.task_queue,
             workflow_id_prefix=config.temporal.workflow_id_prefix,
@@ -782,6 +789,8 @@ async def build_temporal_worker(
                     "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
                     "working_directory": str(Path.cwd()),
                     "tool_count": str(len(tool_snapshot.definitions)),
+                    "mcp_server_count": str(len(mcp_snapshot.servers)),
+                    "mcp_tool_count": str(len(mcp_snapshot.tools)),
                 },
             )
         )
@@ -1232,6 +1241,7 @@ async def build_temporal_worker(
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
             browser_manager=browser_manager,
+            mcp_registry=mcp_registry,
             run_repository=run_repository,
             event_repository=event_repository,
             safety_stopper=safety_stopper,
@@ -1251,6 +1261,8 @@ async def build_temporal_worker(
     except Exception:
         if browser_manager is not None:
             await browser_manager.close_all()
+        if mcp_registry is not None:
+            await mcp_registry.close()
         if terminal_supervisor is not None:
             await terminal_supervisor.close_all()
         if process_supervisor is not None:

@@ -501,8 +501,12 @@ def test_example_runtime_config_is_valid(tmp_path: Path) -> None:
     assert config.security.trust_proxy_auth is False
     assert config.mcp.max_concurrent_per_server == 2
     assert config.mcp.max_concurrent_total == 16
+    assert config.mcp.discovery_timeout_seconds == 15
+    assert config.mcp.max_tools_per_server == 256
+    assert config.mcp.max_schema_bytes == 65_536
     assert config.mcp.circuit_breaker.failure_threshold == 3
     assert config.mcp.circuit_breaker.cooldown_seconds == 60
+    assert config.mcp.servers == {}
 
 
 def test_execution_output_config_rejects_unsafe_limits(tmp_path: Path) -> None:

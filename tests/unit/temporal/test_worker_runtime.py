@@ -184,6 +184,9 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert runtime.run_repository is not None
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None
+    assert runtime.mcp_registry is not None
+    assert runtime.mcp_registry.snapshot.servers == []
+    assert runtime.mcp_registry.snapshot.tools == []
     assert runtime.safety_stopper is not None
     assert runtime.runner_control_service is not None
     process_executor = runtime.process_supervisor._process_executor
@@ -201,6 +204,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert node is not None
     assert node.labels["mode"] == "worker-local"
     assert node.labels["tool_count"] == "0"
+    assert node.labels["mcp_server_count"] == "0"
+    assert node.labels["mcp_tool_count"] == "0"
     assert node.labels["working_directory"]
     assert node.labels["shell"]
 

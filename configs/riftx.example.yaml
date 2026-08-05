@@ -169,6 +169,12 @@ hooks:
 mcp:
   max_concurrent_per_server: 2
   max_concurrent_total: 16
+  discovery_timeout_seconds: 15
+  max_tools_per_server: 256
+  max_schema_bytes: 65536
   circuit_breaker:
     failure_threshold: 3
     cooldown_seconds: 60
+  # Remote Streamable HTTP servers are discovered at Worker startup. Secrets are
+  # referenced by environment variable name and never copied into model-visible metadata.
+  servers: {}
