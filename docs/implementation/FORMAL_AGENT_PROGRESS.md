@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -341,7 +341,20 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4992 passed, 5 skipped, 11 warnings`；跳过项为 Windows、PowerShell 或 delegated cgroup 主机条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff 和 `git diff --check`：passed。
 - Seventh delivery implementation commit：`546f1466`。
-- Later slices：受控 LSP，以及显式批准的 Patch/Worktree/Revert。
+- Eighth delivery slice：
+  - 已建立显式批准 control tool bridge，供后续 `apply_patch`、Worktree 和 Revert 等原生写工具复用；本切片只交付批准与恢复基础设施，不向生产 Agent 暴露尚未实现的写工具；
+  - OpenAI Agents SDK 的 interruption 会投影为 `TOOL_CALL_READY`，携带 `engine_call_id`、Tool ID、参数和 `approval_policy=explicit`；显式批准不受 AUTO mode 或 Run 级永久授权绕过；
+  - Provider control proposal 以无 Runner execution spec 的 durable ToolCallIntent 保存，批准请求绑定 Cycle、Step、Context compilation、Provider State 和原始 Tool Call；批准后恢复 SDK Provider State，不创建 Runner Execution；
+  - SDK Resume 只按 `engine_call_id` 应用本次数据库批准或拒绝；`approve_tool_for_run` 不会转成 SDK 永久批准，Hook 或普通上下文注入的伪 `approval_decision` 会在 Resume 前剔除；
+  - Runtime control handler 在执行批准型 mutation 前以 CAS 将 intent 从 `READY` claim 为 `EXECUTING`，完成或失败后 durable settle 为 `COMPLETED`/`FAILED`；缺少 approved intent 时失败关闭；
+  - 新入口已纳入 RunKind Effect inventory：proposal persistence 与 control execution state mutation 均保持 General-only durable write 边界。
+- Eighth delivery checks：
+  - Agent Factory、OpenAI Agents Adapter、Deferred Runtime、Control Tool、Approval Recovery、Coordinator、Tool Visibility 与 Tool Policy 定向回归：`119 passed`；
+  - RunKind Effect Policy、Deferred Runtime、Control Tool 与 Approval Recovery 关联回归：`94 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4999 passed, 5 skipped, 11 warnings`；跳过项为 Windows、PowerShell 或 delegated cgroup 主机条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff 和 `git diff --check`：passed。
+- Eighth delivery implementation commit：`08d746ec`。
+- Later slices：实际 `apply_patch`/Revert、隔离 Worktree，以及受控 LSP。
 
 ## 9. Known pre-existing worktree state
 
