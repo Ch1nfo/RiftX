@@ -37,10 +37,10 @@
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Session Tool、Skill、Technique 选择现在具备统一持久化模型、复合身份、Version/Digest lock 与 CAS reload 语义；生产 Skill 入口已切换到统一表，旧 Skill 数据由迁移回填且旧表暂留兼容。Skill 固定快照可在 Worker 重启后恢复，只有显式 reload 才能替换版本；不安全降级会拒绝丢弃新选择事实。
-- Current implementation commits：CAP-104 `7fc96d33`。
-- Verification：统一仓储、Skill 恢复/隔离/reload、迁移与 Schema 定向集 `66 passed`；Scoped mypy 与 Ruff 通过。
-- Next delivery slice：将 ToolContextManager 接入统一 Store，执行固定 Tool 快照并实现 stale/reload/unload；随后提供 Technique 选择服务与统一 Manifest。
+- Product behavior：Session Tool、Skill、Technique 选择具备统一持久化模型、复合身份、Version/Digest lock 与 CAS reload 语义。生产 Tool/Skill 入口已切换到统一表；Tool 固定 Schema、解析后 executable、环境和版本可在 Worker 重启后恢复。Registry 变化只会把选择标记为 stale，执行路径拒绝静默切换，必须显式 reload；Tool/Skill 均支持显式 reload/unload。旧 Skill 数据由迁移回填且旧表暂留兼容，不安全降级会拒绝丢弃新选择事实。
+- Current implementation commits：CAP-104 `7fc96d33`、`ab9c2f3c`。
+- Verification：第二切片核心定向集 `82 passed`，Runtime/Temporal/Execution/Context/Subagent 关联回归 `444 passed`，Unit Agent/Tool/Skill 回归 `36 passed`；Scoped mypy 与 Ruff 通过。
+- Next delivery slice：提供 Technique 选择服务并把 Tool、Skill、Technique 汇总为统一 Session Capability Manifest；完成 CAP-104 全仓验证。
 
 ## 3. 研究与实现基线
 
@@ -120,7 +120,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
-| CAP-104 | CAP-100, CAP-103 | in_progress | `7fc96d33` |
+| CAP-104 | CAP-100, CAP-103 | in_progress | `7fc96d33`, `ab9c2f3c` |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
 | COG-202 | COG-201 | pending | — |
