@@ -6,6 +6,7 @@ from typing import Protocol
 
 from riftx.domain import AgentMessage, MessageRole, MessageType
 from riftx.runtime.lifecycle import ContextCompileRequest, ContextPurpose
+from riftx.tasks import TaskGraphRepository
 
 from .items import ContextItem, ContextItemKind, ContextLayer
 from .models import ProcessedToolResult
@@ -24,8 +25,13 @@ class TranscriptReader(Protocol):
 class WorkingMemoryContextSource:
     """Expose authoritative Working Memory as independently budgetable state."""
 
-    def __init__(self, repository: WorkingMemoryRepository) -> None:
+    def __init__(
+        self,
+        repository: WorkingMemoryRepository,
+        task_graphs: TaskGraphRepository | None = None,
+    ) -> None:
         self._repository = repository
+        self._task_graphs = task_graphs
 
     async def load(self, request: ContextCompileRequest) -> list[ContextItem]:
         memory = await self._repository.get_for_run(request.run_id)
@@ -61,18 +67,24 @@ class WorkingMemoryContextSource:
                     priority=92,
                 )
             )
-        items.append(
-            _memory_item(
-                memory.id,
-                "plan",
-                memory.run_plan.model_dump(mode="json"),
-                ref,
-                kind=ContextItemKind.CURRENT_PLAN,
-                priority=100,
-                required=True,
-                compressible=False,
-            )
+        task_graph = (
+            await self._task_graphs.get(request.run_id)
+            if self._task_graphs is not None
+            else None
         )
+        if task_graph is None:
+            items.append(
+                _memory_item(
+                    memory.id,
+                    "plan",
+                    memory.run_plan.model_dump(mode="json"),
+                    ref,
+                    kind=ContextItemKind.CURRENT_PLAN,
+                    priority=100,
+                    required=True,
+                    compressible=False,
+                )
+            )
         if memory.confirmed_facts:
             items.append(
                 _memory_item(
@@ -183,6 +195,37 @@ class WorkingMemoryContextSource:
                 )
             )
         return items
+
+
+class TaskGraphContextSource:
+    """Expose the durable Task Graph as the authoritative current plan."""
+
+    def __init__(self, repository: TaskGraphRepository) -> None:
+        self._repository = repository
+
+    async def load(self, request: ContextCompileRequest) -> list[ContextItem]:
+        if request.purpose is ContextPurpose.SUBAGENT_DELEGATION:
+            return []
+        graph = await self._repository.get(request.run_id)
+        if graph is None:
+            return []
+        source_ref = f"task-graph://runs/{graph.run_id}/versions/{graph.version}"
+        return [
+            ContextItem(
+                id=f"task-graph:{graph.run_id}:v{graph.version}",
+                layer=ContextLayer.WORKING_MEMORY,
+                kind=ContextItemKind.CURRENT_PLAN,
+                content=graph.model_dump(mode="json"),
+                priority=100,
+                required=True,
+                compressible=False,
+                source_refs=[source_ref],
+                metadata={
+                    "task_graph_run_id": graph.run_id,
+                    "task_graph_version": graph.version,
+                },
+            )
+        ]
 
 
 class TranscriptContextSource:

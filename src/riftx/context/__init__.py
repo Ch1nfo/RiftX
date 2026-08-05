@@ -57,6 +57,7 @@ from .reducer import (
     WorkingMemoryVersionConflict,
 )
 from .sources import (
+    TaskGraphContextSource,
     TranscriptContextSource,
     WorkingMemoryContextSource,
     processed_tool_result_context_item,
@@ -107,6 +108,7 @@ __all__ = [
     "StableInstructionScope",
     "StableInstructionSource",
     "TokenBudgeter",
+    "TaskGraphContextSource",
     "TranscriptContextSource",
     "WorkingMemoryContextSource",
     "ActiveExecutionRef",

@@ -26,7 +26,12 @@ from riftx.application.graphs import (
     GraphUserDecisionSource,
     GraphViewKind,
 )
-from riftx.persistence import Database, GraphReadLimits, SQLAlchemyGraphReadRepository
+from riftx.persistence import (
+    Database,
+    GraphReadLimits,
+    SQLAlchemyGraphReadRepository,
+    SQLAlchemyTaskGraphRepository,
+)
 from riftx.persistence.orm import (
     AgentCycleRecord,
     AgentRuntimeStepRecord,
@@ -43,6 +48,7 @@ from riftx.persistence.orm import (
     ToolCallIntentRecord,
     WorkingMemoryRecord,
 )
+from riftx.tasks import Task, TaskDependency, TaskGraph
 
 NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
 SECRET_CANARIES = (
@@ -557,7 +563,7 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         )
         source = loaded
 
-        assert len(statements) == 6
+        assert len(statements) == 7
         assert source.scope == scope
         assert source.run.id == "run-graph"
         assert source.run.engagement_id == "engagement-graph"
@@ -575,6 +581,7 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         assert all(not hasattr(action, "plan_item_id") for action in source.actions)
         assert tuple(item.source for item in source.coverage) == (
             "plan_items",
+            "task_dependencies",
             "actions",
             "findings",
             "artifacts",
@@ -610,6 +617,78 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
             "runner_credentials",
         ):
             assert forbidden_sql_fragment not in rendered_sql
+    finally:
+        await database.dispose()
+
+
+async def test_task_graph_replaces_legacy_plan_and_projects_bounded_dependencies(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path, "graph-task-graph-source.db")
+    await database.create_schema()
+    try:
+        await _seed(database, action_count=1)
+        await SQLAlchemyTaskGraphRepository(database.session_factory).create(
+            TaskGraph(
+                run_id="run-graph",
+                tasks=[
+                    Task(
+                        id="task-discover",
+                        run_id="run-graph",
+                        sequence=1,
+                        title="Sensitive durable task title",
+                    ),
+                    Task(
+                        id="task-verify",
+                        run_id="run-graph",
+                        sequence=2,
+                        title="Sensitive durable verification title",
+                        status="blocked",
+                        blocked_reason="Sensitive blocker",
+                    ),
+                ],
+                dependencies=[
+                    TaskDependency(
+                        run_id="run-graph",
+                        task_id="task-verify",
+                        depends_on_task_id="task-discover",
+                    )
+                ],
+            )
+        )
+        repository = SQLAlchemyGraphReadRepository(database.session_factory)
+        scope = GraphScope(run_id="run-graph", engagement_id="engagement-graph")
+
+        loaded, statements = await _capture_selects(
+            database,
+            repository.load(scope, GraphViewKind.TASK),
+        )
+
+        assert len(statements) == 7
+        assert loaded.plan_items == (
+            GraphPlanItemSource(
+                id="task-discover",
+                run_id="run-graph",
+                sequence=1,
+                status="pending",
+                provenance="task_graph.tasks",
+            ),
+            GraphPlanItemSource(
+                id="task-verify",
+                run_id="run-graph",
+                sequence=2,
+                status="blocked",
+                dependency_ids=("task-discover",),
+                provenance="task_graph.tasks",
+            ),
+        )
+        assert all(item.id != "plan-item-1" for item in loaded.plan_items)
+        coverage = {item.source: item for item in loaded.coverage}
+        assert coverage["task_dependencies"].scanned == 1
+        assert coverage["task_dependencies"].truncated is False
+        rendered = repr(loaded)
+        assert "Sensitive durable task title" not in rendered
+        assert "Sensitive blocker" not in rendered
     finally:
         await database.dispose()
 

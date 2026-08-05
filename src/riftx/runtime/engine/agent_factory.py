@@ -61,6 +61,16 @@ _CONTROL_TOOL_NAMES = {
     "wait_execution",
     "cancel_execution",
     "read_artifact",
+    "list_ready_tasks",
+    "add_task",
+    "update_task",
+    "link_tasks",
+    "block_task",
+    "claim_ready_task",
+    "complete_task",
+    "fail_task_attempt",
+    "reopen_task",
+    "cancel_task",
     "complete_run",
 }
 

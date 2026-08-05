@@ -54,8 +54,7 @@ _TOPOLOGY_DOMAIN = b"riftx-graph-topology-v1\0"
 _DOMAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,127}")
 _TYPE_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
-_TASK_PROJECTION_SOURCES = (
-    "working_memory.run_plan",
+_TASK_PROJECTION_BASE_SOURCES = (
     "tool_call_intents",
     "findings",
     "executions",
@@ -95,6 +94,7 @@ _TASK_TYPE_METADATA = (
         color="#78716c",
     ),
     GraphTypeMetadata(kind="edge", type="unassigned", label="Unassigned", color="#94a3b8"),
+    GraphTypeMetadata(kind="edge", type="depends_on", label="Depends on", color="#64748b"),
     GraphTypeMetadata(kind="edge", type="executed_as", label="Executed as", color="#7c3aed"),
     GraphTypeMetadata(kind="edge", type="produced", label="Produced", color="#0284c7"),
     GraphTypeMetadata(kind="edge", type="supports", label="Supports", color="#16a34a"),
@@ -160,7 +160,9 @@ _SAFE_ACTION_STATUSES = frozenset(
         "partial",
     }
 )
-_SAFE_PLAN_STATUSES = frozenset({"pending", "running", "blocked", "completed", "cancelled"})
+_SAFE_PLAN_STATUSES = frozenset(
+    {"pending", "running", "blocked", "completed", "failed", "cancelled"}
+)
 _SAFE_FINDING_STATUSES = frozenset({"draft", "confirmed", "resolved", "false_positive"})
 _SAFE_FACT_STATUSES = frozenset({"confirmed", "disputed", "superseded"})
 _SAFE_HYPOTHESIS_STATUSES = frozenset(
@@ -186,6 +188,7 @@ _SAFE_RELATION_TYPES = frozenset({"discovered_on", "exploits", "enables", "depen
 _COVERAGE_SOURCES = frozenset(
     {
         "plan_items",
+        "task_dependencies",
         "actions",
         "facts",
         "hypotheses",
@@ -401,10 +404,26 @@ def _project_task(source: GraphSourceSnapshot) -> _Projection:
                 domain_id=item.id,
                 label=f"Plan item {item.sequence}",
                 status=item.status,
-                provenance=("working_memory.run_plan",),
+                provenance=(item.provenance,),
                 reasons=reasons,
             )
         )
+
+    plan_item_ids = {item.id for item in source.plan_items}
+    for item in source.plan_items:
+        for dependency_id in item.dependency_ids:
+            if dependency_id not in plan_item_ids:
+                page_reasons.add("task_dependency_unresolved")
+                continue
+            edges.append(
+                _edge(
+                    edge_id=f"depends_on:{run_id}:{item.id}:{dependency_id}",
+                    edge_type="depends_on",
+                    source=f"plan_item:{run_id}:{item.id}",
+                    target=f"plan_item:{run_id}:{dependency_id}",
+                    provenance=("task_graph.dependencies",),
+                )
+            )
 
     execution_by_id = {item.execution_id: item for item in source.executions}
     resolved_execution_ids: set[str] = set()
@@ -582,10 +601,20 @@ def _project_task(source: GraphSourceSnapshot) -> _Projection:
     return _projection(
         nodes,
         edges,
-        _TASK_PROJECTION_SOURCES,
+        _task_projection_sources(source),
         _TASK_TYPE_METADATA,
         page_reasons,
     )
+
+
+def _task_projection_sources(source: GraphSourceSnapshot) -> tuple[str, ...]:
+    plan_sources = tuple(dict.fromkeys(item.provenance for item in source.plan_items))
+    dependency_sources = (
+        ("task_graph.dependencies",)
+        if any(item.dependency_ids for item in source.plan_items)
+        else ()
+    )
+    return (*plan_sources, *dependency_sources, *_TASK_PROJECTION_BASE_SOURCES)
 
 
 def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
@@ -1237,6 +1266,9 @@ def _validate_plan_items(items: tuple[GraphPlanItemSource, ...], scope: GraphSco
         if item.run_id != scope.run_id or type(item.sequence) is not int or item.sequence < 1:
             raise ValueError
         if item.status not in _SAFE_PLAN_STATUSES:
+            raise ValueError
+        _require_id_tuple(item.dependency_ids)
+        if item.provenance not in {"task_graph.tasks", "working_memory.run_plan"}:
             raise ValueError
 
 

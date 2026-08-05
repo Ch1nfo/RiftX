@@ -145,6 +145,53 @@ async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None
     }
 
 
+async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
+    tmp_path: Path,
+) -> None:
+    manager = ToolContextManager(await _registry(tmp_path, 10))
+    schemas = {
+        item["name"]: item
+        for item in (
+            await manager.visibility(
+                run_id="run-1",
+                session_id="session-1",
+                agent_id="primary",
+            )
+        ).available_tools
+    }
+
+    add_parameters = schemas["add_task"]["parameters"]
+    update_parameters = schemas["update_task"]["parameters"]
+    complete_parameters = schemas["complete_task"]["parameters"]
+    assert add_parameters["required"] == ["expected_graph_version", "title"]
+    assert update_parameters["required"] == ["expected_graph_version", "task_id"]
+    assert update_parameters["properties"]["title"]["type"] == "string"
+    assert complete_parameters["required"] == [
+        "expected_graph_version",
+        "task_id",
+        "attempt_id",
+        "completion_summary",
+    ]
+    assert all(
+        parameters["additionalProperties"] is False
+        for parameters in (add_parameters, update_parameters, complete_parameters)
+    )
+    assert {
+        "list_ready_tasks",
+        "claim_ready_task",
+        "complete_task",
+        "fail_task_attempt",
+    } <= set(SUBAGENT_RESIDENT_TOOL_IDS)
+    assert {
+        "add_task",
+        "update_task",
+        "link_tasks",
+        "block_task",
+        "reopen_task",
+        "cancel_task",
+    }.isdisjoint(SUBAGENT_RESIDENT_TOOL_IDS)
+
+
 async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
 

@@ -55,6 +55,7 @@ from riftx.context import (
     ContextCompiler,
     ExecutionArtifactStore,
     StableInstructionSource,
+    TaskGraphContextSource,
     ToolResultProcessor,
     TranscriptContextSource,
     WorkingMemoryContextSource,
@@ -117,6 +118,8 @@ from riftx.persistence import (
     SQLAlchemyRuntimeApprovalRepository,
     SQLAlchemySkillSelectionStore,
     SQLAlchemySnapshotRepository,
+    SQLAlchemyTaskGraphRepository,
+    SQLAlchemyTaskPlanner,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
@@ -819,6 +822,8 @@ async def build_temporal_worker(
             database.session_factory
         )
         working_memory_repository = SQLAlchemyWorkingMemoryRepository(database.session_factory)
+        task_graph_repository = SQLAlchemyTaskGraphRepository(database.session_factory)
+        task_planner = SQLAlchemyTaskPlanner(database.session_factory)
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
@@ -1175,7 +1180,11 @@ async def build_temporal_worker(
                     transcript_repository,
                     max_items=config.agent.max_history_items or 100,
                 ),
-                WorkingMemoryContextSource(working_memory_repository),
+                TaskGraphContextSource(task_graph_repository),
+                WorkingMemoryContextSource(
+                    working_memory_repository,
+                    task_graph_repository,
+                ),
                 RetrievedMemoryContextSource(memory_service),
             ],
             stable_instruction_source=StableInstructionSource(),
@@ -1222,6 +1231,8 @@ async def build_temporal_worker(
             target_http=target_http_service,
             mcp=mcp_service,
             control_intents=deferred_dispatcher,
+            task_planner=task_planner,
+            worker_id=config.runner.node_id,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,

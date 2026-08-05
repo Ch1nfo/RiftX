@@ -68,6 +68,11 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
         is AgentToolAuthorization.DYNAMIC_APPROVAL
     )
     assert AGENT_TOOL_POLICIES["call_mcp_tool"].approval_required is True
+    assert AGENT_TOOL_POLICIES["list_ready_tasks"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["add_task"].effect is AgentToolEffect.DURABLE_WRITE
+    assert AGENT_TOOL_POLICIES["complete_task"].authorization is (
+        AgentToolAuthorization.RUN_CONTEXT
+    )
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 

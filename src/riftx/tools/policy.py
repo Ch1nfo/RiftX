@@ -265,6 +265,46 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "list_ready_tasks": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "add_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "update_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "link_tasks": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "block_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "claim_ready_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "complete_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "fail_task_attempt": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "reopen_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "cancel_task": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "delegate": AgentToolPolicy(
             AgentToolEffect.RUN_LIFECYCLE,
             AgentToolAuthorization.RUN_CONTEXT,

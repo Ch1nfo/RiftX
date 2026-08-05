@@ -308,5 +308,17 @@ async def test_planner_rejects_stale_versions_cycles_and_illegal_transitions(
         )
         assert owned_claim is not None
         assert owned_claim.graph_version == owned.graph_version + 1
+        assert owned_claim.attempt is not None
+        with pytest.raises(RepositoryConflictError, match="different Agent Session"):
+            await planner.fail_task_attempt(
+                FailTaskAttemptCommand(
+                    run_id="run-1",
+                    expected_graph_version=owned_claim.graph_version,
+                    task_id="owned-task",
+                    attempt_id=owned_claim.attempt.id,
+                    actor_session_id="session-b",
+                    failure_summary="Must not cross Session ownership",
+                )
+            )
     finally:
         await database.dispose()

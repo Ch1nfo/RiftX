@@ -1126,6 +1126,56 @@ async def test_task_findings_are_explicitly_unassigned_and_plan_gaps_are_partial
     }
 
 
+async def test_task_graph_dependencies_are_explicit_without_guessing_blocker_lineage() -> None:
+    snapshot = replace(
+        source_snapshot(),
+        plan_items=(
+            GraphPlanItemSource(
+                id="task-discover",
+                run_id="run-1",
+                sequence=1,
+                status="completed",
+                provenance="task_graph.tasks",
+            ),
+            GraphPlanItemSource(
+                id="task-verify",
+                run_id="run-1",
+                sequence=2,
+                status="blocked",
+                dependency_ids=("task-discover",),
+                provenance="task_graph.tasks",
+            ),
+        ),
+    )
+    service = GraphApplicationService(
+        SnapshotRepository(snapshot),
+        authorizer=RecordingAuthorizer(),
+        cursor_signing_key=CURSOR_SIGNING_KEY,
+    )
+
+    page = await service.get_view(
+        "run-1",
+        principal=PRINCIPAL,
+        view=GraphViewKind.TASK,
+    )
+
+    dependency_edges = [edge for edge in page.edges if edge.type == "depends_on"]
+    assert [(edge.source, edge.target) for edge in dependency_edges] == [
+        (
+            "plan_item:run-1:task-verify",
+            "plan_item:run-1:task-discover",
+        )
+    ]
+    blocked = next(node for node in page.nodes if node.domain_id == "task-verify")
+    assert blocked.partial_reasons == ("blocker_lineage_unavailable",)
+    assert blocked.provenance_refs == ("task_graph.tasks",)
+    assert page.projection_sources[:2] == (
+        "task_graph.tasks",
+        "task_graph.dependencies",
+    )
+    assert "depends_on" in {item.type for item in page.type_metadata}
+
+
 async def test_task_exact_action_evidence_chain_is_traversable_without_plan_guessing() -> None:
     snapshot = replace(
         source_snapshot(),

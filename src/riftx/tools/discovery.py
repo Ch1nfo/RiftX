@@ -73,6 +73,16 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "wait_execution",
     "cancel_execution",
     "read_artifact",
+    "list_ready_tasks",
+    "add_task",
+    "update_task",
+    "link_tasks",
+    "block_task",
+    "claim_ready_task",
+    "complete_task",
+    "fail_task_attempt",
+    "reopen_task",
+    "cancel_task",
     "delegate",
     "complete_run",
 )
@@ -109,6 +119,10 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "wait_execution",
     "cancel_execution",
     "read_artifact",
+    "list_ready_tasks",
+    "claim_ready_task",
+    "complete_task",
+    "fail_task_attempt",
 )
 
 _WORDS = re.compile(r"[a-z0-9]+")
@@ -1001,6 +1015,16 @@ def _resident_schema(
         "wait_execution": "Wait for an Execution without changing its timeout policy.",
         "cancel_execution": "Cancel a durable Execution and its process group.",
         "read_artifact": "Read bounded content from a persisted Artifact.",
+        "list_ready_tasks": "List pending Task Graph nodes whose dependencies are complete.",
+        "add_task": "Add one durable Task Graph node using an expected graph version.",
+        "update_task": "Update one replannable Task using an expected graph version.",
+        "link_tasks": "Add one acyclic dependency between durable Tasks.",
+        "block_task": "Block one pending or failed Task with a durable reason.",
+        "claim_ready_task": "Atomically claim one dependency-ready Task for this Agent Session.",
+        "complete_task": "Complete this Session's running Task Attempt with required evidence.",
+        "fail_task_attempt": "Fail this Session's running Task Attempt with a durable summary.",
+        "reopen_task": "Reopen one blocked or terminal Task with a durable reason.",
+        "cancel_task": "Cancel one non-completed Task with a durable reason.",
         "delegate": "Delegate one bounded independent task to an isolated Subagent.",
         "complete_run": "Request completion of the current authorized Run.",
     }
@@ -1557,6 +1581,137 @@ def _resident_schema(
             "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
         }
         required = ["artifact_id"]
+    elif tool_id == "list_ready_tasks":
+        properties = {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
+    elif tool_id == "add_task":
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 0},
+            "task_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "parent_task_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "sequence": {"type": ["integer", "null"], "minimum": 1},
+            "title": {"type": "string", "minLength": 1},
+            "description": {"type": "string"},
+            "input_scope": {"type": "object"},
+            "expected_output_schema": {"type": "object"},
+            "required_capability_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "workspace_owner": {"type": ["string", "null"]},
+            "session_owner_id": {"type": ["string", "null"]},
+            "stop_condition": {"type": ["string", "null"]},
+            "budget": {
+                "type": ["object", "null"],
+                "properties": {
+                    "max_model_calls": {"type": ["integer", "null"], "minimum": 1},
+                    "max_tool_calls": {"type": ["integer", "null"], "minimum": 1},
+                    "max_tokens": {"type": ["integer", "null"], "minimum": 1},
+                    "max_duration_seconds": {
+                        "type": ["number", "null"],
+                        "exclusiveMinimum": 0,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            "evidence_requirements": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "evidence_type": {"type": "string", "minLength": 1},
+                        "description": {"type": "string", "minLength": 1},
+                        "minimum_count": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["evidence_type", "description"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        required = ["expected_graph_version", "title"]
+    elif tool_id == "update_task":
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 1},
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "title": {"type": "string", "minLength": 1},
+            "description": {"type": "string"},
+            "sequence": {"type": "integer", "minimum": 1},
+            "input_scope": {"type": "object"},
+            "expected_output_schema": {"type": "object"},
+            "required_capability_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "workspace_owner": {"type": ["string", "null"]},
+            "session_owner_id": {"type": ["string", "null"]},
+            "stop_condition": {"type": ["string", "null"]},
+        }
+        required = ["expected_graph_version", "task_id"]
+    elif tool_id == "link_tasks":
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 1},
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "depends_on_task_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
+        }
+        required = ["expected_graph_version", "task_id", "depends_on_task_id"]
+    elif tool_id in {"block_task", "reopen_task", "cancel_task"}:
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 1},
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "reason": {"type": "string", "minLength": 1},
+        }
+        required = ["expected_graph_version", "task_id", "reason"]
+    elif tool_id == "claim_ready_task":
+        properties = {
+            "preferred_task_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+        }
+    elif tool_id == "complete_task":
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 1},
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "attempt_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "completion_summary": {"type": "string", "minLength": 1},
+            "evidence_refs_by_requirement": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+        }
+        required = [
+            "expected_graph_version",
+            "task_id",
+            "attempt_id",
+            "completion_summary",
+        ]
+    elif tool_id == "fail_task_attempt":
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 1},
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "attempt_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "failure_summary": {"type": "string", "minLength": 1},
+        }
+        required = [
+            "expected_graph_version",
+            "task_id",
+            "attempt_id",
+            "failure_summary",
+        ]
     elif tool_id == "delegate":
         properties = {
             "task_id": {"type": "string"},

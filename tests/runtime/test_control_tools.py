@@ -65,6 +65,15 @@ from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
 from riftx.target_http import TargetHttpResult, TargetHttpSubmission
+from riftx.tasks import (
+    AddTaskCommand,
+    ClaimReadyTaskCommand,
+    CompleteTaskCommand,
+    Task,
+    TaskAttempt,
+    TaskAttemptStatus,
+    TaskMutationResult,
+)
 from riftx.tools import ToolContextManager, ToolRegistry
 from riftx.web import (
     EvidenceSpan,
@@ -104,6 +113,41 @@ class FakeTranscript:
     async def append(self, session_id: str, draft: object) -> object:
         self.rows.append((session_id, draft))
         return object()
+
+
+class FakeTaskPlanner:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+        self.task = Task(id="task-1", run_id="run-1", sequence=1, title="Discover")
+        self.attempt = TaskAttempt(
+            id="attempt-1",
+            run_id="run-1",
+            task_id="task-1",
+            sequence=1,
+            status=TaskAttemptStatus.RUNNING,
+            session_id="session-1",
+            worker_id="worker-1",
+            started_at=utc_now(),
+        )
+
+    async def list_ready(self, run_id: str, *, limit: int = 100) -> tuple[Task, ...]:
+        self.calls.append(("list_ready", run_id, limit))
+        return (self.task,)
+
+    async def add_task(self, command: AddTaskCommand) -> TaskMutationResult:
+        self.calls.append(command)
+        return TaskMutationResult(graph_version=1, task=self.task)
+
+    async def claim_ready_task(
+        self,
+        command: ClaimReadyTaskCommand,
+    ) -> TaskMutationResult | None:
+        self.calls.append(command)
+        return TaskMutationResult(graph_version=2, task=self.task, attempt=self.attempt)
+
+    async def complete_task(self, command: CompleteTaskCommand) -> TaskMutationResult:
+        self.calls.append(command)
+        return TaskMutationResult(graph_version=3, task=self.task, attempt=self.attempt)
 
 
 class FakeExecutions:
@@ -888,6 +932,8 @@ def service(
     target_http: FakeTargetHttp | None = None,
     mcp: FakeMCP | None = None,
     control_intents: FakeControlIntents | None = None,
+    task_planner: FakeTaskPlanner | None = None,
+    worker_id: str = "runtime",
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
     transcript = FakeTranscript()
@@ -910,6 +956,8 @@ def service(
         target_http=target_http,  # type: ignore[arg-type]
         mcp=mcp,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
+        task_planner=task_planner,  # type: ignore[arg-type]
+        worker_id=worker_id,
     )
     return control, events, transcript, execution_service
 
@@ -920,6 +968,77 @@ SCOPE = RuntimeToolScope(
     agent_id="primary",
     model_profile="test-profile",
 )
+
+
+async def test_task_planner_tools_bind_run_worker_and_session_identity() -> None:
+    planner = FakeTaskPlanner()
+    control, _, _, _ = service(task_planner=planner, worker_id="worker-1")
+
+    ready = await control(SCOPE, "list_ready_tasks", {"limit": 5}, "ready-call")
+    added = await control(
+        SCOPE,
+        "add_task",
+        {
+            "expected_graph_version": 0,
+            "task_id": "task-1",
+            "title": "Discover",
+        },
+        "add-call",
+    )
+    claimed = await control(
+        SCOPE,
+        "claim_ready_task",
+        {"preferred_task_id": "task-1"},
+        "claim-call",
+    )
+    completed = await control(
+        SCOPE,
+        "complete_task",
+        {
+            "expected_graph_version": 2,
+            "task_id": "task-1",
+            "attempt_id": "attempt-1",
+            "completion_summary": "Done",
+        },
+        "complete-call",
+    )
+
+    assert ready[0]["id"] == "task-1"
+    assert added["graph_version"] == 1
+    assert claimed["attempt"]["id"] == "attempt-1"
+    assert completed["graph_version"] == 3
+    assert planner.calls[0] == ("list_ready", "run-1", 5)
+    add_command = planner.calls[1]
+    claim_command = planner.calls[2]
+    complete_command = planner.calls[3]
+    assert isinstance(add_command, AddTaskCommand) and add_command.run_id == "run-1"
+    assert isinstance(claim_command, ClaimReadyTaskCommand)
+    assert claim_command.worker_id == "worker-1"
+    assert claim_command.session_id == "session-1"
+    assert isinstance(complete_command, CompleteTaskCommand)
+    assert complete_command.actor_session_id == "session-1"
+
+
+async def test_subagent_cannot_change_task_graph_topology() -> None:
+    planner = FakeTaskPlanner()
+    control, _, _, _ = service(task_planner=planner)
+    subagent_scope = RuntimeToolScope(
+        run_id="run-1",
+        session_id="session-subagent",
+        agent_id="subagent",
+        model_profile="test-profile",
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            subagent_scope,
+            "add_task",
+            {"expected_graph_version": 0, "title": "Forbidden"},
+            "add-call",
+        )
+
+    assert captured.value.code == "task_planner_primary_required"
+    assert planner.calls == []
 
 
 async def test_effectful_control_tool_fails_closed_without_approved_intent() -> None:

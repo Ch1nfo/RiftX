@@ -45,6 +45,8 @@ class GraphPlanItemSource:
     run_id: str
     sequence: int
     status: str
+    dependency_ids: tuple[str, ...] = ()
+    provenance: str = "working_memory.run_plan"
 
 
 @dataclass(frozen=True, slots=True)

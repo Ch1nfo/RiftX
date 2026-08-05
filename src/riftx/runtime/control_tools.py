@@ -41,6 +41,21 @@ from riftx.skills import ProgressiveSkillContextManager
 from riftx.target_http import TargetHttpRequest, TargetHttpResult, TargetHttpSubmission
 from riftx.target_http.redaction import safe_redirect_metadata, safe_url_metadata
 from riftx.target_http.service import TargetHttpApplicationService
+from riftx.tasks import (
+    AddTaskCommand,
+    BlockTaskCommand,
+    CancelTaskCommand,
+    ClaimReadyTaskCommand,
+    CompleteTaskCommand,
+    FailTaskAttemptCommand,
+    LinkTasksCommand,
+    ReopenTaskCommand,
+    Task,
+    TaskBudgetInput,
+    TaskEvidenceRequirementInput,
+    TaskMutationResult,
+    UpdateTaskCommand,
+)
 from riftx.tools import ToolContextManager, ToolSearchRequest
 from riftx.tools.policy import AGENT_TOOL_POLICIES
 from riftx.web import (
@@ -106,6 +121,34 @@ class ClaimedControlIntent(Protocol):
 
 class RunReader(Protocol):
     async def get(self, run_id: str) -> Run | None: ...
+
+
+class TaskPlanner(Protocol):
+    async def add_task(self, command: AddTaskCommand) -> TaskMutationResult: ...
+
+    async def update_task(self, command: UpdateTaskCommand) -> TaskMutationResult: ...
+
+    async def link_tasks(self, command: LinkTasksCommand) -> TaskMutationResult: ...
+
+    async def block_task(self, command: BlockTaskCommand) -> TaskMutationResult: ...
+
+    async def complete_task(self, command: CompleteTaskCommand) -> TaskMutationResult: ...
+
+    async def fail_task_attempt(
+        self,
+        command: FailTaskAttemptCommand,
+    ) -> TaskMutationResult: ...
+
+    async def reopen_task(self, command: ReopenTaskCommand) -> TaskMutationResult: ...
+
+    async def cancel_task(self, command: CancelTaskCommand) -> TaskMutationResult: ...
+
+    async def list_ready(self, run_id: str, *, limit: int = 100) -> tuple[Task, ...]: ...
+
+    async def claim_ready_task(
+        self,
+        command: ClaimReadyTaskCommand,
+    ) -> TaskMutationResult | None: ...
 
 
 class _Arguments(BaseModel):
@@ -191,6 +234,72 @@ class _ReadArtifactArguments(_Arguments):
 
 class _CompleteRunArguments(_Arguments):
     run_summary: str = Field(min_length=1, max_length=16_384)
+
+
+class _ListReadyTasksArguments(_Arguments):
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class _AddTaskArguments(_Arguments):
+    expected_graph_version: int = Field(ge=0)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    parent_task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    sequence: int | None = Field(default=None, ge=1)
+    title: str = Field(min_length=1)
+    description: str = ""
+    input_scope: dict[str, JsonValue] = Field(default_factory=dict)
+    expected_output_schema: dict[str, JsonValue] = Field(default_factory=dict)
+    required_capability_ids: list[str] = Field(default_factory=list)
+    workspace_owner: str | None = None
+    session_owner_id: str | None = None
+    stop_condition: str | None = None
+    budget: TaskBudgetInput | None = None
+    evidence_requirements: list[TaskEvidenceRequirementInput] = Field(default_factory=list)
+
+
+class _UpdateTaskArguments(_Arguments):
+    expected_graph_version: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=64)
+    title: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    sequence: int | None = Field(default=None, ge=1)
+    input_scope: dict[str, JsonValue] | None = None
+    expected_output_schema: dict[str, JsonValue] | None = None
+    required_capability_ids: list[str] | None = None
+    workspace_owner: str | None = None
+    session_owner_id: str | None = None
+    stop_condition: str | None = None
+
+
+class _LinkTasksArguments(_Arguments):
+    expected_graph_version: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=64)
+    depends_on_task_id: str = Field(min_length=1, max_length=64)
+
+
+class _TaskReasonArguments(_Arguments):
+    expected_graph_version: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1)
+
+
+class _ClaimReadyTaskArguments(_Arguments):
+    preferred_task_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class _CompleteTaskArguments(_Arguments):
+    expected_graph_version: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=64)
+    attempt_id: str = Field(min_length=1, max_length=64)
+    completion_summary: str = Field(min_length=1)
+    evidence_refs_by_requirement: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class _FailTaskAttemptArguments(_Arguments):
+    expected_graph_version: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=64)
+    attempt_id: str = Field(min_length=1, max_length=64)
+    failure_summary: str = Field(min_length=1)
 
 
 class _ListFilesArguments(_Arguments):
@@ -435,6 +544,8 @@ class RuntimeControlToolService:
         target_http: TargetHttpApplicationService | None = None,
         mcp: MCPApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
+        task_planner: TaskPlanner | None = None,
+        worker_id: str = "runtime",
     ) -> None:
         self._tools = tools
         self._executions = executions
@@ -453,6 +564,8 @@ class RuntimeControlToolService:
         self._target_http = target_http
         self._mcp = mcp
         self._control_intents = control_intents
+        self._task_planner = task_planner
+        self._worker_id = worker_id
 
     async def __call__(
         self,
@@ -1223,6 +1336,125 @@ class RuntimeControlToolService:
                 "encoding": encoding,
                 "content": content,
             }
+        if tool_name == "list_ready_tasks":
+            planner = self._require_task_planner()
+            list_ready_arguments = _ListReadyTasksArguments.model_validate(raw_arguments)
+            return [
+                task.model_dump(mode="json")
+                for task in await planner.list_ready(
+                    scope.run_id,
+                    limit=list_ready_arguments.limit,
+                )
+            ]
+        if tool_name == "add_task":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            add_task_arguments = _AddTaskArguments.model_validate(raw_arguments)
+            return (
+                await planner.add_task(
+                    AddTaskCommand(
+                        run_id=scope.run_id,
+                        **add_task_arguments.model_dump(exclude_none=True),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "update_task":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            update_task_arguments = _UpdateTaskArguments.model_validate(raw_arguments)
+            return (
+                await planner.update_task(
+                    UpdateTaskCommand(
+                        run_id=scope.run_id,
+                        **update_task_arguments.model_dump(exclude_unset=True),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "link_tasks":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            link_tasks_arguments = _LinkTasksArguments.model_validate(raw_arguments)
+            return (
+                await planner.link_tasks(
+                    LinkTasksCommand(
+                        run_id=scope.run_id,
+                        **link_tasks_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "block_task":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            block_task_arguments = _TaskReasonArguments.model_validate(raw_arguments)
+            return (
+                await planner.block_task(
+                    BlockTaskCommand(
+                        run_id=scope.run_id,
+                        **block_task_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "claim_ready_task":
+            planner = self._require_task_planner()
+            claim_task_arguments = _ClaimReadyTaskArguments.model_validate(raw_arguments)
+            claim_result = await planner.claim_ready_task(
+                ClaimReadyTaskCommand(
+                    run_id=scope.run_id,
+                    worker_id=self._worker_id,
+                    session_id=scope.session_id,
+                    preferred_task_id=claim_task_arguments.preferred_task_id,
+                )
+            )
+            return claim_result.model_dump(mode="json") if claim_result is not None else None
+        if tool_name == "complete_task":
+            planner = self._require_task_planner()
+            complete_task_arguments = _CompleteTaskArguments.model_validate(raw_arguments)
+            return (
+                await planner.complete_task(
+                    CompleteTaskCommand(
+                        run_id=scope.run_id,
+                        actor_session_id=scope.session_id,
+                        **complete_task_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "fail_task_attempt":
+            planner = self._require_task_planner()
+            fail_task_arguments = _FailTaskAttemptArguments.model_validate(raw_arguments)
+            return (
+                await planner.fail_task_attempt(
+                    FailTaskAttemptCommand(
+                        run_id=scope.run_id,
+                        actor_session_id=scope.session_id,
+                        **fail_task_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "reopen_task":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            reopen_task_arguments = _TaskReasonArguments.model_validate(raw_arguments)
+            return (
+                await planner.reopen_task(
+                    ReopenTaskCommand(
+                        run_id=scope.run_id,
+                        **reopen_task_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
+        if tool_name == "cancel_task":
+            self._require_primary_planner(scope)
+            planner = self._require_task_planner()
+            cancel_task_arguments = _TaskReasonArguments.model_validate(raw_arguments)
+            return (
+                await planner.cancel_task(
+                    CancelTaskCommand(
+                        run_id=scope.run_id,
+                        actor_session_id=scope.session_id,
+                        **cancel_task_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
         if tool_name == "complete_run":
             complete_arguments = _CompleteRunArguments.model_validate(raw_arguments)
             await self._events.append(
@@ -1289,6 +1521,19 @@ class RuntimeControlToolService:
         if self._mcp is None:
             raise RuntimeError("MCP application service is not configured")
         return self._mcp
+
+    def _require_task_planner(self) -> TaskPlanner:
+        if self._task_planner is None:
+            raise RuntimeError("Task Planner is not configured")
+        return self._task_planner
+
+    @staticmethod
+    def _require_primary_planner(scope: RuntimeToolScope) -> None:
+        if scope.agent_id != "primary":
+            raise ApplicationConflictError(
+                "task_planner_primary_required",
+                "Only the Primary Agent may change Task Graph topology",
+            )
 
     async def _general_run(self, run_id: str) -> Run:
         if self._runs is None:

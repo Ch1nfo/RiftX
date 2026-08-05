@@ -22,6 +22,19 @@ from .types import (
 ENGINE_TYPE = "openai-agents"
 ENGINE_VERSION = "0.19"
 
+_PLAN_TOOL_NAMES = {
+    "update_plan",
+    "add_task",
+    "update_task",
+    "link_tasks",
+    "block_task",
+    "claim_ready_task",
+    "complete_task",
+    "fail_task_attempt",
+    "reopen_task",
+    "cancel_task",
+}
+
 AgentFactory = Callable[[AgentEngineRequest], Any]
 StreamRunner = Callable[..., Awaitable[Any] | Any]
 
@@ -404,7 +417,7 @@ def _translate_sdk_event(
             )
             event_type = (
                 AgentEngineEventType.PLAN_UPDATE
-                if tool_name == "update_plan"
+                if tool_name in _PLAN_TOOL_NAMES
                 else AgentEngineEventType.SUBAGENT_REQUESTED
                 if tool_name in {"delegate", "spawn_subagent"}
                 else AgentEngineEventType.TOOL_CALL_STARTED

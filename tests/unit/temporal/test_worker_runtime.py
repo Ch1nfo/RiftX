@@ -174,6 +174,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         return fake_worker
 
     real_web_artifact_store = worker_runtime.ApplicationWebArtifactStore
+    real_context_compiler = worker_runtime.ContextCompiler
+    real_control_tools = worker_runtime.RuntimeControlToolService
 
     def capture_web_artifact_store(
         service: object,
@@ -189,12 +191,23 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
             audits=audits,
         )
 
+    def capture_context_compiler(*args: object, **kwargs: object) -> object:
+        captured["context_sources"] = kwargs["sources"]
+        return real_context_compiler(*args, **kwargs)  # type: ignore[arg-type]
+
+    def capture_control_tools(*args: object, **kwargs: object) -> object:
+        captured["task_planner"] = kwargs["task_planner"]
+        captured["task_worker_id"] = kwargs["worker_id"]
+        return real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
+
     monkeypatch.setattr(worker_runtime, "create_worker", fake_create_worker)
     monkeypatch.setattr(
         worker_runtime,
         "ApplicationWebArtifactStore",
         capture_web_artifact_store,
     )
+    monkeypatch.setattr(worker_runtime, "ContextCompiler", capture_context_compiler)
+    monkeypatch.setattr(worker_runtime, "RuntimeControlToolService", capture_control_tools)
     temporal_client = object()
     config = runtime_config(tmp_path)
 
@@ -217,6 +230,19 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert runtime.run_repository is not None
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None
+    assert isinstance(captured["task_planner"], worker_runtime.SQLAlchemyTaskPlanner)
+    assert captured["task_worker_id"] == "worker-local"
+    context_sources = captured["context_sources"]
+    assert any(
+        isinstance(source, worker_runtime.TaskGraphContextSource)
+        for source in context_sources
+    )
+    working_memory_source = next(
+        source
+        for source in context_sources
+        if isinstance(source, worker_runtime.WorkingMemoryContextSource)
+    )
+    assert working_memory_source._task_graphs is not None
     assert runtime.mcp_registry is not None
     assert runtime.mcp_registry.snapshot.servers == []
     assert runtime.mcp_registry.snapshot.tools == []

@@ -131,6 +131,7 @@ class CompleteTaskCommand(DomainModel):
     expected_graph_version: int = Field(ge=1)
     task_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
+    actor_session_id: str | None = None
     completion_summary: str = Field(min_length=1)
     evidence_refs_by_requirement: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -147,6 +148,7 @@ class FailTaskAttemptCommand(DomainModel):
     expected_graph_version: int = Field(ge=1)
     task_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
+    actor_session_id: str | None = None
     failure_summary: str = Field(min_length=1)
 
 
@@ -162,6 +164,7 @@ class CancelTaskCommand(DomainModel):
     expected_graph_version: int = Field(ge=1)
     task_id: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+    actor_session_id: str | None = None
 
 
 class ClaimReadyTaskCommand(DomainModel):

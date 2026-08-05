@@ -43,6 +43,9 @@ from .orm import (
     FindingRecord,
     NodeRecord,
     RunRecord,
+    TaskDependencyRecord,
+    TaskGraphRecord,
+    TaskRecord,
     ToolCallIntentRecord,
     WorkingMemoryRecord,
 )
@@ -52,6 +55,7 @@ _MAX_GRAPH_SOURCE_ITEMS = 10_000
 
 _COVERAGE_ORDER = (
     "plan_items",
+    "task_dependencies",
     "actions",
     "facts",
     "hypotheses",
@@ -71,6 +75,7 @@ class GraphReadLimits:
     """Hard materialization budgets; small values are injectable in tests."""
 
     plan_items: int = 1_000
+    task_dependencies: int = 10_000
     actions: int = 10_000
     facts: int = 10_000
     hypotheses: int = 10_000
@@ -134,10 +139,13 @@ class SQLAlchemyGraphReadRepository:
         limits = self._limits
         async with self._session_factory() as session, session.begin():
             if view is GraphViewKind.TASK:
-                run, plan_items, plan_coverage = await _load_run_and_plan_items(
-                    session,
-                    scope,
-                    limits.plan_items,
+                run, plan_items, plan_coverage, dependency_coverage = (
+                    await _load_run_and_plan_items(
+                        session,
+                        scope,
+                        limits.plan_items,
+                        limits.task_dependencies,
+                    )
                 )
                 action_rows, action_coverage = await _load_action_rows(
                     session,
@@ -188,6 +196,7 @@ class SQLAlchemyGraphReadRepository:
                     executions=executions,
                     coverage=_ordered_coverage(
                         plan_coverage,
+                        dependency_coverage,
                         action_coverage,
                         finding_coverage,
                         artifact_coverage,
@@ -331,9 +340,10 @@ async def _load_run_only(
         RunRecord.id == scope.run_id,
         RunRecord.engagement_id == scope.engagement_id,
     )
-    row = (await session.execute(statement)).mappings().one_or_none()
-    if row is None:
+    loaded_row = (await session.execute(statement)).mappings().one_or_none()
+    if loaded_row is None:
         raise GraphSourceContractError("Graph scope disappeared while loading its snapshot")
+    row: Mapping[str, object] = dict(loaded_row)
     return GraphRunSource(
         id=_required_string(row, "run_id"),
         engagement_id=_required_string(row, "engagement_id"),
@@ -344,37 +354,35 @@ async def _load_run_only(
 async def _load_run_and_plan_items(
     session: AsyncSession,
     scope: GraphScope,
-    limit: int,
+    plan_limit: int,
+    dependency_limit: int,
 ) -> tuple[
     GraphRunSource,
     tuple[GraphPlanItemSource, ...],
     GraphSourceCoverage,
+    GraphSourceCoverage,
 ]:
-    plan_rows = _json_each(
-        WorkingMemoryRecord.state_json,
-        "$.run_plan.items",
-        "graph_plan_items",
-    )
     statement = (
         select(
             RunRecord.id.label("run_id"),
             RunRecord.engagement_id,
             RunRecord.node_id,
-            func.json_extract(plan_rows.c.value, "$.id").label("plan_item_id"),
-            func.json_extract(plan_rows.c.value, "$.sequence").label("plan_item_sequence"),
-            func.json_extract(plan_rows.c.value, "$.status").label("plan_item_status"),
+            TaskGraphRecord.run_id.label("task_graph_run_id"),
+            TaskRecord.id.label("plan_item_id"),
+            TaskRecord.sequence.label("plan_item_sequence"),
+            TaskRecord.status.label("plan_item_status"),
         )
         .select_from(RunRecord)
-        .outerjoin(WorkingMemoryRecord, WorkingMemoryRecord.run_id == RunRecord.id)
-        .outerjoin(plan_rows, true())
+        .outerjoin(TaskGraphRecord, TaskGraphRecord.run_id == RunRecord.id)
+        .outerjoin(TaskRecord, TaskRecord.run_id == TaskGraphRecord.run_id)
         .where(
             RunRecord.id == scope.run_id,
             RunRecord.engagement_id == scope.engagement_id,
         )
-        .order_by(cast(plan_rows.c.key, Integer), plan_rows.c.key)
-        .limit(limit + 1)
+        .order_by(TaskRecord.sequence, TaskRecord.id)
     )
-    rows = tuple((await session.execute(statement)).mappings())
+    bounded_tasks = await _bounded_rows(session, statement, plan_limit)
+    rows = bounded_tasks.rows
     if not rows:
         raise GraphSourceContractError("Graph scope disappeared while loading its snapshot")
     first = rows[0]
@@ -383,9 +391,106 @@ async def _load_run_and_plan_items(
         engagement_id=_required_string(first, "engagement_id"),
         node_id=_optional_string(first, "node_id"),
     )
+    if first["task_graph_run_id"] is None:
+        plan_items, plan_coverage = await _load_legacy_plan_items(
+            session,
+            scope,
+            plan_limit,
+        )
+        return (
+            run,
+            plan_items,
+            plan_coverage,
+            _coverage(
+                "task_dependencies",
+                scanned=0,
+                limit=dependency_limit,
+                truncated=False,
+            ),
+        )
+
     populated = tuple(row for row in rows if row["plan_item_id"] is not None)
-    truncated = len(populated) > limit
-    materialized = populated[:limit]
+    truncated = bounded_tasks.truncated
+    materialized = populated
+    task_ids = tuple(_required_string(row, "plan_item_id") for row in materialized)
+    dependency_statement = (
+        select(
+            TaskDependencyRecord.task_id,
+            TaskDependencyRecord.depends_on_task_id,
+        )
+        .where(
+            TaskDependencyRecord.run_id == scope.run_id,
+            TaskDependencyRecord.task_id.in_(task_ids),
+        )
+        .order_by(
+            TaskDependencyRecord.task_id,
+            TaskDependencyRecord.depends_on_task_id,
+        )
+    )
+    bounded_dependencies = await _bounded_rows(
+        session,
+        dependency_statement,
+        dependency_limit,
+    )
+    dependencies_by_task: defaultdict[str, list[str]] = defaultdict(list)
+    for row in bounded_dependencies.rows:
+        dependencies_by_task[_required_string(row, "task_id")].append(
+            _required_string(row, "depends_on_task_id")
+        )
+    plan_items = tuple(
+        GraphPlanItemSource(
+            id=task_id,
+            run_id=scope.run_id,
+            sequence=_required_positive_int(row, "plan_item_sequence"),
+            status=_required_string(row, "plan_item_status"),
+            dependency_ids=tuple(dependencies_by_task[task_id]),
+            provenance="task_graph.tasks",
+        )
+        for row, task_id in zip(materialized, task_ids, strict=True)
+    )
+    return (
+        run,
+        plan_items,
+        _coverage(
+            "plan_items",
+            scanned=bounded_tasks.scanned if truncated else len(populated),
+            limit=plan_limit,
+            truncated=truncated,
+        ),
+        _coverage_from_bounded(
+            "task_dependencies",
+            dependency_limit,
+            bounded_dependencies,
+        ),
+    )
+
+
+async def _load_legacy_plan_items(
+    session: AsyncSession,
+    scope: GraphScope,
+    limit: int,
+) -> tuple[tuple[GraphPlanItemSource, ...], GraphSourceCoverage]:
+    plan_rows = _json_each(
+        WorkingMemoryRecord.state_json,
+        "$.run_plan.items",
+        "graph_plan_items",
+    )
+    statement = (
+        select(
+            func.json_extract(plan_rows.c.value, "$.id").label("plan_item_id"),
+            func.json_extract(plan_rows.c.value, "$.sequence").label("plan_item_sequence"),
+            func.json_extract(plan_rows.c.value, "$.status").label("plan_item_status"),
+        )
+        .select_from(WorkingMemoryRecord)
+        .outerjoin(plan_rows, true())
+        .where(WorkingMemoryRecord.run_id == scope.run_id)
+        .order_by(cast(plan_rows.c.key, Integer), plan_rows.c.key)
+    )
+    bounded = await _bounded_rows(session, statement, limit)
+    rows = bounded.rows
+    populated = tuple(row for row in rows if row["plan_item_id"] is not None)
+    truncated = bounded.truncated
+    materialized = populated
     plan_items = tuple(
         GraphPlanItemSource(
             id=_required_string(row, "plan_item_id"),
@@ -396,11 +501,10 @@ async def _load_run_and_plan_items(
         for row in materialized
     )
     return (
-        run,
         plan_items,
         _coverage(
             "plan_items",
-            scanned=len(populated),
+            scanned=bounded.scanned if truncated else len(populated),
             limit=limit,
             truncated=truncated,
         ),

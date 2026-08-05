@@ -147,6 +147,7 @@ async def test_adapter_translates_text_tool_and_streaming_events_in_order() -> N
     ("tool_name", "expected"),
     [
         ("update_plan", AgentEngineEventType.PLAN_UPDATE),
+        ("complete_task", AgentEngineEventType.PLAN_UPDATE),
         ("delegate", AgentEngineEventType.SUBAGENT_REQUESTED),
     ],
 )

@@ -257,6 +257,7 @@ class SQLAlchemyTaskPlanner:
             )
             if attempt.status != TaskAttemptStatus.RUNNING.value:
                 raise RepositoryConflictError("only a running Task Attempt can complete its Task")
+            _require_attempt_actor(attempt, command.actor_session_id)
             requirements = tuple(
                 await session.scalars(
                     select(TaskEvidenceRequirementRecord)
@@ -324,6 +325,7 @@ class SQLAlchemyTaskPlanner:
             )
             if attempt.status != TaskAttemptStatus.RUNNING.value:
                 raise RepositoryConflictError("only a running Task Attempt can fail")
+            _require_attempt_actor(attempt, command.actor_session_id)
             now = utc_now()
             attempt.status = TaskAttemptStatus.FAILED.value
             attempt.failure_summary = command.failure_summary
@@ -387,6 +389,7 @@ class SQLAlchemyTaskPlanner:
                 attempt = await _running_attempt(session, command.run_id, command.task_id)
                 if attempt is None:
                     raise RepositoryConflictError("running Task has no running Task Attempt")
+                _require_attempt_actor(attempt, command.actor_session_id)
                 attempt.status = TaskAttemptStatus.CANCELLED.value
                 attempt.finished_at = utc_now()
             now = utc_now()
@@ -648,6 +651,14 @@ def _require_status(
         raise RepositoryConflictError(
             f"cannot {operation} Task {task.id!r} while status is {task.status!r}"
         )
+
+
+def _require_attempt_actor(
+    attempt: TaskAttemptRecord,
+    actor_session_id: str | None,
+) -> None:
+    if actor_session_id is not None and attempt.session_id != actor_session_id:
+        raise RepositoryConflictError("Task Attempt belongs to a different Agent Session")
 
 
 def _touch_task(task: TaskRecord, now) -> None:
