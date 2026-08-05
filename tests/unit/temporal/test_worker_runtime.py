@@ -26,6 +26,7 @@ from riftx.config import (
     WorkspaceConfig,
 )
 from riftx.domain import Engagement, Objective, Run, RunKind, RunStatus
+from riftx.mcp import MCPHealthSnapshot, MCPRegistrySnapshot
 from riftx.models import ModelAPI, ModelProfile, ModelProfileRegistry
 from riftx.persistence import (
     Database,
@@ -63,15 +64,47 @@ class BlockingWorker:
 class RecordingNodeService:
     def __init__(self) -> None:
         self.heartbeat_calls = 0
+        self.heartbeats: list[object] = []
         self.first_heartbeat = asyncio.Event()
         self.disconnected_node_id: str | None = None
 
     async def heartbeat(self, node_id: str, heartbeat: object) -> None:
         self.heartbeat_calls += 1
+        self.heartbeats.append(heartbeat)
         self.first_heartbeat.set()
 
     async def disconnect(self, node_id: str) -> None:
         self.disconnected_node_id = node_id
+
+
+class RefreshingMCPRegistry:
+    def __init__(self) -> None:
+        self.snapshot = MCPRegistrySnapshot(
+            generation=1,
+            source_digest="a" * 64,
+        )
+        self.refresh_calls = 0
+        self.recovered = asyncio.Event()
+        self.closed = False
+
+    async def refresh(self) -> MCPRegistrySnapshot:
+        self.refresh_calls += 1
+        if self.refresh_calls == 1:
+            raise RuntimeError("transient MCP refresh failure")
+        self.snapshot = self.snapshot.model_copy(
+            update={"generation": self.snapshot.generation + 1}
+        )
+        self.recovered.set()
+        return self.snapshot
+
+    async def health_snapshot(self) -> MCPHealthSnapshot:
+        return MCPHealthSnapshot(
+            max_concurrent_total=16,
+            max_concurrent_per_server=2,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def write_yaml(path: Path, payload: dict[str, object]) -> None:
@@ -206,6 +239,12 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert node.labels["tool_count"] == "0"
     assert node.labels["mcp_server_count"] == "0"
     assert node.labels["mcp_tool_count"] == "0"
+    assert node.labels["mcp_registry_generation"] == "1"
+    assert node.labels["mcp_refresh_status"] == "ready"
+    assert node.labels["mcp_refresh_failures"] == "0"
+    assert node.labels["mcp_unavailable_server_count"] == "0"
+    assert node.labels["mcp_active_call_count"] == "0"
+    assert node.labels["mcp_open_circuit_count"] == "0"
     assert node.labels["working_directory"]
     assert node.labels["shell"]
 
@@ -421,6 +460,63 @@ async def test_temporal_worker_keeps_local_node_online_until_shutdown() -> None:
     assert nodes.heartbeat_calls == heartbeat_calls_after_close
     assert nodes.disconnected_node_id == "worker-local"
     assert safety_task.done()
+    terminal_supervisor.close_all.assert_awaited_once_with()
+    process_supervisor.close.assert_awaited_once_with(cancel_running=True)
+    model_provider.aclose.assert_awaited_once_with()
+    database.dispose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_temporal_worker_refreshes_mcp_and_publishes_safe_health_labels() -> None:
+    worker = BlockingWorker()
+    nodes = RecordingNodeService()
+    registry = RefreshingMCPRegistry()
+    database = AsyncMock()
+    process_supervisor = AsyncMock()
+    terminal_supervisor = AsyncMock()
+    model_provider = AsyncMock()
+    runtime = TemporalWorkerRuntime(
+        worker=worker,  # type: ignore[arg-type]
+        database=database,
+        process_supervisor=process_supervisor,
+        terminal_supervisor=terminal_supervisor,
+        model_provider=model_provider,
+        node_service=nodes,  # type: ignore[arg-type]
+        node_id="worker-local",
+        heartbeat_interval_seconds=0.01,
+        mcp_registry=registry,  # type: ignore[arg-type]
+        mcp_refresh_interval_seconds=0.01,
+        node_labels={"mode": "worker-local", "tool_count": "0"},
+        mcp_health_snapshot=await registry.health_snapshot(),
+    )
+
+    run_task = asyncio.create_task(runtime.run())
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+    await asyncio.wait_for(registry.recovered.wait(), timeout=1)
+    for _ in range(100):
+        published = [getattr(item, "labels", None) or {} for item in nodes.heartbeats]
+        if any(labels.get("mcp_registry_generation") == "2" for labels in published):
+            break
+        await asyncio.sleep(0.01)
+    refresh_task = runtime._mcp_refresh_task
+    assert refresh_task is not None and not refresh_task.done()
+    assert any(
+        labels.get("mcp_registry_generation") == "2"
+        and labels.get("mcp_refresh_status") == "ready"
+        and labels.get("mcp_refresh_failures") == "1"
+        for labels in published
+    )
+    assert all(
+        not any(secret in key or secret in value for secret in ("url", "header", "secret"))
+        for labels in published
+        for key, value in labels.items()
+    )
+
+    worker.release.set()
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert registry.closed is True
+    assert refresh_task.done()
     terminal_supervisor.close_all.assert_awaited_once_with()
     process_supervisor.close.assert_awaited_once_with(cancel_running=True)
     model_provider.aclose.assert_awaited_once_with()

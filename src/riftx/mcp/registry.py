@@ -19,6 +19,7 @@ from riftx.domain import ToolAvailability
 
 from .governance import GovernedMCPAdapter, MCPAdapter
 from .models import (
+    MCPHealthSnapshot,
     MCPRegistrySnapshot,
     MCPServerAvailability,
     MCPServerSnapshot,
@@ -312,6 +313,9 @@ class MCPServerRegistry:
         close = getattr(self._adapter, "close", None)
         if close is not None:
             await close()
+
+    async def health_snapshot(self) -> MCPHealthSnapshot:
+        return await self._governed.health_snapshot()
 
     async def invoke(
         self,

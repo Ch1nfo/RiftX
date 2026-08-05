@@ -869,6 +869,7 @@ class MCPConfig(_ConfigModel):
     max_concurrent_per_server: int = Field(default=2, ge=1, le=1000)
     max_concurrent_total: int = Field(default=16, ge=1, le=10_000)
     discovery_timeout_seconds: float = Field(default=15, gt=0, le=300)
+    refresh_interval_seconds: float = Field(default=60, ge=1, le=3600)
     max_tools_per_server: int = Field(default=256, ge=1, le=4096)
     max_schema_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
     max_call_argument_bytes: int = Field(default=1_048_576, ge=1024, le=16_777_216)

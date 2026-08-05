@@ -77,7 +77,14 @@ from riftx.execution import (
 )
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
-from riftx.mcp import MCPApplicationService, MCPServerRegistry
+from riftx.mcp import (
+    MCPApplicationService,
+    MCPCircuitState,
+    MCPHealthSnapshot,
+    MCPRegistrySnapshot,
+    MCPServerAvailability,
+    MCPServerRegistry,
+)
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
@@ -391,6 +398,11 @@ class TemporalWorkerRuntime:
     heartbeat_interval_seconds: float
     browser_manager: RunnerBrowserManager | None = None
     mcp_registry: MCPServerRegistry | None = None
+    mcp_refresh_interval_seconds: float = 60.0
+    node_labels: dict[str, str] = field(default_factory=dict)
+    mcp_health_snapshot: MCPHealthSnapshot | None = None
+    mcp_refresh_available: bool = True
+    mcp_refresh_failures: int = 0
     run_repository: SQLAlchemyRunRepository | None = None
     event_repository: SQLAlchemyRunEventRepository | None = None
     safety_stopper: RunSafetyStopService | None = None
@@ -402,6 +414,7 @@ class TemporalWorkerRuntime:
     _safety_reconciler_task: asyncio.Task[None] | None = None
     _workflow_signal_task: asyncio.Task[None] | None = None
     _runner_reconciliation_task: asyncio.Task[None] | None = None
+    _mcp_refresh_task: asyncio.Task[None] | None = None
     _safety_failures: set[str] = field(default_factory=set)
     _closed: bool = False
 
@@ -427,6 +440,11 @@ class TemporalWorkerRuntime:
             self._runner_reconciliation_task = asyncio.create_task(
                 self._runner_reconciliation_loop(),
                 name=f"riftx-worker-runner-reconciler-{self.node_id}",
+            )
+        if self.mcp_registry is not None:
+            self._mcp_refresh_task = asyncio.create_task(
+                self._mcp_refresh_loop(),
+                name=f"riftx-worker-mcp-refresh-{self.node_id}",
             )
         try:
             await self.worker.run()
@@ -619,7 +637,10 @@ class TemporalWorkerRuntime:
         unavailable = False
         while True:
             try:
-                await self.node_service.heartbeat(self.node_id, NodeHeartbeat())
+                await self.node_service.heartbeat(
+                    self.node_id,
+                    NodeHeartbeat(labels=self._current_node_labels() or None),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -631,6 +652,42 @@ class TemporalWorkerRuntime:
                     logger.info("Local Worker node heartbeat recovered for %s", self.node_id)
                 unavailable = False
             await asyncio.sleep(self.heartbeat_interval_seconds)
+
+    async def _mcp_refresh_loop(self) -> None:
+        assert self.mcp_registry is not None
+        unavailable = False
+        while True:
+            await asyncio.sleep(self.mcp_refresh_interval_seconds)
+            try:
+                await self.mcp_registry.refresh()
+                self.mcp_health_snapshot = await self.mcp_registry.health_snapshot()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.mcp_refresh_available = False
+                self.mcp_refresh_failures += 1
+                if not unavailable:
+                    logger.exception("Worker MCP Registry refresh failed; retrying")
+                unavailable = True
+            else:
+                self.mcp_refresh_available = True
+                if unavailable:
+                    logger.info("Worker MCP Registry refresh recovered")
+                unavailable = False
+
+    def _current_node_labels(self) -> dict[str, str]:
+        labels = dict(self.node_labels)
+        if self.mcp_registry is None:
+            return labels
+        labels.update(
+            _mcp_runtime_labels(
+                self.mcp_registry.snapshot,
+                self.mcp_health_snapshot,
+                refresh_available=self.mcp_refresh_available,
+                refresh_failures=self.mcp_refresh_failures,
+            )
+        )
+        return labels
 
     async def close(self) -> None:
         if self._closed:
@@ -644,6 +701,14 @@ class TemporalWorkerRuntime:
         self._workflow_signal_task = None
         runner_reconciliation_task = self._runner_reconciliation_task
         self._runner_reconciliation_task = None
+        mcp_refresh_task = self._mcp_refresh_task
+        self._mcp_refresh_task = None
+        if mcp_refresh_task is not None:
+            mcp_refresh_task.cancel()
+            try:
+                await mcp_refresh_task
+            except asyncio.CancelledError:
+                pass
         if runner_reconciliation_task is not None:
             runner_reconciliation_task.cancel()
             try:
@@ -702,6 +767,7 @@ async def build_temporal_worker(
         tool_snapshot = await registry.refresh()
         mcp_registry = MCPServerRegistry(config.mcp)
         mcp_snapshot = await mcp_registry.refresh()
+        mcp_health_snapshot = await mcp_registry.health_snapshot()
         worker_config = TemporalRuntimeConfig(
             task_queue=config.temporal.task_queue,
             workflow_id_prefix=config.temporal.workflow_id_prefix,
@@ -767,6 +833,18 @@ async def build_temporal_worker(
             offline_after=timedelta(seconds=config.runner.node_offline_after_seconds),
             lost_after=timedelta(seconds=config.runner.node_lost_after_seconds),
         )
+        node_labels = {
+            "mode": "worker-local",
+            "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
+            "working_directory": str(Path.cwd()),
+            "tool_count": str(len(tool_snapshot.definitions)),
+            **_mcp_runtime_labels(
+                mcp_snapshot,
+                mcp_health_snapshot,
+                refresh_available=True,
+                refresh_failures=0,
+            ),
+        }
         await node_service.register(
             NodeRegistration(
                 node_id=config.runner.node_id,
@@ -784,14 +862,7 @@ async def build_temporal_worker(
                         }
                     )
                 ),
-                labels={
-                    "mode": "worker-local",
-                    "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
-                    "working_directory": str(Path.cwd()),
-                    "tool_count": str(len(tool_snapshot.definitions)),
-                    "mcp_server_count": str(len(mcp_snapshot.servers)),
-                    "mcp_tool_count": str(len(mcp_snapshot.tools)),
-                },
+                labels=node_labels,
             )
         )
 
@@ -1250,6 +1321,9 @@ async def build_temporal_worker(
             terminal_supervisor=terminal_supervisor,
             browser_manager=browser_manager,
             mcp_registry=mcp_registry,
+            mcp_refresh_interval_seconds=config.mcp.refresh_interval_seconds,
+            node_labels=node_labels,
+            mcp_health_snapshot=mcp_health_snapshot,
             run_repository=run_repository,
             event_repository=event_repository,
             safety_stopper=safety_stopper,
@@ -1279,6 +1353,36 @@ async def build_temporal_worker(
             await model_provider.aclose()
         await database.dispose()
         raise
+
+
+def _mcp_runtime_labels(
+    snapshot: MCPRegistrySnapshot,
+    health: MCPHealthSnapshot | None,
+    *,
+    refresh_available: bool,
+    refresh_failures: int,
+) -> dict[str, str]:
+    health_servers = health.servers if health is not None else []
+    return {
+        "mcp_registry_generation": str(snapshot.generation),
+        "mcp_refresh_status": "ready" if refresh_available else "unavailable",
+        "mcp_refresh_failures": str(refresh_failures),
+        "mcp_server_count": str(len(snapshot.servers)),
+        "mcp_unavailable_server_count": str(
+            sum(
+                server.availability is MCPServerAvailability.UNAVAILABLE
+                for server in snapshot.servers
+            )
+        ),
+        "mcp_tool_count": str(len(snapshot.tools)),
+        "mcp_active_call_count": str(health.active_calls if health is not None else 0),
+        "mcp_open_circuit_count": str(
+            sum(
+                server.circuit_state is MCPCircuitState.OPEN
+                for server in health_servers
+            )
+        ),
+    }
 
 
 def _prepare_local_paths(config: RiftXConfig) -> None:

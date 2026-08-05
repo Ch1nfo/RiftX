@@ -170,6 +170,7 @@ mcp:
   max_concurrent_per_server: 2
   max_concurrent_total: 16
   discovery_timeout_seconds: 15
+  refresh_interval_seconds: 60
   max_tools_per_server: 256
   max_schema_bytes: 65536
   max_call_argument_bytes: 1048576
