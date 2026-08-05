@@ -179,6 +179,39 @@ class CodeCallHierarchyResult(BaseModel):
     truncated: bool = False
 
 
+class CodeDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["error", "warning"]
+    confidence: Literal["python_ast", "lexical"]
+    code: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=1000)
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    end_line_number: int | None = Field(default=None, ge=1)
+    end_column: int | None = Field(default=None, ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeDiagnosticsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: Literal["builtin_static"] = "builtin_static"
+    analysis_modes: list[Literal["python_ast", "lexical"]]
+    diagnostics: list[CodeDiagnostic]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
 class GitStatusEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -228,6 +261,8 @@ __all__ = [
     "CodeEntry",
     "CodeCall",
     "CodeCallHierarchyResult",
+    "CodeDiagnostic",
+    "CodeDiagnosticsResult",
     "CodeGrepMatch",
     "CodeGrepResult",
     "CodeListResult",

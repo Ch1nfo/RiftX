@@ -301,6 +301,35 @@ async def test_workspace_call_hierarchy_reports_ast_and_lexical_edges(
     assert captured.value.code == "code_call_direction_invalid"
 
 
+async def test_workspace_diagnostics_reports_bounded_static_parse_issues(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "broken.py").write_text("def broken(:\n")
+    (root / "broken.ts").write_text("function broken( {\n")
+    (root / "clean.py").write_text("def clean():\n    return True\n")
+    (root / "README.md").write_text("not source")
+    service = _general_service(_run("run-1", root))
+
+    result = await service.diagnostics("run-1")
+    bounded = await service.diagnostics("run-1", max_results=1)
+
+    assert result.backend == "builtin_static"
+    assert result.analysis_modes == ["lexical", "python_ast"]
+    assert [(item.path, item.code, item.confidence) for item in result.diagnostics] == [
+        ("broken.py", "python_syntax_error", "python_ast"),
+        ("broken.ts", "unclosed_delimiter", "lexical"),
+        ("broken.ts", "unclosed_delimiter", "lexical"),
+    ]
+    assert result.files_scanned == 3
+    assert result.skipped_unsupported_files == 1
+    assert result.parse_errors == 2
+    assert len(bounded.diagnostics) == 1
+    assert bounded.parse_errors == 2
+    assert bounded.truncated is True
+
+
 async def test_workspace_reads_are_run_scoped_and_bounded(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -483,6 +512,10 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         direction="incoming",
         file_glob="symbols.py",
     )
+    diagnostics = await service.diagnostics(
+        run.id,
+        file_glob="audit.py",
+    )
 
     assert read.source == "audit_snapshot"
     assert read.source_digest == snapshot_digest
@@ -502,6 +535,9 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert calls.source == "audit_snapshot"
     assert calls.source_digest == snapshot_digest
     assert calls.calls[0].caller == "invoke"
+    assert diagnostics.source == "audit_snapshot"
+    assert diagnostics.source_digest == snapshot_digest
+    assert diagnostics.diagnostics[0].path == "audit.py"
 
 
 async def test_binary_preview_is_bounded_base64(tmp_path: Path) -> None:

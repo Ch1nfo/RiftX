@@ -166,6 +166,12 @@ class _CallHierarchyArguments(_Arguments):
     max_results: int = Field(default=100, ge=1, le=200)
 
 
+class _DiagnosticsArguments(_Arguments):
+    path: str = Field(default="", max_length=4096)
+    file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
+    max_results: int = Field(default=100, ge=1, le=200)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -477,6 +483,17 @@ class RuntimeControlToolService:
                     path=call_arguments.path,
                     file_glob=call_arguments.file_glob,
                     max_results=call_arguments.max_results,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "diagnostics":
+            code = self._require_code()
+            diagnostic_arguments = _DiagnosticsArguments.model_validate(raw_arguments)
+            return (
+                await code.diagnostics(
+                    scope.run_id,
+                    path=diagnostic_arguments.path,
+                    file_glob=diagnostic_arguments.file_glob,
+                    max_results=diagnostic_arguments.max_results,
                 )
             ).model_dump(mode="json")
         if tool_name == "git_status":

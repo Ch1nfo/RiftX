@@ -22,6 +22,7 @@ _MAX_LINE_CHARS = 4096
 _MAX_LINES = 50_000
 _MAX_NAME_CHARS = 512
 _MAX_QUALIFIED_NAME_CHARS = 2048
+_MAX_DELIMITER_DEPTH = 10_000
 
 type _SymbolKind = Literal[
     "function",
@@ -52,6 +53,25 @@ class StaticCall:
     line_number: int
     column: int
     confidence: Literal["python_ast", "lexical"]
+
+
+@dataclass(frozen=True, slots=True)
+class StaticDiagnostic:
+    severity: Literal["error", "warning"]
+    confidence: Literal["python_ast", "lexical"]
+    code: str
+    message: str
+    line_number: int
+    column: int
+    end_line_number: int | None = None
+    end_column: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LexicalIssue:
+    code: Literal["unclosed_block_comment", "unclosed_string"]
+    message: str
+    index: int
 
 
 _LANGUAGE_BY_SUFFIX = {
@@ -288,6 +308,33 @@ def extract_call_graph(
     )
 
 
+def extract_diagnostics(
+    path: str,
+    text: str,
+    *,
+    max_diagnostics: int,
+) -> tuple[
+    list[StaticDiagnostic],
+    bool,
+    bool,
+    Literal["python_ast", "lexical"],
+]:
+    """Return bounded syntax or lexical-structure diagnostics for one source file."""
+
+    if language_for_path(path) == "python":
+        diagnostics, truncated = _python_diagnostics(
+            text,
+            max_diagnostics=max_diagnostics,
+        )
+        return diagnostics, truncated, bool(diagnostics), "python_ast"
+    diagnostics, truncated = _lexical_diagnostics(
+        text,
+        language=language_for_path(path) or "",
+        max_diagnostics=max_diagnostics,
+    )
+    return diagnostics, truncated, bool(diagnostics), "lexical"
+
+
 def extract_symbols(
     path: str,
     text: str,
@@ -379,7 +426,7 @@ def _lexical_identifier_occurrences(
     identifier: str,
     max_occurrences: int,
 ) -> tuple[list[tuple[int, int]], bool, bool]:
-    scrubbed, parse_error = _scrub_non_code(text, language=language)
+    scrubbed, issue = _scrub_non_code(text, language=language)
     line_starts = _line_starts(scrubbed)
     positions: list[tuple[int, int]] = []
     expression = re.compile(
@@ -389,11 +436,11 @@ def _lexical_identifier_occurrences(
     for match in expression.finditer(scrubbed):
         positions.append(_line_column(line_starts, match.start()))
         if len(positions) >= max_occurrences:
-            return positions, True, parse_error
-    return positions, False, parse_error
+            return positions, True, issue is not None
+    return positions, False, issue is not None
 
 
-def _scrub_non_code(text: str, *, language: str) -> tuple[str, bool]:
+def _scrub_non_code(text: str, *, language: str) -> tuple[str, _LexicalIssue | None]:
     characters = list(text)
     length = len(text)
     index = 0
@@ -414,7 +461,11 @@ def _scrub_non_code(text: str, *, language: str) -> tuple[str, bool]:
             end = text.find("*/", index + 2)
             if end < 0:
                 blank(index, length)
-                return "".join(characters), True
+                return "".join(characters), _LexicalIssue(
+                    code="unclosed_block_comment",
+                    message="Block comment is not closed before end of file",
+                    index=index,
+                )
             end += 2
             blank(index, end)
             index = end
@@ -460,8 +511,12 @@ def _scrub_non_code(text: str, *, language: str) -> tuple[str, bool]:
                 break
         blank(start, index)
         if not closed:
-            return "".join(characters), True
-    return "".join(characters), False
+            return "".join(characters), _LexicalIssue(
+                code="unclosed_string",
+                message="String literal is not closed before end of file",
+                index=start,
+            )
+    return "".join(characters), None
 
 
 def _line_starts(text: str) -> list[int]:
@@ -484,7 +539,7 @@ def _lexical_calls(
     symbols: list[CodeSymbol],
     max_calls: int,
 ) -> tuple[list[StaticCall], bool, bool]:
-    scrubbed, parse_error = _scrub_non_code(text, language=language)
+    scrubbed, issue = _scrub_non_code(text, language=language)
     line_starts = _line_starts(scrubbed)
     declaration_positions = {
         _absolute_index(line_starts, symbol.line_number, symbol.column)
@@ -523,8 +578,149 @@ def _lexical_calls(
             )
         )
         if len(calls) >= max_calls:
-            return calls, True, parse_error
-    return calls, False, parse_error
+            return calls, True, issue is not None
+    return calls, False, issue is not None
+
+
+def _python_diagnostics(
+    text: str,
+    *,
+    max_diagnostics: int,
+) -> tuple[list[StaticDiagnostic], bool]:
+    try:
+        ast.parse(text)
+    except SyntaxError as exc:
+        if max_diagnostics < 1:
+            return [], True
+        line_number = max(1, exc.lineno or 1)
+        column = max(0, (exc.offset or 1) - 1)
+        return [
+            StaticDiagnostic(
+                severity="error",
+                confidence="python_ast",
+                code="python_syntax_error",
+                message=_bounded_text(exc.msg or "Python syntax error", 1000),
+                line_number=line_number,
+                column=column,
+                end_line_number=max(line_number, exc.end_lineno or line_number),
+                end_column=max(column, (exc.end_offset or column + 1) - 1),
+            )
+        ], False
+    except (ValueError, RecursionError):
+        if max_diagnostics < 1:
+            return [], True
+        return [
+            StaticDiagnostic(
+                severity="error",
+                confidence="python_ast",
+                code="python_parse_failed",
+                message="Python source could not be parsed within the static analysis limits",
+                line_number=1,
+                column=0,
+            )
+        ], False
+    return [], False
+
+
+def _lexical_diagnostics(
+    text: str,
+    *,
+    language: str,
+    max_diagnostics: int,
+) -> tuple[list[StaticDiagnostic], bool]:
+    scrubbed, issue = _scrub_non_code(text, language=language)
+    line_starts = _line_starts(scrubbed)
+    diagnostics: list[StaticDiagnostic] = []
+    truncated = False
+
+    def append(diagnostic: StaticDiagnostic) -> None:
+        nonlocal truncated
+        if len(diagnostics) < max_diagnostics:
+            diagnostics.append(diagnostic)
+        else:
+            truncated = True
+
+    if issue is not None:
+        line_number, column = _line_column(line_starts, issue.index)
+        append(
+            StaticDiagnostic(
+                severity="error",
+                confidence="lexical",
+                code=issue.code,
+                message=issue.message,
+                line_number=line_number,
+                column=column,
+            )
+        )
+
+    opening = {"(": ")", "[": "]", "{": "}"}
+    closing = frozenset(opening.values())
+    stack: list[tuple[str, int]] = []
+    for index, character in enumerate(scrubbed):
+        if character in opening:
+            if len(stack) >= _MAX_DELIMITER_DEPTH:
+                line_number, column = _line_column(line_starts, index)
+                append(
+                    StaticDiagnostic(
+                        severity="warning",
+                        confidence="lexical",
+                        code="delimiter_depth_exceeded",
+                        message="Delimiter nesting exceeds the static analysis limit",
+                        line_number=line_number,
+                        column=column,
+                    )
+                )
+                return diagnostics, True
+            stack.append((character, index))
+            continue
+        if character not in closing:
+            continue
+        line_number, column = _line_column(line_starts, index)
+        if not stack:
+            append(
+                StaticDiagnostic(
+                    severity="warning",
+                    confidence="lexical",
+                    code="unexpected_closing_delimiter",
+                    message=f"Unexpected closing delimiter {character!r}",
+                    line_number=line_number,
+                    column=column,
+                    end_line_number=line_number,
+                    end_column=column + 1,
+                )
+            )
+            continue
+        opener, _ = stack.pop()
+        expected = opening[opener]
+        if expected != character:
+            append(
+                StaticDiagnostic(
+                    severity="warning",
+                    confidence="lexical",
+                    code="mismatched_closing_delimiter",
+                    message=f"Expected closing delimiter {expected!r}, found {character!r}",
+                    line_number=line_number,
+                    column=column,
+                    end_line_number=line_number,
+                    end_column=column + 1,
+                )
+            )
+
+    for opener, index in reversed(stack):
+        line_number, column = _line_column(line_starts, index)
+        append(
+            StaticDiagnostic(
+                severity="warning",
+                confidence="lexical",
+                code="unclosed_delimiter",
+                message=f"Opening delimiter {opener!r} is not closed",
+                line_number=line_number,
+                column=column,
+                end_line_number=line_number,
+                end_column=column + 1,
+            )
+        )
+    return diagnostics, truncated
 
 
 def _python_calls(
@@ -705,7 +901,9 @@ def _bounded_text(value: str, maximum: int) -> str:
 
 __all__ = [
     "StaticCall",
+    "StaticDiagnostic",
     "extract_call_graph",
+    "extract_diagnostics",
     "extract_symbols",
     "find_identifier_occurrences",
     "is_identifier",

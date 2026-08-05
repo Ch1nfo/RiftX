@@ -30,6 +30,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "symbol_search",
     "find_references",
     "call_hierarchy",
+    "diagnostics",
     "git_status",
     "git_diff",
     "git_log",
@@ -59,6 +60,7 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "symbol_search",
     "find_references",
     "call_hierarchy",
+    "diagnostics",
     "git_status",
     "git_diff",
     "git_log",
@@ -591,6 +593,9 @@ def _resident_schema(
         "call_hierarchy": (
             "Find bounded incoming or outgoing name-level calls using AST or lexical analysis."
         ),
+        "diagnostics": (
+            "Read bounded built-in syntax and lexical diagnostics without starting project tools."
+        ),
         "git_status": "Read bounded Git worktree and index status without refreshing the index.",
         "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
         "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
@@ -737,6 +742,16 @@ def _resident_schema(
             "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
         }
         required = ["symbol"]
+    elif tool_id == "diagnostics":
+        properties = {
+            "path": {"type": "string", "maxLength": 4096},
+            "file_glob": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
     elif tool_id == "git_diff":
         properties = {
             "path": {

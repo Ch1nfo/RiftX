@@ -12,6 +12,8 @@ from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.code import (
     CodeCall,
     CodeCallHierarchyResult,
+    CodeDiagnostic,
+    CodeDiagnosticsResult,
     CodeEntry,
     CodeListResult,
     CodeReadResult,
@@ -260,6 +262,36 @@ class FakeCode:
             skipped_large_files=0,
             skipped_unsupported_files=0,
             parse_errors=0,
+        )
+
+    async def diagnostics(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodeDiagnosticsResult:
+        self.calls.append(("diagnostics", run_id, kwargs))
+        return CodeDiagnosticsResult(
+            source="workspace",
+            analysis_modes=["python_ast"],
+            diagnostics=[
+                CodeDiagnostic(
+                    severity="error",
+                    confidence="python_ast",
+                    code="python_syntax_error",
+                    message="invalid syntax",
+                    language="python",
+                    path="src/app.py",
+                    line_number=1,
+                    column=4,
+                    excerpt="def broken(:",
+                )
+            ],
+            files_scanned=1,
+            bytes_scanned=13,
+            skipped_binary_files=0,
+            skipped_large_files=0,
+            skipped_unsupported_files=0,
+            parse_errors=1,
         )
 
 
@@ -794,6 +826,29 @@ async def test_native_call_hierarchy_uses_exact_run_scope() -> None:
                 "file_glob": None,
                 "max_results": 10,
             },
+        )
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]
+
+
+async def test_native_diagnostics_uses_exact_run_scope() -> None:
+    code = FakeCode()
+    control, _, transcript, _ = service(code=code)
+
+    result = await control(
+        SCOPE,
+        "diagnostics",
+        {"path": "src", "file_glob": "*.py", "max_results": 10},
+        "call-diagnostics",
+    )
+
+    assert result["backend"] == "builtin_static"
+    assert result["diagnostics"][0]["code"] == "python_syntax_error"
+    assert code.calls == [
+        (
+            "diagnostics",
+            "run-1",
+            {"path": "src", "file_glob": "*.py", "max_results": 10},
         )
     ]
     assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]

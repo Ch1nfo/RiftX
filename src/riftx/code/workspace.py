@@ -40,6 +40,8 @@ from riftx.domain import RunKind
 from .models import (
     CodeCall,
     CodeCallHierarchyResult,
+    CodeDiagnostic,
+    CodeDiagnosticsResult,
     CodeEntry,
     CodeGrepMatch,
     CodeGrepResult,
@@ -53,6 +55,7 @@ from .models import (
 )
 from .symbols import (
     extract_call_graph,
+    extract_diagnostics,
     extract_symbols,
     find_identifier_occurrences,
     is_identifier,
@@ -76,6 +79,8 @@ _MAX_SYMBOLS_SCANNED = 20_000
 _MAX_SYMBOL_RESULTS = 200
 _MAX_CALLS_SCANNED = 20_000
 _MAX_CALL_RESULTS = 200
+_MAX_DIAGNOSTICS_SCANNED = 20_000
+_MAX_DIAGNOSTIC_RESULTS = 200
 
 
 class _Source(Protocol):
@@ -653,6 +658,87 @@ class CodeWorkspaceService:
                     definitions_found=definitions_found,
                     analysis_modes=sorted(modes),
                     calls=results,
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
+                    parse_errors=parse_errors,
+                    truncated=coverage_truncated or output_truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def diagnostics(
+        self,
+        run_id: str,
+        *,
+        path: str = "",
+        file_glob: str | None = None,
+        max_results: int = 100,
+    ) -> CodeDiagnosticsResult:
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_DIAGNOSTIC_RESULTS, label="max_results")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeDiagnosticsResult:
+            results: list[CodeDiagnostic] = []
+            modes: set[Literal["python_ast", "lexical"]] = set()
+            diagnostics_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            with source as opened:
+                scan = _SemanticScan(opened, path, pattern)
+                for source_path, text in scan.files():
+                    remaining = _MAX_DIAGNOSTICS_SCANNED - diagnostics_scanned
+                    if remaining <= 0:
+                        coverage_truncated = True
+                        break
+                    diagnostics, file_truncated, parse_failed, mode = extract_diagnostics(
+                        source_path,
+                        text,
+                        max_diagnostics=remaining,
+                    )
+                    modes.add(mode)
+                    diagnostics_scanned += len(diagnostics)
+                    parse_errors += int(parse_failed)
+                    coverage_truncated |= file_truncated
+                    lines = text.splitlines()
+                    language = language_for_path(source_path)
+                    assert language is not None
+                    for diagnostic in diagnostics:
+                        if len(results) >= max_results:
+                            output_truncated = True
+                            continue
+                        excerpt = (
+                            lines[diagnostic.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                            if 0 < diagnostic.line_number <= len(lines)
+                            else ""
+                        )
+                        results.append(
+                            CodeDiagnostic(
+                                severity=diagnostic.severity,
+                                confidence=diagnostic.confidence,
+                                code=diagnostic.code,
+                                message=diagnostic.message,
+                                language=language,
+                                path=source_path,
+                                line_number=diagnostic.line_number,
+                                column=diagnostic.column,
+                                end_line_number=diagnostic.end_line_number,
+                                end_column=diagnostic.end_column,
+                                excerpt=excerpt,
+                            )
+                        )
+
+                coverage_truncated |= scan.truncated
+                return CodeDiagnosticsResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    analysis_modes=sorted(modes),
+                    diagnostics=results,
                     files_scanned=scan.files_scanned,
                     bytes_scanned=scan.bytes_scanned,
                     skipped_binary_files=scan.skipped_binary_files,

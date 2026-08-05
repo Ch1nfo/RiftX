@@ -31,6 +31,7 @@ _CONTROL_TOOL_NAMES = {
     "symbol_search",
     "find_references",
     "call_hierarchy",
+    "diagnostics",
     "git_status",
     "git_diff",
     "git_log",

@@ -84,6 +84,15 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "outgoing",
         "both",
     ]
+    diagnostic_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "diagnostics"
+    )
+    assert diagnostic_schema["parameters"]["required"] == []
+    assert set(diagnostic_schema["parameters"]["properties"]) == {
+        "path",
+        "file_glob",
+        "max_results",
+    }
     assert {
         "search_tools",
         "list_tools",
@@ -96,6 +105,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "symbol_search",
         "find_references",
         "call_hierarchy",
+        "diagnostics",
         "git_status",
         "git_diff",
         "git_log",

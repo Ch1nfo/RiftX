@@ -4,6 +4,7 @@ import pytest
 
 from riftx.code.symbols import (
     extract_call_graph,
+    extract_diagnostics,
     extract_symbols,
     find_identifier_occurrences,
     language_for_path,
@@ -232,3 +233,37 @@ def test_lexical_call_graph_skips_declarations_comments_and_strings() -> None:
     assert mode == "lexical"
     assert truncated is False
     assert parse_error is False
+
+
+def test_static_diagnostics_report_python_and_lexical_structure_errors() -> None:
+    python_diagnostics, truncated, parse_error, mode = extract_diagnostics(
+        "broken.py",
+        "def broken(:\n",
+        max_diagnostics=10,
+    )
+    lexical_diagnostics, lexical_truncated, lexical_error, lexical_mode = (
+        extract_diagnostics(
+            "broken.ts",
+            "function broken( {\n",
+            max_diagnostics=10,
+        )
+    )
+    string_diagnostics, _, string_error, _ = extract_diagnostics(
+        "string.ts",
+        'const value = "unterminated\n',
+        max_diagnostics=10,
+    )
+
+    assert [(item.code, item.severity, item.line_number) for item in python_diagnostics] == [
+        ("python_syntax_error", "error", 1)
+    ]
+    assert mode == "python_ast"
+    assert truncated is False
+    assert parse_error is True
+    assert {item.code for item in lexical_diagnostics} == {"unclosed_delimiter"}
+    assert lexical_mode == "lexical"
+    assert lexical_truncated is False
+    assert lexical_error is True
+    assert string_diagnostics[0].code == "unclosed_string"
+    assert string_diagnostics[0].severity == "error"
+    assert string_error is True
