@@ -36,9 +36,9 @@
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser；显式批准、Scope、陈旧 Observation、Artifact 与 Transcript 继续复用既有权威服务。
-- Current implementation commit：`69d54ab7`。
-- Next delivery slice：接通有界、不可信标记、Artifact-backed 的 Web Search/Fetch/Research 生产工具。
+- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，并可在逐次批准后匿名抓取公网文档；Scope/SSRF、Run 状态、Artifact、Source 与 Transcript 继续复用既有权威服务。
+- Current implementation commits：`69d54ab7`、`e8c047c6`。
+- Next delivery slice：建立可配置 Search Provider，并接通有界、不可信标记、Artifact-backed 的 Web Search/Research 生产工具。
 
 ## 3. 研究与实现基线
 
@@ -116,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
-| CAP-102 | CAP-001 | in_progress | `69d54ab7` |
+| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6` |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
@@ -394,7 +394,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5013 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 和并发首启 Pydantic alias 提示；
   - 全仓 Ruff、staged `git diff --check`：passed。
 - First delivery implementation commit：`69d54ab7`。
-- Remaining slices：Web Search/Fetch/Research、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
+- Second delivery slice：
+  - 已将 `web_fetch` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Temporal Worker；不向 Subagent 暴露；
+  - 每次 Public Web Fetch 要求 `approval_policy=explicit`，缺少 durable approved intent 时不会进入 Run 查询、DNS 或 HTTP；
+  - Fetch 只允许匿名 GET，不向模型开放 Credential/Proxy/Host 路由 Header；URL Credential、非 HTTP(S)、私有/本地/保留 IP 和 DNS 解析到非公网地址继续失败关闭；
+  - 生产 Worker 使用 Run-scoped `SQLAlchemyWebSourceRepository` 与 `ApplicationWebArtifactStore`，成功 Fetch 后才生成 canonical `WebDocument`、Chunk 和 `SourceReference`；Search Candidate 仍不能直接成为可引用 Source；
+  - 新增 `SERVICE_WEB_FETCH` RunKind effect inventory；当前只允许 General Run，Code Audit、暂停、取消、完成和失败状态均在 DNS/HTTP 前拒绝；每次重定向前重新检查 Run 状态与公网目标，跨域自动跟随仍重新执行 SSRF 检查；
+  - 模型参数限制为 URL、缓存策略、重定向策略、最多 10 MB 响应、最多 60 秒、原文保存和 Browser handoff 标志；固定 GET、匿名 Header 与最多 10 次重定向由 Fetcher 持有；
+  - 模型结果保留 `UNTRUSTED_EXTERNAL_CONTENT`，只内联最多 6 个 Chunk、每个 6000 字符和有界元数据；完整原文与规范化正文进入 immutable Artifact，Source/Document/Artifact 自动进入 Transcript refs；
+  - Browser Fallback、Redirect 和 Binary/Partial 仍返回 typed status，不把未 canonicalize 的页面冒充正式 Source。
+- Second delivery checks：
+  - Public Fetch、Control Tool、Agent visibility、Tool Policy、Tool Discovery、RunKind Effect 与 Worker Runtime 定向回归：`113 passed`；
+  - 完整 Web、Runtime Engine、Deferred Approval/Recovery、Context Gate、RunKind Effect 与 Worker Runtime 关联回归：`188 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5017 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
+  - 全仓 Ruff、staged `git diff --check`：passed。
+- Second delivery implementation commit：`e8c047c6`。
+- Remaining slices：Web Search/Research、Code Audit 公网研究 Artifact owner 适配、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
 
 ## 9. Known pre-existing worktree state
 
