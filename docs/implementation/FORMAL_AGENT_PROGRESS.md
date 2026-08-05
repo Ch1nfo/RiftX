@@ -36,9 +36,9 @@
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，并可在逐次批准后执行匿名 Public Fetch、联合 Web Search 和只引用 canonical Source 的 Web Research；Scope/SSRF、Run 状态、Artifact、Source 与 Transcript 继续复用既有权威服务。
-- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`。
-- Next delivery slice：接通 HTTP Traffic 查询/原文读取与 Target HTTP Request 生产闭环；Code Audit 公网研究继续等待 Audit Artifact owner 适配。
+- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，逐次批准后执行匿名 Public Fetch、联合 Web Search、只引用 canonical Source 的 Web Research 和 Scope-bound Target HTTP Request，并可查询脱敏 HTTP Traffic、读取 Exchange 及其原文 Artifact；Scope/SSRF、Run 状态、Approval、Stop Proof、Artifact、Source 与 Transcript 继续复用既有权威服务。
+- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`、`27fec108`。
+- Next delivery slice：完成 Code Audit 公网研究的 Audit Artifact owner 适配，收束 CAP-102。
 
 ## 3. 研究与实现基线
 
@@ -116,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
-| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6`, `c9a6394a` |
+| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108` |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
@@ -425,7 +425,23 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5038 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
   - 全仓 Ruff、Example YAML 解析和 staged `git diff --check`：passed。
 - Third delivery implementation commit：`c9a6394a`。
-- Remaining slices：Code Audit 公网研究 Artifact owner 适配、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
+- Fourth delivery slice：
+  - 已将 `query_http_traffic`、`read_http_exchange` 和 `target_http_request` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Temporal Worker；三者均不向 Subagent 暴露；
+  - `query_http_traffic` 与 `read_http_exchange` 只接受 trusted Runtime Run identity，继续复用现有 metadata-only Traffic 投影、稳定 Snapshot/Cursor、URL/Redirect 脱敏和精确 Run/Engagement owner 约束；Runtime Cursor 使用与本地操作者不同的签名绑定；
+  - `read_http_exchange` 通过 `run_id + exchange_id` 精确读取 durable Target HTTP Result，仅向模型返回脱敏元数据、最多 8192 字符的不可信响应预览，以及通过 owner 检查的 Request/Response Artifact ID；完整原文继续使用既有 `read_artifact` 有界读取；
+  - `target_http_request` 要求逐次 `approval_policy=explicit`；Runtime Approval claim 返回同一个 durable `ToolCallIntent`，其 ID 同时成为 Target HTTP `tool_call_id` 和 `execution_key` 身份组成部分，不创建第二套临时批准或执行身份；
+  - 写工具复用既有 `TargetHttpApplicationService`、ScopeGuard、Node Router、Runner Client、effect guard、幂等 Repository 与 `RunSafetyStopService`；每个实际网络副作用前仍重新检查 Run/Intent，暂停、取消、完成、失败、越界 URL 和 Code Audit Run 均在出站前拒绝；
+  - 模型可提供 Method、URL、有限 Header/Query/Cookie、Body/JSON、TLS/Redirect、超时和响应上限；不开放 Proxy、Client Certificate、Artifact 保存开关或 Runner 路由，Request/Response 原文固定写入 immutable `UNTRUSTED_SOURCE` Artifact；
+  - Target HTTP 模型结果不暴露 Response Header、Cookie、Authorization 或完整 URL 值，只返回 URL/Redirect 安全摘要、有界 `UNTRUSTED_EXTERNAL_CONTENT` 预览、Exchange ID 和 Artifact ID；Exchange/Artifact 自动进入 Transcript refs；
+  - 新增 exact Run Result lookup、Artifact owner fail-closed、Runtime/Operator Cursor 隔离、durable Intent identity、Primary/Subagent visibility 和 Code Audit 拒绝测试；既有 Target HTTP 停止确认、远程 Runner 与安全收敛语义保持不变。
+- Fourth delivery checks：
+  - `conda run --no-capture-output -n agent pytest -q tests/unit/application/test_traffic.py tests/integration/persistence/test_traffic_repository.py tests/target_http/test_service.py tests/runtime/test_control_tools.py tests/unit/agent/test_tool_policy.py tests/unit/tools/test_discovery.py tests/integration/agent/test_runtime_tool_visibility.py tests/execution/test_deferred_runtime.py tests/unit/temporal/test_worker_runtime.py tests/unit/application/test_run_kind_effect_policy.py tests/unit/application/test_run_kind_effect_bridge.py`：`169 passed`；
+  - `conda run --no-capture-output -n agent pytest -q tests/target_http tests/runtime tests/integration/agent tests/integration/api/test_traffic_api.py tests/integration/persistence/test_traffic_repository.py tests/unit/agent tests/unit/tools tests/unit/temporal`：`458 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/execution/deferred.py src/riftx/target_http/service.py`：`Success: no issues found in 2 source files`；
+  - `conda run --no-capture-output -n agent pytest -q`：`5045 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Fourth delivery implementation commit：`27fec108`。
+- Remaining slice：Code Audit 公网研究 Artifact owner 适配。
 
 ## 9. Known pre-existing worktree state
 
