@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -329,7 +329,19 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4989 passed, 5 skipped, 12 warnings`；额外警告为既有并发首启测试中的 Pydantic alias schema 提示；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
 - Sixth delivery implementation commit：`cbc2a2e5`。
-- Later slices：受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
+- Seventh delivery slice：
+  - 已将 `diagnostics` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool；
+  - General Run 与 Code Audit 继续复用 owner-bound Workspace/Snapshot 和共享有界语义扫描预算，不读取 Audit 可变输出目录；
+  - Python 使用标准库 AST 返回有界语法错误；其他已支持语言使用不执行目标代码的词法结构检查，报告未闭合字符串、未闭合块注释、意外/错误配对/未闭合分隔符和分隔符深度超限；
+  - 返回诊断级别、代码、消息、语言、路径、行列、bounded excerpt、扫描文件/字节、跳过原因、解析失败和截断状态；文件、字节、目录条目、诊断扫描数、返回结果和分隔符深度均有硬上限；
+  - 结果明确标记为 `backend=builtin_static`，每条诊断携带 `python_ast` 或 `lexical` 置信标记；本切片不启动 Language Server，不执行项目 Hook、插件、构建、测试或安装脚本，也不冒充 LSP diagnostics。
+- Seventh delivery checks：
+  - Code/Runtime/Tool Discovery、Tool Policy 与工具可见性定向回归：`70 passed`；
+  - Code/Runtime/Tool 关联回归：`85 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4992 passed, 5 skipped, 11 warnings`；跳过项为 Windows、PowerShell 或 delegated cgroup 主机条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff 和 `git diff --check`：passed。
+- Seventh delivery implementation commit：`546f1466`。
+- Later slices：受控 LSP，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
 
