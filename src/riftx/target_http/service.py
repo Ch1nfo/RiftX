@@ -40,7 +40,7 @@ from .redaction import safe_url_metadata
 
 EffectGuard = Callable[[], Awaitable[None]]
 
-_TARGET_HTTP_TOOL_IDS = frozenset({"request_target_url"})
+_TARGET_HTTP_TOOL_IDS = frozenset({"request_target_url", "target_http_request"})
 _ACTIVE_INTENT_STATUSES = frozenset(
     {
         ToolCallStatus.READY,
@@ -87,6 +87,12 @@ class TargetHttpRunner(Protocol):
 
 class TargetHttpRequestRepository(Protocol):
     async def get_by_execution_key(self, execution_key: str) -> TargetHttpResult | None: ...
+
+    async def get_for_run(
+        self,
+        run_id: str,
+        request_id: str,
+    ) -> TargetHttpResult | None: ...
 
     async def create(
         self,
@@ -312,6 +318,13 @@ class TargetHttpApplicationService:
                 if self._lock_users[request.execution_key] == 0:
                     self._lock_users.pop(request.execution_key, None)
                     self._locks.pop(request.execution_key, None)
+
+    async def get_result(self, run_id: str, request_id: str) -> TargetHttpResult:
+        require_general_run_operation(await self._require_run(run_id))
+        result = await self._requests.get_for_run(run_id, request_id)
+        if result is None or result.request_id != request_id:
+            raise EntityNotFoundError("TargetHttpResult", request_id)
+        return result
 
     async def stop_run(self, run_id: str) -> TargetHttpRunStopResult:
         """Stop every owned READY/EXECUTING intent without inventing remote ACKs."""

@@ -167,6 +167,35 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         for tool in agent.tools
         if tool.name in {"web_search", "web_research"}
     } == {"web_search": True, "web_research": True}
+    query_traffic_schema = next(
+        schema
+        for schema in compiled.available_tools
+        if schema.get("name") == "query_http_traffic"
+    )
+    assert query_traffic_schema["parameters"]["required"] == []
+    read_exchange_schema = next(
+        schema
+        for schema in compiled.available_tools
+        if schema.get("name") == "read_http_exchange"
+    )
+    assert read_exchange_schema["parameters"]["required"] == ["exchange_id"]
+    target_http_schema = next(
+        schema
+        for schema in compiled.available_tools
+        if schema.get("name") == "target_http_request"
+    )
+    assert target_http_schema["parameters"]["required"] == ["method", "url"]
+    assert target_http_schema["x-riftx"]["approval_policy"] == "explicit"
+    assert {
+        tool.name: tool.needs_approval
+        for tool in agent.tools
+        if tool.name
+        in {"query_http_traffic", "read_http_exchange", "target_http_request"}
+    } == {
+        "query_http_traffic": False,
+        "read_http_exchange": False,
+        "target_http_request": True,
+    }
     assert {
         "search_tools",
         "list_tools",
@@ -192,6 +221,9 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "web_fetch",
         "web_search",
         "web_research",
+        "query_http_traffic",
+        "read_http_exchange",
+        "target_http_request",
         "get_execution",
         "wait_execution",
         "cancel_execution",

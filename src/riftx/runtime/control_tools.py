@@ -7,10 +7,19 @@ import hashlib
 import json
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from riftx.application.errors import ApplicationConflictError, ApplicationServiceError
-from riftx.application.services import ArtifactApplicationService
+from riftx.application.errors import (
+    ApplicationConflictError,
+    ApplicationServiceError,
+    EntityNotFoundError,
+)
+from riftx.application.services import (
+    ArtifactApplicationService,
+    TrafficMetadataApplicationService,
+)
+from riftx.application.services.runs import require_general_run_operation
+from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserApplicationService, BrowserView, OpenBrowser
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.domain import (
@@ -21,11 +30,15 @@ from riftx.domain import (
     MessageRole,
     MessageType,
     MessageVisibility,
+    Run,
     TranscriptMessageDraft,
 )
-from riftx.execution import ExecutionService
+from riftx.execution import ExecutionService, build_execution_key
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager
+from riftx.target_http import TargetHttpRequest, TargetHttpResult, TargetHttpSubmission
+from riftx.target_http.redaction import safe_redirect_metadata, safe_url_metadata
+from riftx.target_http.service import TargetHttpApplicationService
 from riftx.tools import ToolContextManager, ToolSearchRequest
 from riftx.tools.policy import AGENT_TOOL_POLICIES
 from riftx.web import (
@@ -70,7 +83,7 @@ class ControlIntentTracker(Protocol):
         run_id: str,
         session_id: str,
         engine_call_id: str,
-    ) -> bool: ...
+    ) -> ClaimedControlIntent | None: ...
 
     async def finish_control_intent(
         self,
@@ -80,6 +93,14 @@ class ControlIntentTracker(Protocol):
         engine_call_id: str,
         succeeded: bool,
     ) -> None: ...
+
+
+class ClaimedControlIntent(Protocol):
+    id: str
+
+
+class RunReader(Protocol):
+    async def get(self, run_id: str) -> Run | None: ...
 
 
 class _Arguments(BaseModel):
@@ -292,6 +313,57 @@ class _WebResearchArguments(_Arguments):
     max_sources: int = Field(default=6, ge=1, le=6)
 
 
+class _QueryHttpTrafficArguments(_Arguments):
+    method: str | None = Field(default=None, min_length=1, max_length=32)
+    status_class: TrafficStatusClass | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    cursor: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class _ReadHttpExchangeArguments(_Arguments):
+    exchange_id: str = Field(min_length=1, max_length=256)
+
+
+class _TargetHttpRequestArguments(_Arguments):
+    method: str = Field(min_length=1, max_length=32)
+    url: str = Field(min_length=1, max_length=8192)
+    headers: dict[str, str] = Field(default_factory=dict, max_length=100)
+    query: dict[str, str] = Field(default_factory=dict, max_length=100)
+    body: str | None = Field(default=None, max_length=1_000_000)
+    json_body: JsonValue | None = None
+    cookies: dict[str, str] = Field(default_factory=dict, max_length=100)
+    verify_tls: bool = True
+    follow_redirects: bool = False
+    timeout_seconds: float = Field(default=30, gt=0, le=60)
+    max_response_bytes: int = Field(default=2_000_000, ge=1, le=10_000_000)
+
+    @field_validator("headers", "query", "cookies")
+    @classmethod
+    def validate_string_map(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(
+            not key
+            or len(key) > 256
+            or len(item) > 16_384
+            for key, item in value.items()
+        ):
+            raise ValueError("Target HTTP string map is invalid or too large")
+        return value
+
+    @model_validator(mode="after")
+    def validate_body_size(self) -> _TargetHttpRequestArguments:
+        if self.body is not None and self.json_body is not None:
+            raise ValueError("Target HTTP accepts body or json_body, not both")
+        if self.json_body is not None:
+            encoded = json.dumps(
+                self.json_body,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+            if len(encoded) > 1_000_000:
+                raise ValueError("Target HTTP json_body exceeds 1000000 bytes")
+        return self
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -331,6 +403,9 @@ class RuntimeControlToolService:
         browser: BrowserApplicationService | None = None,
         web_fetcher: PublicWebFetcher | None = None,
         web_research: WebResearchApplicationService | None = None,
+        runs: RunReader | None = None,
+        traffic: TrafficMetadataApplicationService | None = None,
+        target_http: TargetHttpApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
@@ -344,6 +419,9 @@ class RuntimeControlToolService:
         self._browser = browser
         self._web_fetcher = web_fetcher
         self._web_research = web_research
+        self._runs = runs
+        self._traffic = traffic
+        self._target_http = target_http
         self._control_intents = control_intents
 
     async def __call__(
@@ -364,17 +442,20 @@ class RuntimeControlToolService:
             },
         )
         approval_claimed = False
+        claimed_intent: ClaimedControlIntent | None = None
         try:
             policy = AGENT_TOOL_POLICIES.get(tool_name)
             if policy is not None and policy.approval_required:
-                approved = self._control_intents is not None and await (
-                    self._control_intents.begin_control_intent(
+                claimed_intent = (
+                    await self._control_intents.begin_control_intent(
                         run_id=scope.run_id,
                         session_id=scope.session_id,
                         engine_call_id=call_id,
                     )
+                    if self._control_intents is not None
+                    else None
                 )
-                if not approved:
+                if not claimed_intent:
                     raise ApplicationConflictError(
                         "control_tool_approval_missing",
                         "Control Tool mutation lacks an approved durable intent",
@@ -385,6 +466,7 @@ class RuntimeControlToolService:
                 tool_name,
                 arguments,
                 call_id=call_id,
+                claimed_intent=claimed_intent,
             )
             result = _bounded_result(result)
         except Exception as exc:
@@ -479,6 +561,7 @@ class RuntimeControlToolService:
         raw_arguments: dict[str, object],
         *,
         call_id: str,
+        claimed_intent: ClaimedControlIntent | None,
     ) -> object:
         if tool_name == "search_tools":
             search_arguments = _SearchArguments.model_validate(raw_arguments)
@@ -821,6 +904,77 @@ class RuntimeControlToolService:
                     model_profile=scope.model_profile,
                 )
             )
+        if tool_name == "query_http_traffic":
+            await self._general_run(scope.run_id)
+            traffic = self._require_traffic()
+            traffic_arguments = _QueryHttpTrafficArguments.model_validate(raw_arguments)
+            page = await traffic.list_for_runtime(
+                scope.run_id,
+                method=traffic_arguments.method,
+                status_class=traffic_arguments.status_class,
+                limit=traffic_arguments.limit,
+                cursor=traffic_arguments.cursor,
+            )
+            return {
+                **page.model_dump(mode="json"),
+                "content_trust": "REDACTED_SENSITIVE_METADATA",
+            }
+        if tool_name == "read_http_exchange":
+            await self._general_run(scope.run_id)
+            traffic = self._require_traffic()
+            target_http = self._require_target_http()
+            exchange_arguments = _ReadHttpExchangeArguments.model_validate(raw_arguments)
+            detail = await traffic.get_for_runtime(
+                scope.run_id,
+                exchange_arguments.exchange_id,
+            )
+            target_result = await target_http.get_result(
+                scope.run_id,
+                exchange_arguments.exchange_id,
+            )
+            await self._require_target_http_artifacts(scope.run_id, target_result)
+            return _http_exchange_payload(detail.model_dump(mode="json"), target_result)
+        if tool_name == "target_http_request":
+            if claimed_intent is None:
+                raise ApplicationConflictError(
+                    "control_tool_approval_missing",
+                    "Target HTTP request lacks an approved durable intent",
+                )
+            run = await self._general_run(scope.run_id)
+            target_http = self._require_target_http()
+            request_arguments = _TargetHttpRequestArguments.model_validate(raw_arguments)
+            request = TargetHttpRequest(
+                execution_key=build_execution_key(
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    tool_call_id=claimed_intent.id,
+                    attempt_group="initial",
+                ),
+                method=request_arguments.method,
+                url=request_arguments.url,
+                headers=request_arguments.headers,
+                query=request_arguments.query,
+                body=request_arguments.body,
+                json_body=request_arguments.json_body,
+                cookies=request_arguments.cookies,
+                verify_tls=request_arguments.verify_tls,
+                follow_redirects=request_arguments.follow_redirects,
+                timeout_seconds=request_arguments.timeout_seconds,
+                max_response_bytes=request_arguments.max_response_bytes,
+                save_request=True,
+                save_response=True,
+            )
+            target_result = await target_http.execute(
+                TargetHttpSubmission(
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    tool_call_id=claimed_intent.id,
+                    node_id=run.node_id,
+                    request=request,
+                )
+            )
+            await self._require_target_http_artifacts(scope.run_id, target_result)
+            return _target_http_result_payload(target_result)
         if tool_name == "git_status":
             git = self._require_git()
             git_arguments = _GitStatusArguments.model_validate(raw_arguments)
@@ -982,6 +1136,42 @@ class RuntimeControlToolService:
         if self._web_research is None:
             raise RuntimeError("Web Search and Research service is not configured")
         return self._web_research
+
+    def _require_traffic(self) -> TrafficMetadataApplicationService:
+        if self._traffic is None:
+            raise RuntimeError("Target HTTP Traffic metadata service is not configured")
+        return self._traffic
+
+    def _require_target_http(self) -> TargetHttpApplicationService:
+        if self._target_http is None:
+            raise RuntimeError("Target HTTP service is not configured")
+        return self._target_http
+
+    async def _general_run(self, run_id: str) -> Run:
+        if self._runs is None:
+            raise RuntimeError("Run repository is not configured for Target HTTP tools")
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        return require_general_run_operation(run)
+
+    async def _require_target_http_artifacts(
+        self,
+        run_id: str,
+        result: TargetHttpResult,
+    ) -> None:
+        for artifact_id in (
+            result.request_artifact_id,
+            result.response_artifact_id,
+        ):
+            if artifact_id is None:
+                continue
+            artifact = await self._artifacts.get(artifact_id)
+            if artifact.run_id != run_id:
+                raise ApplicationConflictError(
+                    "target_http_artifact_run_mismatch",
+                    "Target HTTP Artifact is not available to this Run",
+                )
 
     async def _require_browser_scope(
         self,
@@ -1325,6 +1515,41 @@ def _web_research_payload(packet: WebResearchPacket) -> dict[str, object]:
     }
 
 
+def _target_http_result_payload(result: TargetHttpResult) -> dict[str, object]:
+    return {
+        "exchange_id": result.request_id,
+        "execution_key": result.execution_key,
+        "request_hash": result.request_hash,
+        "status_code": result.status_code,
+        "reason_phrase": _truncated(result.reason_phrase, 256),
+        "elapsed_ms": result.elapsed_ms,
+        "content_type": _truncated(result.content_type, 192),
+        "content_length": result.content_length,
+        "response_excerpt": _truncated(result.body_excerpt, 8_192),
+        "request_artifact_id": result.request_artifact_id,
+        "response_artifact_id": result.response_artifact_id,
+        "final_url_summary": safe_url_metadata(result.final_url),
+        "redirect_summary": safe_redirect_metadata(result.redirect_chain),
+        "tls_summary": result.tls_summary,
+        "truncated": result.truncated,
+        "content_trust": "UNTRUSTED_EXTERNAL_CONTENT",
+    }
+
+
+def _http_exchange_payload(
+    metadata: dict[str, object],
+    result: TargetHttpResult,
+) -> dict[str, object]:
+    return {
+        "exchange_id": result.request_id,
+        "metadata": metadata,
+        "response": _target_http_result_payload(result),
+        "request_artifact_id": result.request_artifact_id,
+        "response_artifact_id": result.response_artifact_id,
+        "content_trust": "UNTRUSTED_EXTERNAL_CONTENT",
+    }
+
+
 def _result_artifact_ids(result: object) -> list[str]:
     artifact_ids: list[str] = []
 
@@ -1357,6 +1582,24 @@ def _source_refs(
     *,
     result: object | None = None,
 ) -> list[str]:
+    if tool_name in {
+        "query_http_traffic",
+        "read_http_exchange",
+        "target_http_request",
+    } and isinstance(result, dict):
+        traffic_refs: list[str] = []
+        if isinstance(result.get("exchange_id"), str):
+            traffic_refs.append(f"target-http://{result['exchange_id']}")
+        items = result.get("items")
+        if isinstance(items, list):
+            traffic_refs.extend(
+                f"target-http://{item['exchange_id']}"
+                for item in items
+                if isinstance(item, dict) and isinstance(item.get("exchange_id"), str)
+            )
+        traffic_refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
+        if traffic_refs:
+            return list(dict.fromkeys(traffic_refs))
     if tool_name in {"web_fetch", "web_search", "web_research"} and isinstance(
         result, dict
     ):

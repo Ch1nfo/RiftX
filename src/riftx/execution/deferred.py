@@ -281,7 +281,7 @@ class DeferredExecutionDispatcher:
         run_id: str,
         session_id: str,
         engine_call_id: str,
-    ) -> bool:
+    ) -> ToolCallIntent | None:
         """Claim one approved provider-control mutation immediately before execution."""
 
         intent = await self._control_intent(
@@ -290,7 +290,7 @@ class DeferredExecutionDispatcher:
             engine_call_id=engine_call_id,
         )
         if intent is None:
-            return False
+            return None
         await self._require_resolved_intent_effect(
             intent,
             operation="service.deferred_execution.mutation",
@@ -306,7 +306,7 @@ class DeferredExecutionDispatcher:
                 "control_tool_approval_not_ready",
                 "Approved control Tool Call is not ready for exactly-once execution",
             )
-        return True
+        return claimed
 
     async def finish_control_intent(
         self,

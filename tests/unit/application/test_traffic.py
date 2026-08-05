@@ -240,6 +240,40 @@ async def test_history_projects_only_safe_metadata_and_stable_cursor_pages() -> 
     assert all(call[-1] is TrafficMetadataCapability.READ for call in authorizer.calls)
 
 
+async def test_runtime_history_uses_distinct_cursor_binding_without_operator_principal() -> None:
+    repository = MemoryRepository([_source(0), _source(1)])
+    service = TrafficMetadataApplicationService(
+        repository,
+        cursor_signing_key=b"traffic-cursor-test-key-0000000001",
+    )
+
+    first = await service.list_for_runtime("run-traffic", limit=1)
+    assert [item.exchange_id for item in first.items] == ["exchange-0"]
+    assert first.next_cursor is not None
+    second = await service.list_for_runtime(
+        "run-traffic",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert [item.exchange_id for item in second.items] == ["exchange-1"]
+    detail = await service.get_for_runtime("run-traffic", "exchange-1")
+    assert detail.item.exchange_id == "exchange-1"
+
+    operator_service, _ = _service(repository)
+    operator_first = await operator_service.list(
+        "run-traffic",
+        principal=PRINCIPAL,
+        limit=1,
+    )
+    assert operator_first.next_cursor is not None
+    with pytest.raises(InvalidTrafficCursorError):
+        await service.list_for_runtime(
+            "run-traffic",
+            limit=1,
+            cursor=operator_first.next_cursor,
+        )
+
+
 async def test_cursor_binds_principal_parent_filter_limit_and_snapshot() -> None:
     repository = MemoryRepository([_source(0), _source(1)])
     service, _ = _service(repository)

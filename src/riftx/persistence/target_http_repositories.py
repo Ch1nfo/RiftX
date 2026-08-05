@@ -56,6 +56,19 @@ class SQLAlchemyTargetHttpRequestRepository:
             row = await session.scalar(statement)
         return _target_result(row.result_json) if row is not None else None
 
+    async def get_for_run(
+        self,
+        run_id: str,
+        request_id: str,
+    ) -> TargetHttpResult | None:
+        statement = select(TargetHttpRequestRecord).where(
+            TargetHttpRequestRecord.id == request_id,
+            TargetHttpRequestRecord.run_id == run_id,
+        )
+        async with self._session_factory() as session:
+            row = await session.scalar(statement)
+        return _target_result(row.result_json) if row is not None else None
+
     async def create(
         self,
         submission: TargetHttpSubmission,

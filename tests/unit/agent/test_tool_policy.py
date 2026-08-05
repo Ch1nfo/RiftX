@@ -56,6 +56,10 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
     assert AGENT_TOOL_POLICIES["web_search"].approval_required is True
     assert AGENT_TOOL_POLICIES["web_research"].effect is AgentToolEffect.HOST_EXECUTION
     assert AGENT_TOOL_POLICIES["web_research"].approval_required is True
+    assert AGENT_TOOL_POLICIES["query_http_traffic"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["read_http_exchange"].approval_required is False
+    assert AGENT_TOOL_POLICIES["target_http_request"].effect is AgentToolEffect.HOST_EXECUTION
+    assert AGENT_TOOL_POLICIES["target_http_request"].approval_required is True
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 

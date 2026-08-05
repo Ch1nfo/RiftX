@@ -256,6 +256,9 @@ async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> N
         "web_fetch",
         "web_search",
         "web_research",
+        "query_http_traffic",
+        "read_http_exchange",
+        "target_http_request",
     }.isdisjoint(production_subagent.always_visible_tools)
 
 

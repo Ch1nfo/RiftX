@@ -3550,7 +3550,10 @@ MANAGED_EFFECT_TYPES: tuple[ManagedEffectType, ...] = (
         read_only=("get", "list_for_run", "observations_after", "resolve_run_id"),
     ),
     _managed_type("riftx.web.fetch:PublicWebFetcher"),
-    _managed_type("riftx.target_http.service:TargetHttpApplicationService"),
+    _managed_type(
+        "riftx.target_http.service:TargetHttpApplicationService",
+        read_only=("get_result",),
+    ),
     _managed_type("riftx.connectors.service:ConnectorApplicationService"),
     _managed_type(
         "riftx.context.inspector:ContextApplicationService",

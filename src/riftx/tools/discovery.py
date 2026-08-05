@@ -43,6 +43,9 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "web_fetch",
     "web_search",
     "web_research",
+    "query_http_traffic",
+    "read_http_exchange",
+    "target_http_request",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -636,6 +639,16 @@ def _resident_schema(
             "Search and fetch bounded public evidence into canonical Sources and a "
             "citation-safe untrusted Research packet after explicit approval."
         ),
+        "query_http_traffic": (
+            "Query bounded redacted metadata for Target HTTP exchanges in this Run."
+        ),
+        "read_http_exchange": (
+            "Read one redacted Target HTTP exchange and its Run-bound Artifact references."
+        ),
+        "target_http_request": (
+            "Send one scoped Target HTTP request through the Runner after explicit approval; "
+            "request and response originals are saved as Artifacts."
+        ),
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -1022,6 +1035,67 @@ def _resident_schema(
             },
         }
         required = ["question"]
+    elif tool_id == "query_http_traffic":
+        properties = {
+            "method": {"type": ["string", "null"], "minLength": 1, "maxLength": 32},
+            "status_class": {
+                "type": ["string", "null"],
+                "enum": [
+                    "informational",
+                    "success",
+                    "redirect",
+                    "client_error",
+                    "server_error",
+                    None,
+                ],
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            "cursor": {"type": ["string", "null"], "minLength": 1, "maxLength": 4096},
+        }
+    elif tool_id == "read_http_exchange":
+        properties = {
+            "exchange_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        }
+        required = ["exchange_id"]
+    elif tool_id == "target_http_request":
+        properties = {
+            "method": {"type": "string", "minLength": 1, "maxLength": 32},
+            "url": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "headers": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "maxProperties": 100,
+            },
+            "query": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "maxProperties": 100,
+            },
+            "body": {"type": ["string", "null"], "maxLength": 1_000_000},
+            "json_body": {
+                "type": ["object", "array", "null"],
+            },
+            "cookies": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "maxProperties": 100,
+            },
+            "verify_tls": {"type": "boolean", "default": True},
+            "follow_redirects": {"type": "boolean", "default": False},
+            "timeout_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 60,
+                "default": 30,
+            },
+            "max_response_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10_000_000,
+                "default": 2_000_000,
+            },
+        }
+        required = ["method", "url"]
     elif tool_id == "git_diff":
         properties = {
             "path": {
@@ -1156,6 +1230,7 @@ def _resident_schema(
         "web_fetch",
         "web_search",
         "web_research",
+        "target_http_request",
     }:
         metadata.update(
             {

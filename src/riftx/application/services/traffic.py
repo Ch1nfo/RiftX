@@ -104,7 +104,7 @@ class TrafficMetadataApplicationService:
         self,
         repository: _TrafficReadRepository,
         *,
-        authorizer: _TrafficObjectAuthorizer,
+        authorizer: _TrafficObjectAuthorizer | None = None,
         cursor_signing_key: bytes,
     ) -> None:
         if type(cursor_signing_key) is not bytes or len(cursor_signing_key) < 32:
@@ -123,12 +123,52 @@ class TrafficMetadataApplicationService:
         limit: int = 50,
         cursor: str | None = None,
     ) -> TrafficExchangePage:
+        scope = await self._require_scope(run_id, principal)
+        return await self._list_scope(
+            scope,
+            principal=principal,
+            method=method,
+            status_class=status_class,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def list_for_runtime(
+        self,
+        run_id: str,
+        *,
+        method: str | None = None,
+        status_class: TrafficStatusClass | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> TrafficExchangePage:
+        """Read the trusted Runtime scope without inventing an operator principal."""
+
+        scope = await self._resolve_scope(run_id)
+        return await self._list_scope(
+            scope,
+            principal=None,
+            method=method,
+            status_class=status_class,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def _list_scope(
+        self,
+        scope: TrafficScopeSource,
+        *,
+        principal: LocalPrincipal | None,
+        method: str | None,
+        status_class: TrafficStatusClass | None,
+        limit: int,
+        cursor: str | None,
+    ) -> TrafficExchangePage:
         normalized_method = _normalize_method(method)
         normalized_status = _normalize_status_class(status_class)
         if type(limit) is not int or not 1 <= limit <= _MAX_LIMIT:
             raise ValueError(f"Traffic list limit must be between 1 and {_MAX_LIMIT}")
 
-        scope = await self._require_scope(run_id, principal)
         after: TrafficPageKey | None = None
         requested_snapshot: TrafficPageKey | None = None
         expected_snapshot_id: str | None = None
@@ -225,15 +265,35 @@ class TrafficMetadataApplicationService:
             item=_safe_project(source),
         )
 
+    async def get_for_runtime(
+        self,
+        run_id: str,
+        exchange_id: str,
+    ) -> TrafficExchangeDetail:
+        """Read one exchange for an already trusted Runtime Run identity."""
+
+        scope = await self._resolve_scope(run_id)
+        source = await self._repository.get(scope, exchange_id)
+        if source is None or source.exchange_id != exchange_id or source.run_id != run_id:
+            raise _resource_not_accessible()
+        return TrafficExchangeDetail(
+            scope=TrafficScope(run_id=scope.run_id, engagement_id=scope.engagement_id),
+            item=_safe_project(source),
+        )
+
     async def _require_scope(
         self,
         run_id: str,
         principal: LocalPrincipal,
     ) -> TrafficScopeSource:
+        scope = await self._resolve_scope(run_id)
+        self._authorize(principal, scope, scope.run_id)
+        return scope
+
+    async def _resolve_scope(self, run_id: str) -> TrafficScopeSource:
         scope = await self._repository.resolve_scope(run_id)
         if scope is None or scope.run_id != run_id or not scope.engagement_id:
             raise _resource_not_accessible()
-        self._authorize(principal, scope, scope.run_id)
         return scope
 
     def _authorize(
@@ -242,6 +302,8 @@ class TrafficMetadataApplicationService:
         scope: TrafficScopeSource,
         resource_run_id: str | None,
     ) -> None:
+        if self._authorizer is None:
+            raise RuntimeError("Traffic operator authorization is not configured")
         self._authorizer.require_traffic_metadata(
             principal,
             parent_run_id=scope.run_id,
@@ -652,7 +714,7 @@ def _snapshot_id(
 def _encode_cursor(
     *,
     signing_key: bytes,
-    principal: LocalPrincipal,
+    principal: LocalPrincipal | None,
     scope: TrafficScopeSource,
     method: str | None,
     status_class: TrafficStatusClass | None,
@@ -685,7 +747,7 @@ def _decode_cursor(
     cursor: str,
     *,
     signing_key: bytes,
-    principal: LocalPrincipal,
+    principal: LocalPrincipal | None,
     scope: TrafficScopeSource,
     method: str | None,
     status_class: TrafficStatusClass | None,
@@ -758,13 +820,17 @@ def _decode_cursor(
         raise InvalidTrafficCursorError() from None
 
 
-def _principal_binding(key: bytes, principal: LocalPrincipal) -> str:
-    payload = _canonical_json(
-        {
-            "id": principal.id,
-            "namespace": principal.namespace_id,
-            "profile": principal.profile.value,
-        }
+def _principal_binding(key: bytes, principal: LocalPrincipal | None) -> str:
+    payload = (
+        b"riftx-agent-runtime"
+        if principal is None
+        else _canonical_json(
+            {
+                "id": principal.id,
+                "namespace": principal.namespace_id,
+                "profile": principal.profile.value,
+            }
+        )
     )
     return hmac.new(key, _PRINCIPAL_DOMAIN + payload, hashlib.sha256).hexdigest()
 

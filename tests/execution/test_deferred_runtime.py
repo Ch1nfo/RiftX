@@ -430,11 +430,14 @@ async def test_provider_control_intent_requires_approval_and_settles_once(
     assert intent.execution_spec is None
     assert intent.status is ToolCallStatus.WAITING_APPROVAL
     await fixture.dispatcher.approve_intent(intent.id)
-    assert await fixture.dispatcher.begin_control_intent(
+    claimed = await fixture.dispatcher.begin_control_intent(
         run_id=fixture.run.id,
         session_id=fixture.session.id,
         engine_call_id="patch-call",
     )
+    assert claimed is not None
+    assert claimed.id == intent.id
+    assert claimed.status is ToolCallStatus.EXECUTING
     with pytest.raises(ApplicationConflictError, match="exactly-once"):
         await fixture.dispatcher.begin_control_intent(
             run_id=fixture.run.id,

@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
+from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserView, OpenBrowser
 from riftx.code import (
     CodeCall,
@@ -47,12 +49,17 @@ from riftx.domain import (
     FormSummary,
     InteractiveElement,
     NetworkEventSummary,
+    Objective,
+    Run,
+    RunKind,
+    Scope,
 )
 from riftx.domain.base import utc_now
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
+from riftx.target_http import TargetHttpResult, TargetHttpSubmission
 from riftx.web import (
     EvidenceSpan,
     FetchRequest,
@@ -360,9 +367,9 @@ class FakeControlIntents:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def begin_control_intent(self, **kwargs: object) -> bool:
+    async def begin_control_intent(self, **kwargs: object) -> object:
         self.calls.append(("begin", str(kwargs["engine_call_id"])))
-        return True
+        return SimpleNamespace(id=f"intent-{kwargs['engine_call_id']}")
 
     async def finish_control_intent(self, **kwargs: object) -> None:
         outcome = "success" if kwargs["succeeded"] else "failed"
@@ -409,6 +416,108 @@ class FakeGit:
                 )
             ],
         )
+
+
+class FakeRuns:
+    def __init__(self, *, kind: RunKind = RunKind.GENERAL) -> None:
+        self.run = Run(
+            id="run-1",
+            kind=kind,
+            engagement_id="engagement-1",
+            node_id="local",
+            objective=Objective(description="Authorized Target HTTP test"),
+            scope=Scope(domains=["target.internal"]),
+            workspace_path="/workspace",
+        )
+
+    async def get(self, run_id: str) -> Run | None:
+        return self.run if run_id == self.run.id else None
+
+
+class _DumpPayload:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def model_dump(self, *, mode: str) -> dict[str, object]:
+        assert mode == "json"
+        return self.payload
+
+
+class FakeTraffic:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def list_for_runtime(self, run_id: str, **kwargs: object) -> _DumpPayload:
+        self.calls.append(("list", run_id, kwargs))
+        return _DumpPayload(
+            {
+                "scope": {"run_id": run_id, "engagement_id": "engagement-1"},
+                "items": [{"exchange_id": "exchange-1", "method": "GET"}],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        )
+
+    async def get_for_runtime(self, run_id: str, exchange_id: str) -> _DumpPayload:
+        self.calls.append(("get", run_id, {"exchange_id": exchange_id}))
+        return _DumpPayload(
+            {
+                "scope": {"run_id": run_id, "engagement_id": "engagement-1"},
+                "item": {
+                    "exchange_id": exchange_id,
+                    "method": "POST",
+                    "url_summary": {"origin": "https://target.internal", "redacted": True},
+                },
+            }
+        )
+
+
+class FakeTargetHttp:
+    def __init__(self) -> None:
+        self.submissions: list[TargetHttpSubmission] = []
+        self.result = TargetHttpResult(
+            request_id="exchange-1",
+            execution_key="existing-key",
+            request_hash="1" * 64,
+            status_code=200,
+            reason_phrase="OK",
+            elapsed_ms=12,
+            content_type="application/json",
+            content_length=12,
+            body_excerpt='{"ok":true}',
+            request_artifact_id="target-request-1",
+            response_artifact_id="target-response-1",
+            final_url="https://target.internal/private?token=redacted",
+        )
+
+    async def execute(self, submission: TargetHttpSubmission) -> TargetHttpResult:
+        self.submissions.append(submission)
+        return self.result.model_copy(
+            update={
+                "execution_key": submission.request.execution_key,
+                "request_hash": submission.request.fingerprint,
+            }
+        )
+
+    async def get_result(self, run_id: str, request_id: str) -> TargetHttpResult:
+        assert run_id == "run-1"
+        assert request_id == self.result.request_id
+        return self.result
+
+
+class FakeTargetArtifacts(FakeArtifacts):
+    async def get(self, artifact_id: str) -> object:
+        if artifact_id in {"target-request-1", "target-response-1"}:
+            return SimpleNamespace(run_id="run-1")
+        return await super().get(artifact_id)
+
+
+class ForeignTargetArtifacts(FakeTargetArtifacts):
+    async def get(self, artifact_id: str) -> object:
+        artifact = await super().get(artifact_id)
+        if artifact_id == "target-response-1":
+            return SimpleNamespace(run_id="run-foreign")
+        return artifact
 
 
 class FakeBrowser:
@@ -726,6 +835,9 @@ def service(
     browser: FakeBrowser | None = None,
     web_fetcher: FakeWebFetcher | None = None,
     web_research: FakeWebResearch | None = None,
+    runs: FakeRuns | None = None,
+    traffic: FakeTraffic | None = None,
+    target_http: FakeTargetHttp | None = None,
     control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -743,6 +855,9 @@ def service(
         browser=browser,  # type: ignore[arg-type]
         web_fetcher=web_fetcher,  # type: ignore[arg-type]
         web_research=web_research,  # type: ignore[arg-type]
+        runs=runs,  # type: ignore[arg-type]
+        traffic=traffic,  # type: ignore[arg-type]
+        target_http=target_http,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
@@ -1125,6 +1240,203 @@ async def test_approved_web_research_returns_only_canonical_sources_and_artifact
         "artifact://raw-1",
         "artifact://normalized-1",
         "artifact://research-artifact-1",
+    ]
+
+
+async def test_target_http_has_no_network_side_effect_without_approval() -> None:
+    target_http = FakeTargetHttp()
+    control, events, transcript, _ = service(
+        artifacts=FakeTargetArtifacts(),
+        runs=FakeRuns(),
+        target_http=target_http,
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "target_http_request",
+            {"method": "GET", "url": "https://target.internal/health"},
+            "target-http-call",
+        )
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert target_http.submissions == []
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+async def test_http_traffic_query_and_exchange_read_are_redacted_and_transcripted() -> None:
+    traffic = FakeTraffic()
+    target_http = FakeTargetHttp()
+    control, _, transcript, _ = service(
+        artifacts=FakeTargetArtifacts(),
+        runs=FakeRuns(),
+        traffic=traffic,
+        target_http=target_http,
+    )
+
+    page = await control(
+        SCOPE,
+        "query_http_traffic",
+        {"method": "GET", "status_class": "success", "limit": 10},
+        "traffic-query-call",
+    )
+    detail = await control(
+        SCOPE,
+        "read_http_exchange",
+        {"exchange_id": "exchange-1"},
+        "traffic-read-call",
+    )
+
+    assert page["content_trust"] == "REDACTED_SENSITIVE_METADATA"
+    assert page["items"] == [{"exchange_id": "exchange-1", "method": "GET"}]
+    assert detail["exchange_id"] == "exchange-1"
+    assert detail["response"]["content_trust"] == "UNTRUSTED_EXTERNAL_CONTENT"
+    assert detail["response"]["response_excerpt"] == '{"ok":true}'
+    assert detail["request_artifact_id"] == "target-request-1"
+    assert detail["response_artifact_id"] == "target-response-1"
+    assert traffic.calls == [
+        (
+            "list",
+            "run-1",
+            {
+                "method": "GET",
+                "status_class": TrafficStatusClass.SUCCESS,
+                "limit": 10,
+                "cursor": None,
+            },
+        ),
+        ("get", "run-1", {"exchange_id": "exchange-1"}),
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == [
+        "target-http://exchange-1"
+    ]
+    assert transcript.rows[1][1].artifact_ids == [
+        "target-request-1",
+        "target-response-1",
+    ]
+    assert transcript.rows[1][1].structured_content["source_refs"] == [
+        "target-http://exchange-1",
+        "artifact://target-request-1",
+        "artifact://target-response-1",
+    ]
+
+
+async def test_approved_target_http_reuses_durable_intent_and_forces_artifacts() -> None:
+    tracker = FakeControlIntents()
+    target_http = FakeTargetHttp()
+    control, _, transcript, _ = service(
+        artifacts=FakeTargetArtifacts(),
+        runs=FakeRuns(),
+        target_http=target_http,
+        control_intents=tracker,
+    )
+
+    result = await control(
+        SCOPE,
+        "target_http_request",
+        {
+            "method": "post",
+            "url": "https://target.internal/private?token=secret",
+            "headers": {"X-Test": "value"},
+            "json_body": {"probe": True},
+            "follow_redirects": True,
+            "timeout_seconds": 20,
+            "max_response_bytes": 100_000,
+        },
+        "target-http-call",
+    )
+
+    assert len(target_http.submissions) == 1
+    submission = target_http.submissions[0]
+    assert submission.run_id == "run-1"
+    assert submission.session_id == "session-1"
+    assert submission.tool_call_id == "intent-target-http-call"
+    assert submission.node_id == "local"
+    assert submission.request.method == "POST"
+    assert submission.request.save_request is True
+    assert submission.request.save_response is True
+    assert submission.request.proxy is None
+    assert submission.request.client_cert_ref is None
+    assert "intent-target-http-call" not in submission.request.execution_key
+    assert result["exchange_id"] == "exchange-1"
+    assert result["final_url_summary"] == {
+        "scheme": "https",
+        "origin": "https://target.internal",
+        "path_shape": "/…",
+        "path_segment_count": 1,
+    }
+    assert "secret" not in json.dumps(result)
+    assert tracker.calls == [
+        ("begin", "target-http-call"),
+        ("success", "target-http-call"),
+    ]
+    draft = transcript.rows[0][1]
+    assert draft.artifact_ids == ["target-request-1", "target-response-1"]
+    assert draft.structured_content["source_refs"] == [
+        "target-http://exchange-1",
+        "artifact://target-request-1",
+        "artifact://target-response-1",
+    ]
+
+
+async def test_target_http_rejects_foreign_artifact_before_transcript() -> None:
+    tracker = FakeControlIntents()
+    target_http = FakeTargetHttp()
+    control, events, transcript, _ = service(
+        artifacts=ForeignTargetArtifacts(),
+        runs=FakeRuns(),
+        target_http=target_http,
+        control_intents=tracker,
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "target_http_request",
+            {"method": "GET", "url": "https://target.internal/health"},
+            "target-http-foreign-artifact",
+        )
+
+    assert captured.value.code == "target_http_artifact_run_mismatch"
+    assert transcript.rows == []
+    assert tracker.calls == [
+        ("begin", "target-http-foreign-artifact"),
+        ("failed", "target-http-foreign-artifact"),
+    ]
+    assert events.rows[-1][2]["error_code"] == "target_http_artifact_run_mismatch"
+
+
+async def test_target_http_runtime_tools_reject_code_audit_before_service_use() -> None:
+    tracker = FakeControlIntents()
+    traffic = FakeTraffic()
+    target_http = FakeTargetHttp()
+    control, _, transcript, _ = service(
+        artifacts=FakeTargetArtifacts(),
+        runs=FakeRuns(kind=RunKind.CODE_AUDIT),
+        traffic=traffic,
+        target_http=target_http,
+        control_intents=tracker,
+    )
+
+    for tool_name, arguments in (
+        ("query_http_traffic", {}),
+        ("read_http_exchange", {"exchange_id": "exchange-1"}),
+        (
+            "target_http_request",
+            {"method": "GET", "url": "https://target.internal/health"},
+        ),
+    ):
+        with pytest.raises(ApplicationConflictError) as captured:
+            await control(SCOPE, tool_name, arguments, f"{tool_name}-call")
+        assert captured.value.code == "run_kind_operation_unsupported"
+
+    assert traffic.calls == []
+    assert target_http.submissions == []
+    assert transcript.rows == []
+    assert tracker.calls == [
+        ("begin", "target_http_request-call"),
+        ("failed", "target_http_request-call"),
     ]
 
 

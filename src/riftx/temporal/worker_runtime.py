@@ -34,6 +34,7 @@ from riftx.application.services import (
     RuntimeApprovalRequestRecorder,
     SafetyStopResult,
     TerminalApplicationService,
+    TrafficMetadataApplicationService,
     stop_resources_payload,
 )
 from riftx.application.services.workflow_signals import (
@@ -113,7 +114,10 @@ from riftx.persistence.checkpoint_repositories import (
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
-from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
+from riftx.persistence.target_http_repositories import (
+    SQLAlchemyTargetHttpRequestRepository,
+    SQLAlchemyTrafficMetadataReadRepository,
+)
 from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
 from riftx.persistence.web_research_repositories import SQLAlchemyWebResearchRepository
 from riftx.persistence.workflow_signals import (
@@ -891,10 +895,21 @@ async def build_temporal_worker(
             artifacts=artifact_service,
             events=event_repository,
         )
+        target_http_repository = SQLAlchemyTargetHttpRequestRepository(
+            database.session_factory
+        )
+        traffic_service = TrafficMetadataApplicationService(
+            SQLAlchemyTrafficMetadataReadRepository(
+                database.session_factory,
+                digest_key=secrets.token_bytes(32),
+                artifact_reference_key=secrets.token_bytes(32),
+            ),
+            cursor_signing_key=secrets.token_bytes(32),
+        )
         target_http_service = TargetHttpApplicationService(
             runs=run_repository,
             tool_calls=tool_call_intent_repository,
-            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+            requests=target_http_repository,
             runner=NodeTargetHttpRouter(
                 local_node_id=config.runner.node_id,
                 local=RunnerTargetHttpClient(node_id=config.runner.node_id),
@@ -1090,6 +1105,9 @@ async def build_temporal_worker(
             browser=browser_service,
             web_fetcher=web_fetcher,
             web_research=web_research_service,
+            runs=run_repository,
+            traffic=traffic_service,
+            target_http=target_http_service,
             control_intents=deferred_dispatcher,
         )
         runtime_coordinator = RuntimeCoordinator(

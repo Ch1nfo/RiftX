@@ -469,6 +469,7 @@ async def build_service(
     run_status=RunStatus.CREATED,
     run_kind=RunKind.GENERAL,
     runner=None,
+    tool_id: str = "request_target_url",
 ):
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'target-http.db'}")
     await database.create_schema()
@@ -510,7 +511,7 @@ async def build_service(
             session_id="session-1",
             cycle_id="cycle-1",
             step_id="step-1",
-            tool_id="request_target_url",
+            tool_id=tool_id,
             status=status,
         )
     )
@@ -565,6 +566,7 @@ async def test_service_requires_scope_and_ready_intent_then_saves_artifacts(
         intent = await tool_calls.get("tool-call-1")
         assert intent is not None and intent.status is ToolCallStatus.COMPLETED
         assert await repository.get_by_execution_key(result.execution_key) == result
+        assert await service.get_result("run-1", result.request_id) == result
         assert [item[1] for item in events.types] == [
             "target_http.request_started",
             "target_http.response_received",
@@ -582,6 +584,21 @@ async def test_service_requires_scope_and_ready_intent_then_saves_artifacts(
             "response_recorded": True,
             "status_code": 200,
         }
+    finally:
+        await database.dispose()
+
+
+async def test_runtime_target_http_tool_id_uses_existing_execution_boundary(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, *_ = await build_service(
+        tmp_path,
+        tool_id="target_http_request",
+    )
+    try:
+        result = await service.execute(submission())
+        assert result.request_id == "request-1"
+        assert len(runner.launches) == 1
     finally:
         await database.dispose()
 
