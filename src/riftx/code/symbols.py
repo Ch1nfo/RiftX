@@ -10,6 +10,7 @@ import ast
 import io
 import re
 import tokenize
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
@@ -44,6 +45,15 @@ class _Pattern:
     expression: re.Pattern[str]
 
 
+@dataclass(frozen=True, slots=True)
+class StaticCall:
+    caller: str | None
+    callee: str
+    line_number: int
+    column: int
+    confidence: Literal["python_ast", "lexical"]
+
+
 _LANGUAGE_BY_SUFFIX = {
     ".c": "c",
     ".cc": "cpp",
@@ -74,12 +84,14 @@ _LANGUAGE_BY_SUFFIX = {
 
 _IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _WORD_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
+_CALL_PATTERN = re.compile(rf"(?P<name>{_IDENTIFIER})\s*\(")
 
 _PATTERNS: dict[str, tuple[_Pattern, ...]] = {
     "javascript": (
         _Pattern("class", re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?class\s+(?P<name>{_IDENTIFIER})\b")),
         _Pattern("function", re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(?P<name>{_IDENTIFIER})\b")),
         _Pattern("constant", re.compile(rf"^\s*(?:export\s+)?const\s+(?P<name>{_IDENTIFIER})\b")),
+        _Pattern("method", re.compile(rf"^\s*(?:(?:async|static|get|set)\s+)*(?P<name>{_IDENTIFIER})\s*\([^;{{}}]*\)\s*(?:\{{|=>)")),
     ),
     "typescript": (
         _Pattern("class", re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(?P<name>{_IDENTIFIER})\b")),
@@ -88,6 +100,7 @@ _PATTERNS: dict[str, tuple[_Pattern, ...]] = {
         _Pattern("type", re.compile(rf"^\s*(?:export\s+)?type\s+(?P<name>{_IDENTIFIER})\b")),
         _Pattern("function", re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(?P<name>{_IDENTIFIER})\b")),
         _Pattern("constant", re.compile(rf"^\s*(?:export\s+)?const\s+(?P<name>{_IDENTIFIER})\b")),
+        _Pattern("method", re.compile(rf"^\s*(?:(?:public|protected|private|abstract|async|static|override|readonly|get|set)\s+)*(?P<name>{_IDENTIFIER})\s*\([^;{{}}]*\)\s*(?::\s*[^={{;]+)?(?:\{{|=>)")),
     ),
     "go": (
         _Pattern("method", re.compile(rf"^\s*func\s*\([^)]*\)\s*(?P<name>{_WORD_IDENTIFIER})\s*\(")),
@@ -168,6 +181,7 @@ _PATTERNS["shell"] = (
 )
 
 _NON_SYMBOL_NAMES = frozenset({"if", "for", "while", "switch", "catch", "return", "sizeof"})
+_NON_CALL_NAMES = _NON_SYMBOL_NAMES | frozenset({"def", "fn", "func", "function"})
 _NON_DECLARATION_PREFIXES = ("return ", "throw ", "yield ", "await ")
 _SLASH_COMMENT_LANGUAGES = frozenset(
     {
@@ -223,6 +237,54 @@ def find_identifier_occurrences(
         language=language,
         identifier=identifier,
         max_occurrences=max_occurrences,
+    )
+
+
+def extract_call_graph(
+    path: str,
+    text: str,
+    *,
+    max_symbols: int,
+    max_calls: int,
+) -> tuple[
+    list[CodeSymbol],
+    list[StaticCall],
+    bool,
+    bool,
+    Literal["python_ast", "lexical"],
+]:
+    """Return declarations and bounded name-level call edges for one source file."""
+
+    symbols, symbol_truncated, symbol_parse_error = extract_symbols(
+        path,
+        text,
+        max_symbols=max_symbols,
+    )
+    language = language_for_path(path)
+    if language == "python":
+        calls, call_truncated, call_parse_error = _python_calls(
+            text,
+            max_calls=max_calls,
+        )
+        return (
+            symbols,
+            calls,
+            symbol_truncated or call_truncated,
+            symbol_parse_error or call_parse_error,
+            "python_ast",
+        )
+    calls, call_truncated, call_parse_error = _lexical_calls(
+        text,
+        language=language or "",
+        symbols=symbols,
+        max_calls=max_calls,
+    )
+    return (
+        symbols,
+        calls,
+        symbol_truncated or call_truncated,
+        symbol_parse_error or call_parse_error,
+        "lexical",
     )
 
 
@@ -317,89 +379,261 @@ def _lexical_identifier_occurrences(
     identifier: str,
     max_occurrences: int,
 ) -> tuple[list[tuple[int, int]], bool, bool]:
+    scrubbed, parse_error = _scrub_non_code(text, language=language)
+    line_starts = _line_starts(scrubbed)
     positions: list[tuple[int, int]] = []
-    index = 0
-    line = 1
-    column = 0
-    length = len(text)
+    expression = re.compile(
+        rf"(?<![\w$]){re.escape(identifier)}(?![\w$])",
+        re.UNICODE,
+    )
+    for match in expression.finditer(scrubbed):
+        positions.append(_line_column(line_starts, match.start()))
+        if len(positions) >= max_occurrences:
+            return positions, True, parse_error
+    return positions, False, parse_error
 
-    def advance() -> str:
-        nonlocal index, line, column
-        character = text[index]
-        index += 1
-        if character == "\n":
-            line += 1
-            column = 0
-        else:
-            column += 1
-        return character
+
+def _scrub_non_code(text: str, *, language: str) -> tuple[str, bool]:
+    characters = list(text)
+    length = len(text)
+    index = 0
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, end):
+            if characters[position] != "\n":
+                characters[position] = " "
 
     while index < length:
         if language in _SLASH_COMMENT_LANGUAGES and text.startswith("//", index):
-            while index < length and advance() != "\n":
-                pass
+            end = text.find("\n", index + 2)
+            end = length if end < 0 else end
+            blank(index, end)
+            index = end
             continue
         if language in _SLASH_COMMENT_LANGUAGES and text.startswith("/*", index):
-            advance()
-            advance()
-            while index < length and not text.startswith("*/", index):
-                advance()
-            if index >= length:
-                return positions, False, True
-            advance()
-            advance()
+            end = text.find("*/", index + 2)
+            if end < 0:
+                blank(index, length)
+                return "".join(characters), True
+            end += 2
+            blank(index, end)
+            index = end
             continue
         if language in _HASH_COMMENT_LANGUAGES and text[index] == "#":
-            while index < length and advance() != "\n":
-                pass
+            end = text.find("\n", index + 1)
+            end = length if end < 0 else end
+            blank(index, end)
+            index = end
             continue
 
-        character = text[index]
+        quote = text[index]
         rust_lifetime = (
             language == "rust"
-            and character == "'"
+            and quote == "'"
             and index + 1 < length
             and (text[index + 1].isalpha() or text[index + 1] == "_")
             and (index + 2 >= length or text[index + 2] != "'")
         )
-        if character in {"'", '"'} or (
-            character == "`" and language in _BACKTICK_STRING_LANGUAGES
+        if rust_lifetime:
+            index += 1
+            continue
+        if quote not in {"'", '"'} and not (
+            quote == "`" and language in _BACKTICK_STRING_LANGUAGES
         ):
-            if rust_lifetime:
-                advance()
-                continue
-            quote = advance()
-            closed = False
-            while index < length:
-                current = advance()
-                if (
-                    current == "\\"
-                    and index < length
-                    and not (quote == "`" and language == "go")
-                ):
-                    advance()
-                elif current == quote:
-                    closed = True
-                    break
-            if not closed:
-                return positions, False, True
+            index += 1
             continue
 
-        if character.isalpha() or character in {"_", "$"}:
-            start_line, start_column = line, column
-            start = index
-            advance()
-            while index < length and (
-                text[index].isalnum() or text[index] in {"_", "$"}
+        start = index
+        index += 1
+        closed = False
+        while index < length:
+            current = text[index]
+            index += 1
+            if (
+                current == "\\"
+                and index < length
+                and not (quote == "`" and language == "go")
             ):
-                advance()
-            if text[start:index] == identifier:
-                positions.append((start_line, start_column))
-                if len(positions) >= max_occurrences:
-                    return positions, True, False
+                index += 1
+            elif current == quote:
+                closed = True
+                break
+        blank(start, index)
+        if not closed:
+            return "".join(characters), True
+    return "".join(characters), False
+
+
+def _line_starts(text: str) -> list[int]:
+    return [0, *(index + 1 for index, character in enumerate(text) if character == "\n")]
+
+
+def _line_column(line_starts: list[int], index: int) -> tuple[int, int]:
+    line_index = bisect_right(line_starts, index) - 1
+    return line_index + 1, index - line_starts[line_index]
+
+
+def _absolute_index(line_starts: list[int], line_number: int, column: int) -> int:
+    return line_starts[line_number - 1] + column
+
+
+def _lexical_calls(
+    text: str,
+    *,
+    language: str,
+    symbols: list[CodeSymbol],
+    max_calls: int,
+) -> tuple[list[StaticCall], bool, bool]:
+    scrubbed, parse_error = _scrub_non_code(text, language=language)
+    line_starts = _line_starts(scrubbed)
+    declaration_positions = {
+        _absolute_index(line_starts, symbol.line_number, symbol.column)
+        for symbol in symbols
+    }
+    callable_definitions = sorted(
+        (
+            _absolute_index(line_starts, symbol.line_number, symbol.column),
+            symbol.qualified_name,
+        )
+        for symbol in symbols
+        if symbol.kind in {"function", "method"}
+    )
+    calls: list[StaticCall] = []
+    caller: str | None = None
+    definition_index = 0
+    for match in _CALL_PATTERN.finditer(scrubbed):
+        position = match.start("name")
+        while (
+            definition_index < len(callable_definitions)
+            and callable_definitions[definition_index][0] <= position
+        ):
+            caller = callable_definitions[definition_index][1]
+            definition_index += 1
+        name = match.group("name")
+        if position in declaration_positions or name in _NON_CALL_NAMES:
             continue
-        advance()
-    return positions, False, False
+        line_number, column = _line_column(line_starts, position)
+        calls.append(
+            StaticCall(
+                caller=caller,
+                callee=name,
+                line_number=line_number,
+                column=column,
+                confidence="lexical",
+            )
+        )
+        if len(calls) >= max_calls:
+            return calls, True, parse_error
+    return calls, False, parse_error
+
+
+def _python_calls(
+    text: str,
+    *,
+    max_calls: int,
+) -> tuple[list[StaticCall], bool, bool]:
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return [], False, True
+    visitor = _PythonCallVisitor(text=text, max_calls=max_calls)
+    try:
+        visitor.visit(tree)
+    except RecursionError:
+        return [], False, True
+    return visitor.calls, visitor.truncated, False
+
+
+class _PythonCallVisitor(ast.NodeVisitor):
+    def __init__(self, *, text: str, max_calls: int) -> None:
+        self._lines = text.splitlines()
+        self._max_calls = max_calls
+        self._containers: list[str] = []
+        self._callers: list[str] = []
+        self.calls: list[StaticCall] = []
+        self.truncated = False
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for type_parameter in getattr(node, "type_params", ()):
+            self.visit(type_parameter)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword)
+        self._containers.append(node.name)
+        for statement in node.body:
+            self.visit(statement)
+        self._containers.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for type_parameter in getattr(node, "type_params", ()):
+            self.visit(type_parameter)
+        self.visit(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        qualified = _bounded_text(
+            ".".join([*self._containers, node.name]),
+            _MAX_QUALIFIED_NAME_CHARS,
+        )
+        self._containers.append(node.name)
+        self._callers.append(qualified)
+        for statement in node.body:
+            self.visit(statement)
+        self._callers.pop()
+        self._containers.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = _python_call_target(node.func, self._lines)
+        if target is not None:
+            if len(self.calls) >= self._max_calls:
+                self.truncated = True
+                return
+            callee, line_number, column = target
+            self.calls.append(
+                StaticCall(
+                    caller=self._callers[-1] if self._callers else None,
+                    callee=_bounded_text(callee, _MAX_QUALIFIED_NAME_CHARS),
+                    line_number=line_number,
+                    column=column,
+                    confidence="python_ast",
+                )
+            )
+        self.generic_visit(node)
+
+
+def _python_call_target(
+    node: ast.expr,
+    lines: list[str],
+) -> tuple[str, int, int] | None:
+    if isinstance(node, ast.Name):
+        return node.id, node.lineno, node.col_offset
+    if not isinstance(node, ast.Attribute):
+        return None
+    parts = [node.attr]
+    value = node.value
+    while isinstance(value, ast.Attribute):
+        parts.append(value.attr)
+        value = value.value
+    if isinstance(value, ast.Name):
+        parts.append(value.id)
+    parts.reverse()
+    line_number = int(getattr(node, "end_lineno", node.lineno))
+    column = max(0, int(getattr(node, "end_col_offset", node.col_offset)) - len(node.attr))
+    if 0 < line_number <= len(lines):
+        located = lines[line_number - 1].rfind(node.attr, 0, column + len(node.attr) + 1)
+        if located >= 0:
+            column = located
+    return ".".join(parts), line_number, column
 
 
 class _PythonSymbolVisitor(ast.NodeVisitor):
@@ -470,6 +704,8 @@ def _bounded_text(value: str, maximum: int) -> str:
 
 
 __all__ = [
+    "StaticCall",
+    "extract_call_graph",
     "extract_symbols",
     "find_identifier_occurrences",
     "is_identifier",

@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.code import (
+    CodeCall,
+    CodeCallHierarchyResult,
     CodeEntry,
     CodeListResult,
     CodeReadResult,
@@ -221,6 +223,39 @@ class FakeCode:
             ],
             files_scanned=1,
             bytes_scanned=14,
+            skipped_binary_files=0,
+            skipped_large_files=0,
+            skipped_unsupported_files=0,
+            parse_errors=0,
+        )
+
+    async def call_hierarchy(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodeCallHierarchyResult:
+        self.calls.append(("call_hierarchy", run_id, kwargs))
+        return CodeCallHierarchyResult(
+            source="workspace",
+            symbol=str(kwargs["symbol"]),
+            direction=str(kwargs["direction"]),  # type: ignore[arg-type]
+            resolution="unique",
+            definitions_found=1,
+            analysis_modes=["python_ast"],
+            calls=[
+                CodeCall(
+                    caller="caller",
+                    callee="Handler",
+                    confidence="python_ast",
+                    language="python",
+                    path="src/app.py",
+                    line_number=4,
+                    column=4,
+                    excerpt="    Handler()",
+                )
+            ],
+            files_scanned=1,
+            bytes_scanned=32,
             skipped_binary_files=0,
             skipped_large_files=0,
             skipped_unsupported_files=0,
@@ -730,6 +765,40 @@ async def test_native_find_references_uses_exact_run_scope() -> None:
     assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]
 
 
+async def test_native_call_hierarchy_uses_exact_run_scope() -> None:
+    code = FakeCode()
+    control, _, transcript, _ = service(code=code)
+
+    result = await control(
+        SCOPE,
+        "call_hierarchy",
+        {
+            "symbol": "Handler",
+            "direction": "incoming",
+            "path": "src",
+            "max_results": 10,
+        },
+        "call-call-hierarchy",
+    )
+
+    assert result["backend"] == "builtin_static"
+    assert result["analysis_modes"] == ["python_ast"]
+    assert code.calls == [
+        (
+            "call_hierarchy",
+            "run-1",
+            {
+                "symbol": "Handler",
+                "direction": "incoming",
+                "path": "src",
+                "file_glob": None,
+                "max_results": 10,
+            },
+        )
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]
+
+
 async def test_native_code_argument_limits_fail_before_source_read() -> None:
     code = FakeCode()
     control, _, _, _ = service(code=code)
@@ -740,6 +809,13 @@ async def test_native_code_argument_limits_fail_before_source_read() -> None:
             "read_file",
             {"path": "src/app.py", "max_bytes": 64 * 1024 + 1},
             "call-unbounded-code-read",
+        )
+    with pytest.raises(ValidationError):
+        await control(
+            SCOPE,
+            "call_hierarchy",
+            {"symbol": "Handler", "direction": "sideways"},
+            "call-invalid-direction",
         )
 
     assert code.calls == []

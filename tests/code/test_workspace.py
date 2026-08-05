@@ -235,6 +235,72 @@ async def test_workspace_find_references_marks_incomplete_parse_indeterminate(
     assert result.truncated is True
 
 
+async def test_workspace_call_hierarchy_reports_ast_and_lexical_edges(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "def target():\n"
+        "    pass\n"
+        "\n"
+        "def caller():\n"
+        "    target()\n"
+        "    helper()\n"
+        "\n"
+        "target()\n"
+    )
+    (root / "api.ts").write_text(
+        "function target() {}\n"
+        "function tsCaller() {\n"
+        "  target();\n"
+        "}\n"
+    )
+    service = _general_service(_run("run-1", root))
+
+    incoming = await service.call_hierarchy(
+        "run-1",
+        symbol="target",
+        direction="incoming",
+    )
+    outgoing = await service.call_hierarchy(
+        "run-1",
+        symbol="caller",
+        direction="outgoing",
+    )
+    bounded = await service.call_hierarchy(
+        "run-1",
+        symbol="target",
+        direction="incoming",
+        max_results=1,
+    )
+
+    assert incoming.backend == "builtin_static"
+    assert incoming.resolution == "ambiguous"
+    assert incoming.definitions_found == 2
+    assert incoming.analysis_modes == ["lexical", "python_ast"]
+    assert [
+        (item.path, item.caller, item.callee, item.confidence)
+        for item in incoming.calls
+    ] == [
+        ("api.ts", "tsCaller", "target", "lexical"),
+        ("app.py", "caller", "target", "python_ast"),
+        ("app.py", None, "target", "python_ast"),
+    ]
+    assert outgoing.resolution == "unique"
+    assert [(item.caller, item.callee) for item in outgoing.calls] == [
+        ("caller", "target"),
+        ("caller", "helper"),
+    ]
+    assert bounded.definitions_found == 2
+    assert len(bounded.calls) == 1
+    assert bounded.truncated is True
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.call_hierarchy("run-1", symbol="target", direction="sideways")  # type: ignore[arg-type]
+    assert captured.value.code == "code_call_direction_invalid"
+
+
 async def test_workspace_reads_are_run_scoped_and_bounded(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -342,7 +408,10 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     snapshot_digest = "1" * 64
     manifest_digest = "2" * 64
     content = b"snapshot needle\n" + b"x" * (64 * 1024)
-    symbol_content = b"class SnapshotHandler:\n    pass\n"
+    symbol_content = (
+        b"class SnapshotHandler:\n    pass\n\n"
+        b"def invoke():\n    SnapshotHandler()\n"
+    )
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "audit.py").write_bytes(content)
@@ -408,6 +477,12 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         symbol="SnapshotHandler",
         file_glob="symbols.py",
     )
+    calls = await service.call_hierarchy(
+        run.id,
+        symbol="SnapshotHandler",
+        direction="incoming",
+        file_glob="symbols.py",
+    )
 
     assert read.source == "audit_snapshot"
     assert read.source_digest == snapshot_digest
@@ -424,6 +499,9 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert references.source_digest == snapshot_digest
     assert references.resolution == "unique"
     assert references.references[0].path == "symbols.py"
+    assert calls.source == "audit_snapshot"
+    assert calls.source_digest == snapshot_digest
+    assert calls.calls[0].caller == "invoke"
 
 
 async def test_binary_preview_is_bounded_base64(tmp_path: Path) -> None:

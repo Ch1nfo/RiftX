@@ -38,6 +38,8 @@ from riftx.audit import (
 from riftx.domain import RunKind
 
 from .models import (
+    CodeCall,
+    CodeCallHierarchyResult,
     CodeEntry,
     CodeGrepMatch,
     CodeGrepResult,
@@ -50,6 +52,7 @@ from .models import (
     CodeSymbolSearchResult,
 )
 from .symbols import (
+    extract_call_graph,
     extract_symbols,
     find_identifier_occurrences,
     is_identifier,
@@ -71,6 +74,8 @@ _MAX_SYMBOL_FILE_BYTES = 512 * 1024
 _MAX_SYMBOL_TOTAL_BYTES = 8 * 1024 * 1024
 _MAX_SYMBOLS_SCANNED = 20_000
 _MAX_SYMBOL_RESULTS = 200
+_MAX_CALLS_SCANNED = 20_000
+_MAX_CALL_RESULTS = 200
 
 
 class _Source(Protocol):
@@ -529,6 +534,125 @@ class CodeWorkspaceService:
                     resolution=resolution,
                     definitions_found=definitions_found,
                     references=references,
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
+                    parse_errors=parse_errors,
+                    truncated=coverage_truncated or output_truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def call_hierarchy(
+        self,
+        run_id: str,
+        *,
+        symbol: str,
+        direction: Literal["incoming", "outgoing", "both"] = "both",
+        path: str = "",
+        file_glob: str | None = None,
+        max_results: int = 100,
+    ) -> CodeCallHierarchyResult:
+        if (
+            not is_identifier(symbol)
+            or len(symbol.encode("utf-8")) > 512
+            or any(character in symbol for character in "\x00\r\n")
+        ):
+            raise _conflict(
+                "code_call_symbol_invalid",
+                "symbol must be one bounded identifier",
+            )
+        if direction not in {"incoming", "outgoing", "both"}:
+            raise _conflict("code_call_direction_invalid", "direction is invalid")
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_CALL_RESULTS, label="max_results")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeCallHierarchyResult:
+            results: list[CodeCall] = []
+            modes: set[Literal["python_ast", "lexical"]] = set()
+            definitions_found = 0
+            symbols_scanned = 0
+            calls_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            with source as opened:
+                scan = _SemanticScan(opened, path, pattern)
+                for source_path, text in scan.files():
+                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                    remaining_calls = _MAX_CALLS_SCANNED - calls_scanned
+                    if remaining_symbols <= 0 or remaining_calls <= 0:
+                        coverage_truncated = True
+                        break
+                    symbols, calls, file_truncated, parse_failed, mode = extract_call_graph(
+                        source_path,
+                        text,
+                        max_symbols=remaining_symbols,
+                        max_calls=remaining_calls,
+                    )
+                    modes.add(mode)
+                    symbols_scanned += len(symbols)
+                    calls_scanned += len(calls)
+                    definitions_found += sum(item.name == symbol for item in symbols)
+                    parse_errors += int(parse_failed)
+                    coverage_truncated |= file_truncated or parse_failed
+                    lines = text.splitlines()
+                    language = language_for_path(source_path)
+                    assert language is not None
+                    for call in calls:
+                        incoming = call.callee.rsplit(".", 1)[-1] == symbol
+                        outgoing = (
+                            call.caller is not None
+                            and call.caller.rsplit(".", 1)[-1] == symbol
+                        )
+                        if not (
+                            (direction in {"incoming", "both"} and incoming)
+                            or (direction in {"outgoing", "both"} and outgoing)
+                        ):
+                            continue
+                        if len(results) >= max_results:
+                            output_truncated = True
+                            continue
+                        excerpt = (
+                            lines[call.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                            if 0 < call.line_number <= len(lines)
+                            else ""
+                        )
+                        results.append(
+                            CodeCall(
+                                caller=call.caller,
+                                callee=call.callee,
+                                confidence=call.confidence,
+                                language=language,
+                                path=source_path,
+                                line_number=call.line_number,
+                                column=call.column,
+                                excerpt=excerpt,
+                            )
+                        )
+
+                coverage_truncated |= scan.truncated
+                if definitions_found > 1:
+                    resolution = "ambiguous"
+                elif coverage_truncated:
+                    resolution = "indeterminate"
+                elif definitions_found == 1:
+                    resolution = "unique"
+                else:
+                    resolution = "unresolved"
+                return CodeCallHierarchyResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    symbol=symbol,
+                    direction=direction,
+                    resolution=resolution,
+                    definitions_found=definitions_found,
+                    analysis_modes=sorted(modes),
+                    calls=results,
                     files_scanned=scan.files_scanned,
                     bytes_scanned=scan.bytes_scanned,
                     skipped_binary_files=scan.skipped_binary_files,

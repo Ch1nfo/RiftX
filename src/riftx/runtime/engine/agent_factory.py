@@ -30,6 +30,7 @@ _CONTROL_TOOL_NAMES = {
     "glob",
     "symbol_search",
     "find_references",
+    "call_hierarchy",
     "git_status",
     "git_diff",
     "git_log",

@@ -145,6 +145,40 @@ class CodeReferenceSearchResult(BaseModel):
     truncated: bool = False
 
 
+class CodeCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    caller: str | None = Field(default=None, min_length=1, max_length=2048)
+    callee: str = Field(min_length=1, max_length=2048)
+    confidence: Literal["python_ast", "lexical"]
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeCallHierarchyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: Literal["builtin_static"] = "builtin_static"
+    symbol: str = Field(min_length=1, max_length=512)
+    direction: Literal["incoming", "outgoing", "both"]
+    resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+    definitions_found: int = Field(ge=0)
+    analysis_modes: list[Literal["python_ast", "lexical"]]
+    calls: list[CodeCall]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
 class GitStatusEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -192,6 +226,8 @@ class GitLogResult(BaseModel):
 
 __all__ = [
     "CodeEntry",
+    "CodeCall",
+    "CodeCallHierarchyResult",
     "CodeGrepMatch",
     "CodeGrepResult",
     "CodeListResult",

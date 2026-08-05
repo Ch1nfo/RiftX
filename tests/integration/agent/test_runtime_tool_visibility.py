@@ -75,6 +75,15 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "include_declarations",
         "max_results",
     }
+    call_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "call_hierarchy"
+    )
+    assert call_schema["parameters"]["required"] == ["symbol"]
+    assert call_schema["parameters"]["properties"]["direction"]["enum"] == [
+        "incoming",
+        "outgoing",
+        "both",
+    ]
     assert {
         "search_tools",
         "list_tools",
@@ -86,6 +95,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "glob",
         "symbol_search",
         "find_references",
+        "call_hierarchy",
         "git_status",
         "git_diff",
         "git_log",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -155,6 +155,14 @@ class _FindReferencesArguments(_Arguments):
     path: str = Field(default="", max_length=4096)
     file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
     include_declarations: bool = True
+    max_results: int = Field(default=100, ge=1, le=200)
+
+
+class _CallHierarchyArguments(_Arguments):
+    symbol: str = Field(min_length=1, max_length=512)
+    direction: Literal["incoming", "outgoing", "both"] = "both"
+    path: str = Field(default="", max_length=4096)
+    file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
     max_results: int = Field(default=100, ge=1, le=200)
 
 
@@ -456,6 +464,19 @@ class RuntimeControlToolService:
                     file_glob=reference_arguments.file_glob,
                     include_declarations=reference_arguments.include_declarations,
                     max_results=reference_arguments.max_results,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "call_hierarchy":
+            code = self._require_code()
+            call_arguments = _CallHierarchyArguments.model_validate(raw_arguments)
+            return (
+                await code.call_hierarchy(
+                    scope.run_id,
+                    symbol=call_arguments.symbol,
+                    direction=call_arguments.direction,
+                    path=call_arguments.path,
+                    file_glob=call_arguments.file_glob,
+                    max_results=call_arguments.max_results,
                 )
             ).model_dump(mode="json")
         if tool_name == "git_status":

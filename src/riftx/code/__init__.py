@@ -2,6 +2,8 @@
 
 from .git import GitWorkspaceService
 from .models import (
+    CodeCall,
+    CodeCallHierarchyResult,
     CodeEntry,
     CodeGrepMatch,
     CodeGrepResult,
@@ -22,6 +24,8 @@ from .workspace import CodeArtifactPublisher, CodeWorkspaceService
 
 __all__ = [
     "CodeArtifactPublisher",
+    "CodeCall",
+    "CodeCallHierarchyResult",
     "CodeEntry",
     "CodeGrepMatch",
     "CodeGrepResult",

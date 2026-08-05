@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from riftx.code.symbols import (
+    extract_call_graph,
     extract_symbols,
     find_identifier_occurrences,
     language_for_path,
@@ -156,3 +157,78 @@ def test_identifier_scanner_reports_incomplete_lexical_regions(source: str) -> N
     assert positions == []
     assert truncated is False
     assert parse_error is True
+
+
+def test_python_call_graph_tracks_qualified_callers_and_module_calls() -> None:
+    source = (
+        "def target():\n"
+        "    pass\n"
+        "\n"
+        "class Service:\n"
+        "    def helper(self):\n"
+        "        return target()\n"
+        "\n"
+        "    def caller(self):\n"
+        "        self.helper()\n"
+        "        target()\n"
+        "\n"
+        "def configured(value=target()):\n"
+        "    return target()\n"
+        "\n"
+        "target()\n"
+    )
+
+    symbols, calls, truncated, parse_error, mode = extract_call_graph(
+        "app.py",
+        source,
+        max_symbols=100,
+        max_calls=100,
+    )
+
+    assert [symbol.qualified_name for symbol in symbols] == [
+        "target",
+        "Service",
+        "Service.helper",
+        "Service.caller",
+        "configured",
+    ]
+    assert [(call.caller, call.callee, call.confidence) for call in calls] == [
+        ("Service.helper", "target", "python_ast"),
+        ("Service.caller", "self.helper", "python_ast"),
+        ("Service.caller", "target", "python_ast"),
+        (None, "target", "python_ast"),
+        ("configured", "target", "python_ast"),
+        (None, "target", "python_ast"),
+    ]
+    assert mode == "python_ast"
+    assert truncated is False
+    assert parse_error is False
+
+
+def test_lexical_call_graph_skips_declarations_comments_and_strings() -> None:
+    source = (
+        "class Service {\n"
+        "  target() {}\n"
+        "  caller() {\n"
+        "    target();\n"
+        "    helper();\n"
+        '    const text = "ignored()"; // ignored()\n'
+        "  }\n"
+        "}\n"
+    )
+
+    symbols, calls, truncated, parse_error, mode = extract_call_graph(
+        "api.ts",
+        source,
+        max_symbols=100,
+        max_calls=100,
+    )
+
+    assert [symbol.name for symbol in symbols] == ["Service", "target", "caller", "text"]
+    assert [(call.caller, call.callee, call.confidence) for call in calls] == [
+        ("caller", "target", "lexical"),
+        ("caller", "helper", "lexical"),
+    ]
+    assert mode == "lexical"
+    assert truncated is False
+    assert parse_error is False

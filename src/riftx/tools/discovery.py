@@ -29,6 +29,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "glob",
     "symbol_search",
     "find_references",
+    "call_hierarchy",
     "git_status",
     "git_diff",
     "git_log",
@@ -57,6 +58,7 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "glob",
     "symbol_search",
     "find_references",
+    "call_hierarchy",
     "git_status",
     "git_diff",
     "git_log",
@@ -586,6 +588,9 @@ def _resident_schema(
         "find_references": (
             "Find bounded exact-name source references with explicit static ambiguity."
         ),
+        "call_hierarchy": (
+            "Find bounded incoming or outgoing name-level calls using AST or lexical analysis."
+        ),
         "git_status": "Read bounded Git worktree and index status without refreshing the index.",
         "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
         "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
@@ -716,6 +721,19 @@ def _resident_schema(
                 "maxLength": 4096,
             },
             "include_declarations": {"type": "boolean"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+        required = ["symbol"]
+    elif tool_id == "call_hierarchy":
+        properties = {
+            "symbol": {"type": "string", "minLength": 1, "maxLength": 512},
+            "direction": {"type": "string", "enum": ["incoming", "outgoing", "both"]},
+            "path": {"type": "string", "maxLength": 4096},
+            "file_glob": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
             "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
         }
         required = ["symbol"]
