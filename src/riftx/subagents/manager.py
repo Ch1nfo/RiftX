@@ -269,14 +269,14 @@ class SubagentManager:
                 ]
             )
         )
-        self._tool_context.restrict_tools(
+        await self._tool_context.restrict_tools(
             allowed,
             run_id=session.run_id,
             session_id=session.id,
             agent_id=session.agent_type,
         )
         for tool_id in registered:
-            self._tool_context.load_tool(
+            await self._tool_context.load_tool(
                 tool_id,
                 run_id=session.run_id,
                 session_id=session.id,

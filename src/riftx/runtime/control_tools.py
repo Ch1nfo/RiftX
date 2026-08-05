@@ -587,7 +587,7 @@ class RuntimeControlToolService:
     ) -> object:
         if tool_name == "search_tools":
             search_arguments = _SearchArguments.model_validate(raw_arguments)
-            results = self._tools.search_tools(
+            results = await self._tools.search_tools(
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
@@ -601,7 +601,7 @@ class RuntimeControlToolService:
             return [item.model_dump(mode="json") for item in results]
         if tool_name == "list_tools":
             list_arguments = _ListArguments.model_validate(raw_arguments)
-            entries = self._tools.list_tools_for_scope(
+            entries = await self._tools.list_tools_for_scope(
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
@@ -611,12 +611,33 @@ class RuntimeControlToolService:
             return [item.model_dump(mode="json") for item in entries]
         if tool_name == "get_tool":
             tool_arguments = _ToolArguments.model_validate(raw_arguments)
-            return self._tools.get_tool(
+            return (
+                await self._tools.get_tool(
+                    tool_arguments.tool_id,
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    agent_id=scope.agent_id,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "reload_tool":
+            tool_arguments = _ToolArguments.model_validate(raw_arguments)
+            return (
+                await self._tools.reload_tool(
+                    tool_arguments.tool_id,
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    agent_id=scope.agent_id,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "unload_tool":
+            tool_arguments = _ToolArguments.model_validate(raw_arguments)
+            await self._tools.unload_tool(
                 tool_arguments.tool_id,
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
-            ).model_dump(mode="json")
+            )
+            return {"tool_id": tool_arguments.tool_id, "unloaded": True}
         if tool_name == "search_mcp_tools":
             mcp = self._require_mcp()
             search_mcp_arguments = _SearchMCPToolsArguments.model_validate(raw_arguments)
@@ -686,6 +707,17 @@ class RuntimeControlToolService:
                 agent_id=scope.agent_id,
             )
             return reference.model_dump(mode="json")
+        if tool_name == "reload_skill":
+            skills = self._require_skills()
+            skill_arguments = _LoadSkillArguments.model_validate(raw_arguments)
+            document = await skills.reload_skill(
+                skill_arguments.skill_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+                reason=skill_arguments.reason,
+            )
+            return document.model_dump(mode="json")
         if tool_name == "unload_skill":
             skills = self._require_skills()
             skill_arguments = _SkillArguments.model_validate(raw_arguments)

@@ -98,6 +98,7 @@ from riftx.persistence import (
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditControlUnitOfWork,
     SQLAlchemyAuditCreationUnitOfWork,
+    SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
@@ -1152,7 +1153,10 @@ async def build_temporal_worker(
             max_history_items=config.agent.max_history_items,
             max_turns=config.agent.max_turns,
         )
-        tool_context = ToolContextManager(registry)
+        tool_context = ToolContextManager(
+            registry,
+            store=SQLAlchemyCapabilitySelectionStore(database.session_factory),
+        )
         context_compiler = ContextCompiler(
             sources=[
                 TranscriptContextSource(

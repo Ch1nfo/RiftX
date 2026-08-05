@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from riftx.capabilities import (
+    CapabilityKind,
+    CapabilitySelectionStore,
+    CapabilitySource,
+    InMemoryCapabilitySelectionStore,
+    SessionCapabilitySelection,
+    canonical_payload_digest,
+)
 from riftx.domain import ExecutorType, ToolAvailability
+from riftx.domain.base import utc_now
 
 from .models import ExecutionPolicy, ToolDefinition
-from .registry import ToolNotFoundError, ToolRegistry
+from .registry import ToolNotFoundError, ToolRegistry, ToolUnavailableError
+
+_TOOL_SELECTION_DIGEST_DOMAIN = b"riftx.session-tool-selection/v1\0"
 
 RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "search_tools",
     "list_tools",
     "get_tool",
+    "reload_tool",
+    "unload_tool",
     "search_mcp_tools",
     "get_mcp_tool",
     "call_mcp_tool",
@@ -24,6 +37,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "list_skills",
     "load_skill",
     "load_skill_references",
+    "reload_skill",
     "unload_skill",
     "list_files",
     "read_file",
@@ -62,10 +76,13 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "search_tools",
     "list_tools",
     "get_tool",
+    "reload_tool",
+    "unload_tool",
     "search_skills",
     "list_skills",
     "load_skill",
     "load_skill_references",
+    "reload_skill",
     "unload_skill",
     "list_files",
     "read_file",
@@ -158,6 +175,30 @@ class ToolSelection(BaseModel):
     detail: ToolDetail
     full_schema: dict[str, object]
     generation: int = Field(ge=1)
+    version: str = Field(min_length=1)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stale: bool = False
+
+
+class PinnedToolSnapshot(BaseModel):
+    """Trusted execution and schema snapshot persisted for one selected Tool."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    definition: ToolDefinition
+    resolved_command: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    full_schema: dict[str, object]
+
+
+class ToolSelectionManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    version: str
+    digest: str
+    reason: str
+    stale: bool
 
 
 class ToolVisibilitySnapshot(BaseModel):
@@ -167,6 +208,8 @@ class ToolVisibilitySnapshot(BaseModel):
     available_tools: list[dict[str, object]] = Field(default_factory=list)
     always_visible_tools: list[str] = Field(default_factory=list)
     dynamically_loaded_tools: list[str] = Field(default_factory=list)
+    stale_loaded_tools: list[str] = Field(default_factory=list)
+    loaded_tools: list[ToolSelectionManifest] = Field(default_factory=list)
     hidden_available_tools: list[str] = Field(default_factory=list)
     hidden_unavailable_tools: list[str] = Field(default_factory=list)
     tool_registry_generation: int = Field(ge=1)
@@ -189,11 +232,15 @@ class DynamicToolIndex:
         assert self._generation is not None
         return self._generation
 
-    def list(self, *, include_unavailable: bool = True) -> list[ToolIndexEntry]:
+    def list_entries(self, *, include_unavailable: bool = True) -> list[ToolIndexEntry]:
         self._ensure_current()
-        entries = self._entries.values()
+        entries = list(self._entries.values())
         if not include_unavailable:
-            entries = (item for item in entries if item.availability is ToolAvailability.AVAILABLE)
+            entries = [
+                item
+                for item in entries
+                if item.availability is ToolAvailability.AVAILABLE
+            ]
         return sorted(entries, key=lambda item: item.id)
 
     def get(self, tool_id: str) -> ToolIndexEntry:
@@ -289,12 +336,6 @@ class DynamicToolIndex:
         self._generation = snapshot.generation
 
 
-@dataclass(slots=True)
-class _ScopedToolSet:
-    selected: set[str] = field(default_factory=set)
-    allowed: set[str] | None = None
-
-
 class ToolContextManager:
     """Own independent dynamic Tool Sets for each Runtime agent session."""
 
@@ -303,11 +344,12 @@ class ToolContextManager:
         registry: ToolRegistry,
         *,
         resident_tool_ids: tuple[str, ...] = RESIDENT_TOOL_IDS,
+        store: CapabilitySelectionStore | None = None,
     ) -> None:
         self.registry = registry
         self.index = DynamicToolIndex(registry)
         self.resident_tool_ids = resident_tool_ids
-        self._sets: dict[tuple[str, str, str], _ScopedToolSet] = {}
+        self._store = store or InMemoryCapabilitySelectionStore()
 
     @property
     def execution_policy(self) -> ExecutionPolicy:
@@ -321,7 +363,7 @@ class ToolContextManager:
             return self.resident_tool_ids
         return tuple(tool_id for tool_id in self.resident_tool_ids if tool_id != "run_shell")
 
-    def search_tools(
+    async def search_tools(
         self,
         *,
         run_id: str,
@@ -329,16 +371,17 @@ class ToolContextManager:
         agent_id: str,
         request: ToolSearchRequest,
     ) -> list[ToolSearchResult]:
-        scope = self._scope(run_id, session_id, agent_id)
+        del run_id, agent_id
+        allowed = await self._store.get_allowlist(session_id, CapabilityKind.TOOL)
         results = self.index.search(request)
-        if scope.allowed is None:
+        if allowed is None:
             return results
-        return [result for result in results if result.tool.id in scope.allowed]
+        return [result for result in results if result.tool.id in allowed]
 
     def list_tools(self, *, include_unavailable: bool = True) -> list[ToolIndexEntry]:
-        return self.index.list(include_unavailable=include_unavailable)
+        return self.index.list_entries(include_unavailable=include_unavailable)
 
-    def list_tools_for_scope(
+    async def list_tools_for_scope(
         self,
         *,
         run_id: str,
@@ -351,13 +394,14 @@ class ToolContextManager:
 
         if max_results < 1 or max_results > 100:
             raise ValueError("max_results must be between 1 and 100")
-        scope = self._scope(run_id, session_id, agent_id)
-        entries = self.index.list(include_unavailable=include_unavailable)
-        if scope.allowed is not None:
-            entries = [entry for entry in entries if entry.id in scope.allowed]
+        del run_id, agent_id
+        allowed = await self._store.get_allowlist(session_id, CapabilityKind.TOOL)
+        entries = self.index.list_entries(include_unavailable=include_unavailable)
+        if allowed is not None:
+            entries = [entry for entry in entries if entry.id in allowed]
         return entries[:max_results]
 
-    def get_tool(
+    async def get_tool(
         self,
         tool_id: str,
         *,
@@ -365,22 +409,34 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> ToolSelection:
-        schema = self.load_tool(
+        schema = await self.load_tool(
             tool_id,
             run_id=run_id,
             session_id=session_id,
             agent_id=agent_id,
         )
+        selection = await self._require_selection(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            require_active=True,
+        )
+        pinned = _pinned_tool(selection)
+        stale = self._is_stale(tool_id, selection.digest)
         return ToolSelection(
-            detail=self.index.detail(tool_id),
+            detail=_pinned_detail(pinned),
             full_schema=schema.full_schema,
             generation=schema.generation,
+            version=selection.version,
+            digest=selection.digest,
+            stale=stale,
         )
 
     def describe_tool(self, tool_id: str) -> ToolDetail:
         return self.index.detail(tool_id)
 
-    def load_tool(
+    async def load_tool(
         self,
         tool_id: str,
         *,
@@ -388,17 +444,98 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> ToolSchema:
-        self._require_allowed(
+        await self._require_allowed(
             tool_id,
             run_id=run_id,
             session_id=session_id,
             agent_id=agent_id,
         )
-        schema = self.index.schema(tool_id, require_available=True)
-        self._scope(run_id, session_id, agent_id).selected.add(tool_id)
-        return schema
+        existing = await self._store.get_selection(
+            session_id,
+            CapabilityKind.TOOL,
+            tool_id,
+        )
+        if existing is not None:
+            self._require_scope(existing, run_id=run_id, agent_id=agent_id)
+            if not existing.active:
+                await self._store.save_selection(
+                    existing.model_copy(
+                        update={
+                            "active": True,
+                            "updated_at": utc_now(),
+                            "unloaded_at": None,
+                        }
+                    )
+                )
+            pinned = _pinned_tool(existing)
+            return ToolSchema(
+                tool_id=tool_id,
+                generation=self.index.generation,
+                full_schema=pinned.full_schema,
+            )
 
-    def unload_tool(
+        selection = self._current_selection(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            reason="agent_selected",
+        )
+        await self._store.save_selection(selection)
+        pinned = _pinned_tool(selection)
+        return ToolSchema(
+            tool_id=tool_id,
+            generation=self.index.generation,
+            full_schema=pinned.full_schema,
+        )
+
+    async def reload_tool(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+        reason: str = "agent_reloaded",
+        reloaded_at: datetime | None = None,
+    ) -> ToolSelection:
+        await self._require_allowed(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+        existing = await self._require_selection(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            require_active=False,
+        )
+        replacement = self._current_selection(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            reason=reason,
+            selected_at=existing.selected_at,
+            updated_at=reloaded_at or utc_now(),
+        )
+        await self._store.replace_selection(
+            replacement,
+            expected_digest=existing.digest,
+        )
+        pinned = _pinned_tool(replacement)
+        return ToolSelection(
+            detail=_pinned_detail(pinned),
+            full_schema=pinned.full_schema,
+            generation=self.index.generation,
+            version=replacement.version,
+            digest=replacement.digest,
+            stale=False,
+        )
+
+    async def unload_tool(
         self,
         tool_id: str,
         *,
@@ -406,9 +543,28 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> None:
-        self._scope(run_id, session_id, agent_id).selected.discard(tool_id)
+        selection = await self._store.get_selection(
+            session_id,
+            CapabilityKind.TOOL,
+            tool_id,
+        )
+        if selection is None:
+            return
+        self._require_scope(selection, run_id=run_id, agent_id=agent_id)
+        if not selection.active:
+            return
+        now = utc_now()
+        await self._store.save_selection(
+            selection.model_copy(
+                update={
+                    "active": False,
+                    "updated_at": now,
+                    "unloaded_at": now,
+                }
+            )
+        )
 
-    def restrict_tools(
+    async def restrict_tools(
         self,
         tool_ids: list[str],
         *,
@@ -422,11 +578,15 @@ class ToolContextManager:
         residents = set(self.visible_resident_tool_ids)
         for tool_id in allowed - residents:
             self.index.schema(tool_id, require_available=True)
-        scope = self._scope(run_id, session_id, agent_id)
-        scope.allowed = allowed
-        scope.selected.intersection_update(allowed)
+        await self._store.set_allowlist(
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            kind=CapabilityKind.TOOL,
+            capability_ids=list(dict.fromkeys(tool_ids)),
+        )
 
-    def assert_allowed(
+    async def assert_allowed(
         self,
         tool_id: str,
         *,
@@ -434,71 +594,100 @@ class ToolContextManager:
         session_id: str,
         agent_id: str,
     ) -> None:
-        self._require_allowed(
+        await self._require_allowed(
             tool_id,
             run_id=run_id,
             session_id=session_id,
             agent_id=agent_id,
         )
 
-    def assert_selected(
+    async def assert_selected(
         self,
         tool_id: str,
         *,
         run_id: str,
         session_id: str,
         agent_id: str,
-    ) -> None:
+    ) -> PinnedToolSnapshot:
         """Require an available registered Tool to have been explicitly loaded."""
 
-        self._require_allowed(
+        await self._require_allowed(
             tool_id,
             run_id=run_id,
             session_id=session_id,
             agent_id=agent_id,
         )
-        if tool_id not in self._scope(run_id, session_id, agent_id).selected:
-            raise ToolNotFoundError(tool_id)
-        self.index.schema(tool_id, require_available=True)
+        selection = await self._require_selection(
+            tool_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            require_active=True,
+        )
+        if self._is_stale(tool_id, selection.digest):
+            raise ToolUnavailableError(
+                f"tool {tool_id!r} selection is stale; explicit reload is required"
+            )
+        return _pinned_tool(selection)
 
-    def visibility(
+    async def visibility(
         self,
         *,
         run_id: str,
         session_id: str,
         agent_id: str,
     ) -> ToolVisibilitySnapshot:
-        scope = self._scope(run_id, session_id, agent_id)
+        allowed = await self._store.get_allowlist(session_id, CapabilityKind.TOOL)
+        selections = [
+            selection
+            for selection in await self._store.list_selections(
+                session_id,
+                kind=CapabilityKind.TOOL,
+            )
+            if selection.active
+            and (allowed is None or selection.capability_id in allowed)
+        ]
+        for selection in selections:
+            self._require_scope(selection, run_id=run_id, agent_id=agent_id)
         snapshot = self.registry.snapshot
         execution_policy = self.execution_policy
         resident = [
             tool_id
             for tool_id in dict.fromkeys(self.visible_resident_tool_ids)
-            if scope.allowed is None or tool_id in scope.allowed
+            if allowed is None or tool_id in allowed
         ]
         selected: list[str] = []
+        stale: list[str] = []
+        manifests: list[ToolSelectionManifest] = []
         schemas = [
             _resident_schema(tool_id, execution_policy=execution_policy) for tool_id in resident
         ]
-        for tool_id in sorted(scope.selected):
-            definition = snapshot.definitions.get(tool_id)
-            state = snapshot.states.get(tool_id)
-            if definition is None or state is None:
-                continue
-            if state.availability is not ToolAvailability.AVAILABLE:
-                continue
-            if tool_id not in resident:
+        for selection in selections:
+            tool_id = selection.capability_id
+            is_stale = self._is_stale(tool_id, selection.digest)
+            manifests.append(
+                ToolSelectionManifest(
+                    id=tool_id,
+                    version=selection.version,
+                    digest=selection.digest,
+                    reason=selection.reason,
+                    stale=is_stale,
+                )
+            )
+            if is_stale:
+                stale.append(tool_id)
+            elif tool_id not in resident:
                 selected.append(tool_id)
-                schemas.append(self.index.schema(tool_id).full_schema)
-        selected_set = set(selected)
+                schemas.append(_pinned_tool(selection).full_schema)
+        selection_ids = {selection.capability_id for selection in selections}
         resident_set = set(resident)
-        visible_ids = set(snapshot.states) if scope.allowed is None else scope.allowed
+        visible_ids = set(snapshot.states) if allowed is None else allowed
         hidden_available = sorted(
             tool_id
             for tool_id, state in snapshot.states.items()
             if state.availability is ToolAvailability.AVAILABLE
             and tool_id in visible_ids
-            and tool_id not in selected_set
+            and tool_id not in selection_ids
             and tool_id not in resident_set
         )
         hidden_unavailable = sorted(
@@ -513,15 +702,14 @@ class ToolContextManager:
             available_tools=schemas,
             always_visible_tools=resident,
             dynamically_loaded_tools=selected,
+            stale_loaded_tools=sorted(stale),
+            loaded_tools=manifests,
             hidden_available_tools=hidden_available,
             hidden_unavailable_tools=hidden_unavailable,
             tool_registry_generation=snapshot.generation,
         )
 
-    def _scope(self, run_id: str, session_id: str, agent_id: str) -> _ScopedToolSet:
-        return self._sets.setdefault((run_id, session_id, agent_id), _ScopedToolSet())
-
-    def _require_allowed(
+    async def _require_allowed(
         self,
         tool_id: str,
         *,
@@ -531,9 +719,141 @@ class ToolContextManager:
     ) -> None:
         if tool_id == "run_shell" and self.execution_policy is not ExecutionPolicy.OPEN:
             raise ToolNotFoundError(tool_id)
-        allowed = self._scope(run_id, session_id, agent_id).allowed
+        del run_id, agent_id
+        allowed = await self._store.get_allowlist(session_id, CapabilityKind.TOOL)
         if allowed is not None and tool_id not in allowed:
             raise ToolNotFoundError(tool_id)
+
+    async def _require_selection(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+        require_active: bool,
+    ) -> SessionCapabilitySelection:
+        selection = await self._store.get_selection(
+            session_id,
+            CapabilityKind.TOOL,
+            tool_id,
+        )
+        if selection is None or (require_active and not selection.active):
+            raise ToolNotFoundError(tool_id)
+        self._require_scope(selection, run_id=run_id, agent_id=agent_id)
+        return selection
+
+    def _current_selection(
+        self,
+        tool_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+        reason: str,
+        selected_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> SessionCapabilitySelection:
+        pinned, digest = _current_tool_snapshot(self.registry, tool_id)
+        now = updated_at or utc_now()
+        return SessionCapabilitySelection(
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            kind=CapabilityKind.TOOL,
+            capability_id=tool_id,
+            version=pinned.version,
+            digest=digest,
+            source=CapabilitySource.OPERATOR,
+            reason=reason,
+            snapshot=pinned.model_dump(mode="json"),
+            selected_at=selected_at or now,
+            updated_at=now,
+        )
+
+    def _is_stale(self, tool_id: str, digest: str) -> bool:
+        try:
+            _, current_digest = _current_tool_snapshot(self.registry, tool_id)
+        except (ToolNotFoundError, ToolUnavailableError):
+            return True
+        return current_digest != digest
+
+    @staticmethod
+    def _require_scope(
+        selection: SessionCapabilitySelection,
+        *,
+        run_id: str,
+        agent_id: str,
+    ) -> None:
+        if selection.run_id != run_id or selection.agent_id != agent_id:
+            raise PermissionError("Tool selection belongs to a different Agent Session scope")
+
+
+def _current_tool_snapshot(
+    registry: ToolRegistry,
+    tool_id: str,
+) -> tuple[PinnedToolSnapshot, str]:
+    definition = registry.get_available(tool_id)
+    state = registry.snapshot.states[tool_id]
+    if not state.resolved_command:
+        raise ToolUnavailableError(f"tool {tool_id!r} has no resolved executable")
+    schema = _function_schema(definition)
+    version_seed = canonical_payload_digest(
+        {
+            "definition": definition.model_dump(mode="json"),
+            "resolved_command": state.resolved_command,
+            "probed_version": state.version,
+            "full_schema": schema,
+        },
+        domain=_TOOL_SELECTION_DIGEST_DOMAIN,
+    )
+    pinned = PinnedToolSnapshot(
+        definition=definition,
+        resolved_command=state.resolved_command,
+        version=state.version or f"registry:{version_seed[:16]}",
+        full_schema=schema,
+    )
+    return pinned, canonical_payload_digest(
+        pinned.model_dump(mode="json"),
+        domain=_TOOL_SELECTION_DIGEST_DOMAIN,
+    )
+
+
+def _pinned_tool(selection: SessionCapabilitySelection) -> PinnedToolSnapshot:
+    try:
+        pinned = PinnedToolSnapshot.model_validate(selection.snapshot)
+    except (TypeError, ValueError) as exc:
+        raise ToolUnavailableError(
+            f"tool {selection.capability_id!r} pinned snapshot is invalid"
+        ) from exc
+    digest = canonical_payload_digest(
+        pinned.model_dump(mode="json"),
+        domain=_TOOL_SELECTION_DIGEST_DOMAIN,
+    )
+    if (
+        pinned.definition.id != selection.capability_id
+        or pinned.version != selection.version
+        or digest != selection.digest
+    ):
+        raise ToolUnavailableError(
+            f"tool {selection.capability_id!r} pinned snapshot failed integrity validation"
+        )
+    return pinned
+
+
+def _pinned_detail(pinned: PinnedToolSnapshot) -> ToolDetail:
+    definition = pinned.definition
+    return ToolDetail(
+        id=definition.id,
+        short_description=_short_description(definition),
+        capabilities=list(definition.capabilities),
+        availability=ToolAvailability.AVAILABLE,
+        execution_type=definition.executor,
+        description=_description(definition),
+        approval_level=definition.approval_level.value,
+        timeout_seconds=definition.timeout_seconds,
+        version=pinned.version,
+    )
 
 
 def _short_description(definition: ToolDefinition) -> str:
@@ -591,6 +911,8 @@ def _resident_schema(
         "search_tools": "Search the node Tool Index by task language or capability.",
         "list_tools": "List lightweight Tool Index entries without loading schemas.",
         "get_tool": "Read detail for one registered tool and select its full schema.",
+        "reload_tool": "Explicitly replace one pinned Tool snapshot with the current version.",
+        "unload_tool": "Remove one selected Tool from the active model context.",
         "search_mcp_tools": "Search bounded metadata for discovered MCP Tools.",
         "get_mcp_tool": "Read the bounded schema for one discovered MCP Tool.",
         "call_mcp_tool": (
@@ -601,6 +923,7 @@ def _resident_schema(
         "list_skills": "List lightweight Progressive Skill summaries.",
         "load_skill": "Pin and load one versioned Skill procedure for this Session.",
         "load_skill_references": "Load references for an already selected Skill.",
+        "reload_skill": "Explicitly replace one pinned Skill package with its current version.",
         "unload_skill": "Remove one selected Skill from the active model context.",
         "list_files": "List bounded entries in the current code source without following links.",
         "read_file": "Read a bounded preview from one regular file in the current code source.",
@@ -682,7 +1005,7 @@ def _resident_schema(
             "include_unavailable": {"type": "boolean"},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
         }
-    elif tool_id == "get_tool":
+    elif tool_id in {"get_tool", "reload_tool", "unload_tool"}:
         properties = {"tool_id": {"type": "string"}}
         required = ["tool_id"]
     elif tool_id == "search_mcp_tools":
@@ -716,7 +1039,7 @@ def _resident_schema(
         properties = {
             "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
         }
-    elif tool_id == "load_skill":
+    elif tool_id in {"load_skill", "reload_skill"}:
         properties = {
             "skill_id": {"type": "string"},
             "reason": {"type": "string", "minLength": 1, "maxLength": 1000},

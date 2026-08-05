@@ -49,7 +49,15 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolAuthorization.RUN_CONTEXT,
         ),
         "get_tool": AgentToolPolicy(
-            AgentToolEffect.READ_ONLY,
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "reload_tool": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "unload_tool": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
         "search_mcp_tools": AgentToolPolicy(
@@ -78,6 +86,10 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolAuthorization.RUN_CONTEXT,
         ),
         "load_skill_references": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "reload_skill": AgentToolPolicy(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,
         ),

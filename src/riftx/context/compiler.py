@@ -286,15 +286,15 @@ class ContextCompiler:
         items: list[ContextItem] = []
         metadata: dict[str, object] = {}
         if self._tool_context is not None:
-            visibility = self._tool_context.visibility(
+            tool_visibility = await self._tool_context.visibility(
                 run_id=request.run_id,
                 session_id=request.session_id,
                 agent_id=request.agent_id,
             )
-            metadata.update(visibility.manifest())
+            metadata.update(tool_visibility.manifest())
             if request.include_tool_schemas:
-                residents = set(visibility.always_visible_tools)
-                for sequence, schema in enumerate(visibility.available_tools, start=1):
+                residents = set(tool_visibility.always_visible_tools)
+                for sequence, schema in enumerate(tool_visibility.available_tools, start=1):
                     tool_id = str(schema.get("name") or schema.get("id") or sequence)
                     resident = tool_id in residents
                     items.append(
@@ -313,13 +313,13 @@ class ContextCompiler:
                         )
                     )
         if self._skill_context is not None:
-            visibility = await self._skill_context.visibility(
+            skill_visibility = await self._skill_context.visibility(
                 run_id=request.run_id,
                 session_id=request.session_id,
                 agent_id=request.agent_id,
             )
-            metadata.update(visibility.manifest())
-            for sequence, summary in enumerate(visibility.available_skills, start=1):
+            metadata.update(skill_visibility.manifest())
+            for sequence, summary in enumerate(skill_visibility.available_skills, start=1):
                 items.append(
                     ContextItem(
                         id=f"skill-summary:{summary.id}",
@@ -332,7 +332,10 @@ class ContextCompiler:
                         metadata={"skill_payload": "summary"},
                     )
                 )
-            for sequence, document in enumerate(visibility.loaded_skill_documents, start=1):
+            for sequence, document in enumerate(
+                skill_visibility.loaded_skill_documents,
+                start=1,
+            ):
                 items.append(
                     ContextItem(
                         id=f"skill-document:{document.id}",
@@ -345,7 +348,10 @@ class ContextCompiler:
                         metadata={"skill_payload": "document"},
                     )
                 )
-            for sequence, reference in enumerate(visibility.loaded_skill_references, start=1):
+            for sequence, reference in enumerate(
+                skill_visibility.loaded_skill_references,
+                start=1,
+            ):
                 items.append(
                     ContextItem(
                         id=f"skill-reference:{reference.skill_id}",

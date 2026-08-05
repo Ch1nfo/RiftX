@@ -121,11 +121,11 @@ async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None
 
     schema = next(
         item
-        for item in manager.visibility(
+        for item in (await manager.visibility(
             run_id="run-1",
             session_id="session-1",
             agent_id="primary",
-        ).available_tools
+        )).available_tools
         if item["name"] == "run_shell"
     )
 
@@ -148,7 +148,7 @@ async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None
 async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
 
-    visibility = manager.visibility(
+    visibility = await manager.visibility(
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
@@ -158,21 +158,21 @@ async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> No
     assert "run_shell" not in visibility.always_visible_tools
     assert "run_shell" not in {str(schema.get("name")) for schema in visibility.available_tools}
     with pytest.raises(ToolNotFoundError):
-        manager.load_tool(
+        await manager.load_tool(
             "run_shell",
             run_id="run-1",
             session_id="session-1",
             agent_id="primary",
         )
     with pytest.raises(ToolNotFoundError):
-        manager.assert_allowed(
+        await manager.assert_allowed(
             "run_shell",
             run_id="run-1",
             session_id="session-1",
             agent_id="primary",
         )
     with pytest.raises(ToolNotFoundError):
-        manager.restrict_tools(
+        await manager.restrict_tools(
             ["search_tools", "run_shell"],
             run_id="run-1",
             session_id="session-1",
@@ -183,13 +183,13 @@ async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> No
 async def test_capability_and_synonym_search_discover_smb_tool(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
 
-    by_capability = manager.search_tools(
+    by_capability = await manager.search_tools(
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
         request=ToolSearchRequest(capability="smb enumeration"),
     )
-    by_synonym = manager.search_tools(
+    by_synonym = await manager.search_tools(
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
@@ -204,7 +204,7 @@ async def test_capability_and_synonym_search_discover_smb_tool(tmp_path: Path) -
 async def test_unavailable_tool_is_discoverable_but_cannot_be_loaded(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10, include_unavailable=True))
 
-    results = manager.search_tools(
+    results = await manager.search_tools(
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
@@ -214,7 +214,7 @@ async def test_unavailable_tool_is_discoverable_but_cannot_be_loaded(tmp_path: P
     assert results[0].tool.id == "tool-000"
     assert results[0].tool.availability is ToolAvailability.DISABLED
     with pytest.raises(ToolUnavailableError):
-        manager.load_tool(
+        await manager.load_tool(
             "tool-000",
             run_id="run-1",
             session_id="session-1",
@@ -224,26 +224,30 @@ async def test_unavailable_tool_is_discoverable_but_cannot_be_loaded(tmp_path: P
 
 async def test_subagents_keep_independent_dynamic_tool_sets(tmp_path: Path) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
-    manager.load_tool(
+    await manager.load_tool(
         "netexec-smb",
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
     )
 
-    primary = manager.visibility(run_id="run-1", session_id="session-1", agent_id="primary")
-    subagent = manager.visibility(run_id="run-1", session_id="session-1", agent_id="subagent-1")
+    primary = await manager.visibility(
+        run_id="run-1", session_id="session-1", agent_id="primary"
+    )
+    subagent = await manager.visibility(
+        run_id="run-1", session_id="session-2", agent_id="subagent-1"
+    )
 
     assert primary.dynamically_loaded_tools == ["netexec-smb"]
     assert subagent.dynamically_loaded_tools == []
     assert "netexec-smb" in subagent.hidden_available_tools
-    manager.restrict_tools(
+    await manager.restrict_tools(
         list(SUBAGENT_RESIDENT_TOOL_IDS),
         run_id="run-1",
         session_id="session-1",
         agent_id="subagent:recon",
     )
-    production_subagent = manager.visibility(
+    production_subagent = await manager.visibility(
         run_id="run-1",
         session_id="session-1",
         agent_id="subagent:recon",
@@ -266,25 +270,25 @@ async def test_subagent_tool_allowlist_hides_and_rejects_unassigned_tools(
     tmp_path: Path,
 ) -> None:
     manager = ToolContextManager(await _registry(tmp_path, 10))
-    manager.restrict_tools(
+    await manager.restrict_tools(
         ["search_tools", "get_tool", "run_registered_tool", "netexec-smb"],
         run_id="run-1",
         session_id="subagent-session",
         agent_id="subagent:recon",
     )
-    manager.load_tool(
+    await manager.load_tool(
         "netexec-smb",
         run_id="run-1",
         session_id="subagent-session",
         agent_id="subagent:recon",
     )
 
-    visibility = manager.visibility(
+    visibility = await manager.visibility(
         run_id="run-1",
         session_id="subagent-session",
         agent_id="subagent:recon",
     )
-    search = manager.search_tools(
+    search = await manager.search_tools(
         run_id="run-1",
         session_id="subagent-session",
         agent_id="subagent:recon",
@@ -300,7 +304,7 @@ async def test_subagent_tool_allowlist_hides_and_rejects_unassigned_tools(
     assert visibility.hidden_available_tools == []
     assert search == []
     with pytest.raises(ToolNotFoundError):
-        manager.load_tool(
+        await manager.load_tool(
             "tool-001",
             run_id="run-1",
             session_id="subagent-session",
@@ -308,10 +312,12 @@ async def test_subagent_tool_allowlist_hides_and_rejects_unassigned_tools(
         )
 
 
-async def test_registry_hot_reload_rebuilds_index_and_selected_schema(tmp_path: Path) -> None:
+async def test_registry_hot_reload_marks_selection_stale_until_explicit_reload(
+    tmp_path: Path,
+) -> None:
     registry = await _registry(tmp_path, 10)
     manager = ToolContextManager(registry)
-    first = manager.load_tool(
+    first = await manager.load_tool(
         "netexec-smb",
         run_id="run-1",
         session_id="session-1",
@@ -327,9 +333,40 @@ async def test_registry_hot_reload_rebuilds_index_and_selected_schema(tmp_path: 
 
     await registry.reload_if_changed()
     second = manager.index.schema("netexec-smb")
-    visibility = manager.visibility(run_id="run-1", session_id="session-1", agent_id="primary")
+    visibility = await manager.visibility(
+        run_id="run-1", session_id="session-1", agent_id="primary"
+    )
 
     assert second.generation == first.generation + 1
     assert second.full_schema["description"] == "Reloaded full schema."
     assert "new-tool" in visibility.hidden_available_tools
+    assert visibility.dynamically_loaded_tools == []
+    assert visibility.stale_loaded_tools == ["netexec-smb"]
+    selected = await manager.get_tool(
+        "netexec-smb",
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="primary",
+    )
+    assert selected.full_schema["description"] != "Reloaded full schema."
+    assert selected.stale is True
+    with pytest.raises(ToolUnavailableError, match="explicit reload"):
+        await manager.assert_selected(
+            "netexec-smb",
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+        )
+
+    reloaded = await manager.reload_tool(
+        "netexec-smb",
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="primary",
+    )
+    visibility = await manager.visibility(
+        run_id="run-1", session_id="session-1", agent_id="primary"
+    )
+    assert reloaded.full_schema["description"] == "Reloaded full schema."
     assert visibility.dynamically_loaded_tools == ["netexec-smb"]
+    assert visibility.stale_loaded_tools == []

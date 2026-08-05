@@ -90,7 +90,7 @@ class CompilationRepository:
 
 
 class EightyToolContext:
-    def visibility(self, **_: object) -> SimpleNamespace:
+    async def visibility(self, **_: object) -> SimpleNamespace:
         residents = list(RESIDENT_TOOL_IDS)
         hidden = [f"catalog-tool-{index:02d}" for index in range(80 - len(residents))]
         return SimpleNamespace(

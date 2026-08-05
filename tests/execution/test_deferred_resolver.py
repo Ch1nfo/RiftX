@@ -32,11 +32,11 @@ class ExplodingToolContext:
     def __init__(self) -> None:
         self.called = False
 
-    def assert_allowed(self, *args: object, **kwargs: object) -> None:
+    async def assert_allowed(self, *args: object, **kwargs: object) -> None:
         self.called = True
         raise AssertionError("tool context must not run before RunKind admission")
 
-    def assert_selected(self, *args: object, **kwargs: object) -> None:
+    async def assert_selected(self, *args: object, **kwargs: object) -> None:
         self.called = True
         raise AssertionError("tool context must not run before RunKind admission")
 
@@ -218,7 +218,7 @@ async def test_registry_resolver_enforces_subagent_tool_allowlist(tmp_path: Path
         workspace_path=str(workspace),
     )
     tools = ToolContextManager(registry)
-    tools.restrict_tools(
+    await tools.restrict_tools(
         ["assigned"],
         run_id=run.id,
         session_id="subagent-1",
@@ -303,7 +303,7 @@ async def test_registered_tool_must_be_selected_and_raw_spec_cannot_override_reg
     with pytest.raises(ToolNotFoundError):
         await resolver.resolve(session=session, event=event, tool_id="scanner")
 
-    tools.get_tool(
+    await tools.get_tool(
         "scanner",
         run_id=run.id,
         session_id=session.id,

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
@@ -61,6 +63,7 @@ from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
 from riftx.target_http import TargetHttpResult, TargetHttpSubmission
+from riftx.tools import ToolContextManager, ToolRegistry
 from riftx.web import (
     EvidenceSpan,
     FetchRequest,
@@ -856,6 +859,7 @@ def execution(
 
 def service(
     *,
+    tools: object | None = None,
     executions: FakeExecutions | None = None,
     artifacts: FakeArtifacts | None = None,
     skills: ProgressiveSkillContextManager | None = None,
@@ -874,7 +878,7 @@ def service(
     transcript = FakeTranscript()
     execution_service = executions or FakeExecutions([execution()])
     control = RuntimeControlToolService(
-        tools=object(),  # type: ignore[arg-type]
+        tools=tools or object(),  # type: ignore[arg-type]
         executions=execution_service,  # type: ignore[arg-type]
         artifacts=artifacts or FakeArtifacts(),  # type: ignore[arg-type]
         events=events,
@@ -1812,6 +1816,19 @@ Preserve errors.
         {"skill_id": "http-validation"},
         "call-load-reference",
     )
+    skill_path = directory / "SKILL.md"
+    skill_path.write_text(
+        skill_path.read_text().replace(
+            "description: Validate bounded HTTP behavior",
+            "description: Validate updated HTTP behavior",
+        )
+    )
+    reloaded = await control(
+        SCOPE,
+        "reload_skill",
+        {"skill_id": "http-validation", "reason": "refresh the pinned procedure"},
+        "call-reload-skill",
+    )
     unloaded = await control(
         SCOPE,
         "unload_skill",
@@ -1823,12 +1840,81 @@ Preserve errors.
     assert loaded["version"] == "1.0.0"
     assert len(loaded["digest"]) == 64
     assert reference["content"] == "HTTP REFERENCE"
+    assert reloaded["description"] == "Validate updated HTTP behavior"
+    assert reloaded["digest"] != loaded["digest"]
     assert unloaded == {"skill_id": "http-validation", "active": False}
     assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
         ["runtime-tool://search_skills"],
         ["skill://http-validation"],
         ["skill://http-validation"],
         ["skill://http-validation"],
+        ["skill://http-validation"],
+    ]
+
+
+async def test_tool_control_tools_require_explicit_reload_and_support_unload(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "tools.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "tools": {
+                    "scanner": {
+                        "command": [sys.executable],
+                        "description": "Original scanner",
+                    }
+                },
+            }
+        )
+    )
+    registry = ToolRegistry(config, node_id="node-1")
+    await registry.refresh()
+    tools = ToolContextManager(registry)
+    control, _, transcript, _ = service(tools=tools)
+
+    selected = await control(
+        SCOPE,
+        "get_tool",
+        {"tool_id": "scanner"},
+        "call-get-tool",
+    )
+    config.write_text(
+        config.read_text().replace("Original scanner", "Updated scanner")
+    )
+    await registry.reload_if_changed()
+    stale = await control(
+        SCOPE,
+        "get_tool",
+        {"tool_id": "scanner"},
+        "call-get-stale-tool",
+    )
+    reloaded = await control(
+        SCOPE,
+        "reload_tool",
+        {"tool_id": "scanner"},
+        "call-reload-tool",
+    )
+    unloaded = await control(
+        SCOPE,
+        "unload_tool",
+        {"tool_id": "scanner"},
+        "call-unload-tool",
+    )
+
+    assert selected["stale"] is False
+    assert stale["stale"] is True
+    assert stale["digest"] == selected["digest"]
+    assert reloaded["stale"] is False
+    assert reloaded["digest"] != selected["digest"]
+    assert reloaded["full_schema"]["description"] == "Updated scanner"
+    assert unloaded == {"tool_id": "scanner", "unloaded": True}
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["tool://scanner"],
+        ["tool://scanner"],
+        ["tool://scanner"],
+        ["tool://scanner"],
     ]
 
 

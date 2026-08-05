@@ -27,7 +27,12 @@ from riftx.executors import EnvironmentMode, ShellKind
 from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
-from riftx.tools import ExecutionPolicy, ToolContextManager, ToolRegistry
+from riftx.tools import (
+    ExecutionPolicy,
+    PinnedToolSnapshot,
+    ToolContextManager,
+    ToolRegistry,
+)
 from riftx.tools.policy import (
     AGENT_TOOL_POLICIES,
     AgentToolAuthorization,
@@ -95,13 +100,15 @@ class RegistryDeferredExecutionResolver:
             operation="service.deferred_execution.prepare",
             effect="durable_write",
         )
+        pinned: PinnedToolSnapshot | None = None
+        tool_version: str | None
         if self._tool_context is not None:
             authorization_check = (
                 self._tool_context.assert_allowed
                 if tool_id == "run_shell"
                 else self._tool_context.assert_selected
             )
-            authorization_check(
+            pinned = await authorization_check(
                 tool_id,
                 run_id=session.run_id,
                 session_id=session.id,
@@ -134,7 +141,16 @@ class RegistryDeferredExecutionResolver:
                 timeout_seconds=_timeout(arguments),
             )
 
-        definition = self._registry.get_available(tool_id)
+        if self._tool_context is not None:
+            assert pinned is not None
+            definition = pinned.definition
+            resolved_command = pinned.resolved_command
+            tool_version = pinned.version
+        else:
+            definition = self._registry.get_available(tool_id)
+            state = self._registry.snapshot.states[tool_id]
+            resolved_command = state.resolved_command or definition.command[0]
+            tool_version = state.version
         args = arguments.get("args")
         argv = [str(item) for item in args] if isinstance(args, list) else []
         timeout = _timeout(arguments) or definition.timeout_seconds
@@ -142,8 +158,8 @@ class RegistryDeferredExecutionResolver:
             node_id=run.node_id,
             executor_type=definition.executor,
             cwd=cwd,
-            argv=[*definition.command, *argv],
-            tool_version=self._registry.snapshot.states[tool_id].version,
+            argv=[resolved_command, *definition.command[1:], *argv],
+            tool_version=tool_version,
             environment_mode=EnvironmentMode.INHERIT,
             env={**definition.environment, **_environment(arguments)},
             timeout_seconds=timeout,

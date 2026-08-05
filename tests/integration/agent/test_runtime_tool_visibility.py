@@ -258,7 +258,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         }
     else:
         with pytest.raises(ToolNotFoundError):
-            tool_context.load_tool(
+            await tool_context.load_tool(
                 "run_shell",
                 run_id="run-1",
                 session_id="session-1",
