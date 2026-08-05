@@ -27,6 +27,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "read_many_files",
     "grep",
     "glob",
+    "symbol_search",
     "git_status",
     "git_diff",
     "git_log",
@@ -53,6 +54,7 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "read_many_files",
     "grep",
     "glob",
+    "symbol_search",
     "git_status",
     "git_diff",
     "git_log",
@@ -578,6 +580,7 @@ def _resident_schema(
         "read_many_files": "Read bounded previews from several regular code files.",
         "grep": "Search literal text across bounded regular files in the current code source.",
         "glob": "Find bounded regular files by a relative glob pattern.",
+        "symbol_search": "Search bounded source definitions using the safe built-in static index.",
         "git_status": "Read bounded Git worktree and index status without refreshing the index.",
         "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
         "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
@@ -685,6 +688,19 @@ def _resident_schema(
         properties = {
             "max_entries": {"type": "integer", "minimum": 1, "maximum": 1000},
         }
+    elif tool_id == "symbol_search":
+        properties = {
+            "query": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "path": {"type": "string", "maxLength": 4096},
+            "file_glob": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
+            "case_sensitive": {"type": "boolean"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+        required = ["query"]
     elif tool_id == "git_diff":
         properties = {
             "path": {

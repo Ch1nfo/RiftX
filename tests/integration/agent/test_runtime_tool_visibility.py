@@ -73,6 +73,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "read_many_files",
         "grep",
         "glob",
+        "symbol_search",
         "git_status",
         "git_diff",
         "git_log",

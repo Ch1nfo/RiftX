@@ -72,6 +72,49 @@ class CodeGrepResult(BaseModel):
     truncated: bool = False
 
 
+class CodeSymbol(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=512)
+    qualified_name: str = Field(min_length=1, max_length=2048)
+    kind: Literal[
+        "function",
+        "method",
+        "class",
+        "interface",
+        "struct",
+        "enum",
+        "trait",
+        "module",
+        "namespace",
+        "type",
+        "constant",
+        "variable",
+    ]
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    signature: str = Field(default="", max_length=500)
+
+
+class CodeSymbolSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: Literal["builtin_static"] = "builtin_static"
+    query: str = Field(min_length=1, max_length=1024)
+    symbols: list[CodeSymbol]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
 class GitStatusEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -124,6 +167,8 @@ __all__ = [
     "CodeListResult",
     "CodeReadManyResult",
     "CodeReadResult",
+    "CodeSymbol",
+    "CodeSymbolSearchResult",
     "GitCommitSummary",
     "GitDiffResult",
     "GitLogResult",

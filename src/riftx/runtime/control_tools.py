@@ -142,6 +142,14 @@ class _GrepArguments(_Arguments):
     max_matches: int = Field(default=100, ge=1, le=200)
 
 
+class _SymbolSearchArguments(_Arguments):
+    query: str = Field(min_length=1, max_length=1024)
+    path: str = Field(default="", max_length=4096)
+    file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
+    case_sensitive: bool = False
+    max_results: int = Field(default=100, ge=1, le=200)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -414,6 +422,19 @@ class RuntimeControlToolService:
                     file_glob=code_arguments.file_glob,
                     case_sensitive=code_arguments.case_sensitive,
                     max_matches=code_arguments.max_matches,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "symbol_search":
+            code = self._require_code()
+            symbol_arguments = _SymbolSearchArguments.model_validate(raw_arguments)
+            return (
+                await code.symbol_search(
+                    scope.run_id,
+                    query=symbol_arguments.query,
+                    path=symbol_arguments.path,
+                    file_glob=symbol_arguments.file_glob,
+                    case_sensitive=symbol_arguments.case_sensitive,
+                    max_results=symbol_arguments.max_results,
                 )
             ).model_dump(mode="json")
         if tool_name == "git_status":

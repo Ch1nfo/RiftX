@@ -139,6 +139,40 @@ async def test_workspace_tools_list_read_glob_and_literal_grep(tmp_path: Path) -
     assert grepped.files_scanned == 1
 
 
+async def test_workspace_symbol_search_is_bounded_and_reports_fallback_quality(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "class Handler:\n    def handle_request(self):\n        return True\n"
+    )
+    (root / "api.ts").write_text("export function handleResponse() {}\n")
+    (root / "broken.py").write_text("def broken(:\n")
+    (root / "binary.py").write_bytes(b"\x00not source")
+    (root / "huge.py").write_bytes(b"x" * (512 * 1024 + 1))
+    (root / "README.md").write_text("handle docs\n")
+    service = _general_service(_run("run-1", root))
+
+    result = await service.symbol_search("run-1", query="handle")
+
+    assert result.backend == "builtin_static"
+    assert [(item.name, item.kind, item.path) for item in result.symbols] == [
+        ("handleResponse", "function", "api.ts"),
+        ("Handler", "class", "app.py"),
+        ("handle_request", "method", "app.py"),
+    ]
+    assert result.files_scanned == 3
+    assert result.skipped_binary_files == 1
+    assert result.skipped_large_files == 1
+    assert result.skipped_unsupported_files == 1
+    assert result.parse_errors == 1
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.symbol_search("run-1", query="\n")
+    assert captured.value.code == "code_symbol_query_invalid"
+
+
 async def test_workspace_reads_are_run_scoped_and_bounded(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -246,9 +280,11 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     snapshot_digest = "1" * 64
     manifest_digest = "2" * 64
     content = b"snapshot needle\n" + b"x" * (64 * 1024)
+    symbol_content = b"class SnapshotHandler:\n    pass\n"
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "audit.py").write_bytes(content)
+    (staged / "symbols.py").write_bytes(symbol_content)
     descriptor = SnapshotCASDescriptor(
         project_id=project_id,
         snapshot_digest=snapshot_digest,
@@ -258,6 +294,12 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
                 relative_path="audit.py",
                 blob_digest=hashlib.sha256(content).hexdigest(),
                 size=len(content),
+                mode=0o100644,
+            ),
+            SnapshotBlobMetadata(
+                relative_path="symbols.py",
+                blob_digest=hashlib.sha256(symbol_content).hexdigest(),
+                size=len(symbol_content),
                 mode=0o100644,
             ),
         ),
@@ -273,6 +315,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     output = tmp_path / "audit-output"
     output.mkdir()
     (output / "audit.py").write_text("wrong mutable output")
+    (output / "symbols.py").write_text("class MutableOutputOnly:\n    pass\n")
     run = _run("run-audit", output, kind=RunKind.CODE_AUDIT)
     snapshot = SimpleNamespace(
         id=snapshot_id,
@@ -297,6 +340,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
 
     read = await service.read_file(run.id, path="audit.py", max_bytes=8)
     grepped = await service.grep(run.id, query="needle")
+    symbols = await service.symbol_search(run.id, query="SnapshotHandler")
 
     assert read.source == "audit_snapshot"
     assert read.source_digest == snapshot_digest
@@ -306,6 +350,9 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert artifacts.calls[0]["audit_id"] == "audit-1"
     assert artifacts.calls[0]["content"] == content
     assert grepped.matches[0].path == "audit.py"
+    assert symbols.source == "audit_snapshot"
+    assert symbols.source_digest == snapshot_digest
+    assert [item.name for item in symbols.symbols] == ["SnapshotHandler"]
 
 
 async def test_binary_preview_is_bounded_base64(tmp_path: Path) -> None:

@@ -44,7 +44,10 @@ from .models import (
     CodeListResult,
     CodeReadManyResult,
     CodeReadResult,
+    CodeSymbol,
+    CodeSymbolSearchResult,
 )
+from .symbols import extract_symbols, language_for_path
 
 _MAX_PATH_BYTES = 4096
 _MAX_LIST_ENTRIES = 1000
@@ -57,6 +60,10 @@ _MAX_GREP_MATCHES = 200
 _MAX_GREP_FILE_BYTES = 1024 * 1024
 _MAX_GREP_TOTAL_BYTES = 8 * 1024 * 1024
 _MAX_GREP_LINE_CHARS = 1000
+_MAX_SYMBOL_FILE_BYTES = 512 * 1024
+_MAX_SYMBOL_TOTAL_BYTES = 8 * 1024 * 1024
+_MAX_SYMBOLS_SCANNED = 20_000
+_MAX_SYMBOL_RESULTS = 200
 
 
 class _Source(Protocol):
@@ -280,6 +287,108 @@ class CodeWorkspaceService:
                     path=path,
                     entries=matched[:max_results],
                     truncated=scan_truncated or len(matched) > max_results,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def symbol_search(
+        self,
+        run_id: str,
+        *,
+        query: str,
+        path: str = "",
+        file_glob: str | None = None,
+        case_sensitive: bool = False,
+        max_results: int = 100,
+    ) -> CodeSymbolSearchResult:
+        if (
+            not query.strip()
+            or any(character in query for character in "\x00\r\n")
+            or len(query.encode("utf-8")) > 1024
+        ):
+            raise _conflict("code_symbol_query_invalid", "query is empty or too large")
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeSymbolSearchResult:
+            matches: list[CodeSymbol] = []
+            files_scanned = bytes_scanned = 0
+            skipped_binary = skipped_large = skipped_unsupported = parse_errors = 0
+            symbols_scanned = 0
+            truncated = False
+            needle = query if case_sensitive else query.casefold()
+            with source as opened:
+                entries, scan_truncated = opened.list_entries(
+                    path,
+                    recursive=True,
+                    max_entries=_MAX_SCAN_ENTRIES,
+                )
+                truncated = scan_truncated
+                for entry in entries:
+                    if entry.type != "file":
+                        continue
+                    relative = _relative_to(entry.path, path)
+                    if pattern is not None and not fnmatch.fnmatchcase(relative, pattern):
+                        continue
+                    if language_for_path(entry.path) is None:
+                        skipped_unsupported += 1
+                        continue
+                    if entry.size > _MAX_SYMBOL_FILE_BYTES:
+                        skipped_large += 1
+                        continue
+                    if bytes_scanned + entry.size > _MAX_SYMBOL_TOTAL_BYTES:
+                        truncated = True
+                        break
+                    data, _, _ = opened.read_bytes(
+                        entry.path,
+                        max_bytes=_MAX_SYMBOL_FILE_BYTES,
+                    )
+                    if _looks_binary(data):
+                        skipped_binary += 1
+                        continue
+                    files_scanned += 1
+                    bytes_scanned += len(data)
+                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                    if remaining_symbols <= 0:
+                        truncated = True
+                        break
+                    symbols, file_truncated, parse_failed = extract_symbols(
+                        entry.path,
+                        data.decode("utf-8", errors="replace"),
+                        max_symbols=remaining_symbols,
+                    )
+                    parse_errors += int(parse_failed)
+                    symbols_scanned += len(symbols)
+                    truncated |= file_truncated
+                    for symbol in symbols:
+                        haystack = (
+                            f"{symbol.name}\n{symbol.qualified_name}"
+                            if case_sensitive
+                            else f"{symbol.name}\n{symbol.qualified_name}".casefold()
+                        )
+                        if needle not in haystack:
+                            continue
+                        matches.append(symbol)
+                        if len(matches) >= max_results:
+                            truncated = True
+                            break
+                    if len(matches) >= max_results or symbols_scanned >= _MAX_SYMBOLS_SCANNED:
+                        truncated = True
+                        break
+                return CodeSymbolSearchResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    query=query,
+                    symbols=matches,
+                    files_scanned=files_scanned,
+                    bytes_scanned=bytes_scanned,
+                    skipped_binary_files=skipped_binary,
+                    skipped_large_files=skipped_large,
+                    skipped_unsupported_files=skipped_unsupported,
+                    parse_errors=parse_errors,
+                    truncated=truncated,
                 )
 
         return await asyncio.to_thread(operation)

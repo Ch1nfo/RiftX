@@ -13,6 +13,8 @@ from riftx.code import (
     CodeEntry,
     CodeListResult,
     CodeReadResult,
+    CodeSymbol,
+    CodeSymbolSearchResult,
     GitCommitSummary,
     GitDiffResult,
     GitLogResult,
@@ -163,6 +165,35 @@ class FakeCode:
             eof=True,
             encoding="utf-8",
             content="content",
+        )
+
+    async def symbol_search(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodeSymbolSearchResult:
+        self.calls.append(("symbol_search", run_id, kwargs))
+        return CodeSymbolSearchResult(
+            source="workspace",
+            query=str(kwargs["query"]),
+            symbols=[
+                CodeSymbol(
+                    name="Handler",
+                    qualified_name="Handler",
+                    kind="class",
+                    language="python",
+                    path="src/app.py",
+                    line_number=1,
+                    column=0,
+                    signature="class Handler:",
+                )
+            ],
+            files_scanned=1,
+            bytes_scanned=14,
+            skipped_binary_files=0,
+            skipped_large_files=0,
+            skipped_unsupported_files=0,
+            parse_errors=0,
         )
 
 
@@ -603,6 +634,35 @@ async def test_native_code_control_tools_use_exact_run_scope_and_source_refs() -
         ["code://src"],
         ["code://src/app.py"],
     ]
+
+
+async def test_native_symbol_search_uses_exact_run_scope() -> None:
+    code = FakeCode()
+    control, _, transcript, _ = service(code=code)
+
+    result = await control(
+        SCOPE,
+        "symbol_search",
+        {"query": "handler", "path": "src", "max_results": 10},
+        "call-symbol-search",
+    )
+
+    assert result["backend"] == "builtin_static"
+    assert result["symbols"][0]["qualified_name"] == "Handler"
+    assert code.calls == [
+        (
+            "symbol_search",
+            "run-1",
+            {
+                "query": "handler",
+                "path": "src",
+                "file_glob": None,
+                "case_sensitive": False,
+                "max_results": 10,
+            },
+        )
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]
 
 
 async def test_native_code_argument_limits_fail_before_source_read() -> None:

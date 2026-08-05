@@ -285,7 +285,21 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4967 passed, 5 skipped, 11 warnings`；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
 - Third delivery implementation commit：`a83875d1`。
-- Later slices：符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
+- Fourth delivery slice：
+  - 已将 `symbol_search` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool；
+  - General Run 与 Code Audit 均复用既有 owner-bound Workspace/Snapshot 读取链路，不读取 Audit 可变输出目录；
+  - 无可信 LSP 时使用明确标记为 `builtin_static` 的安全降级索引：Python 使用标准库 AST，JavaScript/TypeScript、Go、Rust、Java、Kotlin、C/C++、C#、Swift、PHP、Ruby 与 Shell 使用有界声明提取；
+  - 结果包含语言、符号类型、限定名、路径、行列、签名，以及扫描字节、跳过二进制/大文件/不支持文件、解析失败和截断状态；
+  - 单文件、总扫描字节、目录条目、符号扫描数、返回结果、行长、行数、名称和限定名均有硬上限；
+  - 本切片不启动 Language Server，不读取项目外配置，不执行项目 Hook、插件、构建、测试或安装脚本；受控 LSP 仍是后续高精度后端。
+- Fourth delivery checks：
+  - Code/Runtime/Tool Discovery 与 Tool Policy：`272 passed`；
+  - Context/Subagent/Agent/Temporal Worker：`110 passed`；
+  - RunKind Effect Policy 与文档约束：`41 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4976 passed, 5 skipped, 11 warnings`；
+  - 全仓 Ruff、文档测试和 `git diff --check`：passed。
+- Fourth delivery implementation commit：pending。
+- Later slices：引用/调用层级、受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
 

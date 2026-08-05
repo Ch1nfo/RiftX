@@ -92,6 +92,10 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "symbol_search": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "git_status": AgentToolPolicy(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,

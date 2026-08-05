@@ -28,6 +28,7 @@ _CONTROL_TOOL_NAMES = {
     "read_many_files",
     "grep",
     "glob",
+    "symbol_search",
     "git_status",
     "git_diff",
     "git_log",
