@@ -36,9 +36,9 @@
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，并可在逐次批准后匿名抓取公网文档；Scope/SSRF、Run 状态、Artifact、Source 与 Transcript 继续复用既有权威服务。
-- Current implementation commits：`69d54ab7`、`e8c047c6`。
-- Next delivery slice：建立可配置 Search Provider，并接通有界、不可信标记、Artifact-backed 的 Web Search/Research 生产工具。
+- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser，并可在逐次批准后执行匿名 Public Fetch、联合 Web Search 和只引用 canonical Source 的 Web Research；Scope/SSRF、Run 状态、Artifact、Source 与 Transcript 继续复用既有权威服务。
+- Current implementation commits：`69d54ab7`、`e8c047c6`、`c9a6394a`。
+- Next delivery slice：接通 HTTP Traffic 查询/原文读取与 Target HTTP Request 生产闭环；Code Audit 公网研究继续等待 Audit Artifact owner 适配。
 
 ## 3. 研究与实现基线
 
@@ -116,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
-| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6` |
+| CAP-102 | CAP-001 | in_progress | `69d54ab7`, `e8c047c6`, `c9a6394a` |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
@@ -409,7 +409,23 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5017 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
   - 全仓 Ruff、staged `git diff --check`：passed。
 - Second delivery implementation commit：`e8c047c6`。
-- Remaining slices：Web Search/Research、Code Audit 公网研究 Artifact owner 适配、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
+- Third delivery slice：
+  - 已将 `web_search` 和 `web_research` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Temporal Worker；两者均要求逐次 `approval_policy=explicit`，不向 Subagent 暴露；
+  - 新增 `web.search` 配置，默认使用当前 Run 的官方 OpenAI profile 提供 Hosted Search，可配置 SearXNG，也可联合两者并在单 Provider 失败时返回有界 warning 与可用结果；
+  - OpenAI Hosted Search 只接受 `provider=openai` 且未配置自定义 `base_url` 的 profile；OpenAI-compatible、本地 Gateway 或自定义目的地不会被误授 Hosted Search 能力，无可用 Provider 时返回明确 `web_search_unavailable`；
+  - 联合 Search 对 Provider 并发调用、跨 Provider 去重并交错保留高排名候选；Search Result 继续是 `DISCOVERY_ONLY_NOT_A_CANONICAL_SOURCE`，不能直接成为 Finding 引用源；
+  - `web_research` 使用最多 4 个查询、50 个候选和 6 个 Source；候选必须通过既有 SSRF-safe Public Fetch 成功 canonicalize 后，才能进入 Note、Claim 和 Research Packet；
+  - 新增 `SERVICE_WEB_SEARCH` 和 `SERVICE_WEB_RESEARCH` RunKind effect inventory；当前仅允许 General Run，每个实际 Provider 出站前都重新读取 Run 并检查暂停、取消、完成或失败状态；
+  - Search Response 和最终 Research Packet 均以 `UNTRUSTED_EXTERNAL_CONTENT` 写入 immutable JSON Artifact；Search Query/Result、Research Note/Packet 同步进入既有持久层，Query、Packet、canonical Source 和所有 Artifact 自动进入 Transcript refs；
+  - Hosted Search 与 Agent 主模型复用同一 generation-aware `AsyncOpenAI` Client；无论 Search 还是主模型先初始化，都不会覆盖并泄漏旧 Client。
+- Third delivery checks：
+  - Web Provider、Research Pipeline/Repository/Service、Model Provider、Runtime Control Tool、Agent visibility、Tool Policy/Discovery、RunKind Effect、Config 与 Worker Runtime 定向回归：`186 passed`；
+  - 完整 Web、Runtime、Agent Integration、Model/Tool/Agent Unit、Worker Runtime、Config 与 RunKind Effect 关联回归：`560 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/models/provider.py src/riftx/web/search.py src/riftx/web/service.py`：`Success: no issues found in 3 source files`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5038 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 提示；
+  - 全仓 Ruff、Example YAML 解析和 staged `git diff --check`：passed。
+- Third delivery implementation commit：`c9a6394a`。
+- Remaining slices：Code Audit 公网研究 Artifact owner 适配、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
 
 ## 9. Known pre-existing worktree state
 
