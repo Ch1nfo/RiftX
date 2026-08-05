@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -299,7 +299,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4976 passed, 5 skipped, 11 warnings`；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
 - Fourth delivery implementation commit：`c6de9413`。
-- Later slices：引用/调用层级、受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
+- Fifth delivery slice：
+  - 已将 `find_references` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool；
+  - General Run 与 Code Audit 继续复用 owner-bound Workspace/Snapshot 读取链路和与 `symbol_search` 共用的有界语义扫描预算；
+  - Python 使用标准库 `tokenize` 跳过注释与字符串；其他已支持语言使用不执行目标代码的有界标识符词法扫描，并跳过行注释、块注释及单引号、双引号、反引号字符串；
+  - 返回精确名称命中的声明/引用类型、语言、路径、行列和 bounded excerpt，不把裸文本出现次数冒充语义引用；
+  - 使用现有声明提取器统计同名定义，明确返回 `unresolved`、`unique`、`ambiguous` 或 `indeterminate`，解析失败、扫描不完整和符号上限不会静默宣称唯一解析；
+  - 结果包含定义数、扫描文件/字节、跳过二进制/大文件/不支持文件、解析失败和截断状态；结果数、单文件、总字节、目录条目、符号与词法出现次数均有硬上限；
+  - 未闭合字符串和块注释标记为词法解析失败；该后端继续明确标记为 `builtin_static`，只按名称解析，不冒充受控 LSP 的位置绑定高精度引用。
+- Fifth delivery checks：
+  - Code/Runtime/Tool Discovery 与 Tool Policy 定向回归：`63 passed`；
+  - Code/Runtime/Context/Agent 关联回归：`113 passed`；
+  - Tool/Policy/Subagent 关联回归：`45 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4985 passed, 5 skipped, 11 warnings`；
+  - 全仓 Ruff、文档测试和 `git diff --check`：passed。
+- Fifth delivery implementation commit：`b7e4b969`。
+- Later slices：调用层级、受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
 
