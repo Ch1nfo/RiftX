@@ -28,19 +28,20 @@
 
 ## 2. Current wave
 
-- Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-104 — 持久化 Tool/Skill Selection`
-- Status：`in_progress`
+- Stage：`S2 — 认知运行时`
+- Current task：`COG-200 — Task Graph`
+- Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
+- Completed predecessor：CAP-104，implementation commits `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Session Tool、Skill、Technique 选择具备统一持久化模型、复合身份、Version/Digest lock 与 CAS reload 语义。生产 Tool/Skill 入口已切换到统一表；Tool 固定 Schema、解析后 executable、环境和版本可在 Worker 重启后恢复。Registry 变化只会把选择标记为 stale，执行路径拒绝静默切换，必须显式 reload；Tool/Skill 均支持显式 reload/unload。旧 Skill 数据由迁移回填且旧表暂留兼容，不安全降级会拒绝丢弃新选择事实。
-- Current implementation commits：CAP-104 `7fc96d33`、`ab9c2f3c`。
-- Verification：第二切片核心定向集 `82 passed`，Runtime/Temporal/Execution/Context/Subagent 关联回归 `444 passed`，Unit Agent/Tool/Skill 回归 `36 passed`；Scoped mypy 与 Ruff 通过。
-- Next delivery slice：提供 Technique 选择服务并把 Tool、Skill、Technique 汇总为统一 Session Capability Manifest；完成 CAP-104 全仓验证。
+- Product behavior：Session Tool、Skill、Technique 选择统一持久化到 Session Capability Manifest，具备复合身份、Version/Digest lock、重启恢复、stale detection 与显式 reload/unload。Tool 执行使用固定 Schema、解析后 executable、环境和版本；Registry 变化不会静默替换已选版本。Technique 从 Active Capability Version 选择并与 Tool/Skill 共享同一生命周期和 Manifest。旧 Skill 数据安全回填，跨版本 downgrade 在任何 DDL 前执行数据丢失保护。
+- Current implementation commits：CAP-104 `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
+- Verification：全仓 `5077 passed, 5 skipped, 17 warnings`；全仓 Ruff、核心 Scoped mypy、Alembic 单 head 与迁移降级回归通过。
+- Next delivery slice：开始 COG-200，建立 durable Task、Dependency、TaskAttempt、TaskBudget、TaskEvidenceRequirement 与 Planner command API。
 
 ## 3. 研究与实现基线
 
@@ -120,7 +121,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
-| CAP-104 | CAP-100, CAP-103 | in_progress | `7fc96d33`, `ab9c2f3c` |
+| CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
 | COG-202 | COG-201 | pending | — |
