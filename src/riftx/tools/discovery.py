@@ -17,6 +17,9 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "search_tools",
     "list_tools",
     "get_tool",
+    "search_mcp_tools",
+    "get_mcp_tool",
+    "call_mcp_tool",
     "search_skills",
     "list_skills",
     "load_skill",
@@ -588,6 +591,12 @@ def _resident_schema(
         "search_tools": "Search the node Tool Index by task language or capability.",
         "list_tools": "List lightweight Tool Index entries without loading schemas.",
         "get_tool": "Read detail for one registered tool and select its full schema.",
+        "search_mcp_tools": "Search bounded metadata for discovered MCP Tools.",
+        "get_mcp_tool": "Read the bounded schema for one discovered MCP Tool.",
+        "call_mcp_tool": (
+            "Invoke one operator-allowlisted MCP Tool after explicit approval and save "
+            "the sanitized full result as an immutable Artifact."
+        ),
         "search_skills": "Search Progressive Skills available to this Agent Session.",
         "list_skills": "List lightweight Progressive Skill summaries.",
         "load_skill": "Pin and load one versioned Skill procedure for this Session.",
@@ -676,6 +685,26 @@ def _resident_schema(
     elif tool_id == "get_tool":
         properties = {"tool_id": {"type": "string"}}
         required = ["tool_id"]
+    elif tool_id == "search_mcp_tools":
+        properties = {
+            "query": {"type": "string", "maxLength": 2000},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+        }
+    elif tool_id == "get_mcp_tool":
+        properties = {
+            "tool_id": {"type": "string", "minLength": 1, "maxLength": 64},
+        }
+        required = ["tool_id"]
+    elif tool_id == "call_mcp_tool":
+        properties = {
+            "tool_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "arguments": {
+                "type": "object",
+                "additionalProperties": True,
+                "maxProperties": 1024,
+            },
+        }
+        required = ["tool_id", "arguments"]
     elif tool_id == "search_skills":
         properties = {
             "query": {"type": "string"},
@@ -1231,6 +1260,7 @@ def _resident_schema(
         "web_search",
         "web_research",
         "target_http_request",
+        "call_mcp_tool",
     }:
         metadata.update(
             {

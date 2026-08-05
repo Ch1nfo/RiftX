@@ -26,6 +26,7 @@ from riftx.execution import (
     DeferredExecutionDispatcher,
     DeferredExecutionSpec,
     ExecutionService,
+    build_execution_key,
     build_tool_call_intent_id,
 )
 from riftx.persistence import (
@@ -430,10 +431,21 @@ async def test_provider_control_intent_requires_approval_and_settles_once(
     assert intent.execution_spec is None
     assert intent.status is ToolCallStatus.WAITING_APPROVAL
     await fixture.dispatcher.approve_intent(intent.id)
+    with pytest.raises(ApplicationConflictError) as mismatched:
+        await fixture.dispatcher.begin_control_intent(
+            run_id=fixture.run.id,
+            session_id=fixture.session.id,
+            engine_call_id="patch-call",
+            tool_name="apply_patch",
+            arguments={"path": "foreign.py"},
+        )
+    assert mismatched.value.code == "control_tool_intent_mismatch"
     claimed = await fixture.dispatcher.begin_control_intent(
         run_id=fixture.run.id,
         session_id=fixture.session.id,
         engine_call_id="patch-call",
+        tool_name="apply_patch",
+        arguments={"path": "src/app.py"},
     )
     assert claimed is not None
     assert claimed.id == intent.id
@@ -443,6 +455,8 @@ async def test_provider_control_intent_requires_approval_and_settles_once(
             run_id=fixture.run.id,
             session_id=fixture.session.id,
             engine_call_id="patch-call",
+            tool_name="apply_patch",
+            arguments={"path": "src/app.py"},
         )
 
     await fixture.dispatcher.finish_control_intent(
@@ -454,6 +468,41 @@ async def test_provider_control_intent_requires_approval_and_settles_once(
 
     settled = await fixture.tool_calls.get(intent.id)
     assert settled is not None and settled.status is ToolCallStatus.COMPLETED
+
+
+async def test_provider_control_intent_can_persist_a_deterministic_execution_claim(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=approved_control_event(),
+    )
+    await fixture.dispatcher.approve_intent(intent.id)
+
+    claimed = await fixture.dispatcher.begin_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+        tool_name="apply_patch",
+        arguments={"path": "src/app.py"},
+        attempt_group="mcp",
+    )
+
+    assert claimed is not None
+    execution_key = build_execution_key(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        tool_call_id=intent.id,
+        attempt_group="mcp",
+    )
+    assert await fixture.tool_calls.execution_claim_is_current(
+        intent.id,
+        execution_key=execution_key,
+        attempt_group="mcp",
+    )
 
 
 async def record_approval(

@@ -1311,6 +1311,7 @@ def test_public_web_services_allow_code_audit_without_widening_target_or_browser
         RunEffectOperation.SERVICE_WEB_FETCH,
         RunEffectOperation.SERVICE_WEB_SEARCH,
         RunEffectOperation.SERVICE_WEB_RESEARCH,
+        RunEffectOperation.SERVICE_MCP_INVOKE,
     ):
         policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
         assert policy.allowed_run_kinds == frozenset(RunKind)

@@ -52,6 +52,19 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "search_mcp_tools": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "get_mcp_tool": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "call_mcp_tool": AgentToolPolicy(
+            AgentToolEffect.HOST_EXECUTION,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
         "search_skills": AgentToolPolicy(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,

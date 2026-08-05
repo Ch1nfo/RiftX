@@ -196,6 +196,20 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "read_http_exchange": False,
         "target_http_request": True,
     }
+    call_mcp_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "call_mcp_tool"
+    )
+    assert call_mcp_schema["parameters"]["required"] == ["tool_id", "arguments"]
+    assert call_mcp_schema["x-riftx"]["approval_policy"] == "explicit"
+    assert {
+        tool.name: tool.needs_approval
+        for tool in agent.tools
+        if tool.name in {"search_mcp_tools", "get_mcp_tool", "call_mcp_tool"}
+    } == {
+        "search_mcp_tools": False,
+        "get_mcp_tool": False,
+        "call_mcp_tool": True,
+    }
     assert {
         "search_tools",
         "list_tools",
@@ -224,6 +238,9 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "query_http_traffic",
         "read_http_exchange",
         "target_http_request",
+        "search_mcp_tools",
+        "get_mcp_tool",
+        "call_mcp_tool",
         "get_execution",
         "wait_execution",
         "cancel_execution",

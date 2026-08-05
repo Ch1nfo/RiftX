@@ -60,6 +60,14 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
     assert AGENT_TOOL_POLICIES["read_http_exchange"].approval_required is False
     assert AGENT_TOOL_POLICIES["target_http_request"].effect is AgentToolEffect.HOST_EXECUTION
     assert AGENT_TOOL_POLICIES["target_http_request"].approval_required is True
+    assert AGENT_TOOL_POLICIES["search_mcp_tools"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["get_mcp_tool"].approval_required is False
+    assert AGENT_TOOL_POLICIES["call_mcp_tool"].effect is AgentToolEffect.HOST_EXECUTION
+    assert (
+        AGENT_TOOL_POLICIES["call_mcp_tool"].authorization
+        is AgentToolAuthorization.DYNAMIC_APPROVAL
+    )
+    assert AGENT_TOOL_POLICIES["call_mcp_tool"].approval_required is True
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 

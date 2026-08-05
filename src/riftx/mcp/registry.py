@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from agents.mcp import MCPServer, MCPServerStreamableHttp
+from mcp.types import CallToolResult
 from mcp.types import Tool as SDKMCPTool
 
 from riftx.config import MCPConfig, MCPServerConfig
@@ -38,6 +39,13 @@ class MCPServerClient(Protocol):
     async def cleanup(self) -> None: ...
 
     async def list_tools(self) -> list[SDKMCPTool]: ...
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object] | None,
+        meta: dict[str, object] | None = None,
+    ) -> CallToolResult: ...
 
 
 class MCPServerFactory(Protocol):
@@ -88,6 +96,12 @@ class MCPServerConfigurationError(RuntimeError):
         super().__init__(f"MCP server {server_id!r} configuration is unavailable ({code})")
 
 
+class MCPToolInvocationError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class OpenAIMCPAdapter:
     """Own connected SDK clients without exposing transport configuration."""
 
@@ -110,11 +124,29 @@ class OpenAIMCPAdapter:
         method: str,
         arguments: dict[str, object],
     ) -> object:
-        del arguments
-        if method != "tools/list":
-            raise ValueError("MCP adapter currently permits discovery only")
+        if method not in {"tools/list", "tools/call"}:
+            raise ValueError("MCP adapter method is not permitted")
         client = await self._client(server_id)
-        return await client.list_tools()
+        if method == "tools/list":
+            return await client.list_tools()
+        if method == "tools/call":
+            tool_name = arguments.get("name")
+            tool_arguments = arguments.get("arguments")
+            execution_key = arguments.get("execution_key")
+            if (
+                not isinstance(tool_name, str)
+                or not tool_name
+                or not isinstance(tool_arguments, dict)
+                or not isinstance(execution_key, str)
+                or not execution_key
+            ):
+                raise ValueError("MCP tools/call envelope is invalid")
+            return await client.call_tool(
+                tool_name,
+                tool_arguments,
+                meta={"riftx/execution-key": execution_key},
+            )
+        raise AssertionError("unreachable MCP adapter method")
 
     async def close(self) -> None:
         async with self._lock:
@@ -281,6 +313,61 @@ class MCPServerRegistry:
         if close is not None:
             await close()
 
+    async def invoke(
+        self,
+        tool_id: str,
+        arguments: dict[str, object],
+        *,
+        execution_key: str,
+    ) -> tuple[MCPToolIndexEntry, dict[str, object]]:
+        try:
+            entry = self.index.get(tool_id)
+        except KeyError:
+            raise MCPToolInvocationError("mcp_tool_not_found") from None
+        if not entry.invocation_enabled:
+            raise MCPToolInvocationError("mcp_tool_invocation_disabled")
+        definition = self._config.servers.get(entry.server_id)
+        if definition is None or not definition.enabled:
+            raise MCPToolInvocationError("mcp_server_not_configured")
+        try:
+            validated_arguments = _bounded_json_object(
+                arguments,
+                max_bytes=self._config.max_call_argument_bytes,
+            )
+        except (TypeError, ValueError):
+            raise MCPToolInvocationError("mcp_call_arguments_invalid") from None
+        try:
+            async with asyncio.timeout(definition.request_timeout_seconds):
+                result = await self._governed.call(
+                    entry.server_id,
+                    "tools/call",
+                    {
+                        "name": entry.name,
+                        "arguments": validated_arguments,
+                        "execution_key": execution_key,
+                    },
+                )
+        except TimeoutError:
+            raise MCPToolInvocationError("mcp_call_timeout") from None
+        except Exception:
+            raise MCPToolInvocationError("mcp_server_unavailable") from None
+        if not isinstance(result, CallToolResult):
+            raise MCPToolInvocationError("mcp_call_result_invalid")
+        try:
+            sanitized = _sanitize_json(
+                result.model_dump(mode="json", by_alias=True),
+                redactions=self._redactions,
+                max_string_length=self._config.max_call_result_bytes,
+                truncate_strings=False,
+            )
+        except (TypeError, ValueError):
+            raise MCPToolInvocationError("mcp_call_result_invalid") from None
+        if not isinstance(sanitized, dict):
+            raise MCPToolInvocationError("mcp_call_result_invalid")
+        if len(_canonical_bytes(sanitized)) > self._config.max_call_result_bytes:
+            raise MCPToolInvocationError("mcp_call_result_too_large")
+        return entry, sanitized
+
     async def _discover(
         self,
         server_id: str,
@@ -330,6 +417,7 @@ class MCPServerRegistry:
                     raw_tool,
                     max_schema_bytes=self._config.max_schema_bytes,
                     redactions=self._redactions,
+                    invocation_enabled=bool(definition.allowed_tools),
                 )
             except Exception:
                 rejected += 1
@@ -369,6 +457,7 @@ def _project_tool(
     *,
     max_schema_bytes: int,
     redactions: tuple[str, ...],
+    invocation_enabled: bool,
 ) -> tuple[MCPToolIndexEntry, dict[str, object]]:
     name = raw_tool.name.strip()
     if (
@@ -401,6 +490,7 @@ def _project_tool(
         title=title,
         description=description,
         availability=ToolAvailability.AVAILABLE,
+        invocation_enabled=invocation_enabled,
         input_schema_digest=hashlib.sha256(schema_bytes).hexdigest(),
         read_only_hint=_optional_bool(annotations, "readOnlyHint"),
         destructive_hint=_optional_bool(annotations, "destructiveHint"),
@@ -455,17 +545,34 @@ def _sanitize_json(
     *,
     redactions: tuple[str, ...],
     depth: int = 0,
+    max_string_length: int = 4096,
+    truncate_strings: bool = True,
+    redact_paths: bool = True,
 ) -> object:
     if depth > 64:
         raise ValueError("MCP schema exceeds the configured nesting bound")
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
-        return _redact_sensitive(value[:4096], redactions)
+        if len(value) > max_string_length:
+            if not truncate_strings:
+                raise ValueError("MCP JSON string exceeds the configured bound")
+            value = value[:max_string_length]
+        return _redact_sensitive(value, redactions, redact_paths=redact_paths)
     if isinstance(value, list):
         if len(value) > 1024:
             raise ValueError("MCP schema array exceeds the configured structural bound")
-        return [_sanitize_json(item, redactions=redactions, depth=depth + 1) for item in value]
+        return [
+            _sanitize_json(
+                item,
+                redactions=redactions,
+                depth=depth + 1,
+                max_string_length=max_string_length,
+                truncate_strings=truncate_strings,
+                redact_paths=redact_paths,
+            )
+            for item in value
+        ]
     if isinstance(value, dict):
         if len(value) > 1024:
             raise ValueError("MCP schema object exceeds the configured structural bound")
@@ -479,6 +586,9 @@ def _sanitize_json(
                 item,
                 redactions=redactions,
                 depth=depth + 1,
+                max_string_length=max_string_length,
+                truncate_strings=truncate_strings,
+                redact_paths=redact_paths,
             )
         return normalized
     raise TypeError("MCP schema must contain JSON values only")
@@ -496,10 +606,15 @@ def _safe_text(
     return normalized or None
 
 
-def _redact_sensitive(value: str, redactions: tuple[str, ...]) -> str:
+def _redact_sensitive(
+    value: str,
+    redactions: tuple[str, ...],
+    *,
+    redact_paths: bool = True,
+) -> str:
     for sensitive in redactions:
         value = value.replace(sensitive, "[REDACTED_SECRET]")
-    return _redact_paths(value)
+    return _redact_paths(value) if redact_paths else value
 
 
 def _redact_paths(value: str) -> str:
@@ -536,6 +651,21 @@ def _canonical_bytes(value: object) -> bytes:
         separators=(",", ":"),
         allow_nan=False,
     ).encode()
+
+
+def _bounded_json_object(value: object, *, max_bytes: int) -> dict[str, object]:
+    normalized = _sanitize_json(
+        value,
+        redactions=(),
+        max_string_length=max_bytes,
+        truncate_strings=False,
+        redact_paths=False,
+    )
+    if not isinstance(normalized, dict):
+        raise MCPToolInvocationError("mcp_call_arguments_invalid")
+    if len(_canonical_bytes(normalized)) > max_bytes:
+        raise MCPToolInvocationError("mcp_call_arguments_too_large")
+    return normalized
 
 
 def _config_digest(config: MCPConfig) -> str:

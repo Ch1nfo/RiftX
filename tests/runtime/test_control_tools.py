@@ -56,6 +56,7 @@ from riftx.domain import (
 )
 from riftx.domain.base import utc_now
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
+from riftx.mcp import MCPInvocationResult
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
@@ -366,14 +367,42 @@ class FakeCode:
 class FakeControlIntents:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.begin_arguments: list[dict[str, object]] = []
 
     async def begin_control_intent(self, **kwargs: object) -> object:
+        self.begin_arguments.append(kwargs)
         self.calls.append(("begin", str(kwargs["engine_call_id"])))
         return SimpleNamespace(id=f"intent-{kwargs['engine_call_id']}")
 
     async def finish_control_intent(self, **kwargs: object) -> None:
         outcome = "success" if kwargs["succeeded"] else "failed"
         self.calls.append((outcome, str(kwargs["engine_call_id"])))
+
+
+class FakeMCP:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search_tools(self, query: str, *, max_results: int) -> list[dict[str, object]]:
+        return [{"id": "mcp__docs__read", "query": query, "max_results": max_results}]
+
+    def get_tool(self, tool_id: str) -> dict[str, object]:
+        return {"entry": {"id": tool_id}, "schema": {"tool_id": tool_id}}
+
+    async def invoke(self, **kwargs: object) -> MCPInvocationResult:
+        self.calls.append(kwargs)
+        return MCPInvocationResult(
+            tool_call_id=str(kwargs["tool_call_id"]),
+            execution_key="execution:v1:mcp",
+            tool_id=str(kwargs["tool_id"]),
+            server_id="docs",
+            tool_name="read_doc",
+            status="completed",
+            artifact_id="mcp-artifact-1",
+            result_sha256="a" * 64,
+            result_bytes=128,
+            content=[{"type": "text", "text": "answer", "truncated": False}],
+        )
 
 
 class FakeGit:
@@ -838,6 +867,7 @@ def service(
     runs: FakeRuns | None = None,
     traffic: FakeTraffic | None = None,
     target_http: FakeTargetHttp | None = None,
+    mcp: FakeMCP | None = None,
     control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -858,6 +888,7 @@ def service(
         runs=runs,  # type: ignore[arg-type]
         traffic=traffic,  # type: ignore[arg-type]
         target_http=target_http,  # type: ignore[arg-type]
+        mcp=mcp,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
@@ -885,6 +916,53 @@ async def test_effectful_control_tool_fails_closed_without_approved_intent() -> 
     assert captured.value.code == "control_tool_approval_missing"
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+async def test_mcp_call_requires_approval_and_uses_durable_intent_identity() -> None:
+    mcp = FakeMCP()
+    control, events, transcript, _ = service(mcp=mcp)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "call_mcp_tool",
+            {"tool_id": "mcp__docs__read", "arguments": {"query": "hello"}},
+            "mcp-call",
+        )
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert mcp.calls == []
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+    tracker = FakeControlIntents()
+    control, _, transcript, _ = service(mcp=mcp, control_intents=tracker)
+    result = await control(
+        SCOPE,
+        "call_mcp_tool",
+        {"tool_id": "mcp__docs__read", "arguments": {"query": "hello"}},
+        "mcp-call",
+    )
+
+    assert result["artifact_id"] == "mcp-artifact-1"
+    assert mcp.calls == [
+        {
+            "run_id": "run-1",
+            "session_id": "session-1",
+            "tool_call_id": "intent-mcp-call",
+            "tool_id": "mcp__docs__read",
+            "arguments": {"query": "hello"},
+        }
+    ]
+    assert tracker.calls == [("begin", "mcp-call"), ("success", "mcp-call")]
+    assert tracker.begin_arguments[0]["attempt_group"] == "mcp"
+    draft = transcript.rows[0][1]
+    assert draft.artifact_ids == ["mcp-artifact-1"]
+    assert draft.structured_content["source_refs"] == [
+        "mcp-tool://mcp__docs__read",
+        "mcp-execution://execution:v1:mcp",
+        "artifact://mcp-artifact-1",
+    ]
 
 
 @pytest.mark.parametrize(

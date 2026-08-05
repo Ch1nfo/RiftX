@@ -245,6 +245,7 @@ class RunEffectFamily(StrEnum):
     BROWSER = "browser"
     WEB_RESEARCH = "web_research"
     TARGET_HTTP = "target_http"
+    MCP = "mcp"
     CONNECTOR = "connector"
     CONTEXT = "context"
     GRAPH = "graph"
@@ -498,6 +499,7 @@ class RunEffectOperation(StrEnum):
     SERVICE_WEB_RESEARCH = "service.web.research"
     SERVICE_TARGET_HTTP_EXECUTE = "service.target_http.execute"
     SERVICE_TARGET_HTTP_STOP_RUN = "service.target_http.stop_run"
+    SERVICE_MCP_INVOKE = "service.mcp.invoke"
     SERVICE_CONNECTOR_INGEST = "service.connector.ingest"
     SERVICE_CONTEXT_CREATE = "service.context.create"
     SERVICE_CONTEXT_RECORD_USAGE = "service.context.record_usage"
@@ -2279,6 +2281,16 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _SAME,
     ),
     _rule(
+        RunEffectOperation.SERVICE_MCP_INVOKE,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.MCP,
+        _ALL_RUN_KINDS,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.RUN_ID,
+        EffectMode.NORMAL,
+        _UNSUPPORTED,
+    ),
+    _rule(
         RunEffectOperation.SERVICE_CONNECTOR_INGEST,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.CONNECTOR,
@@ -3186,6 +3198,11 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         "riftx.target_http.service:TargetHttpApplicationService.stop_run",
         RunEffectOperation.SERVICE_TARGET_HTTP_STOP_RUN,
         EffectOrigin.SAFETY_RECONCILER,
+    ),
+    _entry(
+        "riftx.mcp.service:MCPApplicationService.invoke",
+        RunEffectOperation.SERVICE_MCP_INVOKE,
+        EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(
         "riftx.connectors.service:ConnectorApplicationService.ingest",

@@ -172,9 +172,12 @@ mcp:
   discovery_timeout_seconds: 15
   max_tools_per_server: 256
   max_schema_bytes: 65536
+  max_call_argument_bytes: 1048576
+  max_call_result_bytes: 16777216
   circuit_breaker:
     failure_threshold: 3
     cooldown_seconds: 60
   # Remote Streamable HTTP servers are discovered at Worker startup. Secrets are
   # referenced by environment variable name and never copied into model-visible metadata.
+  # A missing allowed_tools list is discovery-only; only explicitly listed tools may run.
   servers: {}

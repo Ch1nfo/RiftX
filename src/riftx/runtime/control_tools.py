@@ -34,6 +34,7 @@ from riftx.domain import (
     TranscriptMessageDraft,
 )
 from riftx.execution import ExecutionService, build_execution_key
+from riftx.mcp import MCPApplicationService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager
 from riftx.target_http import TargetHttpRequest, TargetHttpResult, TargetHttpSubmission
@@ -83,6 +84,9 @@ class ControlIntentTracker(Protocol):
         run_id: str,
         session_id: str,
         engine_call_id: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        attempt_group: str | None = None,
     ) -> ClaimedControlIntent | None: ...
 
     async def finish_control_intent(
@@ -121,6 +125,19 @@ class _ListArguments(_Arguments):
 
 class _ToolArguments(_Arguments):
     tool_id: str = Field(min_length=1)
+
+
+class _SearchMCPToolsArguments(_Arguments):
+    query: str = Field(default="", max_length=2000)
+    max_results: int = Field(default=20, ge=1, le=20)
+
+
+class _MCPToolArguments(_Arguments):
+    tool_id: str = Field(min_length=1, max_length=64)
+
+
+class _CallMCPToolArguments(_MCPToolArguments):
+    arguments: dict[str, object] = Field(max_length=1024)
 
 
 class _SkillSearchArguments(_Arguments):
@@ -406,6 +423,7 @@ class RuntimeControlToolService:
         runs: RunReader | None = None,
         traffic: TrafficMetadataApplicationService | None = None,
         target_http: TargetHttpApplicationService | None = None,
+        mcp: MCPApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
@@ -422,6 +440,7 @@ class RuntimeControlToolService:
         self._runs = runs
         self._traffic = traffic
         self._target_http = target_http
+        self._mcp = mcp
         self._control_intents = control_intents
 
     async def __call__(
@@ -451,6 +470,9 @@ class RuntimeControlToolService:
                         run_id=scope.run_id,
                         session_id=scope.session_id,
                         engine_call_id=call_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        attempt_group="mcp" if tool_name == "call_mcp_tool" else None,
                     )
                     if self._control_intents is not None
                     else None
@@ -594,6 +616,34 @@ class RuntimeControlToolService:
                 run_id=scope.run_id,
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
+            ).model_dump(mode="json")
+        if tool_name == "search_mcp_tools":
+            mcp = self._require_mcp()
+            search_mcp_arguments = _SearchMCPToolsArguments.model_validate(raw_arguments)
+            return mcp.search_tools(
+                search_mcp_arguments.query,
+                max_results=search_mcp_arguments.max_results,
+            )
+        if tool_name == "get_mcp_tool":
+            mcp = self._require_mcp()
+            get_mcp_arguments = _MCPToolArguments.model_validate(raw_arguments)
+            return mcp.get_tool(get_mcp_arguments.tool_id)
+        if tool_name == "call_mcp_tool":
+            if claimed_intent is None:
+                raise ApplicationConflictError(
+                    "control_tool_approval_missing",
+                    "MCP Tool call lacks an approved durable intent",
+            )
+            mcp = self._require_mcp()
+            call_mcp_arguments = _CallMCPToolArguments.model_validate(raw_arguments)
+            return (
+                await mcp.invoke(
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    tool_call_id=claimed_intent.id,
+                    tool_id=call_mcp_arguments.tool_id,
+                    arguments=call_mcp_arguments.arguments,
+                )
             ).model_dump(mode="json")
         if tool_name == "search_skills":
             skills = self._require_skills()
@@ -1147,6 +1197,11 @@ class RuntimeControlToolService:
             raise RuntimeError("Target HTTP service is not configured")
         return self._target_http
 
+    def _require_mcp(self) -> MCPApplicationService:
+        if self._mcp is None:
+            raise RuntimeError("MCP application service is not configured")
+        return self._mcp
+
     async def _general_run(self, run_id: str) -> Run:
         if self._runs is None:
             raise RuntimeError("Run repository is not configured for Target HTTP tools")
@@ -1582,6 +1637,14 @@ def _source_refs(
     *,
     result: object | None = None,
 ) -> list[str]:
+    if tool_name == "call_mcp_tool" and isinstance(result, dict):
+        mcp_refs: list[str] = []
+        if tool_id := _string_argument(result, "tool_id"):
+            mcp_refs.append(f"mcp-tool://{tool_id}")
+        if execution_key := _string_argument(result, "execution_key"):
+            mcp_refs.append(f"mcp-execution://{execution_key}")
+        mcp_refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
+        return list(dict.fromkeys(mcp_refs))
     if tool_name in {
         "query_http_traffic",
         "read_http_exchange",

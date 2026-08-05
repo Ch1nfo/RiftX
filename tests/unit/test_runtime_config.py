@@ -504,6 +504,8 @@ def test_example_runtime_config_is_valid(tmp_path: Path) -> None:
     assert config.mcp.discovery_timeout_seconds == 15
     assert config.mcp.max_tools_per_server == 256
     assert config.mcp.max_schema_bytes == 65_536
+    assert config.mcp.max_call_argument_bytes == 1_048_576
+    assert config.mcp.max_call_result_bytes == 16_777_216
     assert config.mcp.circuit_breaker.failure_threshold == 3
     assert config.mcp.circuit_breaker.cooldown_seconds == 60
     assert config.mcp.servers == {}

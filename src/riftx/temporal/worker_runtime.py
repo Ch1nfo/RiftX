@@ -77,7 +77,7 @@ from riftx.execution import (
 )
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
-from riftx.mcp import MCPServerRegistry
+from riftx.mcp import MCPApplicationService, MCPServerRegistry
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
@@ -883,6 +883,13 @@ async def build_temporal_worker(
             runs=run_repository,
             audits=audit_aggregate_repository,
         )
+        assert mcp_registry is not None
+        mcp_service = MCPApplicationService(
+            registry=mcp_registry,
+            runs=run_repository,
+            tool_calls=tool_call_intent_repository,
+            artifacts=web_artifact_store,
+        )
         web_research_repository = SQLAlchemyWebResearchRepository(database.session_factory)
         web_fetcher = PublicWebFetcher(
             runs=run_repository,
@@ -1121,6 +1128,7 @@ async def build_temporal_worker(
             runs=run_repository,
             traffic=traffic_service,
             target_http=target_http_service,
+            mcp=mcp_service,
             control_intents=deferred_dispatcher,
         )
         runtime_coordinator = RuntimeCoordinator(

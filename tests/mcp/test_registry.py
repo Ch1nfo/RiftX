@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from mcp.types import Tool, ToolAnnotations
+from mcp.types import CallToolResult, ImageContent, TextContent, Tool, ToolAnnotations
 from pydantic import ValidationError
 
 from riftx.config import MCPConfig, MCPServerConfig
@@ -12,6 +12,7 @@ from riftx.mcp import (
     MCPServerAvailability,
     MCPServerConfigurationError,
     MCPServerRegistry,
+    MCPToolInvocationError,
     OpenAIMCPAdapter,
     OpenAIMCPServerFactory,
 )
@@ -21,6 +22,7 @@ class FakeAdapter:
     def __init__(self, responses: dict[str, object]) -> None:
         self.responses = responses
         self.calls: list[tuple[str, str]] = []
+        self.arguments: list[dict[str, object]] = []
         self.closed = False
 
     async def call(
@@ -30,7 +32,8 @@ class FakeAdapter:
         _arguments: dict[str, object],
     ) -> object:
         self.calls.append((server_id, method))
-        response = self.responses[server_id]
+        self.arguments.append(_arguments)
+        response = self.responses.get(f"{server_id}:{method}", self.responses[server_id])
         if isinstance(response, Exception):
             raise response
         if isinstance(response, asyncio.Event):
@@ -61,6 +64,15 @@ class FakeClient:
 
     async def list_tools(self) -> list[Tool]:
         return self.tools
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object] | None,
+        meta: dict[str, object] | None = None,
+    ) -> CallToolResult:
+        del tool_name, arguments, meta
+        return CallToolResult(content=[])
 
 
 def server(url: str, **updates: object) -> MCPServerConfig:
@@ -186,6 +198,7 @@ async def test_registry_isolates_servers_and_projects_safe_bounded_tool_index() 
     assert snapshot.servers[2].tool_count == 2
     assert snapshot.servers[2].rejected_tool_count == 4
     assert adapter.calls == [("docs", "tools/list"), ("broken", "tools/list")]
+    assert all(tool.invocation_enabled is False for tool in snapshot.tools)
 
     entry = next(tool for tool in snapshot.tools if tool.name == "read_doc")
     assert entry.server_id == "docs"
@@ -261,6 +274,85 @@ async def test_openai_adapter_connects_servers_independently() -> None:
     assert clients["slow"].closed is True
     await registry.close()
     assert clients["ready"].closed is True
+
+
+async def test_registry_invokes_only_allowlisted_tools_with_sanitized_results() -> None:
+    adapter = FakeAdapter(
+        {
+            "docs": [
+                Tool(
+                    name="read_doc",
+                    description="Read one document",
+                    inputSchema={"type": "object"},
+                )
+            ],
+            "docs:tools/call": CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=(
+                            "actual-mcp-secret /Users/operator/private "
+                            "https://mcp.example.test/rpc"
+                        ),
+                    ),
+                    ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png"),
+                ],
+                structuredContent={"path": "C:\\Secrets\\token.txt"},
+            ),
+        }
+    )
+    registry = MCPServerRegistry(
+        MCPConfig(
+            servers={
+                "docs": server(
+                    "https://mcp.example.test/rpc",
+                    header_env={"Authorization": "MCP_TOKEN"},
+                    allowed_tools=["read_doc"],
+                )
+            }
+        ),
+        adapter=adapter,
+        environment={"MCP_TOKEN": "actual-mcp-secret"},
+    )
+    snapshot = await registry.refresh()
+    tool = snapshot.tools[0]
+
+    entry, result = await registry.invoke(
+        tool.id,
+        {"path": "/remote/work"},
+        execution_key="execution:v1:one",
+    )
+
+    assert entry.invocation_enabled is True
+    assert adapter.calls == [("docs", "tools/list"), ("docs", "tools/call")]
+    assert adapter.arguments[-1] == {
+        "name": "read_doc",
+        "arguments": {"path": "/remote/work"},
+        "execution_key": "execution:v1:one",
+    }
+    serialized = json.dumps(result, ensure_ascii=False)
+    for forbidden in (
+        "actual-mcp-secret",
+        "/Users/operator/private",
+        "C:\\Secrets\\token.txt",
+        "https://mcp.example.test/rpc",
+    ):
+        assert forbidden not in serialized
+
+    discovery_only = MCPServerRegistry(
+        MCPConfig(
+            servers={"docs": server("https://mcp.example.test/rpc")},
+        ),
+        adapter=FakeAdapter({"docs": [Tool(name="read_doc", inputSchema={})]}),
+    )
+    discovery_snapshot = await discovery_only.refresh()
+    with pytest.raises(MCPToolInvocationError) as captured:
+        await discovery_only.invoke(
+            discovery_snapshot.tools[0].id,
+            {},
+            execution_key="execution:v1:two",
+        )
+    assert captured.value.code == "mcp_tool_invocation_disabled"
 
 
 async def test_registry_bounds_discovery_timeout_without_blocking_other_servers() -> None:

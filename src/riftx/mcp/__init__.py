@@ -4,6 +4,7 @@ from .governance import GovernedMCPAdapter, MCPAdapter, MCPCircuitOpenError
 from .models import (
     MCPCircuitState,
     MCPHealthSnapshot,
+    MCPInvocationResult,
     MCPRegistrySnapshot,
     MCPServerAvailability,
     MCPServerHealth,
@@ -15,16 +16,20 @@ from .registry import (
     MCPServerConfigurationError,
     MCPServerRegistry,
     MCPToolIndex,
+    MCPToolInvocationError,
     OpenAIMCPAdapter,
     OpenAIMCPServerFactory,
 )
+from .service import MCPApplicationService
 
 __all__ = [
     "GovernedMCPAdapter",
     "MCPAdapter",
     "MCPCircuitOpenError",
     "MCPCircuitState",
+    "MCPApplicationService",
     "MCPHealthSnapshot",
+    "MCPInvocationResult",
     "MCPRegistrySnapshot",
     "MCPServerAvailability",
     "MCPServerConfigurationError",
@@ -33,6 +38,7 @@ __all__ = [
     "MCPServerSnapshot",
     "MCPToolIndex",
     "MCPToolIndexEntry",
+    "MCPToolInvocationError",
     "MCPToolSchema",
     "OpenAIMCPAdapter",
     "OpenAIMCPServerFactory",

@@ -871,6 +871,8 @@ class MCPConfig(_ConfigModel):
     discovery_timeout_seconds: float = Field(default=15, gt=0, le=300)
     max_tools_per_server: int = Field(default=256, ge=1, le=4096)
     max_schema_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
+    max_call_argument_bytes: int = Field(default=1_048_576, ge=1024, le=16_777_216)
+    max_call_result_bytes: int = Field(default=16_777_216, ge=1024, le=67_108_864)
     circuit_breaker: MCPCircuitBreakerConfig = Field(default_factory=MCPCircuitBreakerConfig)
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

@@ -49,6 +49,7 @@ class MCPToolIndexEntry(DomainModel):
     description: str = Field(min_length=1, max_length=1000)
     availability: ToolAvailability = ToolAvailability.AVAILABLE
     execution_type: Literal["mcp"] = "mcp"
+    invocation_enabled: bool = False
     input_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     read_only_hint: bool | None = None
     destructive_hint: bool | None = None
@@ -75,3 +76,20 @@ class MCPRegistrySnapshot(DomainModel):
     source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     servers: list[MCPServerSnapshot] = Field(default_factory=list)
     tools: list[MCPToolIndexEntry] = Field(default_factory=list)
+
+
+class MCPInvocationResult(DomainModel):
+    tool_call_id: str = Field(min_length=1)
+    execution_key: str = Field(min_length=1, max_length=80)
+    tool_id: str = Field(min_length=1, max_length=64)
+    server_id: str = Field(min_length=1, max_length=64)
+    tool_name: str = Field(min_length=1, max_length=256)
+    status: Literal["completed", "error"]
+    artifact_id: str = Field(min_length=1)
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_bytes: int = Field(ge=0)
+    content: list[dict[str, object]] = Field(default_factory=list)
+    content_truncated: bool = False
+    structured_content: dict[str, object] | None = None
+    structured_content_truncated: bool = False
+    content_trust: Literal["UNTRUSTED_EXTERNAL_CONTENT"] = "UNTRUSTED_EXTERNAL_CONTENT"
