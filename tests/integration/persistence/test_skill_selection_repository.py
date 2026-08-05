@@ -4,11 +4,19 @@ from pathlib import Path
 
 import pytest
 
+from riftx.application.errors import RepositoryConflictError
+from riftx.capabilities import (
+    CapabilityKind,
+    CapabilitySource,
+    SessionCapabilitySelection,
+)
 from riftx.context import ContextCompiler
 from riftx.domain import Engagement, Objective, Run
+from riftx.domain.base import utc_now
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentSessionRepository,
+    SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyEngagementRepository,
     SQLAlchemyRunRepository,
     SQLAlchemySkillSelectionStore,
@@ -213,4 +221,110 @@ async def test_skill_selection_isolated_and_subagent_allowlist_fails_closed(
     )
     assert primary.loaded_skill_documents == []
     assert [document.id for document in child.loaded_skill_documents] == ["allowed-skill"]
+    await database.dispose()
+
+
+async def test_unified_capability_selections_pin_versions_and_survive_restart(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}"
+    database = Database(database_url)
+    await database.create_schema()
+    await _build_runtime(database)
+    store = SQLAlchemyCapabilitySelectionStore(database.session_factory)
+    now = utc_now()
+    tool = SessionCapabilitySelection(
+        run_id="run-1",
+        session_id="session-primary",
+        agent_id="primary",
+        kind=CapabilityKind.TOOL,
+        capability_id="shared-id",
+        version="tool 1.0",
+        digest="a" * 64,
+        source=CapabilitySource.OPERATOR,
+        reason="selected for validation",
+        snapshot={"schema": {"type": "object"}},
+        selected_at=now,
+        updated_at=now,
+    )
+    technique = tool.model_copy(
+        update={
+            "kind": CapabilityKind.TECHNIQUE,
+            "version": "1.0.0",
+            "digest": "b" * 64,
+            "snapshot": {"manifest": {"title": "Validate"}},
+        }
+    )
+    await store.save_selection(tool)
+    await store.save_selection(technique)
+
+    with pytest.raises(RepositoryConflictError, match="cannot replace"):
+        await store.save_selection(tool.model_copy(update={"digest": "c" * 64}))
+    with pytest.raises(RepositoryConflictError, match="digest no longer matches"):
+        await store.replace_selection(
+            tool.model_copy(update={"digest": "c" * 64, "updated_at": utc_now()}),
+            expected_digest="d" * 64,
+        )
+
+    replacement = tool.model_copy(
+        update={
+            "version": "tool 2.0",
+            "digest": "c" * 64,
+            "snapshot": {"schema": {"type": "string"}},
+            "updated_at": utc_now(),
+        }
+    )
+    await store.replace_selection(replacement, expected_digest=tool.digest)
+    await database.dispose()
+
+    reopened = Database(database_url)
+    restarted = SQLAlchemyCapabilitySelectionStore(reopened.session_factory)
+    loaded = await restarted.list_selections("session-primary")
+    by_kind = {item.kind: item for item in loaded}
+    assert set(by_kind) == {CapabilityKind.TOOL, CapabilityKind.TECHNIQUE}
+    assert by_kind[CapabilityKind.TOOL].digest == replacement.digest
+    assert by_kind[CapabilityKind.TOOL].snapshot == replacement.snapshot
+    assert by_kind[CapabilityKind.TECHNIQUE] == technique
+    await reopened.dispose()
+
+
+async def test_explicit_skill_reload_replaces_stale_snapshot(tmp_path: Path) -> None:
+    skill_root = tmp_path / "skills"
+    directory = _write_skill(skill_root, "reloadable", marker="original")
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}")
+    await database.create_schema()
+    await _build_runtime(database)
+    context = ProgressiveSkillContextManager(
+        SkillRegistry(skill_root),
+        SQLAlchemySkillSelectionStore(database.session_factory),
+    )
+    original = await context.select_skill(
+        "reloadable",
+        run_id="run-1",
+        session_id="session-primary",
+        agent_id="primary",
+        reason="initial",
+    )
+    path = directory / "SKILL.md"
+    path.write_text(path.read_text().replace("description: original", "description: updated"))
+
+    reloaded = await context.reload_skill(
+        "reloadable",
+        run_id="run-1",
+        session_id="session-primary",
+        agent_id="primary",
+        reason="operator requested refresh",
+    )
+    visibility = await context.visibility(
+        run_id="run-1",
+        session_id="session-primary",
+        agent_id="primary",
+    )
+
+    assert reloaded.description == "updated"
+    assert reloaded.digest != original.digest
+    assert visibility.loaded_skill_documents == [reloaded]
+    assert visibility.loaded_skill_references == []
+    assert visibility.loaded_skills[0].reason == "operator requested refresh"
+    assert visibility.loaded_skills[0].stale is False
     await database.dispose()

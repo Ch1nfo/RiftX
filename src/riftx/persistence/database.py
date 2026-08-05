@@ -224,6 +224,10 @@ def _load_additive_metadata_models() -> None:
         CapabilityRecord,
         CapabilityVersionRecord,
     )
+    from .capability_selection_records import (  # noqa: PLC0415
+        AgentCapabilityScopeRecord,
+        AgentCapabilitySelectionRecord,
+    )
     from .skill_selection_records import (  # noqa: PLC0415
         AgentSkillScopeRecord,
         AgentSkillSelectionRecord,
@@ -248,6 +252,8 @@ def _load_additive_metadata_models() -> None:
     assert CapabilityPackMemberRecord.__tablename__ in Base.metadata.tables
     assert CapabilityPackInstallRecord.__tablename__ in Base.metadata.tables
     assert CapabilityPackLockRecord.__tablename__ in Base.metadata.tables
+    assert AgentCapabilityScopeRecord.__tablename__ in Base.metadata.tables
+    assert AgentCapabilitySelectionRecord.__tablename__ in Base.metadata.tables
     assert AgentSkillScopeRecord.__tablename__ in Base.metadata.tables
     assert AgentSkillSelectionRecord.__tablename__ in Base.metadata.tables
     assert WorkflowSignalIntentRecord.__tablename__ in Base.metadata.tables

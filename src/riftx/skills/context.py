@@ -7,6 +7,7 @@ from typing import Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from riftx.application.errors import RepositoryConflictError
 from riftx.capabilities import CapabilitySource
 from riftx.domain.base import utc_now
 
@@ -63,6 +64,13 @@ class SkillSelectionStore(Protocol):
 
     async def save_selection(self, selection: SkillSelectionState) -> None: ...
 
+    async def replace_selection(
+        self,
+        selection: SkillSelectionState,
+        *,
+        expected_digest: str,
+    ) -> None: ...
+
     async def get_allowlist(self, session_id: str) -> frozenset[str] | None: ...
 
     async def set_allowlist(
@@ -100,7 +108,39 @@ class InMemorySkillSelectionStore:
         )
 
     async def save_selection(self, selection: SkillSelectionState) -> None:
-        self._selections[(selection.session_id, selection.skill_id)] = selection
+        key = (selection.session_id, selection.skill_id)
+        existing = self._selections.get(key)
+        if existing is not None and _pinned_skill_fields(existing) != _pinned_skill_fields(
+            selection
+        ):
+            raise RepositoryConflictError(
+                "Running Agent Session cannot replace a pinned Skill package"
+            )
+        self._selections[key] = selection
+
+    async def replace_selection(
+        self,
+        selection: SkillSelectionState,
+        *,
+        expected_digest: str,
+    ) -> None:
+        key = (selection.session_id, selection.skill_id)
+        existing = self._selections.get(key)
+        if existing is None or existing.digest != expected_digest:
+            raise RepositoryConflictError("Skill reload digest no longer matches")
+        if (
+            existing.run_id,
+            existing.session_id,
+            existing.agent_id,
+            existing.skill_id,
+        ) != (
+            selection.run_id,
+            selection.session_id,
+            selection.agent_id,
+            selection.skill_id,
+        ):
+            raise RepositoryConflictError("Skill reload changed its Session scope")
+        self._selections[key] = selection
 
     async def get_allowlist(self, session_id: str) -> frozenset[str] | None:
         return self._allowlists.get(session_id)
@@ -183,7 +223,7 @@ class ProgressiveSkillContextManager:
         max_results: int = 8,
     ) -> list[SkillSearchResult]:
         del run_id, agent_id
-        results = self.registry.search_skill_documents(
+        results: list[SkillSearchResult] = self.registry.search_skill_documents(
             query,
             capability=capability,
             max_results=max_results,
@@ -272,6 +312,51 @@ class ProgressiveSkillContextManager:
             )
         return selection.reference
 
+    async def reload_skill(
+        self,
+        skill_id: str,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+        reason: str = "agent_reloaded",
+        reloaded_at: datetime | None = None,
+    ) -> SkillDocument:
+        """Explicitly replace a pinned Skill snapshot with the current package."""
+
+        await self._require_allowed(session_id, skill_id)
+        existing = await self._store.get_selection(session_id, skill_id)
+        if existing is None:
+            raise ValueError(f"Skill {skill_id!r} is not selected")
+        self._require_scope(existing, run_id=run_id, agent_id=agent_id)
+        document = self.registry.load_skill_document(skill_id)
+        try:
+            reference = self.registry.load_skill_references(skill_id)
+        except SkillReferenceNotFoundError:
+            reference = None
+        now = reloaded_at or utc_now()
+        replacement = SkillSelectionState(
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+            version=document.version,
+            digest=document.digest,
+            source=document.source,
+            reason=reason,
+            document=document,
+            reference=reference,
+            active=True,
+            references_loaded=False,
+            selected_at=existing.selected_at,
+            updated_at=now,
+        )
+        await self._store.replace_selection(
+            replacement,
+            expected_digest=existing.digest,
+        )
+        return document
+
     async def unload_skill(
         self,
         skill_id: str,
@@ -307,7 +392,8 @@ class ProgressiveSkillContextManager:
         session_id: str,
         agent_id: str,
     ) -> None:
-        known = {summary.id for summary in self.registry.list_skill_summaries()}
+        summaries: list[SkillSummary] = self.registry.list_skill_summaries()
+        known = {summary.id for summary in summaries}
         unknown = sorted(set(skill_ids) - known)
         if unknown:
             raise KeyError(unknown[0])
@@ -401,3 +487,19 @@ class ProgressiveSkillContextManager:
     ) -> None:
         if selection.run_id != run_id or selection.agent_id != agent_id:
             raise PermissionError("Skill selection belongs to a different Agent Session scope")
+
+
+def _pinned_skill_fields(selection: SkillSelectionState) -> tuple[object, ...]:
+    return (
+        selection.run_id,
+        selection.session_id,
+        selection.agent_id,
+        selection.skill_id,
+        selection.version,
+        selection.digest,
+        selection.source,
+        selection.reason,
+        selection.document,
+        selection.reference,
+        selection.selected_at,
+    )

@@ -38,6 +38,11 @@ from .models import (
     evaluation_report_digest,
 )
 from .repository import CapabilityRepository
+from .selection import (
+    CapabilitySelectionStore,
+    InMemoryCapabilitySelectionStore,
+    SessionCapabilitySelection,
+)
 
 __all__ = [
     "CAPABILITY_PACK_SCHEMA_VERSION",
@@ -58,12 +63,14 @@ __all__ = [
     "CapabilityProvenance",
     "CapabilityRepository",
     "CapabilitySource",
+    "CapabilitySelectionStore",
     "CapabilityTrustTier",
     "CapabilityVersion",
     "CapabilityVersionStatus",
     "ConfirmationPolicy",
     "EvaluationResultStatus",
     "EvidenceContract",
+    "InMemoryCapabilitySelectionStore",
     "PackInstall",
     "PackInstallStatus",
     "PackLock",
@@ -71,6 +78,7 @@ __all__ = [
     "PackStatus",
     "PromotionRun",
     "PromotionStatus",
+    "SessionCapabilitySelection",
     "capability_manifest_digest",
     "capability_pack_digest",
     "canonical_payload_digest",

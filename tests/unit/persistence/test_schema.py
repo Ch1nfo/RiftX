@@ -22,6 +22,10 @@ from riftx.persistence.capability_records import (
     CapabilityRecord,
     CapabilityVersionRecord,
 )
+from riftx.persistence.capability_selection_records import (
+    AgentCapabilityScopeRecord,
+    AgentCapabilitySelectionRecord,
+)
 from riftx.persistence.orm import Base
 from riftx.persistence.skill_selection_records import (
     AgentSkillScopeRecord,
@@ -47,12 +51,16 @@ assert CapabilityPackRecord.__table__.metadata is Base.metadata
 assert CapabilityPackMemberRecord.__table__.metadata is Base.metadata
 assert CapabilityPackInstallRecord.__table__.metadata is Base.metadata
 assert CapabilityPackLockRecord.__table__.metadata is Base.metadata
+assert AgentCapabilityScopeRecord.__table__.metadata is Base.metadata
+assert AgentCapabilitySelectionRecord.__table__.metadata is Base.metadata
 assert AgentSkillScopeRecord.__table__.metadata is Base.metadata
 assert AgentSkillSelectionRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
+    "agent_capability_scopes",
+    "agent_capability_selections",
     "agent_cycles",
     "agent_sessions",
     "agent_skill_scopes",
@@ -185,6 +193,27 @@ def test_agent_skill_schema_pins_session_package_snapshots() -> None:
         "reference_json",
         "active",
         "references_loaded",
+    } <= set(selections.columns.keys())
+
+
+def test_agent_capability_schema_unifies_selectable_kinds() -> None:
+    scopes = Base.metadata.tables["agent_capability_scopes"]
+    selections = Base.metadata.tables["agent_capability_selections"]
+
+    assert list(scopes.primary_key.columns.keys()) == ["session_id", "kind"]
+    assert list(selections.primary_key.columns.keys()) == [
+        "session_id",
+        "kind",
+        "capability_id",
+    ]
+    assert {
+        "version",
+        "capability_digest",
+        "source",
+        "reason",
+        "snapshot_json",
+        "state_json",
+        "active",
     } <= set(selections.columns.keys())
 
 
