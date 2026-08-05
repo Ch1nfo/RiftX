@@ -405,7 +405,33 @@ class _FilesystemSource(AbstractContextManager[_Source]):
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._absolute: Path | None = None
         self._fd = -1
+
+    @property
+    def absolute_path(self) -> Path:
+        if self._absolute is None or self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        return self._absolute
+
+    def duplicate_root_fd(self) -> int:
+        if self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        return os.dup(self._fd)
+
+    def verify_path_binding(self) -> None:
+        if self._absolute is None or self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        try:
+            path_stat = os.stat(self._absolute, follow_symlinks=False)
+            descriptor_stat = os.fstat(self._fd)
+        except OSError as exc:
+            raise _path_error(exc, "Run workspace changed during operation") from None
+        if _fingerprint(path_stat) != _fingerprint(descriptor_stat):
+            raise _conflict(
+                "code_workspace_changed",
+                "Run workspace binding changed during operation",
+            )
 
     def __enter__(self) -> Self:
         if not self._root.is_absolute() or ".." in self._root.parts:
@@ -425,6 +451,7 @@ class _FilesystemSource(AbstractContextManager[_Source]):
                 os.close(descriptor)
                 descriptor = next_descriptor
             self._fd = descriptor
+            self._absolute = absolute
             descriptor = -1
         except ApplicationConflictError:
             raise
@@ -439,6 +466,7 @@ class _FilesystemSource(AbstractContextManager[_Source]):
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
+        self._absolute = None
 
     def list_entries(
         self,

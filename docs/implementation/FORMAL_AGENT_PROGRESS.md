@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | pending |
+| CAP-101 | CAP-001 | in_progress | `73ba9900` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -249,6 +249,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 结果具有文件数、读取字节、扫描条目、扫描字节、匹配数、单行长度和最终 Runtime JSON 字节上限；
   - 拒绝绝对路径、非规范路径、`..`、Symlink 读取、FIFO/Socket/设备等特殊文件和跨 Run Root；
   - 二进制内容以 bounded base64 Preview 返回；所有代码工具保持只读，不调用 Shell、项目 Hook、构建、测试或安装脚本。
+- First delivery implementation commit：`73ba9900`。
+- Second delivery slice：
+  - 已将 `git_status`、`git_diff`、`git_log` 接入生产 Worker、Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool；
+  - Git 进程使用固定可执行路径、最小环境、`--no-optional-locks`、无 Pager、无凭据、无网络协议、禁用 Hook、fsmonitor、external diff、textconv 和签名验证；
+  - Git 管理区必须是 Workspace 内的真实 `.git/` 目录；管理区 Symlink、特殊文件、alternates、grafts 和超限条目失败关闭；
+  - Repository local config 出现 include、filter、credential、remote、submodule、external command 等外部行为时拒绝执行；
+  - `git_status` 返回有界 Index/Worktree 状态，`git_diff` 支持工作区或暂存区 Preview，`git_log` 返回有界提交摘要并处理 unborn repository；
+  - 每次命令前后验证 Workspace FD/path binding 和 Git 管理区元数据 Digest，命令不得刷新 Index 或改变管理区；
+  - Code Audit Snapshot 不含可信 Git 管理区，本切片明确拒绝 Git 工具调用，不回退到可变 Audit 输出 Workspace。
 - Artifact boundary：现有 `ArtifactApplicationService.register*()` 仅允许 General Run；本切片不通过放宽 RunKind 防线伪造 Code Audit Artifact。大文件 Artifact 发布将在 CAP-101 后续切片建立 Audit owner-bound 注册接口后接入。
 - Checks：
   - `conda run --no-capture-output -n agent python -m pytest -q tests/code/test_workspace.py`：`9 passed`；
@@ -256,10 +265,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - Snapshot View/Store/Reference/Mount 关联回归：`36 passed`；
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4951 passed, 5 skipped, 11 warnings`；
   - 跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件；警告为既有 Python 3.12 SQLite datetime adapter 弃用提示。
-- Later slices：Git 只读导航、符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
+- Second delivery checks：
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/code/test_git.py`：`10 passed`；
+  - Agent/Runtime/Context/Subagent/Worker 关联回归：`357 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4963 passed, 5 skipped, 11 warnings`；
+  - 全仓 Ruff、文档测试和 `git diff --check`：passed。
+- Later slices：大文件 Artifact、符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
 - Implementation commit：pending。
 
 ## 9. Known pre-existing worktree state
 
-- `apps/burp-extension/.gradle/` 是 SEC-000 开始前已经存在的未跟踪目录。
-- 该目录不属于正式版 Agent 任务，不得暂存或提交。
+- 当前没有已知的任务外工作树改动；每个切片仍须以当次 `git status` 为权威证据。

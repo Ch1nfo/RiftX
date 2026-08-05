@@ -71,6 +71,51 @@ class CodeGrepResult(BaseModel):
     truncated: bool = False
 
 
+class GitStatusEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    index_status: str = Field(min_length=1, max_length=1)
+    worktree_status: str = Field(min_length=1, max_length=1)
+    original_path: str | None = None
+
+
+class GitStatusResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch: str | None = None
+    entries: list[GitStatusEntry]
+    truncated: bool = False
+
+
+class GitDiffResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    staged: bool
+    path: str | None = None
+    content: str
+    bytes_returned: int = Field(ge=0)
+    truncated: bool = False
+
+
+class GitCommitSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    commit: str
+    parents: list[str]
+    authored_at: str
+    author: str
+    subject: str
+
+
+class GitLogResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str | None = None
+    commits: list[GitCommitSummary]
+    truncated: bool = False
+
+
 __all__ = [
     "CodeEntry",
     "CodeGrepMatch",
@@ -78,4 +123,9 @@ __all__ = [
     "CodeListResult",
     "CodeReadManyResult",
     "CodeReadResult",
+    "GitCommitSummary",
+    "GitDiffResult",
+    "GitLogResult",
+    "GitStatusEntry",
+    "GitStatusResult",
 ]

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from riftx.application.errors import ApplicationConflictError, ApplicationServiceError
 from riftx.application.services import ArtifactApplicationService
-from riftx.code import CodeWorkspaceService
+from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.domain import (
     AgentMessage,
     Execution,
@@ -141,6 +141,22 @@ class _GrepArguments(_Arguments):
     max_matches: int = Field(default=100, ge=1, le=200)
 
 
+class _GitStatusArguments(_Arguments):
+    max_entries: int = Field(default=200, ge=1, le=1000)
+
+
+class _GitDiffArguments(_Arguments):
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+    staged: bool = False
+    context_lines: int = Field(default=3, ge=0, le=20)
+    max_bytes: int = Field(default=64 * 1024, ge=1, le=64 * 1024)
+
+
+class _GitLogArguments(_Arguments):
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+    max_entries: int = Field(default=20, ge=1, le=100)
+
+
 class RuntimeControlToolService:
     """Execute resident control tools without crossing the Runner command path.
 
@@ -160,6 +176,7 @@ class RuntimeControlToolService:
         transcript: TranscriptWriter,
         skills: ProgressiveSkillContextManager | None = None,
         code: CodeWorkspaceService | None = None,
+        git: GitWorkspaceService | None = None,
     ) -> None:
         self._tools = tools
         self._executions = executions
@@ -168,6 +185,7 @@ class RuntimeControlToolService:
         self._transcript = transcript
         self._skills = skills
         self._code = code
+        self._git = git
 
     async def __call__(
         self,
@@ -397,6 +415,37 @@ class RuntimeControlToolService:
                     max_matches=code_arguments.max_matches,
                 )
             ).model_dump(mode="json")
+        if tool_name == "git_status":
+            git = self._require_git()
+            git_arguments = _GitStatusArguments.model_validate(raw_arguments)
+            return (
+                await git.status(
+                    scope.run_id,
+                    max_entries=git_arguments.max_entries,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "git_diff":
+            git = self._require_git()
+            git_arguments = _GitDiffArguments.model_validate(raw_arguments)
+            return (
+                await git.diff(
+                    scope.run_id,
+                    path=git_arguments.path,
+                    staged=git_arguments.staged,
+                    context_lines=git_arguments.context_lines,
+                    max_bytes=git_arguments.max_bytes,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "git_log":
+            git = self._require_git()
+            git_arguments = _GitLogArguments.model_validate(raw_arguments)
+            return (
+                await git.log(
+                    scope.run_id,
+                    path=git_arguments.path,
+                    max_entries=git_arguments.max_entries,
+                )
+            ).model_dump(mode="json")
         if tool_name == "get_execution":
             execution_arguments = _ExecutionArguments.model_validate(raw_arguments)
             execution = await self._execution_for_scope(
@@ -489,6 +538,11 @@ class RuntimeControlToolService:
         if self._code is None:
             raise RuntimeError("Native code workspace is not configured")
         return self._code
+
+    def _require_git(self) -> GitWorkspaceService:
+        if self._git is None:
+            raise RuntimeError("Native Git workspace is not configured")
+        return self._git
 
     async def _execution_for_scope(
         self,

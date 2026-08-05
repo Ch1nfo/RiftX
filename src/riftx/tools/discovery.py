@@ -27,6 +27,9 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "read_many_files",
     "grep",
     "glob",
+    "git_status",
+    "git_diff",
+    "git_log",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -50,6 +53,9 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "read_many_files",
     "grep",
     "glob",
+    "git_status",
+    "git_diff",
+    "git_log",
     "run_registered_tool",
     "get_execution",
     "wait_execution",
@@ -572,6 +578,9 @@ def _resident_schema(
         "read_many_files": "Read bounded previews from several regular code files.",
         "grep": "Search literal text across bounded regular files in the current code source.",
         "glob": "Find bounded regular files by a relative glob pattern.",
+        "git_status": "Read bounded Git worktree and index status without refreshing the index.",
+        "git_diff": "Read a bounded working-tree or staged Git diff without external drivers.",
+        "git_log": "Read bounded Git commit history without signatures, pager, or hooks.",
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -672,6 +681,30 @@ def _resident_schema(
             "max_matches": {"type": "integer", "minimum": 1, "maximum": 200},
         }
         required = ["query"]
+    elif tool_id == "git_status":
+        properties = {
+            "max_entries": {"type": "integer", "minimum": 1, "maximum": 1000},
+        }
+    elif tool_id == "git_diff":
+        properties = {
+            "path": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
+            "staged": {"type": "boolean"},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 20},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        }
+    elif tool_id == "git_log":
+        properties = {
+            "path": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 4096,
+            },
+            "max_entries": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
     elif tool_id == "run_registered_tool":
         properties = {
             "tool_id": {"type": "string"},

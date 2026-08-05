@@ -9,7 +9,16 @@ from pydantic import ValidationError
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
-from riftx.code import CodeEntry, CodeListResult, CodeReadResult
+from riftx.code import (
+    CodeEntry,
+    CodeListResult,
+    CodeReadResult,
+    GitCommitSummary,
+    GitDiffResult,
+    GitLogResult,
+    GitStatusEntry,
+    GitStatusResult,
+)
 from riftx.domain import Artifact, Execution, ExecutorType
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
@@ -125,6 +134,47 @@ class FakeCode:
         )
 
 
+class FakeGit:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def status(self, run_id: str, **kwargs: object) -> GitStatusResult:
+        self.calls.append(("git_status", run_id, kwargs))
+        return GitStatusResult(
+            branch="main",
+            entries=[
+                GitStatusEntry(
+                    path="src/app.py",
+                    index_status=" ",
+                    worktree_status="M",
+                )
+            ],
+        )
+
+    async def diff(self, run_id: str, **kwargs: object) -> GitDiffResult:
+        self.calls.append(("git_diff", run_id, kwargs))
+        return GitDiffResult(
+            staged=bool(kwargs["staged"]),
+            path=kwargs["path"],  # type: ignore[arg-type]
+            content="diff",
+            bytes_returned=4,
+        )
+
+    async def log(self, run_id: str, **kwargs: object) -> GitLogResult:
+        self.calls.append(("git_log", run_id, kwargs))
+        return GitLogResult(
+            path=kwargs["path"],  # type: ignore[arg-type]
+            commits=[
+                GitCommitSummary(
+                    commit="1" * 40,
+                    parents=[],
+                    authored_at="2026-08-05T00:00:00+00:00",
+                    author="RiftX",
+                    subject="commit",
+                )
+            ],
+        )
+
 def execution(
     execution_id: str = "execution-1",
     *,
@@ -151,6 +201,7 @@ def service(
     artifacts: FakeArtifacts | None = None,
     skills: ProgressiveSkillContextManager | None = None,
     code: FakeCode | None = None,
+    git: FakeGit | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
     transcript = FakeTranscript()
@@ -163,6 +214,7 @@ def service(
         transcript=transcript,  # type: ignore[arg-type]
         skills=skills,
         code=code,  # type: ignore[arg-type]
+        git=git,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
 
@@ -483,3 +535,56 @@ async def test_native_code_argument_limits_fail_before_source_read() -> None:
         )
 
     assert code.calls == []
+
+
+async def test_native_git_control_tools_use_exact_run_scope() -> None:
+    git = FakeGit()
+    control, _, transcript, _ = service(git=git)
+
+    status = await control(
+        SCOPE,
+        "git_status",
+        {"max_entries": 10},
+        "call-git-status",
+    )
+    diff = await control(
+        SCOPE,
+        "git_diff",
+        {"path": "src/app.py", "staged": False, "context_lines": 2, "max_bytes": 64},
+        "call-git-diff",
+    )
+    history = await control(
+        SCOPE,
+        "git_log",
+        {"path": "src/app.py", "max_entries": 5},
+        "call-git-log",
+    )
+
+    assert status["entries"][0]["path"] == "src/app.py"
+    assert diff["content"] == "diff"
+    assert history["commits"][0]["subject"] == "commit"
+    assert [call[:2] for call in git.calls] == [
+        ("git_status", "run-1"),
+        ("git_diff", "run-1"),
+        ("git_log", "run-1"),
+    ]
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["runtime-tool://git_status"],
+        ["code://src/app.py"],
+        ["code://src/app.py"],
+    ]
+
+
+async def test_native_git_argument_limits_fail_before_repository_read() -> None:
+    git = FakeGit()
+    control, _, _, _ = service(git=git)
+
+    with pytest.raises(ValidationError):
+        await control(
+            SCOPE,
+            "git_diff",
+            {"context_lines": 21},
+            "call-unbounded-git-diff",
+        )
+
+    assert git.calls == []

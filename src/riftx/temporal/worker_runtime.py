@@ -42,7 +42,7 @@ from riftx.application.services.workflow_signals import (
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.audit import LocalSnapshotStore
 from riftx.browser.service import BrowserApplicationService
-from riftx.code import CodeWorkspaceService
+from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
     ContextApplicationService,
@@ -983,6 +983,7 @@ async def build_temporal_worker(
             ),
             max_snapshot_file_bytes=config.audit.max_file_bytes,
         )
+        git_workspace = GitWorkspaceService(run_repository)
         model_registry = ModelProfileRegistry(
             config.models.path.expanduser(),
             config.models.secrets_path.expanduser(),
@@ -1054,6 +1055,7 @@ async def build_temporal_worker(
             transcript=transcript_repository,
             skills=skill_context,
             code=code_workspace,
+            git=git_workspace,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,

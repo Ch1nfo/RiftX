@@ -92,6 +92,18 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "git_status": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "git_diff": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "git_log": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "run_registered_tool": AgentToolPolicy(
             AgentToolEffect.HOST_EXECUTION,
             AgentToolAuthorization.DYNAMIC_APPROVAL,
