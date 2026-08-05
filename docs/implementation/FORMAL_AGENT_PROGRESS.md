@@ -30,16 +30,17 @@
 
 - Stage：`S1 — 生产 Capability Plane`
 - Current task：`CAP-104 — 持久化 Tool/Skill Selection`
-- Status：`pending`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
 - Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：生产 Primary Agent 可搜索和读取 operator-owned Streamable HTTP MCP Tool，并在逐次显式批准后调用 allowlisted Tool；调用绑定 durable ToolCall/execution claim，完整脱敏结果进入 immutable Artifact，有界不可信 Preview 与 source refs 进入 Transcript。Worker 周期刷新 Discovery/Health，单 Server 故障局部降级，Node 只发布聚合健康计数；stdio MCP 仍禁止。
-- Current implementation commits：CAP-103 `2c784d8d`、`94d71f3b`、`483ddb81`。
-- Next delivery slice：开始 CAP-104，将动态 Tool/Skill Selection 统一持久化到 Session Capability Manifest，并验证 Worker 重启恢复、版本锁定与失效处理。
+- Product behavior：Session Tool、Skill、Technique 选择现在具备统一持久化模型、复合身份、Version/Digest lock 与 CAS reload 语义；生产 Skill 入口已切换到统一表，旧 Skill 数据由迁移回填且旧表暂留兼容。Skill 固定快照可在 Worker 重启后恢复，只有显式 reload 才能替换版本；不安全降级会拒绝丢弃新选择事实。
+- Current implementation commits：CAP-104 `7fc96d33`。
+- Verification：统一仓储、Skill 恢复/隔离/reload、迁移与 Schema 定向集 `66 passed`；Scoped mypy 与 Ruff 通过。
+- Next delivery slice：将 ToolContextManager 接入统一 Store，执行固定 Tool 快照并实现 stale/reload/unload；随后提供 Technique 选择服务与统一 Manifest。
 
 ## 3. 研究与实现基线
 
@@ -119,7 +120,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
-| CAP-104 | CAP-100, CAP-103 | pending | — |
+| CAP-104 | CAP-100, CAP-103 | in_progress | `7fc96d33` |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
 | COG-202 | COG-201 | pending | — |
