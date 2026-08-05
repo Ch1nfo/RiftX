@@ -29,16 +29,17 @@
 ## 2. Current wave
 
 - Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-103 — MCP 生产接入`
-- Status：`in_progress`
+- Current task：`CAP-104 — 持久化 Tool/Skill Selection`
+- Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
+- Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：生产 Worker 启动时会发现 operator-owned Streamable HTTP MCP Server，将安全、脱敏且有界的 Tool metadata 与 JSON Schema 投影到只读 MCP Tool Index；单 Server 的缺失 Secret、连接失败、超时或恶意 Schema 只降级对应 Server，不阻塞其他 Server 或 Worker。当前尚未向模型开放 MCP 调用，也未开放 stdio MCP；所有发现结果固定标记为外部不可信内容和显式批准策略。
-- Current implementation commits：`2c784d8d`。
-- Next delivery slice：将 MCP Tool 调用接入 durable ToolCall/Execution identity、Tool Policy、逐次 Approval、Artifact 和 Transcript；继续禁止绕过 Runner/RunKind 安全边界的 stdio MCP。
+- Product behavior：生产 Primary Agent 可搜索和读取 operator-owned Streamable HTTP MCP Tool，并在逐次显式批准后调用 allowlisted Tool；调用绑定 durable ToolCall/execution claim，完整脱敏结果进入 immutable Artifact，有界不可信 Preview 与 source refs 进入 Transcript。Worker 周期刷新 Discovery/Health，单 Server 故障局部降级，Node 只发布聚合健康计数；stdio MCP 仍禁止。
+- Current implementation commits：CAP-103 `2c784d8d`、`94d71f3b`、`483ddb81`。
+- Next delivery slice：开始 CAP-104，将动态 Tool/Skill Selection 统一持久化到 Session Capability Manifest，并验证 Worker 重启恢复、版本锁定与失效处理。
 
 ## 3. 研究与实现基线
 
@@ -117,7 +118,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
-| CAP-103 | CAP-001 | in_progress | `2c784d8d`, `94d71f3b` |
+| CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
@@ -457,7 +458,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### CAP-103：MCP 生产接入
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-06
 - Inputs：CAP-001、既有 `GovernedMCPAdapter`、生产 Temporal Worker、`openai-agents 0.19.0` 和 `mcp 1.29.0` 的 Streamable HTTP 契约。
 - First delivery slice：
@@ -493,7 +494,20 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .` 和 `git diff --check`：passed；
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5066 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field metadata 提示。
 - Second delivery implementation commit：`94d71f3b`。
-- Remaining：补齐周期性 Discovery/Health Refresh、可观测状态发布和对应 Worker 生命周期测试后再关闭 CAP-103。
+- Third delivery slice：
+  - 新增可配置的 MCP Discovery refresh interval；Worker 复用既有后台任务生命周期周期执行 Registry refresh 与 Governor health snapshot，不引入独立调度框架；
+  - 周期刷新保持 Registry 原子快照语义；单 Server discovery 失败继续只移除对应能力，意外的全局 refresh 失败保留上一份可用快照并持续重试；
+  - Node heartbeat 发布 Registry generation、refresh 状态/失败次数、Server/Tool/不可用 Server 数量、active call 和 open circuit 聚合计数，不发布 Server ID、URL、Header、环境变量引用或 Secret；
+  - 可选 MCP Server 故障不会把整个 Worker 标为不可用；运维面通过聚合标签观察局部降级；
+  - Worker 关闭时先取消并等待 MCP refresh task，再清理 MCP Client，避免 refresh 与 transport cleanup 并发竞态。
+- Third delivery checks：
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/mcp tests/unit/test_runtime_config.py tests/unit/temporal/test_worker_runtime.py`：`57 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/mcp src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 6 source files`；
+  - MCP、Temporal、Runtime、Execution、Agent、Tool、Context 和 Subagent 关联回归：`616 passed`；
+  - `conda run --no-capture-output -n agent ruff check .` 和 `git diff --check`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5067 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field metadata 提示。
+- Third delivery implementation commit：`483ddb81`。
+- Completion evidence：Registry、Discovery/Index、Schema、Governor/限流/熔断/超时/周期健康刷新、Tool Policy、Approval、Artifact 与 Transcript 均已接入生产 Worker；Authorization 不可由直接 service 调用绕过，Server 故障局部降级，调用具有 durable ToolCall/execution claim，Secret 与绝对路径不进入模型结果。
 
 ## 9. Known pre-existing worktree state
 
