@@ -7,6 +7,10 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from riftx.capabilities import (
+    SessionCapabilityManifestReader,
+    TechniqueContextManager,
+)
 from riftx.runtime.lifecycle import (
     CompiledContext,
     ContextCompileRequest,
@@ -133,6 +137,8 @@ class ContextCompiler:
         budgeter: TokenBudgeter | None = None,
         tool_context: ToolContextManager | None = None,
         skill_context: ProgressiveSkillContextManager | None = None,
+        technique_context: TechniqueContextManager | None = None,
+        capability_manifest_reader: SessionCapabilityManifestReader | None = None,
         context_service: ContextApplicationService | None = None,
         runtime_contract: str = _RUNTIME_CONTRACT,
     ) -> None:
@@ -143,6 +149,8 @@ class ContextCompiler:
         self._budgeter = budgeter or TokenBudgeter()
         self._tool_context = tool_context
         self._skill_context = skill_context
+        self._technique_context = technique_context
+        self._capability_manifest_reader = capability_manifest_reader
         self._context_service = context_service
         self._runtime_contract = runtime_contract
 
@@ -364,6 +372,22 @@ class ContextCompiler:
                         metadata={"skill_payload": "reference"},
                     )
                 )
+        if self._technique_context is not None:
+            technique_visibility = await self._technique_context.visibility(
+                run_id=request.run_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+            )
+            metadata.update(technique_visibility.manifest())
+        if self._capability_manifest_reader is not None:
+            capability_manifest = await self._capability_manifest_reader.read(
+                run_id=request.run_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+            )
+            metadata["session_capability_manifest"] = capability_manifest.model_dump(
+                mode="json"
+            )
         return items, metadata
 
     def _normalize_estimate(self, item: ContextItem) -> ContextItem:

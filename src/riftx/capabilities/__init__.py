@@ -41,7 +41,16 @@ from .repository import CapabilityRepository
 from .selection import (
     CapabilitySelectionStore,
     InMemoryCapabilitySelectionStore,
+    SessionCapabilityManifest,
+    SessionCapabilityManifestEntry,
+    SessionCapabilityManifestReader,
     SessionCapabilitySelection,
+)
+from .techniques import (
+    TechniqueContextManager,
+    TechniqueSelectionManifest,
+    TechniqueSummary,
+    TechniqueVisibilitySnapshot,
 )
 
 __all__ = [
@@ -79,6 +88,13 @@ __all__ = [
     "PromotionRun",
     "PromotionStatus",
     "SessionCapabilitySelection",
+    "SessionCapabilityManifest",
+    "SessionCapabilityManifestEntry",
+    "SessionCapabilityManifestReader",
+    "TechniqueContextManager",
+    "TechniqueSelectionManifest",
+    "TechniqueSummary",
+    "TechniqueVisibilitySnapshot",
     "capability_manifest_digest",
     "capability_pack_digest",
     "canonical_payload_digest",

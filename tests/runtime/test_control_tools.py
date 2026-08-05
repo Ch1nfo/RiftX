@@ -9,11 +9,13 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from pydantic import ValidationError
+from tests.integration.persistence.test_capability_repository import version
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserView, OpenBrowser
+from riftx.capabilities import CapabilityKind, CapabilityVersion, TechniqueContextManager
 from riftx.code import (
     CodeCall,
     CodeCallHierarchyResult,
@@ -406,6 +408,18 @@ class FakeMCP:
             result_bytes=128,
             content=[{"type": "text", "text": "answer", "truncated": False}],
         )
+
+
+class FakeTechniqueCatalog:
+    def __init__(self, versions: list[CapabilityVersion]) -> None:
+        self.versions = versions
+
+    async def list_active_versions(
+        self,
+        kind: CapabilityKind,
+    ) -> tuple[CapabilityVersion, ...]:
+        assert kind is CapabilityKind.TECHNIQUE
+        return tuple(self.versions)
 
 
 class FakeGit:
@@ -863,6 +877,7 @@ def service(
     executions: FakeExecutions | None = None,
     artifacts: FakeArtifacts | None = None,
     skills: ProgressiveSkillContextManager | None = None,
+    techniques: TechniqueContextManager | None = None,
     code: FakeCode | None = None,
     git: FakeGit | None = None,
     browser: FakeBrowser | None = None,
@@ -884,6 +899,7 @@ def service(
         events=events,
         transcript=transcript,  # type: ignore[arg-type]
         skills=skills,
+        techniques=techniques,
         code=code,  # type: ignore[arg-type]
         git=git,  # type: ignore[arg-type]
         browser=browser,  # type: ignore[arg-type]
@@ -1915,6 +1931,60 @@ async def test_tool_control_tools_require_explicit_reload_and_support_unload(
         ["tool://scanner"],
         ["tool://scanner"],
         ["tool://scanner"],
+    ]
+
+
+async def test_technique_control_tools_select_reload_and_unload() -> None:
+    _, first = version("1.0.0")
+    catalog = FakeTechniqueCatalog([first])
+    techniques = TechniqueContextManager(catalog)  # type: ignore[arg-type]
+    control, _, transcript, _ = service(techniques=techniques)
+
+    listed = await control(
+        SCOPE,
+        "list_techniques",
+        {"max_results": 10},
+        "call-list-techniques",
+    )
+    loaded = await control(
+        SCOPE,
+        "load_technique",
+        {
+            "technique_id": "web.request-analysis",
+            "reason": "compare request evidence",
+        },
+        "call-load-technique",
+    )
+    _, second = version("2.0.0")
+    catalog.versions = [second]
+    reloaded = await control(
+        SCOPE,
+        "reload_technique",
+        {
+            "technique_id": "web.request-analysis",
+            "reason": "refresh the selected technique",
+        },
+        "call-reload-technique",
+    )
+    unloaded = await control(
+        SCOPE,
+        "unload_technique",
+        {"technique_id": "web.request-analysis"},
+        "call-unload-technique",
+    )
+
+    assert listed[0]["id"] == "web.request-analysis"
+    assert loaded["manifest"]["version"] == "1.0.0"
+    assert reloaded["manifest"]["version"] == "2.0.0"
+    assert unloaded == {
+        "technique_id": "web.request-analysis",
+        "active": False,
+    }
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["runtime-tool://list_techniques"],
+        ["technique://web.request-analysis"],
+        ["technique://web.request-analysis"],
+        ["technique://web.request-analysis"],
     ]
 
 

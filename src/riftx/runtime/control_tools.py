@@ -21,6 +21,7 @@ from riftx.application.services import (
 from riftx.application.services.runs import require_general_run_operation
 from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserApplicationService, BrowserView, OpenBrowser
+from riftx.capabilities import TechniqueContextManager
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.domain import (
     AgentMessage,
@@ -155,6 +156,14 @@ class _SkillArguments(_Arguments):
 
 
 class _LoadSkillArguments(_SkillArguments):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class _TechniqueArguments(_Arguments):
+    technique_id: str = Field(min_length=1)
+
+
+class _LoadTechniqueArguments(_TechniqueArguments):
     reason: str = Field(min_length=1, max_length=1000)
 
 
@@ -415,6 +424,7 @@ class RuntimeControlToolService:
         events: RunEventWriter,
         transcript: TranscriptWriter,
         skills: ProgressiveSkillContextManager | None = None,
+        techniques: TechniqueContextManager | None = None,
         code: CodeWorkspaceService | None = None,
         git: GitWorkspaceService | None = None,
         browser: BrowserApplicationService | None = None,
@@ -432,6 +442,7 @@ class RuntimeControlToolService:
         self._events = events
         self._transcript = transcript
         self._skills = skills
+        self._techniques = techniques
         self._code = code
         self._git = git
         self._browser = browser
@@ -728,6 +739,46 @@ class RuntimeControlToolService:
                 agent_id=scope.agent_id,
             )
             return {"skill_id": skill_arguments.skill_id, "active": False}
+        if tool_name == "list_techniques":
+            techniques = self._require_techniques()
+            list_arguments = _SkillListArguments.model_validate(raw_arguments)
+            entries = await techniques.list_techniques(session_id=scope.session_id)
+            return [
+                item.model_dump(mode="json")
+                for item in entries[: list_arguments.max_results]
+            ]
+        if tool_name == "load_technique":
+            techniques = self._require_techniques()
+            technique_arguments = _LoadTechniqueArguments.model_validate(raw_arguments)
+            version = await techniques.select_technique(
+                technique_arguments.technique_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+                reason=technique_arguments.reason,
+            )
+            return version.model_dump(mode="json")
+        if tool_name == "reload_technique":
+            techniques = self._require_techniques()
+            technique_arguments = _LoadTechniqueArguments.model_validate(raw_arguments)
+            version = await techniques.reload_technique(
+                technique_arguments.technique_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+                reason=technique_arguments.reason,
+            )
+            return version.model_dump(mode="json")
+        if tool_name == "unload_technique":
+            techniques = self._require_techniques()
+            technique_arguments = _TechniqueArguments.model_validate(raw_arguments)
+            await techniques.unload_technique(
+                technique_arguments.technique_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+            )
+            return {"technique_id": technique_arguments.technique_id, "active": False}
         if tool_name == "list_files":
             code = self._require_code()
             code_arguments = _ListFilesArguments.model_validate(raw_arguments)
@@ -1193,6 +1244,11 @@ class RuntimeControlToolService:
         if self._skills is None:
             raise RuntimeError("Progressive Skill context is not configured")
         return self._skills
+
+    def _require_techniques(self) -> TechniqueContextManager:
+        if self._techniques is None:
+            raise RuntimeError("Technique context is not configured")
+        return self._techniques
 
     def _require_code(self) -> CodeWorkspaceService:
         if self._code is None:
@@ -1751,6 +1807,8 @@ def _source_refs(
         return [f"tool://{tool_id}"]
     if skill_id := _string_argument(arguments, "skill_id"):
         return [f"skill://{skill_id}"]
+    if technique_id := _string_argument(arguments, "technique_id"):
+        return [f"technique://{technique_id}"]
     if path := _string_argument(arguments, "path"):
         return [f"code://{path}"]
     paths = arguments.get("paths")

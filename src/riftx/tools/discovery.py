@@ -39,6 +39,10 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "load_skill_references",
     "reload_skill",
     "unload_skill",
+    "list_techniques",
+    "load_technique",
+    "reload_technique",
+    "unload_technique",
     "list_files",
     "read_file",
     "read_many_files",
@@ -84,6 +88,10 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "load_skill_references",
     "reload_skill",
     "unload_skill",
+    "list_techniques",
+    "load_technique",
+    "reload_technique",
+    "unload_technique",
     "list_files",
     "read_file",
     "read_many_files",
@@ -925,6 +933,12 @@ def _resident_schema(
         "load_skill_references": "Load references for an already selected Skill.",
         "reload_skill": "Explicitly replace one pinned Skill package with its current version.",
         "unload_skill": "Remove one selected Skill from the active model context.",
+        "list_techniques": "List active versioned security Techniques available to this Session.",
+        "load_technique": "Pin one active Technique version for this Session.",
+        "reload_technique": (
+            "Explicitly replace one pinned Technique with its current active version."
+        ),
+        "unload_technique": "Remove one selected Technique from the active Session manifest.",
         "list_files": "List bounded entries in the current code source without following links.",
         "read_file": "Read a bounded preview from one regular file in the current code source.",
         "read_many_files": "Read bounded previews from several regular code files.",
@@ -1048,6 +1062,19 @@ def _resident_schema(
     elif tool_id in {"load_skill_references", "unload_skill"}:
         properties = {"skill_id": {"type": "string"}}
         required = ["skill_id"]
+    elif tool_id == "list_techniques":
+        properties = {
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
+    elif tool_id in {"load_technique", "reload_technique"}:
+        properties = {
+            "technique_id": {"type": "string"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        }
+        required = ["technique_id", "reason"]
+    elif tool_id == "unload_technique":
+        properties = {"technique_id": {"type": "string"}}
+        required = ["technique_id"]
     elif tool_id == "list_files":
         properties = {
             "path": {"type": "string", "maxLength": 4096},

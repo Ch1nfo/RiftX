@@ -97,6 +97,22 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "list_techniques": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "load_technique": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "reload_technique": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "unload_technique": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "list_files": AgentToolPolicy(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,

@@ -23,6 +23,7 @@ from riftx.capabilities import (
     CapabilityDependency,
     CapabilityDependencyKind,
     CapabilityEvaluationResult,
+    CapabilityKind,
     CapabilityManifest,
     CapabilityPack,
     CapabilityPackManifest,
@@ -141,6 +142,35 @@ class SQLAlchemyCapabilityRepository:
             raise
         except (JSONDecodeError, TypeError, ValueError):
             raise RepositoryIntegrityError("Capability", capability_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
+
+    async def list_active_versions(
+        self,
+        kind: CapabilityKind,
+    ) -> tuple[CapabilityVersion, ...]:
+        statement = (
+            select(CapabilityVersionRecord)
+            .join(
+                CapabilityRecord,
+                CapabilityRecord.id == CapabilityVersionRecord.capability_id,
+            )
+            .where(
+                CapabilityRecord.kind == kind.value,
+                CapabilityVersionRecord.status == CapabilityVersionStatus.ACTIVE.value,
+            )
+            .order_by(CapabilityVersionRecord.capability_id, CapabilityVersionRecord.id)
+        )
+        try:
+            async with self._session_factory() as session:
+                records = (await session.scalars(statement)).all()
+                return tuple(
+                    [await _from_version_record(session, record) for record in records]
+                )
+        except RepositoryError:
+            raise
+        except (JSONDecodeError, TypeError, ValueError):
+            raise RepositoryIntegrityError("Capability", kind.value) from None
         except SQLAlchemyError:
             raise RepositoryUnavailableError("Capability persistence is unavailable") from None
 

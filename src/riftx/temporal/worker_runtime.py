@@ -44,6 +44,10 @@ from riftx.application.services.workflow_signals import (
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.audit import LocalSnapshotStore
 from riftx.browser.service import BrowserApplicationService
+from riftx.capabilities import (
+    SessionCapabilityManifestReader,
+    TechniqueContextManager,
+)
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
@@ -98,6 +102,7 @@ from riftx.persistence import (
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditControlUnitOfWork,
     SQLAlchemyAuditCreationUnitOfWork,
+    SQLAlchemyCapabilityRepository,
     SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -1093,6 +1098,13 @@ async def build_temporal_worker(
             skill_registry,
             SQLAlchemySkillSelectionStore(database.session_factory),
         )
+        capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+            database.session_factory
+        )
+        technique_context = TechniqueContextManager(
+            SQLAlchemyCapabilityRepository(database.session_factory),
+            capability_selection_store,
+        )
         code_workspace = CodeWorkspaceService(
             runs=run_repository,
             audits=audit_aggregate_repository,
@@ -1155,7 +1167,7 @@ async def build_temporal_worker(
         )
         tool_context = ToolContextManager(
             registry,
-            store=SQLAlchemyCapabilitySelectionStore(database.session_factory),
+            store=capability_selection_store,
         )
         context_compiler = ContextCompiler(
             sources=[
@@ -1169,6 +1181,10 @@ async def build_temporal_worker(
             stable_instruction_source=StableInstructionSource(),
             tool_context=tool_context,
             skill_context=skill_context,
+            technique_context=technique_context,
+            capability_manifest_reader=SessionCapabilityManifestReader(
+                capability_selection_store
+            ),
             context_service=ContextApplicationService(context_compilation_repository),
         )
         execution_service = ExecutionService(
@@ -1195,6 +1211,7 @@ async def build_temporal_worker(
             events=event_repository,
             transcript=transcript_repository,
             skills=skill_context,
+            techniques=technique_context,
             code=code_workspace,
             git=git_workspace,
             browser=browser_service,

@@ -87,6 +87,63 @@ class CapabilitySelectionStore(Protocol):
     ) -> None: ...
 
 
+class SessionCapabilityManifestEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: CapabilityKind
+    capability_id: str
+    version: str
+    digest: str
+    source: CapabilitySource
+    reason: str
+    active: bool
+
+
+class SessionCapabilityManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str
+    session_id: str
+    agent_id: str
+    selections: list[SessionCapabilityManifestEntry] = Field(default_factory=list)
+
+
+class SessionCapabilityManifestReader:
+    def __init__(self, store: CapabilitySelectionStore) -> None:
+        self._store = store
+
+    async def read(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        agent_id: str,
+    ) -> SessionCapabilityManifest:
+        selections = await self._store.list_selections(session_id)
+        for selection in selections:
+            if selection.run_id != run_id or selection.agent_id != agent_id:
+                raise PermissionError(
+                    "Capability manifest belongs to a different Agent Session scope"
+                )
+        return SessionCapabilityManifest(
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            selections=[
+                SessionCapabilityManifestEntry(
+                    kind=selection.kind,
+                    capability_id=selection.capability_id,
+                    version=selection.version,
+                    digest=selection.digest,
+                    source=selection.source,
+                    reason=selection.reason,
+                    active=selection.active,
+                )
+                for selection in selections
+            ],
+        )
+
+
 class InMemoryCapabilitySelectionStore:
     """Ephemeral store for tests and non-production runtimes."""
 

@@ -9,6 +9,7 @@ from .models import (
     Capability,
     CapabilityCandidate,
     CapabilityEvaluationResult,
+    CapabilityKind,
     CapabilityPack,
     CapabilityVersion,
     CapabilityVersionStatus,
@@ -29,6 +30,11 @@ class CapabilityRepository(Protocol):
     async def get_version(self, version_id: str) -> CapabilityVersion | None: ...
 
     async def list_versions(self, capability_id: str) -> tuple[CapabilityVersion, ...]: ...
+
+    async def list_active_versions(
+        self,
+        kind: CapabilityKind,
+    ) -> tuple[CapabilityVersion, ...]: ...
 
     async def set_version_status(
         self,
