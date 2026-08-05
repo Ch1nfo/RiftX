@@ -145,6 +145,13 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "act_browser": True,
         "close_browser": False,
     }
+    web_fetch_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "web_fetch"
+    )
+    assert web_fetch_schema["parameters"]["required"] == ["url"]
+    assert web_fetch_schema["x-riftx"]["approval_policy"] == "explicit"
+    web_fetch_tool = next(tool for tool in agent.tools if tool.name == "web_fetch")
+    assert web_fetch_tool.needs_approval is True
     assert {
         "search_tools",
         "list_tools",
@@ -167,6 +174,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "observe_browser",
         "act_browser",
         "close_browser",
+        "web_fetch",
         "get_execution",
         "wait_execution",
         "cancel_execution",

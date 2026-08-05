@@ -28,6 +28,13 @@ from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager
 from riftx.tools import ToolContextManager, ToolSearchRequest
 from riftx.tools.policy import AGENT_TOOL_POLICIES
+from riftx.web import (
+    CachePolicy,
+    FetchRequest,
+    FetchResult,
+    PublicWebFetcher,
+    RedirectPolicy,
+)
 
 _MAX_CONTROL_RESULT_BYTES = 256 * 1024
 
@@ -246,6 +253,16 @@ class _CloseBrowserArguments(_Arguments):
     browser_session_id: str = Field(min_length=1)
 
 
+class _WebFetchArguments(_Arguments):
+    url: str = Field(min_length=1, max_length=8192)
+    cache_policy: CachePolicy = CachePolicy.DEFAULT
+    redirect_policy: RedirectPolicy = RedirectPolicy.SAME_ORIGIN_AUTO
+    max_response_bytes: int = Field(default=2_000_000, ge=1, le=10_000_000)
+    timeout_seconds: float = Field(default=30, gt=0, le=60)
+    save_raw: bool = True
+    use_browser_fallback: bool = True
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -283,6 +300,7 @@ class RuntimeControlToolService:
         code: CodeWorkspaceService | None = None,
         git: GitWorkspaceService | None = None,
         browser: BrowserApplicationService | None = None,
+        web_fetcher: PublicWebFetcher | None = None,
         control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
@@ -294,6 +312,7 @@ class RuntimeControlToolService:
         self._code = code
         self._git = git
         self._browser = browser
+        self._web_fetcher = web_fetcher
         self._control_intents = control_intents
 
     async def __call__(
@@ -714,6 +733,23 @@ class RuntimeControlToolService:
             return _browser_payload(
                 await browser.close(browser_arguments.browser_session_id)
             )
+        if tool_name == "web_fetch":
+            fetcher = self._require_web_fetcher()
+            fetch_arguments = _WebFetchArguments.model_validate(raw_arguments)
+            return _web_fetch_payload(
+                await fetcher.fetch(
+                    scope.run_id,
+                    FetchRequest(
+                        url=fetch_arguments.url,
+                        cache_policy=fetch_arguments.cache_policy,
+                        redirect_policy=fetch_arguments.redirect_policy,
+                        max_response_bytes=fetch_arguments.max_response_bytes,
+                        timeout_seconds=fetch_arguments.timeout_seconds,
+                        save_raw=fetch_arguments.save_raw,
+                        use_browser_fallback=fetch_arguments.use_browser_fallback,
+                    ),
+                )
+            )
         if tool_name == "git_status":
             git = self._require_git()
             git_arguments = _GitStatusArguments.model_validate(raw_arguments)
@@ -865,6 +901,11 @@ class RuntimeControlToolService:
         if self._browser is None:
             raise RuntimeError("Managed browser service is not configured")
         return self._browser
+
+    def _require_web_fetcher(self) -> PublicWebFetcher:
+        if self._web_fetcher is None:
+            raise RuntimeError("Public Web Fetch service is not configured")
+        return self._web_fetcher
 
     async def _require_browser_scope(
         self,
@@ -1066,6 +1107,86 @@ def _browser_payload(view: BrowserView) -> dict[str, object]:
     }
 
 
+def _web_fetch_payload(result: FetchResult) -> dict[str, object]:
+    document = result.document
+    source = result.source
+    chunks = [
+        {
+            "id": chunk.id,
+            "sequence": chunk.sequence,
+            "heading_path": [_truncated(item, 300) for item in chunk.heading_path[:8]],
+            "heading_path_truncated": len(chunk.heading_path) > 8,
+            "content_excerpt": chunk.content[:6_000],
+            "content_truncated": len(chunk.content) > 6_000,
+            "token_count": chunk.token_count,
+            "start_offset": chunk.start_offset,
+            "end_offset": chunk.end_offset,
+        }
+        for chunk in result.chunks[:6]
+    ]
+    return {
+        "status": result.status.value,
+        "requested_url": _truncated(result.requested_url, 8192),
+        "final_url": _truncated(result.final_url, 8192),
+        "redirect_url": _truncated(result.redirect_url, 8192),
+        "redirect_chain": [_truncated(item, 8192) for item in result.redirect_chain[:10]],
+        "redirect_chain_truncated": len(result.redirect_chain) > 10,
+        "reason": _truncated(result.reason, 2_000),
+        "raw_artifact_id": result.raw_artifact_id,
+        "cache_hit": result.cache_hit,
+        "content_trust": "UNTRUSTED_EXTERNAL_CONTENT",
+        "document": (
+            {
+                "id": document.id,
+                "requested_url": _truncated(document.requested_url, 8192),
+                "final_url": _truncated(document.final_url, 8192),
+                "canonical_url": _truncated(document.canonical_url, 8192),
+                "title": _truncated(document.title, 1_000),
+                "author": _truncated(document.author, 500),
+                "site_name": _truncated(document.site_name, 500),
+                "published_at": (
+                    document.published_at.isoformat()
+                    if document.published_at is not None
+                    else None
+                ),
+                "fetched_at": document.fetched_at.isoformat(),
+                "mime_type": document.mime_type,
+                "language": _truncated(document.language, 32),
+                "raw_artifact_id": document.raw_artifact_id,
+                "normalized_artifact_id": document.normalized_artifact_id,
+                "content_hash": document.content_hash,
+                "text_length": document.text_length,
+                "extraction_status": document.extraction_status.value,
+                "truncated": document.truncated,
+            }
+            if document is not None
+            else None
+        ),
+        "source": (
+            {
+                "id": source.id,
+                "document_id": source.document_id,
+                "url": _truncated(source.url, 8192),
+                "title": _truncated(source.title, 1_000),
+                "domain": _truncated(source.domain, 253),
+                "author": _truncated(source.author, 500),
+                "published_at": (
+                    source.published_at.isoformat()
+                    if source.published_at is not None
+                    else None
+                ),
+                "fetched_at": source.fetched_at.isoformat(),
+                "source_type": source.source_type.value,
+                "content_hash": source.content_hash,
+            }
+            if source is not None
+            else None
+        ),
+        "chunks": chunks,
+        "chunks_truncated": len(result.chunks) > len(chunks),
+    }
+
+
 def _result_artifact_ids(result: object) -> list[str]:
     artifact_ids: list[str] = []
 
@@ -1094,6 +1215,17 @@ def _source_refs(
     *,
     result: object | None = None,
 ) -> list[str]:
+    if tool_name == "web_fetch" and isinstance(result, dict):
+        refs: list[str] = []
+        document = result.get("document")
+        if isinstance(document, dict) and isinstance(document.get("id"), str):
+            refs.append(f"web-document://{document['id']}")
+        source = result.get("source")
+        if isinstance(source, dict) and isinstance(source.get("id"), str):
+            refs.append(f"web-source://{source['id']}")
+        refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
+        if refs:
+            return list(dict.fromkeys(refs))
     if tool_name in {
         "open_browser",
         "observe_browser",

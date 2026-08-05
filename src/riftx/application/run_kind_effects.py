@@ -243,6 +243,7 @@ class RunEffectFamily(StrEnum):
     MEMORY = "memory"
     TERMINAL = "terminal"
     BROWSER = "browser"
+    WEB_RESEARCH = "web_research"
     TARGET_HTTP = "target_http"
     CONNECTOR = "connector"
     CONTEXT = "context"
@@ -492,6 +493,7 @@ class RunEffectOperation(StrEnum):
     SERVICE_BROWSER_RELEASE = "service.browser.release"
     SERVICE_BROWSER_CLOSE = "service.browser.close"
     SERVICE_BROWSER_STOP_RUN = "service.browser.stop_run"
+    SERVICE_WEB_FETCH = "service.web.fetch"
     SERVICE_TARGET_HTTP_EXECUTE = "service.target_http.execute"
     SERVICE_TARGET_HTTP_STOP_RUN = "service.target_http.stop_run"
     SERVICE_CONNECTOR_INGEST = "service.connector.ingest"
@@ -2232,6 +2234,16 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _SAME,
     ),
     _rule(
+        RunEffectOperation.SERVICE_WEB_FETCH,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.WEB_RESEARCH,
+        _GENERAL_ONLY,
+        OperationEffect.HOST_EXECUTION,
+        OwnershipResolverKind.RUN_ID,
+        EffectMode.NORMAL,
+        _UNSUPPORTED,
+    ),
+    _rule(
         RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.TARGET_HTTP,
@@ -3136,6 +3148,11 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         )
     ),
     _entry(
+        "riftx.web.fetch:PublicWebFetcher.fetch",
+        RunEffectOperation.SERVICE_WEB_FETCH,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
         "riftx.target_http.service:TargetHttpApplicationService.execute",
         RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
         EffectOrigin.APPLICATION_SERVICE,
@@ -3507,6 +3524,7 @@ MANAGED_EFFECT_TYPES: tuple[ManagedEffectType, ...] = (
         "riftx.browser.service:BrowserApplicationService",
         read_only=("get", "list_for_run", "observations_after", "resolve_run_id"),
     ),
+    _managed_type("riftx.web.fetch:PublicWebFetcher"),
     _managed_type("riftx.target_http.service:TargetHttpApplicationService"),
     _managed_type("riftx.connectors.service:ConnectorApplicationService"),
     _managed_type(

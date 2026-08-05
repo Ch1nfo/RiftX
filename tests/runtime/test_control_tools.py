@@ -48,10 +48,19 @@ from riftx.domain import (
     InteractiveElement,
     NetworkEventSummary,
 )
+from riftx.domain.base import utc_now
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
+from riftx.web import (
+    FetchRequest,
+    FetchResult,
+    FetchResultStatus,
+    SourceReference,
+    WebDocument,
+    WebDocumentChunk,
+)
 
 
 class FakeEvents:
@@ -555,6 +564,55 @@ class LargeFakeBrowser(FakeBrowser):
             action=view.action,
         )
 
+
+class FakeWebFetcher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, FetchRequest]] = []
+
+    async def fetch(self, run_id: str, request: FetchRequest) -> FetchResult:
+        self.calls.append((run_id, request))
+        content = "Untrusted public source content " + "x" * 20_000
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        document = WebDocument(
+            id="document-1",
+            run_id=run_id,
+            requested_url=str(request.url),
+            final_url=str(request.url),
+            fetched_at=utc_now(),
+            mime_type="text/html",
+            raw_artifact_id="web-raw-1",
+            normalized_artifact_id="web-normalized-1",
+            content_hash=digest,
+            text_length=len(content),
+            extraction_status="complete",
+        )
+        source = SourceReference(
+            id="source-1",
+            document_id=document.id,
+            url=document.final_url,
+            domain="example.test",
+            fetched_at=document.fetched_at,
+            content_hash=digest,
+        )
+        chunk = WebDocumentChunk(
+            id="chunk-1",
+            document_id=document.id,
+            sequence=0,
+            heading_path=["Public source"],
+            content=content,
+            token_count=5_000,
+            start_offset=0,
+            end_offset=len(content),
+        )
+        return FetchResult(
+            status=FetchResultStatus.FETCHED,
+            requested_url=document.requested_url,
+            final_url=document.final_url,
+            document=document,
+            chunks=[chunk],
+            source=source,
+        )
+
 def execution(
     execution_id: str = "execution-1",
     *,
@@ -583,6 +641,7 @@ def service(
     code: FakeCode | None = None,
     git: FakeGit | None = None,
     browser: FakeBrowser | None = None,
+    web_fetcher: FakeWebFetcher | None = None,
     control_intents: FakeControlIntents | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -598,6 +657,7 @@ def service(
         code=code,  # type: ignore[arg-type]
         git=git,  # type: ignore[arg-type]
         browser=browser,  # type: ignore[arg-type]
+        web_fetcher=web_fetcher,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
     )
     return control, events, transcript, execution_service
@@ -650,6 +710,24 @@ async def test_effectful_browser_tools_have_no_side_effect_without_approval(
 
     assert captured.value.code == "control_tool_approval_missing"
     assert browser.calls == []
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+async def test_public_web_fetch_has_no_network_side_effect_without_approval() -> None:
+    web_fetcher = FakeWebFetcher()
+    control, events, transcript, _ = service(web_fetcher=web_fetcher)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "web_fetch",
+            {"url": "https://example.test/advisory"},
+            "web-fetch-call",
+        )
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert web_fetcher.calls == []
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
 
@@ -818,6 +896,54 @@ async def test_managed_browser_compacts_maximal_observation_before_transcript() 
     assert len(json.dumps(result).encode()) < 256 * 1024
     assert transcript.rows[0][1].structured_content["content"] == result
     assert events.rows[-1][1] == "runtime.control_tool_completed"
+    assert events.rows[-1][2]["result_bytes"] < 256 * 1024
+
+
+async def test_public_web_fetch_is_approved_bounded_untrusted_and_transcripted() -> None:
+    web_fetcher = FakeWebFetcher()
+    tracker = FakeControlIntents()
+    control, events, transcript, _ = service(
+        web_fetcher=web_fetcher,
+        control_intents=tracker,
+    )
+
+    result = await control(
+        SCOPE,
+        "web_fetch",
+        {
+            "url": "https://example.test/advisory",
+            "cache_policy": "refresh",
+            "max_response_bytes": 1_000_000,
+            "timeout_seconds": 20,
+        },
+        "web-fetch-call",
+    )
+
+    assert len(web_fetcher.calls) == 1
+    run_id, request = web_fetcher.calls[0]
+    assert run_id == "run-1"
+    assert str(request.url) == "https://example.test/advisory"
+    assert request.cache_policy.value == "refresh"
+    assert request.max_response_bytes == 1_000_000
+    assert request.timeout_seconds == 20
+    assert result["content_trust"] == "UNTRUSTED_EXTERNAL_CONTENT"
+    assert result["source"]["id"] == "source-1"
+    assert result["document"]["id"] == "document-1"
+    assert len(result["chunks"][0]["content_excerpt"]) == 6_000
+    assert result["chunks"][0]["content_truncated"] is True
+    assert len(json.dumps(result).encode()) < 256 * 1024
+    assert tracker.calls == [
+        ("begin", "web-fetch-call"),
+        ("success", "web-fetch-call"),
+    ]
+    draft = transcript.rows[0][1]
+    assert set(draft.artifact_ids) == {"web-raw-1", "web-normalized-1"}
+    assert draft.structured_content["source_refs"] == [
+        "web-document://document-1",
+        "web-source://source-1",
+        "artifact://web-normalized-1",
+        "artifact://web-raw-1",
+    ]
     assert events.rows[-1][2]["result_bytes"] < 256 * 1024
 
 

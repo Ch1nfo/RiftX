@@ -148,6 +148,11 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.HOST_CONTROL,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "web_fetch": AgentToolPolicy(
+            AgentToolEffect.HOST_EXECUTION,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
         "run_registered_tool": AgentToolPolicy(
             AgentToolEffect.HOST_EXECUTION,
             AgentToolAuthorization.DYNAMIC_APPROVAL,

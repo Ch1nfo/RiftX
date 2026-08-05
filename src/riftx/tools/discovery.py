@@ -40,6 +40,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "observe_browser",
     "act_browser",
     "close_browser",
+    "web_fetch",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -621,6 +622,10 @@ def _resident_schema(
             "Perform one explicitly approved scoped browser action against a fresh observation."
         ),
         "close_browser": "Close this Agent Session's managed browser.",
+        "web_fetch": (
+            "Fetch one anonymous public HTTP(S) document into canonical untrusted Sources "
+            "and Artifacts after explicit approval."
+        ),
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -879,6 +884,40 @@ def _resident_schema(
             "browser_session_id": {"type": "string", "minLength": 1},
         }
         required = ["browser_session_id"]
+    elif tool_id == "web_fetch":
+        properties = {
+            "url": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "cache_policy": {
+                "type": "string",
+                "enum": ["default", "bypass", "refresh", "no_store"],
+                "default": "default",
+            },
+            "redirect_policy": {
+                "type": "string",
+                "enum": [
+                    "none",
+                    "same_origin_auto",
+                    "all_auto",
+                    "return_cross_origin",
+                ],
+                "default": "same_origin_auto",
+            },
+            "max_response_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10_000_000,
+                "default": 2_000_000,
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 60,
+                "default": 30,
+            },
+            "save_raw": {"type": "boolean", "default": True},
+            "use_browser_fallback": {"type": "boolean", "default": True},
+        }
+        required = ["url"]
     elif tool_id == "git_diff":
         properties = {
             "path": {
@@ -1005,7 +1044,13 @@ def _resident_schema(
         "resident": True,
         "execution_policy": execution_policy.value,
     }
-    if tool_id in {"apply_patch", "revert_patch", "open_browser", "act_browser"}:
+    if tool_id in {
+        "apply_patch",
+        "revert_patch",
+        "open_browser",
+        "act_browser",
+        "web_fetch",
+    }:
         metadata.update(
             {
                 "approval_level": "always",

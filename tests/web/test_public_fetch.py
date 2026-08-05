@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from riftx.application.errors import ApplicationConflictError
+from riftx.domain import RunKind, RunStatus
 from riftx.web import (
     FetchRequest,
     FetchResultStatus,
@@ -15,6 +18,19 @@ from riftx.web import (
 )
 from riftx.web.fetch import normalize_public_url
 from riftx.web.models import SourceReference, WebDocument, WebDocumentChunk
+
+
+class MemoryRuns:
+    def __init__(
+        self,
+        kind: RunKind = RunKind.GENERAL,
+        status: RunStatus = RunStatus.RUNNING,
+    ) -> None:
+        self.kind = kind
+        self.status = status
+
+    async def get(self, run_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=run_id, kind=self.kind, status=self.status)
 
 
 class MemorySources:
@@ -82,6 +98,7 @@ def fetcher(
     client = httpx.AsyncClient(transport=handler)
     return (
         PublicWebFetcher(
+            runs=MemoryRuns(),  # type: ignore[arg-type]
             sources=sources,
             artifacts=artifacts,
             client=client,
@@ -90,6 +107,53 @@ def fetcher(
         sources,
         artifacts,
     )
+
+
+async def test_public_fetch_rejects_code_audit_before_network_io() -> None:
+    network_calls = 0
+
+    def handle(_: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return httpx.Response(200, text="must not be fetched")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        service = PublicWebFetcher(
+            runs=MemoryRuns(RunKind.CODE_AUDIT),  # type: ignore[arg-type]
+            sources=MemorySources(),
+            artifacts=MemoryArtifacts(),
+            client=client,
+            resolver=public_resolver,
+        )
+
+        with pytest.raises(ApplicationConflictError, match="not supported for this Run kind"):
+            await service.fetch("audit-run", FetchRequest(url="https://example.com/"))
+
+    assert network_calls == 0
+
+
+async def test_public_fetch_rejects_paused_run_before_network_io() -> None:
+    network_calls = 0
+
+    def handle(_: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return httpx.Response(200, text="must not be fetched")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        service = PublicWebFetcher(
+            runs=MemoryRuns(status=RunStatus.PAUSED),  # type: ignore[arg-type]
+            sources=MemorySources(),
+            artifacts=MemoryArtifacts(),
+            client=client,
+            resolver=public_resolver,
+        )
+
+        with pytest.raises(ApplicationConflictError) as captured:
+            await service.fetch("paused-run", FetchRequest(url="https://example.com/"))
+
+    assert captured.value.code == "run_web_fetch_blocked"
+    assert network_calls == 0
 
 
 async def test_static_html_becomes_canonical_source_and_cache_hit() -> None:
@@ -238,6 +302,7 @@ async def test_all_auto_redirect_revalidates_cross_origin_destination() -> None:
     sources = MemorySources()
     artifacts = MemoryArtifacts()
     service = PublicWebFetcher(
+        runs=MemoryRuns(),  # type: ignore[arg-type]
         sources=sources,
         artifacts=artifacts,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),

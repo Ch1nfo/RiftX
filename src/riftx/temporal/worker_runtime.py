@@ -114,6 +114,7 @@ from riftx.persistence.checkpoint_repositories import (
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
+from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
 from riftx.persistence.workflow_signals import (
     SQLAlchemyWorkflowSignalIntentRepository,
 )
@@ -147,6 +148,7 @@ from riftx.subagents import (
 )
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
+from riftx.web import ApplicationWebArtifactStore, PublicWebFetcher
 
 from .activities import RiftXActivities
 from .connection import TemporalConnectionSettings, connect_temporal
@@ -856,6 +858,11 @@ async def build_temporal_worker(
             max_artifact_bytes=config.audit.max_artifact_bytes,
             audit_repository=audit_aggregate_repository,
         )
+        web_fetcher = PublicWebFetcher(
+            runs=run_repository,
+            sources=SQLAlchemyWebSourceRepository(database.session_factory),
+            artifacts=ApplicationWebArtifactStore(artifact_service),
+        )
         browser_manager = RunnerBrowserManager(
             node_id=config.runner.node_id,
             paths=paths,
@@ -1060,6 +1067,7 @@ async def build_temporal_worker(
             code=code_workspace,
             git=git_workspace,
             browser=browser_service,
+            web_fetcher=web_fetcher,
             control_intents=deferred_dispatcher,
         )
         runtime_coordinator = RuntimeCoordinator(

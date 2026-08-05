@@ -20,12 +20,14 @@ from xml.etree import ElementTree
 
 import httpx
 
+from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
+from riftx.application.services.runs import require_general_run_operation
 from riftx.context.token_counter import estimate_context_tokens
-from riftx.domain import ArtifactContentTrust
+from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -53,6 +55,17 @@ _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 _MAX_REDIRECTS = 10
 _CHARSET_PATTERN = re.compile(r"charset\s*=\s*['\"]?([^\s;'\"]+)", re.I)
+_WEB_EFFECT_BLOCKED_RUN_STATUSES = frozenset(
+    {
+        RunStatus.PAUSING,
+        RunStatus.PAUSED,
+        RunStatus.CANCELLING,
+        RunStatus.CANCELLED,
+        RunStatus.COMPLETING,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+    }
+)
 
 
 class WebFetchError(RuntimeError):
@@ -73,6 +86,10 @@ class WebArtifactStore(Protocol):
         content: bytes,
         description: str,
     ) -> str: ...
+
+
+class RunRepository(Protocol):
+    async def get(self, run_id: str) -> Run | None: ...
 
 
 class ApplicationWebArtifactStore:
@@ -125,6 +142,7 @@ class PublicWebFetcher:
     def __init__(
         self,
         *,
+        runs: RunRepository,
         sources: WebSourceRepository,
         artifacts: WebArtifactStore,
         client: httpx.AsyncClient | None = None,
@@ -133,6 +151,7 @@ class PublicWebFetcher:
     ) -> None:
         if cache_ttl_seconds < 1:
             raise ValueError("cache_ttl_seconds must be positive")
+        self._runs = runs
         self._sources = sources
         self._artifacts = artifacts
         self._client = client
@@ -140,6 +159,7 @@ class PublicWebFetcher:
         self._cache_ttl = timedelta(seconds=cache_ttl_seconds)
 
     async def fetch(self, run_id: str, request: FetchRequest) -> FetchResult:
+        await self._require_effects_allowed(run_id)
         requested_url = normalize_public_url(str(request.url))
         # Cache lookup must not become an SSRF-policy bypass when DNS changes or
         # durable registry rows are imported from another environment.
@@ -165,7 +185,7 @@ class PublicWebFetcher:
             client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
         try:
             response, final_url, chain, redirect_url = await self._request(
-                client, requested_url, request
+                client, run_id, requested_url, request
             )
             if redirect_url is not None:
                 return FetchResult(
@@ -185,6 +205,7 @@ class PublicWebFetcher:
             if owns_client:
                 await client.aclose()
 
+        await self._require_effects_allowed(run_id)
         mime_type = _mime_type(response, final_url)
         extraction = _extract(raw, mime_type, response.headers.get("content-type"), final_url)
         if extraction.status is ExtractionStatus.BROWSER_FALLBACK_REQUIRED:
@@ -287,6 +308,7 @@ class PublicWebFetcher:
     async def _request(
         self,
         client: httpx.AsyncClient,
+        run_id: str,
         requested_url: str,
         request: FetchRequest,
     ) -> tuple[httpx.Response | None, str, list[str], str | None]:
@@ -294,6 +316,7 @@ class PublicWebFetcher:
         chain: list[str] = []
         headers = {**_DEFAULT_HEADERS, **request.headers}
         for _ in range(_MAX_REDIRECTS + 1):
+            await self._require_effects_allowed(run_id)
             await ensure_public_destination(current, self._resolver)
             outbound = client.build_request(
                 "GET",
@@ -325,6 +348,20 @@ class PublicWebFetcher:
                 return None, current, chain, destination
             current = destination
         raise WebFetchError(f"public fetch exceeded {_MAX_REDIRECTS} redirects")
+
+    async def _require_effects_allowed(self, run_id: str) -> Run:
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        require_general_run_operation(run)
+        if run.status in _WEB_EFFECT_BLOCKED_RUN_STATUSES:
+            raise ApplicationConflictError(
+                "run_web_fetch_blocked",
+                f"Run {run.id!r} cannot perform Public Web Fetch while it is "
+                f"{run.status.value}",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        return run
 
 
 async def ensure_public_destination(url: str, resolver: Resolver) -> None:

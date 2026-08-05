@@ -41,6 +41,7 @@ _CONTROL_TOOL_NAMES = {
     "observe_browser",
     "act_browser",
     "close_browser",
+    "web_fetch",
     "get_execution",
     "wait_execution",
     "cancel_execution",
