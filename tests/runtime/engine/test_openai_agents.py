@@ -17,6 +17,7 @@ from riftx.runtime.engine import (
     InvalidProviderStateError,
     OpenAIAgentsEngine,
 )
+from riftx.runtime.lifecycle import CompiledContext
 
 
 class FakeState:
@@ -39,6 +40,7 @@ class FakeStreamingResult:
         final_output: object = None,
         stream_error: Exception | None = None,
         state: FakeState | None = None,
+        interruptions: list[object] | None = None,
     ) -> None:
         self.sdk_events = events
         self.final_output = final_output
@@ -46,6 +48,7 @@ class FakeStreamingResult:
         self.raw_responses: list[object] = []
         self.cancel_modes: list[str] = []
         self.state = state or FakeState()
+        self.interruptions = interruptions or []
         self._previous_response_id = "response-2"
 
     async def stream_events(self) -> AsyncIterator[object]:
@@ -158,6 +161,51 @@ async def test_adapter_translates_runtime_control_tools(
     assert events[1].event_type is expected
 
 
+async def test_adapter_emits_explicit_control_tool_interruption() -> None:
+    interruption = SimpleNamespace(
+        tool_name="apply_patch",
+        call_id="patch-call",
+        arguments='{"path":"src/app.py"}',
+    )
+    result = FakeStreamingResult([], interruptions=[interruption])
+    context = CompiledContext(
+        system_instructions="Stay inside scope.",
+        available_tools=[
+            {
+                "type": "function",
+                "name": "apply_patch",
+                "parameters": {"type": "object"},
+                "x-riftx": {
+                    "resident": True,
+                    "approval_level": "always",
+                    "approval_policy": "explicit",
+                },
+            }
+        ],
+    )
+    engine = OpenAIAgentsEngine(lambda request: object(), stream_runner=lambda *a, **k: result)
+
+    events = await collect(
+        await engine.start(
+            AgentEngineRequest(
+                session_id="session-1",
+                model="gpt-5.6",
+                context=context,
+            )
+        )
+    )
+
+    assert events[1].event_type is AgentEngineEventType.TOOL_CALL_READY
+    assert events[1].data == {
+        "call_id": "patch-call",
+        "tool_id": "apply_patch",
+        "arguments": '{"path":"src/app.py"}',
+        "approval_level": "always",
+        "approval_required": True,
+        "approval_policy": "explicit",
+    }
+
+
 async def test_streaming_model_failure_becomes_stable_error_event() -> None:
     result = FakeStreamingResult([], stream_error=TimeoutError("model timed out"))
     engine = OpenAIAgentsEngine(lambda request: object(), stream_runner=lambda *a, **k: result)
@@ -213,6 +261,77 @@ async def test_resume_deserializes_provider_state_before_starting_stream() -> No
             AgentEngineResumeRequest(session_id="session-1", model="gpt-5.6", state=state)
         )
     assert captured["input"] is restored
+
+
+@pytest.mark.parametrize(
+    ("decision", "feedback", "expected"),
+    [
+        ("approve_tool_for_run", None, "approve"),
+        ("reject_with_feedback", "Use a narrower patch.", "reject"),
+    ],
+)
+async def test_resume_applies_exact_sdk_approval_decision_before_running(
+    decision: str,
+    feedback: str | None,
+    expected: str,
+) -> None:
+    result = FakeStreamingResult([])
+    interruption = SimpleNamespace(call_id="patch-call")
+
+    class ApprovalState:
+        def __init__(self) -> None:
+            self.approved: list[tuple[object, bool]] = []
+            self.rejected: list[tuple[object, bool, str | None]] = []
+
+        def get_interruptions(self) -> list[object]:
+            return [interruption]
+
+        def approve(self, item: object, always_approve: bool = False) -> None:
+            self.approved.append((item, always_approve))
+
+        def reject(
+            self,
+            item: object,
+            always_reject: bool = False,
+            rejection_message: str | None = None,
+        ) -> None:
+            self.rejected.append((item, always_reject, rejection_message))
+
+    restored = ApprovalState()
+    engine = OpenAIAgentsEngine(lambda request: object(), stream_runner=lambda *a, **k: result)
+    state = AgentEngineState(
+        engine_type="openai-agents",
+        engine_version="0.19",
+        provider="openai",
+        model="gpt-5.6",
+        sdk_run_state={"current_turn": 1},
+    )
+    with patch(
+        "riftx.runtime.engine.openai_agents.RunState.from_json",
+        new=AsyncMock(return_value=restored),
+    ):
+        await engine.resume(
+            AgentEngineResumeRequest(
+                session_id="session-1",
+                model="gpt-5.6",
+                state=state,
+                input_items=[
+                    {
+                        "type": "approval_decision",
+                        "engine_call_id": "patch-call",
+                        "decision": decision,
+                        "feedback": feedback,
+                    }
+                ],
+            )
+        )
+
+    if expected == "approve":
+        assert restored.approved == [(interruption, False)]
+        assert restored.rejected == []
+    else:
+        assert restored.approved == []
+        assert restored.rejected == [(interruption, False, feedback)]
 
 
 async def test_invalid_provider_state_returns_explicit_error() -> None:

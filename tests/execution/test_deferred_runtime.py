@@ -357,6 +357,21 @@ def deferred_event(
     )
 
 
+def approved_control_event() -> AgentEngineEvent:
+    return AgentEngineEvent(
+        sequence=1,
+        event_type=AgentEngineEventType.TOOL_CALL_READY,
+        data={
+            "call_id": "patch-call",
+            "tool_id": "apply_patch",
+            "arguments": {"path": "src/app.py"},
+            "approval_level": ApprovalLevel.ALWAYS.value,
+            "approval_policy": "explicit",
+            "approval_required": True,
+        },
+    )
+
+
 def legacy_intent(
     fixture: DurableDispatcherFixture,
     *,
@@ -399,6 +414,43 @@ async def prepare(
         event=event,
         status=status,
     )
+
+
+async def test_provider_control_intent_requires_approval_and_settles_once(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=approved_control_event(),
+    )
+
+    assert intent.execution_spec is None
+    assert intent.status is ToolCallStatus.WAITING_APPROVAL
+    await fixture.dispatcher.approve_intent(intent.id)
+    assert await fixture.dispatcher.begin_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+    )
+    with pytest.raises(ApplicationConflictError, match="exactly-once"):
+        await fixture.dispatcher.begin_control_intent(
+            run_id=fixture.run.id,
+            session_id=fixture.session.id,
+            engine_call_id="patch-call",
+        )
+
+    await fixture.dispatcher.finish_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+        succeeded=True,
+    )
+
+    settled = await fixture.tool_calls.get(intent.id)
+    assert settled is not None and settled.status is ToolCallStatus.COMPLETED
 
 
 async def record_approval(

@@ -89,6 +89,10 @@ from riftx.runtime.types import (
     UserInputRequest,
     YieldReason,
 )
+from riftx.tools.policy import (
+    AGENT_TOOL_POLICIES,
+    AgentToolAuthorization,
+)
 
 _STEP_TYPES = {
     AgentEngineEventType.ASSISTANT_MESSAGE: AgentStepType.ASSISTANT_MESSAGE,
@@ -244,7 +248,6 @@ class RuntimeCoordinator:
                 request.latest_user_message_id is not None
                 or request.input_text is not None
                 or bool(request.input_items)
-                or request.approval_id is not None
             )
             persisted_tool_results = await self._persist_tool_result_inputs(
                 session,
@@ -271,13 +274,15 @@ class RuntimeCoordinator:
             await self._cycles.save(cycle)
             await self._append(run.id, CYCLE_STARTED, {"cycle_id": cycle.id})
 
+            provider_approval_item: dict[str, object] | None = None
             if request.approval_id is not None:
-                await self._resume_approval(
+                provider_approval_item = await self._resume_approval(
                     run,
                     session,
                     cycle,
                     request,
                 )
+                has_new_canonical_input |= provider_approval_item is None
 
             pending_result = await self._yield_for_next_pending_intent(
                 run,
@@ -406,9 +411,17 @@ class RuntimeCoordinator:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
                     raise EntityNotFoundError("ProviderState", session.provider_state_id)
+                resume_input_items = [
+                    item
+                    for item in engine_request.input_items
+                    if item.get("type") != "approval_decision"
+                ]
+                if provider_approval_item is not None:
+                    resume_input_items.append(provider_approval_item)
                 engine_run = await self._agent_engine.resume(
                     AgentEngineResumeRequest(
-                        **engine_request.model_dump(),
+                        **engine_request.model_dump(exclude={"input_items"}),
+                        input_items=resume_input_items,
                         state=AgentEngineState.from_provider_state(provider_state),
                     )
                 )
@@ -521,10 +534,13 @@ class RuntimeCoordinator:
                     event_requires_approval = bool(event.data.get("approval_required", False))
                     hook_requires_approval = bool(hook_result.pop("_hook_require_approval", False))
                     tool_id = _event_tool_id(event)
+                    explicit_control = _is_explicit_control_event(event)
                     approval_level = ApprovalLevel(
                         str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
                     )
-                    if self._approvals is not None:
+                    if explicit_control:
+                        event_requires_approval = True
+                    elif self._approvals is not None:
                         granted = await self._approvals.is_granted(run.id, tool_id)
                         event_requires_approval = hook_requires_approval or requires_approval(
                             run.approval_mode,
@@ -535,16 +551,25 @@ class RuntimeCoordinator:
                         event_requires_approval = event_requires_approval or hook_requires_approval
                     approval_required = approval_required or event_requires_approval
                     if self._deferred_executions is not None and persisted_step is not None:
-                        intent = await self._deferred_executions.prepare(
-                            session=session,
-                            cycle=cycle,
-                            step=persisted_step,
-                            event=event,
-                            status=(
-                                ToolCallStatus.WAITING_APPROVAL
-                                if event_requires_approval
-                                else ToolCallStatus.READY
-                            ),
+                        intent = (
+                            await self._deferred_executions.prepare_control(
+                                session=session,
+                                cycle=cycle,
+                                step=persisted_step,
+                                event=event,
+                            )
+                            if explicit_control
+                            else await self._deferred_executions.prepare(
+                                session=session,
+                                cycle=cycle,
+                                step=persisted_step,
+                                event=event,
+                                status=(
+                                    ToolCallStatus.WAITING_APPROVAL
+                                    if event_requires_approval
+                                    else ToolCallStatus.READY
+                                ),
+                            )
                         )
                         if event_requires_approval:
                             await self._dispatch_hook(
@@ -691,6 +716,16 @@ class RuntimeCoordinator:
                         YieldReason.RUN_COMPLETED,
                         defer_run_completion=request.defer_run_completion,
                     )
+
+            if pending_tool:
+                pending_result = await self._yield_for_next_pending_intent(
+                    run,
+                    session,
+                    cycle,
+                    engine_run=engine_run,
+                )
+                if pending_result is not None:
+                    return pending_result
 
             return await self._yield_cycle(
                 run.id,
@@ -1219,6 +1254,8 @@ class RuntimeCoordinator:
                 ToolCallStatus.EXECUTING,
             }:
                 continue
+            if intent.execution_spec is None:
+                continue
             first_dispatch = intent.status is ToolCallStatus.READY
             reason, execution_id = await self._execute_prepared_intent(run, intent)
             if first_dispatch:
@@ -1252,7 +1289,7 @@ class RuntimeCoordinator:
         session: AgentSession,
         cycle: AgentCycle,
         request: RunCycleRequest,
-    ) -> None:
+    ) -> dict[str, object] | None:
         approval_id = request.approval_id
         if (
             approval_id is None
@@ -1265,16 +1302,23 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        intent = await self._deferred_executions.get_intent(
+            approval.tool_call_intent_id
+        )
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", approval.tool_call_intent_id)
+        provider_control = intent.execution_spec is None
         item = await self._apply_approval_decision(
             run,
             session,
             cycle,
             approval.id,
         )
-        if self._transcript is None and not any(
+        if (provider_control or self._transcript is None) and not any(
             existing.get("approval_id") == approval.id for existing in request.input_items
         ):
             request.input_items.append(item)
+        return item if provider_control else None
 
     async def _apply_approval_decision(
         self,
@@ -1290,6 +1334,11 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        intent = await self._deferred_executions.get_intent(
+            approval.tool_call_intent_id
+        )
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", approval.tool_call_intent_id)
         if approval.decision in {
             ApprovalDecision.APPROVE_ONCE,
             ApprovalDecision.APPROVE_TOOL_FOR_RUN,
@@ -1308,6 +1357,8 @@ class RuntimeCoordinator:
             "decision": approval.decision.value,
             "feedback": approval.feedback,
             "tool_call_intent_id": approval.tool_call_intent_id,
+            "engine_call_id": intent.engine_call_id,
+            "tool_id": intent.tool_id,
             "source_refs": [f"approval://{approval.id}"],
         }
         await self._persist_approval_decision(session, item)
@@ -1495,6 +1546,17 @@ def _event_tool_id(event: AgentEngineEvent) -> str:
     if not isinstance(value, str) or not value:
         raise DomainError("Tool Call event is missing a tool ID")
     return value
+
+
+def _is_explicit_control_event(event: AgentEngineEvent) -> bool:
+    if event.data.get("approval_policy") != "explicit":
+        return False
+    policy = AGENT_TOOL_POLICIES.get(_event_tool_id(event))
+    return bool(
+        policy is not None
+        and policy.approval_required
+        and policy.authorization is AgentToolAuthorization.DYNAMIC_APPROVAL
+    )
 
 
 def _execution_id_from_tool_result_input(item: Mapping[str, object]) -> str | None:

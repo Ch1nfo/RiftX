@@ -81,6 +81,7 @@ class OpenAIAgentsEngine:
                 context_override=request.context,
                 strict_context=request.context is not None,
             )
+            _apply_sdk_approval_decisions(state, request.input_items)
         except Exception as exc:
             raise InvalidProviderStateError(
                 f"could not deserialize OpenAI Agents state: {type(exc).__name__}: {exc}"
@@ -258,12 +259,17 @@ class OpenAIAgentsEngineRun:
         )
         sequence += 1
         failed = False
+        ready_call_ids: set[str] = set()
         try:
             async for sdk_event in self._result.stream_events():
                 for event_type, data in _translate_sdk_event(
                     sdk_event,
                     tool_schemas=self._tool_schemas,
                 ):
+                    if event_type is AgentEngineEventType.TOOL_CALL_READY:
+                        call_id = data.get("call_id")
+                        if isinstance(call_id, str) and call_id:
+                            ready_call_ids.add(call_id)
                     yield AgentEngineEvent(
                         sequence=sequence,
                         event_type=event_type,
@@ -278,6 +284,22 @@ class OpenAIAgentsEngineRun:
                 data={"error_type": type(exc).__name__, "message": str(exc)},
             )
             sequence += 1
+
+        if not failed:
+            for interruption in getattr(self._result, "interruptions", []) or []:
+                payload = _approval_item_payload(
+                    interruption,
+                    tool_schemas=self._tool_schemas,
+                )
+                call_id = payload.get("call_id")
+                if isinstance(call_id, str) and call_id in ready_call_ids:
+                    continue
+                yield AgentEngineEvent(
+                    sequence=sequence,
+                    event_type=AgentEngineEventType.TOOL_CALL_READY,
+                    data=payload,
+                )
+                sequence += 1
 
         if not failed and getattr(self._result, "final_output", None) is not None:
             yield AgentEngineEvent(
@@ -427,7 +449,90 @@ def _tool_call_payload(
         approval_level = metadata.get("approval_level")
         payload.setdefault("approval_level", approval_level or "sensitive")
         payload.setdefault("approval_required", approval_level != "never")
+        approval_policy = metadata.get("approval_policy")
+        if isinstance(approval_policy, str) and approval_policy:
+            payload.setdefault("approval_policy", approval_policy)
     return payload
+
+
+def _approval_item_payload(
+    item: object,
+    *,
+    tool_schemas: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    tool_name = getattr(item, "tool_name", None) or getattr(item, "name", None)
+    call_id = getattr(item, "call_id", None)
+    arguments = getattr(item, "arguments", None)
+    payload: dict[str, object] = {}
+    if isinstance(call_id, str) and call_id:
+        payload["call_id"] = call_id
+    if isinstance(tool_name, str) and tool_name:
+        payload["tool_id"] = tool_name
+    if isinstance(arguments, dict | str):
+        payload["arguments"] = arguments
+    schema = tool_schemas.get(tool_name, {}) if isinstance(tool_name, str) else {}
+    metadata = schema.get("x-riftx")
+    if isinstance(metadata, dict):
+        approval_level = metadata.get("approval_level")
+        payload["approval_level"] = approval_level or "sensitive"
+        payload["approval_required"] = True
+        approval_policy = metadata.get("approval_policy")
+        if isinstance(approval_policy, str) and approval_policy:
+            payload["approval_policy"] = approval_policy
+    else:
+        payload["approval_level"] = "sensitive"
+        payload["approval_required"] = True
+    return payload
+
+
+def _apply_sdk_approval_decisions(
+    state: RunState[Any],
+    input_items: list[dict[str, object]],
+) -> None:
+    decisions: dict[str, tuple[str, str | None]] = {}
+    for item in input_items:
+        if item.get("type") != "approval_decision":
+            continue
+        call_id = item.get("engine_call_id")
+        decision = item.get("decision")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        if not isinstance(decision, str) or not decision:
+            raise ValueError("SDK approval decision is missing its decision")
+        if call_id in decisions:
+            raise ValueError(f"duplicate SDK approval decision for call {call_id!r}")
+        feedback = item.get("feedback")
+        decisions[call_id] = (
+            decision,
+            feedback if isinstance(feedback, str) and feedback else None,
+        )
+    if not decisions:
+        return
+
+    interruptions = list(state.get_interruptions())
+    by_call_id: dict[str, object] = {}
+    for interruption in interruptions:
+        call_id = getattr(interruption, "call_id", None)
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        if call_id in by_call_id:
+            raise ValueError(f"duplicate SDK interruption for call {call_id!r}")
+        by_call_id[call_id] = interruption
+
+    for call_id, (decision, feedback) in decisions.items():
+        interruption = by_call_id.get(call_id)
+        if interruption is None:
+            raise ValueError(f"SDK approval call {call_id!r} is not pending")
+        if decision in {"approve_once", "approve_tool_for_run"}:
+            state.approve(interruption, always_approve=False)  # type: ignore[arg-type]
+        elif decision in {"reject", "reject_with_feedback"}:
+            state.reject(  # type: ignore[arg-type]
+                interruption,
+                always_reject=False,
+                rejection_message=feedback,
+            )
+        else:
+            raise ValueError(f"unsupported SDK approval decision {decision!r}")
 
 
 def _tool_schemas(context: object | None) -> dict[str, dict[str, object]]:

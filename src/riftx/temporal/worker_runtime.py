@@ -1059,6 +1059,7 @@ async def build_temporal_worker(
             skills=skill_context,
             code=code_workspace,
             git=git_workspace,
+            control_intents=deferred_dispatcher,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,

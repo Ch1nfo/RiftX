@@ -28,6 +28,10 @@ from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
 from riftx.tools import ExecutionPolicy, ToolContextManager, ToolRegistry
+from riftx.tools.policy import (
+    AGENT_TOOL_POLICIES,
+    AgentToolAuthorization,
+)
 
 from .models import SubmitExecutionRequest
 from .service import ExecutionService
@@ -182,6 +186,9 @@ class DeferredExecutionDispatcher:
 
         return await self._tool_calls.pending_for_session(session_id)
 
+    async def get_intent(self, intent_id: str) -> ToolCallIntent | None:
+        return await self._tool_calls.get(intent_id)
+
     async def prepare(
         self,
         *,
@@ -225,6 +232,131 @@ class DeferredExecutionDispatcher:
             spec=spec,
             status=status,
         )
+
+    async def prepare_control(
+        self,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        step: AgentStep,
+        event: AgentEngineEvent,
+        status: ToolCallStatus = ToolCallStatus.WAITING_APPROVAL,
+    ) -> ToolCallIntent:
+        """Persist an SDK-resumable control mutation without a Runner spec."""
+
+        _require_deferred_parent_owners(session, cycle, step)
+        run = await self._require_run(session.run_id)
+        _require_deferred_effect_policy(
+            run,
+            operation="service.deferred_execution.prepare",
+            effect="durable_write",
+        )
+        call_id = _required_string(event.data, "call_id")
+        tool_id = _tool_id(event.data)
+        policy = AGENT_TOOL_POLICIES.get(tool_id)
+        if (
+            event.data.get("approval_policy") != "explicit"
+            or policy is None
+            or not policy.approval_required
+            or policy.authorization is not AgentToolAuthorization.DYNAMIC_APPROVAL
+        ):
+            raise ApplicationConflictError(
+                "control_tool_approval_policy_invalid",
+                "Control Tool is not authorized for explicit approval execution",
+            )
+        return await self._persist_intent(
+            session=session,
+            cycle=cycle,
+            step=step,
+            event=event,
+            call_id=call_id,
+            tool_id=tool_id,
+            spec=None,
+            status=status,
+        )
+
+    async def begin_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+    ) -> bool:
+        """Claim one approved provider-control mutation immediately before execution."""
+
+        intent = await self._control_intent(
+            run_id=run_id,
+            session_id=session_id,
+            engine_call_id=engine_call_id,
+        )
+        if intent is None:
+            return False
+        await self._require_resolved_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
+        claimed, changed = await self._tool_calls.compare_and_set_status(
+            intent.id,
+            expected={ToolCallStatus.READY},
+            target=ToolCallStatus.EXECUTING,
+        )
+        if not changed or claimed.status is not ToolCallStatus.EXECUTING:
+            raise ApplicationConflictError(
+                "control_tool_approval_not_ready",
+                "Approved control Tool Call is not ready for exactly-once execution",
+            )
+        return True
+
+    async def finish_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+        succeeded: bool,
+    ) -> None:
+        intent = await self._control_intent(
+            run_id=run_id,
+            session_id=session_id,
+            engine_call_id=engine_call_id,
+        )
+        if intent is None:
+            return
+        await self._require_resolved_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
+        settled, changed = await self._tool_calls.compare_and_set_status(
+            intent.id,
+            expected={ToolCallStatus.EXECUTING},
+            target=ToolCallStatus.COMPLETED if succeeded else ToolCallStatus.FAILED,
+        )
+        if not changed and settled.status not in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.FAILED,
+        }:
+            raise ApplicationConflictError(
+                "control_tool_outcome_not_settled",
+                "Control Tool Call outcome could not be durably settled",
+            )
+
+    async def _control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+    ) -> ToolCallIntent | None:
+        for intent in await self._tool_calls.pending_for_session(session_id):
+            if (
+                intent.run_id == run_id
+                and intent.engine_call_id == engine_call_id
+                and intent.execution_spec is None
+            ):
+                return intent
+        return None
 
     async def execute_intent(self, intent: ToolCallIntent) -> Execution:
         """Launch exactly the execution snapshot stored with an approved intent."""
@@ -559,7 +691,7 @@ class DeferredExecutionDispatcher:
         event: AgentEngineEvent,
         call_id: str,
         tool_id: str,
-        spec: DeferredExecutionSpec,
+        spec: DeferredExecutionSpec | None,
         status: ToolCallStatus,
     ) -> ToolCallIntent:
         intent = ToolCallIntent(
@@ -575,7 +707,11 @@ class DeferredExecutionDispatcher:
             step_id=step.id,
             tool_id=tool_id,
             arguments=_arguments(event.data),
-            command_preview=spec.command_text or shlex.join(spec.argv),
+            command_preview=(
+                spec.command_text or shlex.join(spec.argv)
+                if spec is not None
+                else tool_id
+            ),
             reason=str(event.data.get("reason") or ""),
             target_summary=_optional_string(event.data.get("target_summary")),
             approval_level=ApprovalLevel(
@@ -583,7 +719,7 @@ class DeferredExecutionDispatcher:
             ),
             status=status,
             engine_call_id=call_id,
-            execution_spec=spec.model_dump(mode="json"),
+            execution_spec=(spec.model_dump(mode="json") if spec is not None else None),
         )
         existing = await self._tool_calls.get(intent.id)
         if existing is not None:

@@ -32,6 +32,7 @@ _CONTROL_TOOL_NAMES = {
     "find_references",
     "call_hierarchy",
     "diagnostics",
+    "apply_patch",
     "git_status",
     "git_diff",
     "git_log",
@@ -122,6 +123,7 @@ class DeferredRuntimeAgentFactory:
         parameters = schema.get("parameters")
         params_json_schema = parameters if isinstance(parameters, dict) else {"type": "object"}
         is_control = name in _CONTROL_TOOL_NAMES
+        explicit_approval = _requires_explicit_approval(schema)
 
         async def invoke(context: object, arguments_json: str) -> object:
             arguments = json.loads(arguments_json or "{}")
@@ -142,6 +144,7 @@ class DeferredRuntimeAgentFactory:
             params_json_schema=params_json_schema,
             on_invoke_tool=invoke,
             strict_json_schema=False,
+            needs_approval=explicit_approval,
             _use_default_failure_error_function=not is_control,
         )
 
@@ -186,6 +189,11 @@ def _is_model_visible_schema(
         "shell",
         "pty",
     }
+
+
+def _requires_explicit_approval(schema: dict[str, object]) -> bool:
+    metadata = schema.get("x-riftx")
+    return isinstance(metadata, dict) and metadata.get("approval_policy") == "explicit"
 
 
 def _runtime_tool_scope(request: AgentEngineRequest) -> RuntimeToolScope:

@@ -25,6 +25,7 @@ from riftx.execution import ExecutionService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager
 from riftx.tools import ToolContextManager, ToolSearchRequest
+from riftx.tools.policy import AGENT_TOOL_POLICIES
 
 _MAX_CONTROL_RESULT_BYTES = 256 * 1024
 
@@ -44,6 +45,25 @@ class TranscriptWriter(Protocol):
         session_id: str,
         draft: TranscriptMessageDraft,
     ) -> AgentMessage: ...
+
+
+class ControlIntentTracker(Protocol):
+    async def begin_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+    ) -> bool: ...
+
+    async def finish_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+        succeeded: bool,
+    ) -> None: ...
 
 
 class _Arguments(BaseModel):
@@ -208,6 +228,7 @@ class RuntimeControlToolService:
         skills: ProgressiveSkillContextManager | None = None,
         code: CodeWorkspaceService | None = None,
         git: GitWorkspaceService | None = None,
+        control_intents: ControlIntentTracker | None = None,
     ) -> None:
         self._tools = tools
         self._executions = executions
@@ -217,6 +238,7 @@ class RuntimeControlToolService:
         self._skills = skills
         self._code = code
         self._git = git
+        self._control_intents = control_intents
 
     async def __call__(
         self,
@@ -235,10 +257,34 @@ class RuntimeControlToolService:
                 "tool_call_id": call_id,
             },
         )
+        approval_claimed = False
         try:
+            policy = AGENT_TOOL_POLICIES.get(tool_name)
+            if policy is not None and policy.approval_required:
+                approved = self._control_intents is not None and await (
+                    self._control_intents.begin_control_intent(
+                        run_id=scope.run_id,
+                        session_id=scope.session_id,
+                        engine_call_id=call_id,
+                    )
+                )
+                if not approved:
+                    raise ApplicationConflictError(
+                        "control_tool_approval_missing",
+                        "Control Tool mutation lacks an approved durable intent",
+                    )
+                approval_claimed = True
             result = await self._invoke(scope, tool_name, arguments)
             result = _bounded_result(result)
         except Exception as exc:
+            if approval_claimed:
+                assert self._control_intents is not None
+                await self._control_intents.finish_control_intent(
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    engine_call_id=call_id,
+                    succeeded=False,
+                )
             error_code = exc.code if isinstance(exc, ApplicationServiceError) else "internal_error"
             await self._events.append(
                 scope.run_id,
@@ -253,6 +299,15 @@ class RuntimeControlToolService:
                 },
             )
             raise
+
+        if approval_claimed:
+            assert self._control_intents is not None
+            await self._control_intents.finish_control_intent(
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                engine_call_id=call_id,
+                succeeded=True,
+            )
 
         content = {
             "type": "tool_result",

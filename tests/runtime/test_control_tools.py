@@ -383,6 +383,22 @@ def service(
 SCOPE = RuntimeToolScope(run_id="run-1", session_id="session-1", agent_id="primary")
 
 
+async def test_effectful_control_tool_fails_closed_without_approved_intent() -> None:
+    control, events, transcript, _ = service()
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "apply_patch",
+            {"path": "src/app.py"},
+            "patch-call",
+        )
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert transcript.rows == []
+    assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
 async def test_execution_controls_are_owned_by_exact_agent_session() -> None:
     sibling = execution("execution-child", session_id="session-child")
     control, events, transcript, execution_service = service(executions=FakeExecutions([sibling]))

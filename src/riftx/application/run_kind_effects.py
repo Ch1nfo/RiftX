@@ -2994,10 +2994,13 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         )
         for method in ("sync_intent_execution", "wait")
     ),
-    _entry(
-        "riftx.execution.deferred:DeferredExecutionDispatcher.prepare",
-        RunEffectOperation.SERVICE_DEFERRED_EXECUTION_PREPARE,
-        EffectOrigin.APPLICATION_SERVICE,
+    *(
+        _entry(
+            f"riftx.execution.deferred:DeferredExecutionDispatcher.{method}",
+            RunEffectOperation.SERVICE_DEFERRED_EXECUTION_PREPARE,
+            EffectOrigin.APPLICATION_SERVICE,
+        )
+        for method in ("prepare", "prepare_control")
     ),
     *(
         _entry(
@@ -3019,6 +3022,8 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
             "sync_intent_execution",
             "settle_failed_intent_execution_start",
             "mark_intent_executing",
+            "begin_control_intent",
+            "finish_control_intent",
         )
     ),
     _entry(
@@ -3477,6 +3482,7 @@ MANAGED_EFFECT_TYPES: tuple[ManagedEffectType, ...] = (
         "riftx.execution.deferred:DeferredExecutionDispatcher",
         read_only=(
             "find_execution_admission",
+            "get_intent",
             "pending_intents",
             "require_current_intent_execution_claim",
         ),
