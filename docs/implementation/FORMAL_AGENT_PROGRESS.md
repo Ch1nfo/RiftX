@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -314,7 +314,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4985 passed, 5 skipped, 11 warnings`；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
 - Fifth delivery implementation commit：`b7e4b969`。
-- Later slices：调用层级、受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
+- Sixth delivery slice：
+  - 已将 `call_hierarchy` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Subagent Resident Tool，支持 `incoming`、`outgoing` 和 `both`；
+  - General Run 与 Code Audit 继续复用 owner-bound Workspace/Snapshot 和共享有界语义扫描预算，不读取 Audit 可变输出目录；
+  - Python 使用标准库 AST 提取限定 Caller、模块级调用和名称/属性 Callee；默认参数、Decorator、Base 等定义期调用不会错误归入函数体 Caller；
+  - 其他已支持语言使用明确标记为 `lexical` 的名称级调用点：共享注释/字符串清洗器，过滤函数声明和控制关键字，并使用已提取的函数/方法声明提供低置信 Caller；
+  - JavaScript/TypeScript 声明提取补充常见类/对象方法，使方法声明不会被当作调用点；词法 Caller 仍是近似结果，每条边均携带 `python_ast` 或 `lexical` 置信标记；
+  - 返回定义数、`unresolved`/`unique`/`ambiguous`/`indeterminate`、分析模式、调用边、扫描质量和截断状态；文件、字节、符号、调用和结果数均有硬上限；
+  - 该后端继续标记为 `builtin_static`，只提供安全的静态降级导航，不冒充受控 LSP 或完整跨语言语义调用图。
+- Sixth delivery checks：
+  - Code/Runtime/Tool Discovery 与 Tool Policy 定向回归：`67 passed`；
+  - Code/Runtime/Context/Agent 关联回归：`119 passed`；
+  - Tool/Policy/Subagent 关联回归：`45 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4989 passed, 5 skipped, 12 warnings`；额外警告为既有并发首启测试中的 Pydantic alias schema 提示；
+  - 全仓 Ruff、文档测试和 `git diff --check`：passed。
+- Sixth delivery implementation commit：`cbc2a2e5`。
+- Later slices：受控 LSP、diagnostics，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
 
