@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -284,7 +284,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - Agent/Temporal Worker 集成回归：`46 passed`；
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4967 passed, 5 skipped, 11 warnings`；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
-- Third delivery implementation commit：pending。
+- Third delivery implementation commit：`a83875d1`。
 - Later slices：符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
