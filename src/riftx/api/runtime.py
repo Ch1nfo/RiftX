@@ -920,6 +920,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         event_repository=event_repository,
         paths=runner_paths,
         max_artifact_bytes=settings.audit.max_artifact_bytes,
+        audit_repository=audit_aggregate_repository,
     )
     browser_service = BrowserApplicationService(
         runs=run_repository,

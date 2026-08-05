@@ -39,6 +39,7 @@ class CodeReadResult(BaseModel):
     encoding: Literal["utf-8", "utf-8-lossy", "base64"]
     content: str
     content_digest: str | None = None
+    artifact_id: str | None = None
 
 
 class CodeReadManyResult(BaseModel):

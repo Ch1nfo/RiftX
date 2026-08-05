@@ -49,6 +49,7 @@ from .models import (
 _MAX_PATH_BYTES = 4096
 _MAX_LIST_ENTRIES = 1000
 _MAX_READ_BYTES = 64 * 1024
+_ARTIFACT_THRESHOLD_BYTES = _MAX_READ_BYTES
 _MAX_READ_MANY_FILES = 20
 _MAX_READ_MANY_BYTES = 128 * 1024
 _MAX_SCAN_ENTRIES = 20_000
@@ -61,6 +62,7 @@ _MAX_GREP_LINE_CHARS = 1000
 class _Source(Protocol):
     kind: Literal["workspace", "audit_snapshot"]
     digest: str | None
+    audit_id: str | None
 
     def list_entries(
         self,
@@ -79,6 +81,18 @@ class _SourceContext(AbstractContextManager[_Source], Protocol):
     def __exit__(self, *args: object) -> None: ...
 
 
+class CodeArtifactPublisher(Protocol):
+    async def publish(
+        self,
+        run_id: str,
+        *,
+        audit_id: str | None,
+        path: str,
+        content: bytes,
+        source_digest: str | None,
+    ) -> str: ...
+
+
 class CodeWorkspaceService:
     """Resolve and operate on the exact source tree owned by one Run."""
 
@@ -90,6 +104,7 @@ class CodeWorkspaceService:
         snapshots: SnapshotRepository,
         snapshot_store: SnapshotStore | None,
         max_snapshot_file_bytes: int,
+        artifacts: CodeArtifactPublisher | None = None,
     ) -> None:
         if max_snapshot_file_bytes < 1:
             raise ValueError("max_snapshot_file_bytes must be positive")
@@ -98,6 +113,7 @@ class CodeWorkspaceService:
         self._snapshots = snapshots
         self._snapshot_store = snapshot_store
         self._max_snapshot_file_bytes = max_snapshot_file_bytes
+        self._artifacts = artifacts
 
     async def list_files(
         self,
@@ -142,7 +158,7 @@ class CodeWorkspaceService:
         _bounded(max_bytes, maximum=_MAX_READ_BYTES, label="max_bytes")
         source = await self._resolve(run_id)
 
-        def operation() -> CodeReadResult:
+        def operation() -> tuple[CodeReadResult, bytes, str | None]:
             with source as opened:
                 data, size, digest = opened.read_bytes(
                     path,
@@ -152,20 +168,25 @@ class CodeWorkspaceService:
                     raise _conflict("code_read_invalid", "offset is beyond file size")
                 preview = data[offset : offset + max_bytes]
                 encoding, content = _model_content(preview)
-                return CodeReadResult(
-                    source=opened.kind,
-                    source_digest=opened.digest,
-                    path=path,
-                    size=size,
-                    offset=offset,
-                    next_offset=offset + len(preview),
-                    eof=offset + len(preview) >= size,
-                    encoding=encoding,
-                    content=content,
-                    content_digest=digest,
+                return (
+                    CodeReadResult(
+                        source=opened.kind,
+                        source_digest=opened.digest,
+                        path=path,
+                        size=size,
+                        offset=offset,
+                        next_offset=offset + len(preview),
+                        eof=offset + len(preview) >= size,
+                        encoding=encoding,
+                        content=content,
+                        content_digest=digest,
+                    ),
+                    data,
+                    opened.audit_id,
                 )
 
-        return await asyncio.to_thread(operation)
+        result, data, audit_id = await asyncio.to_thread(operation)
+        return await self._publish_partial(run_id, result, data, audit_id)
 
     async def read_many_files(
         self,
@@ -185,44 +206,47 @@ class CodeWorkspaceService:
             raise _conflict("code_read_invalid", "paths must not contain duplicates")
         _bounded(max_bytes_per_file, maximum=_MAX_READ_BYTES, label="max_bytes_per_file")
         _bounded(max_total_bytes, maximum=_MAX_READ_MANY_BYTES, label="max_total_bytes")
-        source = await self._resolve(run_id)
-
-        def operation() -> CodeReadManyResult:
-            results: list[CodeReadResult] = []
-            total = 0
-            with source as opened:
-                for path in normalized:
-                    remaining = max_total_bytes - total
-                    if remaining <= 0:
-                        break
-                    data, size, digest = opened.read_bytes(
-                        path,
-                        max_bytes=self._max_snapshot_file_bytes,
-                    )
-                    preview = data[: min(max_bytes_per_file, remaining)]
-                    encoding, content = _model_content(preview)
-                    total += len(preview)
-                    results.append(
-                        CodeReadResult(
-                            source=opened.kind,
-                            source_digest=opened.digest,
-                            path=path,
-                            size=size,
-                            offset=0,
-                            next_offset=len(preview),
-                            eof=len(preview) >= size,
-                            encoding=encoding,
-                            content=content,
-                            content_digest=digest,
-                        )
-                    )
-            return CodeReadManyResult(
-                files=results,
-                total_bytes=total,
-                truncated=len(results) < len(normalized),
+        results: list[CodeReadResult] = []
+        total = 0
+        for path in normalized:
+            remaining = max_total_bytes - total
+            if remaining <= 0:
+                break
+            result = await self.read_file(
+                run_id,
+                path=path,
+                max_bytes=min(max_bytes_per_file, remaining),
             )
+            results.append(result)
+            total += result.next_offset
+        return CodeReadManyResult(
+            files=results,
+            total_bytes=total,
+            truncated=len(results) < len(normalized),
+        )
 
-        return await asyncio.to_thread(operation)
+    async def _publish_partial(
+        self,
+        run_id: str,
+        result: CodeReadResult,
+        content: bytes,
+        audit_id: str | None,
+    ) -> CodeReadResult:
+        if (
+            self._artifacts is None
+            or result.offset != 0
+            or result.eof
+            or result.size <= _ARTIFACT_THRESHOLD_BYTES
+        ):
+            return result
+        artifact_id = await self._artifacts.publish(
+            run_id,
+            audit_id=audit_id,
+            path=result.path,
+            content=content,
+            source_digest=result.source_digest,
+        )
+        return result.model_copy(update={"artifact_id": artifact_id})
 
     async def glob(
         self,
@@ -391,6 +415,7 @@ class CodeWorkspaceService:
             )
         return _SnapshotSource(
             store=self._snapshot_store,
+            audit_id=aggregate.audit.value.id,
             project_id=snapshot.project_id,
             snapshot_digest=snapshot.snapshot_digest,
             manifest_digest=snapshot.manifest_digest,
@@ -402,6 +427,7 @@ class CodeWorkspaceService:
 class _FilesystemSource(AbstractContextManager[_Source]):
     kind: Literal["workspace"] = "workspace"
     digest = None
+    audit_id = None
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -578,6 +604,7 @@ class _FilesystemSource(AbstractContextManager[_Source]):
 @dataclass(slots=True)
 class _SnapshotSource(AbstractContextManager[_Source]):
     store: SnapshotStore
+    audit_id: str
     project_id: str
     snapshot_digest: str
     manifest_digest: str
@@ -823,4 +850,4 @@ def _conflict(code: str, message: str) -> ApplicationConflictError:
     return ApplicationConflictError(code, message)
 
 
-__all__ = ["CodeWorkspaceService"]
+__all__ = ["CodeArtifactPublisher", "CodeWorkspaceService"]

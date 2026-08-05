@@ -19,7 +19,14 @@ from riftx.code import (
     GitStatusEntry,
     GitStatusResult,
 )
-from riftx.domain import Artifact, Execution, ExecutorType
+from riftx.domain import (
+    Artifact,
+    ArtifactAccessClass,
+    ArtifactIngestMethod,
+    ArtifactIngestProvenance,
+    Execution,
+    ExecutorType,
+)
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
@@ -81,6 +88,7 @@ class FakeArtifacts:
     def __init__(self, artifacts: list[tuple[Artifact, Path]] = []) -> None:  # noqa: B006
         self.items = {artifact.id: (artifact, path) for artifact, path in artifacts}
         self.read_content_slice_calls: list[str] = []
+        self.read_audit_content_slice_calls: list[str] = []
 
     async def get(self, artifact_id: str) -> Artifact:
         return self.items[artifact_id][0]
@@ -96,6 +104,30 @@ class FakeArtifacts:
         self.read_content_slice_calls.append(artifact_id)
         artifact, path = self.items[artifact_id]
         assert artifact.run_id == expected_run_id
+        content = path.read_bytes()
+        data = content[offset : offset + max_bytes]
+        next_offset = offset + len(data)
+        return ArtifactContentSlice(
+            artifact=artifact,
+            data=data,
+            offset=offset,
+            next_offset=next_offset,
+            eof=next_offset >= len(content),
+        )
+
+    async def read_audit_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        audit_id: str,
+        run_id: str,
+        offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> ArtifactContentSlice:
+        self.read_audit_content_slice_calls.append(artifact_id)
+        artifact, path = self.items[artifact_id]
+        assert artifact.audit_id == audit_id
+        assert artifact.run_id == run_id
         content = path.read_bytes()
         data = content[offset : offset + max_bytes]
         next_offset = offset + len(data)
@@ -367,6 +399,57 @@ async def test_same_run_artifact_is_shareable_but_cross_run_artifact_is_denied(
         )
     assert captured.value.code == "artifact_run_mismatch"
     assert artifact_service.read_content_slice_calls == [same_run.id]
+
+
+async def test_same_run_audit_artifact_uses_owner_bound_content_read(tmp_path: Path) -> None:
+    content = b"audit source continuation"
+    path = tmp_path / "source.bin"
+    path.write_bytes(content)
+    artifact = Artifact(
+        id="artifact-audit-source",
+        run_id="run-1",
+        audit_id="audit-1",
+        access_class=ArtifactAccessClass.AUDIT_INTERNAL,
+        ingest_provenance=ArtifactIngestProvenance(
+            method=ArtifactIngestMethod.CONTROL_PLANE_BYTES,
+            producer_node_id="node-1",
+        ),
+        name=path.name,
+        path=str(path),
+        mime_type="application/octet-stream",
+        sha256=hashlib.sha256(content).hexdigest(),
+        size=len(content),
+    )
+    artifact_service = FakeArtifacts([(artifact, path)])
+    control, _, _, _ = service(artifacts=artifact_service)
+
+    result = await control(
+        SCOPE,
+        "read_artifact",
+        {"artifact_id": artifact.id, "max_bytes": 5},
+        "call-audit-artifact",
+    )
+
+    assert result["content"] == "audit"
+    assert artifact_service.read_audit_content_slice_calls == [artifact.id]
+    assert artifact_service.read_content_slice_calls == []
+
+    restricted = artifact.model_copy(
+        update={
+            "id": "artifact-restricted",
+            "access_class": ArtifactAccessClass.RESTRICTED_SENSITIVE,
+        }
+    )
+    artifact_service.items[restricted.id] = (restricted, path)
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "read_artifact",
+            {"artifact_id": restricted.id},
+            "call-restricted-artifact",
+        )
+    assert captured.value.code == "artifact_access_denied"
+    assert artifact_service.read_audit_content_slice_calls == [artifact.id]
 
 
 async def test_successful_control_result_is_transcripted_and_digest_audited() -> None:

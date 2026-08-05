@@ -18,6 +18,8 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import (
     ArtifactRepository,
+    AuditAggregateReadRepository,
+    AuditAuthorizationBinding,
     ExecutionRepository,
     RunEventRepository,
     RunRepository,
@@ -29,6 +31,7 @@ from riftx.domain import (
     ArtifactContentTrust,
     ArtifactIngestMethod,
     ArtifactIngestProvenance,
+    RunKind,
 )
 from riftx.domain.base import new_id
 from riftx.runner import (
@@ -83,12 +86,14 @@ class ArtifactApplicationService:
         paths: RunnerPaths,
         max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
         content_store: LocalArtifactContentStore | None = None,
+        audit_repository: AuditAggregateReadRepository | None = None,
     ) -> None:
         self._run_repository = run_repository
         self._execution_repository = execution_repository
         self._artifact_repository = artifact_repository
         self._event_repository = event_repository
         self._paths = paths
+        self._audit_repository = audit_repository
         self._content_store = content_store or LocalArtifactContentStore(
             paths,
             max_artifact_bytes=max_artifact_bytes,
@@ -164,6 +169,62 @@ class ArtifactApplicationService:
         if run is None:
             raise EntityNotFoundError("Run", run_id)
         require_general_run_operation(run)
+        return await self._register_owned_content(
+            run_id=run.id,
+            node_id=run.node_id,
+            audit_id=None,
+            access_class=ArtifactAccessClass.PUBLIC_EXPORT,
+            command=command,
+        )
+
+    async def register_audit_content(
+        self,
+        audit_id: str,
+        run_id: str,
+        command: RegisterArtifactContent,
+    ) -> Artifact:
+        run = await self._run_repository.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.kind is not RunKind.CODE_AUDIT or self._audit_repository is None:
+            raise resource_not_accessible()
+
+        def authorize(binding: AuditAuthorizationBinding) -> None:
+            if (
+                binding.requested_audit_id != audit_id
+                or binding.audit_id != audit_id
+                or binding.scan_run_id != run_id
+                or binding.run_id != run_id
+                or binding.run_kind != RunKind.CODE_AUDIT.value
+            ):
+                raise resource_not_accessible()
+
+        try:
+            aggregate = await self._audit_repository.get_by_run_authorized(
+                run_id,
+                authorize=authorize,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _audit_persistence_unavailable() from None
+        if aggregate is None or aggregate.audit.value.id != audit_id:
+            raise resource_not_accessible()
+        return await self._register_owned_content(
+            run_id=run.id,
+            node_id=run.node_id,
+            audit_id=audit_id,
+            access_class=ArtifactAccessClass.AUDIT_INTERNAL,
+            command=command,
+        )
+
+    async def _register_owned_content(
+        self,
+        *,
+        run_id: str,
+        node_id: str,
+        audit_id: str | None,
+        access_class: ArtifactAccessClass,
+        command: RegisterArtifactContent,
+    ) -> Artifact:
         name = _safe_artifact_name(command.name)
         mime_type = _safe_mime_type(command.mime_type)
         artifact_id = new_id()
@@ -182,15 +243,15 @@ class ArtifactApplicationService:
         artifact = Artifact(
             id=artifact_id,
             run_id=run_id,
-            audit_id=None,
-            access_class=ArtifactAccessClass.PUBLIC_EXPORT,
+            audit_id=audit_id,
+            access_class=access_class,
             content_trust=command.content_trust,
             name=name,
             path=str(destination.content),
             storage_key=destination.storage_key,
             ingest_provenance=ArtifactIngestProvenance(
                 method=ArtifactIngestMethod.CONTROL_PLANE_BYTES,
-                producer_node_id=run.node_id,
+                producer_node_id=node_id,
             ),
             mime_type=mime_type,
             sha256=stored.sha256,
@@ -350,6 +411,46 @@ class ArtifactApplicationService:
             artifact_id,
             expected_run_id=expected_run_id,
         )
+        return await self._read_open_content_slice(
+            artifact,
+            lease,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+
+    async def read_audit_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        audit_id: str,
+        run_id: str,
+        offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> ArtifactContentSlice:
+        if offset < 0:
+            raise ValueError("Artifact offset must not be negative")
+        if max_bytes < 1 or max_bytes > self._content_store.max_artifact_bytes:
+            raise ValueError("Artifact read size is outside the configured bounds")
+        artifact, lease = await self.open_audit_content(
+            artifact_id,
+            audit_id=audit_id,
+            run_id=run_id,
+        )
+        return await self._read_open_content_slice(
+            artifact,
+            lease,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+
+    async def _read_open_content_slice(
+        self,
+        artifact: Artifact,
+        lease: OpenedArtifactContent,
+        *,
+        offset: int,
+        max_bytes: int,
+    ) -> ArtifactContentSlice:
         try:
             if offset > artifact.size:
                 raise ValueError("Artifact offset is beyond content size")
@@ -422,19 +523,22 @@ class ArtifactApplicationService:
         )
 
     async def _append_registered_event(self, artifact: Artifact) -> None:
+        payload: dict[str, object] = {
+            "artifact_id": artifact.id,
+            "execution_id": artifact.execution_id,
+            "name": artifact.name,
+            "mime_type": artifact.mime_type,
+            "sha256": artifact.sha256,
+            "size": artifact.size,
+            "access_class": artifact.access_class.value,
+            "content_trust": artifact.content_trust.value,
+        }
+        if artifact.audit_id is not None:
+            payload["audit_id"] = artifact.audit_id
         await self._event_repository.append(
             artifact.run_id,
             "artifact.registered",
-            {
-                "artifact_id": artifact.id,
-                "execution_id": artifact.execution_id,
-                "name": artifact.name,
-                "mime_type": artifact.mime_type,
-                "sha256": artifact.sha256,
-                "size": artifact.size,
-                "access_class": artifact.access_class.value,
-                "content_trust": artifact.content_trust.value,
-            },
+            payload,
         )
 
 
@@ -612,6 +716,13 @@ def _artifact_persistence_unavailable() -> ServiceUnavailableError:
     return ServiceUnavailableError(
         "artifact_persistence_unavailable",
         "Artifact metadata is temporarily unavailable",
+    )
+
+
+def _audit_persistence_unavailable() -> ServiceUnavailableError:
+    return ServiceUnavailableError(
+        "audit_persistence_unavailable",
+        "Audit metadata is temporarily unavailable",
     )
 
 

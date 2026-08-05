@@ -7,6 +7,7 @@ import hashlib
 import threading
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -23,6 +24,7 @@ from riftx.application.errors import (
 from riftx.application.ports import (
     ArtifactOwnerBinding,
     ArtifactRepository,
+    AuditAggregateReadRepository,
     ExecutionRepository,
     RunEventRepository,
     RunRepository,
@@ -63,6 +65,27 @@ class _RunReads:
 class _UnusedExecutions:
     async def get(self, _execution_id: str) -> None:
         return None
+
+
+class _AuditReads:
+    def __init__(self, *, audit_id: str, run_id: str) -> None:
+        self._audit_id = audit_id
+        self._run_id = run_id
+
+    async def get_by_run_authorized(self, run_id: str, *, authorize: object) -> object:
+        assert run_id == self._run_id
+        authorize(  # type: ignore[operator]
+            SimpleNamespace(
+                requested_audit_id=self._audit_id,
+                audit_id=self._audit_id,
+                scan_run_id=self._run_id,
+                run_id=self._run_id,
+                run_kind=RunKind.CODE_AUDIT.value,
+            )
+        )
+        return SimpleNamespace(
+            audit=SimpleNamespace(value=SimpleNamespace(id=self._audit_id))
+        )
 
 
 class _Events:
@@ -381,8 +404,10 @@ def _service(
     *,
     content_store: object | None = None,
     max_artifact_bytes: int = 1024,
+    run: Run | None = None,
+    audits: object | None = None,
 ) -> tuple[ArtifactApplicationService, _Events, RunnerPaths]:
-    run = _run(tmp_path)
+    run = run or _run(tmp_path)
     events = _Events()
     paths = RunnerPaths(tmp_path / "runner")
     service = ArtifactApplicationService(
@@ -393,6 +418,7 @@ def _service(
         paths=paths,
         max_artifact_bytes=max_artifact_bytes,
         content_store=cast(LocalArtifactContentStore, content_store),
+        audit_repository=cast(AuditAggregateReadRepository, audits),
     )
     return service, events, paths
 
@@ -474,6 +500,57 @@ async def test_invalid_mime_is_rejected_before_snapshot_metadata_or_event(
     assert events.appended == []
     assert store.open_calls == []
     assert paths.root.exists() is False
+
+
+async def test_audit_content_registration_and_read_are_exact_owner_bound(
+    tmp_path: Path,
+) -> None:
+    audit_id = "audit-1"
+    run = _run(tmp_path).model_copy(update={"kind": RunKind.CODE_AUDIT})
+    artifacts = _Artifacts()
+    service, events, _ = _service(
+        tmp_path,
+        artifacts,
+        run=run,
+        audits=_AuditReads(audit_id=audit_id, run_id=run.id),
+    )
+    content = b"owner-bound code source"
+
+    artifact = await service.register_audit_content(
+        audit_id,
+        run.id,
+        RegisterArtifactContent(
+            content=content,
+            name="source.bin",
+            mime_type="application/octet-stream",
+            content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
+        ),
+    )
+    result = await service.read_audit_content_slice(
+        artifact.id,
+        audit_id=audit_id,
+        run_id=run.id,
+        max_bytes=5,
+    )
+
+    assert artifact.audit_id == audit_id
+    assert artifact.access_class is ArtifactAccessClass.AUDIT_INTERNAL
+    assert artifact.ingest_provenance.method is ArtifactIngestMethod.CONTROL_PLANE_BYTES
+    assert result.data == content[:5]
+    assert result.eof is False
+    assert events.appended[0][2]["audit_id"] == audit_id
+
+    with pytest.raises(ResourceNotAccessibleError):
+        await service.register_audit_content(
+            "foreign-audit",
+            run.id,
+            RegisterArtifactContent(
+                content=b"must not persist",
+                name="foreign.bin",
+                mime_type="application/octet-stream",
+            ),
+        )
+    assert len(artifacts.created) == 1
 
 
 async def test_oversize_file_registration_has_no_metadata_event_or_blob_residue(

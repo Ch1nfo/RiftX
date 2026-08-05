@@ -37,10 +37,18 @@ class _UnusedSnapshots:
 
 
 class _AuditReads:
-    def __init__(self, *, run_id: str, project_id: str, snapshot_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        project_id: str,
+        snapshot_id: str,
+        audit_id: str = "audit-1",
+    ) -> None:
         self._run_id = run_id
         self._project_id = project_id
         self._snapshot_id = snapshot_id
+        self._audit_id = audit_id
 
     async def get_by_run_authorized(self, run_id: str, *, authorize: object) -> object:
         assert run_id == self._run_id
@@ -52,7 +60,9 @@ class _AuditReads:
             )
         )
         return SimpleNamespace(
-            audit=SimpleNamespace(value=SimpleNamespace(snapshot_id=self._snapshot_id)),
+            audit=SimpleNamespace(
+                value=SimpleNamespace(id=self._audit_id, snapshot_id=self._snapshot_id)
+            ),
             project=SimpleNamespace(value=SimpleNamespace(id=self._project_id)),
         )
 
@@ -65,6 +75,15 @@ class _Snapshots:
         assert project_id == self._snapshot.project_id  # type: ignore[attr-defined]
         assert snapshot_id == self._snapshot.id  # type: ignore[attr-defined]
         return self._snapshot
+
+
+class _ArtifactPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def publish(self, run_id: str, **kwargs: object) -> str:
+        self.calls.append({"run_id": run_id, **kwargs})
+        return f"artifact-{len(self.calls)}"
 
 
 def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
@@ -141,6 +160,52 @@ async def test_workspace_reads_are_run_scoped_and_bounded(tmp_path: Path) -> Non
     assert captured.value.code == "code_file_too_large"
 
 
+async def test_partial_workspace_read_publishes_full_owner_bound_artifact(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    content = b"0123456789" + b"x" * (64 * 1024)
+    (root / "large.txt").write_bytes(content)
+    artifacts = _ArtifactPublisher()
+    service = CodeWorkspaceService(
+        runs=_Runs(_run("run-1", root)),  # type: ignore[arg-type]
+        audits=_UnusedAudits(),  # type: ignore[arg-type]
+        snapshots=_UnusedSnapshots(),  # type: ignore[arg-type]
+        snapshot_store=None,
+        max_snapshot_file_bytes=128 * 1024,
+        artifacts=artifacts,
+    )
+
+    result = await service.read_file("run-1", path="large.txt", max_bytes=4)
+    many = await service.read_many_files(
+        "run-1",
+        paths=["large.txt"],
+        max_bytes_per_file=3,
+    )
+
+    assert result.content == "0123"
+    assert result.artifact_id == "artifact-1"
+    assert many.files[0].content == "012"
+    assert many.files[0].artifact_id == "artifact-2"
+    assert artifacts.calls == [
+        {
+            "run_id": "run-1",
+            "audit_id": None,
+            "path": "large.txt",
+            "content": content,
+            "source_digest": None,
+        },
+        {
+            "run_id": "run-1",
+            "audit_id": None,
+            "path": "large.txt",
+            "content": content,
+            "source_digest": None,
+        },
+    ]
+
+
 @pytest.mark.parametrize("path", ["../secret", "/etc/passwd", "src/../secret", "src//x"])
 async def test_workspace_rejects_non_normalized_or_absolute_paths(
     tmp_path: Path,
@@ -180,7 +245,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     snapshot_id = "snapshot-1"
     snapshot_digest = "1" * 64
     manifest_digest = "2" * 64
-    content = b"snapshot needle\n"
+    content = b"snapshot needle\n" + b"x" * (64 * 1024)
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "audit.py").write_bytes(content)
@@ -199,8 +264,8 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     )
     store = LocalSnapshotStore(
         (tmp_path / "snapshots").resolve(),
-        max_blob_bytes=1024,
-        max_tree_bytes=4096,
+        max_blob_bytes=128 * 1024,
+        max_tree_bytes=256 * 1024,
     )
     published = store.put_staged_tree(
         SnapshotStagedTree(root=staged.resolve(), descriptor=descriptor)
@@ -216,6 +281,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         manifest_digest=manifest_digest,
         content_storage_key=published.content_storage_key,
     )
+    artifacts = _ArtifactPublisher()
     service = CodeWorkspaceService(
         runs=_Runs(run),  # type: ignore[arg-type]
         audits=_AuditReads(
@@ -225,16 +291,20 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         ),  # type: ignore[arg-type]
         snapshots=_Snapshots(snapshot),  # type: ignore[arg-type]
         snapshot_store=store,
-        max_snapshot_file_bytes=1024,
+        max_snapshot_file_bytes=128 * 1024,
+        artifacts=artifacts,
     )
 
-    read = await service.read_file(run.id, path="audit.py")
+    read = await service.read_file(run.id, path="audit.py", max_bytes=8)
     grepped = await service.grep(run.id, query="needle")
 
     assert read.source == "audit_snapshot"
     assert read.source_digest == snapshot_digest
-    assert read.content == content.decode()
+    assert read.content == content[:8].decode()
     assert read.content_digest == hashlib.sha256(content).hexdigest()
+    assert read.artifact_id == "artifact-1"
+    assert artifacts.calls[0]["audit_id"] == "audit-1"
+    assert artifacts.calls[0]["content"] == content
     assert grepped.matches[0].path == "audit.py"
 
 

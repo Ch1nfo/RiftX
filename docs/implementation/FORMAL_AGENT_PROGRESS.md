@@ -258,7 +258,6 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `git_status` 返回有界 Index/Worktree 状态，`git_diff` 支持工作区或暂存区 Preview，`git_log` 返回有界提交摘要并处理 unborn repository；
   - 每次命令前后验证 Workspace FD/path binding 和 Git 管理区元数据 Digest，命令不得刷新 Index 或改变管理区；
   - Code Audit Snapshot 不含可信 Git 管理区，本切片明确拒绝 Git 工具调用，不回退到可变 Audit 输出 Workspace。
-- Artifact boundary：现有 `ArtifactApplicationService.register*()` 仅允许 General Run；本切片不通过放宽 RunKind 防线伪造 Code Audit Artifact。大文件 Artifact 发布将在 CAP-101 后续切片建立 Audit owner-bound 注册接口后接入。
 - Checks：
   - `conda run --no-capture-output -n agent python -m pytest -q tests/code/test_workspace.py`：`9 passed`；
   - Agent/Runtime/Context/Subagent 关联回归：`337 passed`；
@@ -271,7 +270,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4963 passed, 5 skipped, 11 warnings`；
   - 全仓 Ruff、文档测试和 `git diff --check`：passed。
 - Second delivery implementation commit：`80276a08`。
-- Later slices：大文件 Artifact、符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
+- Third delivery slice：
+  - `read_file` 与 `read_many_files` 对超过 64 KiB 的文件返回 bounded Preview，并附带完整文件 `artifact_id`；小文件的主动分段读取不产生 Artifact；
+  - General Run Artifact 继续使用既有 General-only 注册边界；Code Audit 新增独立的 `register_audit_content()`，不放宽原有 `register*()` 防线；
+  - Code Audit Artifact 在读取 `Run → AuditScan` 原始 owner binding 后，以 `audit_id + run_id` 精确绑定并存为 `AUDIT_INTERNAL`；
+  - Artifact 内容使用 Snapshot/Workspace 已验证的完整字节，标记为 `UNTRUSTED_SOURCE`，生产 Worker 已接入 Artifact Publisher；
+  - `read_artifact` 支持同一 Audit Run 内继续分段读取 `AUDIT_INTERNAL`，并拒绝 `RESTRICTED_SENSITIVE`；
+  - 新 Audit Artifact 写入入口已纳入 RunKind Effect Policy，限定为 Code Audit durable write。
+- Third delivery checks：
+  - Artifact/Code Workspace/Runtime control tool 单元回归：`68 passed`；
+  - RunKind Effect Policy：`37 passed`；
+  - Artifact API/Persistence/Application 集成回归：`24 passed`；
+  - Agent/Temporal Worker 集成回归：`46 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4967 passed, 5 skipped, 11 warnings`；
+  - 全仓 Ruff、文档测试和 `git diff --check`：passed。
+- Third delivery implementation commit：pending。
+- Later slices：符号/引用/调用层级/LSP，以及显式批准的 Patch/Worktree/Revert。
 
 ## 9. Known pre-existing worktree state
 

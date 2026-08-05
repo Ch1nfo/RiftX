@@ -40,6 +40,7 @@ from .audits import (
     CreateAuditDraft,
     CreateAuditDraftV2,
 )
+from .code_artifacts import ArtifactCodePublisher
 from .events import EventApplicationService
 from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
@@ -93,6 +94,7 @@ __all__ = [
     "ApprovalRequestRecorder",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
+    "ArtifactCodePublisher",
     "ArtifactContentSlice",
     "AuditApplicationService",
     "AuditPreflightApplicationService",

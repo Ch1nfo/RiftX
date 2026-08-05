@@ -20,6 +20,7 @@ from riftx.application.errors import RepositoryConflictError
 from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
+    ArtifactCodePublisher,
     AuditApplicationService,
     AuditControlApplicationService,
     AuditRunStateProjector,
@@ -853,6 +854,7 @@ async def build_temporal_worker(
             event_repository=event_repository,
             paths=paths,
             max_artifact_bytes=config.audit.max_artifact_bytes,
+            audit_repository=audit_aggregate_repository,
         )
         browser_manager = RunnerBrowserManager(
             node_id=config.runner.node_id,
@@ -982,6 +984,7 @@ async def build_temporal_worker(
                 else None
             ),
             max_snapshot_file_bytes=config.audit.max_file_bytes,
+            artifacts=ArtifactCodePublisher(artifact_service),
         )
         git_workspace = GitWorkspaceService(run_repository)
         model_registry = ModelProfileRegistry(

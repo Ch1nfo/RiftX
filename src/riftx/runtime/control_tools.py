@@ -14,6 +14,7 @@ from riftx.application.services import ArtifactApplicationService
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
 from riftx.domain import (
     AgentMessage,
+    ArtifactAccessClass,
     Execution,
     MessageRole,
     MessageType,
@@ -489,11 +490,29 @@ class RuntimeControlToolService:
                     "artifact_run_mismatch",
                     "Artifact is not available to this Run",
                 )
-            artifact_slice = await self._artifacts.read_content_slice(
-                artifact_arguments.artifact_id,
-                expected_run_id=scope.run_id,
-                offset=artifact_arguments.offset,
-                max_bytes=artifact_arguments.max_bytes,
+            if (
+                artifact.audit_id is not None
+                and artifact.access_class is not ArtifactAccessClass.AUDIT_INTERNAL
+            ):
+                raise ApplicationConflictError(
+                    "artifact_access_denied",
+                    "Artifact is not available to the Agent Runtime",
+                )
+            artifact_slice = (
+                await self._artifacts.read_audit_content_slice(
+                    artifact_arguments.artifact_id,
+                    audit_id=artifact.audit_id,
+                    run_id=scope.run_id,
+                    offset=artifact_arguments.offset,
+                    max_bytes=artifact_arguments.max_bytes,
+                )
+                if artifact.audit_id is not None
+                else await self._artifacts.read_content_slice(
+                    artifact_arguments.artifact_id,
+                    expected_run_id=scope.run_id,
+                    offset=artifact_arguments.offset,
+                    max_bytes=artifact_arguments.max_bytes,
+                )
             )
             artifact = artifact_slice.artifact
             encoding, content = _artifact_content(

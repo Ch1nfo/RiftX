@@ -14,9 +14,10 @@ from .models import (
     GitStatusEntry,
     GitStatusResult,
 )
-from .workspace import CodeWorkspaceService
+from .workspace import CodeArtifactPublisher, CodeWorkspaceService
 
 __all__ = [
+    "CodeArtifactPublisher",
     "CodeEntry",
     "CodeGrepMatch",
     "CodeGrepResult",

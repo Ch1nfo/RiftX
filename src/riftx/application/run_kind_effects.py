@@ -2114,6 +2114,16 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _dedicated(RunEffectOperation.AUDIT_ARTIFACT_INGEST),
     ),
     _rule(
+        RunEffectOperation.AUDIT_ARTIFACT_INGEST,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.ARTIFACT,
+        _AUDIT_ONLY,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.AUDIT_ID,
+        EffectMode.NORMAL,
+        _SAME,
+    ),
+    _rule(
         RunEffectOperation.SERVICE_FINDING_CREATE,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.FINDING,
@@ -3032,6 +3042,12 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(
+        "riftx.application.services.artifacts:"
+        "ArtifactApplicationService.register_audit_content",
+        RunEffectOperation.AUDIT_ARTIFACT_INGEST,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
         "riftx.application.services.findings:FindingApplicationService.create_finding",
         RunEffectOperation.SERVICE_FINDING_CREATE,
         EffectOrigin.APPLICATION_SERVICE,
@@ -3443,6 +3459,7 @@ MANAGED_EFFECT_TYPES: tuple[ManagedEffectType, ...] = (
             "list_for_audit",
             "open_audit_content",
             "open_public_content",
+            "read_audit_content_slice",
             "read_content_slice",
             "resolve_owner",
             "resolve_run_id",
