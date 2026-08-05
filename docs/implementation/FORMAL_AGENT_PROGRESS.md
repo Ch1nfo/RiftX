@@ -113,7 +113,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
@@ -354,7 +354,23 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`4999 passed, 5 skipped, 11 warnings`；跳过项为 Windows、PowerShell 或 delegated cgroup 主机条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff 和 `git diff --check`：passed。
 - Eighth delivery implementation commit：`08d746ec`。
-- Later slices：实际 `apply_patch`/Revert、隔离 Worktree，以及受控 LSP。
+- Ninth delivery slice：
+  - 已将 `apply_patch` 和 `revert_patch` 接入生产 Runtime control tool、Tool Policy 与 Primary Agent；两者均要求逐次 `approval_policy=explicit`，不向 Subagent 暴露；
+  - 写工具只允许 General Run，Code Audit Run 保持只读；不使用通用 Shell，不执行项目 Hook、构建、测试或安装脚本；
+  - `apply_patch` 使用严格的单文件 `*** Begin Patch` 格式，支持 Add、Update 和 Delete；Update/Delete 必须绑定读取所得 SHA-256，Add 必须确认目标不存在；
+  - Patch 只接受有界 UTF-8 文本，保留 LF/CRLF 与原 permission mode，拒绝二进制、混合换行、Symlink、特殊文件、超限文件、歧义 Context 和无变化 Patch；
+  - 写入前先发布 owner-bound immutable Receipt，保存原内容、原/结果 Digest、原 mode 和原 Patch；Receipt 加载会验证 Run owner、MIME、Artifact 完整性并重新执行 Patch 推导结果，拒绝结构合法但语义伪造的恢复材料；
+  - 单文件提交使用同目录临时文件、`fsync`、Digest CAS 与原子 link/replace；删除和撤销要求当前状态精确匹配预期 Digest，外部漂移失败关闭；
+  - `revert_patch` 可在 Worker/服务实例重启后通过持久 Receipt 恢复 Add、Update 或 Delete，跨 Run Receipt、错误 MIME、错误 Digest 和内容漂移均失败关闭；
+  - Patch/Revert 结果、代码路径与 Receipt Artifact 会进入 Transcript source refs；Receipt Artifact 持久化失败时不会写入目标文件。
+- Ninth delivery checks：
+  - Code、Artifact、Runtime、Agent Factory、Deferred Approval/Recovery、Tool Visibility 与 Tool Policy 关联回归：`141 passed`；
+  - Patch、真实 Artifact 持久化/跨实例恢复、Context Gate 与最终安全回归：`25 passed`；
+  - 全量回归除一个既有 POSIX 进程替换 2 秒时序项外：`5007 passed, 5 skipped, 1 deselected, 12 warnings`；该时序项在相同代码状态下独立连续运行 `3 passed`；
+  - 跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件；警告为既有 Python 3.12 SQLite datetime adapter 和并发首启 Pydantic alias 提示；
+  - 全仓 Ruff 和 `git diff --check`：passed。
+- Ninth delivery implementation commit：`203f6c1e`。
+- Later slices：隔离 Worktree，以及受控 LSP。
 
 ## 9. Known pre-existing worktree state
 
