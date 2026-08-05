@@ -64,6 +64,17 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
     assert ("run_shell" in compiled_names) is shell_visible
     assert ("run_shell" in model_tool_names) is shell_visible
     assert model_tool_names == compiled_names
+    reference_schema = next(
+        schema for schema in compiled.available_tools if schema.get("name") == "find_references"
+    )
+    assert reference_schema["parameters"]["required"] == ["symbol"]
+    assert set(reference_schema["parameters"]["properties"]) == {
+        "symbol",
+        "path",
+        "file_glob",
+        "include_declarations",
+        "max_results",
+    }
     assert {
         "search_tools",
         "list_tools",
@@ -74,6 +85,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "grep",
         "glob",
         "symbol_search",
+        "find_references",
         "git_status",
         "git_diff",
         "git_log",

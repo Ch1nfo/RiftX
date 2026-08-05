@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
@@ -167,10 +169,61 @@ _PATTERNS["shell"] = (
 
 _NON_SYMBOL_NAMES = frozenset({"if", "for", "while", "switch", "catch", "return", "sizeof"})
 _NON_DECLARATION_PREFIXES = ("return ", "throw ", "yield ", "await ")
+_SLASH_COMMENT_LANGUAGES = frozenset(
+    {
+        "c",
+        "cpp",
+        "csharp",
+        "go",
+        "java",
+        "javascript",
+        "kotlin",
+        "php",
+        "rust",
+        "swift",
+        "typescript",
+    }
+)
+_HASH_COMMENT_LANGUAGES = frozenset({"php", "ruby", "shell"})
+_BACKTICK_STRING_LANGUAGES = frozenset(
+    {"go", "javascript", "php", "ruby", "shell", "typescript"}
+)
 
 
 def language_for_path(path: str) -> str | None:
     return _LANGUAGE_BY_SUFFIX.get(PurePosixPath(path).suffix.lower())
+
+
+def is_identifier(value: str) -> bool:
+    return bool(value) and (
+        value.isidentifier() or re.fullmatch(_IDENTIFIER, value) is not None
+    )
+
+
+def find_identifier_occurrences(
+    path: str,
+    text: str,
+    *,
+    identifier: str,
+    max_occurrences: int,
+) -> tuple[list[tuple[int, int]], bool, bool]:
+    """Return exact identifier positions, truncation, and lexical-error state."""
+
+    language = language_for_path(path)
+    if language is None:
+        return [], False, False
+    if language == "python":
+        return _python_identifier_occurrences(
+            text,
+            identifier=identifier,
+            max_occurrences=max_occurrences,
+        )
+    return _lexical_identifier_occurrences(
+        text,
+        language=language,
+        identifier=identifier,
+        max_occurrences=max_occurrences,
+    )
 
 
 def extract_symbols(
@@ -237,6 +290,118 @@ def _python_symbols(
     return visitor.symbols, visitor.truncated, False
 
 
+def _python_identifier_occurrences(
+    text: str,
+    *,
+    identifier: str,
+    max_occurrences: int,
+) -> tuple[list[tuple[int, int]], bool, bool]:
+    positions: list[tuple[int, int]] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token in tokens:
+            if token.type != tokenize.NAME or token.string != identifier:
+                continue
+            positions.append(token.start)
+            if len(positions) >= max_occurrences:
+                return positions, True, False
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        return positions, False, True
+    return positions, False, False
+
+
+def _lexical_identifier_occurrences(
+    text: str,
+    *,
+    language: str,
+    identifier: str,
+    max_occurrences: int,
+) -> tuple[list[tuple[int, int]], bool, bool]:
+    positions: list[tuple[int, int]] = []
+    index = 0
+    line = 1
+    column = 0
+    length = len(text)
+
+    def advance() -> str:
+        nonlocal index, line, column
+        character = text[index]
+        index += 1
+        if character == "\n":
+            line += 1
+            column = 0
+        else:
+            column += 1
+        return character
+
+    while index < length:
+        if language in _SLASH_COMMENT_LANGUAGES and text.startswith("//", index):
+            while index < length and advance() != "\n":
+                pass
+            continue
+        if language in _SLASH_COMMENT_LANGUAGES and text.startswith("/*", index):
+            advance()
+            advance()
+            while index < length and not text.startswith("*/", index):
+                advance()
+            if index >= length:
+                return positions, False, True
+            advance()
+            advance()
+            continue
+        if language in _HASH_COMMENT_LANGUAGES and text[index] == "#":
+            while index < length and advance() != "\n":
+                pass
+            continue
+
+        character = text[index]
+        rust_lifetime = (
+            language == "rust"
+            and character == "'"
+            and index + 1 < length
+            and (text[index + 1].isalpha() or text[index + 1] == "_")
+            and (index + 2 >= length or text[index + 2] != "'")
+        )
+        if character in {"'", '"'} or (
+            character == "`" and language in _BACKTICK_STRING_LANGUAGES
+        ):
+            if rust_lifetime:
+                advance()
+                continue
+            quote = advance()
+            closed = False
+            while index < length:
+                current = advance()
+                if (
+                    current == "\\"
+                    and index < length
+                    and not (quote == "`" and language == "go")
+                ):
+                    advance()
+                elif current == quote:
+                    closed = True
+                    break
+            if not closed:
+                return positions, False, True
+            continue
+
+        if character.isalpha() or character in {"_", "$"}:
+            start_line, start_column = line, column
+            start = index
+            advance()
+            while index < length and (
+                text[index].isalnum() or text[index] in {"_", "$"}
+            ):
+                advance()
+            if text[start:index] == identifier:
+                positions.append((start_line, start_column))
+                if len(positions) >= max_occurrences:
+                    return positions, True, False
+            continue
+        advance()
+    return positions, False, False
+
+
 class _PythonSymbolVisitor(ast.NodeVisitor):
     def __init__(self, *, path: str, text: str, max_symbols: int) -> None:
         self._path = path
@@ -275,6 +440,10 @@ class _PythonSymbolVisitor(ast.NodeVisitor):
             return False
         line_number = int(getattr(node, "lineno", 1))
         column = int(getattr(node, "col_offset", 0))
+        if 0 < line_number <= len(self._lines):
+            located = self._lines[line_number - 1].find(name, column)
+            if located >= 0:
+                column = located
         qualified = ".".join([*(container[0] for container in self._containers), name])
         signature = (
             self._lines[line_number - 1].strip()[:_MAX_SIGNATURE_CHARS]
@@ -300,4 +469,9 @@ def _bounded_text(value: str, maximum: int) -> str:
     return value if len(value) <= maximum else f"{value[: maximum - 3]}..."
 
 
-__all__ = ["extract_symbols", "language_for_path"]
+__all__ = [
+    "extract_symbols",
+    "find_identifier_occurrences",
+    "is_identifier",
+    "language_for_path",
+]

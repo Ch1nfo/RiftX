@@ -115,6 +115,36 @@ class CodeSymbolSearchResult(BaseModel):
     truncated: bool = False
 
 
+class CodeReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["definition", "reference"]
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeReferenceSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: Literal["builtin_static"] = "builtin_static"
+    symbol: str = Field(min_length=1, max_length=512)
+    resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+    definitions_found: int = Field(ge=0)
+    references: list[CodeReference]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
 class GitStatusEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,6 +197,8 @@ __all__ = [
     "CodeListResult",
     "CodeReadManyResult",
     "CodeReadResult",
+    "CodeReference",
+    "CodeReferenceSearchResult",
     "CodeSymbol",
     "CodeSymbolSearchResult",
     "GitCommitSummary",

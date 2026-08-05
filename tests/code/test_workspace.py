@@ -173,6 +173,68 @@ async def test_workspace_symbol_search_is_bounded_and_reports_fallback_quality(
     assert captured.value.code == "code_symbol_query_invalid"
 
 
+async def test_workspace_find_references_skips_non_code_and_reports_ambiguity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "api.ts").write_text(
+        'function call() { return handle(); }\nconst label = "handle"; // handle\n'
+    )
+    (root / "app.py").write_text('def handle():\n    return handle()\n# handle\nlabel = "handle"\n')
+    (root / "other.py").write_text("def handle():\n    return True\n")
+    service = _general_service(_run("run-1", root))
+
+    result = await service.find_references("run-1", symbol="handle")
+    references_only = await service.find_references(
+        "run-1",
+        symbol="handle",
+        include_declarations=False,
+    )
+    bounded = await service.find_references("run-1", symbol="handle", max_results=1)
+
+    assert result.backend == "builtin_static"
+    assert result.resolution == "ambiguous"
+    assert result.definitions_found == 2
+    assert [
+        (item.path, item.line_number, item.column, item.kind) for item in result.references
+    ] == [
+        ("api.ts", 1, 25, "reference"),
+        ("app.py", 1, 4, "definition"),
+        ("app.py", 2, 11, "reference"),
+        ("other.py", 1, 4, "definition"),
+    ]
+    assert {item.kind for item in references_only.references} == {"reference"}
+    assert references_only.definitions_found == 2
+    assert len(bounded.references) == 1
+    assert bounded.definitions_found == 2
+    assert bounded.resolution == "ambiguous"
+    assert bounded.truncated is True
+    assert result.files_scanned == 3
+    assert result.parse_errors == 0
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.find_references("run-1", symbol="Handler.handle")
+    assert captured.value.code == "code_reference_symbol_invalid"
+
+
+async def test_workspace_find_references_marks_incomplete_parse_indeterminate(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "broken.py").write_text("def broken(:\n")
+    (root / "valid.py").write_text("def handle():\n    return True\n")
+    service = _general_service(_run("run-1", root))
+
+    result = await service.find_references("run-1", symbol="handle")
+
+    assert result.definitions_found == 1
+    assert result.parse_errors == 1
+    assert result.resolution == "indeterminate"
+    assert result.truncated is True
+
+
 async def test_workspace_reads_are_run_scoped_and_bounded(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -341,6 +403,11 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     read = await service.read_file(run.id, path="audit.py", max_bytes=8)
     grepped = await service.grep(run.id, query="needle")
     symbols = await service.symbol_search(run.id, query="SnapshotHandler")
+    references = await service.find_references(
+        run.id,
+        symbol="SnapshotHandler",
+        file_glob="symbols.py",
+    )
 
     assert read.source == "audit_snapshot"
     assert read.source_digest == snapshot_digest
@@ -353,6 +420,10 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert symbols.source == "audit_snapshot"
     assert symbols.source_digest == snapshot_digest
     assert [item.name for item in symbols.symbols] == ["SnapshotHandler"]
+    assert references.source == "audit_snapshot"
+    assert references.source_digest == snapshot_digest
+    assert references.resolution == "unique"
+    assert references.references[0].path == "symbols.py"
 
 
 async def test_binary_preview_is_bounded_base64(tmp_path: Path) -> None:

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from riftx.code.symbols import extract_symbols, language_for_path
+from riftx.code.symbols import (
+    extract_symbols,
+    find_identifier_occurrences,
+    language_for_path,
+)
 
 
 @pytest.mark.parametrize(
@@ -101,3 +105,54 @@ def test_python_parse_error_and_unsupported_extension_are_explicit() -> None:
     assert parse_error is False
     assert len(symbols[0].name) == 512
     assert symbols[0].name.endswith("...")
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "expected"),
+    [
+        ("app.py", 'handle()\ntext = "handle"\n# handle\n', [(1, 0)]),
+        (
+            "api.ts",
+            'handle(); // handle\nconst text = "handle";\nconst raw = `handle`;\n',
+            [(1, 0)],
+        ),
+        ("main.go", "handle()\nvar raw = `handle`\n", [(1, 0)]),
+        (
+            "lib.rs",
+            'fn f<\'a>(value: &\'a str) { handle(); let c = \'h\'; let s = "handle"; }\n',
+            [(1, 27)],
+        ),
+    ],
+)
+def test_identifier_scanner_skips_comments_and_string_literals(
+    path: str,
+    source: str,
+    expected: list[tuple[int, int]],
+) -> None:
+    positions, truncated, parse_error = find_identifier_occurrences(
+        path,
+        source,
+        identifier="handle",
+        max_occurrences=10,
+    )
+
+    assert positions == expected
+    assert truncated is False
+    assert parse_error is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    ['const value = "unterminated\nhandle();\n', "/* unterminated\nhandle();\n"],
+)
+def test_identifier_scanner_reports_incomplete_lexical_regions(source: str) -> None:
+    positions, truncated, parse_error = find_identifier_occurrences(
+        "api.ts",
+        source,
+        identifier="handle",
+        max_occurrences=10,
+    )
+
+    assert positions == []
+    assert truncated is False
+    assert parse_error is True

@@ -9,7 +9,7 @@ import fnmatch
 import os
 import stat
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -44,10 +44,17 @@ from .models import (
     CodeListResult,
     CodeReadManyResult,
     CodeReadResult,
+    CodeReference,
+    CodeReferenceSearchResult,
     CodeSymbol,
     CodeSymbolSearchResult,
 )
-from .symbols import extract_symbols, language_for_path
+from .symbols import (
+    extract_symbols,
+    find_identifier_occurrences,
+    is_identifier,
+    language_for_path,
+)
 
 _MAX_PATH_BYTES = 4096
 _MAX_LIST_ENTRIES = 1000
@@ -98,6 +105,52 @@ class CodeArtifactPublisher(Protocol):
         content: bytes,
         source_digest: str | None,
     ) -> str: ...
+
+
+@dataclass(slots=True)
+class _SemanticScan:
+    source: _Source
+    path: str
+    pattern: str | None
+    files_scanned: int = 0
+    bytes_scanned: int = 0
+    skipped_binary_files: int = 0
+    skipped_large_files: int = 0
+    skipped_unsupported_files: int = 0
+    truncated: bool = False
+
+    def files(self) -> Iterator[tuple[str, str]]:
+        entries, scan_truncated = self.source.list_entries(
+            self.path,
+            recursive=True,
+            max_entries=_MAX_SCAN_ENTRIES,
+        )
+        self.truncated = scan_truncated
+        for entry in entries:
+            if entry.type != "file":
+                continue
+            relative = _relative_to(entry.path, self.path)
+            if self.pattern is not None and not fnmatch.fnmatchcase(relative, self.pattern):
+                continue
+            if language_for_path(entry.path) is None:
+                self.skipped_unsupported_files += 1
+                continue
+            if entry.size > _MAX_SYMBOL_FILE_BYTES:
+                self.skipped_large_files += 1
+                continue
+            if self.bytes_scanned + entry.size > _MAX_SYMBOL_TOTAL_BYTES:
+                self.truncated = True
+                break
+            data, _, _ = self.source.read_bytes(
+                entry.path,
+                max_bytes=_MAX_SYMBOL_FILE_BYTES,
+            )
+            if _looks_binary(data):
+                self.skipped_binary_files += 1
+                continue
+            self.files_scanned += 1
+            self.bytes_scanned += len(data)
+            yield entry.path, data.decode("utf-8", errors="replace")
 
 
 class CodeWorkspaceService:
@@ -314,49 +367,20 @@ class CodeWorkspaceService:
 
         def operation() -> CodeSymbolSearchResult:
             matches: list[CodeSymbol] = []
-            files_scanned = bytes_scanned = 0
-            skipped_binary = skipped_large = skipped_unsupported = parse_errors = 0
+            parse_errors = 0
             symbols_scanned = 0
             truncated = False
             needle = query if case_sensitive else query.casefold()
             with source as opened:
-                entries, scan_truncated = opened.list_entries(
-                    path,
-                    recursive=True,
-                    max_entries=_MAX_SCAN_ENTRIES,
-                )
-                truncated = scan_truncated
-                for entry in entries:
-                    if entry.type != "file":
-                        continue
-                    relative = _relative_to(entry.path, path)
-                    if pattern is not None and not fnmatch.fnmatchcase(relative, pattern):
-                        continue
-                    if language_for_path(entry.path) is None:
-                        skipped_unsupported += 1
-                        continue
-                    if entry.size > _MAX_SYMBOL_FILE_BYTES:
-                        skipped_large += 1
-                        continue
-                    if bytes_scanned + entry.size > _MAX_SYMBOL_TOTAL_BYTES:
-                        truncated = True
-                        break
-                    data, _, _ = opened.read_bytes(
-                        entry.path,
-                        max_bytes=_MAX_SYMBOL_FILE_BYTES,
-                    )
-                    if _looks_binary(data):
-                        skipped_binary += 1
-                        continue
-                    files_scanned += 1
-                    bytes_scanned += len(data)
+                scan = _SemanticScan(opened, path, pattern)
+                for source_path, text in scan.files():
                     remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
                     if remaining_symbols <= 0:
                         truncated = True
                         break
                     symbols, file_truncated, parse_failed = extract_symbols(
-                        entry.path,
-                        data.decode("utf-8", errors="replace"),
+                        source_path,
+                        text,
                         max_symbols=remaining_symbols,
                     )
                     parse_errors += int(parse_failed)
@@ -382,13 +406,136 @@ class CodeWorkspaceService:
                     source_digest=opened.digest,
                     query=query,
                     symbols=matches,
-                    files_scanned=files_scanned,
-                    bytes_scanned=bytes_scanned,
-                    skipped_binary_files=skipped_binary,
-                    skipped_large_files=skipped_large,
-                    skipped_unsupported_files=skipped_unsupported,
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
                     parse_errors=parse_errors,
-                    truncated=truncated,
+                    truncated=truncated or scan.truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def find_references(
+        self,
+        run_id: str,
+        *,
+        symbol: str,
+        path: str = "",
+        file_glob: str | None = None,
+        include_declarations: bool = True,
+        max_results: int = 100,
+    ) -> CodeReferenceSearchResult:
+        if (
+            not is_identifier(symbol)
+            or len(symbol.encode("utf-8")) > 512
+            or any(character in symbol for character in "\x00\r\n")
+        ):
+            raise _conflict(
+                "code_reference_symbol_invalid",
+                "symbol must be one bounded identifier",
+            )
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeReferenceSearchResult:
+            references: list[CodeReference] = []
+            definitions_found = 0
+            symbols_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            with source as opened:
+                scan = _SemanticScan(opened, path, pattern)
+                for source_path, text in scan.files():
+                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                    definitions: set[tuple[int, int]] = set()
+                    symbol_parse_failed = False
+                    if remaining_symbols <= 0:
+                        coverage_truncated = True
+                    else:
+                        extracted, file_truncated, symbol_parse_failed = extract_symbols(
+                            source_path,
+                            text,
+                            max_symbols=remaining_symbols,
+                        )
+                        symbols_scanned += len(extracted)
+                        coverage_truncated |= file_truncated
+                        definitions = {
+                            (item.line_number, item.column)
+                            for item in extracted
+                            if item.name == symbol
+                        }
+                        definitions_found += len(definitions)
+
+                    occurrence_limit = max_results + 1
+                    if not include_declarations:
+                        occurrence_limit += len(definitions)
+                    occurrences, occurrence_truncated, lexical_parse_failed = (
+                        find_identifier_occurrences(
+                            source_path,
+                            text,
+                            identifier=symbol,
+                            max_occurrences=occurrence_limit,
+                        )
+                    )
+                    parse_errors += int(symbol_parse_failed or lexical_parse_failed)
+                    coverage_truncated |= symbol_parse_failed or lexical_parse_failed
+                    output_truncated |= occurrence_truncated
+                    lines = text.splitlines()
+                    language = language_for_path(source_path)
+                    assert language is not None
+                    for line_number, column in occurrences:
+                        kind: Literal["definition", "reference"] = (
+                            "definition" if (line_number, column) in definitions else "reference"
+                        )
+                        if kind == "definition" and not include_declarations:
+                            continue
+                        if len(references) >= max_results:
+                            output_truncated = True
+                            continue
+                        excerpt = (
+                            lines[line_number - 1][:_MAX_GREP_LINE_CHARS]
+                            if 0 < line_number <= len(lines)
+                            else ""
+                        )
+                        references.append(
+                            CodeReference(
+                                kind=kind,
+                                language=language,
+                                path=source_path,
+                                line_number=line_number,
+                                column=column,
+                                excerpt=excerpt,
+                            )
+                        )
+
+                coverage_truncated |= scan.truncated
+                if definitions_found > 1:
+                    resolution = "ambiguous"
+                elif coverage_truncated:
+                    resolution = "indeterminate"
+                elif definitions_found == 1:
+                    resolution = "unique"
+                else:
+                    resolution = "unresolved"
+                return CodeReferenceSearchResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    symbol=symbol,
+                    resolution=resolution,
+                    definitions_found=definitions_found,
+                    references=references,
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
+                    parse_errors=parse_errors,
+                    truncated=coverage_truncated or output_truncated,
                 )
 
         return await asyncio.to_thread(operation)

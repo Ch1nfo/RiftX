@@ -150,6 +150,14 @@ class _SymbolSearchArguments(_Arguments):
     max_results: int = Field(default=100, ge=1, le=200)
 
 
+class _FindReferencesArguments(_Arguments):
+    symbol: str = Field(min_length=1, max_length=512)
+    path: str = Field(default="", max_length=4096)
+    file_glob: str | None = Field(default=None, min_length=1, max_length=4096)
+    include_declarations: bool = True
+    max_results: int = Field(default=100, ge=1, le=200)
+
+
 class _GitStatusArguments(_Arguments):
     max_entries: int = Field(default=200, ge=1, le=1000)
 
@@ -435,6 +443,19 @@ class RuntimeControlToolService:
                     file_glob=symbol_arguments.file_glob,
                     case_sensitive=symbol_arguments.case_sensitive,
                     max_results=symbol_arguments.max_results,
+                )
+            ).model_dump(mode="json")
+        if tool_name == "find_references":
+            code = self._require_code()
+            reference_arguments = _FindReferencesArguments.model_validate(raw_arguments)
+            return (
+                await code.find_references(
+                    scope.run_id,
+                    symbol=reference_arguments.symbol,
+                    path=reference_arguments.path,
+                    file_glob=reference_arguments.file_glob,
+                    include_declarations=reference_arguments.include_declarations,
+                    max_results=reference_arguments.max_results,
                 )
             ).model_dump(mode="json")
         if tool_name == "git_status":

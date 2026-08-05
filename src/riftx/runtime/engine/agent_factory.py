@@ -29,6 +29,7 @@ _CONTROL_TOOL_NAMES = {
     "grep",
     "glob",
     "symbol_search",
+    "find_references",
     "git_status",
     "git_diff",
     "git_log",

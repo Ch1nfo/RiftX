@@ -13,6 +13,8 @@ from riftx.code import (
     CodeEntry,
     CodeListResult,
     CodeReadResult,
+    CodeReference,
+    CodeReferenceSearchResult,
     CodeSymbol,
     CodeSymbolSearchResult,
     GitCommitSummary,
@@ -186,6 +188,35 @@ class FakeCode:
                     line_number=1,
                     column=0,
                     signature="class Handler:",
+                )
+            ],
+            files_scanned=1,
+            bytes_scanned=14,
+            skipped_binary_files=0,
+            skipped_large_files=0,
+            skipped_unsupported_files=0,
+            parse_errors=0,
+        )
+
+    async def find_references(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> CodeReferenceSearchResult:
+        self.calls.append(("find_references", run_id, kwargs))
+        return CodeReferenceSearchResult(
+            source="workspace",
+            symbol=str(kwargs["symbol"]),
+            resolution="unique",
+            definitions_found=1,
+            references=[
+                CodeReference(
+                    kind="definition",
+                    language="python",
+                    path="src/app.py",
+                    line_number=1,
+                    column=6,
+                    excerpt="class Handler:",
                 )
             ],
             files_scanned=1,
@@ -658,6 +689,40 @@ async def test_native_symbol_search_uses_exact_run_scope() -> None:
                 "path": "src",
                 "file_glob": None,
                 "case_sensitive": False,
+                "max_results": 10,
+            },
+        )
+    ]
+    assert transcript.rows[0][1].structured_content["source_refs"] == ["code://src"]
+
+
+async def test_native_find_references_uses_exact_run_scope() -> None:
+    code = FakeCode()
+    control, _, transcript, _ = service(code=code)
+
+    result = await control(
+        SCOPE,
+        "find_references",
+        {
+            "symbol": "Handler",
+            "path": "src",
+            "include_declarations": False,
+            "max_results": 10,
+        },
+        "call-find-references",
+    )
+
+    assert result["backend"] == "builtin_static"
+    assert result["resolution"] == "unique"
+    assert code.calls == [
+        (
+            "find_references",
+            "run-1",
+            {
+                "symbol": "Handler",
+                "path": "src",
+                "file_glob": None,
+                "include_declarations": False,
                 "max_results": 10,
             },
         )
