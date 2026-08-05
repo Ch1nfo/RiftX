@@ -19,7 +19,7 @@
 RiftX 正式版需要同时兑现两个基础属性：
 
 1. **开箱即用的即战力**：新用户完成安装和基础配置后，可以正常开展基础渗透测试、代码审计、证据整理和报告生成；该模式不要求立即超过所有通用 Agent。
-2. **显著高于通用 Agent 的能力上限**：用户和团队能够持续添加 Tool、Skill、Technique、Playbook、Knowledge、Eval Case 和实战经验；这些能力经过验证后进入生产，使 RiftX 越用越准确、越符合操作者习惯、越擅长特定资产和技术栈。
+2. **追求显著高于通用 Agent 的能力上限**：用户和团队能够持续添加 Tool、Skill、Technique、Playbook、Knowledge、Eval Case 和实战经验；这些能力经过验证后进入生产，使 RiftX 越用越准确、越符合操作者习惯、越擅长特定资产和技术栈。
 
 本文档不是功能愿望清单。每项能力必须明确：
 
@@ -612,7 +612,7 @@ benchmarks/security_agent/
 2. 支持代码审计和渗透测试两类 Scenario。
 3. 支持隐藏集和公开开发集。
 4. 记录模型、运行时、工具集、Skill/Pack 版本、时间和 Token。
-5. 支持比较 RiftX 不同版本、不同 Capability Pack 和不同运行配置；外部 Agent 结果仅可作为可选参考，不构成正式版发布门。
+5. 支持比较 RiftX 自身不同版本、不同 Capability Pack 和不同运行配置。
 
 **验收门**：
 
@@ -1215,7 +1215,7 @@ Finding 必须绑定：
 
 ## S7：专业能力评测与回归保障
 
-本阶段的目的，是建立稳定的研发反馈系统：发现能力短板、复现失败、检查版本回归、评估 Capability Pack 的实际影响。所有指标都是观察信号，不应被解释为 RiftX 是否“超过通用 Agent”的唯一结论。
+本阶段的目的，是建立稳定的研发反馈系统：发现能力短板、复现失败、检查版本回归、评估 Capability Pack 的实际影响。评测只服务于 RiftX 自身的质量、安全和能力演进，不用于量化证明产品超过通用 Agent。
 
 ### EVAL-700：代码审计语料
 
@@ -1277,7 +1277,6 @@ Finding 必须绑定：
 - RiftX Official-only；
 - RiftX Official + Operator/Organization Pack；
 - 启用或禁用特定 Tool、Skill、Technique 和 Memory 的消融配置；
-- 必要时可记录通用 Agent 的参考结果，但不据此建立强制排名或发布结论。
 
 公平性要求：
 
