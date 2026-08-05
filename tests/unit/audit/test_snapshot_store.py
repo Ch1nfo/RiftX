@@ -261,15 +261,20 @@ def test_power_loss_before_and_after_publish_is_recoverable(tmp_path: Path) -> N
     )
     with pytest.raises(SnapshotStoreCrash):
         crashed.put_staged_tree(staged)
-    assert len(tuple((crashed.root / "staging").iterdir())) == 1
+    staged_orphans = tuple((crashed.root / "staging").iterdir())
+    assert len(staged_orphans) == 1
+    cleanup_cutoff = datetime.fromtimestamp(
+        staged_orphans[0].lstat().st_mtime,
+        UTC,
+    ) + timedelta(seconds=1)
 
     dry_run = crashed.cleanup_staging_orphans(
-        older_than=NOW + timedelta(days=1),
+        older_than=cleanup_cutoff,
         dry_run=True,
     )
     assert (dry_run.examined, dry_run.eligible, dry_run.removed) == (1, 1, 0)
     cleaned = crashed.cleanup_staging_orphans(
-        older_than=NOW + timedelta(days=1),
+        older_than=cleanup_cutoff,
         dry_run=False,
     )
     assert cleaned.removed == 1
