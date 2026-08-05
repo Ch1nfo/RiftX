@@ -117,7 +117,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
-| CAP-103 | CAP-001 | in_progress | `2c784d8d` |
+| CAP-103 | CAP-001 | in_progress | `2c784d8d`, `94d71f3b` |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
 | COG-201 | COG-200 | pending | — |
@@ -476,6 +476,24 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5058 passed, 5 skipped, 11 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
 - First delivery implementation commit：`2c784d8d`。
+- Second delivery slice：
+  - 新增常驻 `search_mcp_tools`、`get_mcp_tool` 和 `call_mcp_tool`；模型通过受控包装工具搜索、读取 Schema 和调用 MCP，不直接获得第三方动态 FunctionTool；
+  - 空 `allowed_tools` 保持 discovery-only；非空时只投影并允许显式列出的 Tool，`blocked_tools` 继续优先拒绝；Adapter 仅允许 `tools/list` 与 `tools/call`，仍不启动 stdio MCP；
+  - `call_mcp_tool` 固定为 `HOST_EXECUTION + DYNAMIC_APPROVAL + explicit approval`，MCP annotation 仍不参与授权；未批准时不会发生 MCP 网络副作用；
+  - Provider Control Tool 在执行前校验 durable Intent 的 Tool ID 与完整 Arguments，并通过既有 ToolCall execution-claim CAS 持久化确定性 `execution_key`；
+  - `MCPApplicationService` 在调用前后重新验证 RunKind Effect Policy、Run 状态、Run/Session/ToolCall owner、Intent 状态、精确参数和当前 execution claim，直接调用服务不能绕过批准边界；
+  - 调用参数保持原始 JSON 语义并具有结构与字节上限；调用结果限制结构、深度、单字符串和总字节，配置 URL、Header Secret、POSIX/Windows/file URI 绝对路径在进入 Artifact 或模型前脱敏；
+  - 完整脱敏结果连同 Run、Session、ToolCall、Execution、Server 和 Tool identity 写入 immutable Artifact；模型只接收有界 `UNTRUSTED_EXTERNAL_CONTENT` Preview，Image/Audio 数据不进入模型；
+  - Transcript 写入 `mcp-tool://`、`mcp-execution://` 和 `artifact://` source refs；General 与 Code Audit 均经 RunKind Effect Policy，Artifact 分别沿用 `PUBLIC_EXPORT` 与 owner-validated `AUDIT_INTERNAL` 路径；
+  - 单 Server 调用超时、熔断、结果非法或超限只使该调用失败，不改变其他 Server Registry 条目；调用后 execution claim 丢失时不写 Artifact，不使已停止的调用产生新的 durable 结果。
+- Second delivery checks：
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/mcp tests/runtime/test_control_tools.py tests/execution/test_deferred_runtime.py tests/unit/agent/test_tool_policy.py tests/unit/tools/test_discovery.py tests/integration/agent/test_runtime_tool_visibility.py tests/unit/application/test_run_kind_effect_policy.py tests/unit/test_runtime_config.py tests/unit/temporal/test_worker_runtime.py`：`167 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/mcp src/riftx/execution/deferred.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 7 source files`；
+  - MCP、Runtime、Execution、Agent、Tool、Context、Subagent、配置和 Worker 关联回归：`592 passed`；
+  - `conda run --no-capture-output -n agent ruff check .` 和 `git diff --check`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5066 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field metadata 提示。
+- Second delivery implementation commit：`94d71f3b`。
+- Remaining：补齐周期性 Discovery/Health Refresh、可观测状态发布和对应 Worker 生命周期测试后再关闭 CAP-103。
 
 ## 9. Known pre-existing worktree state
 
