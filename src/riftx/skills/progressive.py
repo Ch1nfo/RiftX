@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -46,6 +47,7 @@ class ProgressiveSkillRegistry:
         self._fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._generation = 0
         self._front_matter: dict[str, SkillFrontMatter] = {}
+        self._digests: dict[str, str] = {}
         self._paths: dict[str, Path] = {}
         self._documents: dict[str, SkillDocument] = {}
         self._references: dict[str, SkillReference] = {}
@@ -66,13 +68,16 @@ class ProgressiveSkillRegistry:
     def refresh(self) -> int:
         paths = _discover_skill_paths(self.root)
         front_matter: dict[str, SkillFrontMatter] = {}
+        digests: dict[str, str] = {}
         for skill_id, path in paths.items():
             try:
                 front_matter[skill_id] = _read_front_matter(path)
+                digests[skill_id] = _skill_digest(path)
             except (OSError, UnicodeError, yaml.YAMLError, ValidationError) as exc:
                 raise SkillDocumentError(f"invalid Skill front matter in {path}: {exc}") from exc
         self._paths = paths
         self._front_matter = front_matter
+        self._digests = digests
         self._fingerprint = _fingerprint(self.root)
         self._documents.clear()
         self._references.clear()
@@ -150,7 +155,6 @@ class ProgressiveSkillRegistry:
         input_schema, output_schema = _load_optional_schemas(path.parent)
         document = SkillDocument(
             **self._summary(skill_id).model_dump(),
-            version=str(metadata.version),
             preferred_tools=metadata.preferred_tools,
             approval_level=metadata.approval_level,
             content=content,
@@ -172,6 +176,9 @@ class ProgressiveSkillRegistry:
             )
         reference = SkillReference(
             skill_id=skill_id,
+            version=str(self._front_matter[skill_id].version),
+            digest=self._digests[skill_id],
+            source=self._front_matter[skill_id].source,
             content=reference_path.read_text(encoding="utf-8"),
         )
         self._references[skill_id] = reference
@@ -187,6 +194,9 @@ class ProgressiveSkillRegistry:
             id=skill_id,
             name=metadata.name,
             description=metadata.description,
+            version=str(metadata.version),
+            digest=self._digests[skill_id],
+            source=metadata.source,
             required_capabilities=metadata.required_capabilities,
         )
 
@@ -236,6 +246,27 @@ def _fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
                 stat = path.stat()
                 entries.append((str(path.relative_to(root)), stat.st_mtime_ns, stat.st_size))
     return tuple(sorted(entries))
+
+
+def _skill_digest(path: Path) -> str:
+    digest = sha256()
+    directory = path.parent
+    for relative in (
+        Path("SKILL.md"),
+        Path("REFERENCES.md"),
+        Path("schemas/input.json"),
+        Path("schemas/output.json"),
+    ):
+        candidate = directory / relative
+        if not candidate.is_file():
+            continue
+        name = relative.as_posix().encode()
+        content = candidate.read_bytes()
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def _read_front_matter(path: Path) -> SkillFrontMatter:

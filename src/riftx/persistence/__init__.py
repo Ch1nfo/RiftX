@@ -67,6 +67,7 @@ from .runtime_repositories import (
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyUserInputRequestRepository,
 )
+from .skill_selection_repository import SQLAlchemySkillSelectionStore
 from .target_http_repositories import SQLAlchemyTrafficMetadataReadRepository
 from .transcript_repositories import SQLAlchemyTranscriptRepository
 from .workflow_signals import SQLAlchemyWorkflowSignalIntentRepository
@@ -112,6 +113,7 @@ __all__ = [
     "SQLAlchemyRunLeaseRepository",
     "SQLAlchemyRuntimeApprovalRepository",
     "SQLAlchemyRuntimeObservabilityRepository",
+    "SQLAlchemySkillSelectionStore",
     "SQLAlchemyRunRepository",
     "SQLAlchemyTerminalRepository",
     "SQLAlchemyToolCallIntentRepository",

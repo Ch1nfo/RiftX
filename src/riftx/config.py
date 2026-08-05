@@ -729,6 +729,10 @@ class ToolsConfig(_ConfigModel):
     path: Path = Path("configs/tools.yaml")
 
 
+class SkillsConfig(_ConfigModel):
+    path: Path = Path(".riftx/skills")
+
+
 class WebConfig(_ConfigModel):
     dist_path: Path = Path("apps/web/dist")
 
@@ -866,6 +870,7 @@ class RiftXConfig(_ConfigModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)

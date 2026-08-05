@@ -76,12 +76,16 @@ def test_progressive_skill_loads_metadata_body_and_references_in_stages(tmp_path
 
     summaries = catalog.list_summaries()
 
-    assert summaries[0].model_dump() == {
+    assert summaries[0].model_dump(mode="json") == {
         "id": "ssrf-validation",
         "name": "ssrf-validation",
         "description": "Validate SSRF candidates with reproducible evidence",
+        "version": "1",
+        "digest": summaries[0].digest,
+        "source": "operator",
         "required_capabilities": ["http_request"],
     }
+    assert len(summaries[0].digest) == 64
     assert catalog.loaded_document_ids == frozenset()
     assert catalog.loaded_reference_ids == frozenset()
 
@@ -188,18 +192,20 @@ async def test_context_compiler_exposes_skill_content_progressively(tmp_path: Pa
     )
 
     initial = await compiler.compile(request)
-    assert initial.available_skills == [
-        {
-            "id": "ssrf-validation",
-            "name": "ssrf-validation",
-            "description": "Validate SSRF candidates with reproducible evidence",
-            "required_capabilities": ["http_request"],
-        }
-    ]
+    assert len(initial.available_skills) == 1
+    assert initial.available_skills[0] == {
+        "id": "ssrf-validation",
+        "name": "ssrf-validation",
+        "description": "Validate SSRF candidates with reproducible evidence",
+        "version": "1",
+        "digest": initial.available_skills[0]["digest"],
+        "source": "operator",
+        "required_capabilities": ["http_request"],
+    }
     assert initial.loaded_skill_documents == []
     assert initial.loaded_skill_references == []
 
-    skill_context.select_skill(
+    await skill_context.select_skill(
         "ssrf-validation",
         run_id="run-1",
         session_id="session-1",
@@ -210,7 +216,7 @@ async def test_context_compiler_exposes_skill_content_progressively(tmp_path: Pa
     assert "## Procedure" in selected.loaded_skill_documents[0]["content"]
     assert selected.loaded_skill_references == []
 
-    skill_context.load_references(
+    await skill_context.load_references(
         "ssrf-validation",
         run_id="run-1",
         session_id="session-1",
@@ -218,5 +224,11 @@ async def test_context_compiler_exposes_skill_content_progressively(tmp_path: Pa
     )
     with_references = await compiler.compile(request)
     assert with_references.loaded_skill_references == [
-        {"skill_id": "ssrf-validation", "content": "REFERENCE SENTINEL"}
+        {
+            "skill_id": "ssrf-validation",
+            "version": "1",
+            "digest": initial.available_skills[0]["digest"],
+            "source": "operator",
+            "content": "REFERENCE SENTINEL",
+        }
     ]

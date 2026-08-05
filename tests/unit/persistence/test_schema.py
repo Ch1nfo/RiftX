@@ -23,6 +23,10 @@ from riftx.persistence.capability_records import (
     CapabilityVersionRecord,
 )
 from riftx.persistence.orm import Base
+from riftx.persistence.skill_selection_records import (
+    AgentSkillScopeRecord,
+    AgentSkillSelectionRecord,
+)
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
 assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
@@ -43,12 +47,16 @@ assert CapabilityPackRecord.__table__.metadata is Base.metadata
 assert CapabilityPackMemberRecord.__table__.metadata is Base.metadata
 assert CapabilityPackInstallRecord.__table__.metadata is Base.metadata
 assert CapabilityPackLockRecord.__table__.metadata is Base.metadata
+assert AgentSkillScopeRecord.__table__.metadata is Base.metadata
+assert AgentSkillSelectionRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
     "agent_cycles",
     "agent_sessions",
+    "agent_skill_scopes",
+    "agent_skill_selections",
     "agent_steps",
     "agent_messages",
     "alembic_version",
@@ -158,6 +166,26 @@ def test_capability_schema_separates_candidates_versions_and_locks() -> None:
         "ix_capability_pack_locks_owner_active",
         "ix_capability_pack_locks_version_active",
     }
+
+
+def test_agent_skill_schema_pins_session_package_snapshots() -> None:
+    scopes = Base.metadata.tables["agent_skill_scopes"]
+    selections = Base.metadata.tables["agent_skill_selections"]
+
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in scopes.c.session_id.foreign_keys
+    } == {"agent_sessions.id"}
+    assert {
+        "version",
+        "skill_digest",
+        "source",
+        "reason",
+        "document_json",
+        "reference_json",
+        "active",
+        "references_loaded",
+    } <= set(selections.columns.keys())
 
 
 def test_audit_preflight_plan_table_separates_token_and_lifecycle_facts() -> None:

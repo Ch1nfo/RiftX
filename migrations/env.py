@@ -12,8 +12,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from riftx.persistence.capability_records import CapabilityRecord
 from riftx.persistence.orm import Base
+from riftx.persistence.skill_selection_records import AgentSkillSelectionRecord
 
 assert CapabilityRecord.__table__.metadata is Base.metadata
+assert AgentSkillSelectionRecord.__table__.metadata is Base.metadata
 
 config = context.config
 if config.config_file_name is not None:

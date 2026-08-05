@@ -17,6 +17,11 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "search_tools",
     "list_tools",
     "get_tool",
+    "search_skills",
+    "list_skills",
+    "load_skill",
+    "load_skill_references",
+    "unload_skill",
     "run_registered_tool",
     "run_shell",
     "get_execution",
@@ -30,6 +35,11 @@ SUBAGENT_RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "search_tools",
     "list_tools",
     "get_tool",
+    "search_skills",
+    "list_skills",
+    "load_skill",
+    "load_skill_references",
+    "unload_skill",
     "run_registered_tool",
     "get_execution",
     "wait_execution",
@@ -542,6 +552,11 @@ def _resident_schema(
         "search_tools": "Search the node Tool Index by task language or capability.",
         "list_tools": "List lightweight Tool Index entries without loading schemas.",
         "get_tool": "Read detail for one registered tool and select its full schema.",
+        "search_skills": "Search Progressive Skills available to this Agent Session.",
+        "list_skills": "List lightweight Progressive Skill summaries.",
+        "load_skill": "Pin and load one versioned Skill procedure for this Session.",
+        "load_skill_references": "Load references for an already selected Skill.",
+        "unload_skill": "Remove one selected Skill from the active model context.",
         "run_registered_tool": "Run a selected registered tool through the Runner.",
         "run_shell": "Run an authorized shell command through the Runner.",
         "get_execution": "Inspect a durable Execution by ID.",
@@ -569,6 +584,26 @@ def _resident_schema(
     elif tool_id == "get_tool":
         properties = {"tool_id": {"type": "string"}}
         required = ["tool_id"]
+    elif tool_id == "search_skills":
+        properties = {
+            "query": {"type": "string"},
+            "capability": {"type": ["string", "null"]},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+        }
+        required = ["query"]
+    elif tool_id == "list_skills":
+        properties = {
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
+    elif tool_id == "load_skill":
+        properties = {
+            "skill_id": {"type": "string"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        }
+        required = ["skill_id", "reason"]
+    elif tool_id in {"load_skill_references", "unload_skill"}:
+        properties = {"skill_id": {"type": "string"}}
+        required = ["skill_id"]
     elif tool_id == "run_registered_tool":
         properties = {
             "tool_id": {"type": "string"},
@@ -646,6 +681,7 @@ def _resident_schema(
             },
             "selected_memory_ids": {"type": "array", "items": {"type": "string"}},
             "available_tool_ids": {"type": "array", "items": {"type": "string"}},
+            "available_skill_ids": {"type": "array", "items": {"type": "string"}},
             "workspace": {"type": "string"},
             "constraints": {"type": "array", "items": {"type": "string"}},
             "stop_conditions": {"type": "array", "items": {"type": "string"}},

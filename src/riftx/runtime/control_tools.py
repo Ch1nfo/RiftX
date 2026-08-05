@@ -21,6 +21,7 @@ from riftx.domain import (
 )
 from riftx.execution import ExecutionService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
+from riftx.skills import ProgressiveSkillContextManager
 from riftx.tools import ToolContextManager, ToolSearchRequest
 
 _MAX_CONTROL_RESULT_BYTES = 256 * 1024
@@ -61,6 +62,24 @@ class _ListArguments(_Arguments):
 
 class _ToolArguments(_Arguments):
     tool_id: str = Field(min_length=1)
+
+
+class _SkillSearchArguments(_Arguments):
+    query: str = ""
+    capability: str | None = None
+    max_results: int = Field(default=8, ge=1, le=20)
+
+
+class _SkillListArguments(_Arguments):
+    max_results: int = Field(default=100, ge=1, le=100)
+
+
+class _SkillArguments(_Arguments):
+    skill_id: str = Field(min_length=1)
+
+
+class _LoadSkillArguments(_SkillArguments):
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class _ExecutionArguments(_Arguments):
@@ -106,12 +125,14 @@ class RuntimeControlToolService:
         artifacts: ArtifactApplicationService,
         events: RunEventWriter,
         transcript: TranscriptWriter,
+        skills: ProgressiveSkillContextManager | None = None,
     ) -> None:
         self._tools = tools
         self._executions = executions
         self._artifacts = artifacts
         self._events = events
         self._transcript = transcript
+        self._skills = skills
 
     async def __call__(
         self,
@@ -233,6 +254,57 @@ class RuntimeControlToolService:
                 session_id=scope.session_id,
                 agent_id=scope.agent_id,
             ).model_dump(mode="json")
+        if tool_name == "search_skills":
+            skills = self._require_skills()
+            skill_arguments = _SkillSearchArguments.model_validate(raw_arguments)
+            results = await skills.search_skills(
+                skill_arguments.query,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+                capability=skill_arguments.capability,
+                max_results=skill_arguments.max_results,
+            )
+            return [item.model_dump(mode="json") for item in results]
+        if tool_name == "list_skills":
+            skills = self._require_skills()
+            skill_arguments = _SkillListArguments.model_validate(raw_arguments)
+            entries = await skills.list_skills(session_id=scope.session_id)
+            return [
+                item.model_dump(mode="json")
+                for item in entries[: skill_arguments.max_results]
+            ]
+        if tool_name == "load_skill":
+            skills = self._require_skills()
+            skill_arguments = _LoadSkillArguments.model_validate(raw_arguments)
+            document = await skills.select_skill(
+                skill_arguments.skill_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+                reason=skill_arguments.reason,
+            )
+            return document.model_dump(mode="json")
+        if tool_name == "load_skill_references":
+            skills = self._require_skills()
+            skill_arguments = _SkillArguments.model_validate(raw_arguments)
+            reference = await skills.load_references(
+                skill_arguments.skill_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+            )
+            return reference.model_dump(mode="json")
+        if tool_name == "unload_skill":
+            skills = self._require_skills()
+            skill_arguments = _SkillArguments.model_validate(raw_arguments)
+            await skills.unload_skill(
+                skill_arguments.skill_id,
+                run_id=scope.run_id,
+                session_id=scope.session_id,
+                agent_id=scope.agent_id,
+            )
+            return {"skill_id": skill_arguments.skill_id, "active": False}
         if tool_name == "get_execution":
             execution_arguments = _ExecutionArguments.model_validate(raw_arguments)
             execution = await self._execution_for_scope(
@@ -316,6 +388,11 @@ class RuntimeControlToolService:
             }
         raise RuntimeError(f"Unclassified Runtime control tool: {tool_name!r}")
 
+    def _require_skills(self) -> ProgressiveSkillContextManager:
+        if self._skills is None:
+            raise RuntimeError("Progressive Skill context is not configured")
+        return self._skills
+
     async def _execution_for_scope(
         self,
         scope: RuntimeToolScope,
@@ -392,6 +469,8 @@ def _source_refs(tool_name: str, arguments: dict[str, object]) -> list[str]:
         return [f"artifact://{artifact_id}"]
     if tool_id := _string_argument(arguments, "tool_id"):
         return [f"tool://{tool_id}"]
+    if skill_id := _string_argument(arguments, "skill_id"):
+        return [f"skill://{skill_id}"]
     return [f"runtime-tool://{tool_name}"]
 
 

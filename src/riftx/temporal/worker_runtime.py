@@ -97,6 +97,7 @@ from riftx.persistence import (
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemySkillSelectionStore,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
@@ -132,7 +133,7 @@ from riftx.runtime.engine import DeferredRuntimeAgentFactory, OpenAIAgentsEngine
 from riftx.runtime.leases import DatabaseRunLeaseManager
 from riftx.runtime.session import SessionManager
 from riftx.runtime.types import AgentSession
-from riftx.skills import create_default_skill_registry
+from riftx.skills import ProgressiveSkillContextManager, create_default_skill_registry
 from riftx.subagents import (
     DurableSubagentTaskRunner,
     ModelDelegationExecutor,
@@ -958,8 +959,12 @@ async def build_temporal_worker(
             hooks=hooks,
         )
 
-        skill_registry = create_default_skill_registry()
+        skill_registry = create_default_skill_registry(config.skills.path.expanduser())
         skill_registry.load_entry_points()
+        skill_context = ProgressiveSkillContextManager(
+            skill_registry,
+            SQLAlchemySkillSelectionStore(database.session_factory),
+        )
         model_registry = ModelProfileRegistry(
             config.models.path.expanduser(),
             config.models.secrets_path.expanduser(),
@@ -1003,6 +1008,7 @@ async def build_temporal_worker(
             ],
             stable_instruction_source=StableInstructionSource(),
             tool_context=tool_context,
+            skill_context=skill_context,
             context_service=ContextApplicationService(context_compilation_repository),
         )
         execution_service = ExecutionService(
@@ -1028,6 +1034,7 @@ async def build_temporal_worker(
             artifacts=artifact_service,
             events=event_repository,
             transcript=transcript_repository,
+            skills=skill_context,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,
@@ -1071,6 +1078,7 @@ async def build_temporal_worker(
             sessions=session_manager,
             session_repository=agent_session_repository,
             tool_context=tool_context,
+            skill_context=skill_context,
             limits=config.subagents,
             events=event_repository,
             result_merger=PrimaryResultMerger(

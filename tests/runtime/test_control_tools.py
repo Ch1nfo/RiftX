@@ -13,6 +13,7 @@ from riftx.domain import Artifact, Execution, ExecutorType
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
+from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
 
 
 class FakeEvents:
@@ -121,6 +122,7 @@ def service(
     *,
     executions: FakeExecutions | None = None,
     artifacts: FakeArtifacts | None = None,
+    skills: ProgressiveSkillContextManager | None = None,
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
     transcript = FakeTranscript()
@@ -131,6 +133,7 @@ def service(
         artifacts=artifacts or FakeArtifacts(),  # type: ignore[arg-type]
         events=events,
         transcript=transcript,  # type: ignore[arg-type]
+        skills=skills,
     )
     return control, events, transcript, execution_service
 
@@ -328,4 +331,74 @@ async def test_complete_run_records_bounded_completion_request() -> None:
         "runtime.control_tool_started",
         "agent.completion_requested",
         "runtime.control_tool_completed",
+    ]
+
+
+async def test_progressive_skill_control_tools_select_reference_and_unload(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "skills" / "http-validation"
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        """---
+name: http-validation
+description: Validate bounded HTTP behavior
+version: 1.0.0
+source: operator
+---
+## When to use
+Use for HTTP candidates.
+## Preconditions
+Authorized target.
+## Procedure
+Send one bounded request.
+## Decision points
+Compare the response.
+## Stop conditions
+Stop after proof.
+## Expected output
+Evidence references.
+## Error handling
+Preserve errors.
+"""
+    )
+    (directory / "REFERENCES.md").write_text("HTTP REFERENCE")
+    skills = ProgressiveSkillContextManager(SkillRegistry(tmp_path / "skills"))
+    control, _, transcript, _ = service(skills=skills)
+
+    search = await control(
+        SCOPE,
+        "search_skills",
+        {"query": "HTTP"},
+        "call-search-skill",
+    )
+    loaded = await control(
+        SCOPE,
+        "load_skill",
+        {"skill_id": "http-validation", "reason": "verify the HTTP candidate"},
+        "call-load-skill",
+    )
+    reference = await control(
+        SCOPE,
+        "load_skill_references",
+        {"skill_id": "http-validation"},
+        "call-load-reference",
+    )
+    unloaded = await control(
+        SCOPE,
+        "unload_skill",
+        {"skill_id": "http-validation"},
+        "call-unload-skill",
+    )
+
+    assert search[0]["skill"]["id"] == "http-validation"
+    assert loaded["version"] == "1.0.0"
+    assert len(loaded["digest"]) == 64
+    assert reference["content"] == "HTTP REFERENCE"
+    assert unloaded == {"skill_id": "http-validation", "active": False}
+    assert [row[1].structured_content["source_refs"] for row in transcript.rows] == [
+        ["runtime-tool://search_skills"],
+        ["skill://http-validation"],
+        ["skill://http-validation"],
+        ["skill://http-validation"],
     ]

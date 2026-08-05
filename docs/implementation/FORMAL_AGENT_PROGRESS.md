@@ -28,13 +28,14 @@
 
 ## 2. Current wave
 
-- Stage：`S0 — 规格、基线与评测骨架`
-- Current task：`CAP-001 — Capability Domain 与持久化`
+- Stage：`S1 — 生产 Capability Plane`
+- Current task：`CAP-100 — 接通生产 Progressive Skill`
 - Status：`completed`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
-- Product behavior：当前只建立 Capability 权威数据面，不接入生产 Agent 选择或执行。
-- Next task after completion：`CAP-100 — 接通生产 Progressive Skill`。
+- Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
+- Product behavior：当前将既有 file-backed Progressive Skill 接入生产 Worker，不改变 Skill 的工具执行权限。
+- Next task after completion：`CAP-101 — 原生代码工具`。
 
 ## 3. 研究与实现基线
 
@@ -94,7 +95,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | Stage | Status | Exit condition |
 | --- | --- | --- |
 | S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
-| S1 生产 Capability Plane | pending | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
+| S1 生产 Capability Plane | in_progress | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
 | S2 认知运行时 | pending | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
@@ -109,8 +110,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | --- | --- | --- | --- |
 | SEC-000 | none | completed | `a15e8e94` |
 | SEC-001 | SEC-000 | completed | `53161141` |
-| CAP-001 | SEC-000 | completed | pending backfill |
-| CAP-100 | CAP-001 | pending | — |
+| CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
+| CAP-100 | CAP-001 | completed | pending backfill |
 | CAP-101 | CAP-001 | pending | — |
 | CAP-102 | CAP-001 | pending | — |
 | CAP-103 | CAP-001 | pending | — |
@@ -209,7 +210,30 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/capabilities tests/unit/persistence/test_schema.py tests/integration/persistence/test_capability_repository.py tests/integration/persistence/test_capability_migration.py tests/docs/test_formal_agent_docs.py`：`35 passed`。
   - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/persistence tests/integration/persistence`：`504 passed, 10 warnings`；警告为 Python 3.12 SQLite datetime adapter 弃用提示。
   - `git diff --check`：passed。
-- Implementation commits：domain/API `0fd20fda`；persistence pending backfill。
+- Implementation commits：domain/API `0fd20fda`；persistence `84481149`。
+
+### CAP-100：接通生产 Progressive Skill
+
+- Status：completed
+- Started：2026-08-05
+- Inputs：CAP-001、现有 `ProgressiveSkillRegistry`、`ContextCompiler`、Runtime control tools 和 Subagent Delegation。
+- Delivered：
+  - 生产 Worker 创建并注入 `ProgressiveSkillContextManager`；
+  - Primary Agent 获得 Skill search/list/load/reference/unload 工具；
+  - Skill 选择按 Agent Session 持久化，锁定 ID/version/digest/source/reason；
+  - Worker 重启恢复原选择，文件变更只标记 stale，不静默替换运行中快照；
+  - Subagent 只能搜索和加载 Delegation Packet 显式允许的 Skill。
+- Persistence：Alembic revision `9a4d6e2b7c11`，新增 `agent_skill_scopes` 和 `agent_skill_selections`。
+- Manifest：记录 Skill ID、version、package digest、source、load reason、reference 状态和 stale 状态。
+- Product boundary：Skill 文档只进入 Context；不因加载 Skill 扩大 Tool、Scope、Credential 或 Approval 权限。
+- Checks：
+  - `conda run --no-capture-output -n agent ruff check ...`：passed。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/persistence tests/integration/persistence`：`509 passed, 10 warnings`。
+  - `conda run --no-capture-output -n agent python -m pytest -q tests/unit/skills tests/context tests/runtime tests/subagents tests/integration/agent tests/unit/temporal/test_worker_runtime.py tests/unit/test_runtime_config.py`：`365 passed`。
+  - Subagent 恢复修复后关联回归：`340 passed`。
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`4940 passed, 5 skipped, 11 warnings`。
+  - `git diff --check`：passed。
+- Implementation commit：pending backfill。
 
 ## 9. Known pre-existing worktree state
 

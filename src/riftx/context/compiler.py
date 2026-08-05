@@ -152,7 +152,7 @@ class ContextCompiler:
             items.extend(await source.load(request))
         visibility_metadata: dict[str, object] = {}
         items.extend(self._request_input_items(request))
-        dynamic_items, dynamic_metadata = self._dynamic_items(request)
+        dynamic_items, dynamic_metadata = await self._dynamic_items(request)
         items.extend(dynamic_items)
         visibility_metadata.update(dynamic_metadata)
         _require_unique_item_ids(items)
@@ -279,7 +279,7 @@ class ContextCompiler:
             )
         return items
 
-    def _dynamic_items(
+    async def _dynamic_items(
         self,
         request: ContextCompileRequest,
     ) -> tuple[list[ContextItem], dict[str, object]]:
@@ -313,7 +313,7 @@ class ContextCompiler:
                         )
                     )
         if self._skill_context is not None:
-            visibility = self._skill_context.visibility(
+            visibility = await self._skill_context.visibility(
                 run_id=request.run_id,
                 session_id=request.session_id,
                 agent_id=request.agent_id,

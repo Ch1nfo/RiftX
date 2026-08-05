@@ -52,6 +52,26 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.READ_ONLY,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "search_skills": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "list_skills": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "load_skill": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "load_skill_references": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "unload_skill": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "run_registered_tool": AgentToolPolicy(
             AgentToolEffect.HOST_EXECUTION,
             AgentToolAuthorization.DYNAMIC_APPROVAL,

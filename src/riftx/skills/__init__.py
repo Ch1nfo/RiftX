@@ -1,7 +1,15 @@
 """Executable Skill contracts, registries, and built-in skills."""
 
+from pathlib import Path
+
 from .base import BaseSkill, SkillContext, SkillResult
-from .context import ProgressiveSkillContextManager, SkillVisibilitySnapshot
+from .context import (
+    InMemorySkillSelectionStore,
+    ProgressiveSkillContextManager,
+    SkillSelectionState,
+    SkillSelectionStore,
+    SkillVisibilitySnapshot,
+)
 from .generic import (
     PortScanArguments,
     PortScanSkill,
@@ -25,8 +33,8 @@ from .progressive import (
 from .registry import DuplicateSkillError, SkillNotFoundError, SkillRegistry
 
 
-def create_default_skill_registry() -> SkillRegistry:
-    registry = SkillRegistry()
+def create_default_skill_registry(skill_root: Path | None = None) -> SkillRegistry:
+    registry = SkillRegistry(skill_root)
     registry.register(RegisteredToolSkill())
     registry.register(ShellSkill())
     registry.register(PortScanSkill())
@@ -36,6 +44,7 @@ def create_default_skill_registry() -> SkillRegistry:
 __all__ = [
     "BaseSkill",
     "DuplicateSkillError",
+    "InMemorySkillSelectionStore",
     "PortScanArguments",
     "ProgressiveSkillContextManager",
     "ProgressiveSkillRegistry",
@@ -45,6 +54,8 @@ __all__ = [
     "SkillReference",
     "SkillReferenceNotFoundError",
     "SkillSearchResult",
+    "SkillSelectionState",
+    "SkillSelectionStore",
     "SkillSummary",
     "SkillVisibilitySnapshot",
     "PortScanSkill",

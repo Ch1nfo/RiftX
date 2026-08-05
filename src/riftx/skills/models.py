@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from riftx.capabilities import CapabilitySource
 from riftx.domain import ApprovalLevel
 
 
@@ -13,6 +14,7 @@ class SkillFrontMatter(BaseModel):
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     version: str | int = 1
+    source: CapabilitySource = CapabilitySource.OPERATOR
     required_capabilities: list[str] = Field(default_factory=list)
     preferred_tools: list[str] = Field(default_factory=list)
     approval_level: ApprovalLevel = ApprovalLevel.NEVER
@@ -46,13 +48,15 @@ class SkillSummary(BaseModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    digest: str = Field(pattern="^[0-9a-f]{64}$")
+    source: CapabilitySource
     required_capabilities: list[str] = Field(default_factory=list)
 
 
 class SkillDocument(SkillSummary):
     """Full SKILL.md content loaded after explicit selection."""
 
-    version: str
     preferred_tools: list[str] = Field(default_factory=list)
     approval_level: ApprovalLevel
     content: str
@@ -67,6 +71,9 @@ class SkillReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     skill_id: str
+    version: str = Field(min_length=1)
+    digest: str = Field(pattern="^[0-9a-f]{64}$")
+    source: CapabilitySource
     content: str
 
 
