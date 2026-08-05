@@ -29,14 +29,16 @@
 ## 2. Current wave
 
 - Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-101 — 原生代码工具`
+- Current task：`CAP-102 — Browser/Web/Traffic Tool 闭环`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
 - Completed predecessor：CAP-100，implementation commit `bb1b3b03`。
-- Product behavior：当前建立 Code Workspace/Snapshot 内的原生只读工具，不用通用 Shell 替代代码导航。
-- Next task after completion：`CAP-102 — Browser/Web/Traffic Tool 闭环`。
+- Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
+- Product behavior：Primary Agent 已可通过生产 Runtime 使用 owner-bound managed ephemeral browser；显式批准、Scope、陈旧 Observation、Artifact 与 Transcript 继续复用既有权威服务。
+- Current implementation commit：`69d54ab7`。
+- Next delivery slice：接通有界、不可信标记、Artifact-backed 的 Web Search/Fetch/Research 生产工具。
 
 ## 3. 研究与实现基线
 
@@ -114,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
 | CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
-| CAP-102 | CAP-001 | pending | — |
+| CAP-102 | CAP-001 | in_progress | `69d54ab7` |
 | CAP-103 | CAP-001 | pending | — |
 | CAP-104 | CAP-100, CAP-103 | pending | — |
 | COG-200 | CAP-104 | pending | — |
@@ -371,6 +373,28 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 全仓 Ruff 和 `git diff --check`：passed。
 - Ninth delivery implementation commit：`203f6c1e`。
 - Later slices：隔离 Worktree，以及受控 LSP。
+
+### CAP-102：Browser/Web/Traffic Tool 闭环
+
+- Status：in_progress
+- Started：2026-08-06
+- Inputs：CAP-001、既有 `BrowserApplicationService`、Runner managed browser、显式批准 control tool bridge、Scope 与 Artifact/Transcript 边界。
+- First delivery slice：
+  - 已将 `open_browser`、`observe_browser`、`act_browser` 和 `close_browser` 接入生产 Runtime control tool、Tool Policy、Primary Agent 与 Temporal Worker；这些浏览器工具不向 Subagent 暴露；
+  - `open_browser` 只允许 Runtime 注入 Run/Agent Session owner 的 managed ephemeral、headless browser，不向模型暴露 persistent profile 或 CDP；
+  - `open_browser` 与 `act_browser` 要求逐次 `approval_policy=explicit`，并在任何 Browser 调用前 claim durable control intent；缺少批准时零 Browser 副作用；
+  - `observe_browser` 与幂等清理型 `close_browser` 不要求批准，但 Browser Session 必须同时匹配 Run 和精确 Agent Session owner；Sibling Agent Session 在观察、操作或关闭前失败关闭；
+  - Agent Action 只开放 Navigate、Click、Fill、Type、Select、Press、Scroll、Download、Wait、Go Back 和 Reload；不开放 `evaluate`、`upload`、用户 Profile、CDP 或任意 options；
+  - Browser Action 使用稳定 Runtime `call_id` 作为 `action_key`，继续由既有 Browser Service/Runner 拒绝陈旧 Observation、非 Agent owner、越界 URL/Link 和重复键参数漂移；
+  - Browser Observation 明确保留 `UNTRUSTED_EXTERNAL_CONTENT`，模型结果压缩到 256 KiB 以下；Screenshot、Network、DOM 与 Download Artifact 自动进入 Transcript `artifact_ids` 和 `source_refs`；
+  - 本切片复用既有 Browser Application Service、Runner Router、Scope Guard、Artifact Publisher 和停止证明，不建立第二套浏览器状态或执行协议。
+- First delivery checks：
+  - Control Tool、Agent visibility、Tool Policy 与 Tool Discovery 定向回归：`46 passed`；
+  - Browser、Runtime Engine、Deferred Approval/Recovery、Context Gate 与 Worker Runtime 关联回归：`183 passed`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5013 passed, 5 skipped, 12 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 和并发首启 Pydantic alias 提示；
+  - 全仓 Ruff、staged `git diff --check`：passed。
+- First delivery implementation commit：`69d54ab7`。
+- Remaining slices：Web Search/Fetch/Research、HTTP Traffic 查询/原文读取，以及 Target HTTP Request 生产闭环。
 
 ## 9. Known pre-existing worktree state
 
