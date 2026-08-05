@@ -16,6 +16,7 @@ from riftx.tasks import (
     TaskDependency,
     TaskEvidenceRequirement,
     TaskGraph,
+    TaskStatus,
 )
 
 
@@ -37,7 +38,13 @@ def graph(run_id: str) -> TaskGraph:
     return TaskGraph(
         run_id=run_id,
         tasks=[
-            Task(id=f"{run_id}-discover", run_id=run_id, sequence=1, title="Discover"),
+            Task(
+                id=f"{run_id}-discover",
+                run_id=run_id,
+                sequence=1,
+                title="Discover",
+                status=TaskStatus.RUNNING,
+            ),
             Task(id=f"{run_id}-verify", run_id=run_id, sequence=2, title="Verify"),
         ],
         dependencies=[

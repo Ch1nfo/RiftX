@@ -11,6 +11,8 @@ from riftx.tasks import (
     TaskDependency,
     TaskEvidenceRequirement,
     TaskGraph,
+    TaskStatus,
+    UpdateTaskCommand,
 )
 
 
@@ -57,7 +59,10 @@ def test_task_graph_requires_owned_attempt_lineage_budget_and_evidence() -> None
     now = datetime(2026, 8, 6, tzinfo=UTC)
     graph = TaskGraph(
         run_id="run-1",
-        tasks=[task("task-1", 1), task("task-2", 2)],
+        tasks=[
+            task("task-1", 1).model_copy(update={"status": TaskStatus.RUNNING}),
+            task("task-2", 2),
+        ],
         dependencies=[
             TaskDependency(
                 run_id="run-1",
@@ -134,3 +139,19 @@ def test_task_graph_requires_owned_attempt_lineage_budget_and_evidence() -> None
 def test_task_budget_rejects_an_empty_limit_set() -> None:
     with pytest.raises(ValidationError, match="at least one limit"):
         TaskBudget(run_id="run-1", task_id="task-1")
+
+
+def test_update_task_rejects_empty_and_null_authoritative_fields() -> None:
+    with pytest.raises(ValidationError, match="at least one changed field"):
+        UpdateTaskCommand(
+            run_id="run-1",
+            expected_graph_version=1,
+            task_id="task-1",
+        )
+    with pytest.raises(ValidationError, match="cannot be null"):
+        UpdateTaskCommand(
+            run_id="run-1",
+            expected_graph_version=1,
+            task_id="task-1",
+            description=None,
+        )

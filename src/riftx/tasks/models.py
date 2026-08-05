@@ -228,6 +228,26 @@ class TaskGraph(DomainModel):
                     )
                 if previous.status is not TaskAttemptStatus.FAILED:
                     raise ValueError("task retry must reference a failed attempt")
+        tasks_by_id = {task.id: task for task in self.tasks}
+        for task_id, attempts in attempts_by_task.items():
+            running_attempts = [
+                attempt for attempt in attempts if attempt.status is TaskAttemptStatus.RUNNING
+            ]
+            task = tasks_by_id[task_id]
+            if task.status is TaskStatus.RUNNING and len(running_attempts) != 1:
+                raise ValueError("running task requires exactly one running attempt")
+            if task.status is not TaskStatus.RUNNING and running_attempts:
+                raise ValueError("only a running task may own a running attempt")
+            if not attempts:
+                continue
+            latest = max(attempts, key=lambda attempt: attempt.sequence)
+            if (
+                task.status is TaskStatus.COMPLETED
+                and latest.status is not TaskAttemptStatus.SUCCEEDED
+            ):
+                raise ValueError("completed task requires a succeeded latest attempt")
+            if task.status is TaskStatus.FAILED and latest.status is not TaskAttemptStatus.FAILED:
+                raise ValueError("failed task requires a failed latest attempt")
 
         budget_task_ids: list[str] = []
         for budget in self.budgets:

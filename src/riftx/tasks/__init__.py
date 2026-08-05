@@ -1,5 +1,19 @@
 """Durable cognitive Task Graph contracts."""
 
+from .commands import (
+    AddTaskCommand,
+    BlockTaskCommand,
+    CancelTaskCommand,
+    ClaimReadyTaskCommand,
+    CompleteTaskCommand,
+    FailTaskAttemptCommand,
+    LinkTasksCommand,
+    ReopenTaskCommand,
+    TaskBudgetInput,
+    TaskEvidenceRequirementInput,
+    TaskMutationResult,
+    UpdateTaskCommand,
+)
 from .models import (
     Task,
     TaskAttempt,
@@ -13,6 +27,14 @@ from .models import (
 )
 
 __all__ = [
+    "AddTaskCommand",
+    "BlockTaskCommand",
+    "CancelTaskCommand",
+    "ClaimReadyTaskCommand",
+    "CompleteTaskCommand",
+    "FailTaskAttemptCommand",
+    "LinkTasksCommand",
+    "ReopenTaskCommand",
     "Task",
     "TaskAttempt",
     "TaskAttemptStatus",
@@ -21,5 +43,9 @@ __all__ = [
     "TaskEvidenceRequirement",
     "TaskGraph",
     "TaskGraphRepository",
+    "TaskBudgetInput",
+    "TaskEvidenceRequirementInput",
+    "TaskMutationResult",
     "TaskStatus",
+    "UpdateTaskCommand",
 ]
