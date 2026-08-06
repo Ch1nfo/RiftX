@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；14 个稳定检查覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 已能初始化本地目录和 SQLite schema，在停服、一致性备份、exclusive locking 与失败恢复边界内把已管理 SQLite 迁移到 head，原子修复 Official Pack install/active-lock 投影漂移，并安全移除未定制的退役 `audit.source_ingest` 配置。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`。
-- Verification：全仓 `5252 passed, 5 skipped, 17 warnings`；全仓 Ruff、Config Maintenance/Doctor/Database Maintenance/Local FS/CLI Client/Diagnostics/API/Packs Scoped mypy、真实不可达 Control Plane CLI 冒烟、14 类稳定检查、live/offline 状态晋升、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚、RunKind effect inventory、owner-only 目录、SQLite 备份/迁移/恢复与 wheel 迁移资产验证通过。
-- Next delivery slice：交付 `riftx onboard`。
+- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`。
+- Verification：全仓 `5259 passed, 5 skipped, 17 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config Scoped mypy、真实首次启动与重复运行 CLI 冒烟、发行 wheel Tool 模板、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
+- Next delivery slice：完成基础渗透与代码审计 Demo 验收。
 
 ## 3. 研究与实现基线
 
@@ -889,6 +889,13 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 迁移后重新运行权威 inspection，未达到 `ready` 时使用原始字节原子恢复；恢复后保留备份，identity drift 或恢复失败显式报告 rollback incomplete；
   - Doctor 新增稳定 `config_migrations` 检查：无选定文件或无需迁移时 ready，精确旧默认 degraded/fixable，自定义旧配置 failed/manual；配置写修复与数据库/Pack 一样要求 Control Plane 不可达，修复结果记录配置与备份路径并复检 ready；
   - CLI 仅选择显式 `--config`、`RIFTX_CONFIG` 或已存在的默认用户配置作为迁移目标，不默认自动修改 `/etc/riftx/riftx.yaml`，继续复用现有分层配置加载器而不建立第二套状态。
+- Local onboarding slice：
+  - 新增交互式与 `--non-interactive` 顶级 `riftx onboard`；支持 OpenAI 或 OpenAI-compatible 主模型、request mode、base URL、`RIFTX_MODEL_*` Credential Reference、无 API Key 本地模型、自定义 Workspace 与用户配置路径，不接受明文 API Key 参数，也不把 Credential 写入 YAML；
+  - 首次运行生成现有 `RiftXConfig`、`ModelsConfig` 与 `ToolRegistryConfig` 可直接加载的 `riftx.yaml`、`models.yaml` 和 `tools.yaml`，所有路径规范化为用户级 XDG Config/State/Data 绝对路径；Runtime DB、Runner state、Credential store、Workspace、Operator Skills 与 Audit staging 不再依赖仓库当前目录；
+  - Onboard 复用权威 `configs/tools.yaml`，按当前 `PATH` 检测每个已启用工具的入口；缺失 executable 的可选工具只在新用户副本中禁用并明确输出降级列表，不修改发行模板，也不把缺失工具误报为可用；同一模板通过 setuptools data-files 进入 wheel；
+  - 所有新目录由 `OwnerDirectoryBatch` 以 owner-only `0700` 创建并拒绝符号链接或不安全祖先；三个配置文件以 `O_EXCL`/`O_NOFOLLOW`、`0600`、文件 fsync 与目录 fsync 创建，Runtime config 最后发布；任一写入或 fsync 失败时按 inode identity 删除本次文件并回滚新目录，回滚不完整显式失败；
+  - 任何目标配置、Model config 或 Tool config 已存在时均拒绝首次写入；再次执行 Onboard 只验证并复用当前用户拥有、无符号链接的既有 Runtime config，不根据新的 onboarding 参数覆盖现有配置；local onboarding 拒绝非 loopback Control Plane；
+  - 生成或恢复配置后直接复用 `run_local_doctor` 与 `apply_local_doctor_fixes`；仅在 Control Plane 不可达时初始化缺失目录、SQLite schema 与 Official Pack persistence，服务可达或状态不确定时沿用 Doctor 的停服失败边界；最终展示完整 Doctor 报告、缺失工具和 Credential/管理员 Token 后续动作。
 - Safety boundaries：
   - 默认 `riftx doctor` 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径/数据库元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；只有显式 `--fix` 才进入已登记的本地修复处理器；
   - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
@@ -945,8 +952,18 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .`：passed；
   - `conda run --no-capture-output -n agent pytest -q`：`5252 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`。
-- Remaining：`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
+- Local onboarding checks：
+  - 测试先行验证：新增 Onboarding 合同在实现前以 `ModuleNotFoundError: riftx.onboarding` 产生预期收集错误，顶级 CLI 合同随后以 `No such command 'onboard'` 产生预期失败；
+  - Onboarding、CLI、Doctor、Config Maintenance、Database Maintenance、Runtime/Model/Tool Config 与 Tool Registry 关联回归：`174 passed`；最终 Onboarding/Doctor fix 定向回归：`9 passed, 60 deselected`；
+  - 真实隔离 XDG 首次启动冒烟：本地无 Key OpenAI-compatible Profile 下退出 0，创建三个 `0600` 配置、用户级目录，运行完整 49 段 Alembic migration，最终 Doctor 证明 schema head `3c6e8a1f2b40`、22 个 Official Pack 和 66 个 active lock ready，并将当前主机缺失的 `masscan`、`msfconsole`、`nmap`、`nuclei` 降级禁用；
+  - 同一隔离配置第二次执行 `riftx onboard --non-interactive`：退出 0，明确复用既有配置，Database/Pack 继续 ready，未覆盖三个配置文件；
+  - `conda run --no-capture-output -n agent mypy src/riftx/onboarding.py src/riftx/doctor.py src/riftx/config.py src/riftx/models/config.py src/riftx/tools/config.py`：`Success: no issues found in 5 source files`；`src/riftx/cli/app.py` 仍仅命中既有 `_AuditGroup` Typer/Click override 的 6 个类型错误；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-onboard-wheel`：passed；wheel 包含 `share/riftx/templates/tools.yaml`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5259 passed, 5 skipped, 17 warnings`；跳过与警告原因不变；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`。
+- Remaining：基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
