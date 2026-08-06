@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 首个切片已交付顶级只读 `riftx doctor`，以 13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore；确定性配置错误失败关闭，可选或需要 live probe 的组件明确降级并给出修复建议。
-- Current implementation commits：`d4f6e4eb`。
-- Verification：全仓 `5212 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/Render Scoped mypy、实际 CLI 冒烟、13 类稳定检查 ID、可选组件降级、Official Pack/Operator Skill/LSP 失败边界与顶级命令退出语义验证通过。
-- Next delivery slice：接入 Control Plane、Temporal、Runner、Browser、Tool、MCP、数据库 revision 与 Pack Lock 的 live probes，再实现安全、原子、可回滚的 `doctor --fix` 和 `riftx onboard`。
+- Product behavior：PACK-302 已交付顶级只读 `riftx doctor` 及 live overlay，以 13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore；Control Plane、Node heartbeat、Tool Registry 与 Worker MCP 标签可把已有 live proof 晋升为 ready，确定性不可用状态失败关闭。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`。
+- Verification：全仓 `5217 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/CLI Client/Render Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live 状态晋升、离线 Runner/Tool/MCP 失败边界与顶级命令退出语义验证通过。
+- Next delivery slice：为数据库 Alembic revision 与 Official Pack Lock/Digest 增加只读 Control Plane 诊断接口，再实现安全、原子、可回滚的 `doctor --fix` 和 `riftx onboard`。
 
 ## 3. 研究与实现基线
 
@@ -138,7 +138,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb` |
+| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -849,6 +849,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 已启用 LSP 的 Socket/Credential 缺失、MCP Credential 缺失、Temporal TLS 文件缺失、无效 Model/Tool/Skill/Pack、不可用 Storage 或数据库路径确定性失败关闭；LSP disabled 时明确保留 `builtin_static` 降级路径；
   - Scanner 明确说明 built-in static 可用、可选 Adapter 尚未配置；Backup/Restore 明确标记尚不可验证，不伪造 ready；
   - 本切片不暴露空壳 `--fix`，不创建目录、不写配置、不初始化数据库、不连接外部服务；待修复操作具备原子备份、权限边界和回滚语义后再开放。
+- Live probe slice：
+  - `APIClient` 新增只读 `/healthz` 调用；顶级 Doctor 使用 3 秒有界超时，先保留离线报告，再通过 Control Plane、配置的 Runner Node 与公开 Tool Registry 覆盖可证明的 live 状态；
+  - Control Plane 不可达或返回非 ready health 时，Runner 检查失败关闭并保留其他离线诊断，不丢失 Model、Pack、Skill、Storage 等本地证据；
+  - 在线 Runner heartbeat 晋升 Runner 为 ready；`degraded` 保留降级状态，offline/lost/unknown 失败关闭；在线 `worker-local` Node 作为当前 Temporal Worker 连通性的 live proof；
+  - Runner 广告 `browser_playwright` 时 Browser 晋升 ready，否则保留 built-in/未探测降级，Doctor 不尝试创建 Browser Session；
+  - Tool live 检查只读取公开 Registry：已启用 Tool availability 非 available 时失败，声明 version probe 但无 version 时降级，全部可用且所需 version 已解析时 ready；不调用有写语义的 refresh endpoint；
+  - 配置启用 MCP 时复用 Worker heartbeat 的 refresh、unavailable Server 与 open circuit 标签；discovery current 且无 unavailable/open circuit 才 ready，Server 不可用失败，标签不完整或 Circuit open 降级；未配置 MCP 时继续使用 built-in Tool 降级路径；
+  - 同步收紧 CLI Client 内部 request kwargs 类型为 `Any`，使实际 httpx 调用边界通过 scoped mypy，不改变请求行为。
 - Safety boundaries：
   - Doctor 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；
   - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
@@ -862,8 +870,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .`：passed；
   - `conda run --no-capture-output -n agent pytest -q`：`5212 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commit：`d4f6e4eb`。
-- Remaining：live probes、常见配置迁移和安全 `doctor --fix`、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令仍待后续切片完成。
+- Live probe checks：
+  - 测试先行验证：`run_live_doctor` 尚不存在时产生预期 ImportError；实现后 Doctor/CLI Client/CLI App 关联回归：`83 passed`；
+  - `conda run --no-capture-output -n agent env RIFTX_MODEL_API_KEY=doctor-smoke riftx --api-url http://127.0.0.1:9 doctor`：显示完整表格、Runner `failed`、Overall `failed` 并以 1 退出；
+  - `conda run --no-capture-output -n agent mypy src/riftx/doctor.py src/riftx/cli/client.py src/riftx/cli/render.py`：`Success: no issues found in 3 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5217 passed, 5 skipped, 17 warnings`；跳过和警告原因与 Offline Doctor slice 一致；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`。
+- Remaining：数据库 revision 与 Pack Lock/Digest live probe、常见配置迁移和安全 `doctor --fix`、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
