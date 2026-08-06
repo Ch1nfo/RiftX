@@ -58,7 +58,7 @@ async def test_runner_uses_host_network_options_and_structured_request() -> None
             TargetHttpRequest(
                 execution_key="execution-key",
                 method="post",
-                url="https://target.internal/api",
+                url="https://target.internal/api?token=private",
                 headers={"X-Test": "value"},
                 query={"page": "1"},
                 json_body={"name": "RiftX"},
@@ -71,7 +71,7 @@ async def test_runner_uses_host_network_options_and_structured_request() -> None
 
     assert observed is not None
     assert observed.method == "POST"
-    assert observed.url == "https://target.internal/api?page=1"
+    assert observed.url == "https://target.internal/api?token=private&page=1"
     assert observed.headers["x-test"] == "value"
     assert observed.headers["cookie"] == "session=authorized-test-cookie"
     assert observed.read() == b'{"name":"RiftX"}'

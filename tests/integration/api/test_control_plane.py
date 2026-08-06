@@ -119,6 +119,7 @@ from riftx.evidence import (
     EvidenceTrustClass,
     SourceLocator,
 )
+from riftx.execution import build_execution_key
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
@@ -196,6 +197,7 @@ from riftx.runtime import (
     ToolCallIntent,
     ToolCallStatus,
 )
+from riftx.scope import ScopeViolationError
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
 from riftx.target_http.models import (
@@ -213,6 +215,54 @@ from riftx.tools import ToolRegistry
 FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
 PROCESS_TREE_FIXTURE = Path(__file__).parents[2] / "runner" / "fixtures" / "fake_process.py"
 RUNNER_BOOTSTRAP_TOKEN = "test-only-runner-bootstrap-token-0003"
+PENTEST_FOUNDATION_TOOLS = (
+    "list_ready_tasks",
+    "add_task",
+    "query_reasoning_graph",
+    "record_observation",
+    "record_negative_result",
+    "complete_task",
+    "complete_run",
+)
+WEB_REQUEST_ANALYSIS_TOOLS = (
+    "target_http_request",
+    "query_http_traffic",
+    "read_http_exchange",
+    "record_attempt",
+    "record_observation",
+    "record_negative_result",
+)
+
+
+async def _create_pentest_target_intent(
+    *,
+    cycle: RuntimeAgentCycle,
+    step_repository: SQLAlchemyAgentStepRepository,
+    intent_repository: SQLAlchemyToolCallIntentRepository,
+    run_id: str,
+    session_id: str,
+    index: int,
+    target: str,
+) -> ToolCallIntent:
+    step = AgentStep(
+        id=f"pentest-lifecycle-step-{index}",
+        cycle_id=cycle.id,
+        sequence=index,
+        step_type=AgentStepType.TOOL_PROPOSAL,
+    )
+    await step_repository.create(step)
+    intent = ToolCallIntent(
+        id=f"pentest-lifecycle-intent-{index}",
+        run_id=run_id,
+        session_id=session_id,
+        cycle_id=cycle.id,
+        step_id=step.id,
+        tool_id="target_http_request",
+        arguments={"method": "GET", "url": target},
+        target_summary=target,
+        status=ToolCallStatus.READY,
+    )
+    return await intent_repository.create(intent)
 
 
 def _runner_execution_callback_fields(command: dict[str, object]) -> dict[str, object]:
@@ -1058,7 +1108,7 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
             ]
             assert await capability_store.get_allowlist(
                 session.id, CapabilityKind.TOOL
-            ) == frozenset()
+            ) == frozenset(PENTEST_FOUNDATION_TOOLS)
             assert await capability_store.get_allowlist(
                 session.id, CapabilityKind.SKILL
             ) == frozenset({"pentest-foundation"})
@@ -1105,7 +1155,7 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
                 ("technique", "pentest-foundation.technique"),
             ]
             assert pentest_status["capabilities"]["allowlists"] == {
-                "tool": [],
+                "tool": list(PENTEST_FOUNDATION_TOOLS),
                 "skill": ["pentest-foundation"],
                 "technique": ["pentest-foundation.technique"],
             }
@@ -1361,6 +1411,258 @@ async def test_pentest_status_is_rebuilt_after_control_plane_restart(
 
 
 @pytest.mark.asyncio
+async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None:
+    requests: list[str] = []
+
+    async def handle_target(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            request_line = headers.split(b"\r\n", maxsplit=1)[0].decode("ascii")
+            path = request_line.split(" ", maxsplit=2)[1]
+            requests.append(path)
+            if path.startswith("/fail"):
+                await reader.read()
+                return
+            body = b'{"service":"isolated-pentest-target"}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode()
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_target, "127.0.0.1", 0)
+    address = server.sockets[0].getsockname()
+    port = int(address[1])
+    database_path = tmp_path / "pentest-lifecycle.db"
+    run_id = str(uuid4())
+    session_id = f"{run_id}:primary"
+    target_base = f"http://127.0.0.1:{port}"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            missing_scope = _pentest_request(str(uuid4()), target=f"{target_base}/health")
+            missing_scope["scope"] = {"ips": []}
+            rejected_scope = await client.post("/api/v1/pentests", json=missing_scope)
+            assert rejected_scope.status_code == 409
+            assert rejected_scope.json()["error"]["code"] == "pentest_admission_invalid"
+
+            outside_admission = _pentest_request(
+                str(uuid4()),
+                target=f"http://127.0.0.2:{port}/health",
+            )
+            rejected_target = await client.post(
+                "/api/v1/pentests",
+                json=outside_admission,
+            )
+            assert rejected_target.status_code == 409
+            assert (
+                rejected_target.json()["error"]["code"]
+                == "pentest_entry_point_out_of_scope"
+            )
+            assert requests == []
+
+            admitted = _pentest_request(run_id, target=f"{target_base}/health")
+            admitted["capabilities"] = {
+                "pack_ids": ["pentest-foundation", "web-request-analysis"]
+            }
+            created = await client.post("/api/v1/pentests", json=admitted)
+            assert created.status_code == 201, created.text
+            assert created.json()["kind"] == "pentest"
+            assert created.json()["temporal_workflow_id"] == f"riftx-pentest-{run_id}"
+
+            status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert status.status_code == 200, status.text
+            assert status.json()["capabilities"]["allowlists"]["tool"] == list(
+                dict.fromkeys((*PENTEST_FOUNDATION_TOOLS, *WEB_REQUEST_ANALYSIS_TOOLS))
+            )
+
+            cycle_repository = SQLAlchemyAgentCycleRepository(
+                runtime.control_plane.database.session_factory
+            )
+            step_repository = SQLAlchemyAgentStepRepository(
+                runtime.control_plane.database.session_factory
+            )
+            intent_repository = SQLAlchemyToolCallIntentRepository(
+                runtime.control_plane.database.session_factory
+            )
+            cycle = RuntimeAgentCycle(
+                id="pentest-lifecycle-cycle",
+                run_id=run_id,
+                session_id=session_id,
+                sequence=1,
+            )
+            await cycle_repository.create(cycle)
+
+            target_http = runtime.control_plane.target_http_service
+            assert target_http is not None
+            successful = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=1,
+                target=f"{target_base}/health?token=private",
+            )
+            successful_result = await target_http.execute(
+                TargetHttpSubmission(
+                    run_id=run_id,
+                    session_id=session_id,
+                    tool_call_id=successful.id,
+                    node_id="local",
+                    request=TargetHttpRequest(
+                        execution_key=build_execution_key(
+                            run_id=run_id,
+                            session_id=session_id,
+                            tool_call_id=successful.id,
+                            attempt_group="initial",
+                        ),
+                        method="GET",
+                        url=f"{target_base}/health?token=private",
+                        query={"page": "1"},
+                    ),
+                )
+            )
+            assert successful_result.status_code == 200
+            assert successful_result.body_excerpt == '{"service":"isolated-pentest-target"}'
+
+            failed = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=2,
+                target=f"{target_base}/fail",
+            )
+            with pytest.raises(TimeoutError):
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=failed.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=failed.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"{target_base}/fail",
+                            timeout_seconds=0.1,
+                        ),
+                    )
+                )
+
+            outside = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=3,
+                target=f"http://127.0.0.2:{port}/outside",
+            )
+            with pytest.raises(ScopeViolationError, match="outside authorized scope"):
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=outside.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=outside.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"http://127.0.0.2:{port}/outside",
+                        ),
+                    )
+                )
+            assert requests == ["/health?token=private&page=1", "/fail"]
+
+            live_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            live_payload = live_status.json()
+            assert live_payload["budget"]["observed_target_interactions"] == 2
+            assert live_payload["budget"]["active_target_interactions"] == 0
+            nodes = {
+                (item["kind"], item["value"]): item
+                for item in live_payload["attack_surface"]["nodes"]
+            }
+            assert nodes[("endpoint", f"{target_base}/health")]["source_level"] == (
+                "observed"
+            )
+            assert ("parameter", f"{target_base}/health?token=") in nodes
+            assert ("parameter", f"{target_base}/health?page=") in nodes
+            assert "private" not in json.dumps(live_payload["attack_surface"])
+
+            events = await client.get(f"/api/v1/runs/{run_id}/events")
+            event_types = [item["event_type"] for item in events.json()["items"]]
+            assert "target_http.response_received" in event_types
+            assert "target_http.request_failed" in event_types
+
+            paused = await client.post(f"/api/v1/runs/{run_id}/pause")
+            assert paused.status_code == 202, paused.text
+            assert paused.json()["run"]["status"] == "paused"
+            paused_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert paused_status.json()["stop"] == {
+                "latest_event_type": "run.pause_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+            assert paused_status.json()["budget"]["observed_target_interactions"] == 2
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            rebuilt = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert rebuilt.status_code == 200, rebuilt.text
+            assert rebuilt.json()["run"]["status"] == "paused"
+            assert rebuilt.json()["workflow"]["workflow_id"] == f"riftx-pentest-{run_id}"
+            assert rebuilt.json()["budget"]["observed_target_interactions"] == 2
+            assert any(
+                item["value"] == f"{target_base}/health"
+                and item["source_level"] == "observed"
+                for item in rebuilt.json()["attack_surface"]["nodes"]
+            )
+
+            resumed = await client.post(f"/api/v1/runs/{run_id}/resume")
+            assert resumed.status_code == 202, resumed.text
+            assert resumed.json()["run"]["status"] == "waiting_user"
+            stopped = await client.post(f"/api/v1/runs/{run_id}/cancel")
+            assert stopped.status_code == 202, stopped.text
+            assert stopped.json()["run"]["status"] == "cancelled"
+            stopped_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert stopped_status.json()["stop"] == {
+                "latest_event_type": "run.cancel_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+    finally:
+        await restarted.control_plane.close()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
 async def test_pentest_status_projects_durable_usage_and_runner_state(
     tmp_path: Path,
 ) -> None:
@@ -1571,7 +1873,7 @@ async def test_pentest_create_pins_explicit_dynamic_tool(tmp_path: Path) -> None
             assert await store.get_allowlist(
                 session_id,
                 CapabilityKind.TOOL,
-            ) == frozenset({"python"})
+            ) == frozenset((*PENTEST_FOUNDATION_TOOLS, "python"))
     finally:
         await runtime.control_plane.close()
 

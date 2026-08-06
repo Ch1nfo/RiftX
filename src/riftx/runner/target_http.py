@@ -245,14 +245,14 @@ class RunnerTargetHttpClient:
                 retry_closes.values(),
                 timeout=max(0.0, stop_deadline - loop.time()),
             )
-            for task in pending:
-                task.cancel()
+            for pending_close_task in pending:
+                pending_close_task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            for task in retry_closes.values():
-                if task.done():
+            for close_task in retry_closes.values():
+                if close_task.done():
                     try:
-                        task.result()
+                        close_task.result()
                     except BaseException:
                         pass
 
@@ -650,7 +650,7 @@ async def _send(
     effect_guard: EffectGuard | None,
 ) -> tuple[httpx.Response, bytes, str, list[str], bool]:
     request = launch.request
-    current = request.url
+    current = str(httpx.URL(request.url).copy_merge_params(request.query))
     method = request.method
     headers = dict(request.headers)
     content = request.body
@@ -661,7 +661,6 @@ async def _send(
         outbound = client.build_request(
             method,
             current,
-            params=request.query if not redirects else None,
             headers=headers,
             cookies=request.cookies if not redirects else None,
             content=content,

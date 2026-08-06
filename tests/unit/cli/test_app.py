@@ -491,7 +491,15 @@ class FakeAPIClient:
                     }
                 ],
                 "allowlists": {
-                    "tool": [],
+                    "tool": [
+                        "list_ready_tasks",
+                        "add_task",
+                        "query_reasoning_graph",
+                        "record_observation",
+                        "record_negative_result",
+                        "complete_task",
+                        "complete_run",
+                    ],
                     "skill": ["pentest-foundation"],
                     "technique": [],
                 },
