@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 已能初始化本地目录和 SQLite schema，在停服、一致性备份、exclusive locking 与失败恢复边界内把已管理 SQLite 迁移到 head，并原子修复 Official Pack install/active-lock 投影漂移。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`。
-- Verification：全仓 `5243 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/Database Maintenance/Local FS/CLI Client/Diagnostics/API/Packs Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live/offline 状态晋升、Alembic head、Official Pack immutable/install/lock/digest、原子回滚、RunKind effect inventory、owner-only 目录、SQLite 备份/迁移/恢复与 wheel 迁移资产验证通过。
-- Next delivery slice：实现常见配置迁移，再交付 `riftx onboard`。
+- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；14 个稳定检查覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 已能初始化本地目录和 SQLite schema，在停服、一致性备份、exclusive locking 与失败恢复边界内把已管理 SQLite 迁移到 head，原子修复 Official Pack install/active-lock 投影漂移，并安全移除未定制的退役 `audit.source_ingest` 配置。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`。
+- Verification：全仓 `5252 passed, 5 skipped, 17 warnings`；全仓 Ruff、Config Maintenance/Doctor/Database Maintenance/Local FS/CLI Client/Diagnostics/API/Packs Scoped mypy、真实不可达 Control Plane CLI 冒烟、14 类稳定检查、live/offline 状态晋升、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚、RunKind effect inventory、owner-only 目录、SQLite 备份/迁移/恢复与 wheel 迁移资产验证通过。
+- Next delivery slice：交付 `riftx onboard`。
 
 ## 3. 研究与实现基线
 
@@ -882,6 +882,13 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 仅 `missing_install`、`install_drift`、`lock_set_drift` 和 `lock_digest_drift` 属于可重建投影；修复会规范化 install、递增 `state_version`、release 错误 active lock 并创建新的正确 lock，不删除或复活历史 released lock，也不修改 Run Session lock；
   - 离线 Doctor 在 file-backed SQLite 已到 Alembic head 时复用 `Database`、`SystemDiagnosticsService`、Official Pack Catalog 与 Capability Repository 读取权威状态；可修复漂移才标记 `fixable`，unexpected install、Pack/Version/Member immutable drift 明确要求可信恢复；
   - `doctor --fix` 将目录、SQLite migration、Official Pack repair 按顺序执行；数据库或 Pack 持久化修复前统一探测 Control Plane，只要服务可达就拒绝动作；Pack 修复提交后再次运行权威 diagnostics，只有 22 个 install 与 66 个 active lock 全部 ready 才算成功。
+- Runtime configuration migration slice：
+  - 新增只读 `inspect_runtime_config_migration`，只把与 `AuditSourceIngestConfig()` 完全一致、且可用 YAML Node 行标记精确删除的退役 `audit.source_ingest` 标记为 `migratable`；任何自定义 image digest、资源限制、字段或无法无损编辑的内联布局均标记为 `manual`，不推测操作员意图；
+  - `repair_runtime_config` 不重写整份 YAML，只删除目标键值行段与历史示例中精确匹配的两行说明，迁移前后以解析结果证明除 `audit.source_ingest` 外无字段变化，并在第二次读取后重新验证默认值以关闭陈旧检查窗口；
+  - 配置读取限制为 1 MiB、当前用户所有的普通文件，路径遍历拒绝任意符号链接组件；写入前生成 `0700` 目录中的 owner-only `0600` 精确字节备份，临时文件使用 `O_EXCL`/`O_NOFOLLOW`，保留原文件 mode，并以 inode identity、原子 `os.replace` 与文件/目录 fsync 完成提交；
+  - 迁移后重新运行权威 inspection，未达到 `ready` 时使用原始字节原子恢复；恢复后保留备份，identity drift 或恢复失败显式报告 rollback incomplete；
+  - Doctor 新增稳定 `config_migrations` 检查：无选定文件或无需迁移时 ready，精确旧默认 degraded/fixable，自定义旧配置 failed/manual；配置写修复与数据库/Pack 一样要求 Control Plane 不可达，修复结果记录配置与备份路径并复检 ready；
+  - CLI 仅选择显式 `--config`、`RIFTX_CONFIG` 或已存在的默认用户配置作为迁移目标，不默认自动修改 `/etc/riftx/riftx.yaml`，继续复用现有分层配置加载器而不建立第二套状态。
 - Safety boundaries：
   - 默认 `riftx doctor` 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径/数据库元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；只有显式 `--fix` 才进入已登记的本地修复处理器；
   - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
@@ -931,8 +938,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .`：passed；
   - `conda run --no-capture-output -n agent pytest -q`：`5243 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`。
-- Remaining：常见配置迁移、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
+- Runtime configuration migration checks：
+  - 测试先行验证：新增配置维护合同在实现前以 `ModuleNotFoundError: riftx.config_maintenance` 产生预期收集错误；
+  - Config Maintenance、Doctor、Runtime/Audit Config 与 CLI 关联回归：`241 passed`；最终 Config Maintenance、Doctor 与 CLI 定向回归：`82 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/config_maintenance.py src/riftx/doctor.py src/riftx/config.py`：`Success: no issues found in 3 source files`；`src/riftx/cli/app.py` 仍仅命中既有 `_AuditGroup` Typer/Click override 的 6 个类型错误，本切片未修改该边界；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5252 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`。
+- Remaining：`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
