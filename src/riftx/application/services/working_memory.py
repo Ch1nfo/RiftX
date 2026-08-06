@@ -10,16 +10,18 @@ from riftx.application.errors import (
     RepositoryConflictError,
 )
 from riftx.application.ports import RunRepository
-from riftx.context import (
-    AttemptRecord,
+from riftx.context.reducer import (
     DuplicateAttemptError,
     PlanRegressionError,
-    PlanUpdateProposal,
-    WorkingMemory,
     WorkingMemoryReducer,
     WorkingMemoryReductionError,
-    WorkingMemoryRepository,
     WorkingMemoryVersionConflict,
+)
+from riftx.context.working_memory import (
+    AttemptRecord,
+    PlanUpdateProposal,
+    WorkingMemory,
+    WorkingMemoryRepository,
 )
 from riftx.tasks import TaskGraphRepository
 
