@@ -190,6 +190,22 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
         "reopen_task",
         "cancel_task",
     }.isdisjoint(SUBAGENT_RESIDENT_TOOL_IDS)
+    cognitive_tools = {
+        "propose_plan_update",
+        "record_observation",
+        "propose_fact",
+        "propose_hypothesis",
+        "record_attempt",
+        "propose_finding",
+        "record_negative_result",
+        "query_reasoning_graph",
+    }
+    assert cognitive_tools <= set(RESIDENT_TOOL_IDS)
+    assert cognitive_tools.isdisjoint(SUBAGENT_RESIDENT_TOOL_IDS)
+    assert schemas["record_observation"]["parameters"]["properties"]["evidence_ids"][
+        "minItems"
+    ] == 1
+    assert "status" not in schemas["propose_finding"]["parameters"]["properties"]
 
 
 async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> None:

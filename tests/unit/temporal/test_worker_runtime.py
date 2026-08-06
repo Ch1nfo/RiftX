@@ -197,6 +197,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
 
     def capture_control_tools(*args: object, **kwargs: object) -> object:
         captured["task_planner"] = kwargs["task_planner"]
+        captured["working_memory_proposals"] = kwargs["working_memory_proposals"]
+        captured["reasoning_proposals"] = kwargs["reasoning_proposals"]
         captured["task_worker_id"] = kwargs["worker_id"]
         return real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
 
@@ -231,6 +233,14 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None
     assert isinstance(captured["task_planner"], worker_runtime.SQLAlchemyTaskPlanner)
+    assert isinstance(
+        captured["working_memory_proposals"],
+        worker_runtime.WorkingMemoryProposalApplicationService,
+    )
+    assert isinstance(
+        captured["reasoning_proposals"],
+        worker_runtime.ReasoningGraphApplicationService,
+    )
     assert captured["task_worker_id"] == "worker-local"
     context_sources = captured["context_sources"]
     assert any(

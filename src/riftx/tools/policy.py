@@ -305,6 +305,38 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "propose_plan_update": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "record_observation": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "propose_fact": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "propose_hypothesis": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "record_attempt": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "propose_finding": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "record_negative_result": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
+        "query_reasoning_graph": AgentToolPolicy(
+            AgentToolEffect.READ_ONLY,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "delegate": AgentToolPolicy(
             AgentToolEffect.RUN_LIFECYCLE,
             AgentToolAuthorization.RUN_CONTEXT,

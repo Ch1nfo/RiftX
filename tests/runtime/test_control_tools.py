@@ -12,6 +12,10 @@ from pydantic import ValidationError
 from tests.integration.persistence.test_capability_repository import version
 
 from riftx.application.errors import ApplicationConflictError
+from riftx.application.services import (
+    QueryReasoningGraph,
+    ReasoningGraphQueryResult,
+)
 from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserView, OpenBrowser
@@ -35,6 +39,7 @@ from riftx.code import (
     GitStatusEntry,
     GitStatusResult,
 )
+from riftx.context import AttemptRecord, PlanUpdateProposal, WorkingMemory
 from riftx.domain import (
     Artifact,
     ArtifactAccessClass,
@@ -61,6 +66,15 @@ from riftx.domain import (
 from riftx.domain.base import utc_now
 from riftx.execution import ExecutionWaitResult, ExecutionWaitStatus
 from riftx.mcp import MCPInvocationResult
+from riftx.reasoning import (
+    ReasoningCreatorType,
+    ReasoningEdge,
+    ReasoningGraph,
+    ReasoningNode,
+    ReasoningNodeKind,
+    ReasoningNodeStatus,
+    ReasoningRelationType,
+)
 from riftx.runtime.control_tools import RuntimeControlToolService
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
@@ -148,6 +162,102 @@ class FakeTaskPlanner:
     async def complete_task(self, command: CompleteTaskCommand) -> TaskMutationResult:
         self.calls.append(command)
         return TaskMutationResult(graph_version=3, task=self.task, attempt=self.attempt)
+
+
+class FakeWorkingMemoryProposals:
+    def __init__(self) -> None:
+        self.plan_calls: list[tuple[str, int, PlanUpdateProposal]] = []
+        self.attempt_calls: list[tuple[str, int, AttemptRecord]] = []
+
+    async def propose_plan_update(
+        self,
+        *,
+        run_id: str,
+        expected_memory_version: int,
+        proposal: PlanUpdateProposal,
+    ) -> WorkingMemory:
+        self.plan_calls.append((run_id, expected_memory_version, proposal))
+        return WorkingMemory(run_id=run_id, version=max(1, expected_memory_version + 1))
+
+    async def record_attempt(
+        self,
+        *,
+        run_id: str,
+        expected_memory_version: int,
+        attempt: AttemptRecord,
+    ) -> WorkingMemory:
+        self.attempt_calls.append((run_id, expected_memory_version, attempt))
+        return WorkingMemory(
+            run_id=run_id,
+            version=max(1, expected_memory_version + 1),
+            attempts=[attempt],
+        )
+
+
+class FakeReasoningProposals:
+    def __init__(self) -> None:
+        self.graph: ReasoningGraph | None = None
+        self.queries: list[QueryReasoningGraph] = []
+
+    async def create_node(
+        self,
+        node: ReasoningNode,
+        *,
+        expected_graph_version: int,
+    ) -> ReasoningGraph:
+        if self.graph is None:
+            assert expected_graph_version == 0
+            self.graph = ReasoningGraph(run_id=node.run_id, nodes=[node])
+        else:
+            assert expected_graph_version == self.graph.version
+            self.graph = self.graph.model_copy(
+                update={
+                    "version": self.graph.version + 1,
+                    "nodes": [*self.graph.nodes, node],
+                }
+            )
+        return self.graph
+
+    async def record_negative_result(
+        self,
+        negative_result: ReasoningNode,
+        *,
+        invalidated_node_id: str,
+        expected_graph_version: int,
+        edge_id: str | None = None,
+    ) -> ReasoningGraph:
+        assert self.graph is not None
+        assert expected_graph_version == self.graph.version
+        edge = ReasoningEdge(
+            id=edge_id or "negative-edge",
+            run_id=negative_result.run_id,
+            source_node_id=negative_result.id,
+            target_node_id=invalidated_node_id,
+            relation_type=ReasoningRelationType.INVALIDATES,
+            evidence_ids=negative_result.evidence_ids,
+            creator_type=ReasoningCreatorType.REDUCER,
+            created_by="reasoning-reducer",
+        )
+        self.graph = ReasoningGraph(
+            run_id=self.graph.run_id,
+            version=self.graph.version + 1,
+            nodes=[*self.graph.nodes, negative_result],
+            edges=[*self.graph.edges, edge],
+            created_at=self.graph.created_at,
+        )
+        return self.graph
+
+    async def query(self, command: QueryReasoningGraph) -> ReasoningGraphQueryResult:
+        self.queries.append(command)
+        graph = self.graph
+        return ReasoningGraphQueryResult(
+            run_id=command.run_id,
+            graph_version=graph.version if graph is not None else 0,
+            total_matching_nodes=len(graph.nodes) if graph is not None else 0,
+            offset=command.offset,
+            nodes=tuple(graph.nodes) if graph is not None else (),
+            edges=tuple(graph.edges) if graph is not None else (),
+        )
 
 
 class FakeExecutions:
@@ -933,6 +1043,8 @@ def service(
     mcp: FakeMCP | None = None,
     control_intents: FakeControlIntents | None = None,
     task_planner: FakeTaskPlanner | None = None,
+    working_memory_proposals: FakeWorkingMemoryProposals | None = None,
+    reasoning_proposals: FakeReasoningProposals | None = None,
     worker_id: str = "runtime",
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -957,6 +1069,8 @@ def service(
         mcp=mcp,  # type: ignore[arg-type]
         control_intents=control_intents,  # type: ignore[arg-type]
         task_planner=task_planner,  # type: ignore[arg-type]
+        working_memory_proposals=working_memory_proposals,
+        reasoning_proposals=reasoning_proposals,
         worker_id=worker_id,
     )
     return control, events, transcript, execution_service
@@ -1039,6 +1153,138 @@ async def test_subagent_cannot_change_task_graph_topology() -> None:
 
     assert captured.value.code == "task_planner_primary_required"
     assert planner.calls == []
+
+
+async def test_primary_cognitive_tools_inject_scope_and_fixed_candidate_states() -> None:
+    working_memory = FakeWorkingMemoryProposals()
+    reasoning = FakeReasoningProposals()
+    control, _, _, _ = service(
+        working_memory_proposals=working_memory,
+        reasoning_proposals=reasoning,
+    )
+
+    plan_result = await control(
+        SCOPE,
+        "propose_plan_update",
+        {
+            "expected_memory_version": 0,
+            "current_focus": {
+                "phase": "recon",
+                "objective": "Inspect the authorized target",
+            },
+        },
+        "plan-call",
+    )
+    attempt_result = await control(
+        SCOPE,
+        "record_attempt",
+        {
+            "expected_memory_version": 0,
+            "attempt_id": "attempt-1",
+            "action_signature": "http-probe:v1",
+            "target": "https://192.0.2.10",
+            "tool_id": "target_http_request",
+            "result_status": "failed",
+            "result_summary": "Connection was refused",
+            "retryable": True,
+        },
+        "attempt-call",
+    )
+    graph_version = 0
+    expected = [
+        ("record_observation", "observation-1", ReasoningNodeKind.OBSERVATION),
+        ("propose_fact", "fact-1", ReasoningNodeKind.FACT_CANDIDATE),
+        ("propose_hypothesis", "hypothesis-1", ReasoningNodeKind.HYPOTHESIS),
+        (
+            "propose_finding",
+            "finding-candidate-1",
+            ReasoningNodeKind.VULNERABILITY_CANDIDATE,
+        ),
+    ]
+    for tool_name, node_id, kind in expected:
+        arguments: dict[str, object] = {
+            "expected_graph_version": graph_version,
+            "node_id": node_id,
+            "task_id": "task-1",
+            "claim": f"Claim for {node_id}",
+        }
+        if tool_name != "propose_hypothesis":
+            arguments["evidence_ids"] = ["evidence-1"]
+        result = await control(SCOPE, tool_name, arguments, f"{tool_name}-call")
+        graph_version = result["graph_version"]
+        assert result["node"]["kind"] == kind.value
+
+    negative = await control(
+        SCOPE,
+        "record_negative_result",
+        {
+            "expected_graph_version": graph_version,
+            "node_id": "negative-1",
+            "task_id": "task-1",
+            "claim": "The endpoint did not accept the tested input",
+            "evidence_ids": ["evidence-2"],
+            "invalidated_node_id": "observation-1",
+        },
+        "negative-call",
+    )
+    queried = await control(
+        SCOPE,
+        "query_reasoning_graph",
+        {"kinds": ["observation"], "limit": 10},
+        "query-call",
+    )
+
+    assert plan_result["accepted"] is True
+    assert attempt_result["attempt_id"] == "attempt-1"
+    assert negative["node"]["kind"] == "negative_result"
+    assert queried["run_id"] == "run-1"
+    assert reasoning.queries[0].run_id == "run-1"
+    assert reasoning.graph is not None
+    statuses = {node.kind: node.status for node in reasoning.graph.nodes}
+    assert statuses == {
+        ReasoningNodeKind.OBSERVATION: ReasoningNodeStatus.RECORDED,
+        ReasoningNodeKind.FACT_CANDIDATE: ReasoningNodeStatus.CANDIDATE,
+        ReasoningNodeKind.HYPOTHESIS: ReasoningNodeStatus.UNVERIFIED,
+        ReasoningNodeKind.VULNERABILITY_CANDIDATE: ReasoningNodeStatus.CANDIDATE,
+        ReasoningNodeKind.NEGATIVE_RESULT: ReasoningNodeStatus.RECORDED,
+    }
+    assert all(node.run_id == "run-1" for node in reasoning.graph.nodes)
+    assert all(node.session_id == "session-1" for node in reasoning.graph.nodes)
+    assert all(node.created_by == "primary" for node in reasoning.graph.nodes)
+
+
+async def test_cognitive_tools_reject_model_owned_status_and_subagents() -> None:
+    reasoning = FakeReasoningProposals()
+    control, _, _, _ = service(reasoning_proposals=reasoning)
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        await control(
+            SCOPE,
+            "propose_finding",
+            {
+                "expected_graph_version": 0,
+                "claim": "Untrusted confirmed claim",
+                "evidence_ids": ["evidence-1"],
+                "status": "confirmed",
+            },
+            "forged-status",
+        )
+
+    subagent_scope = RuntimeToolScope(
+        run_id="run-1",
+        session_id="session-subagent",
+        agent_id="subagent",
+        model_profile="test-profile",
+    )
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            subagent_scope,
+            "query_reasoning_graph",
+            {},
+            "subagent-query",
+        )
+    assert captured.value.code == "cognitive_tools_primary_required"
+    assert reasoning.queries == []
 
 
 async def test_effectful_control_tool_fails_closed_without_approved_intent() -> None:

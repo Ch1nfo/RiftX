@@ -16,6 +16,8 @@ from riftx.application.errors import (
 )
 from riftx.application.services import (
     ArtifactApplicationService,
+    QueryReasoningGraph,
+    ReasoningGraphQueryResult,
     TrafficMetadataApplicationService,
 )
 from riftx.application.services.runs import require_general_run_operation
@@ -23,6 +25,15 @@ from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserApplicationService, BrowserView, OpenBrowser
 from riftx.capabilities import TechniqueContextManager
 from riftx.code import CodeWorkspaceService, GitWorkspaceService
+from riftx.context import (
+    AttemptRecord,
+    AttemptStatus,
+    CurrentFocus,
+    NextAction,
+    PlanItemUpdate,
+    PlanUpdateProposal,
+    WorkingMemory,
+)
 from riftx.domain import (
     AgentMessage,
     ArtifactAccessClass,
@@ -34,8 +45,16 @@ from riftx.domain import (
     Run,
     TranscriptMessageDraft,
 )
+from riftx.domain.base import new_id
 from riftx.execution import ExecutionService, build_execution_key
 from riftx.mcp import MCPApplicationService
+from riftx.reasoning import (
+    ReasoningCreatorType,
+    ReasoningGraph,
+    ReasoningNode,
+    ReasoningNodeKind,
+    ReasoningNodeStatus,
+)
 from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.skills import ProgressiveSkillContextManager
 from riftx.target_http import TargetHttpRequest, TargetHttpResult, TargetHttpSubmission
@@ -149,6 +168,44 @@ class TaskPlanner(Protocol):
         self,
         command: ClaimReadyTaskCommand,
     ) -> TaskMutationResult | None: ...
+
+
+class WorkingMemoryProposalService(Protocol):
+    async def propose_plan_update(
+        self,
+        *,
+        run_id: str,
+        expected_memory_version: int,
+        proposal: PlanUpdateProposal,
+    ) -> WorkingMemory: ...
+
+    async def record_attempt(
+        self,
+        *,
+        run_id: str,
+        expected_memory_version: int,
+        attempt: AttemptRecord,
+    ) -> WorkingMemory: ...
+
+
+class ReasoningProposalService(Protocol):
+    async def create_node(
+        self,
+        node: ReasoningNode,
+        *,
+        expected_graph_version: int,
+    ) -> ReasoningGraph: ...
+
+    async def record_negative_result(
+        self,
+        negative_result: ReasoningNode,
+        *,
+        invalidated_node_id: str,
+        expected_graph_version: int,
+        edge_id: str | None = None,
+    ) -> ReasoningGraph: ...
+
+    async def query(self, command: QueryReasoningGraph) -> ReasoningGraphQueryResult: ...
 
 
 class _Arguments(BaseModel):
@@ -300,6 +357,56 @@ class _FailTaskAttemptArguments(_Arguments):
     task_id: str = Field(min_length=1, max_length=64)
     attempt_id: str = Field(min_length=1, max_length=64)
     failure_summary: str = Field(min_length=1)
+
+
+class _ProposePlanUpdateArguments(_Arguments):
+    expected_memory_version: int = Field(ge=0)
+    item_updates: list[PlanItemUpdate] = Field(default_factory=list, max_length=100)
+    current_focus: CurrentFocus | None = None
+    next_action: NextAction | None = None
+
+
+class _RecordAttemptArguments(_Arguments):
+    expected_memory_version: int = Field(ge=0)
+    attempt_id: str | None = Field(default=None, min_length=1, max_length=64)
+    action_signature: str = Field(min_length=1, max_length=1_000)
+    target: str = Field(min_length=1, max_length=8_192)
+    tool_id: str = Field(min_length=1, max_length=256)
+    normalized_arguments: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
+    result_status: AttemptStatus
+    result_summary: str = Field(min_length=1, max_length=16_384)
+    retryable: bool = False
+    retry_of_attempt_id: str | None = Field(default=None, min_length=1, max_length=64)
+    retry_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
+
+
+class _ReasoningProposalArguments(_Arguments):
+    expected_graph_version: int = Field(ge=0)
+    node_id: str | None = Field(default=None, min_length=1, max_length=64)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    claim: str = Field(min_length=1, max_length=20_000)
+    structured_data: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=1_000)
+
+
+class _EvidenceReasoningProposalArguments(_ReasoningProposalArguments):
+    evidence_ids: list[str] = Field(min_length=1, max_length=1_000)
+
+
+class _RecordNegativeResultArguments(_EvidenceReasoningProposalArguments):
+    invalidated_node_id: str = Field(min_length=1, max_length=64)
+
+
+class _QueryReasoningGraphArguments(_Arguments):
+    node_ids: list[str] = Field(default_factory=list, max_length=100)
+    kinds: list[ReasoningNodeKind] = Field(default_factory=list, max_length=8)
+    statuses: list[ReasoningNodeStatus] = Field(default_factory=list, max_length=16)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    query: str = Field(default="", max_length=2_000)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=100)
+    edge_limit: int = Field(default=100, ge=0, le=200)
 
 
 class _ListFilesArguments(_Arguments):
@@ -545,6 +652,8 @@ class RuntimeControlToolService:
         mcp: MCPApplicationService | None = None,
         control_intents: ControlIntentTracker | None = None,
         task_planner: TaskPlanner | None = None,
+        working_memory_proposals: WorkingMemoryProposalService | None = None,
+        reasoning_proposals: ReasoningProposalService | None = None,
         worker_id: str = "runtime",
     ) -> None:
         self._tools = tools
@@ -565,6 +674,8 @@ class RuntimeControlToolService:
         self._mcp = mcp
         self._control_intents = control_intents
         self._task_planner = task_planner
+        self._working_memory_proposals = working_memory_proposals
+        self._reasoning_proposals = reasoning_proposals
         self._worker_id = worker_id
 
     async def __call__(
@@ -1455,6 +1566,116 @@ class RuntimeControlToolService:
                     )
                 )
             ).model_dump(mode="json")
+        if tool_name == "propose_plan_update":
+            self._require_primary_cognition(scope)
+            proposals = self._require_working_memory_proposals()
+            plan_arguments = _ProposePlanUpdateArguments.model_validate(raw_arguments)
+            memory = await proposals.propose_plan_update(
+                run_id=scope.run_id,
+                expected_memory_version=plan_arguments.expected_memory_version,
+                proposal=PlanUpdateProposal(
+                    item_updates=plan_arguments.item_updates,
+                    current_focus=plan_arguments.current_focus,
+                    next_action=plan_arguments.next_action,
+                ),
+            )
+            return {
+                "working_memory_id": memory.id,
+                "working_memory_version": memory.version,
+                "accepted": True,
+            }
+        if tool_name == "record_attempt":
+            self._require_primary_cognition(scope)
+            proposals = self._require_working_memory_proposals()
+            attempt_arguments = _RecordAttemptArguments.model_validate(raw_arguments)
+            memory = await proposals.record_attempt(
+                run_id=scope.run_id,
+                expected_memory_version=attempt_arguments.expected_memory_version,
+                attempt=AttemptRecord(
+                    id=attempt_arguments.attempt_id or new_id(),
+                    action_signature=attempt_arguments.action_signature,
+                    target=attempt_arguments.target,
+                    tool_id=attempt_arguments.tool_id,
+                    normalized_arguments=attempt_arguments.normalized_arguments,
+                    result_status=attempt_arguments.result_status,
+                    result_summary=attempt_arguments.result_summary,
+                    retryable=attempt_arguments.retryable,
+                    retry_of_attempt_id=attempt_arguments.retry_of_attempt_id,
+                    retry_reason=attempt_arguments.retry_reason,
+                ),
+            )
+            return {
+                "working_memory_id": memory.id,
+                "working_memory_version": memory.version,
+                "attempt_id": memory.attempts[-1].id,
+                "accepted": True,
+            }
+        if tool_name in {
+            "record_observation",
+            "propose_fact",
+            "propose_hypothesis",
+            "propose_finding",
+        }:
+            self._require_primary_cognition(scope)
+            reasoning = self._require_reasoning_proposals()
+            argument_type = (
+                _ReasoningProposalArguments
+                if tool_name == "propose_hypothesis"
+                else _EvidenceReasoningProposalArguments
+            )
+            reasoning_arguments = argument_type.model_validate(raw_arguments)
+            kind, status = {
+                "record_observation": (
+                    ReasoningNodeKind.OBSERVATION,
+                    ReasoningNodeStatus.RECORDED,
+                ),
+                "propose_fact": (
+                    ReasoningNodeKind.FACT_CANDIDATE,
+                    ReasoningNodeStatus.CANDIDATE,
+                ),
+                "propose_hypothesis": (
+                    ReasoningNodeKind.HYPOTHESIS,
+                    ReasoningNodeStatus.UNVERIFIED,
+                ),
+                "propose_finding": (
+                    ReasoningNodeKind.VULNERABILITY_CANDIDATE,
+                    ReasoningNodeStatus.CANDIDATE,
+                ),
+            }[tool_name]
+            node = _reasoning_node(scope, reasoning_arguments, kind=kind, status=status)
+            graph = await reasoning.create_node(
+                node,
+                expected_graph_version=reasoning_arguments.expected_graph_version,
+            )
+            return _reasoning_mutation_payload(graph, node.id)
+        if tool_name == "record_negative_result":
+            self._require_primary_cognition(scope)
+            reasoning = self._require_reasoning_proposals()
+            negative_arguments = _RecordNegativeResultArguments.model_validate(raw_arguments)
+            node = _reasoning_node(
+                scope,
+                negative_arguments,
+                kind=ReasoningNodeKind.NEGATIVE_RESULT,
+                status=ReasoningNodeStatus.RECORDED,
+            )
+            graph = await reasoning.record_negative_result(
+                node,
+                invalidated_node_id=negative_arguments.invalidated_node_id,
+                expected_graph_version=negative_arguments.expected_graph_version,
+            )
+            return _reasoning_mutation_payload(graph, node.id)
+        if tool_name == "query_reasoning_graph":
+            self._require_primary_cognition(scope)
+            reasoning = self._require_reasoning_proposals()
+            query_arguments = _QueryReasoningGraphArguments.model_validate(raw_arguments)
+            return (
+                await reasoning.query(
+                    QueryReasoningGraph(
+                        run_id=scope.run_id,
+                        **query_arguments.model_dump(),
+                    )
+                )
+            ).model_dump(mode="json")
         if tool_name == "complete_run":
             complete_arguments = _CompleteRunArguments.model_validate(raw_arguments)
             await self._events.append(
@@ -1527,12 +1748,30 @@ class RuntimeControlToolService:
             raise RuntimeError("Task Planner is not configured")
         return self._task_planner
 
+    def _require_working_memory_proposals(self) -> WorkingMemoryProposalService:
+        if self._working_memory_proposals is None:
+            raise RuntimeError("Working Memory Proposal service is not configured")
+        return self._working_memory_proposals
+
+    def _require_reasoning_proposals(self) -> ReasoningProposalService:
+        if self._reasoning_proposals is None:
+            raise RuntimeError("Reasoning Proposal service is not configured")
+        return self._reasoning_proposals
+
     @staticmethod
     def _require_primary_planner(scope: RuntimeToolScope) -> None:
         if scope.agent_id != "primary":
             raise ApplicationConflictError(
                 "task_planner_primary_required",
                 "Only the Primary Agent may change Task Graph topology",
+            )
+
+    @staticmethod
+    def _require_primary_cognition(scope: RuntimeToolScope) -> None:
+        if scope.agent_id != "primary":
+            raise ApplicationConflictError(
+                "cognitive_tools_primary_required",
+                "Only the Primary Agent may propose authoritative cognitive state",
             )
 
     async def _general_run(self, run_id: str) -> Run:
@@ -1591,6 +1830,42 @@ class RuntimeControlToolService:
                 "Execution is not available to this Agent Session",
             )
         return execution
+
+
+def _reasoning_node(
+    scope: RuntimeToolScope,
+    arguments: _ReasoningProposalArguments,
+    *,
+    kind: ReasoningNodeKind,
+    status: ReasoningNodeStatus,
+) -> ReasoningNode:
+    return ReasoningNode(
+        id=arguments.node_id or new_id(),
+        run_id=scope.run_id,
+        session_id=scope.session_id,
+        task_id=arguments.task_id,
+        kind=kind,
+        status=status,
+        claim=arguments.claim,
+        structured_data=arguments.structured_data,
+        evidence_ids=tuple(arguments.evidence_ids),
+        creator_type=ReasoningCreatorType.AGENT,
+        created_by=scope.agent_id,
+    )
+
+
+def _reasoning_mutation_payload(graph: ReasoningGraph, node_id: str) -> dict[str, object]:
+    node = next(item for item in graph.nodes if item.id == node_id)
+    return {
+        "run_id": graph.run_id,
+        "graph_version": graph.version,
+        "node": node.model_dump(mode="json"),
+        "edges": [
+            edge.model_dump(mode="json")
+            for edge in graph.edges
+            if edge.source_node_id == node_id or edge.target_node_id == node_id
+        ],
+    }
 
 
 def _execution_payload(execution: Execution) -> dict[str, object]:

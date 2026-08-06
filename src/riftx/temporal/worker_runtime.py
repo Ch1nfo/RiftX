@@ -28,6 +28,7 @@ from riftx.application.services import (
     NodeApplicationService,
     NodeHeartbeat,
     NodeRegistration,
+    ReasoningGraphApplicationService,
     ReportApplicationService,
     RunnerControlService,
     RunSafetyStopService,
@@ -35,6 +36,7 @@ from riftx.application.services import (
     SafetyStopResult,
     TerminalApplicationService,
     TrafficMetadataApplicationService,
+    WorkingMemoryProposalApplicationService,
     stop_resources_payload,
 )
 from riftx.application.services.workflow_signals import (
@@ -105,6 +107,7 @@ from riftx.persistence import (
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyCapabilityRepository,
     SQLAlchemyCapabilitySelectionStore,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
@@ -826,8 +829,23 @@ async def build_temporal_worker(
         reasoning_graph_repository = SQLAlchemyReasoningGraphRepository(
             database.session_factory
         )
+        evidence_ledger_repository = SQLAlchemyEvidenceLedgerRepository(
+            database.session_factory
+        )
         task_graph_repository = SQLAlchemyTaskGraphRepository(database.session_factory)
         task_planner = SQLAlchemyTaskPlanner(database.session_factory)
+        working_memory_proposals = WorkingMemoryProposalApplicationService(
+            runs=run_repository,
+            task_graphs=task_graph_repository,
+            working_memory=working_memory_repository,
+        )
+        reasoning_proposals = ReasoningGraphApplicationService(
+            runs=run_repository,
+            sessions=agent_session_repository,
+            tasks=task_graph_repository,
+            evidence=evidence_ledger_repository,
+            graphs=reasoning_graph_repository,
+        )
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
@@ -1237,6 +1255,8 @@ async def build_temporal_worker(
             mcp=mcp_service,
             control_intents=deferred_dispatcher,
             task_planner=task_planner,
+            working_memory_proposals=working_memory_proposals,
+            reasoning_proposals=reasoning_proposals,
             worker_id=config.runner.node_id,
         )
         runtime_coordinator = RuntimeCoordinator(

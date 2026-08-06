@@ -83,6 +83,14 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "fail_task_attempt",
     "reopen_task",
     "cancel_task",
+    "propose_plan_update",
+    "record_observation",
+    "propose_fact",
+    "propose_hypothesis",
+    "record_attempt",
+    "propose_finding",
+    "record_negative_result",
+    "query_reasoning_graph",
     "delegate",
     "complete_run",
 )
@@ -1025,6 +1033,22 @@ def _resident_schema(
         "fail_task_attempt": "Fail this Session's running Task Attempt with a durable summary.",
         "reopen_task": "Reopen one blocked or terminal Task with a durable reason.",
         "cancel_task": "Cancel one non-completed Task with a durable reason.",
+        "propose_plan_update": (
+            "Propose a Reducer-validated Working Memory focus or legacy plan update."
+        ),
+        "record_observation": "Record an Evidence-backed Observation in the Reasoning Graph.",
+        "propose_fact": "Propose an Evidence-backed Fact Candidate for later promotion.",
+        "propose_hypothesis": "Propose an unverified Hypothesis for structured investigation.",
+        "record_attempt": (
+            "Record one normalized operation result with explicit failed-attempt retry lineage."
+        ),
+        "propose_finding": (
+            "Propose an Evidence-backed Vulnerability Candidate for later validation."
+        ),
+        "record_negative_result": (
+            "Record an Evidence-backed Negative Result that invalidates a Reasoning claim."
+        ),
+        "query_reasoning_graph": "Query bounded authoritative Reasoning Graph state for this Run.",
         "delegate": "Delegate one bounded independent task to an isolated Subagent.",
         "complete_run": "Request completion of the current authorized Run.",
     }
@@ -1712,6 +1736,199 @@ def _resident_schema(
             "attempt_id",
             "failure_summary",
         ]
+    elif tool_id == "propose_plan_update":
+        properties = {
+            "expected_memory_version": {"type": "integer", "minimum": 0},
+            "item_updates": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string", "minLength": 1},
+                        "task": {"type": ["string", "null"]},
+                        "status": {
+                            "type": ["string", "null"],
+                            "enum": [
+                                "pending",
+                                "running",
+                                "blocked",
+                                "completed",
+                                "cancelled",
+                                None,
+                            ],
+                        },
+                        "sequence": {"type": ["integer", "null"], "minimum": 1},
+                        "completion_summary": {"type": ["string", "null"]},
+                        "reopen_reason": {"type": ["string", "null"]},
+                    },
+                    "required": ["item_id"],
+                    "additionalProperties": False,
+                },
+            },
+            "current_focus": {
+                "type": ["object", "null"],
+                "properties": {
+                    "phase": {"type": "string", "minLength": 1},
+                    "objective": {"type": "string", "minLength": 1},
+                    "plan_item_id": {"type": ["string", "null"]},
+                    "notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["phase", "objective"],
+                "additionalProperties": False,
+            },
+            "next_action": {
+                "type": ["object", "null"],
+                "properties": {
+                    "description": {"type": "string", "minLength": 1},
+                    "tool_id": {"type": ["string", "null"]},
+                    "skill_id": {"type": ["string", "null"]},
+                    "arguments": {"type": "object"},
+                    "reason": {"type": ["string", "null"]},
+                },
+                "required": ["description"],
+                "additionalProperties": False,
+            },
+        }
+        required = ["expected_memory_version"]
+    elif tool_id == "record_attempt":
+        properties = {
+            "expected_memory_version": {"type": "integer", "minimum": 0},
+            "attempt_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "action_signature": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "target": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "tool_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "normalized_arguments": {"type": "object", "maxProperties": 100},
+            "result_status": {
+                "type": "string",
+                "enum": ["succeeded", "failed", "cancelled"],
+            },
+            "result_summary": {"type": "string", "minLength": 1, "maxLength": 16384},
+            "retryable": {"type": "boolean"},
+            "retry_of_attempt_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "retry_reason": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 2000,
+            },
+        }
+        required = [
+            "expected_memory_version",
+            "action_signature",
+            "target",
+            "tool_id",
+            "result_status",
+            "result_summary",
+        ]
+    elif tool_id in {
+        "record_observation",
+        "propose_fact",
+        "propose_hypothesis",
+        "propose_finding",
+        "record_negative_result",
+    }:
+        evidence_schema: dict[str, object] = {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "maxItems": 1000,
+        }
+        if tool_id != "propose_hypothesis":
+            evidence_schema["minItems"] = 1
+        properties = {
+            "expected_graph_version": {"type": "integer", "minimum": 0},
+            "node_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "task_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "claim": {"type": "string", "minLength": 1, "maxLength": 20000},
+            "structured_data": {"type": "object", "maxProperties": 100},
+            "evidence_ids": evidence_schema,
+        }
+        required = ["expected_graph_version", "claim"]
+        if tool_id != "propose_hypothesis":
+            required.append("evidence_ids")
+        if tool_id == "record_negative_result":
+            properties["invalidated_node_id"] = {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            }
+            required.append("invalidated_node_id")
+    elif tool_id == "query_reasoning_graph":
+        properties = {
+            "node_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                "maxItems": 100,
+            },
+            "kinds": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "observation",
+                        "fact_candidate",
+                        "confirmed_fact",
+                        "hypothesis",
+                        "vulnerability_candidate",
+                        "finding",
+                        "proof",
+                        "negative_result",
+                    ],
+                },
+                "maxItems": 8,
+            },
+            "statuses": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "recorded",
+                        "candidate",
+                        "promoted",
+                        "confirmed",
+                        "unverified",
+                        "investigating",
+                        "supported",
+                        "rejected",
+                        "invalidated",
+                        "resolved",
+                        "false_positive",
+                        "validated",
+                        "failed",
+                    ],
+                },
+                "maxItems": 16,
+            },
+            "task_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+            "evidence_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "maxItems": 100,
+            },
+            "query": {"type": "string", "maxLength": 2000},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "edge_limit": {"type": "integer", "minimum": 0, "maximum": 200},
+        }
     elif tool_id == "delegate":
         properties = {
             "task_id": {"type": "string"},

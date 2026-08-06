@@ -73,6 +73,10 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
     assert AGENT_TOOL_POLICIES["complete_task"].authorization is (
         AgentToolAuthorization.RUN_CONTEXT
     )
+    assert AGENT_TOOL_POLICIES["propose_finding"].effect is AgentToolEffect.DURABLE_WRITE
+    assert (
+        AGENT_TOOL_POLICIES["query_reasoning_graph"].effect is AgentToolEffect.READ_ONLY
+    )
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 
