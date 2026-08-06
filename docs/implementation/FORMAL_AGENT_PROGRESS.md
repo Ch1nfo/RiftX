@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`，以及本地只读 `riftx capabilities list`、`riftx capabilities verify` 和 `riftx packs list`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器；Capability/Pack 命令复用权威 Repository、Official Catalog 与 System Diagnostics，数据库缺失时不创建文件，锁或 Digest 漂移时失败关闭；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`。
-- Verification：全仓 `5269 passed, 5 skipped, 18 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo/Capability Management Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 与 Capability/Pack 命令端到端验收、发行 wheel Tool 模板、Demo 与 Capability Management 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
-- Next delivery slice：为 `packs install/update/rollback` 完成停服探测、SQLite 一致性备份、写后验证和失败恢复后再开放写命令。
+- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`，以及本地只读 `riftx capabilities list`、`riftx capabilities verify` 和 `riftx packs list`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器；Capability/Pack 命令复用权威 Repository、Official Catalog 与 System Diagnostics，数据库缺失时不创建文件，锁或 Digest 漂移时失败关闭；Pack 持久化写入已具备 SQLite 一致性备份、双端 inode identity 校验、恢复后完整性复检和 Doctor 失败自动回滚；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
+- Verification：全仓 `5273 passed, 5 skipped, 17 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo/Capability Management Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 与 Capability/Pack 命令端到端验收、发行 wheel Tool 模板、Demo 与 Capability Management 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、SQLite 一致性备份/恢复、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
+- Next delivery slice：为 `packs install/update/rollback` 接入停服探测、现有 SQLite 备份/失败恢复守卫、写后 diagnostics，以及基于持久化 previous version 的 Pack 级 rollback 后再开放写命令。
 
 ## 3. 研究与实现基线
 
@@ -987,8 +987,18 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .`：passed；
   - `conda run --no-capture-output -n agent pytest -q`：`5269 passed, 5 skipped, 18 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个 SQLite datetime adapter 与 1 个既有 Pydantic alias 警告均与本切片无关；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`。
-- Remaining：`packs install/update/rollback` 的安全写入闭环与 Backup/Restore 可用性验收仍待后续切片完成。
+- Pack persistence backup/restore guard slice：
+  - 新增只接受已到 Alembic head 的 file-backed SQLite 的 `backup_sqlite_database` 与 `restore_sqlite_database_backup`；备份复用 SQLite Backup API、`0700` 目录、`0600` 文件、`integrity_check` 与 fsync，不为缺失或未迁移数据库创建状态；
+  - Backup receipt 固定记录源数据库与备份文件的 device/inode identity；恢复前同时验证当前用户所有的普通文件、拒绝符号链接与 identity drift，读取备份时再次通过 `O_NOFOLLOW` descriptor 校验，恢复使用同目录临时文件和原子 `os.replace`；
+  - 恢复前验证备份完整性，恢复后再次运行 `integrity_check`；数据库或备份文件被替换时失败关闭，不覆盖无法证明仍为原对象的路径；
+  - Doctor Official Pack repair 在写前创建一致性备份，继续复用 `bootstrap_official_packs` 与 `SystemDiagnosticsService` 做整批对账和写后验证；任一 reconciliation、提交或 diagnostics 失败时恢复整个数据库，回滚失败则明确报告 incomplete 并保留备份路径；
+  - 定向 Database Maintenance/Doctor 回归：`25 passed`；新增测试证明备份后正常写入不残留锁、后续修改可恢复原值、源数据库或备份 inode 漂移均拒绝恢复，以及 Pack reconcile 注入失败后数据库 marker 回到写前值；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/database_maintenance.py src/riftx/doctor.py`：`Success: no issues found in 2 source files`；
+  - `conda run --no-capture-output -n agent ruff check src/riftx/database_maintenance.py src/riftx/doctor.py tests/unit/test_database_maintenance.py tests/unit/test_doctor.py`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest`：`5273 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
+- Remaining：`packs install/update/rollback` 的停服保护、写后验证、失败恢复和 Pack 版本级 rollback 闭环仍待后续切片完成；SQLite Backup/Restore 原语与 Doctor 接入已完成。
 
 ## 9. Known pre-existing worktree state
 
