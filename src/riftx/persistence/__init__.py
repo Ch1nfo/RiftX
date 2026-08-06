@@ -40,6 +40,7 @@ from .capability_repository import SQLAlchemyCapabilityRepository
 from .capability_selection_repository import SQLAlchemyCapabilitySelectionStore
 from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
+from .evidence_repository import SQLAlchemyEvidenceLedgerRepository
 from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
 from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
@@ -100,6 +101,7 @@ __all__ = [
     "SQLAlchemyConnectorSubmissionRepository",
     "Base",
     "Database",
+    "SQLAlchemyEvidenceLedgerRepository",
     "SQLAlchemyApprovalRepository",
     "SQLAlchemyArtifactRepository",
     "SQLAlchemyEngagementRepository",

@@ -106,6 +106,7 @@ EXPECTED_TABLES = {
     "capability_versions",
     "connector_submissions",
     "context_compilations",
+    "evidence_ledger",
     "context_checkpoints",
     "engagements",
     "engagement_facts",
@@ -545,6 +546,34 @@ def test_task_graph_schema_separates_topology_attempts_budgets_and_evidence() ->
         "task_id",
     }
     assert "evidence_refs_json" in Base.metadata.tables["task_evidence_requirements"].columns.keys()
+
+
+def test_evidence_ledger_schema_preserves_identity_scope_and_replay_metadata() -> None:
+    assert set(Base.metadata.tables["evidence_ledger"].columns.keys()) == {
+        "id",
+        "schema_version",
+        "run_id",
+        "session_id",
+        "task_id",
+        "kind",
+        "source_uri",
+        "digest",
+        "ledger_digest",
+        "creator_type",
+        "created_by",
+        "trust_class",
+        "scope_json",
+        "redaction_status",
+        "redaction_policy_ref",
+        "replay_json",
+        "locator_json",
+        "artifact_id",
+        "created_at",
+    }
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in Base.metadata.tables["evidence_ledger"].c.task_id.foreign_keys
+    } == {"tasks.id"}
 
 
 def test_long_term_memory_table_tracks_scope_sources_and_lifecycle() -> None:

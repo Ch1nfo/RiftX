@@ -2670,6 +2670,80 @@ class TaskEvidenceRequirementRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class EvidenceRecord(Base):
+    __tablename__ = "evidence_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.evidence/v1'",
+            name="ck_evidence_schema_version",
+        ),
+        CheckConstraint(
+            "kind IN ('execution_output', 'artifact_span', 'http_request_response', "
+            "'browser_observation', 'code_location', 'code_flow', 'scanner_signal', "
+            "'user_decision', 'deterministic_parser_result', 'external_research_source')",
+            name="ck_evidence_kind",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'tool', 'parser', 'scanner')",
+            name="ck_evidence_creator_type",
+        ),
+        CheckConstraint(
+            "trust_class IN ('generated', 'user_provided', 'untrusted_source', "
+            "'untrusted_tool_output')",
+            name="ck_evidence_trust_class",
+        ),
+        CheckConstraint(
+            "redaction_status IN ('not_required', 'redacted', 'restricted', 'metadata_only')",
+            name="ck_evidence_redaction_status",
+        ),
+        CheckConstraint(
+            "(redaction_status = 'redacted' AND redaction_policy_ref IS NOT NULL) OR "
+            "(redaction_status = 'not_required' AND redaction_policy_ref IS NULL) OR "
+            "redaction_status IN ('restricted', 'metadata_only')",
+            name="ck_evidence_redaction_shape",
+        ),
+        CheckConstraint(_lower_hex_digest_check("digest"), name="ck_evidence_digest"),
+        CheckConstraint(
+            _lower_hex_digest_check("ledger_digest"),
+            name="ck_evidence_ledger_digest",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        Index("ix_evidence_run_created_id", "run_id", "created_at", "id"),
+        Index("ix_evidence_run_task_created", "run_id", "task_id", "created_at"),
+        Index("ix_evidence_run_kind_created", "run_id", "kind", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ledger_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    trust_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    redaction_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    redaction_policy_ref: Mapped[str | None] = mapped_column(Text)
+    replay_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    locator_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class ContextCompilationRecord(Base):
     __tablename__ = "context_compilations"
     __table_args__ = (
