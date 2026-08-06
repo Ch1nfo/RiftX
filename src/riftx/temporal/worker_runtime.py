@@ -31,6 +31,7 @@ from riftx.application.services import (
     NodeRegistration,
     ReasoningGraphApplicationService,
     ReportApplicationService,
+    RunApplicationService,
     RunnerControlService,
     RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
@@ -116,6 +117,7 @@ from riftx.persistence import (
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyCapabilityRepository,
     SQLAlchemyCapabilitySelectionStore,
+    SQLAlchemyEngagementRepository,
     SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -809,6 +811,7 @@ async def build_temporal_worker(
         workflow_client = TemporalRunClient(client, worker_config)
 
         run_repository = SQLAlchemyRunRepository(database.session_factory)
+        engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
         audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(
             database.session_factory
         )
@@ -1051,6 +1054,10 @@ async def build_temporal_worker(
             artifacts=artifact_service,
             events=event_repository,
         )
+
+        async def pause_budget_exhausted_pentest(run_id: str) -> None:
+            await budget_run_service.pause(run_id)
+
         target_http_repository = SQLAlchemyTargetHttpRequestRepository(
             database.session_factory
         )
@@ -1073,6 +1080,7 @@ async def build_temporal_worker(
             ),
             artifacts=artifact_service,
             events=event_repository,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         safety_stopper = RunSafetyStopService(
             execution_repository=execution_repository,
@@ -1092,6 +1100,16 @@ async def build_temporal_worker(
             runs=run_repository,
             audits=audit_aggregate_repository,
             general=workflow_client,
+        )
+        budget_run_service = RunApplicationService(
+            engagement_repository=engagement_repository,
+            run_repository=run_repository,
+            event_repository=event_repository,
+            workflow_client=workflow_router,
+            execution_repository=execution_repository,
+            execution_runner=execution_runner,
+            workspace_root=config.workspace.root,
+            safety_stopper=safety_stopper,
         )
         audit_cleanup_reconciler = AuditControlApplicationService(
             audits=audit_service,

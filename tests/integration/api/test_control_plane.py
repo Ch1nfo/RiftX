@@ -799,6 +799,10 @@ tools:
         artifacts=artifact_service,
         events=event_repository,
     )
+
+    async def pause_budget_exhausted_pentest(run_id: str) -> None:
+        await run_service.pause(run_id)
+
     target_http_service = TargetHttpApplicationService(
         runs=run_repository,
         tool_calls=tool_call_intent_repository,
@@ -806,6 +810,7 @@ tools:
         runner=RunnerTargetHttpClient(node_id=settings.node_id),
         artifacts=artifact_service,
         events=event_repository,
+        budget_exhaustion_handler=pause_budget_exhausted_pentest,
     )
     runner_control_service = RunnerControlService(
         credentials=runner_credential_repository,
@@ -858,26 +863,27 @@ tools:
         lease_owner=f"control-plane-test-probe:{uuid4()}",
         backoff=lambda attempt: timedelta(0),
     )
+    run_service = RunApplicationService(
+        engagement_repository=engagement_repository,
+        run_repository=run_repository,
+        event_repository=event_repository,
+        workflow_client=workflow_router,
+        execution_repository=execution_repository,
+        execution_runner=process_supervisor,
+        workspace_root=settings.workspace_root,
+        model_profiles=model_profile_service,
+        resource_stoppers={
+            "browser_sessions": browser_service,
+            "target_http_requests": target_http_service,
+        },
+        execution_cancel_timeout_seconds=0.2,
+        execution_cancel_poll_seconds=0.01,
+    )
     return RuntimeFixture(
         control_plane=ControlPlane(
             settings=settings,
             database=database,
-            run_service=RunApplicationService(
-                engagement_repository=engagement_repository,
-                run_repository=run_repository,
-                event_repository=event_repository,
-                workflow_client=workflow_router,
-                execution_repository=execution_repository,
-                execution_runner=process_supervisor,
-                workspace_root=settings.workspace_root,
-                model_profiles=model_profile_service,
-                resource_stoppers={
-                    "browser_sessions": browser_service,
-                    "target_http_requests": target_http_service,
-                },
-                execution_cancel_timeout_seconds=0.2,
-                execution_cancel_poll_seconds=0.01,
-            ),
+            run_service=run_service,
             pentest_service=PentestApplicationService(
                 creation_uow=SQLAlchemyPentestCreationUnitOfWork(database.session_factory),
                 engagement_repository=engagement_repository,
@@ -1471,6 +1477,11 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
             assert requests == []
 
             admitted = _pentest_request(run_id, target=f"{target_base}/health")
+            admission = admitted["admission"]
+            assert isinstance(admission, dict)
+            budget = admission["budget"]
+            assert isinstance(budget, dict)
+            budget["max_target_interactions"] = 2
             admitted["capabilities"] = {
                 "pack_ids": ["pentest-foundation", "web-request-analysis"]
             }
@@ -1610,15 +1621,46 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
             assert ("parameter", f"{target_base}/health?page=") in nodes
             assert "private" not in json.dumps(live_payload["attack_surface"])
 
+            exhausted = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=4,
+                target=f"{target_base}/after-budget",
+            )
+            with pytest.raises(ApplicationConflictError) as exhausted_error:
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=exhausted.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=exhausted.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"{target_base}/after-budget",
+                        ),
+                    )
+                )
+            assert exhausted_error.value.code == "pentest_budget_exhausted"
+            assert requests == ["/health?token=private&page=1", "/fail"]
+
             events = await client.get(f"/api/v1/runs/{run_id}/events")
             event_types = [item["event_type"] for item in events.json()["items"]]
             assert "target_http.response_received" in event_types
             assert "target_http.request_failed" in event_types
+            assert "pentest.budget_exhausted" in event_types
+            assert "run.pause_requested" in event_types
 
-            paused = await client.post(f"/api/v1/runs/{run_id}/pause")
-            assert paused.status_code == 202, paused.text
-            assert paused.json()["run"]["status"] == "paused"
             paused_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert paused_status.json()["run"]["status"] == "paused"
             assert paused_status.json()["stop"] == {
                 "latest_event_type": "run.pause_requested",
                 "confirmed": True,

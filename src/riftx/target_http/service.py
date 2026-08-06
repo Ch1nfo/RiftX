@@ -40,6 +40,7 @@ from .models import (
 from .redaction import safe_url_metadata
 
 EffectGuard = Callable[[], Awaitable[None]]
+BudgetExhaustionHandler = Callable[[str], Awaitable[None]]
 
 _TARGET_HTTP_TOOL_IDS = frozenset({"request_target_url", "target_http_request"})
 _ACTIVE_INTENT_STATUSES = frozenset(
@@ -134,6 +135,7 @@ class TargetHttpApplicationService:
         artifacts: ArtifactApplicationService,
         events: RunEventRepository | None = None,
         target_http_tool_ids: Sequence[str] = tuple(_TARGET_HTTP_TOOL_IDS),
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
     ) -> None:
         if not target_http_tool_ids:
             raise ValueError("Target HTTP must own at least one Tool Call id")
@@ -144,6 +146,7 @@ class TargetHttpApplicationService:
         self._artifacts = artifacts
         self._events = events
         self._target_http_tool_ids = frozenset(target_http_tool_ids)
+        self._budget_exhaustion_handler = budget_exhaustion_handler
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_users: dict[str, int] = {}
 
@@ -212,14 +215,34 @@ class TargetHttpApplicationService:
                         "limit": exc.limit,
                         "used": exc.used,
                     }
+                    concurrency_limited = (
+                        exc.budget_name == "max_concurrent_target_interactions"
+                    )
                     await self._event(
                         submission.run_id,
-                        "pentest.budget_exhausted",
+                        (
+                            "pentest.budget_capacity_reached"
+                            if concurrency_limited
+                            else "pentest.budget_exhausted"
+                        ),
                         details,
                     )
+                    if (
+                        not concurrency_limited
+                        and self._budget_exhaustion_handler is not None
+                    ):
+                        await self._budget_exhaustion_handler(submission.run_id)
                     raise ApplicationConflictError(
-                        "pentest_budget_exhausted",
-                        "Pentest target interaction budget is exhausted",
+                        (
+                            "pentest_budget_capacity_reached"
+                            if concurrency_limited
+                            else "pentest_budget_exhausted"
+                        ),
+                        (
+                            "Pentest target interaction concurrency is at capacity"
+                            if concurrency_limited
+                            else "Pentest target interaction budget is exhausted"
+                        ),
                         details=details,
                     ) from exc
                 if not claim.acquired:

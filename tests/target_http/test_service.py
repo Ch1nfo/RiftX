@@ -769,7 +769,7 @@ async def test_pentest_target_interaction_concurrency_is_claimed_atomically(
         with pytest.raises(ApplicationConflictError) as caught:
             await service.execute(submission(tool_call_id="tool-call-2"))
 
-        assert caught.value.code == "pentest_budget_exhausted"
+        assert caught.value.code == "pentest_budget_capacity_reached"
         assert caught.value.details == {
             "run_id": "run-1",
             "budget_name": "max_concurrent_target_interactions",
@@ -785,7 +785,7 @@ async def test_pentest_target_interaction_concurrency_is_claimed_atomically(
         await service.execute(submission(tool_call_id="tool-call-2"))
         assert len(runner.launches) == 2
         assert any(
-            event_type == "pentest.budget_exhausted"
+            event_type == "pentest.budget_capacity_reached"
             and payload == caught.value.details
             for _, event_type, payload in events.types
         )

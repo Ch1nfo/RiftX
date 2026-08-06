@@ -947,6 +947,10 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         artifacts=artifact_service,
         events=event_repository,
     )
+
+    async def pause_budget_exhausted_pentest(run_id: str) -> None:
+        await run_service.pause(run_id)
+
     target_http_service = TargetHttpApplicationService(
         runs=run_repository,
         tool_calls=tool_call_intent_repository,
@@ -958,6 +962,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         artifacts=artifact_service,
         events=event_repository,
+        budget_exhaustion_handler=pause_budget_exhausted_pentest,
     )
 
     hooks = HookBus(audit_sink=RunEventHookAuditSink(event_repository))
