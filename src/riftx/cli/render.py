@@ -249,6 +249,96 @@ def render_run(console: Console, run: dict[str, Any]) -> None:
     console.print(Panel(body, title=tr("RiftX Run"), border_style="cyan"))
 
 
+def render_pentest_status(console: Console, payload: dict[str, Any]) -> None:
+    run = payload.get("run") or {}
+    session = payload.get("primary_session") or {}
+    workflow = payload.get("workflow") or {}
+    runner = payload.get("runner") or {}
+    stop = payload.get("stop") or {}
+    objective = run.get("objective") or {}
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="bold", no_wrap=True)
+    body.add_column(overflow="fold")
+    body.add_row(tr("Run"), str(run.get("id", "")))
+    body.add_row(tr("Status"), _status_text(str(run.get("status", "unknown"))))
+    body.add_row(tr("Objective"), str(objective.get("description", "")))
+    body.add_row(tr("Model"), str(session.get("model_profile") or "—"))
+    body.add_row(tr("Session"), str(session.get("status") or "—"))
+    body.add_row(tr("Workflow"), str(workflow.get("workflow_id") or "—"))
+    body.add_row(
+        tr("Workflow persisted"),
+        tr("yes") if workflow.get("persisted_started") else tr("no"),
+    )
+    body.add_row(
+        tr("Runner"),
+        ", ".join(str(item) for item in runner.get("node_ids", [])) or "—",
+    )
+    body.add_row(tr("Stop event"), str(stop.get("latest_event_type") or "—"))
+    body.add_row(
+        tr("Stop confirmed"),
+        tr("yes") if stop.get("confirmed") else tr("no"),
+    )
+    console.print(Panel(body, title=tr("Pentest Status"), border_style="cyan"))
+
+    budget = payload.get("budget") or {}
+    limits = budget.get("limits") or {}
+    usage = Table(title=tr("Pentest Budget"), expand=True)
+    usage.add_column(tr("Resource"), style="cyan")
+    usage.add_column(tr("Used"), justify="right")
+    usage.add_column(tr("Limit"), justify="right")
+    usage.add_row(
+        tr("Elapsed seconds"),
+        str(budget.get("elapsed_seconds", 0)),
+        str(limits.get("max_duration_seconds", "—")),
+    )
+    usage.add_row(
+        tr("Model calls"),
+        str(budget.get("model_calls", 0)),
+        str(limits.get("max_model_calls", "—")),
+    )
+    usage.add_row(
+        tr("Tokens"),
+        str(budget.get("tokens", 0)),
+        str(limits.get("max_tokens", "—")),
+    )
+    usage.add_row(
+        tr("Tool calls"),
+        str(budget.get("tool_calls", 0)),
+        str(limits.get("max_tool_calls", "—")),
+    )
+    usage.add_row(
+        tr("Target interactions"),
+        str(budget.get("observed_target_interactions", 0)),
+        str(limits.get("max_target_interactions", "—")),
+    )
+    console.print(usage)
+
+    capabilities = payload.get("capabilities") or {}
+    selected = Table(title=tr("Pentest Capabilities"), expand=True)
+    selected.add_column(tr("Kind"), style="cyan")
+    selected.add_column(tr("ID"))
+    selected.add_column(tr("Version"))
+    selected.add_column(tr("Source"))
+    selected.add_column(tr("Active"))
+    for item in capabilities.get("selections", []):
+        selected.add_row(
+            str(item.get("kind", "")),
+            str(item.get("capability_id", "")),
+            str(item.get("version", "")),
+            str(item.get("source", "")),
+            tr("yes") if item.get("active") else tr("no"),
+        )
+    console.print(selected)
+
+    attack_surface = payload.get("attack_surface") or {}
+    entries = Table(title=tr("Declared Attack Surface"), expand=True)
+    entries.add_column(tr("Kind"), style="cyan")
+    entries.add_column(tr("Value"))
+    for item in attack_surface.get("declared_entry_points", []):
+        entries.add_row(str(item.get("kind", "")), str(item.get("value", "")))
+    console.print(entries)
+
+
 def render_memories(console: Console, memories: Iterable[dict[str, Any]]) -> None:
     items = list(memories)
     if not items:

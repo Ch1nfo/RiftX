@@ -82,6 +82,9 @@ class APIClient:
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         return self._json("POST", "/api/v1/runs", json=payload)
 
+    def create_pentest(self, payload: dict[str, object]) -> dict[str, Any]:
+        return self._json("POST", "/api/v1/pentests", json=payload)
+
     def list_runs(
         self,
         *,
@@ -99,6 +102,9 @@ class APIClient:
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}")
+
+    def get_pentest_status(self, run_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/v1/pentests/{run_id}/status")
 
     def get_run_metrics(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}/metrics")

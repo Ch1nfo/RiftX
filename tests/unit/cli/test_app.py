@@ -79,6 +79,14 @@ class FakeAPIClient:
             "temporal_workflow_id": "workflow-run-1",
         }
 
+    def create_pentest(self, payload: dict[str, object]) -> dict[str, Any]:
+        self.calls.append(("create_pentest", payload))
+        return {"id": payload["request_id"], "kind": "pentest", "status": "waiting_user"}
+
+    def get_pentest_status(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("get_pentest_status", run_id))
+        return self._pentest_status(run_id)
+
     def create_local_audit(self, source_path: str) -> dict[str, Any]:
         self.calls.append(("create_local_audit", source_path))
         return {"audit_id": "audit-1", "status": "draft"}
@@ -116,6 +124,10 @@ class FakeAPIClient:
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("cancel_run", run_id))
         return {"run": {"id": run_id, "status": "cancelled"}}
+
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("resume_run", run_id))
+        return {"run": {"id": run_id, "status": "waiting_user"}}
 
     def pause_run(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("pause_run", run_id))
@@ -459,6 +471,59 @@ class FakeAPIClient:
             "content_url": f"/api/v1/artifacts/{artifact_id}/content",
         }
 
+    @staticmethod
+    def _pentest_status(run_id: str) -> dict[str, Any]:
+        return {
+            "run": {
+                "id": run_id,
+                "status": "waiting_user",
+                "objective": {"description": "Assess target"},
+            },
+            "primary_session": {"model_profile": "fast", "status": "created"},
+            "capabilities": {
+                "selections": [
+                    {
+                        "kind": "skill",
+                        "capability_id": "pentest-foundation",
+                        "version": "1.0.0",
+                        "source": "official",
+                        "active": True,
+                    }
+                ],
+                "allowlists": {
+                    "tool": [],
+                    "skill": ["pentest-foundation"],
+                    "technique": [],
+                },
+                "pack_locks": [],
+            },
+            "budget": {
+                "limits": {
+                    "max_duration_seconds": 900,
+                    "max_model_calls": 20,
+                    "max_tokens": 100000,
+                    "max_tool_calls": 50,
+                    "max_target_interactions": 100,
+                },
+                "elapsed_seconds": 1,
+                "model_calls": 0,
+                "tokens": 0,
+                "tool_calls": 0,
+                "observed_target_interactions": 0,
+            },
+            "workflow": {
+                "workflow_id": f"riftx-pentest-{run_id}",
+                "persisted_started": True,
+            },
+            "runner": {"node_ids": ["local"], "execution_status_counts": {}},
+            "stop": {"latest_event_type": None, "confirmed": False},
+            "attack_surface": {
+                "declared_entry_points": [
+                    {"kind": "url", "value": "https://app.example.test"}
+                ]
+            },
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -705,6 +770,154 @@ def test_run_create_builds_api_payload() -> None:
             },
         )
     ]
+
+
+def test_pentest_start_builds_admission_payload_and_renders_status() -> None:
+    request_id = "00000000-0000-4000-8000-000000000123"
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--target",
+            "https://app.example.test/login",
+            "--scope",
+            "app.example.test",
+            "--exclude",
+            "https://app.example.test/admin/destructive",
+            "--mode",
+            "manual",
+            "--model",
+            "fast",
+            "--success",
+            "Verify authorization boundaries",
+            "--tool",
+            "python",
+            "--request-id",
+            request_id,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Pentest Status" in result.output
+    assert "Pentest Budget" in result.output
+    assert "Declared Attack Surface" in result.output
+    assert "Pentest admitted and started." in result.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "create_pentest",
+            {
+                "request_id": request_id,
+                "objective": "Assess target",
+                "approval_mode": "manual",
+                "success_criteria": [
+                    {
+                        "description": "Verify authorization boundaries",
+                        "required": True,
+                    }
+                ],
+                "entry_points": [
+                    {"kind": "url", "value": "https://app.example.test/login"}
+                ],
+                "scope": {
+                    "cidrs": [],
+                    "ips": [],
+                    "domains": ["app.example.test"],
+                    "url_prefixes": [],
+                    "asset_tags": [],
+                    "exclusions": [
+                        "https://app.example.test/admin/destructive"
+                    ],
+                },
+                "admission": {
+                    "budget": {
+                        "max_duration_seconds": 900,
+                        "max_model_calls": 20,
+                        "max_tokens": 100000,
+                        "max_tool_calls": 50,
+                        "max_target_interactions": 100,
+                        "max_concurrent_target_interactions": 2,
+                    }
+                },
+                "engagement": {
+                    "name": "Pentest: https://app.example.test/login",
+                    "authorization_reference": "ticket://authorized-123",
+                },
+                "capabilities": {
+                    "pack_ids": ["pentest-foundation"],
+                    "tool_ids": ["python"],
+                    "skill_ids": [],
+                    "technique_ids": [],
+                },
+                "model_profile": "fast",
+            },
+        ),
+        ("get_pentest_status", request_id),
+    ]
+
+
+def test_pentest_commands_use_status_type_guard_and_shared_controls() -> None:
+    status = runner.invoke(cli_module.app, ["pentest", "status", "pentest-1"])
+    resume = runner.invoke(cli_module.app, ["pentest", "resume", "pentest-1"])
+    stop = runner.invoke(cli_module.app, ["pentest", "stop", "pentest-1"])
+
+    for result in (status, resume, stop):
+        assert result.exit_code == 0, result.output
+        assert "Pentest Status" in result.output
+    assert "Pentest resume requested." in resume.output
+    assert "Pentest stop confirmed." in stop.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("get_pentest_status", "pentest-1")
+    ]
+    assert FakeAPIClient.instances[1].calls == [
+        ("get_pentest_status", "pentest-1"),
+        ("resume_run", "pentest-1"),
+        ("get_pentest_status", "pentest-1"),
+    ]
+    assert FakeAPIClient.instances[2].calls == [
+        ("get_pentest_status", "pentest-1"),
+        ("cancel_run", "pentest-1"),
+        ("get_pentest_status", "pentest-1"),
+    ]
+
+
+def test_pentest_start_rejects_missing_target_or_scope_before_api() -> None:
+    missing_target = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--scope",
+            "app.example.test",
+        ],
+    )
+    missing_scope = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--target",
+            "app.example.test",
+        ],
+    )
+
+    assert missing_target.exit_code == 2
+    assert "at least one target is required" in missing_target.output
+    assert missing_scope.exit_code == 2
+    assert "at least one Scope value is required" in missing_scope.output
+    assert FakeAPIClient.instances == []
 
 
 def test_run_list_forwards_status_and_kind_filters() -> None:

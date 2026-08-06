@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 import os
@@ -82,6 +83,7 @@ from .render import (
     render_model_profiles,
     render_node,
     render_nodes,
+    render_pentest_status,
     render_report,
     render_reports,
     render_run,
@@ -117,6 +119,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
+pentest_app = typer.Typer(help="Start and control authorized Pentest Runs.")
 execution_app = typer.Typer(help="Inspect, wait for, and cancel durable Executions.")
 nodes_app = typer.Typer(help="Register and inspect execution nodes.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
@@ -133,6 +136,7 @@ audit_app = typer.Typer(
     help="Audit a local folder with read-only static analysis.",
 )
 app.add_typer(run_app, name="run")
+app.add_typer(pentest_app, name="pentest")
 app.add_typer(execution_app, name="execution")
 app.add_typer(nodes_app, name="node")
 app.add_typer(tools_app, name="tools")
@@ -1210,6 +1214,210 @@ def remove_model_profile(
     )
 
 
+@pentest_app.command("start")
+def start_pentest(
+    context: typer.Context,
+    objective: Annotated[
+        str,
+        typer.Option("--objective", help="Authorized Pentest objective."),
+    ],
+    authorization: Annotated[
+        str,
+        typer.Option("--authorization", help="Ticket, contract, or authorization reference."),
+    ],
+    target: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--target",
+            help="Repeatable target URL, domain, IP, CIDR, or explicit KIND=VALUE.",
+        ),
+    ] = None,
+    scope: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope",
+            help="Repeatable authorized URL prefix, domain, IP, or CIDR.",
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Repeatable explicit Scope exclusion."),
+    ] = None,
+    engagement_name: Annotated[
+        str | None,
+        typer.Option("--engagement", help="Engagement display name."),
+    ] = None,
+    node_id: Annotated[str | None, typer.Option("--node", help="Execution node ID.")] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option("--workspace", help="Workspace path visible to the Worker."),
+    ] = None,
+    approval_mode: Annotated[
+        ApprovalMode,
+        typer.Option("--mode", case_sensitive=False, help="Approval mode."),
+    ] = ApprovalMode.BALANCED,
+    model_profile: Annotated[
+        str | None,
+        typer.Option("--model", help="Model profile for this Pentest."),
+    ] = None,
+    success: Annotated[
+        list[str] | None,
+        typer.Option("--success", help="Repeatable required success criterion."),
+    ] = None,
+    pack: Annotated[
+        list[str] | None,
+        typer.Option("--pack", help="Repeatable official Capability Pack ID."),
+    ] = None,
+    tool: Annotated[
+        list[str] | None,
+        typer.Option("--tool", help="Repeatable Tool capability ID."),
+    ] = None,
+    skill: Annotated[
+        list[str] | None,
+        typer.Option("--skill", help="Repeatable Skill capability ID."),
+    ] = None,
+    technique: Annotated[
+        list[str] | None,
+        typer.Option("--technique", help="Repeatable Technique capability ID."),
+    ] = None,
+    request_id: Annotated[
+        str | None,
+        typer.Option("--request-id", help="UUID reused for an explicit retry."),
+    ] = None,
+    max_duration_seconds: Annotated[
+        int,
+        typer.Option("--max-duration", min=1, help="Maximum elapsed seconds."),
+    ] = 900,
+    max_model_calls: Annotated[
+        int,
+        typer.Option("--max-model-calls", min=1),
+    ] = 20,
+    max_tokens: Annotated[int, typer.Option("--max-tokens", min=1)] = 100_000,
+    max_tool_calls: Annotated[
+        int,
+        typer.Option("--max-tool-calls", min=1),
+    ] = 50,
+    max_target_interactions: Annotated[
+        int,
+        typer.Option("--max-target-interactions", min=1),
+    ] = 100,
+    max_concurrent_target_interactions: Annotated[
+        int,
+        typer.Option("--max-target-concurrency", min=1),
+    ] = 2,
+) -> None:
+    """Admit and start one authorized Pentest Run."""
+
+    targets = target or []
+    scopes = scope or []
+    if not targets:
+        raise typer.BadParameter("at least one target is required", param_hint="--target")
+    if not scopes:
+        raise typer.BadParameter("at least one Scope value is required", param_hint="--scope")
+    authorization_reference = authorization.strip()
+    if not authorization_reference:
+        raise typer.BadParameter(
+            "authorization reference must not be blank",
+            param_hint="--authorization",
+        )
+    payload: dict[str, object] = {
+        "request_id": request_id or str(uuid4()),
+        "objective": objective,
+        "approval_mode": approval_mode.value,
+        "success_criteria": [
+            {"description": item, "required": True} for item in (success or [])
+        ],
+        "entry_points": [_parse_pentest_target(item) for item in targets],
+        "scope": _parse_pentest_scope(scopes, exclusions=exclude or []),
+        "admission": {
+            "budget": {
+                "max_duration_seconds": max_duration_seconds,
+                "max_model_calls": max_model_calls,
+                "max_tokens": max_tokens,
+                "max_tool_calls": max_tool_calls,
+                "max_target_interactions": max_target_interactions,
+                "max_concurrent_target_interactions": (
+                    max_concurrent_target_interactions
+                ),
+            }
+        },
+        "engagement": {
+            "name": engagement_name or f"Pentest: {targets[0]}",
+            "authorization_reference": authorization_reference,
+        },
+        "capabilities": {
+            "pack_ids": pack if pack is not None else ["pentest-foundation"],
+            "tool_ids": tool or [],
+            "skill_ids": skill or [],
+            "technique_ids": technique or [],
+        },
+    }
+    if node_id:
+        payload["node_id"] = node_id
+    if workspace:
+        payload["workspace_path"] = workspace
+    if model_profile:
+        payload["model_profile"] = model_profile
+
+    def operation(client: APIClient) -> None:
+        run = client.create_pentest(payload)
+        run_id = str(run.get("id") or "").strip()
+        if not run_id:
+            raise ValueError("Pentest creation response did not include a Run ID")
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest admitted and started.')}[/green]")
+
+    _run_with_client(context, operation)
+
+
+@pentest_app.command("status")
+def show_pentest_status(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Show the durable Pentest admission, usage, execution, and stop state."""
+
+    _run_with_client(
+        context,
+        lambda client: render_pentest_status(
+            console,
+            client.get_pentest_status(run_id),
+        ),
+    )
+
+
+@pentest_app.command("resume")
+def resume_pentest(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Resume an admitted Pentest Run through the shared Run control path."""
+
+    def operation(client: APIClient) -> None:
+        client.get_pentest_status(run_id)
+        client.resume_run(run_id)
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest resume requested.')}[/green]")
+
+    _run_with_client(context, operation)
+
+
+@pentest_app.command("stop")
+def stop_pentest(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Cancel a Pentest Run and display its durable stop proof."""
+
+    def operation(client: APIClient) -> None:
+        client.get_pentest_status(run_id)
+        client.cancel_run(run_id)
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest stop confirmed.')}[/green]")
+
+    _run_with_client(context, operation)
+
+
 @run_app.command("create")
 def create_run(
     context: typer.Context,
@@ -1804,6 +2012,78 @@ def _parse_entry_point(value: str) -> dict[str, str]:
         choices = ", ".join(item.value for item in EntryPointKind)
         raise typer.BadParameter(f"entry point kind must be one of: {choices}") from exc
     return {"kind": parsed_kind.value, "value": entry_value.strip()}
+
+
+def _parse_pentest_target(value: str) -> dict[str, str]:
+    item = value.strip()
+    if not item:
+        raise typer.BadParameter("Pentest targets must not be blank")
+    if "=" in item:
+        parsed = _parse_entry_point(item)
+        if parsed["kind"] not in {
+            EntryPointKind.CIDR.value,
+            EntryPointKind.IP.value,
+            EntryPointKind.DOMAIN.value,
+            EntryPointKind.URL.value,
+        }:
+            raise typer.BadParameter("Pentest targets must be CIDR, IP, Domain, or URL")
+        return parsed
+    if "://" in item:
+        return {"kind": EntryPointKind.URL.value, "value": item}
+    try:
+        return {
+            "kind": EntryPointKind.IP.value,
+            "value": str(ipaddress.ip_address(item)),
+        }
+    except ValueError:
+        pass
+    if "/" in item:
+        try:
+            return {
+                "kind": EntryPointKind.CIDR.value,
+                "value": str(ipaddress.ip_network(item, strict=False)),
+            }
+        except ValueError as exc:
+            raise typer.BadParameter(f"invalid Pentest target: {item}") from exc
+    return {"kind": EntryPointKind.DOMAIN.value, "value": item}
+
+
+def _parse_pentest_scope(
+    values: list[str],
+    *,
+    exclusions: list[str],
+) -> dict[str, object]:
+    result: dict[str, list[str]] = {
+        "cidrs": [],
+        "ips": [],
+        "domains": [],
+        "url_prefixes": [],
+        "asset_tags": [],
+        "exclusions": list(dict.fromkeys(item.strip() for item in exclusions if item.strip())),
+    }
+    for raw in values:
+        item = raw.strip()
+        if not item:
+            raise typer.BadParameter("Scope values must not be blank", param_hint="--scope")
+        if "://" in item:
+            result["url_prefixes"].append(item)
+            continue
+        try:
+            result["ips"].append(str(ipaddress.ip_address(item)))
+            continue
+        except ValueError:
+            pass
+        if "/" in item:
+            try:
+                result["cidrs"].append(str(ipaddress.ip_network(item, strict=False)))
+                continue
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    f"invalid Scope value: {item}",
+                    param_hint="--scope",
+                ) from exc
+        result["domains"].append(item)
+    return {key: list(dict.fromkeys(items)) for key, items in result.items()}
 
 
 if __name__ == "__main__":

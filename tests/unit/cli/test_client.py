@@ -83,6 +83,32 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     assert json.loads(requests[2].content) == {"max_history_items": 25}
 
 
+def test_api_client_uses_dedicated_pentest_admission_and_status_endpoints() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "pentest-1", "kind": "pentest"})
+        return httpx.Response(200, json={"run": {"id": "pentest-1"}})
+
+    payload = {"request_id": "pentest-1", "objective": "Assess target"}
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        created = client.create_pentest(payload)
+        status = client.get_pentest_status("pentest-1")
+
+    assert created["kind"] == "pentest"
+    assert status["run"]["id"] == "pentest-1"
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/v1/pentests"),
+        ("GET", "/api/v1/pentests/pentest-1/status"),
+    ]
+    assert json.loads(requests[0].content) == payload
+
+
 def test_api_client_combines_run_status_and_kind_filters() -> None:
     requests: list[httpx.Request] = []
 
