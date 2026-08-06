@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import errno
 import os
-import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -15,6 +13,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from riftx.config import RiftXConfig
+from riftx.database_maintenance import (
+    DatabaseRepairError,
+    SQLiteMigrationStatus,
+    inspect_sqlite_migration,
+    repair_sqlite_database,
+)
+from riftx.local_fs import OwnerDirectoryBatch, OwnerDirectoryError
 from riftx.models.config import ModelConfigError, load_models_config
 from riftx.packs import OfficialPackBundle, OfficialPackCatalog
 from riftx.skills import ProgressiveSkillRegistry, SkillDocumentError
@@ -71,6 +76,7 @@ class DoctorCheck:
 class DoctorFix:
     check_id: str
     path: Path
+    backup_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,14 +98,6 @@ class DoctorReport:
 
     def by_id(self, check_id: str) -> DoctorCheck:
         return next(check for check in self.checks if check.id == check_id)
-
-
-@dataclass(frozen=True, slots=True)
-class _CreatedDirectory:
-    parent_descriptor: int
-    child_descriptor: int
-    name: str
-    path: Path
 
 
 def run_local_doctor(
@@ -164,11 +162,16 @@ def apply_local_doctor_fixes(
     report: DoctorReport,
     *,
     cwd: Path | None = None,
+    allow_database_fix: bool = True,
 ) -> tuple[DoctorFix, ...]:
-    """Create only missing local directories advertised as safely fixable."""
+    """Apply registered local repairs as one rollback-aware batch."""
 
     root = Path.cwd() if cwd is None else cwd
     fixable = {check.id for check in report.checks if check.fixable}
+    if "database_migrations" in fixable and not allow_database_fix:
+        raise DoctorFixError(
+            "Stop the reachable RiftX Control Plane before repairing the database."
+        )
     targets: list[tuple[str, Path]] = []
     if "skills" in fixable:
         targets.append(("skills", _resolve(config.skills.path, root)))
@@ -184,30 +187,34 @@ def apply_local_doctor_fixes(
                 )
             )
 
-    created: list[_CreatedDirectory] = []
-    fixes: list[DoctorFix] = []
-    seen: set[Path] = set()
     try:
-        for check_id, raw_path in targets:
-            path = Path(os.path.abspath(os.fspath(raw_path)))
-            if path in seen:
-                continue
-            seen.add(path)
-            if _create_owner_directory(path, created):
-                fixes.append(DoctorFix(check_id=check_id, path=path))
-    except Exception as exc:
-        rollback_failures = _rollback_created_directories(created)
-        if rollback_failures:
-            failed = ", ".join(str(path) for path in rollback_failures)
-            raise DoctorFixError(
-                f"Doctor fix failed and rollback was incomplete for: {failed}"
-            ) from exc
-        detail = str(exc) or type(exc).__name__
+        with OwnerDirectoryBatch() as directory_batch:
+            normalized_targets = tuple(
+                (check_id, Path(os.path.abspath(os.fspath(path))))
+                for check_id, path in targets
+            )
+            created = set(
+                directory_batch.ensure(path for _, path in normalized_targets)
+            )
+            fixes = [
+                DoctorFix(check_id=check_id, path=path)
+                for check_id, path in normalized_targets
+                if path in created
+            ]
+            if "database_migrations" in fixable:
+                repaired = repair_sqlite_database(config.database.url, cwd=root)
+                fixes.append(
+                    DoctorFix(
+                        check_id="database_migrations",
+                        path=repaired.path,
+                        backup_path=repaired.backup_path,
+                    )
+                )
+            return tuple(fixes)
+    except (DatabaseRepairError, OwnerDirectoryError) as exc:
         raise DoctorFixError(
-            f"Doctor fix failed; all created directories were rolled back: {detail}"
+            f"Doctor fix failed; created directories were rolled back: {exc}"
         ) from exc
-    _close_created_directories(created)
-    return tuple(fixes)
 
 
 def run_live_doctor(
@@ -775,153 +782,6 @@ def _nearest_existing_parent(path: Path) -> Path:
     return candidate
 
 
-def _create_owner_directory(
-    path: Path,
-    created: list[_CreatedDirectory],
-) -> bool:
-    if (
-        os.name != "posix"
-        or not hasattr(os, "O_DIRECTORY")
-        or not hasattr(os, "O_NOFOLLOW")
-        or not hasattr(os, "fchmod")
-        or os.mkdir not in os.supports_dir_fd
-        or os.open not in os.supports_dir_fd
-    ):
-        raise DoctorFixError(
-            "Owner-only Doctor directory repair requires secure POSIX filesystem primitives."
-        )
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(os.sep, flags)
-    final_created = False
-    try:
-        for index, component in enumerate(path.parts[1:]):
-            was_created = False
-            try:
-                next_descriptor = os.open(component, flags, dir_fd=descriptor)
-            except FileNotFoundError:
-                try:
-                    os.mkdir(component, 0o700, dir_fd=descriptor)
-                    was_created = True
-                except FileExistsError:
-                    pass
-                try:
-                    next_descriptor = os.open(component, flags, dir_fd=descriptor)
-                except OSError as exc:
-                    _raise_directory_open_error(exc, descriptor, component, path)
-            except OSError as exc:
-                _raise_directory_open_error(exc, descriptor, component, path)
-
-            try:
-                metadata = os.fstat(next_descriptor)
-                if was_created:
-                    os.fchmod(next_descriptor, 0o700)
-                    metadata = os.fstat(next_descriptor)
-                _validate_directory_metadata(metadata, path=path, created=was_created)
-                if was_created:
-                    os.fsync(next_descriptor)
-                    os.fsync(descriptor)
-                    created.append(
-                        _CreatedDirectory(
-                            parent_descriptor=os.dup(descriptor),
-                            child_descriptor=os.dup(next_descriptor),
-                            name=component,
-                            path=Path(os.sep, *path.parts[1 : index + 2]),
-                        )
-                    )
-                if index == len(path.parts[1:]) - 1:
-                    final_created = was_created
-            except Exception:
-                os.close(next_descriptor)
-                raise
-            os.close(descriptor)
-            descriptor = next_descriptor
-    finally:
-        os.close(descriptor)
-    return final_created
-
-
-def _raise_directory_open_error(
-    error: OSError,
-    parent_descriptor: int,
-    component: str,
-    path: Path,
-) -> None:
-    try:
-        metadata = os.stat(
-            component,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-    except OSError:
-        metadata = None
-    if error.errno == errno.ELOOP or (
-        metadata is not None and stat.S_ISLNK(metadata.st_mode)
-    ):
-        raise DoctorFixError(
-            f"Doctor fix refuses symbolic links in directory path: {path}"
-        ) from error
-    if error.errno == errno.ENOTDIR:
-        raise DoctorFixError(
-            f"Doctor fix path component is not a directory: {path}"
-        ) from error
-    raise error
-
-
-def _validate_directory_metadata(
-    metadata: os.stat_result,
-    *,
-    path: Path,
-    created: bool,
-) -> None:
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise DoctorFixError(f"Doctor fix path is not a directory: {path}")
-    mode = stat.S_IMODE(metadata.st_mode)
-    if created:
-        if metadata.st_uid != os.geteuid() or mode != 0o700:
-            raise DoctorFixError(
-                f"Doctor fix could not establish owner-only permissions for: {path}"
-            )
-        return
-    trusted_sticky_root = metadata.st_uid == 0 and bool(mode & stat.S_ISVTX)
-    if metadata.st_uid not in {0, os.geteuid()} or (
-        mode & 0o022 and not trusted_sticky_root
-    ):
-        raise DoctorFixError(f"Doctor fix path has an unsafe writable ancestor: {path}")
-
-
-def _rollback_created_directories(
-    created: list[_CreatedDirectory],
-) -> tuple[Path, ...]:
-    failures: list[Path] = []
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    for item in reversed(created):
-        opened: int | None = None
-        try:
-            opened = os.open(item.name, flags, dir_fd=item.parent_descriptor)
-            current = os.fstat(opened)
-            expected = os.fstat(item.child_descriptor)
-            if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
-                raise DoctorFixError("created directory identity changed before rollback")
-            os.close(opened)
-            opened = None
-            os.rmdir(item.name, dir_fd=item.parent_descriptor)
-            os.fsync(item.parent_descriptor)
-        except Exception:
-            failures.append(item.path)
-        finally:
-            if opened is not None:
-                os.close(opened)
-    _close_created_directories(created)
-    return tuple(failures)
-
-
-def _close_created_directories(created: list[_CreatedDirectory]) -> None:
-    for item in created:
-        os.close(item.parent_descriptor)
-        os.close(item.child_descriptor)
-    created.clear()
-
-
 def _check_pack_integrity(
     official_packs: tuple[OfficialPackBundle, ...],
     pack_error: Exception | None,
@@ -954,24 +814,38 @@ def _check_database(config: RiftXConfig, cwd: Path) -> DoctorCheck:
             detail=f"Database URL is invalid: {exc}",
             remediation="Repair database.url in RiftX configuration.",
         )
-    database = url.database
-    if url.get_backend_name() == "sqlite" and database not in {None, "", ":memory:"}:
-        assert database is not None
-        database_path = _resolve(Path(database), cwd)
-        if database_path.exists() and not database_path.is_file():
+    if url.get_backend_name() == "sqlite" and url.database not in {None, "", ":memory:"}:
+        state = inspect_sqlite_migration(config.database.url, cwd=cwd)
+        assert state is not None
+        if state.status is SQLiteMigrationStatus.READY:
             return DoctorCheck(
                 id="database_migrations",
-                status=DoctorStatus.FAILED,
-                detail=f"SQLite database path is not a file: {database_path}",
-                remediation="Repair database.url or replace the invalid path.",
+                status=DoctorStatus.READY,
+                detail=state.detail,
             )
-        if not database_path.exists():
+        if state.status in {SQLiteMigrationStatus.MISSING, SQLiteMigrationStatus.EMPTY}:
             return DoctorCheck(
                 id="database_migrations",
                 status=DoctorStatus.DEGRADED,
-                detail="Database is not initialized; migration state is unavailable.",
-                remediation="Initialize the database and apply all Alembic migrations.",
+                detail=state.detail,
+                remediation="Run `riftx doctor --fix` while the Control Plane is stopped.",
+                fixable=True,
             )
+        if state.status is SQLiteMigrationStatus.MISMATCH:
+            observed = ", ".join(state.revisions) or "unknown"
+            return DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.FAILED,
+                detail=f"SQLite revision is {observed}; expected packaged Alembic head.",
+                remediation="Stop the Control Plane, back up, and run `riftx doctor --fix`.",
+                fixable=True,
+            )
+        return DoctorCheck(
+            id="database_migrations",
+            status=DoctorStatus.FAILED,
+            detail=state.detail,
+            remediation="Repair or explicitly migrate the unmanaged SQLite database.",
+        )
     return DoctorCheck(
         id="database_migrations",
         status=DoctorStatus.DEGRADED,

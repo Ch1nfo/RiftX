@@ -10,6 +10,7 @@ import yaml
 
 import riftx.doctor as doctor_module
 from riftx.config import RiftXConfig
+from riftx.database_maintenance import DatabaseRepairResult
 from riftx.doctor import (
     DOCTOR_CHECK_IDS,
     DoctorCheck,
@@ -150,20 +151,51 @@ def test_doctor_fails_when_official_pack_catalog_is_unavailable(tmp_path: Path) 
     assert report.failed
 
 
-def test_doctor_fix_creates_only_supported_local_directories(tmp_path: Path) -> None:
+def test_doctor_fix_creates_supported_directories_and_repairs_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = _write_runtime_configs(tmp_path)
     report = run_local_doctor(config, environment={}, cwd=tmp_path)
+    database_path = tmp_path / "riftx.db"
+    monkeypatch.setattr(
+        doctor_module,
+        "repair_sqlite_database",
+        lambda *_args, **_kwargs: DatabaseRepairResult(
+            path=database_path,
+            backup_path=None,
+            previous_revisions=(),
+        ),
+    )
 
     fixes = apply_local_doctor_fixes(config, report, cwd=tmp_path)
 
     assert {(fix.check_id, fix.path) for fix in fixes} == {
         ("skills", config.skills.path),
         ("storage_permissions", config.workspace.root),
+        ("database_migrations", database_path),
     }
-    for fix in fixes:
+    for fix in fixes[:2]:
         assert fix.path.is_dir()
         assert stat.S_IMODE(fix.path.stat().st_mode) == 0o700
-    assert not (tmp_path / "riftx.db").exists()
+
+
+def test_doctor_fix_refuses_database_repair_while_control_plane_is_reachable(
+    tmp_path: Path,
+) -> None:
+    config = _write_runtime_configs(tmp_path)
+    report = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    with pytest.raises(DoctorFixError, match="Control Plane"):
+        apply_local_doctor_fixes(
+            config,
+            report,
+            cwd=tmp_path,
+            allow_database_fix=False,
+        )
+
+    assert not config.skills.path.exists()
+    assert not config.workspace.root.exists()
 
 
 def test_doctor_fix_rolls_back_all_created_directories_on_failure(tmp_path: Path) -> None:

@@ -196,24 +196,44 @@ def doctor(
     context: typer.Context,
     fix: Annotated[
         bool,
-        typer.Option("--fix", help="Create safely repairable local directories."),
+        typer.Option("--fix", help="Apply registered offline-safe local repairs."),
     ] = False,
 ) -> None:
     """Inspect RiftX readiness and optionally apply bounded local repairs."""
 
     state = _state(context)
     report = run_local_doctor(state.config)
-    if fix:
-        try:
-            fixes = apply_local_doctor_fixes(state.config, report)
-        except DoctorFixError as exc:
-            console.print(f"[red]Doctor fix failed:[/red] {exc}")
-            render_doctor_report(console, report)
-            raise typer.Exit(1) from exc
-        for applied in fixes:
-            console.print(f"Fixed {applied.check_id}: created {applied.path}")
-        report = run_local_doctor(state.config)
     with APIClient(state.api_url, timeout_seconds=3) as client:
+        if fix:
+            database_fix = any(
+                check.id == "database_migrations" and check.fixable
+                for check in report.checks
+            )
+            control_plane_reachable = False
+            if database_fix:
+                try:
+                    client.health()
+                except httpx.TransportError:
+                    pass
+                except Exception:
+                    control_plane_reachable = True
+                else:
+                    control_plane_reachable = True
+            try:
+                fixes = apply_local_doctor_fixes(
+                    state.config,
+                    report,
+                    allow_database_fix=not control_plane_reachable,
+                )
+            except DoctorFixError as exc:
+                console.print(f"[red]Doctor fix failed:[/red] {exc}")
+                render_doctor_report(console, report)
+                raise typer.Exit(1) from exc
+            for applied in fixes:
+                console.print(f"Fixed {applied.check_id}: repaired {applied.path}")
+                if applied.backup_path is not None:
+                    console.print(f"Backup retained: {applied.backup_path}")
+            report = run_local_doctor(state.config)
         report = run_live_doctor(state.config, report, client)
     render_doctor_report(console, report)
     if report.failed:

@@ -24,7 +24,9 @@ if config.config_file_name is not None:
     # effect of applying the migration logging configuration.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-configured_url = os.getenv("RIFTX_DATABASE_URL")
+configured_url = config.attributes.get("riftx_database_url") or os.getenv(
+    "RIFTX_DATABASE_URL"
+)
 if configured_url:
     config.set_main_option("sqlalchemy.url", configured_url)
 
@@ -61,6 +63,10 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    configured_connection = config.attributes.get("connection")
+    if configured_connection is not None:
+        configure_and_run_migrations(configured_connection)
+        return
     asyncio.run(run_async_migrations())
 
 

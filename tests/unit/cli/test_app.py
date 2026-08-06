@@ -14,7 +14,13 @@ from typer.testing import CliRunner
 import riftx.cli.app as cli_module
 from riftx.cli.client import RiftXAPIError
 from riftx.cli.render import render_error
-from riftx.doctor import DoctorCheck, DoctorFix, DoctorReport, DoctorStatus
+from riftx.doctor import (
+    DoctorCheck,
+    DoctorFix,
+    DoctorFixError,
+    DoctorReport,
+    DoctorStatus,
+)
 
 runner = CliRunner()
 
@@ -1121,6 +1127,40 @@ def test_top_level_doctor_fix_applies_local_repairs_before_rechecking(
     assert "Fixed skills" in result.output
     assert fixed.name in result.output
     assert "Overall: ready" in result.output
+
+
+def test_top_level_doctor_fix_blocks_database_migration_while_api_is_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.FAILED,
+                detail="database is behind",
+                fixable=True,
+            ),
+        )
+    )
+    observed: list[bool] = []
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    def refuse_fix(
+        *_args: object,
+        allow_database_fix: bool,
+        **_kwargs: object,
+    ) -> tuple[DoctorFix, ...]:
+        observed.append(allow_database_fix)
+        raise DoctorFixError("Stop the reachable RiftX Control Plane")
+
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", refuse_fix)
+
+    result = runner.invoke(cli_module.app, ["doctor", "--fix"])
+
+    assert result.exit_code == 1
+    assert observed == [False]
+    assert "Stop the reachable RiftX Control Plane" in result.output
+    assert FakeAPIClient.instances[0].calls == [("health", None)]
 
 
 def test_approval_commands_delegate_to_shared_http_client() -> None:

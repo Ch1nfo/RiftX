@@ -57,6 +57,11 @@ where = ["src"]
   "official/*/skills/*/schemas/*.json",
 ]
 
+[tool.setuptools.data-files]
+"share/riftx" = ["alembic.ini"]
+"share/riftx/migrations" = ["migrations/env.py", "migrations/script.py.mako"]
+"share/riftx/migrations/versions" = ["migrations/versions/*.py"]
+
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
 asyncio_mode = "auto"
