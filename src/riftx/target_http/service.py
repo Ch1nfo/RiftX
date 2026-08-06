@@ -11,6 +11,7 @@ from typing import Protocol
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
+    PentestBudgetExceededError,
 )
 from riftx.application.ports import RunEventRepository
 from riftx.application.services.artifacts import (
@@ -197,14 +198,41 @@ class TargetHttpApplicationService:
                         "Tool Call intent is not owned by the Target HTTP boundary",
                     )
                 self._raise_if_intent_inactive(intent)
-                if intent.status is ToolCallStatus.READY:
-                    intent, transitioned = await self._tool_calls.compare_and_set_status(
+                try:
+                    claim = await self._tool_calls.claim_execution(
                         intent.id,
-                        expected={ToolCallStatus.READY},
-                        target=ToolCallStatus.EXECUTING,
+                        execution_key=request.execution_key,
+                        attempt_group="initial",
+                        target_interaction_tool_ids=self._target_http_tool_ids,
                     )
-                    if not transitioned and intent.status is not ToolCallStatus.EXECUTING:
-                        self._raise_if_intent_inactive(intent)
+                except PentestBudgetExceededError as exc:
+                    details = {
+                        "run_id": submission.run_id,
+                        "budget_name": exc.budget_name,
+                        "limit": exc.limit,
+                        "used": exc.used,
+                    }
+                    await self._event(
+                        submission.run_id,
+                        "pentest.budget_exhausted",
+                        details,
+                    )
+                    raise ApplicationConflictError(
+                        "pentest_budget_exhausted",
+                        "Pentest target interaction budget is exhausted",
+                        details=details,
+                    ) from exc
+                if not claim.acquired:
+                    raise ApplicationConflictError(
+                        "target_http_execution_claim_conflict",
+                        "Target HTTP Tool Call cannot claim this execution identity",
+                        details={
+                            "run_id": submission.run_id,
+                            "tool_call_id": intent.id,
+                            "status": claim.intent.status.value,
+                        },
+                    )
+                intent = claim.intent
 
                 async def effect_guard() -> None:
                     await self._require_effect_allowed(

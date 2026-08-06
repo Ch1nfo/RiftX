@@ -5,13 +5,17 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
+from riftx.application.errors import (
+    EntityNotFoundError,
+    PentestBudgetExceededError,
+    RepositoryConflictError,
+)
 from riftx.application.ports import ExecutionAdmissionIdentity, ToolCallIntentExecutionClaim
-from riftx.domain import ApprovalStatus, ExecutorType
+from riftx.domain import ApprovalStatus, ExecutorType, RunKind
 from riftx.domain.base import utc_now
 from riftx.runtime.types import (
     AgentCycle,
@@ -28,7 +32,7 @@ from riftx.runtime.types import (
     UserInputStatus,
 )
 
-from .mappers import execution_from_record
+from .mappers import execution_from_record, run_from_record
 from .mutation_clock import Clock, next_mutation_at
 from .orm import (
     AgentCycleRecord,
@@ -37,6 +41,7 @@ from .orm import (
     ExecutionRecord,
     ProviderStateRecord,
     RunLeaseRecord,
+    RunRecord,
     RuntimeApprovalRequestRecord,
     ToolCallIntentRecord,
     UserInputRequestRecord,
@@ -375,10 +380,18 @@ class SQLAlchemyToolCallIntentRepository:
         *,
         execution_key: str,
         attempt_group: str,
+        target_interaction_tool_ids: Collection[str] | None = None,
     ) -> ToolCallIntentExecutionClaim:
         """Claim one exact execution identity before any Runner effect."""
 
         _validate_execution_claim_identity(execution_key, attempt_group)
+        target_tool_ids = (
+            frozenset(target_interaction_tool_ids)
+            if target_interaction_tool_ids is not None
+            else None
+        )
+        if target_tool_ids is not None and not target_tool_ids:
+            raise ValueError("target interaction Tool ids cannot be empty")
         async with _serialized_run_write(self._session_factory) as session:
             record = await session.scalar(
                 select(ToolCallIntentRecord)
@@ -423,6 +436,80 @@ class SQLAlchemyToolCallIntentRepository:
                     execution_key=execution_key,
                     attempt_group=attempt_group,
                 )
+
+            if target_tool_ids is not None:
+                if record.tool_id not in target_tool_ids:
+                    raise RepositoryConflictError(
+                        "Tool Call intent is not owned by the target interaction boundary"
+                    )
+                run_record = await session.scalar(
+                    select(RunRecord)
+                    .where(RunRecord.id == record.run_id)
+                    .with_for_update()
+                )
+                if run_record is None:
+                    raise EntityNotFoundError("Run", record.run_id)
+                run = run_from_record(run_record)
+                if run.kind is RunKind.PENTEST:
+                    admission = run.pentest_admission
+                    if admission is None:
+                        raise RepositoryConflictError(
+                            "Pentest target interaction is missing its admission"
+                        )
+                    has_target = ToolCallIntentRecord.tool_id.in_(target_tool_ids) | (
+                        ToolCallIntentRecord.target_summary.is_not(None)
+                        & (
+                            func.length(func.trim(ToolCallIntentRecord.target_summary))
+                            > 0
+                        )
+                    )
+                    consumed = has_target & (
+                        ToolCallIntentRecord.claimed_execution_key.is_not(None)
+                        | ToolCallIntentRecord.status.in_(
+                            {
+                                ToolCallStatus.EXECUTING.value,
+                                ToolCallStatus.COMPLETED.value,
+                                ToolCallStatus.FAILED.value,
+                            }
+                        )
+                    )
+                    used_total = int(
+                        await session.scalar(
+                            select(func.count(ToolCallIntentRecord.id)).where(
+                                ToolCallIntentRecord.run_id == record.run_id,
+                                consumed,
+                            )
+                        )
+                        or 0
+                    )
+                    if used_total >= admission.budget.max_target_interactions:
+                        raise PentestBudgetExceededError(
+                            "max_target_interactions",
+                            limit=admission.budget.max_target_interactions,
+                            used=used_total,
+                        )
+                    used_active = int(
+                        await session.scalar(
+                            select(func.count(ToolCallIntentRecord.id)).where(
+                                ToolCallIntentRecord.run_id == record.run_id,
+                                has_target,
+                                ToolCallIntentRecord.status
+                                == ToolCallStatus.EXECUTING.value,
+                            )
+                        )
+                        or 0
+                    )
+                    if (
+                        used_active
+                        >= admission.budget.max_concurrent_target_interactions
+                    ):
+                        raise PentestBudgetExceededError(
+                            "max_concurrent_target_interactions",
+                            limit=(
+                                admission.budget.max_concurrent_target_interactions
+                            ),
+                            used=used_active,
+                        )
 
             record.status = ToolCallStatus.EXECUTING.value
             record.claimed_execution_key = execution_key

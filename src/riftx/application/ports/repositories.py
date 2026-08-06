@@ -517,6 +517,7 @@ class ToolCallIntentRepository(Protocol):
         *,
         execution_key: str,
         attempt_group: str,
+        target_interaction_tool_ids: Collection[str] | None = None,
     ) -> ToolCallIntentExecutionClaim: ...
 
     async def execution_claim_is_current(
