@@ -32,6 +32,8 @@ class DoctorLiveClient(Protocol):
 
     def list_tools(self, node_id: str) -> dict[str, object]: ...
 
+    def system_diagnostics(self) -> dict[str, object]: ...
+
 
 DOCTOR_CHECK_IDS = (
     "model_provider",
@@ -196,7 +198,16 @@ def run_live_doctor(
         )
     else:
         tool_check = _live_tool_check(tools)
-    return _replace_checks(report, {**node_updates, "tools": tool_check})
+    try:
+        diagnostics = client.system_diagnostics()
+    except Exception:
+        system_updates: dict[str, DoctorCheck] = {}
+    else:
+        system_updates = _live_system_checks(diagnostics)
+    return _replace_checks(
+        report,
+        {**node_updates, "tools": tool_check, **system_updates},
+    )
 
 
 def _replace_checks(
@@ -339,6 +350,51 @@ def _live_tool_check(payload: Mapping[str, object]) -> DoctorCheck:
     )
 
 
+def _live_system_checks(payload: Mapping[str, object]) -> dict[str, DoctorCheck]:
+    database = payload.get("database")
+    packs = payload.get("official_packs")
+    updates: dict[str, DoctorCheck] = {}
+    if isinstance(database, Mapping):
+        status = database.get("status")
+        expected = str(database.get("expected_revision", "unknown"))
+        current = _string_set(database.get("current_revisions"))
+        if status == "ready":
+            updates["database_migrations"] = DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.READY,
+                detail=f"Database revision matches Alembic head {expected}.",
+            )
+        else:
+            observed = ", ".join(sorted(current)) or "unmanaged"
+            updates["database_migrations"] = DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.FAILED,
+                detail=f"Database revision is {observed}; expected {expected}.",
+                remediation="Back up the database and apply all Alembic migrations.",
+                fixable=True,
+            )
+    if isinstance(packs, Mapping):
+        if packs.get("status") == "ready":
+            updates["pack_integrity"] = DoctorCheck(
+                id="pack_integrity",
+                status=DoctorStatus.READY,
+                detail=(
+                    f"{packs.get('installed_pack_count', 0)} Official Packs and "
+                    f"{packs.get('active_lock_count', 0)} active locks match source digests."
+                ),
+            )
+        else:
+            issues = sorted(_string_set(packs.get("issues")))
+            updates["pack_integrity"] = DoctorCheck(
+                id="pack_integrity",
+                status=DoctorStatus.FAILED,
+                detail="Official Pack persistence drift: " + ", ".join(issues[:5]),
+                remediation="Restore or reinstall Official Packs before starting new Runs.",
+                fixable=True,
+            )
+    return updates
+
+
 def _string_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
@@ -350,7 +406,7 @@ def _string_mapping(value: object) -> dict[str, str]:
 
 
 def _string_set(value: object) -> set[str]:
-    if not isinstance(value, list):
+    if not isinstance(value, (list, tuple)):
         return set()
     return {item for item in value if isinstance(item, str)}
 

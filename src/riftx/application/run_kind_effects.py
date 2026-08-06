@@ -361,6 +361,7 @@ class RunEffectOperation(StrEnum):
     GET_RUN_METRICS = "get_run_metrics"
     GET_SECURITY_PROFILE = "get_security_profile"
     GET_SESSION_CONTEXT = "get_session_context"
+    GET_SYSTEM_DIAGNOSTICS = "get_system_diagnostics"
     GET_TARGET_HTTP_EXCHANGE = "get_target_http_exchange"
     GET_TERMINAL = "get_terminal"
     LIST_APPROVALS = "list_approvals"
@@ -978,6 +979,7 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
             RunEffectOperation.API_NOT_FOUND,
             RunEffectOperation.GET_NODE,
             RunEffectOperation.GET_SECURITY_PROFILE,
+            RunEffectOperation.GET_SYSTEM_DIAGNOSTICS,
             RunEffectOperation.LIST_MODEL_PROFILES,
             RunEffectOperation.LIST_NODES,
             RunEffectOperation.LIST_TOOLS,

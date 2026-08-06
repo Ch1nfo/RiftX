@@ -40,6 +40,7 @@ from .routes import (
     runner_control_router,
     runs_router,
     security_router,
+    system_router,
     terminals_router,
     tools_router,
     traffic_router,
@@ -132,6 +133,7 @@ def create_app(
     app.include_router(browser_router, prefix="/api/v1")
     app.include_router(connectors_router, prefix="/api/v1")
     app.include_router(security_router, prefix="/api/v1")
+    app.include_router(system_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:

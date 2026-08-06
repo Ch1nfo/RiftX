@@ -39,6 +39,23 @@ class FakeAPIClient:
         self.calls.append(("health", None))
         return {"status": "ok", "trust_profile": "local_trusted"}
 
+    def system_diagnostics(self) -> dict[str, Any]:
+        self.calls.append(("system_diagnostics", None))
+        return {
+            "database": {
+                "status": "ready",
+                "expected_revision": "head-1",
+                "current_revisions": ["head-1"],
+            },
+            "official_packs": {
+                "status": "ready",
+                "expected_pack_count": 22,
+                "installed_pack_count": 22,
+                "active_lock_count": 66,
+                "issues": [],
+            },
+        }
+
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         self.calls.append(("create_run", payload))
         return {

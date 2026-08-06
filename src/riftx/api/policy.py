@@ -131,6 +131,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "connector_events",
                 "connector_webui",
                 "get_security_profile",
+                "get_system_diagnostics",
                 "api_not_found",
             }
         ),

@@ -27,6 +27,23 @@ def test_api_client_reads_control_plane_health() -> None:
     assert requests[0].url.path == "/healthz"
 
 
+def test_api_client_reads_system_diagnostics() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"database": {}, "official_packs": {}})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        diagnostics = client.system_diagnostics()
+
+    assert "database" in diagnostics
+    assert requests[0].url.path == "/api/v1/system/diagnostics"
+
+
 def test_api_client_uses_shared_run_endpoints() -> None:
     requests: list[httpx.Request] = []
 

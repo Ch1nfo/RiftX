@@ -189,6 +189,22 @@ class _LiveClient:
             ],
         }
 
+    def system_diagnostics(self) -> dict[str, object]:
+        return {
+            "database": {
+                "status": "ready",
+                "expected_revision": "head-1",
+                "current_revisions": ["head-1"],
+            },
+            "official_packs": {
+                "status": "ready",
+                "expected_pack_count": 22,
+                "installed_pack_count": 22,
+                "active_lock_count": 66,
+                "issues": [],
+            },
+        }
+
 
 def test_live_doctor_promotes_proven_runtime_checks(tmp_path: Path) -> None:
     config = _write_runtime_configs(tmp_path)
@@ -198,7 +214,14 @@ def test_live_doctor_promotes_proven_runtime_checks(tmp_path: Path) -> None:
 
     assert all(
         report.by_id(check_id).status is DoctorStatus.READY
-        for check_id in ("temporal", "runner", "browser", "tools")
+        for check_id in (
+            "temporal",
+            "runner",
+            "browser",
+            "tools",
+            "pack_integrity",
+            "database_migrations",
+        )
     )
     assert report.by_id("mcp").status is DoctorStatus.DEGRADED
 

@@ -22,6 +22,7 @@ from .reports import router as reports_router
 from .runner_control import router as runner_control_router
 from .runs import router as runs_router
 from .security import router as security_router
+from .system import router as system_router
 from .terminals import router as terminals_router
 from .tools import router as tools_router
 from .traffic import router as traffic_router
@@ -49,6 +50,7 @@ __all__ = [
     "runner_control_router",
     "runs_router",
     "security_router",
+    "system_router",
     "terminals_router",
     "tools_router",
     "traffic_router",

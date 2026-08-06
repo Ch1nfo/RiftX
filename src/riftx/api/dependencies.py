@@ -42,6 +42,7 @@ from riftx.audit import LocalAuditJobService
 from riftx.browser.service import BrowserApplicationService
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
+from riftx.diagnostics import SystemDiagnosticsService
 from riftx.domain import LocalPrincipal, OperatorCapability, Run, RunKind, RunnerPrincipal
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
@@ -308,6 +309,16 @@ def get_runtime_observability_service(request: Request) -> RuntimeObservabilityS
     return request.app.state.control_plane.runtime_observability_service
 
 
+def get_system_diagnostics_service(request: Request) -> SystemDiagnosticsService:
+    service = getattr(request.app.state, "system_diagnostics_service", None)
+    if service is None:
+        service = SystemDiagnosticsService(
+            request.app.state.control_plane.database.session_factory
+        )
+        request.app.state.system_diagnostics_service = service
+    return service
+
+
 def get_model_profile_service(request: Request) -> ModelProfileApplicationService:
     return request.app.state.control_plane.model_profile_service
 
@@ -380,6 +391,10 @@ MemoryServiceDependency = Annotated[MemoryService, Depends(get_memory_service)]
 
 RuntimeObservabilityServiceDependency = Annotated[
     RuntimeObservabilityService, Depends(get_runtime_observability_service)
+]
+SystemDiagnosticsServiceDependency = Annotated[
+    SystemDiagnosticsService,
+    Depends(get_system_diagnostics_service),
 ]
 ModelProfileServiceDependency = Annotated[
     ModelProfileApplicationService,

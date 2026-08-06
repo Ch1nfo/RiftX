@@ -76,6 +76,9 @@ class APIClient:
     def health(self) -> dict[str, Any]:
         return self._json("GET", "/healthz")
 
+    def system_diagnostics(self) -> dict[str, Any]:
+        return self._json("GET", "/api/v1/system/diagnostics")
+
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         return self._json("POST", "/api/v1/runs", json=payload)
 
