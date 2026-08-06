@@ -3060,11 +3060,12 @@ class SQLAlchemyApprovalRepository:
         source_event_id: str,
         decided_at: datetime,
     ) -> None:
-        """Persist the General Workflow decision intent in the decision UoW."""
+        """Persist the interactive Workflow decision intent in the decision UoW."""
 
-        if RunKind(run_record.kind) is not RunKind.GENERAL:
+        run_kind = RunKind(run_record.kind)
+        if run_kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise RepositoryConflictError(
-                "Generic Runtime Approval decisions require a General Run owner"
+                "Runtime Approval decisions require an interactive Run owner"
             )
         workflow_id = run_record.temporal_workflow_id
         if not workflow_id:
@@ -3089,7 +3090,12 @@ class SQLAlchemyApprovalRepository:
             if status is ApprovalStatus.APPROVED
             else WorkflowSignalKind.REJECT
         )
-        intent = WorkflowSignalIntent.general_run(
+        intent_factory = (
+            WorkflowSignalIntent.general_run
+            if run_kind is RunKind.GENERAL
+            else WorkflowSignalIntent.pentest_run
+        )
+        intent = intent_factory(
             run_id=approval.run_id,
             workflow_id=workflow_id,
             signal_kind=signal_kind,
@@ -3723,14 +3729,15 @@ class SQLAlchemyExecutionRepository:
         )
         if run_record is None:
             raise EntityNotFoundError("Run", execution.run_id)
-        if RunKind(run_record.kind) is not RunKind.GENERAL:
+        run_kind = RunKind(run_record.kind)
+        if run_kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             # M1 has no authoritative Code Audit effect plan. Persisting the
             # terminal state is safe, but it must never fall back to the
-            # General Workflow protocol.
+            # interactive Workflow protocols.
             return
         if execution.audit_id is not None or execution.plan_digest is not None:
             raise RepositoryConflictError(
-                "General execution completion carried Code Audit ownership"
+                "Interactive execution completion carried Code Audit ownership"
             )
         workflow_id = run_record.temporal_workflow_id
         if not workflow_id:
@@ -3756,7 +3763,12 @@ class SQLAlchemyExecutionRepository:
             or execution.created_at
             or utc_now()
         )
-        intent = WorkflowSignalIntent.general_run(
+        intent_factory = (
+            WorkflowSignalIntent.general_run
+            if run_kind is RunKind.GENERAL
+            else WorkflowSignalIntent.pentest_run
+        )
+        intent = intent_factory(
             run_id=execution.run_id,
             workflow_id=workflow_id,
             signal_kind=WorkflowSignalKind.EXECUTION_COMPLETED,

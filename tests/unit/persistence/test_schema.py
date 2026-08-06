@@ -311,6 +311,42 @@ def test_run_table_matches_design_contract() -> None:
     )
 
 
+def test_pentest_identity_is_explicit_in_workflow_and_runner_constraints() -> None:
+    workflow = Base.metadata.tables["workflow_signal_intents"]
+    workflow_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in workflow.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert workflow_checks["ck_workflow_signal_intents_owner_kind"] == (
+        "owner_kind IN ('general_run', 'pentest_run', 'code_audit')"
+    )
+    assert workflow_checks["ck_workflow_signal_intents_run_kind"] == (
+        "run_kind IN ('general', 'pentest', 'code_audit')"
+    )
+    assert "owner_identity = 'pentest_run:' || run_id" in workflow_checks[
+        "ck_workflow_signal_intents_owner_binding"
+    ]
+    assert "workflow_id = 'riftx-pentest-' || run_id" in workflow_checks[
+        "ck_workflow_signal_intents_owner_binding"
+    ]
+
+    runner = Base.metadata.tables["runner_effect_bindings"]
+    runner_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in runner.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert runner_checks["ck_runner_effect_bindings_run_kind"] == (
+        "run_kind IN ('general', 'pentest', 'code_audit')"
+    )
+    assert runner_checks["ck_runner_effect_bindings_run_owner_shape"] == (
+        "(run_kind IN ('general', 'pentest') "
+        "AND audit_id IS NULL AND plan_digest IS NULL) OR "
+        "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)"
+    )
+
+
 def test_event_sequence_is_unique_per_run() -> None:
     constraints = Base.metadata.tables["run_events"].constraints
     unique_columns = {

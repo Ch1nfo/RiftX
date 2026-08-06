@@ -237,6 +237,9 @@ class RunnerEffectBinding(DomainModel):
         if self.run_kind is RunKind.GENERAL:
             if self.audit_id is not None or self.plan_digest is not None:
                 raise ValueError("General Runner effect binding cannot carry Audit ownership")
+        elif self.run_kind is RunKind.PENTEST:
+            if self.audit_id is not None or self.plan_digest is not None:
+                raise ValueError("Pentest Runner effect binding cannot carry Audit ownership")
         elif self.run_kind is RunKind.CODE_AUDIT:
             if self.audit_id is None or self.plan_digest is None:
                 raise ValueError("Code Audit Runner effect binding requires Audit plan ownership")

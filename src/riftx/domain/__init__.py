@@ -225,6 +225,7 @@ from .tool import Tool, ToolState
 from .workflow_signal import (
     CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     GENERAL_RUN_WORKFLOW_PROTOCOL_V1,
+    PENTEST_RUN_WORKFLOW_PROTOCOL_V1,
     WORKFLOW_SIGNAL_INTENT_SCHEMA_VERSION,
     WorkflowSignalDeliveryState,
     WorkflowSignalIntent,
@@ -361,6 +362,7 @@ __all__ = [
     "FormFieldSummary",
     "FormSummary",
     "GENERAL_RUN_WORKFLOW_PROTOCOL_V1",
+    "PENTEST_RUN_WORKFLOW_PROTOCOL_V1",
     "InvalidStateTransitionError",
     "InteractiveElement",
     "MessageRole",

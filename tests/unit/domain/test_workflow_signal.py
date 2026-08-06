@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from riftx.domain.workflow_signal import (
     CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     GENERAL_RUN_WORKFLOW_PROTOCOL_V1,
+    PENTEST_RUN_WORKFLOW_PROTOCOL_V1,
     WorkflowSignalDeliveryState,
     WorkflowSignalIntent,
     WorkflowSignalKind,
@@ -35,6 +36,21 @@ def _general(**updates: object) -> WorkflowSignalIntent:
     return WorkflowSignalIntent.general_run(**payload)  # type: ignore[arg-type]
 
 
+def _pentest(**updates: object) -> WorkflowSignalIntent:
+    payload: dict[str, object] = {
+        "run_id": "pentest-1",
+        "workflow_id": "riftx-pentest-pentest-1",
+        "signal_kind": WorkflowSignalKind.EXECUTION_COMPLETED,
+        "source_event_kind": WorkflowSignalSourceKind.EXECUTION_TERMINAL,
+        "source_event_id": "execution-pentest-1",
+        "source_state_version": 1,
+        "payload": {"execution_id": "execution-pentest-1"},
+        "created_at": NOW,
+    }
+    payload.update(updates)
+    return WorkflowSignalIntent.pentest_run(**payload)  # type: ignore[arg-type]
+
+
 def test_payload_is_canonical_and_domain_separated() -> None:
     left = {"nested": {"z": 1, "a": True}, "items": [3, 2, 1]}
     right = {"items": [3, 2, 1], "nested": {"a": True, "z": 1}}
@@ -55,6 +71,29 @@ def test_general_owner_contract_is_computed_and_exact() -> None:
     assert intent.audit_id is None
     assert len(intent.identity_digest) == 64
     assert len(intent.payload_digest) == 64
+
+
+def test_pentest_owner_contract_is_distinct_and_exact() -> None:
+    intent = _pentest()
+
+    assert intent.owner_kind is WorkflowSignalOwnerKind.PENTEST_RUN
+    assert intent.owner_identity == "pentest_run:pentest-1"
+    assert intent.workflow_protocol_version == PENTEST_RUN_WORKFLOW_PROTOCOL_V1
+    assert intent.workflow_id == "riftx-pentest-pentest-1"
+    assert intent.audit_id is None
+
+    payload = intent.model_dump(mode="python")
+    payload["owner_kind"] = WorkflowSignalOwnerKind.GENERAL_RUN
+    payload["owner_identity"] = ""
+    payload["workflow_protocol_version"] = GENERAL_RUN_WORKFLOW_PROTOCOL_V1
+    payload["identity_digest"] = ""
+    with pytest.raises(ValidationError, match="General Workflow signal owner binding"):
+        WorkflowSignalIntent.model_validate(payload)
+
+
+def test_general_owner_cannot_claim_reserved_pentest_workflow_identity() -> None:
+    with pytest.raises(ValidationError, match="General Workflow signal owner binding"):
+        _general(workflow_id="riftx-pentest-run-1")
 
 
 def test_code_audit_cannot_fallback_to_general_workflow_identity_or_protocol() -> None:

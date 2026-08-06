@@ -62,6 +62,26 @@ def _audit_intent() -> WorkflowSignalIntent:
     )
 
 
+def _pentest_intent(
+    *,
+    signal_kind: WorkflowSignalKind = WorkflowSignalKind.APPROVE,
+    source_event_kind: WorkflowSignalSourceKind = (
+        WorkflowSignalSourceKind.APPROVAL_DECISION
+    ),
+    payload: dict[str, object] | None = None,
+) -> WorkflowSignalIntent:
+    return WorkflowSignalIntent.pentest_run(
+        run_id="pentest-1",
+        workflow_id="riftx-pentest-pentest-1",
+        signal_kind=signal_kind,
+        source_event_kind=source_event_kind,
+        source_event_id="pentest-source-1",
+        source_state_version=1,
+        payload=payload or {"approval_id": "approval-pentest-1"},
+        created_at=NOW,
+    )
+
+
 class _Router:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
@@ -177,6 +197,25 @@ async def test_transport_dispatches_general_approval_to_exact_workflow() -> None
     assert receipt.workflow_id == intent.workflow_id
     assert receipt.identity_digest == intent.identity_digest
     assert receipt.payload_digest == intent.payload_digest
+
+
+async def test_transport_dispatches_pentest_approval_without_general_owner_fallback() -> None:
+    router = _Router()
+    intent = _pentest_intent()
+
+    receipt = await RoutedWorkflowSignalTransport(
+        router,  # type: ignore[arg-type]
+        runs=_runs(
+            kind=RunKind.PENTEST,
+            workflow_id="riftx-pentest-pentest-1",
+        ),  # type: ignore[arg-type]
+        sources=_sources(),  # type: ignore[arg-type]
+    ).send(intent)
+
+    assert router.calls == [("approve", "pentest-1", "approval-pentest-1")]
+    assert router.exact_workflow_ids == ["riftx-pentest-pentest-1"]
+    assert receipt.owner_kind is intent.owner_kind
+    assert receipt.workflow_protocol_version == intent.workflow_protocol_version
 
 
 async def test_transport_supersedes_general_workflow_identity_drift_before_signal() -> None:

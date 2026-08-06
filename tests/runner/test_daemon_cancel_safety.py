@@ -4640,6 +4640,32 @@ def _daemon(
     )
 
 
+def test_runner_daemon_accepts_distinct_pentest_effect_binding(tmp_path: Path) -> None:
+    execution = _execution(tmp_path)
+    daemon = _daemon(
+        tmp_path,
+        client=_RunnerClient(),
+        supervisor=_Supervisor(execution),
+        repository=_ExecutionRepository(execution),
+    )
+    command = _command(
+        "pentest-effect-binding",
+        RunnerCommandKind.CANCEL,
+        {
+            "execution_id": execution.id,
+            "execution_key": execution.execution_key,
+        },
+        run_id="pentest-1",
+        run_kind=RunKind.PENTEST,
+    )
+
+    binding = daemon._require_command_effect_binding(command)
+
+    assert binding.run_kind is RunKind.PENTEST
+    assert binding.audit_id is None
+    assert binding.plan_digest is None
+
+
 def _terminal_start_request(tmp_path: Path) -> dict[str, object]:
     return {
         "run_id": "run-1",
@@ -4752,6 +4778,7 @@ def _command(
     lease_expires_at: datetime | None = None,
     lease_duration_seconds: float | None = None,
     run_id: str = "run-1",
+    run_kind: RunKind = RunKind.GENERAL,
     binding_id: str | None = None,
 ) -> LeasedRunnerCommand:
     if kind in {RunnerCommandKind.EXECUTE, RunnerCommandKind.TERMINAL_START}:
@@ -4861,7 +4888,7 @@ def _command(
     binding = RunnerEffectBinding(
         id=binding_id or f"binding-{command_id}",
         run_id=run_id,
-        run_kind=RunKind.GENERAL,
+        run_kind=run_kind,
         node_id="runner-a",
         target=_OWNER,
         origin=RunnerCommandOrigin.APPLICATION_SERVICE,

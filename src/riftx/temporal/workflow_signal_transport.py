@@ -47,6 +47,12 @@ _APPROVAL_TERMINAL_RUN_STATUSES = frozenset(
         RunStatus.CANCELLED,
     }
 )
+_INTERACTIVE_WORKFLOW_OWNERS = frozenset(
+    {
+        WorkflowSignalOwnerKind.GENERAL_RUN,
+        WorkflowSignalOwnerKind.PENTEST_RUN,
+    }
+)
 
 
 class RoutedWorkflowSignalTransport:
@@ -112,7 +118,7 @@ class RoutedWorkflowSignalTransport:
             raise WorkflowSignalTerminallyRejected(
                 "persisted_workflow_identity_mismatch"
             )
-        if intent.owner_kind is not WorkflowSignalOwnerKind.GENERAL_RUN:
+        if intent.owner_kind not in _INTERACTIVE_WORKFLOW_OWNERS:
             return
         if intent.signal_kind in {
             WorkflowSignalKind.APPROVE,
@@ -131,7 +137,7 @@ class RoutedWorkflowSignalTransport:
             _payload_id(intent, "execution_id")
 
     async def _dispatch(self, intent: WorkflowSignalIntent) -> None:
-        if intent.owner_kind is WorkflowSignalOwnerKind.GENERAL_RUN:
+        if intent.owner_kind in _INTERACTIVE_WORKFLOW_OWNERS:
             if intent.signal_kind is WorkflowSignalKind.APPROVE:
                 await self._router.approve(
                     intent.run_id,
@@ -171,8 +177,10 @@ class RoutedWorkflowSignalTransport:
                     workflow_id=intent.workflow_id,
                 )
                 return
-            raise WorkflowSignalTerminallyRejected("unsupported_general_signal_kind")
+            raise WorkflowSignalTerminallyRejected("unsupported_interactive_signal_kind")
 
+        if intent.owner_kind is not WorkflowSignalOwnerKind.CODE_AUDIT:
+            raise WorkflowSignalTerminallyRejected("unsupported_workflow_signal_owner")
         audit_id = intent.audit_id
         if audit_id is None or intent.workflow_id != f"riftx-code-audit-{audit_id}":
             raise WorkflowSignalTerminallyRejected("audit_workflow_identity_mismatch")
@@ -221,8 +229,8 @@ class TemporalWorkflowSignalOutcomeProbe:
             }
         )
         if not correlatable:
-            # General controls retain their historical zero-argument wire
-            # contract, and undefined signal kinds have no correlation
+            # General/Pentest controls retain the zero-argument wire contract,
+            # and undefined signal kinds have no correlation
             # contract. A same-name history event cannot prove that this exact
             # durable intent was accepted.
             return _observation(

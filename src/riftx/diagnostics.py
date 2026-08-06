@@ -18,7 +18,7 @@ from riftx.persistence.capability_records import (
     CapabilityVersionRecord,
 )
 
-ALEMBIC_HEAD_REVISION = "6f2a9c4d8e17"
+ALEMBIC_HEAD_REVISION = "7b3d1e5f9a24"
 
 
 class _DiagnosticsModel(BaseModel):

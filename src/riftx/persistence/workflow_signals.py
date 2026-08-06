@@ -35,6 +35,7 @@ from riftx.domain.enums import ApprovalStatus, ExecutionStatus, RunKind, RunStat
 from riftx.domain.workflow_signal import (
     CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     GENERAL_RUN_WORKFLOW_PROTOCOL_V1,
+    PENTEST_RUN_WORKFLOW_PROTOCOL_V1,
     WORKFLOW_SIGNAL_INTENT_SCHEMA_VERSION,
     WorkflowSignalDeliveryState,
     WorkflowSignalIntent,
@@ -77,18 +78,23 @@ class WorkflowSignalIntentRecord(Base):
             name="ck_workflow_signal_intents_schema",
         ),
         CheckConstraint(
-            "owner_kind IN ('general_run', 'code_audit')",
+            "owner_kind IN ('general_run', 'pentest_run', 'code_audit')",
             name="ck_workflow_signal_intents_owner_kind",
         ),
         CheckConstraint(
-            "run_kind IN ('general', 'code_audit')",
+            "run_kind IN ('general', 'pentest', 'code_audit')",
             name="ck_workflow_signal_intents_run_kind",
         ),
         CheckConstraint(
             "(owner_kind = 'general_run' AND run_kind = 'general' "
             "AND audit_id IS NULL AND owner_identity = 'general_run:' || run_id "
             f"AND workflow_protocol_version = '{GENERAL_RUN_WORKFLOW_PROTOCOL_V1}' "
-            "AND workflow_id NOT LIKE 'riftx-code-audit-%') OR "
+            "AND workflow_id NOT LIKE 'riftx-code-audit-%' "
+            "AND workflow_id NOT LIKE 'riftx-pentest-%') OR "
+            "(owner_kind = 'pentest_run' AND run_kind = 'pentest' "
+            "AND audit_id IS NULL AND owner_identity = 'pentest_run:' || run_id "
+            f"AND workflow_protocol_version = '{PENTEST_RUN_WORKFLOW_PROTOCOL_V1}' "
+            "AND workflow_id = 'riftx-pentest-' || run_id) OR "
             "(owner_kind = 'code_audit' AND run_kind = 'code_audit' "
             "AND audit_id IS NOT NULL AND owner_identity = 'code_audit:' || audit_id "
             f"AND workflow_protocol_version = '{CODE_AUDIT_WORKFLOW_PROTOCOL_V1}' "
@@ -782,6 +788,18 @@ async def _require_exact_owner_binding(
                 "General Workflow signal intent has a non-General owner"
             )
         return
+    if intent.owner_kind is WorkflowSignalOwnerKind.PENTEST_RUN:
+        if (
+            run.kind != RunKind.PENTEST.value
+            or intent.audit_id is not None
+            or intent.workflow_id != f"riftx-pentest-{intent.run_id}"
+        ):
+            raise RepositoryConflictError(
+                "Pentest Workflow signal intent has a non-Pentest owner"
+            )
+        return
+    if intent.owner_kind is not WorkflowSignalOwnerKind.CODE_AUDIT:
+        raise RepositoryConflictError("Workflow signal intent owner kind is unsupported")
     assert intent.audit_id is not None
     if (
         audit is None

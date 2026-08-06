@@ -18,11 +18,15 @@ from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     BrowserSessionStatus,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutorType,
     Node,
     NodeStatus,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
     RunnerCommand,
@@ -38,6 +42,7 @@ from riftx.domain import (
     RunnerPrincipal,
     RunnerResourceKind,
     RunnerStopReceipt,
+    Scope,
     TerminalSession,
     runner_command_protocol,
     runner_payload_digest,
@@ -51,14 +56,37 @@ _FOREIGN_OWNER = RunnerPrincipal(instance_id="runner-policy-foreign", epoch=2)
 
 
 def _run(*, kind: RunKind = RunKind.GENERAL) -> Run:
+    pentest = kind is RunKind.PENTEST
     return Run(
         id=f"run-{kind.value}",
         engagement_id="engagement-runner-policy",
         node_id=_NODE_ID,
         objective=Objective(description="Runner policy test"),
         kind=kind,
+        entry_points=(
+            [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+            if pentest
+            else []
+        ),
+        scope=Scope(domains=["example.test"] if pentest else []),
+        pentest_admission=(
+            PentestAdmission(
+                budget=PentestBudget(
+                    max_duration_seconds=3600,
+                    max_model_calls=100,
+                    max_tokens=100_000,
+                    max_tool_calls=200,
+                    max_target_interactions=50,
+                    max_concurrent_target_interactions=2,
+                )
+            )
+            if pentest
+            else None
+        ),
         workspace_path="/tmp/runner-policy",
-        temporal_workflow_id=f"riftx-run-{kind.value}",
+        temporal_workflow_id=(
+            f"riftx-pentest-run-{kind.value}" if pentest else f"riftx-run-{kind.value}"
+        ),
     )
 
 
@@ -253,9 +281,12 @@ def _service(
     terminals: object | None = None,
     stop_projection_executions: object | None = None,
 ) -> tuple[RunnerControlService, SimpleNamespace, SimpleNamespace]:
+    async def list_runs(*, kind: RunKind, **_: object) -> list[Run]:
+        return [run] if run.kind is kind else []
+
     run_repository = SimpleNamespace(
         get=AsyncMock(return_value=run),
-        list=AsyncMock(return_value=[run] if run.kind is RunKind.GENERAL else []),
+        list=AsyncMock(side_effect=list_runs),
     )
     execution_repository = SimpleNamespace(
         get=AsyncMock(return_value=execution),
@@ -322,6 +353,14 @@ def test_stop_projection_repository_never_falls_back_to_ordinary_execution_write
         non_emitting_completion.value.code
         == "runner_completion_projection_unavailable"
     )
+
+
+@pytest.mark.asyncio
+async def test_interactive_run_reconciliation_includes_pentest(tmp_path: Path) -> None:
+    run = _run(kind=RunKind.PENTEST)
+    service, _, _ = _service(tmp_path, run=run, execution=None)
+
+    assert await service._interactive_runs_for_node(_NODE_ID) == (run,)
 
 
 @pytest.mark.asyncio

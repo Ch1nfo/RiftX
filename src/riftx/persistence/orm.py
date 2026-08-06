@@ -2134,7 +2134,7 @@ class RunnerEffectBindingRecord(Base):
             name="ck_runner_effect_bindings_schema",
         ),
         CheckConstraint(
-            "run_kind IN ('general', 'code_audit')",
+            "run_kind IN ('general', 'pentest', 'code_audit')",
             name="ck_runner_effect_bindings_run_kind",
         ),
         CheckConstraint(
@@ -2156,7 +2156,8 @@ class RunnerEffectBindingRecord(Base):
             name="ck_runner_effect_bindings_resource_kind",
         ),
         CheckConstraint(
-            "(run_kind = 'general' AND audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(run_kind IN ('general', 'pentest') "
+            "AND audit_id IS NULL AND plan_digest IS NULL) OR "
             "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
             name="ck_runner_effect_bindings_run_owner_shape",
         ),

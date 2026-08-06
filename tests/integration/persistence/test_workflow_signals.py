@@ -32,13 +32,18 @@ from riftx.domain import (
     AuditLifecycleStatus,
     AuditPhase,
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
     RunStatus,
+    Scope,
 )
 from riftx.domain.workflow_signal import (
     WorkflowSignalDeliveryState,
@@ -109,6 +114,41 @@ async def _general_database(tmp_path: Path) -> tuple[Database, Run]:
         expected={ExecutionStatus.RUNNING},
     )
     assert saved is True
+    return database, run
+
+
+async def _pentest_database(tmp_path: Path) -> tuple[Database, Run]:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pentest-signals.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(
+            id="engagement-pentest",
+            name="Pentest",
+            authorization_reference="authorization://pentest-signals",
+        )
+    )
+    run = Run(
+        id="pentest-1",
+        engagement_id="engagement-pentest",
+        kind=RunKind.PENTEST,
+        node_id="local",
+        objective=Objective(description="Test Pentest durable signals"),
+        entry_points=[EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")],
+        scope=Scope(domains=["example.test"]),
+        pentest_admission=PentestAdmission(
+            budget=PentestBudget(
+                max_duration_seconds=3600,
+                max_model_calls=100,
+                max_tokens=100_000,
+                max_tool_calls=200,
+                max_target_interactions=50,
+                max_concurrent_target_interactions=2,
+            )
+        ),
+        workspace_path="/tmp/riftx/pentest-1",
+        temporal_workflow_id="riftx-pentest-pentest-1",
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(run)
     return database, run
 
 
@@ -313,6 +353,47 @@ async def test_execution_terminal_transition_atomically_creates_one_signal_inten
     assert records[0].source_event_id == completed.id
     assert records[0].payload_json == '{"execution_id":"execution-terminal"}'
     assert records[0].delivery_state == "pending"
+    await database.dispose()
+
+
+async def test_pentest_execution_terminal_uses_distinct_workflow_owner(
+    tmp_path: Path,
+) -> None:
+    database, run = await _pentest_database(tmp_path)
+    repository = SQLAlchemyExecutionRepository(
+        database.session_factory,
+        emit_workflow_signal_intents=True,
+    )
+    running = await _persist_running_execution(
+        repository,
+        _execution(tmp_path, run, execution_id="execution-pentest"),
+    )
+    completed = running.model_copy(deep=True)
+    completed.transition_to(
+        ExecutionStatus.COMPLETED,
+        at=NOW + timedelta(seconds=3),
+        exit_code=0,
+    )
+
+    _, saved = await repository.save_if_status(
+        completed,
+        expected={ExecutionStatus.RUNNING},
+    )
+
+    assert saved is True
+    records = await _all_signal_records(database)
+    assert len(records) == 1
+    assert records[0].owner_kind == "pentest_run"
+    assert records[0].owner_identity == "pentest_run:pentest-1"
+    assert records[0].run_kind == "pentest"
+    assert records[0].workflow_protocol_version == "riftx.pentest-run-workflow/v1"
+    assert records[0].workflow_id == "riftx-pentest-pentest-1"
+    signal_repository = SQLAlchemyWorkflowSignalIntentRepository(
+        database.session_factory
+    )
+    stored = await signal_repository.get(records[0].id)
+    assert stored is not None
+    await signal_repository.validate_for_delivery(stored)
     await database.dispose()
 
 

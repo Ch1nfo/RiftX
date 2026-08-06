@@ -46,7 +46,7 @@ from riftx.persistence.orm import Base
 
 BASE_REVISION = "2b7d9e4a6c10"
 PLAN_REVISION = "5d8c1a7e3b24"
-HEAD_REVISION = "6f2a9c4d8e17"
+HEAD_REVISION = "7b3d1e5f9a24"
 PLAN_TABLE = "audit_preflight_plans"
 MIGRATION = run_path(
     str(

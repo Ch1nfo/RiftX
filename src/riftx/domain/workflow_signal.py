@@ -30,16 +30,23 @@ WORKFLOW_SIGNAL_INTENT_SCHEMA_VERSION: Literal[
 GENERAL_RUN_WORKFLOW_PROTOCOL_V1: Literal[
     "riftx.general-run-workflow/v1"
 ] = "riftx.general-run-workflow/v1"
+PENTEST_RUN_WORKFLOW_PROTOCOL_V1: Literal[
+    "riftx.pentest-run-workflow/v1"
+] = "riftx.pentest-run-workflow/v1"
 CODE_AUDIT_WORKFLOW_PROTOCOL_V1: Literal[
     "riftx.code-audit-workflow/v1"
 ] = "riftx.code-audit-workflow/v1"
 
 _MAX_PAYLOAD_BYTES = 64 * 1024
-_GENERAL_WORKFLOW_PREFIX = "riftx-code-audit-"
+_RESERVED_INTERACTIVE_WORKFLOW_PREFIXES = (
+    "riftx-code-audit-",
+    "riftx-pentest-",
+)
 
 
 class WorkflowSignalOwnerKind(StrEnum):
     GENERAL_RUN = "general_run"
+    PENTEST_RUN = "pentest_run"
     CODE_AUDIT = "code_audit"
 
 
@@ -214,6 +221,38 @@ class WorkflowSignalIntent(DomainModel):
             next_attempt_at=now,
         )
 
+    @classmethod
+    def pentest_run(
+        cls,
+        *,
+        run_id: str,
+        workflow_id: str,
+        signal_kind: WorkflowSignalKind,
+        source_event_kind: WorkflowSignalSourceKind,
+        source_event_id: str,
+        source_state_version: int,
+        payload: dict[str, JsonValue],
+        intent_id: str | None = None,
+        created_at: AwareDatetime | None = None,
+    ) -> WorkflowSignalIntent:
+        now = created_at or utc_now()
+        return cls(
+            id=intent_id or new_id(),
+            owner_kind=WorkflowSignalOwnerKind.PENTEST_RUN,
+            run_id=run_id,
+            run_kind=RunKind.PENTEST,
+            workflow_protocol_version=PENTEST_RUN_WORKFLOW_PROTOCOL_V1,
+            workflow_id=workflow_id,
+            signal_kind=signal_kind,
+            source_event_kind=source_event_kind,
+            source_event_id=source_event_id,
+            source_state_version=source_state_version,
+            payload=payload,
+            created_at=now,
+            updated_at=now,
+            next_attempt_at=now,
+        )
+
     @model_validator(mode="after")
     def validate_contract(self) -> WorkflowSignalIntent:
         expected_owner = workflow_signal_owner_identity(
@@ -232,16 +271,29 @@ class WorkflowSignalIntent(DomainModel):
                 self.run_kind is not RunKind.GENERAL
                 or self.audit_id is not None
                 or self.workflow_protocol_version != GENERAL_RUN_WORKFLOW_PROTOCOL_V1
-                or self.workflow_id.startswith(_GENERAL_WORKFLOW_PREFIX)
+                or self.workflow_id.startswith(
+                    _RESERVED_INTERACTIVE_WORKFLOW_PREFIXES
+                )
             ):
                 raise ValueError("General Workflow signal owner binding is invalid")
-        elif (
-            self.run_kind is not RunKind.CODE_AUDIT
-            or self.audit_id is None
-            or self.workflow_protocol_version != CODE_AUDIT_WORKFLOW_PROTOCOL_V1
-            or self.workflow_id != f"riftx-code-audit-{self.audit_id}"
-        ):
-            raise ValueError("Code Audit Workflow signal owner binding is invalid")
+        elif self.owner_kind is WorkflowSignalOwnerKind.PENTEST_RUN:
+            if (
+                self.run_kind is not RunKind.PENTEST
+                or self.audit_id is not None
+                or self.workflow_protocol_version != PENTEST_RUN_WORKFLOW_PROTOCOL_V1
+                or self.workflow_id != f"riftx-pentest-{self.run_id}"
+            ):
+                raise ValueError("Pentest Workflow signal owner binding is invalid")
+        elif self.owner_kind is WorkflowSignalOwnerKind.CODE_AUDIT:
+            if (
+                self.run_kind is not RunKind.CODE_AUDIT
+                or self.audit_id is None
+                or self.workflow_protocol_version != CODE_AUDIT_WORKFLOW_PROTOCOL_V1
+                or self.workflow_id != f"riftx-code-audit-{self.audit_id}"
+            ):
+                raise ValueError("Code Audit Workflow signal owner binding is invalid")
+        else:  # pragma: no cover - StrEnum is closed, retained as a fail-closed guard
+            raise ValueError("unknown Workflow signal owner kind")
 
         if self.signal_kind not in _SIGNALS_BY_SOURCE[self.source_event_kind]:
             raise ValueError("Workflow signal kind does not match its source event kind")
@@ -354,9 +406,15 @@ def workflow_signal_owner_identity(
         if audit_id is not None:
             raise ValueError("General Workflow signal cannot carry audit_id")
         return f"general_run:{run_id}"
-    if audit_id is None:
-        raise ValueError("Code Audit Workflow signal requires audit_id")
-    return f"code_audit:{audit_id}"
+    if owner_kind is WorkflowSignalOwnerKind.PENTEST_RUN:
+        if audit_id is not None:
+            raise ValueError("Pentest Workflow signal cannot carry audit_id")
+        return f"pentest_run:{run_id}"
+    if owner_kind is WorkflowSignalOwnerKind.CODE_AUDIT:
+        if audit_id is None:
+            raise ValueError("Code Audit Workflow signal requires audit_id")
+        return f"code_audit:{audit_id}"
+    raise ValueError("unknown Workflow signal owner kind")
 
 
 def workflow_signal_identity_digest(intent: WorkflowSignalIntent) -> str:
@@ -420,6 +478,7 @@ def workflow_signal_delivery_receipt_digest(
 __all__ = [
     "CODE_AUDIT_WORKFLOW_PROTOCOL_V1",
     "GENERAL_RUN_WORKFLOW_PROTOCOL_V1",
+    "PENTEST_RUN_WORKFLOW_PROTOCOL_V1",
     "WORKFLOW_SIGNAL_INTENT_SCHEMA_VERSION",
     "WorkflowSignalDeliveryState",
     "WorkflowSignalIntent",

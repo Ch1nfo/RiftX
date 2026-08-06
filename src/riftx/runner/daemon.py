@@ -1940,13 +1940,13 @@ class RunnerDaemon:
         if binding.resource_kind is not protocol.resource_kind:
             raise RuntimeError(f"Runner command {command.id!r} uses an invalid resource kind")
         if (
-            binding.run_kind is not RunKind.GENERAL
+            binding.run_kind not in {RunKind.GENERAL, RunKind.PENTEST}
             or binding.audit_id is not None
             or binding.plan_digest is not None
         ):
             raise RuntimeError(
-                f"Runner command {command.id!r} requests a Code Audit host effect "
-                "before Audit Runner admission is enabled"
+                f"Runner command {command.id!r} requests a non-interactive host effect "
+                "before that Runner admission is enabled"
             )
         allowed_origins = (
             frozenset(
