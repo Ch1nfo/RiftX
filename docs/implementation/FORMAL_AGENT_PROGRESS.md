@@ -45,10 +45,10 @@
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
-- Product behavior：CAP-101 已完成 owner-bound Workspace/Audit Snapshot 读取、Git 只读导航、四类语义工具、显式静态降级、Patch/Revert Receipt、批准型隔离 Worktree 与受控 LSP Gateway。RiftX 不启动目标项目 Language Server，而是仅把有界相对路径和源码内容发送给同账号、固定身份/版本、强令牌认证的 Unix Socket Gateway；任何不可用、失信、超限、不支持或越界结果都会整份丢弃，并在同一输入上明确降级为 `builtin_static`。
-- Current implementation commits：PACK-301 尚无。
-- Verification：全仓 `5205 passed, 5 skipped, 17 warnings`；全仓 Ruff、Code/LSP/Config/Worker/Tool Scoped mypy、受控 LSP 四类语义操作、Code Audit Snapshot owner binding、Gateway 身份/摘要/契约、Unix Socket 权限、越界结果丢弃、失败恢复、静态降级、Worktree、Patch/Revert 和 Runtime 装配验证通过。
-- Next delivery slice：交付 `code-audit-foundation`、`repository-mapping`、`entrypoint-discovery` 等首批 Official Code Audit Packs，并复用现有 Pack Catalog、Progressive Skill、Technique、Eval Case、Evidence Contract 与 Session pinning。
+- Product behavior：PACK-301 首个切片已交付 `code-audit-foundation`、`repository-mapping` 与 `entrypoint-discovery`。三个 Official Pack 复用既有 Catalog、Capability Repository、Progressive Skill、Technique、Eval Case、Evidence Contract、bootstrap 与 Session pinning，只使用 owner-bound 代码导航和认知状态工具，不授予 Shell、Patch、Worktree、Browser、Web、Target HTTP、Credential、Scope 或 Approval 权限。
+- Current implementation commits：`4f74479d`。
+- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、13 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、精确工具权限契约与 wheel 中 104 个 Official Pack 发行资产验证通过。
+- Next delivery slice：继续交付 `authn-authz-audit`、`injection-audit` 与 `secret-and-config-audit`，沿用同一 Official Pack 生产链路和只读代码审计安全边界。
 
 ## 3. 研究与实现基线
 
@@ -762,6 +762,34 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5176 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
+
+### PACK-301：基础代码审计 Packs
+
+- Status：in_progress
+- Started：2026-08-06
+- Inputs：CAP-101、CAP-104、COG-205、PACK-300 的 Official Pack Catalog/Bootstrap、Capability Repository、Progressive Skill、Technique Context、Tool Policy、Evidence Ledger 与 Closure Verifier。
+- First delivery slice：
+  - 新增 `code-audit-foundation`，把 owner-bound Workspace/Audit Snapshot、最小覆盖 Task、Evidence、Hypothesis、Negative Result 与 Closure 组织成基础代码审计循环；
+  - 新增 `repository-mapping`，区分 first-party、generated、vendored、test、configuration、deployment 与 unknown/truncated 区域，并形成语言、框架、子系统和信任边界地图；
+  - 新增 `entrypoint-discovery`，以注册点、配置、符号、引用和调用关系识别外部输入、事件、任务、CLI 与高权限入口，名称匹配本身不能证明可达性；
+  - 每个 Pack 均包含 Capability Manifest、Skill、Technique、精确 Tool requirements、Evidence contract、两个 Negative Case、一个 Eval Case、输入/输出 Schema 和 Changelog；
+  - Catalog 自动发现后生产 bootstrap 从 10 Pack/30 Capability 扩展为 13 Pack/39 Capability，继续使用稳定 ID、immutable digest、Official install 与精确 Pack Lock；Worker 直接暴露新增 Skill/Technique，无新 Registry、数据库表或 Runtime authority；
+  - wheel 中 Official Pack 发行资产从 80 个扩展为 104 个。
+- Safety boundaries：
+  - 三个 Pack 的工具集合由测试精确锁定，只包含 owner-bound `list_files`/`glob`/`grep`/`read_many_files`、语义导航、Task/Reasoning/Evidence/Closure 工具；
+  - 不依赖 Shell、目标项目执行、Patch/Revert、Worktree、Browser、Web、Target HTTP、Credential 或外部服务；
+  - Skill/Technique 只允许无需批准、无需 Target Scope 的本地认知状态写入，Eval Case 为只读；Pack 不扩大生产 Tool、Scope、Approval、Credential、Budget 或 Run lifecycle 权限；
+  - Source comment、框架命名、Scanner/模型置信度和 name-only candidate 不能替代 owner-bound Source、Reachability、Input/Privilege Boundary 与 replayable Evidence。
+- Checks：
+  - Catalog、Bootstrap、Capability persistence、Worker Skill/Technique 暴露与安全契约定向回归：`22 passed`；
+  - Pack、Skill、Capability 与生产 Worker 关联回归：`49 passed`；收紧精确工具和权限断言后 Catalog 回归：`6 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/packs src/riftx/skills/progressive.py src/riftx/skills/registry.py src/riftx/skills/__init__.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 7 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack301-wheel.g6tBa8`：passed，13 个 Pack 的 104 个发行资产存在；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5206 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`4f74479d`。
+- Remaining Packs：`authn-authz-audit`、`injection-audit`、`secret-and-config-audit`、`dependency-and-supply-chain`、`file-upload-and-path-audit`、`ssrf-and-outbound-request-audit`、`deserialization-audit`、`finding-verification`、`variant-analysis`。
 
 ## 9. Known pre-existing worktree state
 
