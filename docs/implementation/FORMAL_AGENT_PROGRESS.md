@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-301 已完成正式计划中的 12 个基础代码审计 Pack，覆盖仓库与入口建模、认证授权、注入、秘密配置、依赖供应链、文件路径、SSRF、反序列化、Finding Verification 与 Variant Analysis。所有 Pack 复用既有生产链路，只使用 owner-bound 代码导航和认知状态工具；候选不能绕过内部 Confirmed Finding gate。
-- Current implementation commits：PACK-302 尚无。
-- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、22 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、12 个代码审计 Pack 的 96 个发行资产、精确工具权限契约与 wheel 中 176 个 Official Pack 发行资产验证通过。
-- Next delivery slice：审计现有 CLI、配置、Runtime、Pack/Skill/MCP/LSP/Scanner/Snapshot/Backup 能力，设计并交付最小可用的 `riftx onboard`、`riftx doctor` 与安全的 `doctor --fix` 生产闭环。
+- Product behavior：PACK-302 首个切片已交付顶级只读 `riftx doctor`，以 13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore；确定性配置错误失败关闭，可选或需要 live probe 的组件明确降级并给出修复建议。
+- Current implementation commits：`d4f6e4eb`。
+- Verification：全仓 `5212 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/Render Scoped mypy、实际 CLI 冒烟、13 类稳定检查 ID、可选组件降级、Official Pack/Operator Skill/LSP 失败边界与顶级命令退出语义验证通过。
+- Next delivery slice：接入 Control Plane、Temporal、Runner、Browser、Tool、MCP、数据库 revision 与 Pack Lock 的 live probes，再实现安全、原子、可回滚的 `doctor --fix` 和 `riftx onboard`。
 
 ## 3. 研究与实现基线
 
@@ -138,7 +138,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | — |
+| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -835,6 +835,35 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
 - Completion：正式文档列出的 12 个基础代码审计 Pack 已全部进入 Official Catalog、Capability persistence、生产 Worker、Session pinning 与 wheel 发行链路；无剩余 Pack。
+
+### PACK-302：Onboard 和 Doctor
+
+- Status：in_progress
+- Started：2026-08-06
+- Inputs：PACK-300/PACK-301 Official Pack、严格 RiftX/Model/Tool 配置加载器、Progressive Skill Registry、MCP/LSP 配置、Runner/Workspace/Audit Storage 与既有 `riftx tools doctor`。
+- Offline Doctor slice：
+  - 新增结构化 `DoctorStatus`、`DoctorCheck` 和 `DoctorReport`，状态固定为 `ready`、`degraded` 或 `failed`；13 个检查 ID 稳定覆盖正式计划要求的全部 Doctor 类别；
+  - 顶级 `riftx doctor` 只读运行并使用 Rich 表格展示 Detail 和 Remediation；存在 `failed` 时退出 1，仅有 `degraded` 时退出 0，避免把可选组件缺失误判为产品不可用；
+  - Model 检查复用现有 `load_models_config`，验证选定 Profile 与 Credential Reference；Tool 检查复用 `load_tool_config`；Official Pack/Skill 检查复用 `OfficialPackCatalog` 与 `ProgressiveSkillRegistry`，不建立第二套 Catalog；
+  - Temporal、Runner、Browser、Tool version、Skill runtime dependency、MCP discovery、LSP handshake、Pack DB Lock 和数据库 Alembic revision 在离线切片中不冒充已验证，统一返回带降级路径的 `degraded`；
+  - 已启用 LSP 的 Socket/Credential 缺失、MCP Credential 缺失、Temporal TLS 文件缺失、无效 Model/Tool/Skill/Pack、不可用 Storage 或数据库路径确定性失败关闭；LSP disabled 时明确保留 `builtin_static` 降级路径；
+  - Scanner 明确说明 built-in static 可用、可选 Adapter 尚未配置；Backup/Restore 明确标记尚不可验证，不伪造 ready；
+  - 本切片不暴露空壳 `--fix`，不创建目录、不写配置、不初始化数据库、不连接外部服务；待修复操作具备原子备份、权限边界和回滚语义后再开放。
+- Safety boundaries：
+  - Doctor 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；
+  - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
+  - Pack Digest 继续由 Official Catalog 权威计算，Skill 文档继续由 Progressive Skill Registry 权威解析，Doctor 不持久化第二份健康状态。
+- Checks：
+  - 测试先行验证：实现前定向测试以 `ModuleNotFoundError: riftx.doctor` 产生 2 个预期收集错误；
+  - Doctor 合同与顶级 CLI 定向回归：`7 passed, 55 deselected`；
+  - CLI、Runtime Config、Model/Tool Config、Pack Catalog 与 Progressive Skill 关联回归：`143 passed`；
+  - `conda run --no-capture-output -n agent env RIFTX_MODEL_API_KEY=doctor-smoke riftx doctor`：退出 0，实际加载 22 个 Official Pack 并输出 13 类 `ready/degraded` 检查；
+  - `conda run --no-capture-output -n agent mypy src/riftx/doctor.py src/riftx/cli/render.py`：`Success: no issues found in 2 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5212 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commit：`d4f6e4eb`。
+- Remaining：live probes、常见配置迁移和安全 `doctor --fix`、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
