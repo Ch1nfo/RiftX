@@ -771,7 +771,10 @@ class ManagedEffectType:
             raise TypeError("read_only_methods must be an immutable frozenset")
 
 
-_ALL_RUN_KINDS = frozenset(RunKind)
+# Deliberately excludes newly introduced Run kinds until each effect family is
+# audited and granted explicitly. Safe generic reads use _READABLE_RUN_KINDS.
+_ALL_RUN_KINDS = frozenset({RunKind.GENERAL, RunKind.CODE_AUDIT})
+_READABLE_RUN_KINDS = frozenset(RunKind)
 _GENERAL_ONLY = frozenset({RunKind.GENERAL})
 _AUDIT_ONLY = frozenset({RunKind.CODE_AUDIT})
 _NO_RUN_KIND: frozenset[RunKind] = frozenset()
@@ -1008,7 +1011,7 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         RunEffectOperation.GET_RUN,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.RUN_LIFECYCLE,
-        _ALL_RUN_KINDS,
+        _READABLE_RUN_KINDS,
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,

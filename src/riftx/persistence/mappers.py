@@ -30,6 +30,7 @@ from riftx.domain import (
     Node,
     NodeStatus,
     Objective,
+    PentestAdmission,
     Report,
     ReportFormat,
     Run,
@@ -535,6 +536,11 @@ def run_to_record(run: Run) -> RunRecord:
         scope_json=run.scope.model_dump(mode="json"),
         status=run.status.value,
         approval_mode=run.approval_mode.value,
+        pentest_admission_json=(
+            run.pentest_admission.model_dump(mode="json")
+            if run.pentest_admission is not None
+            else None
+        ),
         model_profile=run.model_profile,
         workspace_path=run.workspace_path,
         temporal_workflow_id=run.temporal_workflow_id,
@@ -556,6 +562,11 @@ def apply_run_to_record(run: Run, record: RunRecord) -> None:
     record.scope_json = run.scope.model_dump(mode="json")
     record.status = run.status.value
     record.approval_mode = run.approval_mode.value
+    record.pentest_admission_json = (
+        run.pentest_admission.model_dump(mode="json")
+        if run.pentest_admission is not None
+        else None
+    )
     record.model_profile = run.model_profile
     record.workspace_path = run.workspace_path
     record.temporal_workflow_id = run.temporal_workflow_id
@@ -577,6 +588,11 @@ def run_from_record(record: RunRecord) -> Run:
         scope=Scope.model_validate(record.scope_json),
         status=RunStatus(record.status),
         approval_mode=ApprovalMode(record.approval_mode),
+        pentest_admission=(
+            PentestAdmission.model_validate(record.pentest_admission_json)
+            if record.pentest_admission_json is not None
+            else None
+        ),
         model_profile=record.model_profile,
         workspace_path=record.workspace_path,
         temporal_workflow_id=record.temporal_workflow_id,

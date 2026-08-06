@@ -29,7 +29,7 @@ from riftx.persistence.repositories import SQLAlchemyRunnerCommandRepository
 EARLIEST_REVISION = "2f14cbcea74b"
 BASE_REVISION = "91e6f4a2c8b7"
 RUNNER_REVISION = "8d7c2e4f1a90"
-HEAD_REVISION = "3c6e8a1f2b40"
+HEAD_REVISION = "6f2a9c4d8e17"
 NOW = "2026-08-03 12:00:00+00:00"
 LEASE_EXPIRES_AT = "2026-08-03 12:05:00+00:00"
 GRAPH_RUN_ID = "runner-migration-run"

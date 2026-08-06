@@ -1314,7 +1314,9 @@ def test_public_web_services_allow_code_audit_without_widening_target_or_browser
         RunEffectOperation.SERVICE_MCP_INVOKE,
     ):
         policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
-        assert policy.allowed_run_kinds == frozenset(RunKind)
+        assert policy.allowed_run_kinds == frozenset(
+            {RunKind.GENERAL, RunKind.CODE_AUDIT}
+        )
         assert policy.required_effect is OperationEffect.HOST_EXECUTION
         assert policy.effect_mode is EffectMode.NORMAL
 
@@ -1385,7 +1387,9 @@ def test_workflow_signal_outbox_inventory_covers_every_managed_boundary() -> Non
             else EffectEntrypointSurface.RECONCILER
         )
         policy = RUN_KIND_EFFECT_POLICIES[(operation, origin)]
-        assert policy.allowed_run_kinds == frozenset(RunKind)
+        assert policy.allowed_run_kinds == frozenset(
+            {RunKind.GENERAL, RunKind.CODE_AUDIT}
+        )
         assert policy.required_effect is effect
         assert policy.effect_mode is mode
 

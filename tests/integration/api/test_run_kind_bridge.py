@@ -33,7 +33,18 @@ from riftx.application.run_kind_effects import (
     PolicyDenialReason,
     RunKindEffectPolicyDenied,
 )
-from riftx.domain import LocalPrincipal, Objective, OperatorCapability, Run, RunKind
+from riftx.domain import (
+    EntryPoint,
+    EntryPointKind,
+    LocalPrincipal,
+    Objective,
+    OperatorCapability,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    Scope,
+)
 
 
 @dataclass
@@ -128,12 +139,33 @@ class FakeEffectService:
 
 
 def _run(kind: RunKind, tmp_path: Path) -> Run:
+    pentest = kind is RunKind.PENTEST
     return Run(
         kind=kind,
         id=f"{kind.value}-run",
         engagement_id="engagement-1",
         node_id="local",
         objective=Objective(description=f"{kind.value} projection"),
+        entry_points=(
+            [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+            if pentest
+            else []
+        ),
+        scope=Scope(domains=["example.test"] if pentest else []),
+        pentest_admission=(
+            PentestAdmission(
+                budget=PentestBudget(
+                    max_duration_seconds=3600,
+                    max_model_calls=100,
+                    max_tokens=100_000,
+                    max_tool_calls=200,
+                    max_target_interactions=50,
+                    max_concurrent_target_interactions=2,
+                )
+            )
+            if pentest
+            else None
+        ),
         workspace_path=str(tmp_path / f"{kind.value}-workspace-sensitive"),
         temporal_workflow_id=f"{kind.value}-workflow-sensitive",
     )
@@ -210,6 +242,24 @@ async def test_code_audit_generic_reads_use_path_free_discriminated_projection(
         assert "temporal_workflow_id" not in payload
         assert run.workspace_path not in str(payload)
         assert run.temporal_workflow_id not in str(payload)
+
+
+@pytest.mark.asyncio
+async def test_pentest_generic_reads_preserve_discriminated_admission_projection(
+    tmp_path: Path,
+) -> None:
+    run = _run(RunKind.PENTEST, tmp_path)
+    service = FakeRunService(run)
+
+    async with _client(service) as client:
+        detail = await client.get(f"/api/v1/runs/{run.id}")
+        listed = await client.get("/api/v1/runs", params={"kind": "pentest"})
+
+    assert detail.status_code == 200, detail.text
+    assert listed.status_code == 200, listed.text
+    for payload in (detail.json(), listed.json()["items"][0]):
+        assert payload["kind"] == RunKind.PENTEST.value
+        assert payload["pentest_admission"] == run.pentest_admission.model_dump(mode="json")
 
 
 @pytest.mark.asyncio

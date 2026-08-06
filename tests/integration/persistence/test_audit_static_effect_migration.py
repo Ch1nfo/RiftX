@@ -76,7 +76,7 @@ def test_empty_static_effect_upgrade_downgrades_cleanly(tmp_path: Path) -> None:
 
 def test_static_effect_fact_blocks_lossy_downgrade_before_any_ddl(tmp_path: Path) -> None:
     database_path = tmp_path / "static-effect-block.db"
-    run_alembic(database_path, STATIC_EFFECT_REVISION)
+    run_alembic(database_path, "head")
 
     async def seed() -> None:
         database = Database(f"sqlite+aiosqlite:///{database_path}")

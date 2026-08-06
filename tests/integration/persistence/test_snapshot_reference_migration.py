@@ -80,7 +80,7 @@ def test_empty_snapshot_reference_upgrade_downgrades_cleanly(tmp_path: Path) -> 
 
 def test_durable_snapshot_reference_blocks_lossy_downgrade(tmp_path: Path) -> None:
     database_path = tmp_path / "snapshot-reference-block.db"
-    run_alembic(database_path, REFERENCE_REVISION)
+    run_alembic(database_path, "head")
 
     async def seed() -> None:
         database = Database(f"sqlite+aiosqlite:///{database_path}")

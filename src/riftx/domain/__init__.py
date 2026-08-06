@@ -159,6 +159,8 @@ from .enums import (
     MessageVisibility,
     NodeStatus,
     OperatorCapability,
+    PentestProhibitedAction,
+    PentestStopCondition,
     ReportFormat,
     RunKind,
     RunnerCommandKind,
@@ -181,7 +183,15 @@ from .message import AgentCheckpoint, AgentMessage, TranscriptMessageDraft
 from .node import Node
 from .principal import LocalPrincipal
 from .report import Report
-from .run import EntryPoint, Objective, Run, Scope, SuccessCriterion
+from .run import (
+    EntryPoint,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    Scope,
+    SuccessCriterion,
+)
 from .runner import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
@@ -365,6 +375,10 @@ __all__ = [
     "Node",
     "NodeStatus",
     "OperatorCapability",
+    "PentestAdmission",
+    "PentestBudget",
+    "PentestProhibitedAction",
+    "PentestStopCondition",
     "PreflightRequest",
     "NetworkEventSummary",
     "Objective",

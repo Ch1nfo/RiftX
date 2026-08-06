@@ -339,8 +339,13 @@ class RunRecord(Base):
     __tablename__ = "runs"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('general', 'code_audit')",
+            "kind IN ('general', 'pentest', 'code_audit')",
             name="ck_runs_kind",
+        ),
+        CheckConstraint(
+            "(kind = 'pentest' AND pentest_admission_json IS NOT NULL) OR "
+            "(kind <> 'pentest' AND pentest_admission_json IS NULL)",
+            name="ck_runs_pentest_admission",
         ),
         Index(
             "uq_runs_id_engagement_kind",
@@ -381,6 +386,9 @@ class RunRecord(Base):
     scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     approval_mode: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
+    pentest_admission_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     model_profile: Mapped[str | None] = mapped_column(String(255))
     workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
     temporal_workflow_id: Mapped[str | None] = mapped_column(String(255), unique=True)

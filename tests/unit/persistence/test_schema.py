@@ -287,6 +287,7 @@ def test_run_table_matches_design_contract() -> None:
         "scope_json",
         "status",
         "approval_mode",
+        "pentest_admission_json",
         "model_profile",
         "workspace_path",
         "temporal_workflow_id",
@@ -303,7 +304,11 @@ def test_run_table_matches_design_contract() -> None:
         for constraint in runs.constraints
         if constraint.__class__.__name__ == "CheckConstraint"
     }
-    assert checks["ck_runs_kind"] == "kind IN ('general', 'code_audit')"
+    assert checks["ck_runs_kind"] == "kind IN ('general', 'pentest', 'code_audit')"
+    assert checks["ck_runs_pentest_admission"] == (
+        "(kind = 'pentest' AND pentest_admission_json IS NOT NULL) OR "
+        "(kind <> 'pentest' AND pentest_admission_json IS NULL)"
+    )
 
 
 def test_event_sequence_is_unique_per_run() -> None:

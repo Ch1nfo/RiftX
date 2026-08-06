@@ -209,4 +209,4 @@ def test_wheel_configuration_includes_all_alembic_assets() -> None:
     assert data_files["share/riftx/migrations/versions"] == [
         "migrations/versions/*.py"
     ]
-    assert len(tuple((root / "migrations" / "versions").glob("*.py"))) == 49
+    assert len(tuple((root / "migrations" / "versions").glob("*.py"))) == 50
