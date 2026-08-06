@@ -108,6 +108,17 @@ from riftx.domain import (
     runner_stop_ack_digest,
 )
 from riftx.domain.workflow_signal import WorkflowSignalIntent, WorkflowSignalKind
+from riftx.evidence import (
+    Evidence,
+    EvidenceCreatorType,
+    EvidenceKind,
+    EvidenceRedactionStatus,
+    EvidenceReplayMetadata,
+    EvidenceReplayStrategy,
+    EvidenceScope,
+    EvidenceTrustClass,
+    SourceLocator,
+)
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
@@ -1135,6 +1146,15 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
             assert pentest_status["attack_surface"]["declared_entry_points"] == run[
                 "entry_points"
             ]
+            assert {
+                (item["kind"], item["value"], item["source_level"])
+                for item in pentest_status["attack_surface"]["nodes"]
+            } == {
+                ("asset", "127.0.0.1", "declared"),
+                ("service", "http://127.0.0.1:8080", "declared"),
+                ("endpoint", "http://127.0.0.1:8080/", "declared"),
+            }
+            assert pentest_status["attack_surface"]["truncated"] is False
 
             events = await client.get(f"/api/v1/runs/{request_id}/events")
             assert events.status_code == 200
@@ -1217,6 +1237,72 @@ async def test_pentest_status_is_rebuilt_after_control_plane_restart(
                 json=_pentest_request(request_id),
             )
             assert created.status_code == 201, created.text
+            observed_at = datetime.now(tz=UTC)
+            async with first.control_plane.database.session_factory() as session, session.begin():
+                session.add(
+                    TargetHttpRequestRecord(
+                        id="pentest-observed-request",
+                        execution_key=f"execution:v1:{'a' * 64}",
+                        run_id=request_id,
+                        session_id=f"{request_id}:primary",
+                        tool_call_id="pentest-observed-intent",
+                        node_id="node-local",
+                        method="GET",
+                        url="http://127.0.0.1:8080/login?secret=raw-value",
+                        request_json={
+                            "query": {"page": "1", "token": "raw-query-value"}
+                        },
+                        result_json={},
+                        request_artifact_id=None,
+                        response_artifact_id=None,
+                        created_at=observed_at,
+                    )
+                )
+            evidence_repository = SQLAlchemyEvidenceLedgerRepository(
+                first.control_plane.database.session_factory
+            )
+            for evidence_id, kind, target, digest in (
+                (
+                    "pentest-verified-evidence",
+                    EvidenceKind.HTTP_REQUEST_RESPONSE,
+                    "http://127.0.0.1:8080/login?token=verified-value",
+                    "b" * 64,
+                ),
+                (
+                    "pentest-scanner-signal",
+                    EvidenceKind.SCANNER_SIGNAL,
+                    "http://127.0.0.1:8080/login?scanner=unverified-value",
+                    "c" * 64,
+                ),
+            ):
+                locator = SourceLocator(uri=f"evidence-source://{evidence_id}")
+                await evidence_repository.create(
+                    Evidence(
+                        id=evidence_id,
+                        kind=kind,
+                        source_uri=locator.source_uri,
+                        digest=digest,
+                        run_id=request_id,
+                        session_id=f"{request_id}:primary",
+                        creator_type=EvidenceCreatorType.TOOL,
+                        created_by="pentest-test-tool",
+                        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+                        scope=EvidenceScope(
+                            engagement_id=created.json()["engagement_id"],
+                            run_id=request_id,
+                            target_refs=(target,),
+                        ),
+                        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+                        replay=EvidenceReplayMetadata(
+                            strategy=EvidenceReplayStrategy.NOT_REPLAYABLE,
+                            replayable=False,
+                            expected_digest=digest,
+                            reason="Integration projection fixture",
+                        ),
+                        locator=locator,
+                        created_at=observed_at,
+                    )
+                )
     finally:
         await first.control_plane.close()
 
@@ -1242,6 +1328,34 @@ async def test_pentest_status_is_rebuilt_after_control_plane_restart(
                     "metadata": {},
                 }
             ]
+            nodes = {
+                (item["kind"], item["value"]): item
+                for item in payload["attack_surface"]["nodes"]
+            }
+            endpoint = nodes[("endpoint", "http://127.0.0.1:8080/login")]
+            token = nodes[("parameter", "http://127.0.0.1:8080/login?token=")]
+            assert endpoint["source_level"] == "verified"
+            assert endpoint["source_refs"] == [
+                "evidence:pentest-verified-evidence",
+                "target_http_request:pentest-observed-request",
+            ]
+            assert token["source_level"] == "verified"
+            assert nodes[("parameter", "http://127.0.0.1:8080/login?page=")][
+                "source_level"
+            ] == "observed"
+            assert nodes[("parameter", "http://127.0.0.1:8080/login?secret=")][
+                "source_level"
+            ] == "observed"
+            assert (
+                "parameter",
+                "http://127.0.0.1:8080/login?scanner=",
+            ) not in nodes
+            assert payload["attack_surface"]["truncated"] is False
+            serialized_nodes = json.dumps(payload["attack_surface"]["nodes"])
+            assert "raw-value" not in serialized_nodes
+            assert "raw-query-value" not in serialized_nodes
+            assert "verified-value" not in serialized_nodes
+            assert "unverified-value" not in serialized_nodes
     finally:
         await restarted.control_plane.close()
 

@@ -331,12 +331,31 @@ def render_pentest_status(console: Console, payload: dict[str, Any]) -> None:
     console.print(selected)
 
     attack_surface = payload.get("attack_surface") or {}
-    entries = Table(title=tr("Declared Attack Surface"), expand=True)
+    entries = Table(title=tr("Attack Surface"), expand=True)
     entries.add_column(tr("Kind"), style="cyan")
     entries.add_column(tr("Value"))
-    for item in attack_surface.get("declared_entry_points", []):
-        entries.add_row(str(item.get("kind", "")), str(item.get("value", "")))
+    entries.add_column(tr("Source"))
+    entries.add_column(tr("Scope"))
+    nodes = attack_surface.get("nodes") or []
+    if nodes:
+        for item in nodes:
+            entries.add_row(
+                str(item.get("kind", "")),
+                str(item.get("value", "")),
+                str(item.get("source_level", "")),
+                tr("allowed") if item.get("scope_allowed") else tr("denied"),
+            )
+    else:
+        for item in attack_surface.get("declared_entry_points", []):
+            entries.add_row(
+                str(item.get("kind", "")),
+                str(item.get("value", "")),
+                "declared",
+                "—",
+            )
     console.print(entries)
+    if attack_surface.get("truncated"):
+        console.print(f"[yellow]{tr('Attack Surface projection was truncated.')}[/yellow]")
 
 
 def render_memories(console: Console, memories: Iterable[dict[str, Any]]) -> None:

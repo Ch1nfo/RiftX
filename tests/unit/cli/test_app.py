@@ -520,7 +520,18 @@ class FakeAPIClient:
             "attack_surface": {
                 "declared_entry_points": [
                     {"kind": "url", "value": "https://app.example.test"}
-                ]
+                ],
+                "nodes": [
+                    {
+                        "kind": "endpoint",
+                        "value": "https://app.example.test/login",
+                        "source_level": "observed",
+                        "scope_allowed": True,
+                        "scope_reason": "target matches authorized scope",
+                        "source_refs": ["target_http_request:request-1"],
+                    }
+                ],
+                "truncated": False,
             },
         }
 
@@ -805,7 +816,10 @@ def test_pentest_start_builds_admission_payload_and_renders_status() -> None:
     assert result.exit_code == 0, result.output
     assert "Pentest Status" in result.output
     assert "Pentest Budget" in result.output
-    assert "Declared Attack Surface" in result.output
+    assert "Attack Surface" in result.output
+    assert "https://app.example.test/login" in result.output
+    assert "observed" in result.output
+    assert "allowed" in result.output
     assert "Pentest admitted and started." in result.output
     assert FakeAPIClient.instances[0].calls == [
         (
