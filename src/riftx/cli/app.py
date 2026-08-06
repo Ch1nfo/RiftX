@@ -20,9 +20,15 @@ import typer
 import uvicorn
 from click import Command, Context
 from rich.console import Console
+from rich.table import Table
 from typer.core import TyperGroup
 
 from riftx.api import APISettings, create_app
+from riftx.capability_management import (
+    CapabilityManagementError,
+    LocalCapabilityState,
+    inspect_local_capability_state,
+)
 from riftx.config import (
     RiftXConfig,
     RiftXConfigError,
@@ -120,6 +126,8 @@ report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
 model_app = typer.Typer(help="Configure model provider profiles.")
 demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
+capabilities_app = typer.Typer(help="Inspect the local Capability catalog.")
+packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
 audit_app = typer.Typer(
     cls=_AuditGroup,
     help="Audit a local folder with read-only static analysis.",
@@ -134,6 +142,8 @@ app.add_typer(report_app, name="report")
 app.add_typer(memory_app, name="memory")
 app.add_typer(model_app, name="model")
 app.add_typer(demo_app, name="demo")
+app.add_typer(capabilities_app, name="capabilities")
+app.add_typer(packs_app, name="packs")
 app.add_typer(audit_app, name="audit")
 
 
@@ -603,6 +613,71 @@ def demo_code_audit() -> None:
             markup=False,
         )
     console.print("Degradation path: " + result.degradation_path)
+
+
+@capabilities_app.command("list")
+def list_capabilities(context: typer.Context) -> None:
+    """List active Capability versions from local authoritative persistence."""
+
+    state = _capability_state(context)
+    table = Table(title=f"{len(state.capabilities)} active capabilities", expand=True)
+    table.add_column("Capability")
+    table.add_column("Version")
+    table.add_column("Kind")
+    table.add_column("Source")
+    table.add_column("Trust")
+    for item in state.capabilities:
+        table.add_row(
+            item.capability_id,
+            item.version,
+            item.kind,
+            item.source,
+            item.trust_tier,
+        )
+    console.print(table)
+
+
+@capabilities_app.command("verify")
+def verify_capabilities(context: typer.Context) -> None:
+    """Verify Official Capability versions, Packs, installs, and active locks."""
+
+    state = _capability_state(context)
+    console.print(
+        f"Capability verification: {state.verification_status}; "
+        f"{len(state.capabilities)} active capabilities; {len(state.packs)} Official Packs."
+    )
+    for issue in state.issues:
+        console.print(f"- {issue}", markup=False)
+    if state.verification_status != "ready":
+        raise typer.Exit(1)
+
+
+@packs_app.command("list")
+def list_packs(context: typer.Context) -> None:
+    """List packaged Official Packs and their persisted status."""
+
+    state = _capability_state(context)
+    table = Table(title=f"{len(state.packs)} Official Packs", expand=True)
+    table.add_column("Pack")
+    table.add_column("Version")
+    table.add_column("Capabilities", justify="right")
+    table.add_column("Persistence")
+    for item in state.packs:
+        table.add_row(
+            item.pack_id,
+            item.version,
+            str(item.capability_count),
+            item.persistence_status,
+        )
+    console.print(table)
+
+
+def _capability_state(context: typer.Context) -> LocalCapabilityState:
+    try:
+        return inspect_local_capability_state(_state(context).config)
+    except CapabilityManagementError as exc:
+        console.print(f"[red]Capability inspection failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
 
 
 @audit_app.command("scan")

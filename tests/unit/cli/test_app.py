@@ -12,6 +12,11 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 import riftx.cli.app as cli_module
+from riftx.capability_management import (
+    CapabilityInventoryItem,
+    LocalCapabilityState,
+    PackInventoryItem,
+)
 from riftx.cli.client import RiftXAPIError
 from riftx.cli.render import render_error
 from riftx.doctor import (
@@ -586,6 +591,75 @@ def test_new_user_can_run_both_demos_after_onboard(
     assert "Degradation path" in pentest.output
     assert "SANITIZED LOCAL CODE AUDIT DEMO" in code_audit.output
     assert "Built-in static detectors remain available" in code_audit.output
+    assert FakeAPIClient.instances == []
+
+
+def test_local_capability_inventory_commands_are_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = LocalCapabilityState(
+        capabilities=(
+            CapabilityInventoryItem(
+                capability_id="pentest-foundation",
+                version="1.0.0",
+                kind="skill",
+                source="official",
+                trust_tier="official",
+                status="active",
+                manifest_digest="a" * 64,
+            ),
+        ),
+        packs=(
+            PackInventoryItem(
+                pack_id="pentest-foundation",
+                version="1.0.0",
+                capability_count=3,
+                persistence_status="ready",
+                manifest_digest="b" * 64,
+            ),
+        ),
+        verification_status="ready",
+        issues=(),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_local_capability_state",
+        lambda *_args, **_kwargs: state,
+    )
+
+    capabilities = runner.invoke(cli_module.app, ["capabilities", "list"])
+    verified = runner.invoke(cli_module.app, ["capabilities", "verify"])
+    packs = runner.invoke(cli_module.app, ["packs", "list"])
+
+    for result in (capabilities, verified, packs):
+        assert result.exit_code == 0, result.output
+    assert "pentest-foundation" in capabilities.output
+    assert "1 active capabilities" in capabilities.output
+    assert "ready" in verified.output
+    assert "pentest-foundation" in packs.output
+    assert "1 Official Packs" in packs.output
+    assert FakeAPIClient.instances == []
+
+
+def test_capability_verify_fails_closed_on_persistence_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_local_capability_state",
+        lambda *_args, **_kwargs: LocalCapabilityState(
+            capabilities=(),
+            packs=(),
+            verification_status="drifted",
+            issues=("lock_set_drift:pentest-foundation",),
+        ),
+    )
+
+    result = runner.invoke(cli_module.app, ["capabilities", "verify"])
+
+    assert result.exit_code == 1
+    assert "drifted" in result.output
+    assert "lock_set_drift:pentest-foundation" in result.output
     assert FakeAPIClient.instances == []
 
 
