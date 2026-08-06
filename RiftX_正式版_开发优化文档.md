@@ -8,7 +8,7 @@
 >
 > 当前实现分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前进度基线：`8b9ef440`；PEN-500 的 P0 身份、Runner 与 Effect Policy 安全边界已完成
+> 当前进度基线：`33c863ea`；PEN-500 的专用 Admission/API 与 Capability Selection 原子绑定已完成
 >
 > 实施证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -67,9 +67,9 @@ RiftX 正式版只兑现一个结果：
 最近完整验证证据：
 
 ```text
-5321 passed, 5 skipped, 17 warnings
+5326 passed, 5 skipped, 17 warnings
 Full Ruff passed
-PEN-500 scoped mypy: 23 source files passed
+PEN-500 Capability Selection scoped mypy: 9 source files passed
 Alembic single head: 7b3d1e5f9a24
 ```
 
@@ -90,13 +90,16 @@ Alembic single head: 7b3d1e5f9a24
 - 109 条 General+Pentest 交互 Effect 规则与 55 条三类 Run 共享安全/所有权规则；
 - `require_interactive_run_operation` 已替代 28 个生产模块的 general-only guard；
 - Pentest 的 Run 控制响应、Artifact/Memory 持久可见性、Web Artifact 与原生 Code/Git Tool 共享交互路径；
+- 专用 `POST /api/v1/pentests`，普通 `POST /runs` 继续拒绝 `kind=pentest`；
+- Engagement、Pentest Run、主 Agent Session、上下文、首条指令、Capability Selection、三类 allowlist 与 Pack member locks 的单事务创建和同请求恢复；
+- 默认 `pentest-foundation`，以及显式 Tool、Skill、Technique 和 Official Pack 选择；
+- Tool/Skill/Technique 固定快照、空 Tool allowlist 的失败关闭、Pack 全成员（含 Eval Case）版本锁；
 - migrations `6f2a9c4d8e17` 与 `7b3d1e5f9a24`；
 - 有 Pentest 权威数据时拒绝有损 downgrade；
 - 未审计 Pentest 副作用继续失败关闭。
 
 尚未完成：
 
-- 专用 Pentest Application/API 创建入口；
 - `riftx pentest start/status/resume/stop/report`；
 - Attack Surface 投影；
 - 隔离授权目标上的真实 E2E；
@@ -362,7 +365,7 @@ Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，�
 
 ### 7.1 专用 Application Service
 
-**状态：in_progress（Admission/Application/API 创建切片 `8f1b2554` 已完成；Capability Selection 原子锁定为下一切片）。**
+**状态：completed（Admission/Application/API `8f1b2554`；Capability Selection 原子绑定 `33c863ea`）。**
 
 只实现一个权威创建入口，职责包括：
 
@@ -384,8 +387,12 @@ Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，�
 - Application 与持久化双重验证非空授权引用、Pentest Admission、具体正向 Scope 和每个 Entry Point 的 `ScopeGuard` 决策；
 - `request_id` 作为可恢复幂等身份；Temporal 失败后保留同一 Run 与消息事件，重试同一请求通过 `riftx-pentest-<run_id>` Signal-With-Start 恢复，不重复创建权威事实；
 - 创建入口纳入 Route Policy、Effect Policy 和 Managed Effect Inventory；事务中途失败回滚全部数据库事实。
+- 创建请求默认选择 `pentest-foundation`，也可显式指定动态 Tool、Skill、Technique 与 Official Pack；解析冲突、缺失或不可用能力时在创建前失败关闭；
+- 同一 Creation UoW 原子写入 Tool/Skill/Technique 固定快照、三类不可变 allowlist 和所有已选 Pack member locks，包含不可直接选择的 Eval Case；
+- Model Profile 继续由 Run 与主 Session 的现有字段强制绑定；当前不虚构尚无执行消费者的 Model 版本仓；
+- 同请求重试验证既有 Selection、allowlist 和锁的语义合同，不复制权威事实；未知 CapabilityVersion 与中途故障均完整回滚。
 
-下一切片只补 Selection 绑定：扩展同一个 Creation UoW，复用现有 `agent_sessions`、`agent_capability_selections` 与 `capability_pack_locks`，在生产创建请求的同一事务内将 Model Profile、Tool、Skill、Technique 和 Pack 的最终版本/摘要绑定到主 Session。不得在 Run 上增加一份不被执行器强制消费的重复 JSON manifest，也不得新建平行 Selection 数据库。
+下一切片不再扩建 Capability 平台，直接交付 `riftx pentest start/status/resume/stop` 与 status 聚合。
 
 ### 7.2 API 与 CLI
 
@@ -699,7 +706,7 @@ conda run --no-capture-output -n agent ...
 **依赖**：CAP-101、AUD-403。状态：frozen；不得成为默认执行未知目标代码的入口。
 
 ### PEN-500：Pentest Admission 与 Attack Surface
-**依赖**：CAP-102、COG-202。状态：in_progress；P0 安全边界和专用 Pentest Admission/Application/API 创建入口已完成，当前绑定最终 Capability Selection，随后交付 CLI、Attack Surface 与真实 E2E。
+**依赖**：CAP-102、COG-202。状态：in_progress；P0 安全边界、专用 Pentest Admission/Application/API 与 Capability Selection 原子绑定已完成，当前交付 CLI/status，随后完成 Attack Surface 与真实 E2E。
 
 ### PEN-501：状态化 Web 测试
 **依赖**：CAP-102、PEN-500。状态：pending；只交付一个真实身份/授权场景。

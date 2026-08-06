@@ -52,9 +52,9 @@
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
 - Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
-- Current PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`。
-- Verification：全仓 `5325 passed, 5 skipped, 17 warnings`；Pentest 创建/Effect/事务定向回归 `27 passed`；全仓 Ruff；8 个新增核心源/测试文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
-- Next delivery slice：扩展同一 Pentest Creation UoW，在生产创建请求的同一事务内复用现有 Capability Selection 与 Pack Lock 表，把最终 Model、Tool、Skill、Technique、Pack 版本和摘要绑定到 `<run_id>:primary`；不得新增无执行约束的 Run JSON manifest 或平行 Selection 存储。随后交付 `riftx pentest start/status/resume/stop`、Attack Surface 和隔离授权目标 E2E。
+- Current PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`。
+- Verification：全仓 `5326 passed, 5 skipped, 17 warnings`；Control Plane API `63 passed`；Tool/Skill/Technique/Pack 相关回归 `24 passed`；全仓 Ruff；9 个核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
+- Next delivery slice：停止扩建 Capability 平台，直接交付 `riftx pentest start/status/resume/stop` 与 status 聚合；随后完成 declared Attack Surface 和隔离授权目标 E2E。
 
 ## 3. 研究与实现基线
 
@@ -1050,9 +1050,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `SQLAlchemyPentestCreationUnitOfWork` 在一个 serialized transaction 中写入 Engagement（若需创建）、Pentest Run、主 Agent Session、上下文事件与首条指令；故障注入证明中途失败不残留任一数据库事实；
   - 客户端 UUID `request_id` 同时提供稳定 Run 恢复身份；创建后以 `riftx-pentest-<run_id>` 对同一消息事件执行 Signal-With-Start，Temporal 故障返回可恢复的 Run/message 身份，重试同一请求不重复写入事件；
   - 当前主 Session 已在 Workflow 前持久存在，消除了 Worker 延迟建 Session 对下一步 Selection 原子绑定的阻断；本切片不伪造重复 Selection JSON。
-- Verification：Pentest 创建/Effect/事务定向回归 `27 passed`；全仓 `5325 passed, 5 skipped, 17 warnings`；全仓 Ruff passed；8 个新增核心源/测试文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
-- Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；Dedicated Admission/Application/API `8f1b2554`。
-- Next：扩展现有 Pentest Creation UoW，复用 `agent_capability_selections` 与 `capability_pack_locks`，在同一生产创建事务内把最终 Model、Tool、Skill、Technique、Pack 版本/摘要绑定到 `<run_id>:primary`；完成前 PEN-500 与 P1 继续保持 `in_progress`。
+- Capability Selection admission slice：
+  - `CreatePentestRequest` 新增 Pack/Tool/Skill/Technique 选择，默认 `pentest-foundation`；Control Plane 与 Worker 复用同一 Official Pack、Tool Registry、Progressive Skill 和 Capability catalog 生产来源；
+  - Tool、Skill、Technique 复用既有运行时固定快照构建器，不建立第二种 Selection 模型；主 Session 同时写入三类不可变 allowlist，空 Tool allowlist 显式禁止未授权动态 Tool；
+  - 已选 Official Pack 的每个 CapabilityVersion 都获得 `RUN_SESSION` lock，包括 Skill、Technique 与不可直接选择的 Eval Case；显式 Technique 仍通过 Selection snapshot 固定并在事务内核对 durable catalog；
+  - Engagement、Run、主 Session、事件、Selection、allowlist 和 Pack locks 在同一 serialized transaction 提交；未知版本、中途故障与同 request_id 合同漂移全部失败关闭且不残留半成品；
+  - Model Profile 继续使用现有 Run/AgentSession 强制绑定；未增加无消费者的 Model 版本表、Run JSON manifest 或平行 Selection/Pack 存储。
+- Verification：全仓 `5326 passed, 5 skipped, 17 warnings`；Control Plane API `63 passed`；Tool/Skill/Technique/Pack 相关回归 `24 passed`；全仓 Ruff passed；9 个核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
+- Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；Dedicated Admission/Application/API `8f1b2554`；Capability Selection `33c863ea`。
+- Next：停止扩建 Capability 平台，交付 `riftx pentest start/status/resume/stop` 与 status 聚合；随后完成 declared Attack Surface 和隔离授权目标 E2E。PEN-500 与 P1 继续保持 `in_progress`。
 
 ## 9. Known pre-existing worktree state
 
