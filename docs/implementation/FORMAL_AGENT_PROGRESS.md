@@ -8,9 +8,11 @@
 >
 > 计划输入基线：`e40af267`
 >
-> 正式版计划提交：`84c657e1`
+> 初始正式版计划提交：`84c657e1`
 >
-> 权威计划：[RiftX 正式版开发文档](../../RiftX_正式版_开发文档.md)
+> 当前交付重基线提交：`9424b82b`
+>
+> 权威计划：[RiftX 正式版开发优化文档](../../RiftX_正式版_开发优化文档.md)
 >
 > 总体架构：[ADR-0012](../architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
 
@@ -49,7 +51,7 @@
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`，以及本地只读 `riftx capabilities list`、`riftx capabilities verify` 和 `riftx packs list`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器；Capability/Pack 命令复用权威 Repository、Official Catalog 与 System Diagnostics，数据库缺失时不创建文件，锁或 Digest 漂移时失败关闭；Pack 持久化写入已具备 SQLite 一致性备份、双端 inode identity 校验、恢复后完整性复检和 Doctor 失败自动回滚；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
 - Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
 - Verification：全仓 `5273 passed, 5 skipped, 17 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo/Capability Management Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 与 Capability/Pack 命令端到端验收、发行 wheel Tool 模板、Demo 与 Capability Management 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、SQLite 一致性备份/恢复、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
-- Next delivery slice：为 `packs install/update/rollback` 接入停服探测、现有 SQLite 备份/失败恢复守卫、写后 diagnostics，以及基于持久化 previous version 的 Pack 级 rollback 后再开放写命令。
+- Next delivery slice：将 Doctor `backup_restore` 从固定占位状态改为基于现有 SQLite 备份/恢复原语的真实检查并完成 PACK-302；随后直接进入 PEN-500，交付 Pentest admission、真实 Run 入口与持久 Attack Surface。`packs install/update/rollback` 延后至 ECO-800，不再阻塞 V1。
 
 ## 3. 研究与实现基线
 
@@ -57,6 +59,7 @@
 | --- | --- | --- |
 | RiftX | `e40af267` | 正式版计划开始前的产品代码基线 |
 | 正式版计划 | `84c657e1` | S0-S8 权威开发计划 |
+| 交付重基线 | `9424b82b` | 专业纵向闭环优先、分层验证门禁、V1/增强/生态边界 |
 | LuaN1aoAgent | `51af327c29c2` | Task/Reasoning/Operation Graph、Planner/Executor/Observer |
 | CyberStrikeAI | `f7ba7070ca74` | Tool Search、Progressive Skill、验证与负结果 |
 | OpenAI Codex | `757c151a0e92` | 原生代码工具、Sandbox、Approval、Skill/Plugin/MCP |
@@ -106,17 +109,18 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ## 6. Milestone status
 
-| Stage | Status | Exit condition |
+| Milestone | Status | Exit condition |
 | --- | --- | --- |
-| S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
-| S1 生产 Capability Plane | completed | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
-| S2 认知运行时 | completed | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
-| S3 Official Packs 与开箱即用 | in_progress | Onboard/Doctor 可完成基础渗透和代码审计流程 |
-| S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
-| S5 渗透测试完全体 | pending | Attack Surface、状态 Web、验证规划、Research、Attack Chain 闭环 |
-| S6 学习飞轮 | pending | Trajectory 到 Candidate/Replay/Promotion/Curator 闭环 |
-| S7 专业能力评测与回归保障 | pending | 专业案例、回归 Harness 与质量安全发布检查可用 |
-| S8 Pack 生态与正式版运维 | pending | SDK、签名供应链、Gateway 和持续运维可用 |
+| O0 平台根基与计划迁移 | in_progress | S0-S2 已完成；优化计划、ADR、账本和文档合同完成迁移 |
+| O1 开箱即用收口 | in_progress | PACK-302 的真实 Backup/Restore Doctor 检查通过 |
+| P1 真实 Pentest Run | pending | 非空 Scope admission、Pentest CLI、真实隔离目标和重启恢复 |
+| P2 专业验证闭环 | pending | 状态化 Web、Attack Surface、Hypothesis、Evidence 与 Negative Result |
+| P3 Attack Chain 与收口 | pending | Report、Coverage、Attack Chain 和 Stop Proof |
+| P4 Operator 能力成长 | pending | Trajectory、Review、Replay、批准、激活和回滚 |
+| R1 Pentest 发布门 | pending | Pentest-only 回归、真实场景和安全发布检查通过 |
+| O2 代码优化 | pending | 默认产品面收缩，非核心模块经引用审计后隔离或删除 |
+| Frozen Code Audit | frozen | 只修复安全、数据兼容和现有用户阻断问题 |
+| Post-V1 Ecosystem | deferred | 真实第三方分发或规模化运维需求出现后再启动 |
 
 ## 7. Task status
 
@@ -138,7 +142,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a`, `faf12c50` |
+| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a`, `faf12c50`, `ab3f50b6` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -158,11 +162,13 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | LEARN-605 | LEARN-604, PACK-302 | pending | — |
 | EVAL-700 | SEC-001, AUD-403, AUD-404 | pending | — |
 | EVAL-701 | SEC-001, PEN-504 | pending | — |
-| EVAL-702 | EVAL-700, EVAL-701, LEARN-603 | pending | — |
+| EVAL-702 | EVAL-701, LEARN-603 | pending | — |
 | EVAL-703 | EVAL-702, PACK-302 | pending | — |
 | ECO-800 | CAP-001, LEARN-604 | pending | — |
 | ECO-801 | ECO-800 | pending | — |
 | ECO-802 | LEARN-605, ECO-801 | pending | — |
+
+交付说明：AUD-400 至 AUD-405 与 EVAL-700 冻结，不阻塞 Pentest-first V1；ECO-800 至 ECO-802 属于 Post-V1。任务状态仍保留 `pending`，用于保存历史依赖和未来恢复入口，不代表当前排期。
 
 ## 8. Task records
 
@@ -998,7 +1004,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest`：`5273 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
-- Remaining：`packs install/update/rollback` 的停服保护、写后验证、失败恢复和 Pack 版本级 rollback 闭环仍待后续切片完成；SQLite Backup/Restore 原语与 Doctor 接入已完成。
+- Plan rebaseline：`9424b82b` 将正式版发布线调整为专业纵向闭环优先；内嵌 Official Packs 的 `packs install/update/rollback` 不再作为 PACK-302 或 V1 blocker，待 ECO-800 出现真实第三方来源、签名分发和多版本缓存边界后实现。
+- Remaining：Doctor `backup_restore` 仍是旧的固定 `degraded` 占位；下一切片只将其接到现有 SQLite Backup/Restore 原语并完成 PACK-302，随后进入 PEN-500 Pentest admission、真实 Run 与 Attack Surface。
 
 ## 9. Known pre-existing worktree state
 

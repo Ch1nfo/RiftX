@@ -6,7 +6,7 @@
 >
 > 所属任务：SEC-000
 >
-> 权威计划：[RiftX 正式版开发文档](../../../RiftX_正式版_开发文档.md)
+> 权威计划：[RiftX 正式版开发优化文档](../../../RiftX_正式版_开发优化文档.md)
 >
 > 实施账本：[正式版 Agent 开发实施账本](../../implementation/FORMAL_AGENT_PROGRESS.md)
 

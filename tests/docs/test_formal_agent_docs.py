@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-PLAN = REPOSITORY_ROOT / "RiftX_正式版_开发文档.md"
+PLAN = REPOSITORY_ROOT / "RiftX_正式版_开发优化文档.md"
 ADR = (
     REPOSITORY_ROOT
     / "docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md"
