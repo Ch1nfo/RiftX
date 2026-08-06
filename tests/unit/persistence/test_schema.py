@@ -118,6 +118,11 @@ EXPECTED_TABLES = {
     "nodes",
     "provider_states",
     "reports",
+    "reasoning_edge_evidence",
+    "reasoning_edges",
+    "reasoning_graphs",
+    "reasoning_node_evidence",
+    "reasoning_nodes",
     "runtime_approval_requests",
     "runner_commands",
     "runner_command_ownerships",
@@ -574,6 +579,42 @@ def test_evidence_ledger_schema_preserves_identity_scope_and_replay_metadata() -
         foreign_key.target_fullname
         for foreign_key in Base.metadata.tables["evidence_ledger"].c.task_id.foreign_keys
     } == {"tasks.id"}
+
+
+def test_reasoning_graph_schema_normalizes_evidence_lineage() -> None:
+    assert set(Base.metadata.tables["reasoning_graphs"].columns.keys()) == {
+        "run_id",
+        "schema_version",
+        "version",
+        "created_at",
+        "updated_at",
+    }
+    assert {
+        "run_id",
+        "session_id",
+        "task_id",
+        "kind",
+        "status",
+        "claim",
+        "structured_data_json",
+        "reproduction_contract_json",
+        "creator_type",
+        "version",
+    } <= set(Base.metadata.tables["reasoning_nodes"].columns.keys())
+    assert set(
+        Base.metadata.tables["reasoning_node_evidence"].primary_key.columns.keys()
+    ) == {
+        "run_id",
+        "node_id",
+        "evidence_id",
+    }
+    assert set(
+        Base.metadata.tables["reasoning_edge_evidence"].primary_key.columns.keys()
+    ) == {
+        "run_id",
+        "edge_id",
+        "evidence_id",
+    }
 
 
 def test_long_term_memory_table_tracks_scope_sources_and_lifecycle() -> None:

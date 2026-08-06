@@ -45,6 +45,7 @@ from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
 from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .orm import Base
+from .reasoning_repository import SQLAlchemyReasoningGraphRepository
 from .repositories import (
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
@@ -113,6 +114,7 @@ __all__ = [
     "SQLAlchemyNodeRepository",
     "SQLAlchemyProviderStateRepository",
     "SQLAlchemyReportRepository",
+    "SQLAlchemyReasoningGraphRepository",
     "SQLAlchemyRunnerCommandRepository",
     "SQLAlchemyRunnerCredentialRepository",
     "SQLAlchemyRunEventRepository",

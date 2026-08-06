@@ -2712,6 +2712,7 @@ class EvidenceRecord(Base):
             ["tasks.run_id", "tasks.id"],
             ondelete="RESTRICT",
         ),
+        UniqueConstraint("run_id", "id", name="uq_evidence_owner_id"),
         Index("ix_evidence_run_created_id", "run_id", "created_at", "id"),
         Index("ix_evidence_run_task_created", "run_id", "task_id", "created_at"),
         Index("ix_evidence_run_kind_created", "run_id", "kind", "created_at"),
@@ -2742,6 +2743,201 @@ class EvidenceRecord(Base):
         ForeignKey("artifacts.id", ondelete="RESTRICT"), index=True
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningGraphRecord(Base):
+    __tablename__ = "reasoning_graphs"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_graphs_schema_version",
+        ),
+        CheckConstraint("version >= 1", name="ck_reasoning_graphs_version"),
+        Index("ix_reasoning_graphs_updated_at", "updated_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningNodeRecord(Base):
+    __tablename__ = "reasoning_nodes"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_nodes_schema_version",
+        ),
+        CheckConstraint(
+            "kind IN ('observation', 'fact_candidate', 'confirmed_fact', 'hypothesis', "
+            "'vulnerability_candidate', 'finding', 'proof', 'negative_result')",
+            name="ck_reasoning_nodes_kind",
+        ),
+        CheckConstraint(
+            "status IN ('recorded', 'candidate', 'promoted', 'confirmed', 'unverified', "
+            "'investigating', 'supported', 'rejected', 'invalidated', 'resolved', "
+            "'false_positive', 'validated', 'failed')",
+            name="ck_reasoning_nodes_status",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'reducer', 'tool', "
+            "'parser', 'scanner')",
+            name="ck_reasoning_nodes_creator_type",
+        ),
+        CheckConstraint("version >= 1", name="ck_reasoning_nodes_version"),
+        CheckConstraint(
+            "(kind = 'finding') OR reproduction_contract_json IS NULL",
+            name="ck_reasoning_nodes_reproduction_kind",
+        ),
+        CheckConstraint(
+            "kind <> 'finding' OR status <> 'confirmed' OR "
+            "reproduction_contract_json IS NOT NULL",
+            name="ck_reasoning_nodes_confirmed_finding",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_reasoning_nodes_owner_id"),
+        Index("ix_reasoning_nodes_run_kind_status", "run_id", "kind", "status"),
+        Index("ix_reasoning_nodes_run_updated", "run_id", "updated_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("reasoning_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_data_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reproduction_contract_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningEdgeRecord(Base):
+    __tablename__ = "reasoning_edges"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_edges_schema_version",
+        ),
+        CheckConstraint(
+            "relation_type IN ('supports', 'contradicts', 'derived_from', "
+            "'discovered_on', 'validates', 'exploits', 'invalidates', 'depends_on')",
+            name="ck_reasoning_edges_relation_type",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'reducer', 'tool', "
+            "'parser', 'scanner')",
+            name="ck_reasoning_edges_creator_type",
+        ),
+        CheckConstraint("source_node_id <> target_node_id", name="ck_reasoning_edges_self"),
+        ForeignKeyConstraint(
+            ["run_id", "source_node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "target_node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "source_node_id",
+            "target_node_id",
+            "relation_type",
+            name="uq_reasoning_edges_structure",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_reasoning_edges_owner_id"),
+        Index("ix_reasoning_edges_run_source", "run_id", "source_node_id"),
+        Index("ix_reasoning_edges_run_target", "run_id", "target_node_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("reasoning_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    target_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningNodeEvidenceRecord(Base):
+    __tablename__ = "reasoning_node_evidence"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_reasoning_node_evidence_ordinal"),
+        ForeignKeyConstraint(
+            ["run_id", "node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "evidence_id"],
+            ["evidence_ledger.run_id", "evidence_ledger.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "node_id",
+            "ordinal",
+            name="uq_reasoning_node_evidence_ordinal",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ReasoningEdgeEvidenceRecord(Base):
+    __tablename__ = "reasoning_edge_evidence"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_reasoning_edge_evidence_ordinal"),
+        ForeignKeyConstraint(
+            ["run_id", "edge_id"],
+            ["reasoning_edges.run_id", "reasoning_edges.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "evidence_id"],
+            ["evidence_ledger.run_id", "evidence_ledger.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "edge_id",
+            "ordinal",
+            name="uq_reasoning_edge_evidence_ordinal",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    edge_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ContextCompilationRecord(Base):
