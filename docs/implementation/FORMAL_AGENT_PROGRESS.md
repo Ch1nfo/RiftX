@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S3 — Official Packs 与开箱即用`
-- Current task：`PACK-301 — 基础代码审计 Packs`
+- Current task：`PACK-302 — Onboard 和 Doctor`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -45,10 +45,11 @@
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
-- Product behavior：PACK-301 已交付九个基础代码审计 Pack，覆盖仓库/入口建模、认证授权、注入、秘密配置、依赖供应链、文件路径和 SSRF/出站请求。所有 Pack 复用既有生产链路，只使用 owner-bound 代码导航和认知状态工具；不执行目标项目、不操作目标文件、不联网查询依赖，也不向目标或内网发送请求。
-- Current implementation commits：`4f74479d`、`81574f56`、`0237a0cb`。
-- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、19 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、精确工具权限契约与 wheel 中 152 个 Official Pack 发行资产验证通过。
-- Next delivery slice：完成 `deserialization-audit`、`finding-verification` 与 `variant-analysis`，收束危险对象构造、候选结论晋升和同类缺陷扩展搜索。
+- Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
+- Product behavior：PACK-301 已完成正式计划中的 12 个基础代码审计 Pack，覆盖仓库与入口建模、认证授权、注入、秘密配置、依赖供应链、文件路径、SSRF、反序列化、Finding Verification 与 Variant Analysis。所有 Pack 复用既有生产链路，只使用 owner-bound 代码导航和认知状态工具；候选不能绕过内部 Confirmed Finding gate。
+- Current implementation commits：PACK-302 尚无。
+- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、22 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、12 个代码审计 Pack 的 96 个发行资产、精确工具权限契约与 wheel 中 176 个 Official Pack 发行资产验证通过。
+- Next delivery slice：审计现有 CLI、配置、Runtime、Pack/Skill/MCP/LSP/Scanner/Snapshot/Backup 能力，设计并交付最小可用的 `riftx onboard`、`riftx doctor` 与安全的 `doctor --fix` 生产闭环。
 
 ## 3. 研究与实现基线
 
@@ -136,8 +137,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-204 | COG-203 | completed | `16a1d800`, `a03654e0`, `21e28b3e`, `de863606`, `7a70ef6f`, `465ea1f0`, `65f12b02` |
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
-| PACK-301 | CAP-101, CAP-104, COG-205 | in_progress | — |
-| PACK-302 | PACK-300, PACK-301 | pending | — |
+| PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
+| PACK-302 | PACK-300, PACK-301 | in_progress | — |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -765,7 +766,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### PACK-301：基础代码审计 Packs
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-06
 - Inputs：CAP-101、CAP-104、COG-205、PACK-300 的 Official Pack Catalog/Bootstrap、Capability Repository、Progressive Skill、Technique Context、Tool Policy、Evidence Ledger 与 Closure Verifier。
 - First delivery slice：
@@ -787,6 +788,12 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 新增 `ssrf-and-outbound-request-audit`，分别追踪 Scheme、Authority、Host、Port、Path、Redirect、Proxy、Resolved Address、Credential 与 Response 使用；可控 Body/Header 或固定主机 Path 不等于 SSRF；
   - 三个 Pack 均不执行 Installer/Build/File Operation/Archive Extraction，也不发送网络请求、解析在线 DNS、查询 Registry 或访问 Credential；
   - Catalog/Bootstrap 扩展为 19 Pack/57 Capability，wheel 扩展为 152 个 Official Pack 发行资产。
+- Fourth delivery slice：
+  - 新增 `deserialization-audit`，追踪不可信结构化输入、Parser Mode、Type Resolution、Object Construction、Lifecycle Hook、Gadget、Side Effect 与 Integrity/Allowlist；格式或 Parser 名称本身不能证明危险反序列化；
+  - 新增 `finding-verification`，从权威 Reasoning Graph 和 owner-bound Source 独立重建 Candidate，检查攻击者控制、每条可达边、防御、反证、影响、Identity 与 Replay；`propose_finding` 只能形成 Candidate，不能写入 Confirmed 状态；
+  - 新增 `variant-analysis`，从已验证 Seed 提取 Root-cause Invariant，组合 Lexical/Symbol/Reference/Caller/Flow/Config/Defense 搜索，并对每个 Candidate 独立验证，禁止复制 Seed Evidence；
+  - Catalog/Bootstrap 最终扩展为 22 Pack/66 Capability；正式计划中的 12 个代码审计 Pack 每个均包含 Manifest、Skill、Technique、Tool requirements、Evidence contract、Negative cases、Eval Case、Schema 与 Changelog，共 96 个发行资产；
+  - wheel 最终包含 22 个 Official Pack 的 176 个发行资产，生产 Worker 暴露全部 22 个 Skill 与 Technique。
 - Safety boundaries：
   - 每个代码审计 Pack 的工具集合由测试精确锁定，只包含 owner-bound `list_files`/`glob`/`grep`/`read_many_files`、语义导航、Task/Reasoning/Evidence/Closure 工具；
   - 不依赖 Shell、目标项目执行、Patch/Revert、Worktree、Browser、Web、Target HTTP、Credential 或外部服务；
@@ -817,8 +824,17 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack301-slice3-wheel.4Eidio`：passed，19 个 Pack 的 152 个发行资产存在；
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5206 passed, 5 skipped, 17 warnings`；跳过和警告原因与前两切片一致；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`4f74479d`、`81574f56`、`0237a0cb`。
-- Remaining Packs：`deserialization-audit`、`finding-verification`、`variant-analysis`。
+- Fourth slice checks：
+  - 测试先行缺失资产验证：`4 failed, 18 passed`，失败仅为三个 Pack 尚不存在；资产接入后定向回归：`22 passed`；
+  - Pack、Skill、Capability 与生产 Worker 关联回归：`49 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/packs src/riftx/skills/progressive.py src/riftx/skills/registry.py src/riftx/skills/__init__.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 7 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack301-final-wheel.76zz69`：passed，22 个 Pack 的 176 个发行资产存在；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5206 passed, 5 skipped, 17 warnings`；跳过和警告原因与前三切片一致；
+  - 12 个计划代码审计 Pack 的 96 个 `pack.yaml`、Eval、Negative、Changelog、Skill、References 和输入/输出 Schema 文件逐项存在；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
+- Completion：正式文档列出的 12 个基础代码审计 Pack 已全部进入 Official Catalog、Capability persistence、生产 Worker、Session pinning 与 wheel 发行链路；无剩余 Pack。
 
 ## 9. Known pre-existing worktree state
 
