@@ -29,6 +29,13 @@ from riftx.execution import (
     build_execution_key,
     build_tool_call_intent_id,
 )
+from riftx.observer import (
+    SupervisorCheck,
+    SupervisorDisposition,
+    SupervisorReport,
+    SupervisorSeverity,
+    SupervisorSignal,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -95,6 +102,51 @@ class DeferredEngine:
 
     async def resume(self, request: object) -> DeferredEngineRun:
         return DeferredEngineRun(self._events)
+
+
+class ApprovalYieldObserver:
+    def __init__(
+        self,
+        tool_calls: SQLAlchemyToolCallIntentRepository,
+        approvals: SQLAlchemyRuntimeApprovalRepository,
+    ) -> None:
+        self._tool_calls = tool_calls
+        self._approvals = approvals
+        self.calls = 0
+
+    async def inspect(self, **kwargs: object) -> SupervisorReport:
+        self.calls += 1
+        session = kwargs["session"]
+        cycle = kwargs["cycle"]
+        assert isinstance(session, AgentSession)
+        assert isinstance(cycle, AgentCycle)
+        intents = await self._tool_calls.recent_for_session(session.id)
+        if not intents:
+            return SupervisorReport(
+                run_id=session.run_id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                disposition=SupervisorDisposition.CONTINUE,
+            )
+        approval = await self._approvals.get_for_intent(intents[-1].id)
+        assert approval is not None
+        return SupervisorReport(
+            run_id=session.run_id,
+            session_id=session.id,
+            cycle_id=cycle.id,
+            disposition=SupervisorDisposition.YIELD,
+            yield_reason=YieldReason.APPROVAL_REQUIRED,
+            signals=(
+                SupervisorSignal(
+                    code="approval_pending",
+                    check=SupervisorCheck.APPROVAL,
+                    severity=SupervisorSeverity.INFO,
+                    summary="Wait for durable approval",
+                    refs=(f"approval:{approval.id}",),
+                    yield_reason=YieldReason.APPROVAL_REQUIRED,
+                ),
+            ),
+        )
 
 
 class RecordingRunner:
@@ -1031,3 +1083,69 @@ async def test_runtime_retry_yields_same_deferred_execution_without_relaunch(
     assert completed.execution.status is ExecutionStatus.COMPLETED
     await supervisor.close()
     await database.dispose()
+
+
+async def test_runtime_observer_yields_with_durable_approval_identity(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    database = durable_dispatcher.database
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    observer = ApprovalYieldObserver(
+        durable_dispatcher.tool_calls,
+        durable_dispatcher.runtime_approvals,
+    )
+    coordinator = RuntimeCoordinator(
+        run_repository=runs,
+        session_repository=sessions,
+        cycle_repository=SQLAlchemyAgentCycleRepository(database.session_factory),
+        step_repository=SQLAlchemyAgentStepRepository(database.session_factory),
+        provider_state_repository=SQLAlchemyProviderStateRepository(database.session_factory),
+        event_repository=events,
+        lease_manager=DatabaseRunLeaseManager(
+            SQLAlchemyRunLeaseRepository(database.session_factory)
+        ),
+        context_compiler=MinimalContextCompiler(),
+        agent_engine=DeferredEngine(
+            [
+                deferred_event(durable_dispatcher.workspace),
+                AgentEngineEvent(
+                    sequence=2,
+                    event_type=AgentEngineEventType.RUN_COMPLETED,
+                ),
+            ]
+        ),
+        deferred_execution_dispatcher=durable_dispatcher.dispatcher,
+        approval_repository=durable_dispatcher.public_approvals,
+        runtime_approval_repository=durable_dispatcher.runtime_approvals,
+        approval_recorder=durable_dispatcher.approval_recorder,
+        observer=observer,
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id=durable_dispatcher.run.id,
+            session_id=durable_dispatcher.session.id,
+            worker_id="observer-worker",
+            cycle_id="observer-approval-cycle",
+        )
+    )
+
+    pending = await durable_dispatcher.runtime_approvals.pending_for_run(
+        durable_dispatcher.run.id
+    )
+    assert len(pending) == 1
+    assert result.yield_reason is YieldReason.APPROVAL_REQUIRED
+    assert result.waiting_object_id == pending[0].id
+    assert pending[0].provider_state_id == result.provider_state_id
+    assert observer.calls == 2
+    observer_events = [
+        item
+        for item in await events.list_after(durable_dispatcher.run.id)
+        if item.event_type == "runtime.observer_inspected"
+    ]
+    assert [item.payload["phase"] for item in observer_events] == [
+        "pre_model",
+        "tool_intent",
+    ]

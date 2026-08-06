@@ -22,6 +22,13 @@ from riftx.hooks import (
     HookResult,
     PythonHook,
 )
+from riftx.observer import (
+    SupervisorCheck,
+    SupervisorDisposition,
+    SupervisorReport,
+    SupervisorSeverity,
+    SupervisorSignal,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -41,7 +48,13 @@ from riftx.runtime.engine import (
     AgentEngineState,
 )
 from riftx.runtime.leases import DatabaseRunLeaseManager
-from riftx.runtime.lifecycle import CycleLimits, MinimalContextCompiler, RunCycleRequest
+from riftx.runtime.lifecycle import (
+    CompiledContext,
+    ContextCompiler,
+    CycleLimits,
+    MinimalContextCompiler,
+    RunCycleRequest,
+)
 from riftx.runtime.types import AgentSession, CycleStatus, SessionStatus, YieldReason
 
 
@@ -105,6 +118,25 @@ class FakeSubagentBatchExecutor:
         self.calls.append((parent_session_id, requests))
 
 
+class CapabilityContextCompiler:
+    async def compile(self, request: object) -> CompiledContext:
+        return CompiledContext(
+            system_instructions="Observe compiled capabilities",
+            available_tools=[{"name": "tool-b"}, {"id": "tool-a"}],
+            available_skills=[{"id": "skill-b"}, {"name": "skill-a"}],
+        )
+
+
+class RecordingObserver:
+    def __init__(self, report: SupervisorReport) -> None:
+        self.report = report
+        self.calls: list[dict[str, object]] = []
+
+    async def inspect(self, **kwargs: object) -> SupervisorReport:
+        self.calls.append(kwargs)
+        return self.report
+
+
 class RecordingSafetyStopper:
     def __init__(self, runs: SQLAlchemyRunRepository, *, confirmed: bool = True) -> None:
         self._runs = runs
@@ -148,6 +180,8 @@ async def build_runtime(
     observable_context: bool = False,
     workspace_path: Path | None = None,
     hooks: HookBus | None = None,
+    observer: object | None = None,
+    context_compiler: ContextCompiler | None = None,
     subagent_executor: object | None = None,
     with_safety_stopper: bool = True,
     run_kind: RunKind = RunKind.GENERAL,
@@ -182,12 +216,12 @@ async def build_runtime(
     }
     safety_stopper = RecordingSafetyStopper(runs)
     repos["safety_stopper"] = safety_stopper
-    context_compiler = MinimalContextCompiler()
+    resolved_context_compiler = context_compiler or MinimalContextCompiler()
     if observable_context:
         context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
         repos["context"] = context_repository
-        context_compiler = ManifestingContextCompiler(
-            context_compiler,
+        resolved_context_compiler = ManifestingContextCompiler(
+            resolved_context_compiler,
             ContextApplicationService(context_repository),
         )
     coordinator = RuntimeCoordinator(
@@ -198,15 +232,75 @@ async def build_runtime(
         provider_state_repository=repos["providers"],
         event_repository=repos["events"],
         lease_manager=DatabaseRunLeaseManager(repos["leases"]),
-        context_compiler=context_compiler,
+        context_compiler=resolved_context_compiler,
         agent_engine=engine,
         hooks=hooks,
+        observer=observer,  # type: ignore[arg-type]
         **({"safety_stopper": safety_stopper} if with_safety_stopper else {}),
         **({"subagent_executor": subagent_executor} if subagent_executor is not None else {}),
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_observer_blocks_before_model_and_records_redacted_audit_event(
+    tmp_path: Path,
+) -> None:
+    signal = SupervisorSignal(
+        code="scope_boundary_rejected",
+        check=SupervisorCheck.SCOPE,
+        severity=SupervisorSeverity.BLOCKING,
+        summary="Sensitive scope detail must not enter the audit event",
+        refs=("event:scope-event",),
+    )
+    observer = RecordingObserver(
+        SupervisorReport(
+            run_id="run-1",
+            session_id="session-1",
+            cycle_id="cycle-observer",
+            disposition=SupervisorDisposition.BLOCK,
+            signals=(signal,),
+        )
+    )
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        observer=observer,
+        context_compiler=CapabilityContextCompiler(),
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            cycle_id="cycle-observer",
+        )
+    )
+
+    assert result.yield_reason is YieldReason.FATAL_FAILURE
+    assert engine.requests == []
+    assert observer.calls[0]["available_tool_ids"] == ("tool-a", "tool-b")
+    assert observer.calls[0]["available_skill_ids"] == ("skill-a", "skill-b")
+    events = await repos["events"].list_after("run-1")
+    audit = next(item for item in events if item.event_type == "runtime.observer_inspected")
+    assert audit.payload == {
+        "cycle_id": "cycle-observer",
+        "phase": "pre_model",
+        "disposition": "block",
+        "yield_reason": None,
+        "signals": [
+            {
+                "code": "scope_boundary_rejected",
+                "check": "scope",
+                "severity": "blocking",
+                "refs": ["event:scope-event"],
+            }
+        ],
+    }
+    assert "Sensitive scope detail" not in str(audit.payload)
+    await database.dispose()
 
 
 async def test_code_audit_runtime_cycle_denies_before_lease_event_state_and_model(

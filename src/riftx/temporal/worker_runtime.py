@@ -95,8 +95,10 @@ from riftx.mcp import (
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
+from riftx.observer import ObserverSupervisorApplicationService
 from riftx.persistence import (
     Database,
+    SQLAlchemyActiveTakeoverReader,
     SQLAlchemyAgentCycleRepository,
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
@@ -846,6 +848,16 @@ async def build_temporal_worker(
             evidence=evidence_ledger_repository,
             graphs=reasoning_graph_repository,
         )
+        observer = ObserverSupervisorApplicationService(
+            working_memory=working_memory_repository,
+            task_graphs=task_graph_repository,
+            reasoning_graphs=reasoning_graph_repository,
+            tool_intents=tool_call_intent_repository,
+            approvals=runtime_approval_repository,
+            user_input=user_input_repository,
+            events=event_repository,
+            takeovers=SQLAlchemyActiveTakeoverReader(database.session_factory),
+        )
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
@@ -1285,6 +1297,7 @@ async def build_temporal_worker(
             terminal_service=terminal_service,
             safety_stopper=safety_stopper,
             hooks=hooks,
+            observer=observer,
         )
         session_manager = SessionManager(
             run_repository=run_repository,
