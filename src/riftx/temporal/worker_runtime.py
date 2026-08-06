@@ -97,6 +97,7 @@ from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
 from riftx.observer import ObserverSupervisorApplicationService
+from riftx.packs import bootstrap_official_packs
 from riftx.persistence import (
     Database,
     SQLAlchemyActiveTakeoverReader,
@@ -779,6 +780,8 @@ async def build_temporal_worker(
     mcp_registry: MCPServerRegistry | None = None
     try:
         await database.create_schema()
+        capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
+        await bootstrap_official_packs(capability_repository)
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
         mcp_registry = MCPServerRegistry(config.mcp)
@@ -1148,7 +1151,7 @@ async def build_temporal_worker(
             database.session_factory
         )
         technique_context = TechniqueContextManager(
-            SQLAlchemyCapabilityRepository(database.session_factory),
+            capability_repository,
             capability_selection_store,
         )
         code_workspace = CodeWorkspaceService(

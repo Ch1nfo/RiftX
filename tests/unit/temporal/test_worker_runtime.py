@@ -19,6 +19,7 @@ from riftx.application.services import (
     ResourceStopDisposition,
     SafetyStopResult,
 )
+from riftx.capabilities import CapabilityKind
 from riftx.config import (
     AgentConfig,
     DatabaseConfig,
@@ -35,6 +36,7 @@ from riftx.models import ModelAPI, ModelProfile, ModelProfileRegistry
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentSessionRepository,
+    SQLAlchemyCapabilityRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyRunEventRepository,
@@ -275,6 +277,13 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         "browser_sessions",
         "target_http_requests",
     }
+    official_techniques = await SQLAlchemyCapabilityRepository(
+        runtime.database.session_factory
+    ).list_active_versions(CapabilityKind.TECHNIQUE)
+    assert [version.manifest.capability_id for version in official_techniques] == [
+        "pentest-foundation.technique",
+        "scope-and-safety.technique",
+    ]
     assert (tmp_path / "workspaces").is_dir()
     assert (tmp_path / "runner").is_dir()
     node = await SQLAlchemyNodeRepository(runtime.database.session_factory).get("worker-local")
