@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
+from math import ceil
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,7 +16,7 @@ from riftx.application.errors import (
     RepositoryConflictError,
 )
 from riftx.application.ports import ExecutionAdmissionIdentity, ToolCallIntentExecutionClaim
-from riftx.domain import ApprovalStatus, ExecutorType, RunKind
+from riftx.domain import ApprovalStatus, ExecutorType, RunKind, RunStatus
 from riftx.domain.base import utc_now
 from riftx.runtime.types import (
     AgentCycle,
@@ -39,6 +40,7 @@ from .orm import (
     AgentCycleRecord,
     AgentRuntimeStepRecord,
     AgentSessionRecord,
+    ContextCompilationRecord,
     ExecutionRecord,
     ProviderStateRecord,
     RunLeaseRecord,
@@ -133,8 +135,14 @@ class SQLAlchemyAgentSessionRepository:
 
 
 class SQLAlchemyAgentCycleRepository:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        clock: Clock = utc_now,
+    ) -> None:
         self._session_factory = session_factory
+        self._clock = clock
 
     async def create(self, cycle: AgentCycle) -> AgentCycle:
         try:
@@ -201,6 +209,171 @@ class SQLAlchemyAgentCycleRepository:
             apply_agent_cycle_to_record(cycle, cycle_record)
             await session.flush()
         return cycle
+
+    async def claim_pentest_model_call(
+        self,
+        *,
+        run_id: str,
+        cycle_id: str,
+        compilation_id: str,
+    ) -> AgentCycle:
+        """Reserve one Pentest model call after checking prior durable usage."""
+
+        async with _serialized_run_write(self._session_factory) as session:
+            run_record = await session.scalar(
+                select(RunRecord).where(RunRecord.id == run_id).with_for_update()
+            )
+            if run_record is None:
+                raise EntityNotFoundError("Run", run_id)
+            run = run_from_record(run_record)
+            if run.kind is not RunKind.PENTEST or run.pentest_admission is None:
+                raise RepositoryConflictError(
+                    "Pentest model call claim requires a Pentest admission"
+                )
+            if run.status is not RunStatus.RUNNING:
+                raise RepositoryConflictError(
+                    "Pentest model call claim requires a running Run"
+                )
+            cycle_record = await session.scalar(
+                select(AgentCycleRecord)
+                .where(AgentCycleRecord.id == cycle_id)
+                .with_for_update()
+            )
+            if cycle_record is None:
+                raise EntityNotFoundError("AgentCycle", cycle_id)
+            if cycle_record.run_id != run_id:
+                raise RepositoryConflictError(
+                    "AgentCycle is not owned by the Pentest Run"
+                )
+            compilation_record = await session.scalar(
+                select(ContextCompilationRecord)
+                .where(ContextCompilationRecord.id == compilation_id)
+                .with_for_update()
+            )
+            if compilation_record is None:
+                raise EntityNotFoundError("ContextCompilation", compilation_id)
+            if (
+                compilation_record.run_id != run_id
+                or compilation_record.session_id != cycle_record.session_id
+            ):
+                raise RepositoryConflictError(
+                    "ContextCompilation is not owned by the Pentest Cycle"
+                )
+
+            admission = run.pentest_admission
+            elapsed = max(0.0, (self._clock() - run.created_at).total_seconds())
+            if elapsed >= admission.budget.max_duration_seconds:
+                raise PentestBudgetExceededError(
+                    "max_duration_seconds",
+                    limit=admission.budget.max_duration_seconds,
+                    used=ceil(elapsed),
+                )
+
+            session_model_calls = int(
+                await session.scalar(
+                    select(func.coalesce(func.sum(AgentSessionRecord.model_call_count), 0))
+                    .where(AgentSessionRecord.run_id == run_id)
+                )
+                or 0
+            )
+            unmerged_model_calls = int(
+                await session.scalar(
+                    select(func.coalesce(func.sum(AgentCycleRecord.model_call_count), 0))
+                    .where(
+                        AgentCycleRecord.run_id == run_id,
+                        AgentCycleRecord.status != CycleStatus.YIELDED.value,
+                    )
+                )
+                or 0
+            )
+            used_model_calls = session_model_calls + unmerged_model_calls
+            if used_model_calls >= admission.budget.max_model_calls:
+                raise PentestBudgetExceededError(
+                    "max_model_calls",
+                    limit=admission.budget.max_model_calls,
+                    used=used_model_calls,
+                )
+
+            token_row = (
+                await session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        ContextCompilationRecord.actual_input_tokens.is_not(
+                                            None
+                                        )
+                                        & ContextCompilationRecord.actual_output_tokens.is_not(
+                                            None
+                                        ),
+                                        1,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        ContextCompilationRecord.actual_input_tokens.is_not(
+                                            None
+                                        )
+                                        & ContextCompilationRecord.actual_output_tokens.is_not(
+                                            None
+                                        ),
+                                        ContextCompilationRecord.actual_input_tokens,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        ContextCompilationRecord.actual_input_tokens.is_not(
+                                            None
+                                        )
+                                        & ContextCompilationRecord.actual_output_tokens.is_not(
+                                            None
+                                        ),
+                                        ContextCompilationRecord.actual_output_tokens,
+                                    ),
+                                    else_=0,
+                                )
+                            ),
+                            0,
+                        ),
+                    ).where(
+                        ContextCompilationRecord.run_id == run_id,
+                        ContextCompilationRecord.id != compilation_id,
+                    )
+                )
+            ).one()
+            complete_compilations = int(token_row[0])
+            used_tokens = int(token_row[1]) + int(token_row[2])
+            if complete_compilations < used_model_calls:
+                raise PentestBudgetExceededError(
+                    "max_tokens",
+                    limit=admission.budget.max_tokens,
+                    used=used_tokens,
+                    reason="token_usage_incomplete",
+                )
+            if used_tokens >= admission.budget.max_tokens:
+                raise PentestBudgetExceededError(
+                    "max_tokens",
+                    limit=admission.budget.max_tokens,
+                    used=used_tokens,
+                )
+
+            cycle_record.model_call_count += 1
+            await session.flush()
+            claimed = agent_cycle_from_record(cycle_record)
+        return claimed
 
     async def list_by_session(self, session_id: str) -> Sequence[AgentCycle]:
         statement = (

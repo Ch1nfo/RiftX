@@ -16,7 +16,19 @@ from riftx.application.services import (
     SafetyStopResult,
 )
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
-from riftx.domain import DomainError, Engagement, Objective, Run, RunKind, RunStatus
+from riftx.domain import (
+    DomainError,
+    Engagement,
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    RunStatus,
+    Scope,
+)
 from riftx.hooks import (
     HookBus,
     HookDecision,
@@ -185,6 +197,14 @@ class RecordingSafetyStopper:
         )
 
 
+class RecordingBudgetExhaustionHandler:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def __call__(self, run_id: str) -> None:
+        self.calls.append(run_id)
+
+
 def event(sequence: int, event_type: AgentEngineEventType, **data: object) -> AgentEngineEvent:
     return AgentEngineEvent(sequence=sequence, event_type=event_type, data=data)
 
@@ -202,15 +222,38 @@ async def build_runtime(
     observer: object | None = None,
     context_compiler: ContextCompiler | None = None,
     subagent_executor: object | None = None,
+    budget_exhaustion_handler: RecordingBudgetExhaustionHandler | None = None,
     with_safety_stopper: bool = True,
     run_kind: RunKind = RunKind.GENERAL,
+    pentest_budget: PentestBudget | None = None,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
-        Engagement(id="engagement-1", name="Authorized")
+        Engagement(
+            id="engagement-1",
+            name="Authorized",
+            authorization_reference=(
+                "ticket://runtime-test" if run_kind is RunKind.PENTEST else None
+            ),
+        )
     )
     runs = SQLAlchemyRunRepository(database.session_factory)
+    admission = (
+        PentestAdmission(
+            budget=pentest_budget
+            or PentestBudget(
+                max_duration_seconds=600,
+                max_model_calls=10,
+                max_tokens=10_000,
+                max_tool_calls=10,
+                max_target_interactions=10,
+                max_concurrent_target_interactions=1,
+            )
+        )
+        if run_kind is RunKind.PENTEST
+        else None
+    )
     await runs.create(
         Run(
             kind=run_kind,
@@ -218,6 +261,13 @@ async def build_runtime(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Map the authorized target"),
+            entry_points=(
+                [EntryPoint(kind=EntryPointKind.IP, value="127.0.0.1")]
+                if run_kind is RunKind.PENTEST
+                else []
+            ),
+            scope=(Scope(ips=["127.0.0.1"]) if run_kind is RunKind.PENTEST else Scope()),
+            pentest_admission=admission,
             workspace_path=str(workspace_path or tmp_path / "workspace"),
         )
     )
@@ -244,7 +294,7 @@ async def build_runtime(
     safety_stopper = RecordingSafetyStopper(runs, event_repository)
     repos["safety_stopper"] = safety_stopper
     resolved_context_compiler = context_compiler or MinimalContextCompiler()
-    if observable_context:
+    if observable_context or run_kind is RunKind.PENTEST:
         context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
         repos["context"] = context_repository
         resolved_context_compiler = ManifestingContextCompiler(
@@ -271,6 +321,11 @@ async def build_runtime(
         ),
         **({"safety_stopper": safety_stopper} if with_safety_stopper else {}),
         **({"subagent_executor": subagent_executor} if subagent_executor is not None else {}),
+        **(
+            {"budget_exhaustion_handler": budget_exhaustion_handler}
+            if budget_exhaustion_handler is not None
+            else {}
+        ),
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
@@ -546,6 +601,59 @@ async def test_blocking_model_hook_fails_cycle_before_provider_call(tmp_path: Pa
         )
 
     assert engine.requests == []
+    cycles = await repos["cycles"].list_by_session("session-1")
+    assert cycles[0].status is CycleStatus.FAILED
+    await database.dispose()
+
+
+async def test_pentest_model_budget_exhaustion_stops_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    budget_handler = RecordingBudgetExhaustionHandler()
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        run_kind=RunKind.PENTEST,
+        pentest_budget=PentestBudget(
+            max_duration_seconds=600,
+            max_model_calls=1,
+            max_tokens=10_000,
+            max_tool_calls=10,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        budget_exhaustion_handler=budget_handler,
+    )
+    sessions = repos["sessions"]
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    session = await sessions.get("session-1")
+    assert session is not None
+    session.model_call_count = 1
+    await sessions.save(session)
+
+    with pytest.raises(ApplicationConflictError) as exhausted:
+        await coordinator.run_cycle(
+            RunCycleRequest(
+                run_id="run-1",
+                session_id="session-1",
+                worker_id="worker-1",
+                cycle_id="pentest-budget-cycle",
+            )
+        )
+
+    assert exhausted.value.code == "pentest_budget_exhausted"
+    assert exhausted.value.details == {
+        "run_id": "run-1",
+        "budget_name": "max_model_calls",
+        "limit": 1,
+        "used": 1,
+        "reason": "exhausted",
+    }
+    assert engine.requests == []
+    assert engine.resume_requests == []
+    assert budget_handler.calls == ["run-1"]
+    events = await repos["events"].list_after("run-1")
+    assert any(item.event_type == "pentest.budget_exhausted" for item in events)
     cycles = await repos["cycles"].list_by_session("session-1")
     assert cycles[0].status is CycleStatus.FAILED
     await database.dispose()

@@ -275,6 +275,10 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     closure_verifier = captured["activities"]._closure_verifier
     assert isinstance(closure_verifier, ClosureVerifierApplicationService)
     assert captured["runtime_cycle_activities"]._coordinator._closure_verifier is closure_verifier
+    assert (
+        captured["runtime_cycle_activities"]._coordinator._budget_exhaustion_handler
+        is not None
+    )
     assert runtime.run_repository is not None
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None

@@ -21,11 +21,19 @@ class RepositoryConflictError(RepositoryError):
 class PentestBudgetExceededError(RepositoryConflictError):
     """A serialized Pentest effect claim would exceed its durable budget."""
 
-    def __init__(self, budget_name: str, *, limit: int, used: int) -> None:
+    def __init__(
+        self,
+        budget_name: str,
+        *,
+        limit: int,
+        used: int,
+        reason: str = "exhausted",
+    ) -> None:
         super().__init__(f"Pentest budget {budget_name!r} is exhausted")
         self.budget_name = budget_name
         self.limit = limit
         self.used = used
+        self.reason = reason
 
 
 class RepositoryUnavailableError(RepositoryError):

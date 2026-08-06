@@ -6,8 +6,26 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
-from riftx.domain import ApprovalLevel, ApprovalStatus, Engagement, Objective, Run
+from riftx.application.errors import (
+    EntityNotFoundError,
+    PentestBudgetExceededError,
+    RepositoryConflictError,
+)
+from riftx.context import ContextCompilation, ContextManifest
+from riftx.domain import (
+    ApprovalLevel,
+    ApprovalStatus,
+    Engagement,
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    RunStatus,
+    Scope,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
@@ -21,6 +39,7 @@ from riftx.persistence import (
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyUserInputRequestRepository,
 )
+from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runtime.types import (
     AgentCycle,
     AgentSession,
@@ -55,6 +74,38 @@ async def create_run(database: Database) -> None:
             workspace_path="/tmp/riftx/run-1",
         )
     )
+
+
+async def create_pentest_run(
+    database: Database,
+    *,
+    budget: PentestBudget,
+    created_at: datetime,
+) -> None:
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(
+            id="engagement-1",
+            name="Authorized Pentest",
+            authorization_reference="ticket://runtime-budget",
+        )
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(
+        Run(
+            kind=RunKind.PENTEST,
+            id="run-1",
+            engagement_id="engagement-1",
+            node_id="node-1",
+            objective=Objective(description="Assess the authorized target"),
+            entry_points=[EntryPoint(kind=EntryPointKind.IP, value="127.0.0.1")],
+            scope=Scope(ips=["127.0.0.1"]),
+            pentest_admission=PentestAdmission(budget=budget),
+            workspace_path="/tmp/riftx/run-1",
+            created_at=created_at,
+        )
+    )
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    await runs.update_status("run-1", RunStatus.PREPARING)
+    await runs.update_status("run-1", RunStatus.RUNNING)
 
 
 async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> None:
@@ -236,6 +287,303 @@ async def test_yield_usage_merge_rolls_back_session_when_cycle_update_fails(
     assert stored_cycle is not None
     assert stored_cycle.status is CycleStatus.RUNNING
     assert stored_cycle.yield_reason is None
+    await database.dispose()
+
+
+async def _create_context_compilation(
+    database: Database,
+    *,
+    compilation_id: str,
+    session_id: str,
+    actual_input_tokens: int | None = None,
+    actual_output_tokens: int | None = None,
+) -> None:
+    await SQLAlchemyContextCompilationRepository(database.session_factory).create(
+        ContextCompilation(
+            id=compilation_id,
+            run_id="run-1",
+            session_id=session_id,
+            agent_id="primary",
+            model_profile="default",
+            purpose="pentest-cycle",
+            manifest=ContextManifest.empty(
+                run_id="run-1",
+                session_id=session_id,
+                agent_id="primary",
+                model_profile="default",
+                purpose="pentest-cycle",
+            ),
+            actual_input_tokens=actual_input_tokens,
+            actual_output_tokens=actual_output_tokens,
+        )
+    )
+
+
+async def test_pentest_model_claim_requires_complete_prior_usage_and_counts_once(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 7, 12, tzinfo=UTC)
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'model-claim.db'}")
+    await database.create_schema()
+    await create_pentest_run(
+        database,
+        budget=PentestBudget(
+            max_duration_seconds=600,
+            max_model_calls=2,
+            max_tokens=100,
+            max_tool_calls=10,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        created_at=now,
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=1),
+    )
+    contexts = SQLAlchemyContextCompilationRepository(database.session_factory)
+    await sessions.create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    await cycles.create(
+        AgentCycle(
+            id="cycle-1",
+            run_id="run-1",
+            session_id="session-1",
+            sequence=1,
+            status=CycleStatus.RUNNING,
+        )
+    )
+    await _create_context_compilation(
+        database,
+        compilation_id="context-1",
+        session_id="session-1",
+    )
+
+    claimed = await cycles.claim_pentest_model_call(
+        run_id="run-1",
+        cycle_id="cycle-1",
+        compilation_id="context-1",
+    )
+    assert claimed.model_call_count == 1
+    await cycles.create(
+        AgentCycle(
+            id="cycle-2",
+            run_id="run-1",
+            session_id="session-1",
+            sequence=2,
+            status=CycleStatus.RUNNING,
+        )
+    )
+    await _create_context_compilation(
+        database,
+        compilation_id="context-2",
+        session_id="session-1",
+    )
+    with pytest.raises(PentestBudgetExceededError) as incomplete:
+        await cycles.claim_pentest_model_call(
+            run_id="run-1",
+            cycle_id="cycle-2",
+            compilation_id="context-2",
+        )
+    assert incomplete.value.budget_name == "max_tokens"
+    assert incomplete.value.reason == "token_usage_incomplete"
+    unclaimed = await cycles.get("cycle-2")
+    assert unclaimed is not None and unclaimed.model_call_count == 0
+
+    await contexts.update_usage(
+        "context-1",
+        actual_input_tokens=20,
+        actual_output_tokens=5,
+    )
+    claimed = await cycles.claim_pentest_model_call(
+        run_id="run-1",
+        cycle_id="cycle-2",
+        compilation_id="context-2",
+    )
+    assert claimed.model_call_count == 1
+
+    await contexts.update_usage(
+        "context-2",
+        actual_input_tokens=10,
+        actual_output_tokens=5,
+    )
+    await cycles.create(
+        AgentCycle(
+            id="cycle-3",
+            run_id="run-1",
+            session_id="session-1",
+            sequence=3,
+            status=CycleStatus.RUNNING,
+        )
+    )
+    await _create_context_compilation(
+        database,
+        compilation_id="context-3",
+        session_id="session-1",
+    )
+    restarted_cycles = SQLAlchemyAgentCycleRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=2),
+    )
+    with pytest.raises(PentestBudgetExceededError) as exhausted:
+        await restarted_cycles.claim_pentest_model_call(
+            run_id="run-1",
+            cycle_id="cycle-3",
+            compilation_id="context-3",
+        )
+    assert exhausted.value.budget_name == "max_model_calls"
+    assert exhausted.value.used == 2
+    await database.dispose()
+
+
+async def test_pentest_model_claim_enforces_tokens_duration_and_concurrency(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 7, 12, tzinfo=UTC)
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'model-bounds.db'}")
+    await database.create_schema()
+    await create_pentest_run(
+        database,
+        budget=PentestBudget(
+            max_duration_seconds=60,
+            max_model_calls=1,
+            max_tokens=10,
+            max_tool_calls=10,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        created_at=now,
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    await sessions.create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    cycles = SQLAlchemyAgentCycleRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=1),
+    )
+    for index in (1, 2):
+        await cycles.create(
+            AgentCycle(
+                id=f"cycle-{index}",
+                run_id="run-1",
+                session_id="session-1",
+                sequence=index,
+                status=CycleStatus.RUNNING,
+            )
+        )
+        await _create_context_compilation(
+            database,
+            compilation_id=f"context-{index}",
+            session_id="session-1",
+        )
+
+    results = await asyncio.gather(
+        *(
+            cycles.claim_pentest_model_call(
+                run_id="run-1",
+                cycle_id=f"cycle-{index}",
+                compilation_id=f"context-{index}",
+            )
+            for index in (1, 2)
+        ),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, AgentCycle) for result in results) == 1
+    conflicts = [
+        result for result in results if isinstance(result, PentestBudgetExceededError)
+    ]
+    assert len(conflicts) == 1
+    assert conflicts[0].budget_name == "max_model_calls"
+
+    await SQLAlchemyContextCompilationRepository(
+        database.session_factory
+    ).update_usage(
+        "context-1" if isinstance(results[0], AgentCycle) else "context-2",
+        actual_input_tokens=8,
+        actual_output_tokens=2,
+    )
+    duration_cycles = SQLAlchemyAgentCycleRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=60),
+    )
+    losing_index = 2 if isinstance(results[0], AgentCycle) else 1
+    with pytest.raises(PentestBudgetExceededError) as duration:
+        await duration_cycles.claim_pentest_model_call(
+            run_id="run-1",
+            cycle_id=f"cycle-{losing_index}",
+            compilation_id=f"context-{losing_index}",
+        )
+    assert duration.value.budget_name == "max_duration_seconds"
+    assert duration.value.used == 60
+    await database.dispose()
+
+
+async def test_pentest_model_claim_rejects_exhausted_token_budget(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 7, 12, tzinfo=UTC)
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'token-bound.db'}")
+    await database.create_schema()
+    await create_pentest_run(
+        database,
+        budget=PentestBudget(
+            max_duration_seconds=60,
+            max_model_calls=2,
+            max_tokens=10,
+            max_tool_calls=10,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        created_at=now,
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=1),
+    )
+    await sessions.create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    for index in (1, 2):
+        await cycles.create(
+            AgentCycle(
+                id=f"cycle-{index}",
+                run_id="run-1",
+                session_id="session-1",
+                sequence=index,
+                status=CycleStatus.RUNNING,
+            )
+        )
+        await _create_context_compilation(
+            database,
+            compilation_id=f"context-{index}",
+            session_id="session-1",
+        )
+
+    await cycles.claim_pentest_model_call(
+        run_id="run-1",
+        cycle_id="cycle-1",
+        compilation_id="context-1",
+    )
+    await SQLAlchemyContextCompilationRepository(
+        database.session_factory
+    ).update_usage(
+        "context-1",
+        actual_input_tokens=8,
+        actual_output_tokens=2,
+    )
+
+    with pytest.raises(PentestBudgetExceededError) as exhausted:
+        await cycles.claim_pentest_model_call(
+            run_id="run-1",
+            cycle_id="cycle-2",
+            compilation_id="context-2",
+        )
+    assert exhausted.value.budget_name == "max_tokens"
+    assert exhausted.value.used == 10
     await database.dispose()
 
 

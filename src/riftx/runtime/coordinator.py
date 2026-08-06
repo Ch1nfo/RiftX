@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from time import monotonic
 from typing import Protocol, cast
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    PentestBudgetExceededError,
+)
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
     CLOSURE_EVALUATED_EVENT_TYPE,
@@ -30,6 +34,7 @@ from riftx.domain import (
     MessageType,
     MessageVisibility,
     Run,
+    RunKind,
     RunStatus,
     TranscriptMessageDraft,
     requires_approval,
@@ -125,6 +130,10 @@ class SubagentBatchExecutor(Protocol):
     ) -> object: ...
 
 
+class BudgetExhaustionHandler(Protocol):
+    def __call__(self, run_id: str) -> Awaitable[object]: ...
+
+
 class RuntimeObserver(Protocol):
     async def inspect(
         self,
@@ -164,6 +173,7 @@ class RuntimeCoordinator:
         observer: RuntimeObserver | None = None,
         closure_verifier: ClosureVerifierApplicationService | None = None,
         subagent_executor: SubagentBatchExecutor | None = None,
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -195,6 +205,7 @@ class RuntimeCoordinator:
         self._observer = observer
         self._closure_verifier = closure_verifier
         self._subagent_executor = subagent_executor
+        self._budget_exhaustion_handler = budget_exhaustion_handler
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -452,6 +463,35 @@ class RuntimeCoordinator:
             max_turns = before_model.get("max_turns")
             if isinstance(max_turns, int):
                 engine_request.max_turns = max_turns
+            if run.kind is RunKind.PENTEST:
+                if compiled.compilation_id is None:
+                    raise ApplicationConflictError(
+                        "pentest_token_usage_unavailable",
+                        "Pentest model usage requires a durable Context Compilation",
+                        details={"run_id": run.id, "cycle_id": cycle.id},
+                    )
+                try:
+                    cycle = await self._cycles.claim_pentest_model_call(
+                        run_id=run.id,
+                        cycle_id=cycle.id,
+                        compilation_id=compiled.compilation_id,
+                    )
+                except PentestBudgetExceededError as exc:
+                    details = {
+                        "run_id": run.id,
+                        "budget_name": exc.budget_name,
+                        "limit": exc.limit,
+                        "used": exc.used,
+                        "reason": exc.reason,
+                    }
+                    await self._append(run.id, "pentest.budget_exhausted", details)
+                    if self._budget_exhaustion_handler is not None:
+                        await self._budget_exhaustion_handler(run.id)
+                    raise ApplicationConflictError(
+                        "pentest_budget_exhausted",
+                        "Pentest model execution budget is exhausted",
+                        details=details,
+                    ) from exc
             if session.provider_state_id is not None and not has_new_canonical_input:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
@@ -510,8 +550,9 @@ class RuntimeCoordinator:
                         engine_run=engine_run,
                     )
                 if event.event_type is AgentEngineEventType.RUN_STARTED:
-                    cycle.model_call_count += 1
-                    await self._cycles.save(cycle)
+                    if run.kind is not RunKind.PENTEST:
+                        cycle.model_call_count += 1
+                        await self._cycles.save(cycle)
                     if cycle.model_call_count >= self._limits.max_model_calls:
                         return await self._yield_cycle(
                             run.id,
@@ -531,8 +572,9 @@ class RuntimeCoordinator:
                         )
                     model_calls = event.data.get("model_calls", 0)
                     extra_calls = model_calls if isinstance(model_calls, int) else 0
-                    cycle.model_call_count += extra_calls
-                    await self._cycles.save(cycle)
+                    if run.kind is not RunKind.PENTEST:
+                        cycle.model_call_count += extra_calls
+                        await self._cycles.save(cycle)
                     if cycle.model_call_count >= self._limits.max_model_calls:
                         return await self._yield_cycle(
                             run.id,

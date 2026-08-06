@@ -1357,6 +1357,7 @@ async def build_temporal_worker(
             hooks=hooks,
             observer=observer,
             closure_verifier=closure_verifier,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         session_manager = SessionManager(
             run_repository=run_repository,
