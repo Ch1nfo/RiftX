@@ -1,6 +1,15 @@
 """Native code navigation capability."""
 
 from .git import GitWorkspaceService
+from .lsp import (
+    ControlledLSPBackend,
+    ControlledLSPContract,
+    ControlledLSPError,
+    ControlledLSPFile,
+    ControlledLSPGatewayClient,
+    ControlledLSPRequest,
+    ControlledLSPResponse,
+)
 from .models import (
     CodeCall,
     CodeCallHierarchyResult,
@@ -47,6 +56,13 @@ __all__ = [
     "CodeSymbol",
     "CodeSymbolSearchResult",
     "CodeWorkspaceService",
+    "ControlledLSPBackend",
+    "ControlledLSPContract",
+    "ControlledLSPError",
+    "ControlledLSPFile",
+    "ControlledLSPGatewayClient",
+    "ControlledLSPRequest",
+    "ControlledLSPResponse",
     "GitCommitSummary",
     "GitDiffResult",
     "GitLogResult",

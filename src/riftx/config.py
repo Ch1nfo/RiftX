@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
 import yaml
@@ -89,8 +89,8 @@ class _AuditConfigModel(_ConfigModel):
     )
 
 
-AUDIT_CONFIG_DIGEST_VERSION = "riftx.audit-config/v2"
-AUDIT_SOURCE_INGEST_POLICY_VERSION = "riftx.audit-source-ingest-policy/v1"
+AUDIT_CONFIG_DIGEST_VERSION: Final = "riftx.audit-config/v2"
+AUDIT_SOURCE_INGEST_POLICY_VERSION: Final = "riftx.audit-source-ingest-policy/v1"
 _MAX_AUDIT_REPOSITORY_BYTES = 2_147_483_648
 _MAX_AUDIT_FILE_BYTES = 5_242_880
 _MAX_AUDIT_FILES = 200_000
@@ -769,6 +769,54 @@ class ModelsRuntimeConfig(_ConfigModel):
     profile: str | None = None
 
 
+class ControlledLSPConfig(_ConfigModel):
+    enabled: bool = False
+    socket_path: Path | None = None
+    backend_id: str | None = None
+    backend_version: str | None = None
+    token_env: str | None = None
+    timeout_seconds: float = Field(default=15, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def validate_trusted_gateway(self) -> ControlledLSPConfig:
+        if not self.enabled:
+            return self
+        if any(
+            value is None
+            for value in (
+                self.socket_path,
+                self.backend_id,
+                self.backend_version,
+                self.token_env,
+            )
+        ):
+            raise ValueError(
+                "enabled controlled LSP requires socket_path, backend_id, "
+                "backend_version, and token_env"
+            )
+        assert self.socket_path is not None
+        assert self.backend_id is not None
+        assert self.backend_version is not None
+        assert self.token_env is not None
+        if not self.socket_path.is_absolute() or ".." in self.socket_path.parts:
+            raise ValueError("controlled LSP socket_path must be absolute and normalized")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", self.backend_id):
+            raise ValueError("controlled LSP backend_id is invalid")
+        if (
+            not self.backend_version
+            or self.backend_version != self.backend_version.strip()
+            or len(self.backend_version) > 128
+        ):
+            raise ValueError("controlled LSP backend_version is invalid")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.token_env):
+            raise ValueError("controlled LSP token_env is invalid")
+        return self
+
+
+class CodeConfig(_ConfigModel):
+    lsp: ControlledLSPConfig = Field(default_factory=ControlledLSPConfig)
+
+
 class SecurityConfig(_ConfigModel):
     trust_profile: TrustProfile | None = None
     local_principal_path: Path = Path(".riftx/secrets/local-principal.json")
@@ -983,6 +1031,7 @@ class RiftXConfig(_ConfigModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
+    code: CodeConfig = Field(default_factory=CodeConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     subagents: SubagentConfig = Field(default_factory=SubagentConfig)
@@ -1231,6 +1280,12 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_MODELS_CONFIG": ("models", "path"),
     "RIFTX_MODEL_SECRETS": ("models", "secrets_path"),
     "RIFTX_MODEL_PROFILE": ("models", "profile"),
+    "RIFTX_CODE_LSP_ENABLED": ("code", "lsp", "enabled"),
+    "RIFTX_CODE_LSP_SOCKET_PATH": ("code", "lsp", "socket_path"),
+    "RIFTX_CODE_LSP_BACKEND_ID": ("code", "lsp", "backend_id"),
+    "RIFTX_CODE_LSP_BACKEND_VERSION": ("code", "lsp", "backend_version"),
+    "RIFTX_CODE_LSP_TOKEN_ENV": ("code", "lsp", "token_env"),
+    "RIFTX_CODE_LSP_TIMEOUT_SECONDS": ("code", "lsp", "timeout_seconds"),
     "RIFTX_ADMIN_TOKEN": ("security", "admin_token"),
     "RIFTX_TRUST_PROFILE": ("security", "trust_profile"),
     "RIFTX_LOCAL_PRINCIPAL_PATH": ("security", "local_principal_path"),

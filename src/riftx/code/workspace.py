@@ -16,7 +16,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol, Self
+from typing import Literal, Protocol, Self, cast
 
 from riftx.application.errors import (
     ApplicationConflictError,
@@ -40,6 +40,12 @@ from riftx.audit import (
 )
 from riftx.domain import RunKind
 
+from .lsp import (
+    ControlledLSPBackend,
+    ControlledLSPFile,
+    ControlledLSPRequest,
+    ControlledLSPResponse,
+)
 from .models import (
     CodeCall,
     CodeCallHierarchyResult,
@@ -55,6 +61,7 @@ from .models import (
     CodeReadResult,
     CodeReference,
     CodeReferenceSearchResult,
+    CodeSemanticFallbackReason,
     CodeSymbol,
     CodeSymbolSearchResult,
 )
@@ -112,12 +119,6 @@ class _Source(Protocol):
     def read_bytes(self, path: str, *, max_bytes: int) -> tuple[bytes, int, str | None]: ...
 
 
-class _SourceContext(AbstractContextManager[_Source], Protocol):
-    def __enter__(self) -> _Source: ...
-
-    def __exit__(self, *args: object) -> None: ...
-
-
 class CodeArtifactPublisher(Protocol):
     async def publish(
         self,
@@ -164,7 +165,7 @@ class _SemanticScan:
     skipped_unsupported_files: int = 0
     truncated: bool = False
 
-    def files(self) -> Iterator[tuple[str, str]]:
+    def files(self) -> Iterator[ControlledLSPFile]:
         entries, scan_truncated = self.source.list_entries(
             self.path,
             recursive=True,
@@ -177,7 +178,8 @@ class _SemanticScan:
             relative = _relative_to(entry.path, self.path)
             if self.pattern is not None and not fnmatch.fnmatchcase(relative, self.pattern):
                 continue
-            if language_for_path(entry.path) is None:
+            language = language_for_path(entry.path)
+            if language is None:
                 self.skipped_unsupported_files += 1
                 continue
             if entry.size > _MAX_SYMBOL_FILE_BYTES:
@@ -195,7 +197,27 @@ class _SemanticScan:
                 continue
             self.files_scanned += 1
             self.bytes_scanned += len(data)
-            yield entry.path, data.decode("utf-8", errors="replace")
+            content = data.decode("utf-8", errors="replace")
+            yield ControlledLSPFile(
+                path=entry.path,
+                language=language,
+                content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                content=content,
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticBundle:
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None
+    files: tuple[ControlledLSPFile, ...]
+    input_digest: str
+    files_scanned: int
+    bytes_scanned: int
+    skipped_binary_files: int
+    skipped_large_files: int
+    skipped_unsupported_files: int
+    truncated: bool
 
 
 class CodeWorkspaceService:
@@ -210,6 +232,7 @@ class CodeWorkspaceService:
         snapshot_store: SnapshotStore | None,
         max_snapshot_file_bytes: int,
         artifacts: CodeArtifactPublisher | None = None,
+        controlled_lsp: ControlledLSPBackend | None = None,
     ) -> None:
         if max_snapshot_file_bytes < 1:
             raise ValueError("max_snapshot_file_bytes must be positive")
@@ -219,6 +242,7 @@ class CodeWorkspaceService:
         self._snapshot_store = snapshot_store
         self._max_snapshot_file_bytes = max_snapshot_file_bytes
         self._artifacts = artifacts
+        self._controlled_lsp = controlled_lsp
 
     async def list_files(
         self,
@@ -570,6 +594,143 @@ class CodeWorkspaceService:
 
         return await asyncio.to_thread(operation)
 
+    async def _semantic_bundle(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        pattern: str | None,
+    ) -> _SemanticBundle:
+        source = await self._resolve(run_id)
+
+        def operation() -> _SemanticBundle:
+            with source as opened:
+                scan = _SemanticScan(opened, path, pattern)
+                files = tuple(scan.files())
+                digest = hashlib.sha256(b"riftx.controlled-lsp-input/v1\0")
+                digest.update(opened.kind.encode("ascii"))
+                digest.update(b"\0")
+                digest.update((opened.digest or "").encode("ascii"))
+                for item in files:
+                    digest.update(b"\0")
+                    digest.update(item.path.encode("utf-8"))
+                    digest.update(b"\0")
+                    digest.update(item.language.encode("ascii"))
+                    digest.update(b"\0")
+                    digest.update(item.content_digest.encode("ascii"))
+                return _SemanticBundle(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    files=files,
+                    input_digest=digest.hexdigest(),
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
+                    truncated=scan.truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def _controlled_lsp_response(
+        self,
+        request: ControlledLSPRequest,
+    ) -> tuple[ControlledLSPResponse | None, CodeSemanticFallbackReason | None]:
+        backend = self._controlled_lsp
+        if backend is None:
+            return None, "controlled_lsp_unconfigured"
+        if not request.files:
+            return None, "controlled_lsp_unsupported"
+        try:
+            raw_response = await backend.analyze(request)
+            response = ControlledLSPResponse.model_validate(
+                raw_response.model_dump(mode="python")
+            )
+        except ValueError:
+            return None, "controlled_lsp_invalid_response"
+        except Exception:
+            return None, "controlled_lsp_unavailable"
+        if (
+            response.backend_id != backend.backend_id
+            or response.backend_version != backend.backend_version
+        ):
+            return None, "controlled_lsp_untrusted"
+        if response.request_digest != request.request_digest():
+            return None, "controlled_lsp_invalid_response"
+        if response.status == "unsupported":
+            return None, "controlled_lsp_unsupported"
+        return response, None
+
+    @staticmethod
+    def _controlled_lsp_payload(
+        response: ControlledLSPResponse,
+        request: ControlledLSPRequest,
+        bundle: _SemanticBundle,
+        *,
+        authoritative: dict[str, object],
+    ) -> dict[str, object]:
+        payload = dict(response.result)
+        forbidden = {
+            "source",
+            "source_digest",
+            "backend",
+            "backend_id",
+            "backend_version",
+            "analysis_input_digest",
+            "fallback_reason",
+            "files_scanned",
+            "bytes_scanned",
+            "skipped_binary_files",
+            "skipped_large_files",
+            "skipped_unsupported_files",
+        }
+        if forbidden & payload.keys() or not isinstance(payload.get("truncated"), bool):
+            raise ValueError("controlled LSP result contains non-authoritative fields")
+        payload.update(
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            backend="controlled_lsp",
+            backend_id=response.backend_id,
+            backend_version=response.backend_version,
+            analysis_input_digest=request.input_digest,
+            fallback_reason=None,
+            files_scanned=bundle.files_scanned,
+            bytes_scanned=bundle.bytes_scanned,
+            skipped_binary_files=bundle.skipped_binary_files,
+            skipped_large_files=bundle.skipped_large_files,
+            skipped_unsupported_files=bundle.skipped_unsupported_files,
+            truncated=bool(payload["truncated"]) or bundle.truncated,
+            **authoritative,
+        )
+        return payload
+
+    @staticmethod
+    def _validate_controlled_paths(
+        bundle: _SemanticBundle,
+        paths: Iterator[str],
+    ) -> None:
+        allowed = {item.path for item in bundle.files}
+        if any(path not in allowed for path in paths):
+            raise ValueError("controlled LSP result references an unknown source path")
+
+    @staticmethod
+    def _validate_controlled_locations(
+        bundle: _SemanticBundle,
+        locations: Iterator[tuple[str, int, int]],
+    ) -> None:
+        files = {item.path: item for item in bundle.files}
+        for path, line_number, column in locations:
+            source_file = files.get(path)
+            if source_file is None:
+                raise ValueError("controlled LSP result references an unknown source path")
+            lines = source_file.content.splitlines()
+            if (
+                line_number > len(lines)
+                or column > len(lines[line_number - 1])
+            ):
+                raise ValueError("controlled LSP result location is outside source content")
+
     async def symbol_search(
         self,
         run_id: str,
@@ -589,7 +750,55 @@ class CodeWorkspaceService:
         path = _relative_path(path, allow_empty=True)
         pattern = _glob_pattern(file_glob) if file_glob is not None else None
         _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
-        source = await self._resolve(run_id)
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="symbol_search",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            query=query,
+            case_sensitive=case_sensitive,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeSymbolSearchResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"query": query},
+                    )
+                )
+                if len(result.symbols) > max_results:
+                    raise ValueError("controlled LSP returned too many symbols")
+                needle = query if case_sensitive else query.casefold()
+                if any(
+                    needle
+                    not in (
+                        f"{item.name}\n{item.qualified_name}"
+                        if case_sensitive
+                        else f"{item.name}\n{item.qualified_name}".casefold()
+                    )
+                    for item in result.symbols
+                ):
+                    raise ValueError("controlled LSP returned unrelated symbols")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.symbols),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.symbols
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
 
         def operation() -> CodeSymbolSearchResult:
             matches: list[CodeSymbol] = []
@@ -597,49 +806,49 @@ class CodeWorkspaceService:
             symbols_scanned = 0
             truncated = False
             needle = query if case_sensitive else query.casefold()
-            with source as opened:
-                scan = _SemanticScan(opened, path, pattern)
-                for source_path, text in scan.files():
-                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
-                    if remaining_symbols <= 0:
-                        truncated = True
-                        break
-                    symbols, file_truncated, parse_failed = extract_symbols(
-                        source_path,
-                        text,
-                        max_symbols=remaining_symbols,
-                    )
-                    parse_errors += int(parse_failed)
-                    symbols_scanned += len(symbols)
-                    truncated |= file_truncated
-                    for symbol in symbols:
-                        haystack = (
-                            f"{symbol.name}\n{symbol.qualified_name}"
-                            if case_sensitive
-                            else f"{symbol.name}\n{symbol.qualified_name}".casefold()
-                        )
-                        if needle not in haystack:
-                            continue
-                        matches.append(symbol)
-                        if len(matches) >= max_results:
-                            truncated = True
-                            break
-                    if len(matches) >= max_results or symbols_scanned >= _MAX_SYMBOLS_SCANNED:
-                        truncated = True
-                        break
-                return CodeSymbolSearchResult(
-                    source=opened.kind,
-                    source_digest=opened.digest,
-                    query=query,
-                    symbols=matches,
-                    files_scanned=scan.files_scanned,
-                    bytes_scanned=scan.bytes_scanned,
-                    skipped_binary_files=scan.skipped_binary_files,
-                    skipped_large_files=scan.skipped_large_files,
-                    skipped_unsupported_files=scan.skipped_unsupported_files,
-                    parse_errors=parse_errors,
-                    truncated=truncated or scan.truncated,
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                if remaining_symbols <= 0:
+                    truncated = True
+                    break
+                symbols, file_truncated, parse_failed = extract_symbols(
+                    source_file.path,
+                    source_file.content,
+                    max_symbols=remaining_symbols,
                 )
+                parse_errors += int(parse_failed)
+                symbols_scanned += len(symbols)
+                truncated |= file_truncated
+                for symbol in symbols:
+                    haystack = (
+                        f"{symbol.name}\n{symbol.qualified_name}"
+                        if case_sensitive
+                        else f"{symbol.name}\n{symbol.qualified_name}".casefold()
+                    )
+                    if needle not in haystack:
+                        continue
+                    matches.append(symbol)
+                    if len(matches) >= max_results:
+                        truncated = True
+                        break
+                if len(matches) >= max_results or symbols_scanned >= _MAX_SYMBOLS_SCANNED:
+                    truncated = True
+                    break
+            return CodeSymbolSearchResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                query=query,
+                symbols=matches,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=truncated or bundle.truncated,
+            )
 
         return await asyncio.to_thread(operation)
 
@@ -665,7 +874,48 @@ class CodeWorkspaceService:
         path = _relative_path(path, allow_empty=True)
         pattern = _glob_pattern(file_glob) if file_glob is not None else None
         _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
-        source = await self._resolve(run_id)
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="find_references",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            symbol=symbol,
+            include_declarations=include_declarations,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeReferenceSearchResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"symbol": symbol},
+                    )
+                )
+                if len(result.references) > max_results:
+                    raise ValueError("controlled LSP returned too many references")
+                if not include_declarations and any(
+                    item.kind == "definition" for item in result.references
+                ):
+                    raise ValueError("controlled LSP returned excluded declarations")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.references),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.references
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
 
         def operation() -> CodeReferenceSearchResult:
             references: list[CodeReference] = []
@@ -674,95 +924,96 @@ class CodeWorkspaceService:
             parse_errors = 0
             coverage_truncated = False
             output_truncated = False
-            with source as opened:
-                scan = _SemanticScan(opened, path, pattern)
-                for source_path, text in scan.files():
-                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
-                    definitions: set[tuple[int, int]] = set()
-                    symbol_parse_failed = False
-                    if remaining_symbols <= 0:
-                        coverage_truncated = True
-                    else:
-                        extracted, file_truncated, symbol_parse_failed = extract_symbols(
-                            source_path,
-                            text,
-                            max_symbols=remaining_symbols,
-                        )
-                        symbols_scanned += len(extracted)
-                        coverage_truncated |= file_truncated
-                        definitions = {
-                            (item.line_number, item.column)
-                            for item in extracted
-                            if item.name == symbol
-                        }
-                        definitions_found += len(definitions)
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                definitions: set[tuple[int, int]] = set()
+                symbol_parse_failed = False
+                if remaining_symbols <= 0:
+                    coverage_truncated = True
+                else:
+                    extracted, file_truncated, symbol_parse_failed = extract_symbols(
+                        source_file.path,
+                        source_file.content,
+                        max_symbols=remaining_symbols,
+                    )
+                    symbols_scanned += len(extracted)
+                    coverage_truncated |= file_truncated
+                    definitions = {
+                        (item.line_number, item.column)
+                        for item in extracted
+                        if item.name == symbol
+                    }
+                    definitions_found += len(definitions)
 
-                    occurrence_limit = max_results + 1
-                    if not include_declarations:
-                        occurrence_limit += len(definitions)
-                    occurrences, occurrence_truncated, lexical_parse_failed = (
-                        find_identifier_occurrences(
-                            source_path,
-                            text,
-                            identifier=symbol,
-                            max_occurrences=occurrence_limit,
+                occurrence_limit = max_results + 1
+                if not include_declarations:
+                    occurrence_limit += len(definitions)
+                occurrences, occurrence_truncated, lexical_parse_failed = (
+                    find_identifier_occurrences(
+                        source_file.path,
+                        source_file.content,
+                        identifier=symbol,
+                        max_occurrences=occurrence_limit,
+                    )
+                )
+                parse_errors += int(symbol_parse_failed or lexical_parse_failed)
+                coverage_truncated |= symbol_parse_failed or lexical_parse_failed
+                output_truncated |= occurrence_truncated
+                lines = source_file.content.splitlines()
+                for line_number, column in occurrences:
+                    kind: Literal["definition", "reference"] = (
+                        "definition"
+                        if (line_number, column) in definitions
+                        else "reference"
+                    )
+                    if kind == "definition" and not include_declarations:
+                        continue
+                    if len(references) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < line_number <= len(lines)
+                        else ""
+                    )
+                    references.append(
+                        CodeReference(
+                            kind=kind,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=line_number,
+                            column=column,
+                            excerpt=excerpt,
                         )
                     )
-                    parse_errors += int(symbol_parse_failed or lexical_parse_failed)
-                    coverage_truncated |= symbol_parse_failed or lexical_parse_failed
-                    output_truncated |= occurrence_truncated
-                    lines = text.splitlines()
-                    language = language_for_path(source_path)
-                    assert language is not None
-                    for line_number, column in occurrences:
-                        kind: Literal["definition", "reference"] = (
-                            "definition" if (line_number, column) in definitions else "reference"
-                        )
-                        if kind == "definition" and not include_declarations:
-                            continue
-                        if len(references) >= max_results:
-                            output_truncated = True
-                            continue
-                        excerpt = (
-                            lines[line_number - 1][:_MAX_GREP_LINE_CHARS]
-                            if 0 < line_number <= len(lines)
-                            else ""
-                        )
-                        references.append(
-                            CodeReference(
-                                kind=kind,
-                                language=language,
-                                path=source_path,
-                                line_number=line_number,
-                                column=column,
-                                excerpt=excerpt,
-                            )
-                        )
 
-                coverage_truncated |= scan.truncated
-                if definitions_found > 1:
-                    resolution = "ambiguous"
-                elif coverage_truncated:
-                    resolution = "indeterminate"
-                elif definitions_found == 1:
-                    resolution = "unique"
-                else:
-                    resolution = "unresolved"
-                return CodeReferenceSearchResult(
-                    source=opened.kind,
-                    source_digest=opened.digest,
-                    symbol=symbol,
-                    resolution=resolution,
-                    definitions_found=definitions_found,
-                    references=references,
-                    files_scanned=scan.files_scanned,
-                    bytes_scanned=scan.bytes_scanned,
-                    skipped_binary_files=scan.skipped_binary_files,
-                    skipped_large_files=scan.skipped_large_files,
-                    skipped_unsupported_files=scan.skipped_unsupported_files,
-                    parse_errors=parse_errors,
-                    truncated=coverage_truncated or output_truncated,
-                )
+            coverage_truncated |= bundle.truncated
+            resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+            if definitions_found > 1:
+                resolution = "ambiguous"
+            elif coverage_truncated:
+                resolution = "indeterminate"
+            elif definitions_found == 1:
+                resolution = "unique"
+            else:
+                resolution = "unresolved"
+            return CodeReferenceSearchResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                symbol=symbol,
+                resolution=resolution,
+                definitions_found=definitions_found,
+                references=references,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
 
         return await asyncio.to_thread(operation)
 
@@ -790,7 +1041,50 @@ class CodeWorkspaceService:
         path = _relative_path(path, allow_empty=True)
         pattern = _glob_pattern(file_glob) if file_glob is not None else None
         _bounded(max_results, maximum=_MAX_CALL_RESULTS, label="max_results")
-        source = await self._resolve(run_id)
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="call_hierarchy",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            symbol=symbol,
+            direction=direction,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeCallHierarchyResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={
+                            "symbol": symbol,
+                            "direction": direction,
+                            "analysis_modes": ["lsp"],
+                        },
+                    )
+                )
+                if len(result.calls) > max_results or any(
+                    item.confidence != "lsp" for item in result.calls
+                ):
+                    raise ValueError("controlled LSP returned invalid calls")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.calls),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.calls
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
 
         def operation() -> CodeCallHierarchyResult:
             results: list[CodeCall] = []
@@ -801,87 +1095,86 @@ class CodeWorkspaceService:
             parse_errors = 0
             coverage_truncated = False
             output_truncated = False
-            with source as opened:
-                scan = _SemanticScan(opened, path, pattern)
-                for source_path, text in scan.files():
-                    remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
-                    remaining_calls = _MAX_CALLS_SCANNED - calls_scanned
-                    if remaining_symbols <= 0 or remaining_calls <= 0:
-                        coverage_truncated = True
-                        break
-                    symbols, calls, file_truncated, parse_failed, mode = extract_call_graph(
-                        source_path,
-                        text,
-                        max_symbols=remaining_symbols,
-                        max_calls=remaining_calls,
-                    )
-                    modes.add(mode)
-                    symbols_scanned += len(symbols)
-                    calls_scanned += len(calls)
-                    definitions_found += sum(item.name == symbol for item in symbols)
-                    parse_errors += int(parse_failed)
-                    coverage_truncated |= file_truncated or parse_failed
-                    lines = text.splitlines()
-                    language = language_for_path(source_path)
-                    assert language is not None
-                    for call in calls:
-                        incoming = call.callee.rsplit(".", 1)[-1] == symbol
-                        outgoing = (
-                            call.caller is not None
-                            and call.caller.rsplit(".", 1)[-1] == symbol
-                        )
-                        if not (
-                            (direction in {"incoming", "both"} and incoming)
-                            or (direction in {"outgoing", "both"} and outgoing)
-                        ):
-                            continue
-                        if len(results) >= max_results:
-                            output_truncated = True
-                            continue
-                        excerpt = (
-                            lines[call.line_number - 1][:_MAX_GREP_LINE_CHARS]
-                            if 0 < call.line_number <= len(lines)
-                            else ""
-                        )
-                        results.append(
-                            CodeCall(
-                                caller=call.caller,
-                                callee=call.callee,
-                                confidence=call.confidence,
-                                language=language,
-                                path=source_path,
-                                line_number=call.line_number,
-                                column=call.column,
-                                excerpt=excerpt,
-                            )
-                        )
-
-                coverage_truncated |= scan.truncated
-                if definitions_found > 1:
-                    resolution = "ambiguous"
-                elif coverage_truncated:
-                    resolution = "indeterminate"
-                elif definitions_found == 1:
-                    resolution = "unique"
-                else:
-                    resolution = "unresolved"
-                return CodeCallHierarchyResult(
-                    source=opened.kind,
-                    source_digest=opened.digest,
-                    symbol=symbol,
-                    direction=direction,
-                    resolution=resolution,
-                    definitions_found=definitions_found,
-                    analysis_modes=sorted(modes),
-                    calls=results,
-                    files_scanned=scan.files_scanned,
-                    bytes_scanned=scan.bytes_scanned,
-                    skipped_binary_files=scan.skipped_binary_files,
-                    skipped_large_files=scan.skipped_large_files,
-                    skipped_unsupported_files=scan.skipped_unsupported_files,
-                    parse_errors=parse_errors,
-                    truncated=coverage_truncated or output_truncated,
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                remaining_calls = _MAX_CALLS_SCANNED - calls_scanned
+                if remaining_symbols <= 0 or remaining_calls <= 0:
+                    coverage_truncated = True
+                    break
+                symbols, calls, file_truncated, parse_failed, mode = extract_call_graph(
+                    source_file.path,
+                    source_file.content,
+                    max_symbols=remaining_symbols,
+                    max_calls=remaining_calls,
                 )
+                modes.add(mode)
+                symbols_scanned += len(symbols)
+                calls_scanned += len(calls)
+                definitions_found += sum(item.name == symbol for item in symbols)
+                parse_errors += int(parse_failed)
+                coverage_truncated |= file_truncated or parse_failed
+                lines = source_file.content.splitlines()
+                for call in calls:
+                    incoming = call.callee.rsplit(".", 1)[-1] == symbol
+                    outgoing = (
+                        call.caller is not None
+                        and call.caller.rsplit(".", 1)[-1] == symbol
+                    )
+                    if not (
+                        (direction in {"incoming", "both"} and incoming)
+                        or (direction in {"outgoing", "both"} and outgoing)
+                    ):
+                        continue
+                    if len(results) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[call.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < call.line_number <= len(lines)
+                        else ""
+                    )
+                    results.append(
+                        CodeCall(
+                            caller=call.caller,
+                            callee=call.callee,
+                            confidence=call.confidence,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=call.line_number,
+                            column=call.column,
+                            excerpt=excerpt,
+                        )
+                    )
+
+            coverage_truncated |= bundle.truncated
+            resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+            if definitions_found > 1:
+                resolution = "ambiguous"
+            elif coverage_truncated:
+                resolution = "indeterminate"
+            elif definitions_found == 1:
+                resolution = "unique"
+            else:
+                resolution = "unresolved"
+            return CodeCallHierarchyResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                symbol=symbol,
+                direction=direction,
+                resolution=resolution,
+                definitions_found=definitions_found,
+                analysis_modes=sorted(modes),
+                calls=results,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
 
         return await asyncio.to_thread(operation)
 
@@ -896,7 +1189,44 @@ class CodeWorkspaceService:
         path = _relative_path(path, allow_empty=True)
         pattern = _glob_pattern(file_glob) if file_glob is not None else None
         _bounded(max_results, maximum=_MAX_DIAGNOSTIC_RESULTS, label="max_results")
-        source = await self._resolve(run_id)
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="diagnostics",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeDiagnosticsResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"analysis_modes": ["lsp"]},
+                    )
+                )
+                if len(result.diagnostics) > max_results or any(
+                    item.confidence != "lsp" for item in result.diagnostics
+                ):
+                    raise ValueError("controlled LSP returned invalid diagnostics")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.diagnostics),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.diagnostics
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
 
         def operation() -> CodeDiagnosticsResult:
             results: list[CodeDiagnostic] = []
@@ -905,64 +1235,62 @@ class CodeWorkspaceService:
             parse_errors = 0
             coverage_truncated = False
             output_truncated = False
-            with source as opened:
-                scan = _SemanticScan(opened, path, pattern)
-                for source_path, text in scan.files():
-                    remaining = _MAX_DIAGNOSTICS_SCANNED - diagnostics_scanned
-                    if remaining <= 0:
-                        coverage_truncated = True
-                        break
-                    diagnostics, file_truncated, parse_failed, mode = extract_diagnostics(
-                        source_path,
-                        text,
-                        max_diagnostics=remaining,
-                    )
-                    modes.add(mode)
-                    diagnostics_scanned += len(diagnostics)
-                    parse_errors += int(parse_failed)
-                    coverage_truncated |= file_truncated
-                    lines = text.splitlines()
-                    language = language_for_path(source_path)
-                    assert language is not None
-                    for diagnostic in diagnostics:
-                        if len(results) >= max_results:
-                            output_truncated = True
-                            continue
-                        excerpt = (
-                            lines[diagnostic.line_number - 1][:_MAX_GREP_LINE_CHARS]
-                            if 0 < diagnostic.line_number <= len(lines)
-                            else ""
-                        )
-                        results.append(
-                            CodeDiagnostic(
-                                severity=diagnostic.severity,
-                                confidence=diagnostic.confidence,
-                                code=diagnostic.code,
-                                message=diagnostic.message,
-                                language=language,
-                                path=source_path,
-                                line_number=diagnostic.line_number,
-                                column=diagnostic.column,
-                                end_line_number=diagnostic.end_line_number,
-                                end_column=diagnostic.end_column,
-                                excerpt=excerpt,
-                            )
-                        )
-
-                coverage_truncated |= scan.truncated
-                return CodeDiagnosticsResult(
-                    source=opened.kind,
-                    source_digest=opened.digest,
-                    analysis_modes=sorted(modes),
-                    diagnostics=results,
-                    files_scanned=scan.files_scanned,
-                    bytes_scanned=scan.bytes_scanned,
-                    skipped_binary_files=scan.skipped_binary_files,
-                    skipped_large_files=scan.skipped_large_files,
-                    skipped_unsupported_files=scan.skipped_unsupported_files,
-                    parse_errors=parse_errors,
-                    truncated=coverage_truncated or output_truncated,
+            for source_file in bundle.files:
+                remaining = _MAX_DIAGNOSTICS_SCANNED - diagnostics_scanned
+                if remaining <= 0:
+                    coverage_truncated = True
+                    break
+                diagnostics, file_truncated, parse_failed, mode = extract_diagnostics(
+                    source_file.path,
+                    source_file.content,
+                    max_diagnostics=remaining,
                 )
+                modes.add(mode)
+                diagnostics_scanned += len(diagnostics)
+                parse_errors += int(parse_failed)
+                coverage_truncated |= file_truncated
+                lines = source_file.content.splitlines()
+                for diagnostic in diagnostics:
+                    if len(results) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[diagnostic.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < diagnostic.line_number <= len(lines)
+                        else ""
+                    )
+                    results.append(
+                        CodeDiagnostic(
+                            severity=diagnostic.severity,
+                            confidence=diagnostic.confidence,
+                            code=diagnostic.code,
+                            message=diagnostic.message,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=diagnostic.line_number,
+                            column=diagnostic.column,
+                            end_line_number=diagnostic.end_line_number,
+                            end_column=diagnostic.end_column,
+                            excerpt=excerpt,
+                        )
+                    )
+
+            coverage_truncated |= bundle.truncated
+            return CodeDiagnosticsResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                analysis_modes=sorted(modes),
+                diagnostics=results,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
 
         return await asyncio.to_thread(operation)
 
@@ -1047,7 +1375,7 @@ class CodeWorkspaceService:
 
         return await asyncio.to_thread(operation)
 
-    async def _resolve(self, run_id: str) -> _SourceContext:
+    async def _resolve(self, run_id: str) -> AbstractContextManager[_Source]:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
@@ -1057,7 +1385,10 @@ class CodeWorkspaceService:
                     "code_workspace_invalid",
                     "Run workspace is not configured",
                 )
-            return _FilesystemSource(Path(run.workspace_path))
+            return cast(
+                AbstractContextManager[_Source],
+                _FilesystemSource(Path(run.workspace_path)),
+            )
         if run.kind is not RunKind.CODE_AUDIT:
             raise _conflict("code_source_unavailable", "Run kind has no code source")
         if self._snapshot_store is None:
@@ -1095,14 +1426,17 @@ class CodeWorkspaceService:
                 "code_source_unavailable",
                 "Code Audit source Snapshot is unavailable",
             )
-        return _SnapshotSource(
-            store=self._snapshot_store,
-            audit_id=aggregate.audit.value.id,
-            project_id=snapshot.project_id,
-            snapshot_digest=snapshot.snapshot_digest,
-            manifest_digest=snapshot.manifest_digest,
-            content_storage_key=snapshot.content_storage_key,
-            max_file_bytes=self._max_snapshot_file_bytes,
+        return cast(
+            AbstractContextManager[_Source],
+            _SnapshotSource(
+                store=self._snapshot_store,
+                audit_id=aggregate.audit.value.id,
+                project_id=snapshot.project_id,
+                snapshot_digest=snapshot.snapshot_digest,
+                manifest_digest=snapshot.manifest_digest,
+                content_storage_key=snapshot.content_storage_key,
+                max_file_bytes=self._max_snapshot_file_bytes,
+            ),
         )
 
     async def _resolve_writable(self, run_id: str) -> _FilesystemSource:
@@ -1119,7 +1453,7 @@ class CodeWorkspaceService:
         return _FilesystemSource(Path(run.workspace_path))
 
 
-class _FilesystemSource(AbstractContextManager[_Source]):
+class _FilesystemSource(AbstractContextManager["_FilesystemSource"]):
     kind: Literal["workspace"] = "workspace"
     digest = None
     audit_id = None
@@ -1361,7 +1695,7 @@ class _FilesystemSource(AbstractContextManager[_Source]):
 
 
 @dataclass(slots=True)
-class _SnapshotSource(AbstractContextManager[_Source]):
+class _SnapshotSource(AbstractContextManager["_SnapshotSource"]):
     store: SnapshotStore
     audit_id: str
     project_id: str

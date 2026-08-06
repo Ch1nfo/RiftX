@@ -22,6 +22,8 @@ from riftx.application.services import (
 from riftx.capabilities import CapabilityKind
 from riftx.config import (
     AgentConfig,
+    CodeConfig,
+    ControlledLSPConfig,
     DatabaseConfig,
     ModelsRuntimeConfig,
     RiftXConfig,
@@ -110,6 +112,20 @@ class RefreshingMCPRegistry:
         )
 
     async def close(self) -> None:
+        self.closed = True
+
+
+class RecordingControlledLSP:
+    backend_id = "trusted-lsp"
+    backend_version = "1.0.0"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def analyze(self, request: object) -> object:
+        raise AssertionError("Worker assembly test must not invoke LSP analysis")
+
+    async def aclose(self) -> None:
         self.closed = True
 
 
@@ -207,6 +223,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         captured["working_memory_proposals"] = kwargs["working_memory_proposals"]
         captured["reasoning_proposals"] = kwargs["reasoning_proposals"]
         captured["task_worker_id"] = kwargs["worker_id"]
+        captured["code_workspace"] = kwargs["code"]
         return real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(worker_runtime, "create_worker", fake_create_worker)
@@ -217,8 +234,27 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     )
     monkeypatch.setattr(worker_runtime, "ContextCompiler", capture_context_compiler)
     monkeypatch.setattr(worker_runtime, "RuntimeControlToolService", capture_control_tools)
+    controlled_lsp = RecordingControlledLSP()
+    monkeypatch.setattr(
+        worker_runtime,
+        "ControlledLSPGatewayClient",
+        lambda *_, **__: controlled_lsp,
+    )
+    monkeypatch.setenv("RIFTX_TEST_LSP_TOKEN", "t" * 32)
     temporal_client = object()
-    config = runtime_config(tmp_path)
+    config = runtime_config(tmp_path).model_copy(
+        update={
+            "code": CodeConfig(
+                lsp=ControlledLSPConfig(
+                    enabled=True,
+                    socket_path=tmp_path / "lsp.sock",
+                    backend_id="trusted-lsp",
+                    backend_version="1.0.0",
+                    token_env="RIFTX_TEST_LSP_TOKEN",
+                )
+            )
+        }
+    )
 
     runtime = await worker_runtime.build_temporal_worker(
         config,
@@ -252,6 +288,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         worker_runtime.ReasoningGraphApplicationService,
     )
     assert captured["task_worker_id"] == "worker-local"
+    assert captured["code_workspace"]._controlled_lsp is controlled_lsp
+    assert runtime.controlled_lsp is controlled_lsp
     context_sources = captured["context_sources"]
     assert any(
         isinstance(source, worker_runtime.TaskGraphContextSource)
@@ -328,6 +366,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
 
     assert fake_worker.run_calls == 1
     assert runtime._closed is True
+    assert controlled_lsp.closed is True
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+CodeSemanticBackend = Literal["builtin_static", "controlled_lsp"]
+CodeSemanticAnalysisMode = Literal["python_ast", "lexical", "lsp"]
+CodeSemanticFallbackReason = Literal[
+    "controlled_lsp_unconfigured",
+    "controlled_lsp_unavailable",
+    "controlled_lsp_untrusted",
+    "controlled_lsp_unsupported",
+    "controlled_lsp_invalid_response",
+]
+
 
 class CodeEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -103,7 +113,11 @@ class CodeSymbolSearchResult(BaseModel):
 
     source: Literal["workspace", "audit_snapshot"]
     source_digest: str | None = None
-    backend: Literal["builtin_static"] = "builtin_static"
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
     query: str = Field(min_length=1, max_length=1024)
     symbols: list[CodeSymbol]
     files_scanned: int = Field(ge=0)
@@ -131,7 +145,11 @@ class CodeReferenceSearchResult(BaseModel):
 
     source: Literal["workspace", "audit_snapshot"]
     source_digest: str | None = None
-    backend: Literal["builtin_static"] = "builtin_static"
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
     symbol: str = Field(min_length=1, max_length=512)
     resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
     definitions_found: int = Field(ge=0)
@@ -150,7 +168,7 @@ class CodeCall(BaseModel):
 
     caller: str | None = Field(default=None, min_length=1, max_length=2048)
     callee: str = Field(min_length=1, max_length=2048)
-    confidence: Literal["python_ast", "lexical"]
+    confidence: CodeSemanticAnalysisMode
     language: str = Field(min_length=1, max_length=32)
     path: str = Field(min_length=1, max_length=4096)
     line_number: int = Field(ge=1)
@@ -163,12 +181,16 @@ class CodeCallHierarchyResult(BaseModel):
 
     source: Literal["workspace", "audit_snapshot"]
     source_digest: str | None = None
-    backend: Literal["builtin_static"] = "builtin_static"
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
     symbol: str = Field(min_length=1, max_length=512)
     direction: Literal["incoming", "outgoing", "both"]
     resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
     definitions_found: int = Field(ge=0)
-    analysis_modes: list[Literal["python_ast", "lexical"]]
+    analysis_modes: list[CodeSemanticAnalysisMode]
     calls: list[CodeCall]
     files_scanned: int = Field(ge=0)
     bytes_scanned: int = Field(ge=0)
@@ -183,7 +205,7 @@ class CodeDiagnostic(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     severity: Literal["error", "warning"]
-    confidence: Literal["python_ast", "lexical"]
+    confidence: CodeSemanticAnalysisMode
     code: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=1000)
     language: str = Field(min_length=1, max_length=32)
@@ -200,8 +222,12 @@ class CodeDiagnosticsResult(BaseModel):
 
     source: Literal["workspace", "audit_snapshot"]
     source_digest: str | None = None
-    backend: Literal["builtin_static"] = "builtin_static"
-    analysis_modes: list[Literal["python_ast", "lexical"]]
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
+    analysis_modes: list[CodeSemanticAnalysisMode]
     diagnostics: list[CodeDiagnostic]
     files_scanned: int = Field(ge=0)
     bytes_scanned: int = Field(ge=0)

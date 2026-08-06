@@ -51,7 +51,12 @@ from riftx.capabilities import (
     SessionCapabilityManifestReader,
     TechniqueContextManager,
 )
-from riftx.code import CodeWorkspaceService, GitWorkspaceService
+from riftx.code import (
+    CodeWorkspaceService,
+    ControlledLSPBackend,
+    ControlledLSPGatewayClient,
+    GitWorkspaceService,
+)
 from riftx.config import RiftXConfig, validate_audit_storage_isolation
 from riftx.context import (
     ContextApplicationService,
@@ -414,6 +419,7 @@ class TemporalWorkerRuntime:
     node_id: str
     heartbeat_interval_seconds: float
     browser_manager: RunnerBrowserManager | None = None
+    controlled_lsp: ControlledLSPBackend | None = None
     mcp_registry: MCPServerRegistry | None = None
     mcp_refresh_interval_seconds: float = 60.0
     node_labels: dict[str, str] = field(default_factory=dict)
@@ -758,6 +764,8 @@ class TemporalWorkerRuntime:
             await self.browser_manager.close_all()
         if self.mcp_registry is not None:
             await self.mcp_registry.close()
+        if self.controlled_lsp is not None:
+            await self.controlled_lsp.aclose()
         await self.terminal_supervisor.close_all()
         await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
@@ -777,6 +785,7 @@ async def build_temporal_worker(
     process_supervisor: ProcessSupervisor | None = None
     terminal_supervisor: TerminalSupervisor | None = None
     browser_manager: RunnerBrowserManager | None = None
+    controlled_lsp: ControlledLSPBackend | None = None
     mcp_registry: MCPServerRegistry | None = None
     try:
         await database.create_schema()
@@ -1158,6 +1167,22 @@ async def build_temporal_worker(
             capability_repository,
             capability_selection_store,
         )
+        if config.code.lsp.enabled:
+            lsp_config = config.code.lsp
+            assert lsp_config.socket_path is not None
+            assert lsp_config.backend_id is not None
+            assert lsp_config.backend_version is not None
+            assert lsp_config.token_env is not None
+            token = os.environ.get(lsp_config.token_env, "")
+            if not token.strip():
+                raise ValueError("controlled LSP token environment reference is unavailable")
+            controlled_lsp = ControlledLSPGatewayClient(
+                lsp_config.socket_path,
+                backend_id=lsp_config.backend_id,
+                backend_version=lsp_config.backend_version,
+                token=token,
+                timeout_seconds=lsp_config.timeout_seconds,
+            )
         code_workspace = CodeWorkspaceService(
             runs=run_repository,
             audits=audit_aggregate_repository,
@@ -1173,6 +1198,7 @@ async def build_temporal_worker(
             ),
             max_snapshot_file_bytes=config.audit.max_file_bytes,
             artifacts=ArtifactCodePublisher(artifact_service),
+            controlled_lsp=controlled_lsp,
         )
         git_workspace = GitWorkspaceService(run_repository)
         model_registry = ModelProfileRegistry(
@@ -1406,6 +1432,7 @@ async def build_temporal_worker(
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
             browser_manager=browser_manager,
+            controlled_lsp=controlled_lsp,
             mcp_registry=mcp_registry,
             mcp_refresh_interval_seconds=config.mcp.refresh_interval_seconds,
             node_labels=node_labels,
@@ -1431,6 +1458,8 @@ async def build_temporal_worker(
             await browser_manager.close_all()
         if mcp_registry is not None:
             await mcp_registry.close()
+        if controlled_lsp is not None:
+            await controlled_lsp.aclose()
         if terminal_supervisor is not None:
             await terminal_supervisor.close_all()
         if process_supervisor is not None:

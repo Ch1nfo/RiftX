@@ -14,7 +14,13 @@ from riftx.audit import (
     SnapshotCASDescriptor,
     SnapshotStagedTree,
 )
-from riftx.code import CodePatchReceipt, CodeWorkspaceService
+from riftx.code import (
+    CodePatchReceipt,
+    CodeWorkspaceService,
+    ControlledLSPContract,
+    ControlledLSPRequest,
+    ControlledLSPResponse,
+)
 from riftx.domain import Objective, Run, RunKind
 
 
@@ -111,6 +117,125 @@ class _ArtifactPublisher:
         return receipt
 
 
+class _ControlledLSP:
+    backend_id = "test-lsp"
+    backend_version = "1.2.3"
+
+    def __init__(self) -> None:
+        self.requests: list[ControlledLSPRequest] = []
+        self.error: Exception | None = None
+        self.response_update: dict[str, object] = {}
+
+    async def analyze(self, request: ControlledLSPRequest) -> ControlledLSPResponse:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        needle = request.query or request.symbol
+        source_file = next(
+            (
+                item
+                for item in request.files
+                if needle is not None and needle in item.content
+            ),
+            request.files[0],
+        )
+        path = source_file.path
+        line_number, column = next(
+            (
+                (number, line.index(needle))
+                for number, line in enumerate(source_file.content.splitlines(), start=1)
+                if needle is not None and needle in line
+            ),
+            (1, 0),
+        )
+        if request.operation == "symbol_search":
+            assert request.query is not None
+            result: dict[str, object] = {
+                "symbols": [
+                    {
+                        "name": request.query,
+                        "qualified_name": f"Handler.{request.query}",
+                        "kind": "method",
+                        "language": source_file.language,
+                        "path": path,
+                        "line_number": line_number,
+                        "column": column,
+                        "signature": f"def {request.query}(self):",
+                    }
+                ],
+                "parse_errors": 0,
+                "truncated": False,
+            }
+        elif request.operation == "find_references":
+            assert request.symbol is not None
+            result = {
+                "resolution": "unique",
+                "definitions_found": 1,
+                "references": [
+                    {
+                        "kind": "definition",
+                        "language": source_file.language,
+                        "path": path,
+                        "line_number": line_number,
+                        "column": column,
+                        "excerpt": f"def {request.symbol}(self):",
+                    }
+                ],
+                "parse_errors": 0,
+                "truncated": False,
+            }
+        elif request.operation == "call_hierarchy":
+            assert request.symbol is not None
+            result = {
+                "resolution": "unique",
+                "definitions_found": 1,
+                "calls": [
+                    {
+                        "caller": "invoke",
+                        "callee": request.symbol,
+                        "confidence": "lsp",
+                        "language": source_file.language,
+                        "path": path,
+                        "line_number": line_number,
+                        "column": column,
+                        "excerpt": f"{request.symbol}()",
+                    }
+                ],
+                "parse_errors": 0,
+                "truncated": False,
+            }
+        else:
+            result = {
+                "diagnostics": [
+                    {
+                        "severity": "warning",
+                        "confidence": "lsp",
+                        "code": "test-warning",
+                        "message": "test diagnostic",
+                        "language": source_file.language,
+                        "path": path,
+                        "line_number": 1,
+                        "column": 0,
+                        "excerpt": source_file.content.splitlines()[0],
+                    }
+                ],
+                "parse_errors": 0,
+                "truncated": False,
+            }
+        response = ControlledLSPResponse(
+            request_digest=request.request_digest(),
+            backend_id=self.backend_id,
+            backend_version=self.backend_version,
+            contract=ControlledLSPContract(),
+            status="ok",
+            result=result,
+        )
+        return response.model_copy(update=self.response_update)
+
+    async def aclose(self) -> None:
+        return None
+
+
 def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
     return Run(
         id=run_id,
@@ -125,6 +250,7 @@ def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
 def _general_service(
     *runs: Run,
     artifacts: _ArtifactPublisher | None = None,
+    controlled_lsp: _ControlledLSP | None = None,
 ) -> CodeWorkspaceService:
     return CodeWorkspaceService(
         runs=_Runs(*runs),  # type: ignore[arg-type]
@@ -133,6 +259,7 @@ def _general_service(
         snapshot_store=None,
         max_snapshot_file_bytes=5 * 1024 * 1024,
         artifacts=artifacts,
+        controlled_lsp=controlled_lsp,
     )
 
 
@@ -371,6 +498,8 @@ async def test_workspace_symbol_search_is_bounded_and_reports_fallback_quality(
     result = await service.symbol_search("run-1", query="handle")
 
     assert result.backend == "builtin_static"
+    assert result.fallback_reason == "controlled_lsp_unconfigured"
+    assert result.analysis_input_digest is not None
     assert [(item.name, item.kind, item.path) for item in result.symbols] == [
         ("handleResponse", "function", "api.ts"),
         ("Handler", "class", "app.py"),
@@ -385,6 +514,170 @@ async def test_workspace_symbol_search_is_bounded_and_reports_fallback_quality(
     with pytest.raises(ApplicationConflictError) as captured:
         await service.symbol_search("run-1", query="\n")
     assert captured.value.code == "code_symbol_query_invalid"
+
+
+async def test_controlled_lsp_receives_only_bounded_relative_source_content(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text(
+        "class Handler:\n    def handle(self):\n        return 1\n"
+    )
+    backend = _ControlledLSP()
+    service = _general_service(
+        _run("run-1", root),
+        controlled_lsp=backend,
+    )
+
+    result = await service.symbol_search("run-1", query="handle")
+
+    assert result.backend == "controlled_lsp"
+    assert result.backend_id == "test-lsp"
+    assert result.backend_version == "1.2.3"
+    assert result.fallback_reason is None
+    assert result.analysis_input_digest == backend.requests[0].input_digest
+    assert [item.path for item in result.symbols] == ["src/app.py"]
+    request = backend.requests[0]
+    assert request.source == "workspace"
+    assert request.source_digest is None
+    assert [(item.path, item.language) for item in request.files] == [
+        ("src/app.py", "python")
+    ]
+    assert str(root) not in request.model_dump_json()
+    assert request.files[0].content.startswith("class Handler")
+
+
+async def test_controlled_lsp_covers_references_calls_and_diagnostics(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "class Handler:\n    def handle(self):\n        return 1\n"
+    )
+    backend = _ControlledLSP()
+    service = _general_service(
+        _run("run-1", root),
+        controlled_lsp=backend,
+    )
+
+    references = await service.find_references("run-1", symbol="handle")
+    calls = await service.call_hierarchy(
+        "run-1",
+        symbol="handle",
+        direction="incoming",
+    )
+    diagnostics = await service.diagnostics("run-1")
+
+    assert references.backend == "controlled_lsp"
+    assert references.references[0].path == "app.py"
+    assert calls.backend == "controlled_lsp"
+    assert calls.analysis_modes == ["lsp"]
+    assert calls.calls[0].confidence == "lsp"
+    assert diagnostics.backend == "controlled_lsp"
+    assert diagnostics.analysis_modes == ["lsp"]
+    assert diagnostics.diagnostics[0].confidence == "lsp"
+    assert [request.operation for request in backend.requests] == [
+        "find_references",
+        "call_hierarchy",
+        "diagnostics",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("response_update", "fallback_reason"),
+    [
+        ({"backend_id": "unexpected"}, "controlled_lsp_untrusted"),
+        ({"request_digest": "f" * 64}, "controlled_lsp_invalid_response"),
+        (
+            {"status": "unsupported", "result": {}},
+            "controlled_lsp_unsupported",
+        ),
+        (
+            {
+                "result": {
+                    "symbols": [
+                        {
+                            "name": "escape",
+                            "qualified_name": "escape",
+                            "kind": "function",
+                            "language": "python",
+                            "path": "../outside.py",
+                            "line_number": 1,
+                            "column": 0,
+                        }
+                    ],
+                    "parse_errors": 0,
+                    "truncated": False,
+                }
+            },
+            "controlled_lsp_invalid_response",
+        ),
+    ],
+)
+async def test_controlled_lsp_rejection_discards_results_and_uses_static_fallback(
+    tmp_path: Path,
+    response_update: dict[str, object],
+    fallback_reason: str,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text("def handle():\n    return 1\n")
+    backend = _ControlledLSP()
+    backend.response_update = response_update
+    service = _general_service(
+        _run("run-1", root),
+        controlled_lsp=backend,
+    )
+
+    result = await service.symbol_search("run-1", query="handle")
+
+    assert result.backend == "builtin_static"
+    assert result.fallback_reason == fallback_reason
+    assert [item.path for item in result.symbols] == ["app.py"]
+
+
+async def test_controlled_lsp_failure_does_not_pollute_the_next_call(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("def handle():\n    return 1\n")
+    backend = _ControlledLSP()
+    backend.error = RuntimeError("gateway unavailable")
+    service = _general_service(
+        _run("run-1", root),
+        controlled_lsp=backend,
+    )
+
+    fallback = await service.symbol_search("run-1", query="handle")
+    backend.error = None
+    recovered = await service.symbol_search("run-1", query="handle")
+
+    assert fallback.backend == "builtin_static"
+    assert fallback.fallback_reason == "controlled_lsp_unavailable"
+    assert recovered.backend == "controlled_lsp"
+    assert recovered.fallback_reason is None
+
+
+async def test_controlled_lsp_is_not_called_without_supported_source(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("documentation only")
+    backend = _ControlledLSP()
+    service = _general_service(
+        _run("run-1", root),
+        controlled_lsp=backend,
+    )
+
+    result = await service.symbol_search("run-1", query="missing")
+
+    assert result.backend == "builtin_static"
+    assert result.fallback_reason == "controlled_lsp_unsupported"
+    assert backend.requests == []
 
 
 async def test_workspace_find_references_skips_non_code_and_reports_ambiguity(
@@ -738,6 +1031,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         content_storage_key=published.content_storage_key,
     )
     artifacts = _ArtifactPublisher()
+    backend = _ControlledLSP()
     service = CodeWorkspaceService(
         runs=_Runs(run),  # type: ignore[arg-type]
         audits=_AuditReads(
@@ -749,6 +1043,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
         snapshot_store=store,
         max_snapshot_file_bytes=128 * 1024,
         artifacts=artifacts,
+        controlled_lsp=backend,
     )
 
     read = await service.read_file(run.id, path="audit.py", max_bytes=8)
@@ -780,6 +1075,7 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert grepped.matches[0].path == "audit.py"
     assert symbols.source == "audit_snapshot"
     assert symbols.source_digest == snapshot_digest
+    assert symbols.backend == "controlled_lsp"
     assert [item.name for item in symbols.symbols] == ["SnapshotHandler"]
     assert references.source == "audit_snapshot"
     assert references.source_digest == snapshot_digest
@@ -791,6 +1087,11 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert diagnostics.source == "audit_snapshot"
     assert diagnostics.source_digest == snapshot_digest
     assert diagnostics.diagnostics[0].path == "audit.py"
+    assert all(request.source == "audit_snapshot" for request in backend.requests)
+    assert all(request.source_digest == snapshot_digest for request in backend.requests)
+    assert str(output) not in "".join(
+        request.model_dump_json() for request in backend.requests
+    )
 
 
 async def test_binary_preview_is_bounded_base64(tmp_path: Path) -> None:

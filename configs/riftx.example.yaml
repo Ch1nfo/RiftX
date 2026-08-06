@@ -136,6 +136,21 @@ models:
   secrets_path: .riftx/secrets/models.json
   # profile: primary
 
+# Optional operator-managed, content-only LSP gateway. RiftX sends only bounded
+# relative paths and source content through the Unix socket; it never starts a
+# project language server or loads project configuration itself. The socket and
+# its parent directory must be owned by the Worker account and not group/world
+# writable. The bearer token is read from token_env and must not be stored here. Any unavailable,
+# untrusted, unsupported, or invalid response falls back explicitly to builtin_static.
+code:
+  lsp:
+    enabled: false
+    # socket_path: /run/user/1000/riftx-controlled-lsp.sock
+    # backend_id: organization-lsp
+    # backend_version: 1.0.0
+    # token_env: RIFTX_CODE_LSP_TOKEN
+    timeout_seconds: 15
+
 # The current release implements exactly one explicit deployment profile.
 # RIFTX_ADMIN_TOKEN is the shared local operator/admin credential and must come
 # from the process environment, never YAML. It must contain at least 32 printable,

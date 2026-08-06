@@ -967,15 +967,20 @@ def _resident_schema(
         "read_many_files": "Read bounded previews from several regular code files.",
         "grep": "Search literal text across bounded regular files in the current code source.",
         "glob": "Find bounded regular files by a relative glob pattern.",
-        "symbol_search": "Search bounded source definitions using the safe built-in static index.",
+        "symbol_search": (
+            "Search bounded source definitions through controlled LSP when configured, "
+            "with an explicit built-in static fallback."
+        ),
         "find_references": (
-            "Find bounded exact-name source references with explicit static ambiguity."
+            "Find bounded source references through controlled LSP with explicit static "
+            "fallback quality."
         ),
         "call_hierarchy": (
-            "Find bounded incoming or outgoing name-level calls using AST or lexical analysis."
+            "Find bounded incoming or outgoing calls through controlled LSP, AST, or lexical "
+            "analysis."
         ),
         "diagnostics": (
-            "Read bounded built-in syntax and lexical diagnostics without starting project tools."
+            "Read bounded controlled-LSP or built-in diagnostics without starting project tools."
         ),
         "apply_patch": (
             "Apply one explicitly approved digest-bound code patch and save a revert receipt."
