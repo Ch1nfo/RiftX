@@ -7,7 +7,17 @@ from pydantic import ValidationError
 import riftx.persistence.memory_repositories as memory_repository_module
 from riftx.application.errors import ApplicationConflictError
 from riftx.context import ContextCompiler
-from riftx.domain import Engagement, Objective, Run, RunKind
+from riftx.domain import (
+    Engagement,
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    Scope,
+)
 from riftx.domain.base import utc_now
 from riftx.memory import (
     CreateMemory,
@@ -309,8 +319,29 @@ async def test_default_memory_queries_filter_audit_and_orphan_run_scope_in_sql(
     audit_run = general_run.model_copy(
         update={"id": "audit-memory-run", "kind": RunKind.CODE_AUDIT}
     )
+    pentest_run = Run(
+        kind=RunKind.PENTEST,
+        id="pentest-memory-run",
+        engagement_id="engagement-memory",
+        node_id="local",
+        objective=Objective(description="Pentest Memory visibility"),
+        entry_points=[EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")],
+        scope=Scope(domains=["example.test"]),
+        pentest_admission=PentestAdmission(
+            budget=PentestBudget(
+                max_duration_seconds=3600,
+                max_model_calls=100,
+                max_tokens=100_000,
+                max_tool_calls=200,
+                max_target_interactions=50,
+                max_concurrent_target_interactions=2,
+            )
+        ),
+        workspace_path=str(tmp_path / "pentest"),
+    )
     await runs.create(general_run)
     await runs.create(audit_run)
+    await runs.create(pentest_run)
 
     repository = SQLAlchemyMemoryRepository(database.session_factory)
     records = (
@@ -324,6 +355,11 @@ async def test_default_memory_queries_filter_audit_and_orphan_run_scope_in_sql(
             scope_type=MemoryScopeType.RUN,
             scope_id=audit_run.id,
             content="RIFTX_AUDIT_MEMORY_CONTENT_CANARY",
+        ),
+        memory(
+            "pentest-run-memory",
+            scope_type=MemoryScopeType.RUN,
+            scope_id=pentest_run.id,
         ),
         memory(
             "orphan-run-memory",
@@ -352,9 +388,14 @@ async def test_default_memory_queries_filter_audit_and_orphan_run_scope_in_sql(
 
     assert {item.id for item in visible} == {
         "general-run-memory",
+        "pentest-run-memory",
         "engagement-memory",
     }
-    assert set(hydrated_ids) == {"general-run-memory", "engagement-memory"}
+    assert set(hydrated_ids) == {
+        "general-run-memory",
+        "pentest-run-memory",
+        "engagement-memory",
+    }
 
     hydrated_ids.clear()
     explicit = await repository.list_scope(MemoryScopeType.RUN, audit_run.id)

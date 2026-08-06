@@ -12,7 +12,7 @@ from riftx.execution import ExecutionWaitResult
 from riftx.execution.waiting import wait_for_execution
 from riftx.runner import ExecutionOutput, ExecutionRunner
 
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 
 class ExecutionApplicationService:
@@ -62,7 +62,7 @@ class ExecutionApplicationService:
         run = await self._run_repository.get(execution.run_id)
         if run is None:
             raise EntityNotFoundError("Run", execution.run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         cancelled = await self._runner.cancel(execution.id)
         await self._event_repository.append(
             cancelled.run_id,

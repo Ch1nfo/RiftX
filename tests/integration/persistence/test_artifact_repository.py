@@ -19,11 +19,16 @@ from riftx.domain import (
     ArtifactIngestMethod,
     ArtifactIngestProvenance,
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutorType,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
+    Scope,
 )
 from riftx.persistence import (
     Database,
@@ -36,7 +41,11 @@ from riftx.persistence import (
 from riftx.persistence.mappers import artifact_to_record
 
 
-async def _database_with_run(path: Path) -> Database:
+async def _database_with_run(
+    path: Path,
+    *,
+    kind: RunKind = RunKind.GENERAL,
+) -> Database:
     database = Database(f"sqlite+aiosqlite:///{path}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
@@ -44,11 +53,31 @@ async def _database_with_run(path: Path) -> Database:
     )
     await SQLAlchemyRunRepository(database.session_factory).create(
         Run(
-            kind="general",
+            kind=kind,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Test"),
+            entry_points=(
+                [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+                if kind is RunKind.PENTEST
+                else []
+            ),
+            scope=Scope(domains=["example.test"] if kind is RunKind.PENTEST else []),
+            pentest_admission=(
+                PentestAdmission(
+                    budget=PentestBudget(
+                        max_duration_seconds=3600,
+                        max_model_calls=100,
+                        max_tokens=100_000,
+                        max_tool_calls=200,
+                        max_target_interactions=50,
+                        max_concurrent_target_interactions=2,
+                    )
+                )
+                if kind is RunKind.PENTEST
+                else None
+            ),
             workspace_path=str(path.parent),
         )
     )
@@ -84,6 +113,23 @@ async def test_artifact_repository_create_get_filter_and_restart(tmp_path: Path)
     assert await repository.get(first.id) == first
     assert list(await repository.list("run-1", limit=1, offset=1)) == [second]
     await restarted.dispose()
+
+
+async def test_pentest_artifact_uses_the_interactive_owner_and_visibility_path(
+    tmp_path: Path,
+) -> None:
+    database = await _database_with_run(
+        tmp_path / "pentest-artifact.db",
+        kind=RunKind.PENTEST,
+    )
+    repository = SQLAlchemyArtifactRepository(database.session_factory)
+    artifact = _artifact("artifact-pentest")
+
+    assert await repository.create(artifact) == artifact
+    assert await repository.get(artifact.id) == artifact
+    assert list(await repository.list(artifact.run_id)) == [artifact]
+    assert await repository.restricted_artifact_ids({artifact.id}) == frozenset()
+    await database.dispose()
 
 
 async def test_artifact_repository_enforces_run_and_id_constraints(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ from riftx.application.errors import (
 )
 from riftx.application.services.runs import (
     RunApplicationService,
-    require_general_run_operation,
+    require_interactive_run_operation,
 )
 from riftx.memory import MemoryRecord, MemoryRetrievalScope, MemoryScopeType
 
@@ -52,14 +52,14 @@ async def create_memory(
     runs: RunServiceDependency,
 ) -> MemoryResponse:
     command = request.to_command()
-    await _require_general_memory_scope(
+    await _require_interactive_memory_scope(
         runs,
         scope_type=command.scope_type,
         scope_id=command.scope_id,
     )
     if command.supersedes is not None:
         current = await service.get(command.supersedes)
-        await _require_general_memory_scope(
+        await _require_interactive_memory_scope(
             runs,
             scope_type=current.scope_type,
             scope_id=current.scope_id,
@@ -77,7 +77,7 @@ async def list_memories(
 ) -> MemoryListResponse:
     if scope_type is MemoryScopeType.RUN and scope_id is not None:
         authorized_run = await authorizer.require(scope_id)
-        require_general_run_operation(authorized_run)
+        require_interactive_run_operation(authorized_run)
     memories = await service.list_scope(
         scope_type=scope_type,
         scope_id=scope_id,
@@ -105,7 +105,7 @@ async def search_memories(
 ) -> MemoryListResponse:
     if run_id is not None:
         authorized_run = await authorizer.require(run_id)
-        require_general_run_operation(authorized_run)
+        require_interactive_run_operation(authorized_run)
     memories = await service.retrieve(
         query,
         scope=MemoryRetrievalScope(
@@ -132,7 +132,7 @@ async def get_memory(
     scope = await service.resolve_scope(memory_id)
     if scope.scope_type is MemoryScopeType.RUN:
         authorized_run = await authorizer.require(scope.scope_id)
-        require_general_run_operation(authorized_run)
+        require_interactive_run_operation(authorized_run)
     memory = await load_authorized_child(service.get(memory_id))
     if memory.scope != scope:
         raise resource_not_accessible()
@@ -147,13 +147,13 @@ async def update_memory(
     runs: RunServiceDependency,
 ) -> MemoryResponse:
     current = await service.get(memory_id)
-    await _require_general_memory_scope(
+    await _require_interactive_memory_scope(
         runs,
         scope_type=current.scope_type,
         scope_id=current.scope_id,
     )
     changes = request.changes()
-    await _require_general_memory_scope(
+    await _require_interactive_memory_scope(
         runs,
         scope_type=changes.get("scope_type", current.scope_type),
         scope_id=changes.get("scope_id", current.scope_id),
@@ -168,7 +168,7 @@ async def delete_memory(
     runs: RunServiceDependency,
 ) -> MemoryResponse:
     current = await service.get(memory_id)
-    await _require_general_memory_scope(
+    await _require_interactive_memory_scope(
         runs,
         scope_type=current.scope_type,
         scope_id=current.scope_id,
@@ -184,7 +184,7 @@ async def pin_memory(
     runs: RunServiceDependency,
 ) -> MemoryResponse:
     current = await service.get(memory_id)
-    await _require_general_memory_scope(
+    await _require_interactive_memory_scope(
         runs,
         scope_type=current.scope_type,
         scope_id=current.scope_id,
@@ -192,7 +192,7 @@ async def pin_memory(
     return MemoryResponse.from_domain(await service.pin(memory_id, pinned=request.pinned))
 
 
-async def _require_general_memory_scope(
+async def _require_interactive_memory_scope(
     runs: RunApplicationService,
     *,
     scope_type: object,
@@ -202,7 +202,7 @@ async def _require_general_memory_scope(
         return
     if not isinstance(scope_id, str):
         return
-    require_general_run_operation(await runs.get_run(scope_id))
+    require_interactive_run_operation(await runs.get_run(scope_id))
 
 
 async def _filter_authorized_memories(
@@ -214,7 +214,7 @@ async def _filter_authorized_memories(
         if memory.scope_type is MemoryScopeType.RUN:
             try:
                 authorized_run = await authorizer.require(memory.scope_id)
-                require_general_run_operation(authorized_run)
+                require_interactive_run_operation(authorized_run)
             except (EntityNotFoundError, ResourceNotAccessibleError):
                 continue
             except ApplicationConflictError as exc:

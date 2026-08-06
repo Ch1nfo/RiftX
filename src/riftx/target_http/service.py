@@ -17,7 +17,7 @@ from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.execution import build_execution_key
 from riftx.persistence.repositories import SQLAlchemyRunRepository
@@ -166,7 +166,7 @@ class TargetHttpApplicationService:
                 # RunKind admission deliberately precedes idempotent replay.
                 # Generic execution results must never become an alternate
                 # read/mutation surface for Code Audit Runs.
-                run = require_general_run_operation(
+                run = require_interactive_run_operation(
                     await self._require_run(submission.run_id)
                 )
                 existing = await self._requests.get_by_execution_key(request.execution_key)
@@ -320,7 +320,7 @@ class TargetHttpApplicationService:
                     self._locks.pop(request.execution_key, None)
 
     async def get_result(self, run_id: str, request_id: str) -> TargetHttpResult:
-        require_general_run_operation(await self._require_run(run_id))
+        require_interactive_run_operation(await self._require_run(run_id))
         result = await self._requests.get_for_run(run_id, request_id)
         if result is None or result.request_id != request_id:
             raise EntityNotFoundError("TargetHttpResult", request_id)
@@ -435,7 +435,7 @@ class TargetHttpApplicationService:
 
     async def _require_effect_allowed(self, run_id: str, intent_id: str) -> None:
         run = await self._require_run(run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         if run.status in _EFFECT_BLOCKED_RUN_STATUSES:
             await self._cancel_intent_if_active(intent_id)
             raise self._run_effect_blocked_error(run)

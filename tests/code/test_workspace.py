@@ -21,7 +21,16 @@ from riftx.code import (
     ControlledLSPRequest,
     ControlledLSPResponse,
 )
-from riftx.domain import Objective, Run, RunKind
+from riftx.domain import (
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    Scope,
+)
 
 
 class _Runs:
@@ -243,6 +252,26 @@ def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
         node_id="local",
         kind=kind,
         objective=Objective(description="inspect code"),
+        entry_points=(
+            [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+            if kind is RunKind.PENTEST
+            else []
+        ),
+        scope=Scope(domains=["example.test"] if kind is RunKind.PENTEST else []),
+        pentest_admission=(
+            PentestAdmission(
+                budget=PentestBudget(
+                    max_duration_seconds=3600,
+                    max_model_calls=100,
+                    max_tokens=100_000,
+                    max_tool_calls=200,
+                    max_target_interactions=50,
+                    max_concurrent_target_interactions=2,
+                )
+            )
+            if kind is RunKind.PENTEST
+            else None
+        ),
         workspace_path=str(root),
     )
 
@@ -263,19 +292,24 @@ def _general_service(
     )
 
 
-async def test_apply_patch_is_digest_bound_atomic_and_revertible(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", (RunKind.GENERAL, RunKind.PENTEST))
+async def test_interactive_apply_patch_is_digest_bound_atomic_and_revertible(
+    tmp_path: Path,
+    kind: RunKind,
+) -> None:
     root = tmp_path / "workspace"
     (root / "src").mkdir(parents=True)
     target = root / "src" / "app.py"
     target.write_text("def value():\n    return 1\n")
     target.chmod(0o640)
     artifacts = _ArtifactPublisher()
-    service = _general_service(_run("run-1", root), artifacts=artifacts)
-    original = await service.read_file("run-1", path="src/app.py")
+    run_id = f"{kind.value}-run"
+    service = _general_service(_run(run_id, root, kind=kind), artifacts=artifacts)
+    original = await service.read_file(run_id, path="src/app.py")
     assert original.content_digest is not None
 
     applied = await service.apply_patch(
-        "run-1",
+        run_id,
         patch=(
             "*** Begin Patch\n"
             "*** Update File: src/app.py\n"
@@ -298,14 +332,14 @@ async def test_apply_patch_is_digest_bound_atomic_and_revertible(tmp_path: Path)
     target.write_text("external drift\n")
     with pytest.raises(ApplicationConflictError) as captured:
         await service.revert_patch(
-            "run-1",
+            run_id,
             receipt_artifact_id=applied.receipt_artifact_id,
         )
     assert captured.value.code == "code_patch_revert_digest_mismatch"
 
     target.write_text("def value():\n    return 2\n")
     reverted = await service.revert_patch(
-        "run-1",
+        run_id,
         receipt_artifact_id=applied.receipt_artifact_id,
     )
     assert reverted.action == "reverted"

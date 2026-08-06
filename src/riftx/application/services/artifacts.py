@@ -42,7 +42,7 @@ from riftx.runner import (
     RunnerPaths,
 )
 
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 _DEFAULT_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
@@ -103,7 +103,7 @@ class ArtifactApplicationService:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         if command.execution_id is not None:
             execution = await self._execution_repository.get(command.execution_id)
             if execution is None:
@@ -168,7 +168,7 @@ class ArtifactApplicationService:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         return await self._register_owned_content(
             run_id=run.id,
             node_id=run.node_id,

@@ -129,6 +129,15 @@ def _preflight_owner() -> PreflightJobEffectOwnership:
     )
 
 
+def test_pentest_effect_owner_cannot_claim_code_audit_identity() -> None:
+    with pytest.raises(ValueError, match="Interactive Run ownership"):
+        _run_owner(
+            RunKind.PENTEST,
+            audit_id="audit-owner",
+            plan_digest=_DIGEST,
+        )
+
+
 def test_api_route_inventory_has_an_exact_run_kind_policy_for_every_route() -> None:
     validate_api_route_effect_inventory(ROUTE_POLICIES)
 
@@ -138,6 +147,20 @@ def test_api_route_inventory_has_an_exact_run_kind_policy_for_every_route() -> N
         policy = RUN_KIND_EFFECT_POLICIES[(binding.operation, binding.origin)]
         assert policy.required_effect.value == route_policy.effect.value
         assert policy.audit_alternative.disposition in AuditAlternativeDisposition
+
+
+def test_pentest_inventory_has_no_unreviewed_general_only_effect_holes() -> None:
+    for policy in RUN_KIND_EFFECT_POLICIES.values():
+        if RunKind.GENERAL in policy.allowed_run_kinds:
+            assert RunKind.PENTEST in policy.allowed_run_kinds, (
+                policy.operation,
+                policy.origin,
+            )
+        if (
+            RunKind.CODE_AUDIT in policy.allowed_run_kinds
+            and RunKind.GENERAL not in policy.allowed_run_kinds
+        ):
+            assert policy.allowed_run_kinds == frozenset({RunKind.CODE_AUDIT})
 
 
 def test_local_principal_administrative_scope_is_canonical_and_identity_bound() -> None:
@@ -870,6 +893,23 @@ async def test_workflow_router_passes_exact_persisted_general_workflow_id() -> N
     assert general.workflow_ids == ["historical-prefix-general-run"]
 
 
+async def test_workflow_router_passes_exact_persisted_pentest_workflow_id() -> None:
+    general = _GeneralWorkflowSpy()
+    router = RunWorkflowControlRouter(
+        runs=_RouterRuns(
+            RunKind.PENTEST,
+            workflow_id="riftx-pentest-pentest-run",
+        ),  # type: ignore[arg-type]
+        audits=_RouterAudits(),  # type: ignore[arg-type]
+        general=general,  # type: ignore[arg-type]
+    )
+
+    await router.pause("pentest-run")
+
+    assert general.calls == [("pause", "pentest-run")]
+    assert general.workflow_ids == ["riftx-pentest-pentest-run"]
+
+
 async def test_workflow_router_fails_closed_for_legacy_empty_workflow_id() -> None:
     general = _GeneralWorkflowSpy()
     router = RunWorkflowControlRouter(
@@ -918,7 +958,9 @@ def test_generic_cancel_cannot_bypass_audit_host_control() -> None:
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    assert generic.allowed_run_kinds == frozenset({RunKind.GENERAL})
+    assert generic.allowed_run_kinds == frozenset(
+        {RunKind.GENERAL, RunKind.PENTEST}
+    )
     assert generic.audit_alternative.operation is RunEffectOperation.CANCEL_AUDIT
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
@@ -951,6 +993,135 @@ def test_generic_cancel_cannot_bypass_audit_host_control() -> None:
     assert audit.ownership_resolver is OwnershipResolverKind.AUDIT_ID
 
 
+@pytest.mark.parametrize(
+    ("operation", "origin", "effect", "mode"),
+    (
+        (
+            RunEffectOperation.PAUSE_RUN,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.WORKFLOW_CONTROL,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.CREATE_FINDING,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.REGISTER_ARTIFACT,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.CREATE_TERMINAL,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.OPEN_BROWSER,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SUBMIT_HTTP_CAPTURE,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SERVICE_EXECUTION_SUBMIT,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SERVICE_MEMORY_CREATE,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SERVICE_CONTEXT_CREATE,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.SERVICE_CONNECTOR_INGEST,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.RUNTIME_AGENT_CYCLE,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.WORKFLOW_START_RUN,
+            EffectOrigin.APPLICATION_SERVICE,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.ACTIVITY_AGENT_CYCLE,
+            EffectOrigin.TEMPORAL_ACTIVITY,
+            OperationEffect.HOST_EXECUTION,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.ACTIVITY_GENERATE_REPORT,
+            EffectOrigin.TEMPORAL_ACTIVITY,
+            OperationEffect.DURABLE_WRITE,
+            EffectMode.NORMAL,
+        ),
+        (
+            RunEffectOperation.GET_RUN_GRAPH,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.READ_ONLY,
+            EffectMode.READ_ONLY,
+        ),
+        (
+            RunEffectOperation.GET_RUN_METRICS,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            OperationEffect.READ_ONLY,
+            EffectMode.READ_ONLY,
+        ),
+    ),
+)
+def test_pentest_uses_only_the_audited_interactive_effect_contract(
+    operation: RunEffectOperation,
+    origin: EffectOrigin,
+    effect: OperationEffect,
+    mode: EffectMode,
+) -> None:
+    policy = require_run_kind_effect_policy(
+        operation,
+        origin,
+        ownership=_run_owner(RunKind.PENTEST),
+        effect=effect,
+        mode=mode,
+    )
+
+    assert policy.allowed_run_kinds == frozenset(
+        {RunKind.GENERAL, RunKind.PENTEST}
+    )
+    with pytest.raises(RunKindEffectPolicyDenied) as captured:
+        require_run_kind_effect_policy(
+            operation,
+            origin,
+            ownership=_run_owner(RunKind.CODE_AUDIT),
+            effect=effect,
+            mode=mode,
+        )
+    assert captured.value.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED
+
+
 def test_generic_cleanup_cannot_dispatch_code_audit_workflow_finalization() -> None:
     generic = require_run_kind_effect_policy(
         RunEffectOperation.SERVICE_RUN_CLEANUP,
@@ -959,7 +1130,9 @@ def test_generic_cleanup_cannot_dispatch_code_audit_workflow_finalization() -> N
         effect=OperationEffect.HOST_CONTROL,
         mode=EffectMode.SAFETY_REDUCE_ONLY,
     )
-    assert generic.allowed_run_kinds == frozenset({RunKind.GENERAL})
+    assert generic.allowed_run_kinds == frozenset(
+        {RunKind.GENERAL, RunKind.PENTEST}
+    )
     assert generic.audit_alternative.operation is RunEffectOperation.SERVICE_AUDIT_RECONCILE
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
@@ -1306,7 +1479,7 @@ def test_managed_service_callback_and_reconciler_inventory_is_registered() -> No
         assert (entrypoint.operation, entrypoint.origin) in RUN_KIND_EFFECT_POLICIES
 
 
-def test_public_web_services_allow_code_audit_without_widening_target_or_browser() -> None:
+def test_public_web_services_and_interactive_target_tools_have_explicit_kinds() -> None:
     for operation in (
         RunEffectOperation.SERVICE_WEB_FETCH,
         RunEffectOperation.SERVICE_WEB_SEARCH,
@@ -1315,7 +1488,7 @@ def test_public_web_services_allow_code_audit_without_widening_target_or_browser
     ):
         policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
         assert policy.allowed_run_kinds == frozenset(
-            {RunKind.GENERAL, RunKind.CODE_AUDIT}
+            {RunKind.GENERAL, RunKind.PENTEST, RunKind.CODE_AUDIT}
         )
         assert policy.required_effect is OperationEffect.HOST_EXECUTION
         assert policy.effect_mode is EffectMode.NORMAL
@@ -1325,7 +1498,9 @@ def test_public_web_services_allow_code_audit_without_widening_target_or_browser
         RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
     ):
         policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
-        assert policy.allowed_run_kinds == frozenset({RunKind.GENERAL})
+        assert policy.allowed_run_kinds == frozenset(
+            {RunKind.GENERAL, RunKind.PENTEST}
+        )
 
 
 def test_workflow_signal_outbox_inventory_covers_every_managed_boundary() -> None:
@@ -1388,7 +1563,7 @@ def test_workflow_signal_outbox_inventory_covers_every_managed_boundary() -> Non
         )
         policy = RUN_KIND_EFFECT_POLICIES[(operation, origin)]
         assert policy.allowed_run_kinds == frozenset(
-            {RunKind.GENERAL, RunKind.CODE_AUDIT}
+            {RunKind.GENERAL, RunKind.PENTEST, RunKind.CODE_AUDIT}
         )
         assert policy.required_effect is effect
         assert policy.effect_mode is mode

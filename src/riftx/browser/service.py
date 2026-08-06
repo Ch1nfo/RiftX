@@ -22,7 +22,7 @@ from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.browser.models import (
     BrowserActCommand,
     BrowserObserveCommand,
@@ -371,7 +371,7 @@ class BrowserApplicationService:
     ) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_active_session(session_id)
-            await self._require_general_run_operation(session.run_id)
+            await self._require_interactive_run_operation(session.run_id)
         exchange = await self._runner.observe(
             BrowserObserveCommand(
                 session_id=session.id,
@@ -573,7 +573,7 @@ class BrowserApplicationService:
     async def close(self, session_id: str) -> BrowserView:
         async with self._session_lock(session_id):
             session = await self._require_session(session_id)
-            await self._require_general_run_operation(session.run_id)
+            await self._require_interactive_run_operation(session.run_id)
             if session.status is BrowserSessionStatus.CLOSED:
                 return await self.get(session_id)
             view = await self._close_locked(session.id)
@@ -588,7 +588,7 @@ class BrowserApplicationService:
         self, session_id: str, version: int, *, limit: int = 100
     ) -> Sequence[BrowserObservation]:
         session = await self._require_session(session_id)
-        await self._require_general_run_operation(session.run_id)
+        await self._require_interactive_run_operation(session.run_id)
         return await self._repository.observations_after(session_id, version, limit=limit)
 
     async def _persist_exchange(
@@ -879,13 +879,13 @@ class BrowserApplicationService:
         return run if run.status in _BROWSER_EFFECT_BLOCKED_RUN_STATUSES else None
 
     async def _require_effects_allowed(self, run_id: str) -> Run:
-        run = await self._require_general_run_operation(run_id)
+        run = await self._require_interactive_run_operation(run_id)
         if run.status in _BROWSER_EFFECT_BLOCKED_RUN_STATUSES:
             raise self._effect_blocked_error(run)
         return run
 
-    async def _require_general_run_operation(self, run_id: str) -> Run:
-        return require_general_run_operation(await self._require_run(run_id))
+    async def _require_interactive_run_operation(self, run_id: str) -> Run:
+        return require_interactive_run_operation(await self._require_run(run_id))
 
     async def _require_effect_session(self, session_id: str) -> BrowserSession:
         session = await self._require_active_session(session_id)

@@ -263,6 +263,30 @@ async def test_pentest_generic_reads_preserve_discriminated_admission_projection
 
 
 @pytest.mark.asyncio
+async def test_pentest_generic_controls_use_the_interactive_service_path(
+    tmp_path: Path,
+) -> None:
+    run = _run(RunKind.PENTEST, tmp_path)
+    service = FakeRunService(run)
+
+    async with _client(service) as client:
+        responses = [
+            await client.post(f"/api/v1/runs/{run.id}/pause"),
+            await client.post(f"/api/v1/runs/{run.id}/resume"),
+            await client.post(f"/api/v1/runs/{run.id}/cancel"),
+            await client.post(f"/api/v1/runs/{run.id}/cancel-current-execution"),
+        ]
+
+    assert [response.status_code for response in responses] == [202, 202, 202, 202]
+    assert service.mutation_calls == [
+        ("pause", run.id),
+        ("resume", run.id),
+        ("cancel", run.id),
+        ("cancel_current_execution", run.id),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_code_audit_generic_run_api_bridge_rejects_before_service_mutation(
     tmp_path: Path,
 ) -> None:

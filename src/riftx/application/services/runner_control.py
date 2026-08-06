@@ -71,7 +71,7 @@ from riftx.runtime.types import ToolCallStatus
 from riftx.security import validate_runner_registration_credential
 
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 _MAX_OUTPUT_CHUNK_BYTES = 256 * 1024
 _STOP_ACK_EXECUTION = RUNNER_STOP_ACK_EXECUTION_SCHEMA
@@ -1906,7 +1906,7 @@ class RunnerControlService:
             raise EntityNotFoundError("Run", execution.run_id)
         if allow_safety_stop:
             return
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
 
     def authenticate_bootstrap(self, token: str) -> None:
         """Validate the shared token used to provision a Runner credential."""

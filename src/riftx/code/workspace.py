@@ -1379,7 +1379,7 @@ class CodeWorkspaceService:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        if run.kind is RunKind.GENERAL:
+        if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
             if not run.workspace_path:
                 raise _conflict(
                     "code_workspace_invalid",
@@ -1443,10 +1443,10 @@ class CodeWorkspaceService:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        if run.kind is not RunKind.GENERAL:
+        if run.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise _conflict(
                 "code_workspace_read_only",
-                "Native code mutation is available only to General Runs",
+                "Native code mutation is available only to interactive Runs",
             )
         if not run.workspace_path:
             raise _conflict("code_workspace_invalid", "Run workspace is not configured")

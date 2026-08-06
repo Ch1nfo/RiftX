@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 
 from ..dependencies import (
     AuthorizedRunReadDependency,
@@ -36,7 +36,7 @@ async def get_observer_projection(
     authorized_run: AuthorizedRunReadDependency,
     query: Annotated[ObserverProjectionQuery, Query()],
 ) -> ObserverProjection:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.project(
         run_id,
         principal=principal,

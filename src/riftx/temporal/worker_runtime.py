@@ -539,7 +539,7 @@ class TemporalWorkerRuntime:
                         )
                         for run in runs:
                             try:
-                                if run.kind is RunKind.GENERAL:
+                                if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
                                     result = await self.safety_stopper.stop_run(
                                         run.id,
                                         drain=True,
@@ -613,9 +613,9 @@ class TemporalWorkerRuntime:
         current = await self.run_repository.get(run_id)
         if current is None:
             return
-        if current.kind is not RunKind.GENERAL:
+        if current.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise RepositoryConflictError(
-                "General finalization reconciler cannot operate on a Code Audit Run"
+                "Interactive finalization reconciler cannot operate on a Code Audit Run"
             )
         if current.status in {RunStatus.COMPLETING, intent.target}:
             try:

@@ -31,7 +31,7 @@ from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
 from riftx.runner import EffectGuard, OutputSlice, TerminalController, TerminalLaunchRequest
 
 from .artifacts import ArtifactApplicationService, RegisterArtifact, RegisterArtifactContent
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +226,7 @@ class TerminalApplicationService:
 
     @staticmethod
     def _require_execution_allowed(run: Run) -> None:
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         if run.status not in {
             RunStatus.PAUSING,
             RunStatus.PAUSED,
@@ -303,7 +303,7 @@ class TerminalApplicationService:
         await self._supervisor.write(session_id, data, actor=actor)
 
     async def resize(self, session_id: str, *, cols: int, rows: int) -> TerminalView:
-        await self._require_general_terminal(session_id)
+        await self._require_interactive_terminal(session_id)
         terminal = await self._supervisor.resize(session_id, cols=cols, rows=rows)
         return TerminalView(
             terminal=terminal,
@@ -311,11 +311,11 @@ class TerminalApplicationService:
         )
 
     async def interrupt(self, session_id: str, *, actor: TerminalOwner) -> None:
-        await self._require_general_terminal(session_id)
+        await self._require_interactive_terminal(session_id)
         await self._supervisor.interrupt(session_id, actor=actor)
 
     async def take_over(self, session_id: str) -> TerminalView:
-        before = await self._require_general_terminal(session_id)
+        before = await self._require_interactive_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_OWNER_CHANGED,
             before.run_id,
@@ -332,7 +332,7 @@ class TerminalApplicationService:
         )
 
     async def release(self, session_id: str) -> TerminalView:
-        before = await self._require_general_terminal(session_id)
+        before = await self._require_interactive_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_OWNER_CHANGED,
             before.run_id,
@@ -384,7 +384,7 @@ class TerminalApplicationService:
         )
 
     async def close(self, session_id: str) -> TerminalView:
-        before = await self._require_general_terminal(session_id)
+        before = await self._require_interactive_terminal(session_id)
         await self._terminal_hook(
             HookPoint.TERMINAL_CLOSE,
             before.run_id,
@@ -420,14 +420,14 @@ class TerminalApplicationService:
             execution=execution,
         )
 
-    async def _require_general_terminal(self, session_id: str) -> TerminalSession:
+    async def _require_interactive_terminal(self, session_id: str) -> TerminalSession:
         """Resolve the child owner before any generic terminal effect."""
 
         terminal = await self._supervisor.get(session_id)
         run = await self._runs.get(terminal.run_id)
         if run is None:
             raise EntityNotFoundError("Run", terminal.run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         return terminal
 
     async def _terminal_hook(

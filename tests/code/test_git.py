@@ -10,7 +10,16 @@ import pytest
 from riftx.application.errors import ApplicationConflictError
 from riftx.code import GitWorkspaceService
 from riftx.code import git as git_module
-from riftx.domain import Objective, Run, RunKind
+from riftx.domain import (
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    Scope,
+)
 
 
 class _Runs:
@@ -56,6 +65,26 @@ def _run(run_id: str, root: Path, *, kind: RunKind = RunKind.GENERAL) -> Run:
         node_id="local",
         kind=kind,
         objective=Objective(description="inspect git"),
+        entry_points=(
+            [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+            if kind is RunKind.PENTEST
+            else []
+        ),
+        scope=Scope(domains=["example.test"] if kind is RunKind.PENTEST else []),
+        pentest_admission=(
+            PentestAdmission(
+                budget=PentestBudget(
+                    max_duration_seconds=3600,
+                    max_model_calls=100,
+                    max_tokens=100_000,
+                    max_tool_calls=200,
+                    max_target_interactions=50,
+                    max_concurrent_target_interactions=2,
+                )
+            )
+            if kind is RunKind.PENTEST
+            else None
+        ),
         workspace_path=str(root),
     )
 
@@ -64,18 +93,23 @@ def _service(run: Run) -> GitWorkspaceService:
     return GitWorkspaceService(_Runs(run))  # type: ignore[arg-type]
 
 
-async def test_git_status_diff_and_log_are_bounded_native_reads(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", (RunKind.GENERAL, RunKind.PENTEST))
+async def test_interactive_git_status_diff_and_log_are_bounded_native_reads(
+    tmp_path: Path,
+    kind: RunKind,
+) -> None:
     root = _repository(tmp_path)
     (root / "app.py").write_text("print('two')\n")
     (root / "README.md").write_text("# Staged\n")
     _git(root, "add", "README.md")
     (root / "new.txt").write_text("untracked\n")
-    service = _service(_run("run-1", root))
+    run_id = f"{kind.value}-run"
+    service = _service(_run(run_id, root, kind=kind))
 
-    status = await service.status("run-1")
-    unstaged = await service.diff("run-1", path="app.py")
-    staged = await service.diff("run-1", staged=True, path="README.md")
-    history = await service.log("run-1", max_entries=1)
+    status = await service.status(run_id)
+    unstaged = await service.diff(run_id, path="app.py")
+    staged = await service.diff(run_id, staged=True, path="README.md")
+    history = await service.log(run_id, max_entries=1)
 
     assert status.branch is not None
     observed_status = {

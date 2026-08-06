@@ -477,6 +477,7 @@ class AuditOwner:
     ("kind", "expected_id", "expected_owner"),
     [
         (RunKind.GENERAL, "artifact-general", None),
+        (RunKind.PENTEST, "artifact-general", None),
         (RunKind.CODE_AUDIT, "artifact-audit", "audit-1"),
     ],
 )

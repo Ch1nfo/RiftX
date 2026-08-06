@@ -35,7 +35,11 @@ from ..schemas import (
     RunResponse,
     SwitchRunModelRequest,
 )
-from ..schemas.runs import RunReadResponse, run_read_response_from_domain
+from ..schemas.runs import (
+    RunReadResponse,
+    interactive_run_response_from_domain,
+    run_read_response_from_domain,
+)
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -137,7 +141,9 @@ async def pause_run(run_id: str, run_service: RunServiceDependency) -> RunAction
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.pause(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.pause(run_id))
+    )
 
 
 @router.post(
@@ -154,7 +160,9 @@ async def resume_run(run_id: str, run_service: RunServiceDependency) -> RunActio
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.resume(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.resume(run_id))
+    )
 
 
 @router.post(
@@ -171,7 +179,9 @@ async def cancel_run(run_id: str, run_service: RunServiceDependency) -> RunActio
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.cancel(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.cancel(run_id))
+    )
 
 
 @router.post(
@@ -193,7 +203,7 @@ async def compact_run(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(
+        run=interactive_run_response_from_domain(
             await run_service.compact(run_id, max_history_items=request.max_history_items)
         )
     )
@@ -218,7 +228,9 @@ async def switch_run_model(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(await run_service.switch_model(run_id, request.model_profile))
+        run=interactive_run_response_from_domain(
+            await run_service.switch_model(run_id, request.model_profile)
+        )
     )
 
 
@@ -240,7 +252,9 @@ async def cancel_current_execution(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(await run_service.cancel_current_execution(run_id))
+        run=interactive_run_response_from_domain(
+            await run_service.cancel_current_execution(run_id)
+        )
     )
 
 
@@ -263,7 +277,7 @@ async def append_message(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(
+        run=interactive_run_response_from_domain(
             await run_service.append_user_message(
                 run_id,
                 request.message,

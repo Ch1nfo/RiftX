@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, status
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import Execution, RunKind
 
 from ..dependencies import (
@@ -94,7 +94,7 @@ async def cancel_execution(
     runs: RunServiceDependency,
 ) -> ExecutionResponse:
     current = await service.get(execution_id)
-    require_general_run_operation(await runs.get_run(current.run_id))
+    require_interactive_run_operation(await runs.get_run(current.run_id))
     return ExecutionResponse.from_domain(await service.cancel(execution_id))
 
 

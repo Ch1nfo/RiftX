@@ -139,7 +139,7 @@ class ApplicationWebArtifactStore:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        if run.kind is RunKind.GENERAL:
+        if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
             artifact = await self._service.register_content(run_id, command)
             return artifact.id
         if run.kind is not RunKind.CODE_AUDIT:

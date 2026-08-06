@@ -228,10 +228,10 @@ class GitWorkspaceService:
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        if run.kind is not RunKind.GENERAL or not run.workspace_path:
+        if run.kind not in {RunKind.GENERAL, RunKind.PENTEST} or not run.workspace_path:
             raise _conflict(
                 "code_git_unavailable",
-                "Git tools require a General Run workspace",
+                "Git tools require an interactive Run workspace",
             )
         return Path(run.workspace_path)
 

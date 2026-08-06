@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import ReportFormat
 
 from ..dependencies import (
@@ -37,7 +37,7 @@ async def generate_reports(
     service: ReportServiceDependency,
     runs: RunServiceDependency,
 ) -> ReportListResponse:
-    require_general_run_operation(await runs.get_run(run_id))
+    require_interactive_run_operation(await runs.get_run(run_id))
     reports = await service.generate(run_id, request.to_command())
     return ReportListResponse(
         items=[ReportResponse.from_domain(item) for item in reports],
@@ -59,7 +59,7 @@ async def list_reports(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ReportListResponse:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     reports = await service.list(
         run_id,
         format=report_format,
@@ -85,7 +85,7 @@ async def get_report(
 ) -> ReportResponse:
     run_id = await service.resolve_run_id(report_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     report = await load_authorized_child(service.get(report_id))
     require_run_read_binding(run_id, report.run_id)
     return ReportResponse.from_domain(report)

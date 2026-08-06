@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import RedirectResponse
 
 from riftx.application.errors import ServiceUnavailableError
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import RunKind, RunStatus, Scope
 
 from ..dependencies import (
@@ -27,6 +27,7 @@ from ..schemas.connectors import (
     ConnectorSubmissionRequest,
     ConnectorWebUIResponse,
 )
+from ..schemas.runs import interactive_run_response_from_domain
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
@@ -72,7 +73,7 @@ async def submit_http_capture(
         run_id = run.id
         created = True
     assert run_id is not None
-    require_general_run_operation(await runs.get_run(run_id))
+    require_interactive_run_operation(await runs.get_run(run_id))
     receipt = await connector.ingest(run_id, payload.capture, created_run=created)
     return ConnectorReceiptResponse(receipt=receipt)
 
@@ -103,7 +104,7 @@ async def connector_events(
     authorized_run: AuthorizedRunReadDependency,
     after_sequence: Annotated[int, Query(ge=0)] = 0,
 ) -> RedirectResponse:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return RedirectResponse(
         url=(
             f"/api/v1/runs/{run_id}/events/stream?"
@@ -122,8 +123,10 @@ async def connector_events(
 async def cancel_connector_run(
     run_id: str, runs: RunServiceDependency
 ) -> RunActionResponse:
-    require_general_run_operation(await runs.get_run(run_id))
-    return RunActionResponse(run=RunResponse.from_domain(await runs.cancel(run_id)))
+    require_interactive_run_operation(await runs.get_run(run_id))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await runs.cancel(run_id))
+    )
 
 
 @router.get(
@@ -136,7 +139,7 @@ async def connector_webui(
     request: Request,
     authorized_run: AuthorizedRunReadDependency,
 ) -> ConnectorWebUIResponse:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     base = str(request.base_url).rstrip("/")
     return ConnectorWebUIResponse(run_id=run_id, url=f"{base}/runs/{run_id}")
 

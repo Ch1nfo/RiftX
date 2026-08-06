@@ -20,7 +20,7 @@ from riftx.application.services import (
     ReasoningGraphQueryResult,
     TrafficMetadataApplicationService,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.application.traffic import TrafficStatusClass
 from riftx.browser.service import ActBrowser, BrowserApplicationService, BrowserView, OpenBrowser
 from riftx.capabilities import TechniqueContextManager
@@ -1267,7 +1267,7 @@ class RuntimeControlToolService:
                 )
             )
         if tool_name == "query_http_traffic":
-            await self._general_run(scope.run_id)
+            await self._interactive_run(scope.run_id)
             traffic = self._require_traffic()
             traffic_arguments = _QueryHttpTrafficArguments.model_validate(raw_arguments)
             page = await traffic.list_for_runtime(
@@ -1282,7 +1282,7 @@ class RuntimeControlToolService:
                 "content_trust": "REDACTED_SENSITIVE_METADATA",
             }
         if tool_name == "read_http_exchange":
-            await self._general_run(scope.run_id)
+            await self._interactive_run(scope.run_id)
             traffic = self._require_traffic()
             target_http = self._require_target_http()
             exchange_arguments = _ReadHttpExchangeArguments.model_validate(raw_arguments)
@@ -1302,7 +1302,7 @@ class RuntimeControlToolService:
                     "control_tool_approval_missing",
                     "Target HTTP request lacks an approved durable intent",
                 )
-            run = await self._general_run(scope.run_id)
+            run = await self._interactive_run(scope.run_id)
             target_http = self._require_target_http()
             request_arguments = _TargetHttpRequestArguments.model_validate(raw_arguments)
             request = TargetHttpRequest(
@@ -1798,13 +1798,13 @@ class RuntimeControlToolService:
                 "Worktree creation is available only to the Primary Agent",
             )
 
-    async def _general_run(self, run_id: str) -> Run:
+    async def _interactive_run(self, run_id: str) -> Run:
         if self._runs is None:
             raise RuntimeError("Run repository is not configured for Target HTTP tools")
         run = await self._runs.get(run_id)
         if run is None:
             raise EntityNotFoundError("Run", run_id)
-        return require_general_run_operation(run)
+        return require_interactive_run_operation(run)
 
     async def _require_target_http_artifacts(
         self,

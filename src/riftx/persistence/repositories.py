@@ -473,7 +473,7 @@ def _artifact_create_owner_is_valid(
     )
     if not execution_owner_is_valid:
         return False
-    if run_kind == RunKind.GENERAL.value:
+    if run_kind in {RunKind.GENERAL.value, RunKind.PENTEST.value}:
         return artifact.audit_id is None and audit_run_id is None
     if run_kind == RunKind.CODE_AUDIT.value:
         return (

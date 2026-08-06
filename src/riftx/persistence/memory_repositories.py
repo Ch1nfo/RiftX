@@ -65,16 +65,18 @@ class SQLAlchemyMemoryRepository:
         return memory
 
     async def list_all(self) -> list[MemoryRecord]:
-        general_run_scope = exists(
+        interactive_run_scope = exists(
             select(RunRecord.id).where(
                 RunRecord.id == MemoryRecordRow.scope_id,
-                RunRecord.kind == RunKind.GENERAL.value,
+                RunRecord.kind.in_(
+                    (RunKind.GENERAL.value, RunKind.PENTEST.value)
+                ),
             )
         )
         statement = _ordered_memories().where(
             or_(
                 MemoryRecordRow.scope_type != MemoryScopeType.RUN.value,
-                general_run_scope,
+                interactive_run_scope,
             )
         )
         return await self._load(statement)

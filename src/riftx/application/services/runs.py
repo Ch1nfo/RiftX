@@ -73,10 +73,10 @@ _SAFETY_FENCE_RUN_STATUSES = frozenset(
 )
 
 
-def require_general_run_operation(run: Run) -> Run:
-    """Fail closed while a generic Run operation lacks a kind-aware contract."""
+def require_interactive_run_operation(run: Run) -> Run:
+    """Admit only the shared General/Pentest interaction contract."""
 
-    if run.kind is not RunKind.GENERAL:
+    if run.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
         raise ApplicationConflictError(
             "run_kind_operation_unsupported",
             "The requested operation is not supported for this Run kind",

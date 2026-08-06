@@ -39,7 +39,7 @@ from riftx.domain.base import utc_now
 
 from .artifacts import ArtifactApplicationService, RegisterArtifactContent
 from .closure import CLOSURE_EVALUATED_EVENT_TYPE, ClosureOutcome
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 _MAX_SUMMARY_LENGTH = 2_000
 _MAX_TEXT_LENGTH = 10_000
@@ -227,7 +227,7 @@ class ReportApplicationService:
         request = command or GenerateReports()
         formats = _normalize_formats(request.formats)
         run = await self._require_run(run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         if run.status not in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
             raise ApplicationConflictError(
                 "run_not_reportable",

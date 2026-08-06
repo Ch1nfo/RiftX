@@ -634,7 +634,7 @@ class ControlPlane:
                         )
                         for run in runs:
                             try:
-                                if run.kind is RunKind.GENERAL:
+                                if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
                                     result = await self.run_service.stop_resources_for_cleanup(
                                         run.id
                                     )

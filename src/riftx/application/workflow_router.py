@@ -148,7 +148,7 @@ class RunWorkflowControlRouter:
     """Select one Workflow protocol from authoritative Run/Audit ownership.
 
     This class intentionally performs no authorization, state projection,
-    resource stop, or owner inference. Generic methods accept only General Runs;
+    resource stop, or owner inference. Generic methods accept interactive Runs;
     dedicated Audit methods resolve the exact Audit aggregate and call only the
     Audit protocol.  M1 has no Audit Workflow client or execution-plan verifier,
     so those paths fail closed without touching the General client.
@@ -175,37 +175,37 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> object:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="workflow.start_run",
             effect="host_execution",
         )
-        exact_workflow_id = _require_exact_general_workflow_id(run, workflow_id)
+        exact_workflow_id = _require_exact_interactive_workflow_id(run, workflow_id)
         return await self._general.start_run(
             run_id,
             workflow_id=exact_workflow_id,
         )
 
     async def pause(self, run_id: str, *, workflow_id: str | None = None) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.pause",
             effect="workflow_control",
         )
         await self._general.pause(
             run_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def resume(self, run_id: str, *, workflow_id: str | None = None) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.resume",
             effect="workflow_control",
         )
         await self._general.resume(
             run_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def approve(
@@ -215,7 +215,7 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.approval.approve",
             effect="workflow_control",
@@ -225,7 +225,7 @@ class RunWorkflowControlRouter:
         await self._general.approve(
             run_id,
             approval_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def reject(
@@ -235,7 +235,7 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.approval.reject",
             effect="workflow_control",
@@ -245,7 +245,7 @@ class RunWorkflowControlRouter:
         await self._general.reject(
             run_id,
             approval_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def execution_completed(
@@ -255,9 +255,9 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        """Compatibility entrypoint for a proven General completion only."""
+        """Compatibility entrypoint for a proven interactive completion only."""
 
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="workflow.execution_completion",
             effect="workflow_control",
@@ -266,7 +266,7 @@ class RunWorkflowControlRouter:
         await self._general.execution_completed(
             run_id,
             execution_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def cancel_current_execution(
@@ -275,25 +275,25 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.cancel_current_execution",
             effect="workflow_control",
         )
         await self._general.cancel_current_execution(
             run_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.cancel",
             effect="workflow_control",
         )
         await self._general.cancel(
             run_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def compact(
@@ -303,7 +303,7 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.compact",
             effect="workflow_control",
@@ -311,7 +311,7 @@ class RunWorkflowControlRouter:
         await self._general.compact(
             run_id,
             max_history_items,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def switch_model(
@@ -321,7 +321,7 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.switch_model",
             effect="workflow_control",
@@ -329,7 +329,7 @@ class RunWorkflowControlRouter:
         await self._general.switch_model(
             run_id,
             model_profile,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     async def append_user_message(
@@ -339,7 +339,7 @@ class RunWorkflowControlRouter:
         *,
         workflow_id: str | None = None,
     ) -> None:
-        run = await self._require_general(
+        run = await self._require_interactive(
             run_id,
             operation="service.run.append_message",
             effect="workflow_control",
@@ -347,7 +347,7 @@ class RunWorkflowControlRouter:
         await self._general.append_user_message(
             run_id,
             message_id,
-            workflow_id=_require_exact_general_workflow_id(run, workflow_id),
+            workflow_id=_require_exact_interactive_workflow_id(run, workflow_id),
         )
 
     def workflow_id(self, run_id: str) -> str:
@@ -439,7 +439,7 @@ class RunWorkflowControlRouter:
         run = await self._runs.get(execution.run_id)
         if run is None:
             raise EntityNotFoundError("Run", execution.run_id)
-        if run.kind is RunKind.GENERAL:
+        if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
             _require_routed_effect(
                 operation="workflow.execution_completion",
                 run_id=run.id,
@@ -450,12 +450,12 @@ class RunWorkflowControlRouter:
             if execution.audit_id is not None or execution.plan_digest is not None:
                 raise ApplicationConflictError(
                     "execution_ownership_invalid",
-                    "General execution completion carried Code Audit ownership",
+                    "Interactive execution completion carried Code Audit ownership",
                 )
             await self._general.execution_completed(
                 run.id,
                 execution.id,
-                workflow_id=_require_exact_general_workflow_id(run, None),
+                workflow_id=_require_exact_interactive_workflow_id(run, None),
             )
             return
 
@@ -498,7 +498,7 @@ class RunWorkflowControlRouter:
             plan_digest=execution.plan_digest,
         )
 
-    async def _require_general(
+    async def _require_interactive(
         self,
         run_id: str,
         *,
@@ -568,11 +568,11 @@ class RunWorkflowControlRouter:
         return self._audit
 
 
-def _require_exact_general_workflow_id(
+def _require_exact_interactive_workflow_id(
     run: Run,
     requested_workflow_id: str | None,
 ) -> str:
-    """Resolve only the Workflow identity already persisted on the General Run.
+    """Resolve only the Workflow identity persisted on an interactive Run.
 
     Legacy rows with no identity remain readable and safety-stoppable, but a
     control signal must fail closed: deriving from today's prefix could target

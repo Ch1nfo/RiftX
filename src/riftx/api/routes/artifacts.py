@@ -10,7 +10,7 @@ from riftx.application.errors import resource_not_accessible
 from riftx.application.ports import AuditObjectAuthorizer
 from riftx.application.services import AuditApplicationService, RegisterArtifact
 from riftx.application.services.artifacts import ArtifactApplicationService
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import Artifact, LocalPrincipal, RunKind
 from riftx.runner import OpenedArtifactContent
 
@@ -90,7 +90,7 @@ async def register_artifact(
     service: ArtifactServiceDependency,
     runs: RunServiceDependency,
 ) -> ArtifactResponse:
-    require_general_run_operation(await runs.get_run(run_id))
+    require_interactive_run_operation(await runs.get_run(run_id))
     artifact = await service.register(
         run_id,
         RegisterArtifact(**request.model_dump()),

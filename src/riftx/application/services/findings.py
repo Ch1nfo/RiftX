@@ -26,7 +26,7 @@ from riftx.domain import (
     Run,
 )
 
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 if TYPE_CHECKING:
     from riftx.memory import MemoryCandidateFactory, MemoryWriter
@@ -84,7 +84,7 @@ class FindingApplicationService:
             self._memory_candidates = None
 
     async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
-        require_general_run_operation(await self._require_run(run_id))
+        require_interactive_run_operation(await self._require_run(run_id))
         finding = Finding(
             run_id=run_id,
             title=_required_text(command.title, "title"),
@@ -133,7 +133,7 @@ class FindingApplicationService:
         command: UpdateFinding,
     ) -> Finding:
         current = await self.get_finding(finding_id)
-        require_general_run_operation(await self._require_run(current.run_id))
+        require_interactive_run_operation(await self._require_run(current.run_id))
         updates: dict[str, object] = {}
         if command.title is not None:
             updates["title"] = _required_text(command.title, "title")

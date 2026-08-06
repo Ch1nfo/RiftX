@@ -190,6 +190,11 @@ RunReadResponse = Annotated[
     Field(discriminator="kind"),
 ]
 
+InteractiveRunResponse = Annotated[
+    RunResponse | PentestRunResponse,
+    Field(discriminator="kind"),
+]
+
 
 def run_read_response_from_domain(run: Run) -> RunReadResponse:
     if run.kind is RunKind.PENTEST:
@@ -197,6 +202,14 @@ def run_read_response_from_domain(run: Run) -> RunReadResponse:
     if run.kind is RunKind.CODE_AUDIT:
         return CodeAuditRunResponse.from_domain(run)
     return RunResponse.from_domain(run)
+
+
+def interactive_run_response_from_domain(run: Run) -> InteractiveRunResponse:
+    if run.kind is RunKind.PENTEST:
+        return PentestRunResponse.from_domain(run)
+    if run.kind is RunKind.GENERAL:
+        return RunResponse.from_domain(run)
+    raise ValueError("interactive Run response requires General or Pentest ownership")
 
 
 class RunListResponse(BaseModel):
@@ -207,7 +220,7 @@ class RunListResponse(BaseModel):
 
 class RunActionResponse(BaseModel):
     accepted: bool = True
-    run: RunResponse
+    run: InteractiveRunResponse
 
 
 class RunMessageRequest(BaseModel):

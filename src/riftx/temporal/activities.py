@@ -593,9 +593,9 @@ class RiftXActivities:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ApplicationError(f"run {run_id!r} was not found", non_retryable=True)
-        if run.kind is not RunKind.GENERAL:
+        if run.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise ApplicationError(
-                "General RiftX Activities cannot operate on a Code Audit Run",
+                "Interactive RiftX Activities cannot operate on a Code Audit Run",
                 type="run_kind_operation_unsupported",
                 non_retryable=True,
             )

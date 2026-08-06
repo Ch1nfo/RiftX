@@ -26,7 +26,7 @@ from riftx.runtime.types import (
 )
 from riftx.tools import ToolRegistry
 
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 _APPROVAL_BLOCKED_RUN_STATUSES = frozenset(
     {
@@ -325,7 +325,7 @@ class ApprovalApplicationService:
         run = await self._run_repository.get(approval.run_id)
         if run is None:
             raise EntityNotFoundError("Run", approval.run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         self._raise_if_approval_not_actionable(approval, run)
         decision = _runtime_decision(target, command)
         try:
