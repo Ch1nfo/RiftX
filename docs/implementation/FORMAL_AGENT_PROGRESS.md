@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S2 — 认知运行时`
-- Current task：`COG-203 — Primary Agent Proposal Tools`
+- Current task：`COG-204 — Observer Supervisor 与 Projector`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -40,11 +40,12 @@
 - Completed predecessor：COG-200，implementation commits `20b8dc92`、`099ae428`、`cc48c32a`。
 - Completed predecessor：COG-201，implementation commits `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit `666d055a`。
 - Completed predecessor：COG-202，implementation commits `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
+- Completed predecessor：COG-203，implementation commits `a8dbdf50`、`87c7381d`、`d369b684`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Reasoning Graph 已成为 Fact、Hypothesis 和 Finding 的权威认知状态。八类 Node、八类结构化 Edge、Evidence lineage、Reproduction Contract、Graph/Node CAS 和原子晋升均已耐久化；External Research、CVE 页面、PoC 描述和 User Decision 不能单独确认目标 Finding。生产 Context 优先消费 Reasoning Graph，旧 Working Memory Fact/Hypothesis 仅在新图不存在时兼容回退；Evidence Graph 只读取 ID、类型、状态和 Evidence lineage，不读取 claim、structured data 或 Reproduction Contract。模型通用写入口仍保持关闭，等待 COG-203。
-- Current implementation commits：COG-202 `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
-- Verification：全仓 `5135 passed, 5 skipped, 18 warnings`；全仓 Ruff、COG-202 Scoped mypy、Alembic 单 head、Reasoning migration/Repository/Reducer、Context、Graph Repository/Application/API 与跨版本迁移关联回归通过。
-- Next delivery slice：开始 COG-203，为 Primary Agent 增加只提交 Proposal 的 Reasoning/Working Memory 工具，并由既有 Reducer 校验后提交；模型不得直接覆盖权威图状态。
+- Product behavior：Primary Agent 已获得 `propose_plan_update`、`record_observation`、`propose_fact`、`propose_hypothesis`、`record_attempt`、`propose_finding`、`record_negative_result` 与 `query_reasoning_graph` 八个生产工具。Run、Session、creator、Node 类型和初始状态由 Runtime 注入；模型只能提交 Candidate/Unverified/Recorded Proposal，不能伪造 Confirmed 状态。Reasoning 写入继续经过 COG-202 的 Evidence/owner/CAS 约束；Working Memory 写入经过既有 Reducer，Task Graph 存在时拒绝旧计划拓扑写入，重复失败操作必须携带合法 Retry relation。八个工具只对 Primary 可见，Subagent 工具面不包含这些入口。
+- Current implementation commits：COG-203 `a8dbdf50`、`87c7381d`、`d369b684`。
+- Verification：全仓 `5141 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-203 Scoped mypy、Working Memory Proposal、Reasoning Query、Runtime Control Tools、Tool Discovery/Policy、Agent Factory、生产 Worker 与 Context gate 回归通过。
+- Next delivery slice：开始 COG-204，复用现有 Runtime Event、Task/Reasoning/Evidence Graph 与 Context 投影边界，实现 Observer Supervisor 检查和受限 Projector，不引入第二套权威状态。
 
 ## 3. 研究与实现基线
 
@@ -128,7 +129,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-200 | CAP-104 | completed | `20b8dc92`, `099ae428`, `cc48c32a` |
 | COG-201 | COG-200 | completed | `d9c2e530`, `f54b1ed8`, `97cd44d7` |
 | COG-202 | COG-201 | completed | `4413c1f3`, `e21a6d7f`, `eb1d30b5`, `317a20f7` |
-| COG-203 | COG-202 | pending | — |
+| COG-203 | COG-202 | completed | `a8dbdf50`, `87c7381d`, `d369b684` |
 | COG-204 | COG-203 | pending | — |
 | COG-205 | COG-204 | pending | — |
 | PACK-300 | CAP-102, CAP-104, COG-205 | pending | — |
@@ -601,6 +602,32 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent pytest -q`：`5135 passed, 5 skipped, 18 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field alias 提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
+
+### COG-203：Primary Agent Proposal Tools
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：COG-202 Reasoning Graph、Working Memory Reducer、Task Graph、Evidence Ledger、Runtime Control Tools、Tool Discovery/Policy 与 Temporal Worker 生产装配。
+- Proposal service slice：
+  - 新增 `WorkingMemoryProposalApplicationService`，仅接受结构化 Plan/Focus/Next Action 与 Attempt Proposal，统一经过既有 `WorkingMemoryReducer` 和 Repository CAS 后提交；模型不能替换完整 Working Memory；
+  - Task Graph 存在时拒绝旧 `working_memory.run_plan` 拓扑写入，只允许兼容的 Focus/Next Action Proposal，避免形成生产 Context 不消费的第二份计划；
+  - 重复 action signature、target、tool 与 normalized arguments 的失败操作，必须引用最近失败 Attempt、前次标记 retryable 且携带 retry reason，否则以稳定冲突码拒绝；
+  - Reasoning Graph 新增 Run-bound 有界查询，支持 Node/Kind/Status/Task/Evidence/文本过滤、分页与 Edge 上限；空图返回 version 0，不泄漏其他 Run 状态。
+- Runtime tool slice：
+  - Primary Agent 新增 `propose_plan_update`、`record_observation`、`propose_fact`、`propose_hypothesis`、`record_attempt`、`propose_finding`、`record_negative_result` 与 `query_reasoning_graph`；
+  - Runtime 注入 Run、Session、creator、Node kind 与初始 status；Observation、Fact/Vulnerability Candidate 和 Negative Result 必须绑定 Evidence，Hypothesis 无 Evidence 时固定为 unverified；模型传入 `status`、`run_id`、`session_id` 或 creator 等未知字段会被严格 Schema 拒绝；
+  - Proposal 写入继续调用 COG-202 `ReasoningGraphApplicationService`，因此跨 Run、Sibling Session、其他 Task Evidence、陈旧 Graph version 和非法状态晋升均失败关闭；Confirmed Finding 仍只能通过内部原子晋升并满足 Evidence/Reproduction Contract；
+  - 八个工具属于 Primary resident set，不进入 Subagent resident set；Proposal/Record 为 `DURABLE_WRITE + RUN_CONTEXT`，查询为 `READ_ONLY + RUN_CONTEXT`，不新增外部副作用审批；
+  - Temporal Worker 注入真实 Working Memory Proposal 与 Reasoning Graph Application Service。SDK Agent Factory 删除手写 Control Tool 白名单，改由权威 `RESIDENT_TOOL_IDS` 派生，避免 Tool Discovery 与模型绑定再次漂移。
+- Checks：
+  - Working Memory Proposal 与 Reasoning Application 定向回归：`12 passed`；
+  - Runtime Control Tools、Tool Discovery/Policy 与 Worker 定向回归：`76 passed`；
+  - Runtime/Context gate、Reasoning/Working Memory 关联回归：`24 passed`；
+  - SDK Agent Factory 根因修复关联回归：`49 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/application/services/working_memory.py src/riftx/application/services/reasoning.py src/riftx/tools/discovery.py src/riftx/tools/policy.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 5 source files`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5141 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`a8dbdf50`、`87c7381d`、`d369b684`。
 
 ## 9. Known pre-existing worktree state
 
