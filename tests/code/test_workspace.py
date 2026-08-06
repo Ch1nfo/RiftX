@@ -258,6 +258,47 @@ async def test_apply_patch_add_delete_and_precommit_drift_fail_closed(
     assert drift.read_text() == "raced\n"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [".git/config", "nested/.git", "nested/.git/hooks/post-checkout"],
+)
+async def test_patch_and_revert_reject_git_administrative_paths(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    artifacts = _ArtifactPublisher()
+    service = _general_service(_run("run-1", root), artifacts=artifacts)
+    patch = (
+        "*** Begin Patch\n"
+        f"*** Add File: {path}\n"
+        "+unsafe\n"
+        "*** End Patch"
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.apply_patch("run-1", patch=patch)
+    assert captured.value.code == "code_patch_git_admin_forbidden"
+    assert artifacts.receipts == {}
+
+    receipt = CodePatchReceipt(
+        run_id="run-1",
+        operation="add",
+        path=path,
+        result_sha256=hashlib.sha256(b"unsafe\n").hexdigest(),
+        patch=patch,
+        patch_sha256=hashlib.sha256(patch.encode()).hexdigest(),
+    )
+    artifacts.receipts["unsafe-receipt"] = receipt
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.revert_patch(
+            "run-1",
+            receipt_artifact_id="unsafe-receipt",
+        )
+    assert captured.value.code == "code_patch_git_admin_forbidden"
+
+
 async def test_code_audit_patch_is_read_only(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

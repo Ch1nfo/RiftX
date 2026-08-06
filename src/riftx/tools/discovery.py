@@ -53,6 +53,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "call_hierarchy",
     "diagnostics",
     "apply_patch",
+    "create_worktree",
     "revert_patch",
     "git_status",
     "git_diff",
@@ -979,6 +980,10 @@ def _resident_schema(
         "apply_patch": (
             "Apply one explicitly approved digest-bound code patch and save a revert receipt."
         ),
+        "create_worktree": (
+            "Create one explicitly approved Run-owned detached Git worktree at HEAD or a "
+            "full local commit hash."
+        ),
         "revert_patch": (
             "Revert one explicitly approved patch when the current digest matches its receipt."
         ),
@@ -1246,6 +1251,23 @@ def _resident_schema(
             },
         }
         required = ["patch"]
+    elif tool_id == "create_worktree":
+        properties = {
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$",
+            },
+            "start_point": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "HEAD or a full 40/64-character local commit hash.",
+                "default": "HEAD",
+            },
+        }
+        required = ["name"]
     elif tool_id == "revert_patch":
         properties = {
             "receipt_artifact_id": {"type": "string", "minLength": 1},
@@ -1975,6 +1997,7 @@ def _resident_schema(
     }
     if tool_id in {
         "apply_patch",
+        "create_worktree",
         "revert_patch",
         "open_browser",
         "act_browser",

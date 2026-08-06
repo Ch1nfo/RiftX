@@ -202,6 +202,8 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
     }
     assert cognitive_tools <= set(RESIDENT_TOOL_IDS)
     assert cognitive_tools.isdisjoint(SUBAGENT_RESIDENT_TOOL_IDS)
+    assert "create_worktree" in RESIDENT_TOOL_IDS
+    assert "create_worktree" not in SUBAGENT_RESIDENT_TOOL_IDS
     assert schemas["record_observation"]["parameters"]["properties"]["evidence_ids"][
         "minItems"
     ] == 1

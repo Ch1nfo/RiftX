@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.code import GitWorkspaceService
+from riftx.code import git as git_module
 from riftx.domain import Objective, Run, RunKind
 
 
@@ -169,6 +171,11 @@ async def test_git_tools_reject_repository_config_with_external_behavior(
 
     assert captured.value.code == "code_git_config_unsafe"
 
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.create_worktree("run-1", name="fix")
+    assert captured.value.code == "code_git_config_unsafe"
+    assert not any(root.glob(".riftx-wt-*"))
+
 
 async def test_git_tools_reject_admin_symlink_and_external_object_store(tmp_path: Path) -> None:
     root = _repository(tmp_path)
@@ -203,3 +210,147 @@ async def test_git_tools_reject_code_audit_snapshot_and_non_normalized_paths(
     with pytest.raises(ApplicationConflictError) as captured:
         await general.diff("run-1", path="../outside")
     assert captured.value.code == "code_path_invalid"
+
+
+async def test_create_worktree_is_run_owned_detached_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    marker = tmp_path / "post-checkout-ran"
+    hook = root / ".git" / "hooks" / "post-checkout"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    service = _service(_run("run-1", root))
+    expected_head = _git(root, "rev-parse", "HEAD")
+
+    created = await service.create_worktree(
+        "run-1",
+        name="audit-fix",
+    )
+    replayed = await service.create_worktree(
+        "run-1",
+        name="audit-fix",
+        start_point=expected_head,
+    )
+
+    owner = hashlib.sha256(b"run-1").hexdigest()[:24]
+    expected_path = f".riftx-wt-{owner}-audit-fix"
+    worktree = root / expected_path
+    assert created.action == "created"
+    assert replayed.action == "existing"
+    assert created.path == replayed.path == expected_path
+    assert created.head_commit == replayed.head_commit == expected_head
+    assert created.detached is replayed.detached is True
+    assert (worktree / "app.py").read_text() == "print('one')\n"
+    assert (worktree / ".git").is_file()
+    assert _git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert marker.exists() is False
+
+
+async def test_create_worktree_rejects_code_audit_invalid_inputs_and_conflicts(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    general = _service(_run("run-1", root))
+    audit = _service(_run("run-audit", root, kind=RunKind.CODE_AUDIT))
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await audit.create_worktree("run-audit", name="fix")
+    assert captured.value.code == "code_git_unavailable"
+
+    for name in ("../escape", "nested/path", ".", "bad name"):
+        with pytest.raises(ApplicationConflictError) as captured:
+            await general.create_worktree("run-1", name=name)
+        assert captured.value.code == "code_worktree_name_invalid"
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await general.create_worktree("run-1", name="fix", start_point="main~1")
+    assert captured.value.code == "code_worktree_start_point_invalid"
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await general.create_worktree("run-1", name="fix", start_point="f" * 40)
+    assert captured.value.code == "code_worktree_start_point_unavailable"
+
+    first = await general.create_worktree("run-1", name="fix")
+    (root / "next.txt").write_text("next\n")
+    _git(root, "add", "next.txt")
+    _git(root, "commit", "--quiet", "-m", "next")
+    with pytest.raises(ApplicationConflictError) as captured:
+        await general.create_worktree("run-1", name="fix")
+    assert captured.value.code == "code_worktree_conflict"
+    assert (root / first.path / "next.txt").exists() is False
+
+
+@pytest.mark.parametrize("entry_type", ["symlink", "fifo", "directory"])
+async def test_create_worktree_rejects_preexisting_unowned_destination(
+    tmp_path: Path,
+    entry_type: str,
+) -> None:
+    root = _repository(tmp_path)
+    owner = hashlib.sha256(b"run-1").hexdigest()[:24]
+    destination = root / f".riftx-wt-{owner}-fix"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if entry_type == "symlink":
+        destination.symlink_to(outside, target_is_directory=True)
+    elif entry_type == "fifo":
+        os.mkfifo(destination)
+    else:
+        destination.mkdir()
+    service = _service(_run("run-1", root))
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.create_worktree("run-1", name="fix")
+
+    expected = (
+        "code_worktree_conflict"
+        if entry_type == "directory"
+        else "code_worktree_path_unsafe"
+    )
+    assert captured.value.code == expected
+    assert list(outside.iterdir()) == []
+
+
+async def test_create_worktree_uses_distinct_run_owned_destinations(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    service = GitWorkspaceService(
+        _Runs(_run("run-1", root), _run("run-2", root))  # type: ignore[arg-type]
+    )
+
+    first = await service.create_worktree("run-1", name="fix")
+    second = await service.create_worktree("run-2", name="fix")
+
+    assert first.path != second.path
+    assert (root / first.path / "app.py").is_file()
+    assert (root / second.path / "app.py").is_file()
+
+
+async def test_create_worktree_rolls_back_failed_postcondition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    owner = hashlib.sha256(b"run-1").hexdigest()[:24]
+    relative_path = f".riftx-wt-{owner}-fix"
+    service = _service(_run("run-1", root))
+
+    def reject_postcondition(*_: object, **__: object) -> None:
+        raise ApplicationConflictError(
+            "code_worktree_invalid",
+            "synthetic postcondition failure",
+        )
+
+    monkeypatch.setattr(
+        git_module._SafeGitRepository,
+        "_validate_worktree",
+        reject_postcondition,
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.create_worktree("run-1", name="fix")
+
+    assert captured.value.code == "code_worktree_invalid"
+    assert (root / relative_path).exists() is False
+    assert relative_path not in _git(root, "worktree", "list", "--porcelain")

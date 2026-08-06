@@ -384,7 +384,7 @@ class CodeWorkspaceService:
                 "Patch receipt storage is not configured",
             )
         parsed = parse_code_patch(patch)
-        parsed = replace(parsed, path=_relative_path(parsed.path))
+        parsed = replace(parsed, path=_writable_code_path(parsed.path))
         source = await self._resolve_writable(run_id)
         with source as opened:
             original = await asyncio.to_thread(opened.patch_state, parsed.path)
@@ -450,7 +450,7 @@ class CodeWorkspaceService:
                 "Patch receipt storage is not configured",
             )
         receipt = await self._artifacts.load_patch_receipt(run_id, receipt_artifact_id)
-        path = _relative_path(receipt.path)
+        path = _writable_code_path(receipt.path)
         try:
             restored = (
                 base64.b64decode(receipt.original_content_base64, validate=True)
@@ -1488,6 +1488,16 @@ def _relative_path(value: str, *, allow_empty: bool = False) -> str:
     if candidate.is_absolute():
         raise _conflict("code_path_invalid", "Code path must be a normalized relative path")
     normalized = candidate.as_posix()
+    return normalized
+
+
+def _writable_code_path(value: str) -> str:
+    normalized = _relative_path(value)
+    if ".git" in PurePosixPath(normalized).parts:
+        raise _conflict(
+            "code_patch_git_admin_forbidden",
+            "Native code patches cannot modify Git administrative state",
+        )
     return normalized
 
 

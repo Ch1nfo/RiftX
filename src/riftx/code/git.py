@@ -1,4 +1,4 @@
-"""Side-effect-free, bounded Git navigation for one General Run workspace."""
+"""Bounded native Git reads and approved isolated worktrees for General Runs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import RunRepository
@@ -24,6 +24,7 @@ from .models import (
     GitLogResult,
     GitStatusEntry,
     GitStatusResult,
+    GitWorktreeResult,
 )
 from .workspace import _FilesystemSource, _relative_path
 
@@ -35,7 +36,11 @@ _MAX_STATUS_BYTES = 512 * 1024
 _MAX_DIFF_BYTES = 64 * 1024
 _MAX_LOG_ENTRIES = 100
 _MAX_LOG_BYTES = 256 * 1024
+_MAX_WORKTREE_OUTPUT_BYTES = 64 * 1024
+_MAX_WORKTREE_LIST_BYTES = 1024 * 1024
 _COMMAND_TIMEOUT_SECONDS = 10.0
+_WORKTREE_TIMEOUT_SECONDS = 60.0
+_MAX_WORKTREE_NAME_BYTES = 64
 
 _DANGEROUS_CONFIG_PREFIXES = (
     "credential.",
@@ -72,8 +77,15 @@ class _GitOutput:
     stderr_truncated: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _GitWorktree:
+    path: str
+    head_commit: str
+    detached: bool
+
+
 class GitWorkspaceService:
-    """Expose selected Git reads without entering the durable execution path."""
+    """Expose selected Git operations inside one Run-owned workspace."""
 
     def __init__(self, runs: RunRepository) -> None:
         self._runs = runs
@@ -184,6 +196,30 @@ class GitWorkspaceService:
                     path=normalized,
                     commits=commits[:max_entries],
                     truncated=output.truncated or len(commits) > max_entries,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def create_worktree(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        start_point: str = "HEAD",
+    ) -> GitWorktreeResult:
+        normalized_name = _worktree_name(name)
+        normalized_start = _worktree_start_point(start_point)
+        root = await self._workspace(run_id)
+        owner = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:24]
+        relative_path = f".riftx-wt-{owner}-{normalized_name}"
+
+        def operation() -> GitWorktreeResult:
+            with _FilesystemSource(root) as source:
+                repository = _SafeGitRepository(source)
+                return repository.create_worktree(
+                    name=normalized_name,
+                    relative_path=relative_path,
+                    start_point=normalized_start,
                 )
 
         return await asyncio.to_thread(operation)
@@ -303,6 +339,264 @@ class _SafeGitRepository:
                 "Git administrative state changed during read",
             )
         return bool(output.stdout.strip())
+
+    def create_worktree(
+        self,
+        *,
+        name: str,
+        relative_path: str,
+        start_point: str,
+    ) -> GitWorktreeResult:
+        destination = self._root / relative_path
+        head_commit = self._resolve_commit(start_point)
+        root_fd = self._source.duplicate_root_fd()
+        try:
+            existing = _destination_type(root_fd, relative_path)
+            if existing is not None and existing != "directory":
+                raise _conflict(
+                    "code_worktree_path_unsafe",
+                    "Managed worktree destination is a link or special file",
+                )
+            if existing == "directory":
+                worktree = self._worktree_at(destination)
+                if worktree is None:
+                    raise _conflict(
+                        "code_worktree_conflict",
+                        "Managed worktree destination already exists",
+                    )
+                self._validate_worktree(
+                    root_fd,
+                    relative_path,
+                    destination,
+                    worktree,
+                )
+                if worktree.head_commit != head_commit or not worktree.detached:
+                    raise _conflict(
+                        "code_worktree_conflict",
+                        "Managed worktree exists at a different commit or branch state",
+                    )
+                return GitWorktreeResult(
+                    action="existing",
+                    name=name,
+                    path=relative_path,
+                    head_commit=head_commit,
+                )
+
+            try:
+                self._run_raw(
+                    (
+                        *self._base,
+                        "worktree",
+                        "add",
+                        "--detach",
+                        str(destination),
+                        head_commit,
+                    ),
+                    maximum_bytes=_MAX_WORKTREE_OUTPUT_BYTES,
+                    allow_truncation=False,
+                    timeout_seconds=_WORKTREE_TIMEOUT_SECONDS,
+                )
+            except ApplicationConflictError as exc:
+                self._cleanup_failed_worktree(root_fd, relative_path, destination, exc)
+                raise
+
+            try:
+                self._source.verify_path_binding()
+                self._admin_digest = self._validate_admin()
+                self._validate_config()
+                worktree = self._worktree_at(destination)
+                if worktree is None:
+                    raise _conflict(
+                        "code_worktree_invalid",
+                        "Git did not register the managed worktree",
+                    )
+                self._validate_worktree(
+                    root_fd,
+                    relative_path,
+                    destination,
+                    worktree,
+                )
+                if worktree.head_commit != head_commit or not worktree.detached:
+                    raise _conflict(
+                        "code_worktree_invalid",
+                        "Managed worktree does not match the requested detached commit",
+                    )
+            except ApplicationConflictError as exc:
+                self._cleanup_failed_worktree(root_fd, relative_path, destination, exc)
+                raise
+            return GitWorktreeResult(
+                action="created",
+                name=name,
+                path=relative_path,
+                head_commit=head_commit,
+            )
+        finally:
+            os.close(root_fd)
+
+    def _resolve_commit(self, start_point: str) -> str:
+        output = self._run_admin_read(
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{start_point}^{{commit}}",
+            maximum_bytes=256,
+            accepted_returncodes={0, 1},
+        )
+        commit = output.stdout.strip().decode("ascii", errors="strict")
+        if not _is_full_object_id(commit):
+            raise _conflict(
+                "code_worktree_start_point_unavailable",
+                "Worktree start point does not resolve to a local commit",
+            )
+        return commit
+
+    def _worktree_at(self, destination: Path) -> _GitWorktree | None:
+        output = self._run_admin_read(
+            "worktree",
+            "list",
+            "--porcelain",
+            "-z",
+            maximum_bytes=_MAX_WORKTREE_LIST_BYTES,
+        )
+        expected = os.fspath(destination)
+        return next(
+            (item for item in _parse_worktrees(output.stdout) if item.path == expected),
+            None,
+        )
+
+    def _run_admin_read(
+        self,
+        subcommand: str,
+        *arguments: str,
+        maximum_bytes: int,
+        accepted_returncodes: set[int] | None = None,
+    ) -> _GitOutput:
+        output = self._run_raw(
+            (*self._base, subcommand, *arguments),
+            maximum_bytes=maximum_bytes,
+            allow_truncation=False,
+            accepted_returncodes=accepted_returncodes,
+        )
+        self._source.verify_path_binding()
+        if self._validate_admin() != self._admin_digest:
+            raise _conflict(
+                "code_git_changed",
+                "Git administrative state changed during read",
+            )
+        return output
+
+    def _validate_worktree(
+        self,
+        root_fd: int,
+        relative_path: str,
+        destination: Path,
+        worktree: _GitWorktree,
+    ) -> None:
+        descriptor = -1
+        git_descriptor = -1
+        try:
+            descriptor = os.open(
+                relative_path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+            _verify_destination_binding(root_fd, relative_path, descriptor)
+            git_descriptor = os.open(
+                ".git",
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            before = os.fstat(git_descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 4096:
+                raise _conflict(
+                    "code_worktree_invalid",
+                    "Managed worktree Git link is invalid",
+                )
+            content = os.read(git_descriptor, 4097)
+            after = os.fstat(git_descriptor)
+            if (
+                len(content) != before.st_size
+                or _metadata_fingerprint(before) != _metadata_fingerprint(after)
+            ):
+                raise _conflict(
+                    "code_worktree_changed",
+                    "Managed worktree changed during validation",
+                )
+            try:
+                link = content.decode("utf-8", errors="strict").strip()
+            except UnicodeDecodeError as exc:
+                raise _conflict(
+                    "code_worktree_invalid",
+                    "Managed worktree Git link is invalid",
+                ) from exc
+            prefix = "gitdir: "
+            if not link.startswith(prefix):
+                raise _conflict(
+                    "code_worktree_invalid",
+                    "Managed worktree Git link is invalid",
+                )
+            admin = Path(link[len(prefix) :])
+            expected_admin_root = self._git_dir / "worktrees"
+            if (
+                not admin.is_absolute()
+                or ".." in admin.parts
+                or not admin.is_relative_to(expected_admin_root)
+            ):
+                raise _conflict(
+                    "code_worktree_invalid",
+                    "Managed worktree Git link escapes repository administration",
+                )
+            if worktree.path != os.fspath(destination):
+                raise _conflict(
+                    "code_worktree_invalid",
+                    "Managed worktree registration path is invalid",
+                )
+            _verify_destination_binding(root_fd, relative_path, descriptor)
+            self._source.verify_path_binding()
+        except ApplicationConflictError:
+            raise
+        except OSError as exc:
+            raise _conflict(
+                "code_worktree_invalid",
+                "Managed worktree could not be validated",
+            ) from exc
+        finally:
+            if git_descriptor >= 0:
+                os.close(git_descriptor)
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _cleanup_failed_worktree(
+        self,
+        root_fd: int,
+        relative_path: str,
+        destination: Path,
+        cause: ApplicationConflictError,
+    ) -> None:
+        try:
+            self._source.verify_path_binding()
+            self._admin_digest = self._validate_admin()
+            worktree = self._worktree_at(destination)
+            if worktree is not None:
+                self._run_raw(
+                    (*self._base, "worktree", "remove", "--force", str(destination)),
+                    maximum_bytes=_MAX_WORKTREE_OUTPUT_BYTES,
+                    allow_truncation=False,
+                    timeout_seconds=_WORKTREE_TIMEOUT_SECONDS,
+                )
+                self._admin_digest = self._validate_admin()
+            if _destination_type(root_fd, relative_path) is not None:
+                raise _conflict(
+                    "code_worktree_cleanup_failed",
+                    "Failed worktree creation left an owned destination behind",
+                )
+        except ApplicationConflictError as cleanup_error:
+            if cleanup_error.code == "code_worktree_cleanup_failed":
+                raise cleanup_error from cause
+            raise _conflict(
+                "code_worktree_cleanup_failed",
+                "Failed worktree creation could not be rolled back safely",
+            ) from cause
 
     def _validate_config(self) -> None:
         output = self._run_raw(
@@ -434,6 +728,7 @@ class _SafeGitRepository:
         maximum_bytes: int,
         allow_truncation: bool,
         accepted_returncodes: set[int] | None = None,
+        timeout_seconds: float = _COMMAND_TIMEOUT_SECONDS,
     ) -> _GitOutput:
         try:
             process = subprocess.Popen(
@@ -450,7 +745,7 @@ class _SafeGitRepository:
             raise _conflict("code_git_spawn_failed", "Git command could not start") from exc
         output = _communicate_bounded(
             process,
-            timeout_seconds=_COMMAND_TIMEOUT_SECONDS,
+            timeout_seconds=timeout_seconds,
             maximum_bytes=maximum_bytes,
         )
         if output.stderr_truncated:
@@ -474,9 +769,9 @@ def _communicate_bounded(
         raise _conflict("code_git_pipe_unavailable", "Git output pipe is unavailable")
     selector = selectors.DefaultSelector()
     streams = {process.stdout: bytearray(), process.stderr: bytearray()}
-    for stream in streams:
-        os.set_blocking(stream.fileno(), False)
-        selector.register(stream, selectors.EVENT_READ)
+    for registered_stream in streams:
+        os.set_blocking(registered_stream.fileno(), False)
+        selector.register(registered_stream, selectors.EVENT_READ)
     deadline = time.monotonic() + timeout_seconds
     total = 0
     truncated = False
@@ -490,20 +785,20 @@ def _communicate_bounded(
             if not events and process.poll() is not None:
                 events = [(key, selectors.EVENT_READ) for key in selector.get_map().values()]
             for key, _ in events:
-                stream = cast(object, key.fileobj)
+                selected_stream = cast(IO[bytes], key.fileobj)
                 try:
-                    chunk = os.read(stream.fileno(), 64 * 1024)  # type: ignore[attr-defined]
+                    chunk = os.read(selected_stream.fileno(), 64 * 1024)
                 except BlockingIOError:
                     continue
                 if not chunk:
-                    selector.unregister(stream)
+                    selector.unregister(selected_stream)
                     continue
                 allowed = max(0, maximum_bytes - total)
-                streams[stream].extend(chunk[:allowed])  # type: ignore[index]
+                streams[selected_stream].extend(chunk[:allowed])
                 total += min(len(chunk), allowed)
                 if len(chunk) > allowed:
                     truncated = True
-                    stderr_truncated = stream is process.stderr
+                    stderr_truncated = selected_stream is process.stderr
                     _terminate(process)
                     selector.close()
                     return _GitOutput(
@@ -598,6 +893,131 @@ def _parse_log(raw: bytes) -> list[GitCommitSummary]:
             )
         )
     return commits
+
+
+def _parse_worktrees(raw: bytes) -> list[_GitWorktree]:
+    results: list[_GitWorktree] = []
+    fields: dict[bytes, bytes] = {}
+
+    def finish() -> None:
+        if not fields:
+            return
+        path = fields.get(b"worktree")
+        head = fields.get(b"HEAD")
+        if path is None or head is None:
+            raise _conflict("code_git_output_invalid", "Git worktree output is invalid")
+        try:
+            head_commit = head.decode("ascii", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise _conflict(
+                "code_git_output_invalid",
+                "Git worktree output is invalid",
+            ) from exc
+        if not _is_full_object_id(head_commit):
+            raise _conflict("code_git_output_invalid", "Git worktree output is invalid")
+        results.append(
+            _GitWorktree(
+                path=os.fsdecode(path),
+                head_commit=head_commit,
+                detached=b"detached" in fields,
+            )
+        )
+        fields.clear()
+
+    for record in raw.split(b"\x00"):
+        if not record:
+            finish()
+            continue
+        key, separator, value = record.partition(b" ")
+        if key == b"worktree" and fields:
+            finish()
+        fields[key] = value if separator else b""
+    finish()
+    return results
+
+
+def _worktree_name(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > _MAX_WORKTREE_NAME_BYTES
+        or not value[0].isalnum()
+        or not value[-1].isalnum()
+        or any(
+            not (
+                character.isascii()
+                and (character.isalnum() or character in "._-")
+            )
+            for character in value
+        )
+        or ".." in value
+    ):
+        raise _conflict(
+            "code_worktree_name_invalid",
+            "Worktree name must be a bounded ASCII slug",
+        )
+    return value
+
+
+def _worktree_start_point(value: str) -> str:
+    if value == "HEAD" or _is_full_object_id(value):
+        return value
+    raise _conflict(
+        "code_worktree_start_point_invalid",
+        "Worktree start point must be HEAD or a full commit hash",
+    )
+
+
+def _is_full_object_id(value: str) -> bool:
+    return len(value) in {40, 64} and all(
+        character in "0123456789abcdefABCDEF" for character in value
+    )
+
+
+def _destination_type(root_fd: int, name: str) -> str | None:
+    try:
+        metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _conflict(
+            "code_worktree_path_unsafe",
+            "Managed worktree destination is unavailable",
+        ) from exc
+    if stat.S_ISDIR(metadata.st_mode):
+        return "directory"
+    if stat.S_ISREG(metadata.st_mode):
+        return "file"
+    if stat.S_ISLNK(metadata.st_mode):
+        return "symlink"
+    return "special"
+
+
+def _verify_destination_binding(root_fd: int, name: str, descriptor: int) -> None:
+    try:
+        path_metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        descriptor_metadata = os.fstat(descriptor)
+    except OSError as exc:
+        raise _conflict(
+            "code_worktree_changed",
+            "Managed worktree binding changed during validation",
+        ) from exc
+    if _metadata_fingerprint(path_metadata) != _metadata_fingerprint(descriptor_metadata):
+        raise _conflict(
+            "code_worktree_changed",
+            "Managed worktree binding changed during validation",
+        )
+
+
+def _metadata_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _bounded(value: int, *, maximum: int, label: str) -> None:

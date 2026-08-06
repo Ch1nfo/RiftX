@@ -23,6 +23,7 @@ from .models import (
     GitLogResult,
     GitStatusEntry,
     GitStatusResult,
+    GitWorktreeResult,
 )
 from .workspace import CodeArtifactPublisher, CodeLocationContent, CodeWorkspaceService
 
@@ -51,5 +52,6 @@ __all__ = [
     "GitLogResult",
     "GitStatusEntry",
     "GitStatusResult",
+    "GitWorktreeResult",
     "GitWorkspaceService",
 ]

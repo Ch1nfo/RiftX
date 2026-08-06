@@ -154,6 +154,11 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolAuthorization.DYNAMIC_APPROVAL,
             approval_required=True,
         ),
+        "create_worktree": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.DYNAMIC_APPROVAL,
+            approval_required=True,
+        ),
         "revert_patch": AgentToolPolicy(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.DYNAMIC_APPROVAL,

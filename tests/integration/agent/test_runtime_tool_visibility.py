@@ -102,13 +102,22 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         schema for schema in compiled.available_tools if schema.get("name") == "revert_patch"
     )
     assert revert_schema["parameters"]["required"] == ["receipt_artifact_id"]
+    worktree_schema = next(
+        schema
+        for schema in compiled.available_tools
+        if schema.get("name") == "create_worktree"
+    )
+    assert worktree_schema["parameters"]["required"] == ["name"]
+    assert worktree_schema["x-riftx"]["approval_policy"] == "explicit"
     assert {
-        tool.name for tool in agent.tools if tool.name in {"apply_patch", "revert_patch"}
-    } == {"apply_patch", "revert_patch"}
+        tool.name
+        for tool in agent.tools
+        if tool.name in {"apply_patch", "create_worktree", "revert_patch"}
+    } == {"apply_patch", "create_worktree", "revert_patch"}
     assert all(
         tool.needs_approval is True
         for tool in agent.tools
-        if tool.name in {"apply_patch", "revert_patch"}
+        if tool.name in {"apply_patch", "create_worktree", "revert_patch"}
     )
     open_browser_schema = next(
         schema for schema in compiled.available_tools if schema.get("name") == "open_browser"
@@ -224,6 +233,7 @@ async def test_registry_policy_controls_shell_visibility_end_to_end(
         "call_hierarchy",
         "diagnostics",
         "apply_patch",
+        "create_worktree",
         "revert_patch",
         "git_status",
         "git_diff",

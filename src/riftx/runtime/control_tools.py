@@ -622,6 +622,11 @@ class _GitLogArguments(_Arguments):
     max_entries: int = Field(default=20, ge=1, le=100)
 
 
+class _CreateWorktreeArguments(_Arguments):
+    name: str = Field(min_length=1, max_length=64)
+    start_point: str = Field(default="HEAD", min_length=1, max_length=64)
+
+
 class RuntimeControlToolService:
     """Execute resident control tools without crossing the Runner command path.
 
@@ -1363,6 +1368,17 @@ class RuntimeControlToolService:
                     max_entries=git_arguments.max_entries,
                 )
             ).model_dump(mode="json")
+        if tool_name == "create_worktree":
+            self._require_primary_worktree(scope)
+            git = self._require_git()
+            worktree_arguments = _CreateWorktreeArguments.model_validate(raw_arguments)
+            return (
+                await git.create_worktree(
+                    scope.run_id,
+                    name=worktree_arguments.name,
+                    start_point=worktree_arguments.start_point,
+                )
+            ).model_dump(mode="json")
         if tool_name == "get_execution":
             execution_arguments = _ExecutionArguments.model_validate(raw_arguments)
             execution = await self._execution_for_scope(
@@ -1772,6 +1788,14 @@ class RuntimeControlToolService:
             raise ApplicationConflictError(
                 "cognitive_tools_primary_required",
                 "Only the Primary Agent may propose authoritative cognitive state",
+            )
+
+    @staticmethod
+    def _require_primary_worktree(scope: RuntimeToolScope) -> None:
+        if scope.agent_id != "primary":
+            raise ApplicationConflictError(
+                "code_worktree_primary_required",
+                "Worktree creation is available only to the Primary Agent",
             )
 
     async def _general_run(self, run_id: str) -> Run:
@@ -2319,6 +2343,14 @@ def _source_refs(
             refs.append(f"artifact://{receipt_id}")
         if refs:
             return refs
+    if tool_name == "create_worktree" and isinstance(result, dict):
+        worktree_refs: list[str] = []
+        if path := _string_argument(result, "path"):
+            worktree_refs.append(f"worktree://{path}")
+        if commit := _string_argument(result, "head_commit"):
+            worktree_refs.append(f"git-commit://{commit}")
+        if worktree_refs:
+            return worktree_refs
     if execution_id := _string_argument(arguments, "execution_id"):
         return [f"execution://{execution_id}"]
     if artifact_id := _string_argument(arguments, "artifact_id"):

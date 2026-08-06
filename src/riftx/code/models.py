@@ -287,6 +287,16 @@ class GitLogResult(BaseModel):
     truncated: bool = False
 
 
+class GitWorktreeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["created", "existing"]
+    name: str = Field(min_length=1, max_length=64)
+    path: str = Field(min_length=1, max_length=4096)
+    head_commit: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    detached: Literal[True] = True
+
+
 __all__ = [
     "CodeEntry",
     "CodeCall",
@@ -309,4 +319,5 @@ __all__ = [
     "GitLogResult",
     "GitStatusEntry",
     "GitStatusResult",
+    "GitWorktreeResult",
 ]

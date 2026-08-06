@@ -38,6 +38,7 @@ from riftx.code import (
     GitLogResult,
     GitStatusEntry,
     GitStatusResult,
+    GitWorktreeResult,
 )
 from riftx.context import AttemptRecord, PlanUpdateProposal, WorkingMemory
 from riftx.domain import (
@@ -615,6 +616,19 @@ class FakeGit:
                     subject="commit",
                 )
             ],
+        )
+
+    async def create_worktree(
+        self,
+        run_id: str,
+        **kwargs: object,
+    ) -> GitWorktreeResult:
+        self.calls.append(("create_worktree", run_id, kwargs))
+        return GitWorktreeResult(
+            action="created",
+            name=str(kwargs["name"]),
+            path=".riftx-wt-owner-fix",
+            head_commit="1" * 40,
         )
 
 
@@ -2568,6 +2582,69 @@ async def test_native_git_control_tools_use_exact_run_scope() -> None:
         ["code://src/app.py"],
         ["code://src/app.py"],
     ]
+
+
+async def test_approved_worktree_is_primary_only_and_transcripted() -> None:
+    git = FakeGit()
+    tracker = FakeControlIntents()
+    control, _, transcript, _ = service(git=git, control_intents=tracker)
+
+    result = await control(
+        SCOPE,
+        "create_worktree",
+        {"name": "fix", "start_point": "HEAD"},
+        "worktree-call",
+    )
+
+    assert result["path"] == ".riftx-wt-owner-fix"
+    assert git.calls == [
+        (
+            "create_worktree",
+            "run-1",
+            {"name": "fix", "start_point": "HEAD"},
+        )
+    ]
+    assert tracker.calls == [
+        ("begin", "worktree-call"),
+        ("success", "worktree-call"),
+    ]
+    assert transcript.rows[-1][1].structured_content["source_refs"] == [
+        "worktree://.riftx-wt-owner-fix",
+        "git-commit://" + "1" * 40,
+    ]
+
+    subagent_scope = RuntimeToolScope(
+        run_id="run-1",
+        session_id="session-subagent",
+        agent_id="subagent",
+        model_profile="test-profile",
+    )
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            subagent_scope,
+            "create_worktree",
+            {"name": "other"},
+            "subagent-worktree-call",
+        )
+    assert captured.value.code == "code_worktree_primary_required"
+    assert len(git.calls) == 1
+
+
+async def test_worktree_has_no_side_effect_without_approved_intent() -> None:
+    git = FakeGit()
+    control, _, transcript, _ = service(git=git)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            SCOPE,
+            "create_worktree",
+            {"name": "fix"},
+            "worktree-call",
+        )
+
+    assert captured.value.code == "control_tool_approval_missing"
+    assert git.calls == []
+    assert transcript.rows == []
 
 
 async def test_native_git_argument_limits_fail_before_repository_read() -> None:
