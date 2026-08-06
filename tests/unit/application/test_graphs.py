@@ -22,6 +22,8 @@ from riftx.application.graphs import (
     GraphHypothesisSource,
     GraphNode,
     GraphPlanItemSource,
+    GraphReasoningEdgeSource,
+    GraphReasoningNodeSource,
     GraphRunSource,
     GraphScope,
     GraphSessionSource,
@@ -754,6 +756,114 @@ async def test_working_memory_candidate_evidence_never_confirms_facts_or_hypothe
         assert canary not in serialized
     node_ids = {node.id for node in page.nodes}
     assert all(edge.source in node_ids and edge.target in node_ids for edge in page.edges)
+
+
+async def test_reasoning_graph_is_authoritative_and_projects_only_safe_lineage() -> None:
+    snapshot = replace(
+        evidence_snapshot(),
+        reasoning_graph_version=7,
+        reasoning_nodes=(
+            GraphReasoningNodeSource(
+                node_id="candidate",
+                run_id="run-1",
+                kind="fact_candidate",
+                status="promoted",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="fact",
+                run_id="run-1",
+                kind="confirmed_fact",
+                status="confirmed",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="finding",
+                run_id="run-1",
+                kind="finding",
+                status="confirmed",
+                evidence_ids=("evidence-2",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="proof",
+                run_id="run-1",
+                kind="proof",
+                status="validated",
+                evidence_ids=("evidence-2",),
+            ),
+        ),
+        reasoning_edges=(
+            GraphReasoningEdgeSource(
+                edge_id="derived",
+                run_id="run-1",
+                source_node_id="candidate",
+                target_node_id="fact",
+                relation_type="derived_from",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningEdgeSource(
+                edge_id="validates",
+                run_id="run-1",
+                source_node_id="proof",
+                target_node_id="finding",
+                relation_type="validates",
+                evidence_ids=("evidence-2",),
+            ),
+        ),
+    )
+    service = GraphApplicationService(
+        SnapshotRepository(snapshot),
+        authorizer=RecordingAuthorizer(),
+        cursor_signing_key=CURSOR_SIGNING_KEY,
+    )
+
+    page = await service.get_view(
+        "run-1",
+        principal=PRINCIPAL,
+        view=GraphViewKind.EVIDENCE,
+    )
+    nodes = {node.domain_id: node for node in page.nodes}
+
+    assert nodes["fact"].status == "confirmed"
+    assert nodes["fact"].provenance_refs == (
+        "reasoning_nodes",
+        "evidence:evidence-1",
+    )
+    assert nodes["finding"].status == "confirmed"
+    assert "fact-artifact" not in nodes
+    assert "hypothesis-verified" not in nodes
+    assert "finding-verified" not in nodes
+    assert {
+        (edge.type, edge.source, edge.target, edge.provenance_refs)
+        for edge in page.edges
+        if edge.id.startswith("reasoning_edge:")
+    } == {
+        (
+            "derived_from",
+            "fact_candidate:run-1:candidate",
+            "fact:run-1:fact",
+            ("reasoning_edges", "evidence:evidence-1"),
+        ),
+        (
+            "validates",
+            "proof:run-1:proof",
+            "finding:run-1:finding",
+            ("reasoning_edges", "evidence:evidence-2"),
+        ),
+    }
+    assert "reasoning_nodes" in page.projection_sources
+    assert "reasoning_edges" in page.projection_sources
+    assert "run_facts" not in page.projection_sources
+    assert "findings" not in page.projection_sources
+
+    with pytest.raises(TypeError):
+        GraphReasoningNodeSource(  # type: ignore[call-arg]
+            node_id="unsafe",
+            run_id="run-1",
+            kind="observation",
+            status="recorded",
+            claim="SECRET CLAIM",
+        )
 
 
 async def test_working_memory_fact_lifecycle_statuses_survive_confirmation_downgrade() -> None:

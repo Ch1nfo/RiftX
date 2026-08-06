@@ -10,7 +10,7 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from riftx.application.errors import ResourceNotAccessibleError
 from riftx.application.graphs import (
@@ -28,6 +28,8 @@ from riftx.application.graphs import (
     GraphHypothesisSource,
     GraphNode,
     GraphPlanItemSource,
+    GraphReasoningEdgeSource,
+    GraphReasoningNodeSource,
     GraphRunSource,
     GraphScope,
     GraphSessionSource,
@@ -61,6 +63,8 @@ _TASK_PROJECTION_BASE_SOURCES = (
     "artifacts",
 )
 _EVIDENCE_PROJECTION_SOURCES = (
+    "reasoning_nodes",
+    "reasoning_edges",
     "run_facts",
     "engagement_facts",
     "fact_relations",
@@ -101,9 +105,29 @@ _TASK_TYPE_METADATA = (
 )
 
 _EVIDENCE_TYPE_METADATA = (
+    GraphTypeMetadata(kind="node", type="observation", label="Observation", color="#0891b2"),
+    GraphTypeMetadata(
+        kind="node",
+        type="fact_candidate",
+        label="Fact candidate",
+        color="#14b8a6",
+    ),
     GraphTypeMetadata(kind="node", type="fact", label="Fact", color="#0f766e"),
     GraphTypeMetadata(kind="node", type="hypothesis", label="Hypothesis", color="#9333ea"),
+    GraphTypeMetadata(
+        kind="node",
+        type="vulnerability_candidate",
+        label="Vulnerability candidate",
+        color="#f97316",
+    ),
     GraphTypeMetadata(kind="node", type="finding", label="Finding", color="#dc2626"),
+    GraphTypeMetadata(kind="node", type="proof", label="Proof", color="#16a34a"),
+    GraphTypeMetadata(
+        kind="node",
+        type="negative_result",
+        label="Negative result",
+        color="#64748b",
+    ),
     GraphTypeMetadata(kind="node", type="artifact", label="Artifact", color="#0284c7"),
     GraphTypeMetadata(kind="node", type="execution", label="Execution", color="#475569"),
     GraphTypeMetadata(
@@ -120,6 +144,12 @@ _EVIDENCE_TYPE_METADATA = (
     ),
     GraphTypeMetadata(kind="edge", type="supports", label="Supports", color="#16a34a"),
     GraphTypeMetadata(kind="edge", type="contradicts", label="Contradicts", color="#dc2626"),
+    GraphTypeMetadata(
+        kind="edge",
+        type="derived_from",
+        label="Derived from",
+        color="#0f766e",
+    ),
     GraphTypeMetadata(kind="edge", type="produced", label="Produced", color="#0284c7"),
     GraphTypeMetadata(
         kind="edge",
@@ -128,6 +158,13 @@ _EVIDENCE_TYPE_METADATA = (
         color="#0d9488",
     ),
     GraphTypeMetadata(kind="edge", type="exploits", label="Exploits", color="#e11d48"),
+    GraphTypeMetadata(kind="edge", type="validates", label="Validates", color="#16a34a"),
+    GraphTypeMetadata(
+        kind="edge",
+        type="invalidates",
+        label="Invalidates",
+        color="#dc2626",
+    ),
     GraphTypeMetadata(kind="edge", type="enables", label="Enables", color="#ca8a04"),
     GraphTypeMetadata(kind="edge", type="depends_on", label="Depends on", color="#64748b"),
     GraphTypeMetadata(kind="edge", type="leads_to", label="Leads to", color="#ea580c"),
@@ -185,6 +222,45 @@ _SAFE_EXECUTION_STATUSES = frozenset(
 _SAFE_SESSION_STATUSES = frozenset({"created", "active", "open", "closed", "lost"})
 _SAFE_HOST_STATUSES = frozenset({"online", "offline", "degraded", "lost", "unknown"})
 _SAFE_RELATION_TYPES = frozenset({"discovered_on", "exploits", "enables", "depends_on", "leads_to"})
+_REASONING_NODE_TYPES = {
+    "observation": ("observation", "Observation"),
+    "fact_candidate": ("fact_candidate", "Fact candidate"),
+    "confirmed_fact": ("fact", "Fact"),
+    "hypothesis": ("hypothesis", "Hypothesis"),
+    "vulnerability_candidate": ("vulnerability_candidate", "Vulnerability candidate"),
+    "finding": ("finding", "Finding"),
+    "proof": ("proof", "Proof"),
+    "negative_result": ("negative_result", "Negative result"),
+}
+_SAFE_REASONING_STATUSES = frozenset(
+    {
+        "recorded",
+        "candidate",
+        "promoted",
+        "confirmed",
+        "unverified",
+        "investigating",
+        "supported",
+        "rejected",
+        "invalidated",
+        "resolved",
+        "false_positive",
+        "validated",
+        "failed",
+    }
+)
+_SAFE_REASONING_RELATIONS = frozenset(
+    {
+        "supports",
+        "contradicts",
+        "derived_from",
+        "discovered_on",
+        "validates",
+        "exploits",
+        "invalidates",
+        "depends_on",
+    }
+)
 _COVERAGE_SOURCES = frozenset(
     {
         "plan_items",
@@ -192,6 +268,8 @@ _COVERAGE_SOURCES = frozenset(
         "actions",
         "facts",
         "hypotheses",
+        "reasoning_nodes",
+        "reasoning_edges",
         "user_decisions",
         "engagement_facts",
         "fact_relations",
@@ -684,12 +762,74 @@ def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
                 )
             )
 
+    reasoning_graph_ids: dict[str, str] = {}
+    if source.reasoning_graph_version is not None:
+        for reasoning_node in sorted(
+            source.reasoning_nodes,
+            key=lambda item: item.node_id,
+        ):
+            node_type, label = _REASONING_NODE_TYPES[reasoning_node.kind]
+            status, reasoning_reasons = _safe_status(
+                reasoning_node.status,
+                _SAFE_REASONING_STATUSES,
+                "reasoning_status_unknown",
+            )
+            reasoning_provenance, lineage_truncated = _reasoning_provenance(
+                "reasoning_nodes",
+                reasoning_node.evidence_ids,
+            )
+            if lineage_truncated:
+                reasoning_reasons = (
+                    *reasoning_reasons,
+                    "evidence_lineage_truncated",
+                )
+            page_reasons.update(reasoning_reasons)
+            graph_id = f"{node_type}:{run_id}:{reasoning_node.node_id}"
+            reasoning_graph_ids[reasoning_node.node_id] = graph_id
+            nodes.append(
+                _node(
+                    node_id=graph_id,
+                    node_type=node_type,
+                    domain_id=reasoning_node.node_id,
+                    label=label,
+                    status=status,
+                    provenance=reasoning_provenance,
+                    reasons=reasoning_reasons,
+                )
+            )
+        for reasoning_edge in sorted(
+            source.reasoning_edges,
+            key=lambda item: item.edge_id,
+        ):
+            source_id = reasoning_graph_ids.get(reasoning_edge.source_node_id)
+            target_id = reasoning_graph_ids.get(reasoning_edge.target_node_id)
+            if source_id is None or target_id is None:
+                page_reasons.add("reasoning_edge_endpoint_unavailable")
+                continue
+            reasoning_provenance, lineage_truncated = _reasoning_provenance(
+                "reasoning_edges",
+                reasoning_edge.evidence_ids,
+            )
+            if lineage_truncated:
+                page_reasons.add("evidence_lineage_truncated")
+            edges.append(
+                _edge(
+                    edge_id=f"reasoning_edge:{run_id}:{reasoning_edge.edge_id}",
+                    edge_type=reasoning_edge.relation_type,
+                    source=source_id,
+                    target=target_id,
+                    provenance=reasoning_provenance,
+                    quality="partial" if lineage_truncated else "exact",
+                )
+            )
+
     # Working Memory Fact source refs and their declared source types are model
     # writable. They can preserve candidate lineage, but cannot populate this
     # authoritative set or upgrade either a Fact or a Hypothesis to confirmed.
     authoritatively_confirmed_fact_ids: set[str] = set()
     fact_graph_ids: dict[str, str] = {}
-    for fact in sorted(source.facts, key=lambda item: item.fact_id):
+    legacy_facts = () if source.reasoning_graph_version is not None else source.facts
+    for fact in sorted(legacy_facts, key=lambda item: item.fact_id):
         graph_id = f"fact:{run_id}:{fact.fact_id}"
         fact_graph_ids[fact.fact_id] = graph_id
         candidate_targets = _candidate_fact_evidence_targets(fact.evidence_refs, index)
@@ -724,7 +864,10 @@ def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
                 )
             )
 
-    for hypothesis in sorted(source.hypotheses, key=lambda item: item.hypothesis_id):
+    legacy_hypotheses = (
+        () if source.reasoning_graph_version is not None else source.hypotheses
+    )
+    for hypothesis in sorted(legacy_hypotheses, key=lambda item: item.hypothesis_id):
         graph_id = f"hypothesis:{run_id}:{hypothesis.hypothesis_id}"
         has_trusted_support = any(
             item in authoritatively_confirmed_fact_ids for item in hypothesis.supporting_fact_ids
@@ -775,7 +918,8 @@ def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
                     )
                 )
 
-    for finding in sorted(source.findings, key=lambda item: item.finding_id):
+    legacy_findings = () if source.reasoning_graph_version is not None else source.findings
+    for finding in sorted(legacy_findings, key=lambda item: item.finding_id):
         graph_id = f"finding:{run_id}:{finding.finding_id}"
         trusted_targets = _finding_evidence_targets(finding, index)
         status, reasons = _confirmed_claim_status(finding.status, bool(trusted_targets))
@@ -803,31 +947,35 @@ def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
             )
 
     active_engagement_facts: dict[str, str] = {}
-    for fact in sorted(source.engagement_facts, key=lambda item: item.id):
-        if fact.engagement_id != engagement_id:
+    for engagement_fact in sorted(source.engagement_facts, key=lambda item: item.id):
+        if engagement_fact.engagement_id != engagement_id:
             page_reasons.add("cross_engagement_source_omitted")
             continue
-        if run_id not in fact.source_run_ids:
+        if run_id not in engagement_fact.source_run_ids:
             page_reasons.add("cross_run_source_omitted")
             continue
-        if fact.status != "active":
+        if engagement_fact.status != "active":
             page_reasons.add("superseded_fact_omitted")
             continue
-        graph_id = f"engagement_fact:{engagement_id}:{fact.id}"
-        active_engagement_facts[fact.id] = graph_id
-        reasons = ["engagement_fact_evidence_type_unavailable"]
-        if fact.unresolved or not _engagement_fact_refs_resolve(fact, source, index):
-            reasons.append("engagement_fact_provenance_unresolved")
-        page_reasons.update(reasons)
+        graph_id = f"engagement_fact:{engagement_id}:{engagement_fact.id}"
+        active_engagement_facts[engagement_fact.id] = graph_id
+        engagement_reasons = ["engagement_fact_evidence_type_unavailable"]
+        if engagement_fact.unresolved or not _engagement_fact_refs_resolve(
+            engagement_fact,
+            source,
+            index,
+        ):
+            engagement_reasons.append("engagement_fact_provenance_unresolved")
+        page_reasons.update(engagement_reasons)
         nodes.append(
             _node(
                 node_id=graph_id,
                 node_type="engagement_fact",
-                domain_id=fact.id,
+                domain_id=engagement_fact.id,
                 label="Engagement fact",
                 status="unverified",
                 provenance=("engagement_facts",),
-                reasons=tuple(reasons),
+                reasons=tuple(engagement_reasons),
             )
         )
 
@@ -858,10 +1006,22 @@ def _project_evidence(source: GraphSourceSnapshot) -> _Projection:
             )
         )
 
+    projection_sources = tuple(
+        source_name
+        for source_name in _EVIDENCE_PROJECTION_SOURCES
+        if (
+            source.reasoning_graph_version is not None
+            or source_name not in {"reasoning_nodes", "reasoning_edges"}
+        )
+        and (
+            source.reasoning_graph_version is None
+            or source_name not in {"run_facts", "findings"}
+        )
+    )
     return _projection(
         nodes,
         edges,
-        _EVIDENCE_PROJECTION_SOURCES,
+        projection_sources,
         _EVIDENCE_TYPE_METADATA,
         page_reasons,
     )
@@ -1174,6 +1334,17 @@ def _edge_suffix(graph_id: str) -> str:
     return hashlib.sha256(graph_id.encode()).hexdigest()[:16]
 
 
+def _reasoning_provenance(
+    source: str,
+    evidence_ids: tuple[str, ...],
+) -> tuple[tuple[str, ...], bool]:
+    visible = evidence_ids[:31]
+    return (
+        (source, *(f"evidence:{evidence_id}" for evidence_id in visible)),
+        len(visible) != len(evidence_ids),
+    )
+
+
 def _validate_source(source: GraphSourceSnapshot, scope: GraphScope) -> None:
     try:
         if type(source) is not GraphSourceSnapshot or source.scope != scope:
@@ -1190,6 +1361,8 @@ def _validate_source(source: GraphSourceSnapshot, scope: GraphScope) -> None:
         _require_tuple(source.actions, GraphActionSource)
         _require_tuple(source.facts, GraphFactSource)
         _require_tuple(source.hypotheses, GraphHypothesisSource)
+        _require_tuple(source.reasoning_nodes, GraphReasoningNodeSource)
+        _require_tuple(source.reasoning_edges, GraphReasoningEdgeSource)
         _require_tuple(source.user_decisions, GraphUserDecisionSource)
         _require_tuple(source.engagement_facts, GraphEngagementFactSource)
         _require_tuple(source.fact_relations, GraphFactRelationSource)
@@ -1204,6 +1377,7 @@ def _validate_source(source: GraphSourceSnapshot, scope: GraphScope) -> None:
         _validate_actions(source.actions, scope)
         _validate_run_facts(source.facts, scope)
         _validate_hypotheses(source.hypotheses, scope)
+        _validate_reasoning(source, scope)
         _validate_decisions(source.user_decisions, scope)
         _validate_engagement_facts(source.engagement_facts)
         _validate_fact_relations(source.fact_relations)
@@ -1310,6 +1484,43 @@ def _validate_hypotheses(
         if item.run_id != scope.run_id:
             raise ValueError
         if set(item.supporting_fact_ids) & set(item.contradicting_fact_ids):
+            raise ValueError
+
+
+def _validate_reasoning(source: GraphSourceSnapshot, scope: GraphScope) -> None:
+    if source.reasoning_graph_version is None:
+        if source.reasoning_nodes or source.reasoning_edges:
+            raise ValueError
+        return
+    if type(source.reasoning_graph_version) is not int or source.reasoning_graph_version < 1:
+        raise ValueError
+    _require_unique([item.node_id for item in source.reasoning_nodes])
+    node_ids = {item.node_id for item in source.reasoning_nodes}
+    for reasoning_node in source.reasoning_nodes:
+        _require_id(reasoning_node.node_id)
+        _require_id_tuple(reasoning_node.evidence_ids)
+        if (
+            reasoning_node.run_id != scope.run_id
+            or reasoning_node.kind not in _REASONING_NODE_TYPES
+            or reasoning_node.status not in _SAFE_REASONING_STATUSES
+        ):
+            raise ValueError
+    _require_unique([item.edge_id for item in source.reasoning_edges])
+    for reasoning_edge in source.reasoning_edges:
+        _require_id(reasoning_edge.edge_id)
+        _require_id(reasoning_edge.source_node_id)
+        _require_id(reasoning_edge.target_node_id)
+        _require_id_tuple(reasoning_edge.evidence_ids)
+        if (
+            reasoning_edge.run_id != scope.run_id
+            or reasoning_edge.source_node_id == reasoning_edge.target_node_id
+            or reasoning_edge.relation_type not in _SAFE_REASONING_RELATIONS
+        ):
+            raise ValueError
+        if (
+            reasoning_edge.source_node_id not in node_ids
+            or reasoning_edge.target_node_id not in node_ids
+        ):
             raise ValueError
 
 
@@ -1731,9 +1942,9 @@ def _validate_cursor_body(body: dict[str, object]) -> None:
         value = body[name]
         if type(value) is not str or not value or len(value) > maximum:
             raise ValueError
-    if re.fullmatch(r"[0-9a-f]{64}", body["principal"]) is None:
+    if re.fullmatch(r"[0-9a-f]{64}", cast(str, body["principal"])) is None:
         raise ValueError
-    if re.fullmatch(r"[0-9a-f]{64}", body["snapshot_id"]) is None:
+    if re.fullmatch(r"[0-9a-f]{64}", cast(str, body["snapshot_id"])) is None:
         raise ValueError
     if type(body["limit"]) is not int or not 1 <= body["limit"] <= _MAX_LIMIT:
         raise ValueError
