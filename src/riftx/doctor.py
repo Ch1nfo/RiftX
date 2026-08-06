@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from typing import Protocol
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from riftx.application.errors import RepositoryError
 from riftx.config import RiftXConfig
 from riftx.database_maintenance import (
     DatabaseRepairError,
@@ -19,9 +21,15 @@ from riftx.database_maintenance import (
     inspect_sqlite_migration,
     repair_sqlite_database,
 )
+from riftx.diagnostics import OfficialPackDiagnostics, SystemDiagnosticsService
 from riftx.local_fs import OwnerDirectoryBatch, OwnerDirectoryError
 from riftx.models.config import ModelConfigError, load_models_config
-from riftx.packs import OfficialPackBundle, OfficialPackCatalog
+from riftx.packs import (
+    OfficialPackBundle,
+    OfficialPackCatalog,
+    bootstrap_official_packs,
+)
+from riftx.persistence import Database, SQLAlchemyCapabilityRepository
 from riftx.skills import ProgressiveSkillRegistry, SkillDocumentError
 from riftx.tools.config import ToolConfigError, load_tool_config
 
@@ -145,7 +153,7 @@ def run_local_doctor(
             ),
         ),
         _check_storage(config, root),
-        _check_pack_integrity(official_packs, pack_error),
+        _check_pack_integrity(config, root, catalog, official_packs, pack_error),
         _check_database(config, root),
         DoctorCheck(
             id="backup_restore",
@@ -162,15 +170,17 @@ def apply_local_doctor_fixes(
     report: DoctorReport,
     *,
     cwd: Path | None = None,
-    allow_database_fix: bool = True,
+    allow_persistence_fix: bool = True,
+    official_pack_catalog: OfficialPackCatalog | None = None,
 ) -> tuple[DoctorFix, ...]:
     """Apply registered local repairs as one rollback-aware batch."""
 
     root = Path.cwd() if cwd is None else cwd
     fixable = {check.id for check in report.checks if check.fixable}
-    if "database_migrations" in fixable and not allow_database_fix:
+    persistence_fixes = {"database_migrations", "pack_integrity"}.intersection(fixable)
+    if persistence_fixes and not allow_persistence_fix:
         raise DoctorFixError(
-            "Stop the reachable RiftX Control Plane before repairing the database."
+            "Stop the reachable RiftX Control Plane before repairing persistence."
         )
     targets: list[tuple[str, Path]] = []
     if "skills" in fixable:
@@ -210,8 +220,15 @@ def apply_local_doctor_fixes(
                         backup_path=repaired.backup_path,
                     )
                 )
+            if "pack_integrity" in fixable:
+                path = _repair_official_pack_persistence(
+                    config,
+                    root,
+                    official_pack_catalog or OfficialPackCatalog(),
+                )
+                fixes.append(DoctorFix(check_id="pack_integrity", path=path))
             return tuple(fixes)
-    except (DatabaseRepairError, OwnerDirectoryError) as exc:
+    except (DatabaseRepairError, OwnerDirectoryError, RepositoryError) as exc:
         raise DoctorFixError(
             f"Doctor fix failed; created directories were rolled back: {exc}"
         ) from exc
@@ -783,6 +800,9 @@ def _nearest_existing_parent(path: Path) -> Path:
 
 
 def _check_pack_integrity(
+    config: RiftXConfig,
+    cwd: Path,
+    catalog: OfficialPackCatalog,
     official_packs: tuple[OfficialPackBundle, ...],
     pack_error: Exception | None,
 ) -> DoctorCheck:
@@ -793,6 +813,33 @@ def _check_pack_integrity(
             detail=f"Official Pack digest validation failed: {pack_error}",
             remediation="Reinstall the RiftX package containing Official Packs.",
         )
+    migration = inspect_sqlite_migration(config.database.url, cwd=cwd)
+    if migration is not None and migration.status is SQLiteMigrationStatus.READY:
+        try:
+            diagnostics = _read_official_pack_persistence(config, cwd, catalog)
+        except Exception as exc:  # local database diagnostic boundary
+            return DoctorCheck(
+                id="pack_integrity",
+                status=DoctorStatus.FAILED,
+                detail=f"Official Pack persistence could not be inspected: {exc}",
+                remediation="Repair the local database before starting new Runs.",
+            )
+        return _official_pack_check(diagnostics)
+    if migration is not None and migration.fixable:
+        return DoctorCheck(
+            id="pack_integrity",
+            status=(
+                DoctorStatus.FAILED
+                if migration.status is SQLiteMigrationStatus.MISMATCH
+                else DoctorStatus.DEGRADED
+            ),
+            detail=(
+                f"Validated source digests for {len(official_packs)} Official Packs; "
+                "persistence will be initialized after the SQLite migration repair."
+            ),
+            remediation="Run `riftx doctor --fix` while the Control Plane is stopped.",
+            fixable=True,
+        )
     return DoctorCheck(
         id="pack_integrity",
         status=DoctorStatus.DEGRADED,
@@ -802,6 +849,102 @@ def _check_pack_integrity(
         ),
         remediation="Use a live Doctor probe to compare active Pack locks with source digests.",
     )
+
+
+def _official_pack_check(diagnostics: OfficialPackDiagnostics) -> DoctorCheck:
+    if diagnostics.status == "ready":
+        return DoctorCheck(
+            id="pack_integrity",
+            status=DoctorStatus.READY,
+            detail=(
+                f"{diagnostics.installed_pack_count} Official Packs and "
+                f"{diagnostics.active_lock_count} active locks match source digests."
+            ),
+        )
+    issue_kinds = {issue.partition(":")[0] for issue in diagnostics.issues}
+    repairable = {
+        "missing_install",
+        "install_drift",
+        "lock_set_drift",
+        "lock_digest_drift",
+    }
+    fixable = bool(issue_kinds) and issue_kinds.issubset(repairable)
+    return DoctorCheck(
+        id="pack_integrity",
+        status=DoctorStatus.FAILED,
+        detail="Official Pack persistence drift: " + ", ".join(diagnostics.issues[:5]),
+        remediation=(
+            "Stop the Control Plane and run `riftx doctor --fix`."
+            if fixable
+            else "Restore immutable Official Pack records from a trusted backup."
+        ),
+        fixable=fixable,
+    )
+
+
+def _read_official_pack_persistence(
+    config: RiftXConfig,
+    cwd: Path,
+    catalog: OfficialPackCatalog,
+) -> OfficialPackDiagnostics:
+    database_url, _ = _absolute_sqlite_database(config.database.url, cwd)
+
+    async def read() -> OfficialPackDiagnostics:
+        database = Database(database_url)
+        try:
+            return (
+                await SystemDiagnosticsService(
+                    database.session_factory,
+                    catalog,
+                ).snapshot()
+            ).official_packs
+        finally:
+            await database.dispose()
+
+    return asyncio.run(read())
+
+
+def _repair_official_pack_persistence(
+    config: RiftXConfig,
+    cwd: Path,
+    catalog: OfficialPackCatalog,
+) -> Path:
+    database_url, database_path = _absolute_sqlite_database(config.database.url, cwd)
+
+    async def repair() -> None:
+        database = Database(database_url)
+        try:
+            await bootstrap_official_packs(
+                SQLAlchemyCapabilityRepository(database.session_factory),
+                catalog,
+            )
+            diagnostics = (
+                await SystemDiagnosticsService(
+                    database.session_factory,
+                    catalog,
+                ).snapshot()
+            ).official_packs
+            if diagnostics.status != "ready":
+                raise DoctorFixError(
+                    "Official Pack repair verification still reports persistence drift."
+                )
+        finally:
+            await database.dispose()
+
+    asyncio.run(repair())
+    return database_path
+
+
+def _absolute_sqlite_database(database_url: str, cwd: Path) -> tuple[str, Path]:
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite" or url.database in {None, "", ":memory:"}:
+        raise DoctorFixError("Official Pack offline maintenance requires file-backed SQLite.")
+    database_path = _resolve(Path(str(url.database)), cwd)
+    resolved_url = url.set(
+        drivername="sqlite+aiosqlite",
+        database=str(database_path),
+    )
+    return resolved_url.render_as_string(hide_password=False), database_path
 
 
 def _check_database(config: RiftXConfig, cwd: Path) -> DoctorCheck:

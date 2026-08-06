@@ -1129,15 +1129,15 @@ def test_top_level_doctor_fix_applies_local_repairs_before_rechecking(
     assert "Overall: ready" in result.output
 
 
-def test_top_level_doctor_fix_blocks_database_migration_while_api_is_reachable(
+def test_top_level_doctor_fix_blocks_persistence_repair_while_api_is_reachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     report = DoctorReport(
         checks=(
             DoctorCheck(
-                id="database_migrations",
+                id="pack_integrity",
                 status=DoctorStatus.FAILED,
-                detail="database is behind",
+                detail="Official Pack locks drifted",
                 fixable=True,
             ),
         )
@@ -1147,10 +1147,10 @@ def test_top_level_doctor_fix_blocks_database_migration_while_api_is_reachable(
 
     def refuse_fix(
         *_args: object,
-        allow_database_fix: bool,
+        allow_persistence_fix: bool,
         **_kwargs: object,
     ) -> tuple[DoctorFix, ...]:
-        observed.append(allow_database_fix)
+        observed.append(allow_persistence_fix)
         raise DoctorFixError("Stop the reachable RiftX Control Plane")
 
     monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", refuse_fix)

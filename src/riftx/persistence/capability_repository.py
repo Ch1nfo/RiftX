@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from json import JSONDecodeError
+from typing import TYPE_CHECKING
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -59,6 +61,9 @@ from .capability_records import (
     CapabilityVersionRecord,
 )
 from .transactions import SessionFactory, serialized_write
+
+if TYPE_CHECKING:
+    from riftx.packs import OfficialPackBundle
 
 _LOCKED_VERSION_STATUSES = frozenset(
     {
@@ -402,6 +407,191 @@ class SQLAlchemyCapabilityRepository:
             raise
         except IntegrityError:
             raise RepositoryConflictError("Capability Pack registration conflicted") from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
+
+    async def reconcile_official_packs(
+        self,
+        bundles: tuple[OfficialPackBundle, ...],
+        *,
+        scope_id: str,
+        changed_at: datetime,
+    ) -> tuple[PackInstall, ...]:
+        """Atomically reconcile mutable Official Pack projections."""
+
+        try:
+            async with serialized_write(self._session_factory) as session:
+                desired: list[tuple[CapabilityPack, PackInstall, tuple[PackLock, ...]]] = []
+                for bundle in bundles:
+                    registered_versions: dict[str, CapabilityVersion] = {}
+                    for version in bundle.capability_versions:
+                        registered_versions[
+                            version.manifest.capability_id
+                        ] = await _register_version(
+                            session,
+                            Capability(
+                                capability_id=version.manifest.capability_id,
+                                kind=version.manifest.kind,
+                                created_at=version.created_at,
+                            ),
+                            version,
+                        )
+                    pack = await _register_pack(session, bundle.pack)
+                    install = _official_install(pack, scope_id)
+                    locks = _official_locks(pack, install, registered_versions)
+                    await _validate_pack_locks(session, pack, install, locks)
+                    desired.append((pack, install, locks))
+
+                records = tuple(
+                    (
+                        await session.scalars(
+                            select(CapabilityPackInstallRecord)
+                            .where(
+                                CapabilityPackInstallRecord.scope_type
+                                == CapabilitySource.OFFICIAL.value,
+                                CapabilityPackInstallRecord.scope_id == scope_id,
+                            )
+                            .with_for_update()
+                        )
+                    ).all()
+                )
+                expected_pack_ids = {pack.manifest.pack_id for pack, _, _ in desired}
+                unexpected = sorted(
+                    record.pack_id for record in records if record.pack_id not in expected_pack_ids
+                )
+                if unexpected:
+                    raise RepositoryConflictError(
+                        "Official Pack persistence contains unexpected installs: "
+                        + ", ".join(unexpected)
+                    )
+                by_pack_id = {record.pack_id: record for record in records}
+                installs: list[PackInstall] = []
+                for pack, expected_install, expected_locks in desired:
+                    record = by_pack_id.get(pack.manifest.pack_id)
+                    if record is None:
+                        orphaned_locks = tuple(
+                            (
+                                await session.scalars(
+                                    select(CapabilityPackLockRecord)
+                                    .where(
+                                        CapabilityPackLockRecord.owner_kind
+                                        == PackLockOwnerKind.PACK_INSTALL.value,
+                                        CapabilityPackLockRecord.owner_id
+                                        == expected_install.install_id,
+                                        CapabilityPackLockRecord.released_at.is_(None),
+                                    )
+                                    .with_for_update()
+                                )
+                            ).all()
+                        )
+                        repair_at = max(changed_at, expected_install.installed_at)
+                        for lock in orphaned_locks:
+                            acquired_at = lock.acquired_at
+                            if not isinstance(acquired_at, datetime):
+                                raise RepositoryIntegrityError(
+                                    "CapabilityPackLock",
+                                    lock.id,
+                                )
+                            repair_at = max(repair_at, acquired_at)
+                        for lock in orphaned_locks:
+                            lock.released_at = repair_at
+                        session.add(_install_record(expected_install))
+                        replacement_locks: list[PackLock] = []
+                        for expected_lock in expected_locks:
+                            existing_lock_id = await session.get(
+                                CapabilityPackLockRecord,
+                                expected_lock.lock_id,
+                            )
+                            replacement_locks.append(
+                                expected_lock
+                                if existing_lock_id is None and not orphaned_locks
+                                else expected_lock.model_copy(
+                                    update={
+                                        "lock_id": str(uuid4()),
+                                        "acquired_at": repair_at,
+                                    }
+                                )
+                            )
+                        session.add_all(_lock_record(lock) for lock in replacement_locks)
+                        installs.append(expected_install)
+                        continue
+
+                    active_locks = tuple(
+                        (
+                            await session.scalars(
+                                select(CapabilityPackLockRecord)
+                                .where(
+                                    CapabilityPackLockRecord.owner_kind
+                                    == PackLockOwnerKind.PACK_INSTALL.value,
+                                    CapabilityPackLockRecord.owner_id == record.id,
+                                    CapabilityPackLockRecord.released_at.is_(None),
+                                )
+                                .with_for_update()
+                            )
+                        ).all()
+                    )
+                    install_drift = (
+                        record.pack_version_id != pack.pack_version_id
+                        or record.pack_version != pack.manifest.version
+                        or record.pack_digest != pack.manifest_digest
+                        or record.status != PackInstallStatus.INSTALLED.value
+                        or record.disabled_at is not None
+                    )
+                    lock_drift = not _locks_match_expected(active_locks, expected_locks)
+                    if not install_drift and not lock_drift:
+                        installs.append(_from_install_record(record))
+                        continue
+
+                    installed_at = record.installed_at
+                    if not isinstance(installed_at, datetime):
+                        raise RepositoryIntegrityError(
+                            "CapabilityPackInstall",
+                            record.id,
+                        )
+                    repair_at = max(changed_at, installed_at)
+                    for lock in active_locks:
+                        acquired_at = lock.acquired_at
+                        if not isinstance(acquired_at, datetime):
+                            raise RepositoryIntegrityError(
+                                "CapabilityPackLock",
+                                lock.id,
+                            )
+                        repair_at = max(repair_at, acquired_at)
+                    previous_pack_version_id = record.previous_pack_version_id
+                    if record.pack_version_id != pack.pack_version_id:
+                        previous_pack_version_id = record.pack_version_id
+                    record.pack_version_id = pack.pack_version_id
+                    record.pack_version = pack.manifest.version
+                    record.pack_digest = pack.manifest_digest
+                    record.status = PackInstallStatus.INSTALLED.value
+                    record.state_version += 1
+                    record.previous_pack_version_id = previous_pack_version_id
+                    record.updated_at = repair_at
+                    record.disabled_at = None
+                    if lock_drift:
+                        for lock in active_locks:
+                            lock.released_at = repair_at
+                        session.add_all(
+                            _lock_record(
+                                lock.model_copy(
+                                    update={
+                                        "lock_id": str(uuid4()),
+                                        "owner_id": record.id,
+                                        "acquired_at": repair_at,
+                                    }
+                                )
+                            )
+                            for lock in expected_locks
+                        )
+                    installs.append(_from_install_record(record))
+                await session.flush()
+                return tuple(installs)
+        except RepositoryError:
+            raise
+        except IntegrityError:
+            raise RepositoryConflictError("Official Pack reconciliation conflicted") from None
+        except (JSONDecodeError, TypeError, ValueError):
+            raise RepositoryIntegrityError("OfficialPack", scope_id) from None
         except SQLAlchemyError:
             raise RepositoryUnavailableError("Capability persistence is unavailable") from None
 
@@ -1135,6 +1325,74 @@ def _from_lock_record(record: CapabilityPackLockRecord) -> PackLock:
         acquired_at=record.acquired_at,
         released_at=record.released_at,
     )
+
+
+def _official_install(pack: CapabilityPack, scope_id: str) -> PackInstall:
+    install_id = _stable_official_id(
+        "official-pack-install",
+        pack.manifest.pack_id,
+        pack.manifest.version,
+    )
+    return PackInstall(
+        install_id=install_id,
+        scope_type=CapabilitySource.OFFICIAL,
+        scope_id=scope_id,
+        pack_id=pack.manifest.pack_id,
+        pack_version_id=pack.pack_version_id,
+        pack_version=pack.manifest.version,
+        pack_digest=pack.manifest_digest,
+        status=PackInstallStatus.INSTALLED,
+        state_version=1,
+        installed_at=pack.created_at,
+        updated_at=pack.created_at,
+    )
+
+
+def _official_locks(
+    pack: CapabilityPack,
+    install: PackInstall,
+    versions: dict[str, CapabilityVersion],
+) -> tuple[PackLock, ...]:
+    return tuple(
+        PackLock(
+            lock_id=_stable_official_id(
+                "official-pack-lock",
+                pack.manifest.pack_id,
+                pack.manifest.version,
+                member.capability_id,
+            ),
+            owner_kind=PackLockOwnerKind.PACK_INSTALL,
+            owner_id=install.install_id,
+            capability_id=member.capability_id,
+            capability_version_id=versions[member.capability_id].version_id,
+            capability_version=member.version,
+            capability_digest=member.version_digest,
+            acquired_at=pack.created_at,
+        )
+        for member in pack.manifest.members
+    )
+
+
+def _locks_match_expected(
+    records: tuple[CapabilityPackLockRecord, ...],
+    expected: tuple[PackLock, ...],
+) -> bool:
+    by_capability: dict[str, list[CapabilityPackLockRecord]] = {}
+    for record in records:
+        by_capability.setdefault(record.capability_id, []).append(record)
+    if set(by_capability) != {lock.capability_id for lock in expected}:
+        return False
+    return all(
+        len(by_capability[lock.capability_id]) == 1
+        and by_capability[lock.capability_id][0].capability_version_id == lock.capability_version_id
+        and by_capability[lock.capability_id][0].capability_version == lock.capability_version
+        and by_capability[lock.capability_id][0].capability_digest == lock.capability_digest
+        for lock in expected
+    )
+
+
+def _stable_official_id(kind: str, *parts: str) -> str:
+    return str(uuid5(NAMESPACE_URL, ":".join(("riftx", kind, *parts))))
 
 
 def _manifest_digest(manifest: CapabilityManifest) -> str:

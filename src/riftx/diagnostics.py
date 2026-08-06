@@ -13,7 +13,9 @@ from riftx.packs import OFFICIAL_PACK_SCOPE_ID, OfficialPackBundle, OfficialPack
 from riftx.persistence.capability_records import (
     CapabilityPackInstallRecord,
     CapabilityPackLockRecord,
+    CapabilityPackMemberRecord,
     CapabilityPackRecord,
+    CapabilityVersionRecord,
 )
 
 ALEMBIC_HEAD_REVISION = "3c6e8a1f2b40"
@@ -95,7 +97,9 @@ async def _official_pack_diagnostics(
     bundles: tuple[OfficialPackBundle, ...],
 ) -> OfficialPackDiagnostics:
     required_tables = {
+        "capability_versions",
         "capability_packs",
+        "capability_pack_members",
         "capability_pack_installs",
         "capability_pack_locks",
     }
@@ -120,12 +124,13 @@ async def _official_pack_diagnostics(
     )
     install_ids = {record.id for record in installs}
     packs = tuple((await session.scalars(select(CapabilityPackRecord))).all())
+    versions = tuple((await session.scalars(select(CapabilityVersionRecord))).all())
+    members = tuple((await session.scalars(select(CapabilityPackMemberRecord))).all())
     locks = tuple(
         (
             await session.scalars(
                 select(CapabilityPackLockRecord).where(
-                    CapabilityPackLockRecord.owner_kind
-                    == PackLockOwnerKind.PACK_INSTALL.value,
+                    CapabilityPackLockRecord.owner_kind == PackLockOwnerKind.PACK_INSTALL.value,
                     CapabilityPackLockRecord.released_at.is_(None),
                 )
             )
@@ -134,6 +139,10 @@ async def _official_pack_diagnostics(
     active_locks = tuple(lock for lock in locks if lock.owner_id in install_ids)
     installs_by_pack = {record.pack_id: record for record in installs}
     packs_by_id = {record.id: record for record in packs}
+    versions_by_id = {record.id: record for record in versions}
+    members_by_pack: dict[str, list[CapabilityPackMemberRecord]] = {}
+    for member in members:
+        members_by_pack.setdefault(member.pack_version_id, []).append(member)
     locks_by_owner: dict[str, list[CapabilityPackLockRecord]] = {}
     for lock in active_locks:
         locks_by_owner.setdefault(lock.owner_id, []).append(lock)
@@ -144,11 +153,57 @@ async def _official_pack_diagnostics(
         issues.append(f"unexpected_install:{unexpected}")
     for bundle in bundles:
         pack_id = bundle.source.pack_id
+        expected_pack = bundle.pack
+        persisted_pack = packs_by_id.get(expected_pack.pack_version_id)
+        if persisted_pack is not None and (
+            persisted_pack.pack_id != pack_id
+            or persisted_pack.version != expected_pack.manifest.version
+            or persisted_pack.status != expected_pack.status.value
+            or persisted_pack.manifest_json != expected_pack.manifest.model_dump(mode="json")
+            or persisted_pack.manifest_digest != expected_pack.manifest_digest
+        ):
+            issues.append(f"pack_digest_drift:{pack_id}")
+
+        if any(
+            (record := versions_by_id.get(version.version_id)) is not None
+            and (
+                record.capability_id != version.manifest.capability_id
+                or record.version != version.manifest.version
+                or record.status != version.status.value
+                or record.manifest_json != version.manifest.model_dump(mode="json")
+                or record.manifest_digest != version.manifest_digest
+            )
+            for version in bundle.capability_versions
+        ):
+            issues.append(f"capability_version_drift:{pack_id}")
+
+        actual_members = sorted(
+            members_by_pack.get(expected_pack.pack_version_id, []),
+            key=lambda item: item.position,
+        )
+        expected_versions = {
+            version.manifest.capability_id: version for version in bundle.capability_versions
+        }
+        if persisted_pack is not None and (
+            len(actual_members) != len(expected_pack.manifest.members)
+            or any(
+                actual.position != position
+                or actual.capability_id != expected.capability_id
+                or actual.capability_version_id
+                != expected_versions[expected.capability_id].version_id
+                or actual.capability_version != expected.version
+                or actual.capability_digest != expected.version_digest
+                for position, (actual, expected) in enumerate(
+                    zip(actual_members, expected_pack.manifest.members, strict=False)
+                )
+            )
+        ):
+            issues.append(f"pack_member_drift:{pack_id}")
+
         install = installs_by_pack.get(pack_id)
         if install is None:
             issues.append(f"missing_install:{pack_id}")
             continue
-        expected_pack = bundle.pack
         if (
             install.status != PackInstallStatus.INSTALLED.value
             or install.pack_version_id != expected_pack.pack_version_id
@@ -156,21 +211,22 @@ async def _official_pack_diagnostics(
             or install.pack_digest != expected_pack.manifest_digest
         ):
             issues.append(f"install_drift:{pack_id}")
-        persisted_pack = packs_by_id.get(install.pack_version_id)
+        installed_pack = packs_by_id.get(install.pack_version_id)
         if (
-            persisted_pack is None
-            or persisted_pack.pack_id != pack_id
-            or persisted_pack.version != expected_pack.manifest.version
-            or persisted_pack.manifest_digest != expected_pack.manifest_digest
+            installed_pack is None
+            or installed_pack.pack_id != pack_id
+            or installed_pack.version != expected_pack.manifest.version
+            or installed_pack.manifest_digest != expected_pack.manifest_digest
         ):
-            issues.append(f"pack_digest_drift:{pack_id}")
+            issue = f"pack_digest_drift:{pack_id}"
+            if issue not in issues:
+                issues.append(issue)
 
-        expected_versions = {
-            version.manifest.capability_id: version
-            for version in bundle.capability_versions
-        }
-        actual_locks = {lock.capability_id: lock for lock in locks_by_owner.get(install.id, [])}
-        if set(actual_locks) != set(expected_versions):
+        owner_locks = locks_by_owner.get(install.id, [])
+        actual_locks = {lock.capability_id: lock for lock in owner_locks}
+        if len(owner_locks) != len(expected_versions) or set(actual_locks) != set(
+            expected_versions
+        ):
             issues.append(f"lock_set_drift:{pack_id}")
             continue
         if any(

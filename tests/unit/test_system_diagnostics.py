@@ -57,6 +57,37 @@ async def test_system_diagnostics_detects_missing_official_pack_installs(
     await database.dispose()
 
 
+async def test_system_diagnostics_classifies_immutable_official_pack_drift(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}")
+    await database.create_schema()
+    await bootstrap_official_packs(SQLAlchemyCapabilityRepository(database.session_factory))
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE capability_versions SET manifest_digest = :digest "
+                "WHERE rowid = (SELECT min(rowid) FROM capability_versions)"
+            ),
+            {"digest": "0" * 64},
+        )
+        await connection.execute(
+            text(
+                "UPDATE capability_pack_members SET capability_digest = :digest "
+                "WHERE rowid = (SELECT max(rowid) FROM capability_pack_members)"
+            ),
+            {"digest": "0" * 64},
+        )
+
+    snapshot = await SystemDiagnosticsService(database.session_factory).snapshot()
+
+    assert any(
+        issue.startswith("capability_version_drift:") for issue in snapshot.official_packs.issues
+    )
+    assert any(issue.startswith("pack_member_drift:") for issue in snapshot.official_packs.issues)
+    await database.dispose()
+
+
 def test_embedded_alembic_head_matches_migration_graph() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
 

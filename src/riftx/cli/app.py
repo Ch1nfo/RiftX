@@ -205,12 +205,12 @@ def doctor(
     report = run_local_doctor(state.config)
     with APIClient(state.api_url, timeout_seconds=3) as client:
         if fix:
-            database_fix = any(
-                check.id == "database_migrations" and check.fixable
+            persistence_fix = any(
+                check.id in {"database_migrations", "pack_integrity"} and check.fixable
                 for check in report.checks
             )
             control_plane_reachable = False
-            if database_fix:
+            if persistence_fix:
                 try:
                     client.health()
                 except httpx.TransportError:
@@ -223,7 +223,7 @@ def doctor(
                 fixes = apply_local_doctor_fixes(
                     state.config,
                     report,
-                    allow_database_fix=not control_plane_reachable,
+                    allow_persistence_fix=not control_plane_reachable,
                 )
             except DoctorFixError as exc:
                 console.print(f"[red]Doctor fix failed:[/red] {exc}")

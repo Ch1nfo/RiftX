@@ -167,6 +167,11 @@ def test_doctor_fix_creates_supported_directories_and_repairs_database(
             previous_revisions=(),
         ),
     )
+    monkeypatch.setattr(
+        doctor_module,
+        "_repair_official_pack_persistence",
+        lambda *_args, **_kwargs: database_path,
+    )
 
     fixes = apply_local_doctor_fixes(config, report, cwd=tmp_path)
 
@@ -174,13 +179,14 @@ def test_doctor_fix_creates_supported_directories_and_repairs_database(
         ("skills", config.skills.path),
         ("storage_permissions", config.workspace.root),
         ("database_migrations", database_path),
+        ("pack_integrity", database_path),
     }
     for fix in fixes[:2]:
         assert fix.path.is_dir()
         assert stat.S_IMODE(fix.path.stat().st_mode) == 0o700
 
 
-def test_doctor_fix_refuses_database_repair_while_control_plane_is_reachable(
+def test_doctor_fix_refuses_persistence_repair_while_control_plane_is_reachable(
     tmp_path: Path,
 ) -> None:
     config = _write_runtime_configs(tmp_path)
@@ -191,11 +197,30 @@ def test_doctor_fix_refuses_database_repair_while_control_plane_is_reachable(
             config,
             report,
             cwd=tmp_path,
-            allow_database_fix=False,
+            allow_persistence_fix=False,
         )
 
     assert not config.skills.path.exists()
     assert not config.workspace.root.exists()
+
+
+def test_doctor_repairs_official_pack_persistence_and_rechecks_ready(
+    tmp_path: Path,
+) -> None:
+    config = _write_runtime_configs(tmp_path)
+    doctor_module.repair_sqlite_database(config.database.url, cwd=tmp_path)
+
+    before = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    assert before.by_id("database_migrations").status is DoctorStatus.READY
+    assert before.by_id("pack_integrity").status is DoctorStatus.FAILED
+    assert before.by_id("pack_integrity").fixable
+
+    fixes = apply_local_doctor_fixes(config, before, cwd=tmp_path)
+    after = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    assert any(fix.check_id == "pack_integrity" for fix in fixes)
+    assert after.by_id("pack_integrity").status is DoctorStatus.READY
 
 
 def test_doctor_fix_rolls_back_all_created_directories_on_failure(tmp_path: Path) -> None:
