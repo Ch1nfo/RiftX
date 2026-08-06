@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["scope", "proposed_action"],
+  "properties": {
+    "scope": {"type": "object"},
+    "proposed_action": {"type": "object"}
+  }
+}
