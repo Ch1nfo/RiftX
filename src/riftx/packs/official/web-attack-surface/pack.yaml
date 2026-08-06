@@ -1,0 +1,93 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: web-attack-surface
+version: 1.0.0
+title: Web Attack Surface
+description: Stateful discovery of authorized web routes, inputs, identities, and traffic evidence.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - open_browser
+  - observe_browser
+  - web_fetch
+  - query_http_traffic
+  - read_http_exchange
+  - record_observation
+  - propose_hypothesis
+evidence_contract: &pack_evidence
+  required_refs: [scope, browser_or_fetch_artifact, http_exchange, surface_observation]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [web-attack-surface]
+capabilities:
+  - capability_id: web-attack-surface
+    kind: skill
+    title: Web Attack Surface Procedure
+    description: Map routes, methods, parameters, sessions, and trust boundaries from bounded browser and HTTP evidence.
+    domains: [pentest, web, attack-surface]
+    triggers: [web application, route discovery, input inventory]
+    dependencies:
+      - {kind: tool, reference: open_browser}
+      - {kind: tool, reference: observe_browser}
+      - {kind: tool, reference: web_fetch}
+      - {kind: tool, reference: query_http_traffic}
+      - {kind: tool, reference: read_http_exchange}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema:
+      type: object
+      required: [entrypoints, scope]
+      properties:
+        entrypoints: {type: array, items: {type: string}}
+        scope: {type: object}
+    output_schema:
+      type: object
+      required: [routes, inputs, trust_boundaries, evidence_ids]
+      properties:
+        routes: {type: array, items: {type: object}}
+        inputs: {type: array, items: {type: object}}
+        trust_boundaries: {type: array, items: {type: object}}
+        evidence_ids: {type: array, items: {type: string}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.web-attack-surface.baseline]
+  - capability_id: web-attack-surface.technique
+    kind: technique
+    title: Stateful Route and Input Mapping
+    description: Correlate browser state, observed navigation, forms, scripts, and captured HTTP exchanges.
+    domains: [pentest, web, stateful-analysis]
+    triggers: [authenticated flow, dynamic route, client-side request]
+    dependencies:
+      - {kind: tool, reference: open_browser}
+      - {kind: tool, reference: observe_browser}
+      - {kind: tool, reference: web_fetch}
+      - {kind: tool, reference: query_http_traffic}
+      - {kind: tool, reference: read_http_exchange}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.web-attack-surface.baseline]
+  - capability_id: eval.web-attack-surface.baseline
+    kind: eval_case
+    title: Web Attack Surface Baseline Case
+    description: Checks stateful route discovery, input provenance, redirects, and separation of observations from hypotheses.
+    domains: [pentest, web, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

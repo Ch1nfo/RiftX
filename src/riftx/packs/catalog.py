@@ -41,6 +41,7 @@ from riftx.capabilities import (
     capability_pack_digest,
 )
 from riftx.skills import ProgressiveSkillRegistry, SkillDocument, SkillSummary
+from riftx.tools.policy import AGENT_TOOL_POLICIES
 
 OFFICIAL_PACK_SOURCE_SCHEMA_VERSION = "riftx.official-pack-source/v1"
 OFFICIAL_PACK_ROOT = Path(__file__).with_name("official")
@@ -312,6 +313,11 @@ def _validate_bundle_source(
     evaluation_cases: tuple[OfficialEvaluationCase, ...],
     changelog: str,
 ) -> None:
+    unknown_tools = sorted(set(source.tool_requirements) - AGENT_TOOL_POLICIES.keys())
+    if unknown_tools:
+        raise ValueError(
+            f"Official Pack references unknown production Tools: {', '.join(unknown_tools)}"
+        )
     if set(source.skill_ids) != set(skill_summaries):
         raise ValueError("Official Pack Skill packages do not match declared skill IDs")
     if any(summary.source is not CapabilitySource.OFFICIAL for summary in skill_summaries.values()):

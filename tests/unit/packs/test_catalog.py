@@ -20,8 +20,12 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
     second = OfficialPackCatalog().load()
 
     assert [bundle.source.pack_id for bundle in first] == [
+        "passive-recon",
         "pentest-foundation",
         "scope-and-safety",
+        "service-enumeration",
+        "web-attack-surface",
+        "web-request-analysis",
     ]
     assert [bundle.pack for bundle in first] == [bundle.pack for bundle in second]
     for bundle in first:
@@ -77,6 +81,17 @@ def test_official_catalog_rejects_tool_requirement_drift(tmp_path: Path) -> None
     pack_path.write_text(pack_path.read_text().replace("  - complete_run\n", ""))
 
     with pytest.raises(ValueError, match="tool requirements"):
+        OfficialPackCatalog(root).load()
+
+
+def test_official_catalog_rejects_unknown_production_tool(tmp_path: Path) -> None:
+    root = _copy_pack(tmp_path, "pentest-foundation")
+    pack_path = root / "pentest-foundation" / "pack.yaml"
+    pack_path.write_text(
+        pack_path.read_text().replace("  - complete_run\n", "  - missing_tool\n")
+    )
+
+    with pytest.raises(ValueError, match="unknown production Tools: missing_tool"):
         OfficialPackCatalog(root).load()
 
 

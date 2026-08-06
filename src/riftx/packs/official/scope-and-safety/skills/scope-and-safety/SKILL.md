@@ -9,7 +9,7 @@ required_capabilities:
   - effect_policy
   - safety_stop
 preferred_tools:
-  - list_tasks
+  - list_ready_tasks
   - query_reasoning_graph
   - record_observation
   - record_negative_result

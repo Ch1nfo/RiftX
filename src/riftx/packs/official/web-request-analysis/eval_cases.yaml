@@ -1,0 +1,11 @@
+- case_id: eval.web-request-analysis.baseline
+  capability_ids: [web-request-analysis, web-request-analysis.technique]
+  description: Compare a stable baseline with bounded parameter and identity changes while one duplicate is proposed.
+  scenario: builtin://eval/web-request-analysis/baseline-v1
+  assertions:
+    - Each attempt identifies its baseline, changed variable, identity state, and resulting exchange.
+    - Conclusions separate status, headers, body structure, timing, and application-state differences.
+    - Stale baselines and duplicate attempts fail closed or become durable negative results.
+  negative_case_ids:
+    - negative.web-request-analysis.stale-baseline
+    - negative.web-request-analysis.duplicate-attempt

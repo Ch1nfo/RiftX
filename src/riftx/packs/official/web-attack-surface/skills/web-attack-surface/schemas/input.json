@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["entrypoints", "scope"],
+  "properties": {
+    "entrypoints": {"type": "array", "items": {"type": "string"}},
+    "scope": {"type": "object"}
+  }
+}

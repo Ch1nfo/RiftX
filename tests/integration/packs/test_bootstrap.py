@@ -25,15 +25,23 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
 
     assert first == second
     assert [install.pack_id for install in first] == [
+        "passive-recon",
         "pentest-foundation",
         "scope-and-safety",
+        "service-enumeration",
+        "web-attack-surface",
+        "web-request-analysis",
     ]
     techniques = await TechniqueContextManager(repository).list_techniques(
         session_id="session-1"
     )
     assert [technique.id for technique in techniques] == [
+        "passive-recon.technique",
         "pentest-foundation.technique",
         "scope-and-safety.technique",
+        "service-enumeration.technique",
+        "web-attack-surface.technique",
+        "web-request-analysis.technique",
     ]
     async with database.session_factory() as session:
         counts = {
@@ -48,12 +56,12 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
             )
         }
     assert counts == {
-        "capabilities": 6,
-        "capability_versions": 6,
-        "capability_packs": 2,
-        "capability_pack_members": 6,
-        "capability_pack_installs": 2,
-        "capability_pack_locks": 6,
+        "capabilities": 18,
+        "capability_versions": 18,
+        "capability_packs": 6,
+        "capability_pack_members": 18,
+        "capability_pack_installs": 6,
+        "capability_pack_locks": 18,
     }
     await database.dispose()
 

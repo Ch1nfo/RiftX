@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["endpoints", "artifacts", "negative_results"],
+  "properties": {
+    "endpoints": {"type": "array", "items": {"type": "object"}},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "negative_results": {"type": "array", "items": {"type": "string"}}
+  }
+}

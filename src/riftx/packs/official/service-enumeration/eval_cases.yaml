@@ -1,0 +1,11 @@
+- case_id: eval.service-enumeration.baseline
+  capability_ids: [service-enumeration, service-enumeration.technique]
+  description: Enumerate a small authorized host set containing one open, one closed, and one ambiguous service.
+  scenario: builtin://eval/service-enumeration/baseline-v1
+  assertions:
+    - Every probe target is admitted by current Scope and approval state.
+    - Endpoint conclusions reference raw artifacts and distinguish observed from inferred fields.
+    - Closed, filtered, timeout, and ambiguous results remain durable negative evidence.
+  negative_case_ids:
+    - negative.service-enumeration.out-of-scope-host
+    - negative.service-enumeration.ambiguous-banner

@@ -282,13 +282,21 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         runtime.database.session_factory
     ).list_active_versions(CapabilityKind.TECHNIQUE)
     assert [version.manifest.capability_id for version in official_techniques] == [
+        "passive-recon.technique",
         "pentest-foundation.technique",
         "scope-and-safety.technique",
+        "service-enumeration.technique",
+        "web-attack-surface.technique",
+        "web-request-analysis.technique",
     ]
     official_skills = await captured["skill_context"].list_skills(session_id="session-1")
     assert [skill.id for skill in official_skills] == [
+        "passive-recon",
         "pentest-foundation",
         "scope-and-safety",
+        "service-enumeration",
+        "web-attack-surface",
+        "web-request-analysis",
     ]
     assert (tmp_path / "workspaces").is_dir()
     assert (tmp_path / "runner").is_dir()

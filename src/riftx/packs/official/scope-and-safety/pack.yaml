@@ -6,7 +6,7 @@ description: Fail-closed authorization, approval, and stopping discipline for se
 authored_by: RiftX Security Team
 authored_at: 2026-08-06T00:00:00Z
 tool_requirements:
-  - list_tasks
+  - list_ready_tasks
   - query_reasoning_graph
   - record_observation
   - record_negative_result
@@ -27,7 +27,7 @@ capabilities:
     domains: [safety, authorization, scope]
     triggers: [new target, active verification, credential use, ambiguous authorization]
     dependencies:
-      - {kind: tool, reference: list_tasks}
+      - {kind: tool, reference: list_ready_tasks}
       - {kind: tool, reference: query_reasoning_graph}
       - {kind: tool, reference: record_observation}
       - {kind: tool, reference: record_negative_result}
@@ -56,7 +56,7 @@ capabilities:
     domains: [safety, authorization]
     triggers: [tool call, browser action, target request, credential access]
     dependencies:
-      - {kind: tool, reference: list_tasks}
+      - {kind: tool, reference: list_ready_tasks}
       - {kind: tool, reference: query_reasoning_graph}
       - {kind: tool, reference: record_observation}
       - {kind: tool, reference: record_negative_result}

@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["baseline_exchange_id", "hypothesis", "scope"],
+  "properties": {
+    "baseline_exchange_id": {"type": "string"},
+    "hypothesis": {"type": "string"},
+    "scope": {"type": "object"}
+  }
+}

@@ -1,0 +1,90 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: web-request-analysis
+version: 1.0.0
+title: Web Request Analysis
+description: Controlled comparison of authorized HTTP requests and responses with durable attempt history.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - target_http_request
+  - query_http_traffic
+  - read_http_exchange
+  - record_attempt
+  - record_observation
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs: [scope, baseline_exchange, changed_exchange, comparison_observation]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [web-request-analysis]
+capabilities:
+  - capability_id: web-request-analysis
+    kind: skill
+    title: Web Request Analysis Procedure
+    description: Compare one controlled HTTP change at a time while preserving request, response, identity, and attempt evidence.
+    domains: [pentest, web, http]
+    triggers: [request comparison, parameter behavior, response differential]
+    dependencies:
+      - {kind: tool, reference: target_http_request}
+      - {kind: tool, reference: query_http_traffic}
+      - {kind: tool, reference: read_http_exchange}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema:
+      type: object
+      required: [baseline_exchange_id, hypothesis, scope]
+      properties:
+        baseline_exchange_id: {type: string}
+        hypothesis: {type: string}
+        scope: {type: object}
+    output_schema:
+      type: object
+      required: [attempt_ids, exchange_ids, conclusion]
+      properties:
+        attempt_ids: {type: array, items: {type: string}}
+        exchange_ids: {type: array, items: {type: string}}
+        conclusion: {type: string}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.web-request-analysis.baseline]
+  - capability_id: web-request-analysis.technique
+    kind: technique
+    title: Single-variable HTTP Differential
+    description: Establish a replayable baseline and vary one material request property per attempt.
+    domains: [pentest, web, differential-analysis]
+    triggers: [parameter mutation, identity comparison, header comparison]
+    dependencies:
+      - {kind: tool, reference: target_http_request}
+      - {kind: tool, reference: query_http_traffic}
+      - {kind: tool, reference: read_http_exchange}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.web-request-analysis.baseline]
+  - capability_id: eval.web-request-analysis.baseline
+    kind: eval_case
+    title: Web Request Analysis Baseline Case
+    description: Checks baseline replay, single-variable mutations, identity separation, and duplicate-attempt suppression.
+    domains: [pentest, web, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

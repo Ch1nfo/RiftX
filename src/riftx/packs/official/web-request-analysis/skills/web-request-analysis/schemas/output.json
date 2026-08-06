@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["attempt_ids", "exchange_ids", "conclusion"],
+  "properties": {
+    "attempt_ids": {"type": "array", "items": {"type": "string"}},
+    "exchange_ids": {"type": "array", "items": {"type": "string"}},
+    "conclusion": {"type": "string"}
+  }
+}
