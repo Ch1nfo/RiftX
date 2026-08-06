@@ -387,6 +387,13 @@ class RunEventRepository(Protocol):
         limit: int = 100,
     ) -> Sequence[RunEvent]: ...
 
+    async def list_recent(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunEvent]: ...
+
 
 class ApprovalRepository(Protocol):
     async def create_request(
@@ -481,6 +488,13 @@ class ToolCallIntentRepository(Protocol):
     async def get(self, intent_id: str) -> ToolCallIntent | None: ...
 
     async def pending_for_session(self, session_id: str) -> list[ToolCallIntent]: ...
+
+    async def recent_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[ToolCallIntent]: ...
 
     async def active_for_run(
         self,

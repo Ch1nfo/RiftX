@@ -282,6 +282,78 @@ async def test_tool_intent_run_enumeration_and_status_cas_are_terminal_wins(
         await database.dispose()
 
 
+async def test_tool_intent_recent_history_is_bounded_ordered_and_session_scoped(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'intent-history.db'}")
+    await database.create_schema()
+    await create_run(database)
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+    steps = SQLAlchemyAgentStepRepository(database.session_factory)
+    for suffix in ("1", "2"):
+        await sessions.create(
+            AgentSession(
+                id=f"session-{suffix}",
+                run_id="run-1",
+                model_profile="default",
+            )
+        )
+        await cycles.create(
+            AgentCycle(
+                id=f"cycle-{suffix}",
+                run_id="run-1",
+                session_id=f"session-{suffix}",
+                sequence=int(suffix),
+            )
+        )
+        await steps.create(
+            AgentStep(
+                id=f"step-{suffix}",
+                cycle_id=f"cycle-{suffix}",
+                sequence=1,
+                step_type=AgentStepType.TOOL_PROPOSAL,
+            )
+        )
+
+    intents = SQLAlchemyToolCallIntentRepository(database.session_factory)
+    base_time = datetime(2026, 8, 6, tzinfo=UTC)
+    try:
+        for index in range(4):
+            await intents.create(
+                ToolCallIntent(
+                    id=f"intent-{index}",
+                    run_id="run-1",
+                    session_id="session-1",
+                    cycle_id="cycle-1",
+                    step_id="step-1",
+                    tool_id=f"tool-{index}",
+                    created_at=base_time + timedelta(seconds=index),
+                )
+            )
+        await intents.create(
+            ToolCallIntent(
+                id="other-session-intent",
+                run_id="run-1",
+                session_id="session-2",
+                cycle_id="cycle-2",
+                step_id="step-2",
+                tool_id="other-tool",
+                created_at=base_time + timedelta(minutes=1),
+            )
+        )
+
+        recent = await intents.recent_for_session("session-1", limit=2)
+        assert [intent.id for intent in recent] == ["intent-2", "intent-3"]
+        assert await intents.recent_for_session("missing-session") == []
+        with pytest.raises(ValueError, match="between 1 and 1000"):
+            await intents.recent_for_session("session-1", limit=0)
+        with pytest.raises(ValueError, match="between 1 and 1000"):
+            await intents.recent_for_session("session-1", limit=1001)
+    finally:
+        await database.dispose()
+
+
 async def _runtime_approval_fixture(
     tmp_path: Path,
     database_name: str,

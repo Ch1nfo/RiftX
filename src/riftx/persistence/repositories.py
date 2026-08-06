@@ -2493,6 +2493,25 @@ class SQLAlchemyRunEventRepository:
             records = (await session.scalars(statement)).all()
         return [event_from_record(record) for record in records]
 
+    async def list_recent(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunEvent]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        statement = (
+            select(RunEventRecord)
+            .where(RunEventRecord.run_id == run_id)
+            .order_by(RunEventRecord.sequence.desc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            records = list((await session.scalars(statement)).all())
+        records.reverse()
+        return [event_from_record(record) for record in records]
+
 
 _FINDING_MUTABLE_FIELDS = (
     "title",

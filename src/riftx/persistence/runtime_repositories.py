@@ -284,6 +284,28 @@ class SQLAlchemyToolCallIntentRepository:
             records = (await session.scalars(statement)).all()
         return [tool_call_intent_from_record(record) for record in records]
 
+    async def recent_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[ToolCallIntent]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        statement = (
+            select(ToolCallIntentRecord)
+            .where(ToolCallIntentRecord.session_id == session_id)
+            .order_by(
+                ToolCallIntentRecord.created_at.desc(),
+                ToolCallIntentRecord.id.desc(),
+            )
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            records = list((await session.scalars(statement)).all())
+        records.reverse()
+        return [tool_call_intent_from_record(record) for record in records]
+
     async def active_for_run(
         self,
         run_id: str,

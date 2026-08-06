@@ -417,6 +417,39 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
     await reopened.dispose()
 
 
+async def test_recent_run_events_are_bounded_ordered_and_run_scoped(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'recent-events.db'}")
+    await database.create_schema()
+    engagements = SQLAlchemyEngagementRepository(database.session_factory)
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    await engagements.create(Engagement(id="engagement-1", name="Recent events"))
+    await runs.create(make_run())
+    await runs.create(make_run(run_id="run-2"))
+    for index in range(4):
+        await events.append("run-1", f"observer.event_{index}")
+    await events.append("run-2", "observer.other_run")
+
+    recent = await events.list_recent("run-1", limit=3)
+    assert [event.sequence for event in recent] == [3, 4, 5]
+    assert [event.event_type for event in recent] == [
+        "observer.event_1",
+        "observer.event_2",
+        "observer.event_3",
+    ]
+    assert [event.event_type for event in await events.list_recent("run-2")] == [
+        "run.created",
+        "observer.other_run",
+    ]
+    with pytest.raises(ValueError, match="between 1 and 1000"):
+        await events.list_recent("run-1", limit=0)
+    with pytest.raises(ValueError, match="between 1 and 1000"):
+        await events.list_recent("run-1", limit=1001)
+    await database.dispose()
+
+
 async def test_status_transition_and_event_are_atomic(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}")
     await database.create_schema()
