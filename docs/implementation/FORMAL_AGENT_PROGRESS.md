@@ -45,10 +45,10 @@
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
-- Product behavior：PACK-301 已交付六个基础代码审计 Pack：仓库与入口建模，以及认证授权、注入、秘密和安全配置审计。所有 Pack 复用既有 Catalog、Capability Repository、Progressive Skill、Technique、Eval Case、Evidence Contract、bootstrap 与 Session pinning，只使用 owner-bound 代码导航和认知状态工具；秘密证据强制只保留位置、分类、指纹、脱敏形状和消费者，不保留原始值。
-- Current implementation commits：`4f74479d`、`81574f56`。
-- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、16 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、精确工具权限契约与 wheel 中 128 个 Official Pack 发行资产验证通过。
-- Next delivery slice：继续交付 `dependency-and-supply-chain`、`file-upload-and-path-audit` 与 `ssrf-and-outbound-request-audit`，覆盖依赖来源、文件系统边界和出站请求信任边界。
+- Product behavior：PACK-301 已交付九个基础代码审计 Pack，覆盖仓库/入口建模、认证授权、注入、秘密配置、依赖供应链、文件路径和 SSRF/出站请求。所有 Pack 复用既有生产链路，只使用 owner-bound 代码导航和认知状态工具；不执行目标项目、不操作目标文件、不联网查询依赖，也不向目标或内网发送请求。
+- Current implementation commits：`4f74479d`、`81574f56`、`0237a0cb`。
+- Verification：全仓 `5206 passed, 5 skipped, 17 warnings`；全仓 Ruff、Pack/Skill/Worker Scoped mypy、19 Pack bootstrap/lock、生产 Worker Skill/Technique 暴露、精确工具权限契约与 wheel 中 152 个 Official Pack 发行资产验证通过。
+- Next delivery slice：完成 `deserialization-audit`、`finding-verification` 与 `variant-analysis`，收束危险对象构造、候选结论晋升和同类缺陷扩展搜索。
 
 ## 3. 研究与实现基线
 
@@ -781,6 +781,12 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 新增 `secret-and-config-audit`，区分真实秘密、Placeholder、Test Fixture、Public Identifier、Encrypted Blob 与无效配置，并追踪 Loader、Precedence、Fallback、Consumer 和部署可达性；
   - 原始 Credential、Token、Cookie、Private Key 或 Recovery Material 不得进入 Evidence、Memory、Finding、日志或报告；无法安全脱敏时停止处理值，仅保留位置和稳定原因；
   - Catalog/Bootstrap 扩展为 16 Pack/48 Capability，wheel 扩展为 128 个 Official Pack 发行资产；仍无新 Registry、数据库表、运行时权限或外部执行能力。
+- Third delivery slice：
+  - 新增 `dependency-and-supply-chain`，离线核对 Manifest、Lock、Source、Integrity、Install Hook、Build Input 与生产 Consumer；模型记忆、包名或版本相似性不能作为 CVE 或受影响范围证据；
+  - 新增 `file-upload-and-path-audit`，追踪文件内容、元数据、名称、Archive Entry 和路径到存储、提取、读取、写入、删除、Serving 或执行 Sink，并验证解码、规范化、最终路径 containment、Link/Race 与有效 Root；
+  - 新增 `ssrf-and-outbound-request-audit`，分别追踪 Scheme、Authority、Host、Port、Path、Redirect、Proxy、Resolved Address、Credential 与 Response 使用；可控 Body/Header 或固定主机 Path 不等于 SSRF；
+  - 三个 Pack 均不执行 Installer/Build/File Operation/Archive Extraction，也不发送网络请求、解析在线 DNS、查询 Registry 或访问 Credential；
+  - Catalog/Bootstrap 扩展为 19 Pack/57 Capability，wheel 扩展为 152 个 Official Pack 发行资产。
 - Safety boundaries：
   - 每个代码审计 Pack 的工具集合由测试精确锁定，只包含 owner-bound `list_files`/`glob`/`grep`/`read_many_files`、语义导航、Task/Reasoning/Evidence/Closure 工具；
   - 不依赖 Shell、目标项目执行、Patch/Revert、Worktree、Browser、Web、Target HTTP、Credential 或外部服务；
@@ -803,8 +809,16 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack301-slice2-wheel.Mppx2C`：passed，16 个 Pack 的 128 个发行资产存在；
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5206 passed, 5 skipped, 17 warnings`；跳过和警告原因与第一切片一致；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`4f74479d`、`81574f56`。
-- Remaining Packs：`dependency-and-supply-chain`、`file-upload-and-path-audit`、`ssrf-and-outbound-request-audit`、`deserialization-audit`、`finding-verification`、`variant-analysis`。
+- Third slice checks：
+  - 测试先行缺失资产验证：`4 failed, 18 passed`，失败仅为三个 Pack 尚不存在；资产接入后定向回归：`22 passed`；
+  - Pack、Skill、Capability 与生产 Worker 关联回归：`49 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/packs src/riftx/skills/progressive.py src/riftx/skills/registry.py src/riftx/skills/__init__.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 7 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack301-slice3-wheel.4Eidio`：passed，19 个 Pack 的 152 个发行资产存在；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5206 passed, 5 skipped, 17 warnings`；跳过和警告原因与前两切片一致；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`4f74479d`、`81574f56`、`0237a0cb`。
+- Remaining Packs：`deserialization-audit`、`finding-verification`、`variant-analysis`。
 
 ## 9. Known pre-existing worktree state
 
