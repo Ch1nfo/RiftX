@@ -52,9 +52,9 @@
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
 - Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
-- Current PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`。
-- Verification：全仓 `5297 passed, 5 skipped, 17 warnings`；全仓 Ruff；Workflow/Runner 目标回归 `278 passed`；PEN-500 scoped mypy（不含 daemon）passed，daemon 纳入时仅暴露一个既有无关 `RunEventRepository.list_recent` protocol 缺口；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
-- Next delivery slice：审计 Effect Policy，将 General-only 交互 guard 重命名/迁移为 General+Pentest 交互 guard，未逐项允许的副作用继续失败关闭；随后实现专用 Application/API、`riftx pentest start/status/resume/stop`、持久 Attack Surface 和隔离授权目标 E2E。`packs install/update/rollback` 延后至 ECO-800，不阻塞 V1。
+- Current PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`。
+- Verification：全仓 `5321 passed, 5 skipped, 17 warnings`；受影响回归 `2355 passed, 1 warning`；全仓 Ruff；23 个核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
+- Next delivery slice：实现唯一权威 Pentest Application Service 与专用创建 API，在一个原子路径内验证授权引用、具体 Scope、网络 Entry Point、Approval、预算、禁止行为、停止条件与最终 Capability Selection；普通 `POST /runs` 继续不得创建 Pentest。随后交付 `riftx pentest start/status/resume/stop`、Attack Surface 和隔离授权目标 E2E。
 
 ## 3. 研究与实现基线
 
@@ -153,7 +153,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | AUD-403 | COG-201, AUD-400, AUD-401 | pending | — |
 | AUD-404 | AUD-400, AUD-403 | pending | — |
 | AUD-405 | CAP-101, AUD-403 | pending | — |
-| PEN-500 | CAP-102, COG-202 | in_progress | `315039fc`, `86aaecdf`, `e2314e9b` |
+| PEN-500 | CAP-102, COG-202 | in_progress | `315039fc`, `86aaecdf`, `e2314e9b`, `8b9ef440` |
 | PEN-501 | CAP-102, PEN-500 | pending | — |
 | PEN-502 | COG-203, PEN-500, PEN-501 | pending | — |
 | PEN-503 | CAP-102, PEN-502 | pending | — |
@@ -1038,9 +1038,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `RunnerEffectBinding` 显式区分 General、Pentest 与 Code Audit；Runner daemon 允许 General/Pentest 交互运行，仍拒绝 Code Audit 走通用主机副作用；
   - stop reconciliation 查询从 general-only 收敛为 interactive-run 语义，覆盖 Pentest；
   - Alembic revision `7b3d1e5f9a24` 联合更新 Workflow intent 与 Runner binding 约束，并在任何 DDL 前阻断会丢失 Pentest 权威事实的 downgrade。
-- Verification：全仓 Ruff passed；Workflow/Runner 目标回归 `278 passed`；全仓 `5297 passed, 5 skipped, 17 warnings`；PEN-500 scoped mypy（不含 daemon）passed，daemon 纳入时仅暴露一个既有无关 `NullRunEventRepository.list_recent` 缺口；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
-- Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`。
-- Next：审计 Effect Policy，重命名/迁移 General+Pentest 交互 guard；只允许已逐项确认的生产路径，其余副作用与未知分支继续失败关闭。
+- Effect Policy and interactive guard slice：
+  - 删除含义模糊的 `_ALL_RUN_KINDS`/`_GENERAL_ONLY`，以 `_READABLE_RUNS`、`_INTERACTIVE_RUNS`、`_PENTEST_ONLY` 和 `_AUDIT_ONLY` 表达权限；
+  - 完整策略目录现为 65 条非 Run、14 条 Code Audit 专属、55 条 General/Pentest/Code Audit 共享安全/所有权路径、109 条 General+Pentest 交互路径；测试禁止新增未审计 General-only 漏洞；
+  - `require_general_run_operation` 更名为 `require_interactive_run_operation`，28 个生产模块逐项迁移，Code Audit 专属路径仍拒绝 Pentest；
+  - Pentest 复用 Run control、Workflow Router、Temporal Activity、Agent cycle、Execution、Approval、Artifact、Finding、Report、Memory、Context/Graph、Terminal、Browser、Target HTTP/Traffic、Web Research、MCP、Connector、Runner command、Safety Stop 与 reconciliation；
+  - 修正 Pentest Run Action 判别联合响应，以及 Artifact/Memory 持久可见性、Web Artifact、Code Workspace 和 Git Workspace 的交互 Owner 路径；Pentest owner 不得携带 Code Audit identity。
+- Verification：目标回归 `152 passed`；受影响回归 `2355 passed, 1 warning`；全仓 `5321 passed, 5 skipped, 17 warnings`；全仓 Ruff passed；23 个核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` 和 staged `git diff --check` passed。
+- Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`。
+- Next：实现专用 Pentest Application Service 与创建 API；权威创建路径必须原子验证 Admission、Scope、Selection 并以 Pentest Workflow identity 启动，普通 Run 创建入口不得绕过。
 
 ## 9. Known pre-existing worktree state
 
