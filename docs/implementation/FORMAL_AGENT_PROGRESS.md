@@ -44,10 +44,10 @@
 - Completed predecessor：COG-204，implementation commits `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
-- Product behavior：生产 Worker 启动时严格加载并幂等安装 10 个 Official 基础渗透 Pack，共注册 30 个不可变 Capability Version、10 个 Pack/Install 与 30 个精确 Version Lock；所有 Tool requirement 必须存在于生产 Tool Policy。Official Skill 以低优先级根目录进入现有 Progressive Skill Registry，Operator Skill 可显式同 ID 覆盖但不能伪造 `source=official`，运行中 Session 继续锁定原 version/digest。Pack 文本不授予 Scope、Approval、Credential 或 Tool 权限，Technique 继续从既有 Capability Repository 读取。
-- Current implementation commits：PACK-300 `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
-- Verification：全仓 `5176 passed, 5 skipped, 17 warnings`；全仓 Ruff、PACK/Skill/Worker Scoped mypy、严格 Catalog、幂等 Bootstrap、Technique/Skill 可见性、Session pin/overlay、Subagent allowlist 与 wheel 发行资产验证通过。
-- Next delivery slice：恢复 CAP-101，先交付 General Run 的显式批准隔离 Worktree 生命周期与可审计回滚边界，再接入不执行项目配置、插件、Hook、构建或安装脚本的受控 LSP；CAP-101 完成后才能开始依赖它的 PACK-301。
+- Product behavior：CAP-101 已交付 owner-bound 代码读取、Git 只读导航、静态语义降级、Patch/Revert Receipt，以及 General Run 的显式批准隔离 Worktree。`create_worktree` 只对 Primary Agent 可见，目标路径由 Run 摘要和安全名称确定，起点仅允许 `HEAD` 或完整本地提交哈希；创建结果为 detached worktree，不执行项目 Hook、插件、构建、测试或安装脚本。Code Audit 与 Subagent 继续拒绝该写能力，Patch/Revert 同时禁止修改任意层级 `.git` 管理状态。
+- Current implementation commits：CAP-101 `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`。
+- Verification：全仓 `5188 passed, 5 skipped, 17 warnings`；全仓 Ruff、Git/Model/Tool/Policy Scoped mypy、Worktree 创建/幂等/回滚/owner 隔离、Patch `.git` 防线、显式批准、Primary/Subagent 可见性和 Runtime Transcript 验证通过。
+- Next delivery slice：接入不执行项目配置、插件、Hook、构建、测试或安装脚本的受控 LSP；CAP-101 完成后才能开始依赖它的 PACK-301。
 
 ## 3. 研究与实现基线
 
@@ -124,7 +124,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e` |
+| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e`, `8ae9161d` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
 | CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
@@ -381,7 +381,25 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件；警告为既有 Python 3.12 SQLite datetime adapter 和并发首启 Pydantic alias 提示；
   - 全仓 Ruff 和 `git diff --check`：passed。
 - Ninth delivery implementation commit：`203f6c1e`。
-- Later slices：隔离 Worktree，以及受控 LSP。
+- Tenth delivery slice：
+  - 已将 `create_worktree` 接入生产 Runtime control tool、Tool Policy 与 Primary Agent，要求逐次 `approval_policy=explicit`，不进入 Subagent resident set；Runtime 直接调用仍校验 `agent_id=primary`，缺少批准时不会调用 Git 或产生文件系统副作用；
+  - 只允许 General Run；Code Audit 保持只读。模型只提供 64 字节内 ASCII slug 与 `HEAD`/完整 40 或 64 字符本地提交哈希，不接受任意目标路径、分支名、revision expression、remote ref 或协议；
+  - 目标固定为 Run workspace 直接子目录 `.riftx-wt-<run-digest>-<name>`，不经过可替换的中间目录；不同 Run 使用不同 owner digest，Symlink、FIFO、特殊文件、普通未注册目录和冲突 Worktree 均失败关闭；
+  - Worktree 固定为 detached commit，避免隐式创建或覆盖 Branch。精确同 owner/name/commit 的重复调用返回 `action=existing`，HEAD 或 detached 状态漂移返回明确冲突；
+  - Git 继续使用固定 executable、最小环境、无凭据/网络、禁用 Hook、fsmonitor、external diff、textconv 和签名行为；Repository config 出现 filter、remote、include、credential、submodule 或其他外部行为时在创建前拒绝；
+  - 创建前后验证 Workspace FD/path binding、Git 管理区安全形态与配置；结果 Worktree 通过 no-follow 目录 FD 复核，`.git` 链接必须是有界普通文件并指向当前 Repository `.git/worktrees/` 内部；
+  - 创建命令或创建后验证失败时，仅对本次确定性 owner destination 执行 `git worktree remove --force` 回滚；无法证明清理完成时返回 `code_worktree_cleanup_failed`，不静默遗留半成品；
+  - 成功结果包含相对路径、精确 HEAD commit 与 detached 状态，并进入 Transcript `worktree://`、`git-commit://` source refs；成功 Worktree 作为 Run workspace 内的显式资产保留，本切片不增加通用删除工具；
+  - `apply_patch` 和 `revert_patch` 共用新增的 writable-path 防线，拒绝修改任意层级 `.git` 文件或目录，防止 Root Repository 和 linked Worktree 管理状态被原生 Patch 工具伪造。
+- Tenth delivery checks：
+  - Git Worktree、Patch `.git` 防线与异常回滚定向测试：`40 passed`；
+  - Code、Runtime、Agent Factory、Approval/Recovery、Context、Subagent、Tool Discovery/Policy 与 Temporal Worker 关联回归：`310 passed`；
+  - RunKind Effect Policy、正式文档、Pack Catalog/Bootstrap 关联回归：`53 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/code/git.py src/riftx/code/models.py src/riftx/tools/discovery.py src/riftx/tools/policy.py`：`Success: no issues found in 4 source files`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5188 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff、`git diff --check` 与 staged `git diff --check`：passed。
+- Tenth delivery implementation commit：`8ae9161d`。
+- Later slice：受控 LSP。
 
 ### CAP-102：Browser/Web/Traffic Tool 闭环
 
