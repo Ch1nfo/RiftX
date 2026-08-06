@@ -597,8 +597,9 @@ class RuntimeCoordinator:
                     )
                     if call_key not in counted_tool_calls:
                         counted_tool_calls.add(call_key)
-                        cycle.tool_call_count += 1
-                        await self._cycles.save(cycle)
+                        if run.kind is not RunKind.PENTEST:
+                            cycle.tool_call_count += 1
+                            await self._cycles.save(cycle)
                         if cycle.tool_call_count >= self._limits.max_tool_calls:
                             return await self._yield_cycle(
                                 run.id,

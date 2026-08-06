@@ -654,19 +654,77 @@ class SQLAlchemyToolCallIntentRepository:
                     attempt_group=attempt_group,
                 )
 
+            run_record = await session.scalar(
+                select(RunRecord)
+                .where(RunRecord.id == record.run_id)
+                .with_for_update()
+            )
+            if run_record is None:
+                raise EntityNotFoundError("Run", record.run_id)
+            run = run_from_record(run_record)
+            cycle_record: AgentCycleRecord | None = None
+            if run.kind is RunKind.PENTEST:
+                admission = run.pentest_admission
+                if admission is None:
+                    raise RepositoryConflictError(
+                        "Pentest Tool execution is missing its admission"
+                    )
+                if run.status is not RunStatus.RUNNING:
+                    raise RepositoryConflictError(
+                        "Pentest Tool execution claim requires a running Run"
+                    )
+                elapsed = max(0.0, (self._clock() - run.created_at).total_seconds())
+                if elapsed >= admission.budget.max_duration_seconds:
+                    raise PentestBudgetExceededError(
+                        "max_duration_seconds",
+                        limit=admission.budget.max_duration_seconds,
+                        used=ceil(elapsed),
+                    )
+                session_tool_calls = int(
+                    await session.scalar(
+                        select(
+                            func.coalesce(func.sum(AgentSessionRecord.tool_call_count), 0)
+                        ).where(AgentSessionRecord.run_id == record.run_id)
+                    )
+                    or 0
+                )
+                unmerged_tool_calls = int(
+                    await session.scalar(
+                        select(
+                            func.coalesce(func.sum(AgentCycleRecord.tool_call_count), 0)
+                        ).where(
+                            AgentCycleRecord.run_id == record.run_id,
+                            AgentCycleRecord.status != CycleStatus.YIELDED.value,
+                        )
+                    )
+                    or 0
+                )
+                used_tool_calls = session_tool_calls + unmerged_tool_calls
+                if used_tool_calls >= admission.budget.max_tool_calls:
+                    raise PentestBudgetExceededError(
+                        "max_tool_calls",
+                        limit=admission.budget.max_tool_calls,
+                        used=used_tool_calls,
+                    )
+                cycle_record = await session.scalar(
+                    select(AgentCycleRecord)
+                    .where(AgentCycleRecord.id == record.cycle_id)
+                    .with_for_update()
+                )
+                if (
+                    cycle_record is None
+                    or cycle_record.run_id != record.run_id
+                    or cycle_record.session_id != record.session_id
+                ):
+                    raise RepositoryConflictError(
+                        "Tool Call intent is not owned by its Pentest Cycle"
+                    )
+
             if target_tool_ids is not None:
                 if record.tool_id not in target_tool_ids:
                     raise RepositoryConflictError(
                         "Tool Call intent is not owned by the target interaction boundary"
                     )
-                run_record = await session.scalar(
-                    select(RunRecord)
-                    .where(RunRecord.id == record.run_id)
-                    .with_for_update()
-                )
-                if run_record is None:
-                    raise EntityNotFoundError("Run", record.run_id)
-                run = run_from_record(run_record)
                 if run.kind is RunKind.PENTEST:
                     admission = run.pentest_admission
                     if admission is None:
@@ -736,6 +794,20 @@ class SQLAlchemyToolCallIntentRepository:
                 stored=record.updated_at,
                 lifecycle_timestamps=(record.created_at,),
             )
+            if cycle_record is not None:
+                if cycle_record.status == CycleStatus.YIELDED.value:
+                    session_record = await session.scalar(
+                        select(AgentSessionRecord)
+                        .where(AgentSessionRecord.id == cycle_record.session_id)
+                        .with_for_update()
+                    )
+                    if session_record is None:
+                        raise EntityNotFoundError(
+                            "AgentSession", cycle_record.session_id
+                        )
+                    session_record.tool_call_count += 1
+                else:
+                    cycle_record.tool_call_count += 1
             await session.flush()
             return ToolCallIntentExecutionClaim(
                 intent=tool_call_intent_from_record(record),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Collection
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -121,7 +122,8 @@ class ControlIntentTracker(Protocol):
         engine_call_id: str,
         tool_name: str,
         arguments: dict[str, object],
-        attempt_group: str | None = None,
+        attempt_group: str = "control",
+        target_interaction_tool_ids: Collection[str] | None = None,
     ) -> ClaimedControlIntent | None: ...
 
     async def finish_control_intent(
@@ -712,7 +714,18 @@ class RuntimeControlToolService:
                         engine_call_id=call_id,
                         tool_name=tool_name,
                         arguments=arguments,
-                        attempt_group="mcp" if tool_name == "call_mcp_tool" else None,
+                        attempt_group=(
+                            "mcp"
+                            if tool_name == "call_mcp_tool"
+                            else "initial"
+                            if tool_name == "target_http_request"
+                            else "control"
+                        ),
+                        target_interaction_tool_ids=(
+                            ("target_http_request",)
+                            if tool_name == "target_http_request"
+                            else None
+                        ),
                     )
                     if self._control_intents is not None
                     else None

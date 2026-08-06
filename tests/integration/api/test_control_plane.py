@@ -1492,6 +1492,9 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
             assert created.status_code == 201, created.text
             assert created.json()["kind"] == "pentest"
             assert created.json()["temporal_workflow_id"] == f"riftx-pentest-{run_id}"
+            await SQLAlchemyRunRepository(
+                runtime.control_plane.database.session_factory
+            ).update_status(run_id, RunStatus.RUNNING)
 
             status = await client.get(f"/api/v1/pentests/{run_id}/status")
             assert status.status_code == 200, status.text
@@ -1690,7 +1693,7 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
 
             resumed = await client.post(f"/api/v1/runs/{run_id}/resume")
             assert resumed.status_code == 202, resumed.text
-            assert resumed.json()["run"]["status"] == "waiting_user"
+            assert resumed.json()["run"]["status"] == "running"
             stopped = await client.post(f"/api/v1/runs/{run_id}/cancel")
             assert stopped.status_code == 202, stopped.text
             assert stopped.json()["run"]["status"] == "cancelled"

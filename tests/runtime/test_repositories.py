@@ -319,6 +319,35 @@ async def _create_context_compilation(
     )
 
 
+async def _create_tool_intent(
+    database: Database,
+    *,
+    index: int,
+    cycle_id: str,
+    session_id: str = "session-1",
+) -> None:
+    step_id = f"tool-step-{index}"
+    await SQLAlchemyAgentStepRepository(database.session_factory).create(
+        AgentStep(
+            id=step_id,
+            cycle_id=cycle_id,
+            sequence=index,
+            step_type=AgentStepType.TOOL_PROPOSAL,
+        )
+    )
+    await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+        ToolCallIntent(
+            id=f"tool-intent-{index}",
+            run_id="run-1",
+            session_id=session_id,
+            cycle_id=cycle_id,
+            step_id=step_id,
+            tool_id="nmap",
+            status=ToolCallStatus.READY,
+        )
+    )
+
+
 async def test_pentest_model_claim_requires_complete_prior_usage_and_counts_once(
     tmp_path: Path,
 ) -> None:
@@ -584,6 +613,177 @@ async def test_pentest_model_claim_rejects_exhausted_token_budget(
         )
     assert exhausted.value.budget_name == "max_tokens"
     assert exhausted.value.used == 10
+    await database.dispose()
+
+
+async def test_pentest_tool_claim_counts_retries_and_survives_yield_and_restart(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 7, 12, tzinfo=UTC)
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'tool-claims.db'}")
+    await database.create_schema()
+    await create_pentest_run(
+        database,
+        budget=PentestBudget(
+            max_duration_seconds=60,
+            max_model_calls=10,
+            max_tokens=1_000,
+            max_tool_calls=2,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        created_at=now,
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+    await sessions.create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    await cycles.create(
+        AgentCycle(
+            id="cycle-1",
+            run_id="run-1",
+            session_id="session-1",
+            sequence=1,
+            status=CycleStatus.RUNNING,
+        )
+    )
+    await _create_tool_intent(database, index=1, cycle_id="cycle-1")
+    await _create_tool_intent(database, index=2, cycle_id="cycle-1")
+    tools = SQLAlchemyToolCallIntentRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=1),
+    )
+
+    first = await tools.claim_execution(
+        "tool-intent-1",
+        execution_key="tool-execution-1",
+        attempt_group="initial",
+    )
+    assert first.newly_acquired is True
+    intent, changed = await tools.compare_and_set_status(
+        "tool-intent-1",
+        expected={ToolCallStatus.EXECUTING},
+        target=ToolCallStatus.FAILED,
+    )
+    assert changed is True
+    cycle = await cycles.get("cycle-1")
+    session = await sessions.get("session-1")
+    assert cycle is not None and session is not None
+    assert cycle.tool_call_count == 1
+    session.tool_call_count += cycle.tool_call_count
+    RuntimeStateMachine().transition_cycle(
+        cycle,
+        CycleStatus.YIELDED,
+        yield_reason=YieldReason.TOOL_RUNNING,
+    )
+    await cycles.save_yield(session, cycle)
+
+    retry = await tools.claim_execution(
+        intent.id,
+        execution_key="tool-execution-retry-1",
+        attempt_group="retry-1",
+    )
+    assert retry.newly_acquired is True
+    replay = await tools.claim_execution(
+        intent.id,
+        execution_key="tool-execution-retry-1",
+        attempt_group="retry-1",
+    )
+    assert replay.acquired is True
+    assert replay.newly_acquired is False
+    session = await sessions.get("session-1")
+    assert session is not None and session.tool_call_count == 2
+
+    restarted_tools = SQLAlchemyToolCallIntentRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=2),
+    )
+    with pytest.raises(PentestBudgetExceededError) as exhausted:
+        await restarted_tools.claim_execution(
+            "tool-intent-2",
+            execution_key="tool-execution-2",
+            attempt_group="initial",
+        )
+    assert exhausted.value.budget_name == "max_tool_calls"
+    assert exhausted.value.used == 2
+    unclaimed = await restarted_tools.get("tool-intent-2")
+    assert unclaimed is not None and unclaimed.status is ToolCallStatus.READY
+    await database.dispose()
+
+
+async def test_pentest_tool_claim_enforces_duration_and_last_slot_atomically(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 7, 12, tzinfo=UTC)
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'tool-bounds.db'}")
+    await database.create_schema()
+    await create_pentest_run(
+        database,
+        budget=PentestBudget(
+            max_duration_seconds=60,
+            max_model_calls=10,
+            max_tokens=1_000,
+            max_tool_calls=1,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        created_at=now,
+    )
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+    await sessions.create(
+        AgentSession(id="session-1", run_id="run-1", model_profile="default")
+    )
+    for index in (1, 2):
+        cycle_id = f"cycle-{index}"
+        await cycles.create(
+            AgentCycle(
+                id=cycle_id,
+                run_id="run-1",
+                session_id="session-1",
+                sequence=index,
+                status=CycleStatus.RUNNING,
+            )
+        )
+        await _create_tool_intent(database, index=index, cycle_id=cycle_id)
+    tools = SQLAlchemyToolCallIntentRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=1),
+    )
+    results = await asyncio.gather(
+        *(
+            tools.claim_execution(
+                f"tool-intent-{index}",
+                execution_key=f"tool-execution-{index}",
+                attempt_group="initial",
+            )
+            for index in (1, 2)
+        ),
+        return_exceptions=True,
+    )
+    conflicts = [
+        result for result in results if isinstance(result, PentestBudgetExceededError)
+    ]
+    assert len(conflicts) == 1
+    assert conflicts[0].budget_name == "max_tool_calls"
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+
+    losing_index = 1 if isinstance(results[0], PentestBudgetExceededError) else 2
+    duration_tools = SQLAlchemyToolCallIntentRepository(
+        database.session_factory,
+        clock=lambda: now + timedelta(seconds=60),
+    )
+    with pytest.raises(PentestBudgetExceededError) as duration:
+        await duration_tools.claim_execution(
+            f"tool-intent-{losing_index}",
+            execution_key=f"tool-execution-{losing_index}",
+            attempt_group="initial",
+        )
+    assert duration.value.budget_name == "max_duration_seconds"
+    assert duration.value.used == 60
+    persisted_cycles = await cycles.list_by_session("session-1")
+    assert sum(item.tool_call_count for item in persisted_cycles) == 1
     await database.dispose()
 
 

@@ -10,6 +10,7 @@ import pytest
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
+    PentestBudgetExceededError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import (
@@ -20,13 +21,18 @@ from riftx.application.ports import (
 from riftx.application.services.runs import RunApplicationService
 from riftx.domain import (
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
     RunStatus,
+    Scope,
 )
 from riftx.execution import (
     DeferredExecutionDispatcher,
@@ -372,13 +378,21 @@ async def build_service(
     tmp_path: Path,
     *,
     run_kind: RunKind = RunKind.GENERAL,
+    pentest_budget: PentestBudget | None = None,
 ) -> tuple[Database, ExecutionService, RecordingRunner, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution.db'}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
-        Engagement(id="engagement-1", name="Authorized")
+        Engagement(
+            id="engagement-1",
+            name="Authorized",
+            authorization_reference=(
+                "ticket://execution-test" if run_kind is RunKind.PENTEST else None
+            ),
+        )
     )
     runs = SQLAlchemyRunRepository(database.session_factory)
+    is_pentest = run_kind is RunKind.PENTEST
     await runs.create(
         Run(
             kind=run_kind,
@@ -386,6 +400,28 @@ async def build_service(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Run a durable tool"),
+            entry_points=(
+                [EntryPoint(kind=EntryPointKind.IP, value="127.0.0.1")]
+                if is_pentest
+                else []
+            ),
+            scope=Scope(ips=["127.0.0.1"]) if is_pentest else Scope(),
+            pentest_admission=(
+                PentestAdmission(
+                    budget=pentest_budget
+                    or PentestBudget(
+                        max_duration_seconds=600,
+                        max_model_calls=10,
+                        max_tokens=10_000,
+                        max_tool_calls=10,
+                        max_target_interactions=10,
+                        max_concurrent_target_interactions=1,
+                    )
+                )
+                if is_pentest
+                else None
+            ),
+            status=RunStatus.RUNNING if is_pentest else RunStatus.CREATED,
             workspace_path=str(tmp_path),
         )
     )
@@ -436,6 +472,38 @@ async def build_service(
             "tool_calls": tool_calls,
         },
     )
+
+
+async def test_pentest_tool_budget_stops_before_runner_start(tmp_path: Path) -> None:
+    database, service, runner, repos = await build_service(
+        tmp_path,
+        run_kind=RunKind.PENTEST,
+        pentest_budget=PentestBudget(
+            max_duration_seconds=600,
+            max_model_calls=10,
+            max_tokens=10_000,
+            max_tool_calls=1,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+    )
+    sessions = repos["sessions"]
+    tool_calls = repos["tool_calls"]
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    assert isinstance(tool_calls, SQLAlchemyToolCallIntentRepository)
+    session = await sessions.get("session-1")
+    assert session is not None
+    session.tool_call_count = 1
+    await sessions.save(session)
+
+    with pytest.raises(PentestBudgetExceededError) as exhausted:
+        await service.submit(request(tmp_path))
+
+    assert exhausted.value.budget_name == "max_tool_calls"
+    assert runner.launches == 0
+    intent = await tool_calls.get("tool-call-1")
+    assert intent is not None and intent.status is ToolCallStatus.READY
+    await database.dispose()
 
 
 def request(tmp_path: Path, *, attempt_group: str = "initial") -> SubmitExecutionRequest:

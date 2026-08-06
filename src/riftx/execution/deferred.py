@@ -6,6 +6,7 @@ import hashlib
 import json
 import platform
 import shlex
+from collections.abc import Collection
 from pathlib import Path
 from typing import Protocol
 
@@ -299,7 +300,8 @@ class DeferredExecutionDispatcher:
         engine_call_id: str,
         tool_name: str,
         arguments: dict[str, object],
-        attempt_group: str | None = None,
+        attempt_group: str = "control",
+        target_interaction_tool_ids: Collection[str] | None = None,
     ) -> ToolCallIntent | None:
         """Claim one approved provider-control mutation immediately before execution."""
 
@@ -326,35 +328,24 @@ class DeferredExecutionDispatcher:
             operation="service.deferred_execution.mutation",
             effect="durable_write",
         )
-        if attempt_group is not None:
-            execution_key = build_execution_key(
-                run_id=run_id,
-                session_id=session_id,
-                tool_call_id=intent.id,
-                attempt_group=attempt_group,
-            )
-            claim = await self._tool_calls.claim_execution(
-                intent.id,
-                execution_key=execution_key,
-                attempt_group=attempt_group,
-            )
-            if claim.acquired:
-                return claim.intent
-            raise ApplicationConflictError(
-                "control_tool_approval_not_ready",
-                "Approved control Tool Call cannot claim its execution identity",
-            )
-        claimed, changed = await self._tool_calls.compare_and_set_status(
-            intent.id,
-            expected={ToolCallStatus.READY},
-            target=ToolCallStatus.EXECUTING,
+        execution_key = build_execution_key(
+            run_id=run_id,
+            session_id=session_id,
+            tool_call_id=intent.id,
+            attempt_group=attempt_group,
         )
-        if not changed or claimed.status is not ToolCallStatus.EXECUTING:
-            raise ApplicationConflictError(
-                "control_tool_approval_not_ready",
-                "Approved control Tool Call is not ready for exactly-once execution",
-            )
-        return claimed
+        claim = await self._tool_calls.claim_execution(
+            intent.id,
+            execution_key=execution_key,
+            attempt_group=attempt_group,
+            target_interaction_tool_ids=target_interaction_tool_ids,
+        )
+        if claim.newly_acquired:
+            return claim.intent
+        raise ApplicationConflictError(
+            "control_tool_approval_not_ready",
+            "Approved control Tool Call cannot claim exactly-once execution",
+        )
 
     async def finish_control_intent(
         self,

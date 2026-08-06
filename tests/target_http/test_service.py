@@ -471,7 +471,7 @@ async def build_service(
     tmp_path: Path,
     *,
     status=ToolCallStatus.READY,
-    run_status=RunStatus.CREATED,
+    run_status: RunStatus | None = None,
     run_kind=RunKind.GENERAL,
     runner=None,
     tool_id: str = "request_target_url",
@@ -488,6 +488,9 @@ async def build_service(
     )
     runs = SQLAlchemyRunRepository(database.session_factory)
     is_pentest = run_kind is RunKind.PENTEST
+    resolved_run_status = run_status or (
+        RunStatus.RUNNING if is_pentest else RunStatus.CREATED
+    )
     await runs.create(
         Run(
             kind=run_kind,
@@ -516,7 +519,7 @@ async def build_service(
                 if is_pentest
                 else None
             ),
-            status=run_status,
+            status=resolved_run_status,
             workspace_path=str(tmp_path),
         )
     )
@@ -809,24 +812,37 @@ async def test_same_key_with_different_request_is_rejected(tmp_path: Path) -> No
 
 
 async def test_out_of_scope_request_never_reaches_runner(tmp_path: Path) -> None:
-    database, service, runner, *_ = await build_service(tmp_path)
+    database, service, runner, *_ = await build_service(
+        tmp_path,
+        run_kind=RunKind.PENTEST,
+    )
     try:
         with pytest.raises(ScopeViolationError):
             await service.execute(submission("http://outside.internal/admin"))
         assert runner.launches == []
+        cycle = await SQLAlchemyAgentCycleRepository(database.session_factory).get(
+            "cycle-1"
+        )
+        assert cycle is not None and cycle.tool_call_count == 0
     finally:
         await database.dispose()
 
 
 async def test_unapproved_tool_intent_never_reaches_runner(tmp_path: Path) -> None:
     database, service, runner, *_ = await build_service(
-        tmp_path, status=ToolCallStatus.WAITING_APPROVAL
+        tmp_path,
+        status=ToolCallStatus.WAITING_APPROVAL,
+        run_kind=RunKind.PENTEST,
     )
     try:
         with pytest.raises(ApplicationConflictError) as caught:
             await service.execute(submission())
         assert caught.value.code == "target_http_not_approved"
         assert runner.launches == []
+        cycle = await SQLAlchemyAgentCycleRepository(database.session_factory).get(
+            "cycle-1"
+        )
+        assert cycle is not None and cycle.tool_call_count == 0
     finally:
         await database.dispose()
 
