@@ -27,6 +27,7 @@ from riftx.application.services import (
     ModelProfileApplicationService,
     NodeApplicationService,
     PentestApplicationService,
+    PentestStatusApplicationService,
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
@@ -48,7 +49,7 @@ from riftx.domain import LocalPrincipal, OperatorCapability, Run, RunKind, Runne
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
 from riftx.observer import ObserverProjectorApplicationService
-from riftx.persistence import SQLAlchemyRunEventRepository
+from riftx.persistence import SQLAlchemyPentestStatusReader, SQLAlchemyRunEventRepository
 from riftx.security import LocalObjectAuthorizer
 
 from .auth import (
@@ -155,6 +156,18 @@ def get_pentest_service(request: Request) -> PentestApplicationService:
             "pentest_service_unavailable",
             "RiftX Pentest admission is temporarily unavailable",
         )
+    return service
+
+
+def get_pentest_status_service(request: Request) -> PentestStatusApplicationService:
+    service = getattr(request.app.state, "pentest_status_service", None)
+    if service is None:
+        service = PentestStatusApplicationService(
+            SQLAlchemyPentestStatusReader(
+                request.app.state.control_plane.database.session_factory
+            )
+        )
+        request.app.state.pentest_status_service = service
     return service
 
 
@@ -345,6 +358,10 @@ RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)
 PentestServiceDependency = Annotated[
     PentestApplicationService,
     Depends(get_pentest_service),
+]
+PentestStatusServiceDependency = Annotated[
+    PentestStatusApplicationService,
+    Depends(get_pentest_status_service),
 ]
 AuditServiceDependency = Annotated[AuditApplicationService, Depends(get_audit_service)]
 AuditControlServiceDependency = Annotated[

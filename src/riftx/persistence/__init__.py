@@ -46,6 +46,7 @@ from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .observer_repositories import SQLAlchemyActiveTakeoverReader
 from .orm import Base
+from .pentest_status import SQLAlchemyPentestStatusReader
 from .pentest_uow import PentestCreationFailpoint, SQLAlchemyPentestCreationUnitOfWork
 from .reasoning_repository import SQLAlchemyReasoningGraphRepository
 from .repositories import (
@@ -116,6 +117,7 @@ __all__ = [
     "SQLAlchemyLocalAuditJobRepository",
     "SQLAlchemyNodeRepository",
     "SQLAlchemyPentestCreationUnitOfWork",
+    "SQLAlchemyPentestStatusReader",
     "SQLAlchemyProviderStateRepository",
     "SQLAlchemyReportRepository",
     "SQLAlchemyReasoningGraphRepository",

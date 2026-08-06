@@ -354,6 +354,7 @@ class RunEffectOperation(StrEnum):
     GET_MEMORY = "get_memory"
     GET_NODE = "get_node"
     GET_OBSERVER_PROJECTION = "get_observer_projection"
+    GET_PENTEST_STATUS = "get_pentest_status"
     GET_REPORT = "get_report"
     GET_RUN = "get_run"
     GET_RUN_ACTION = "get_run_action"
@@ -1015,6 +1016,16 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.RUN_LIFECYCLE,
         _READABLE_RUNS,
+        OperationEffect.READ_ONLY,
+        OwnershipResolverKind.RUN_ID,
+        EffectMode.READ_ONLY,
+        _SAFE_PROJECTION,
+    ),
+    _rule(
+        RunEffectOperation.GET_PENTEST_STATUS,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _PENTEST_ONLY,
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,

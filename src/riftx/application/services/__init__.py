@@ -68,6 +68,8 @@ from .pentests import (
     PentestApplicationService,
     PentestCapabilityResolver,
     PentestCapabilitySelection,
+    PentestStatusApplicationService,
+    PentestStatusProjection,
     ResolvedPentestCapabilities,
 )
 from .reasoning import (
@@ -173,6 +175,8 @@ __all__ = [
     "PentestApplicationService",
     "PentestCapabilityResolver",
     "PentestCapabilitySelection",
+    "PentestStatusApplicationService",
+    "PentestStatusProjection",
     "ResolvedPentestCapabilities",
     "RegisteredToolView",
     "RegisterArtifact",

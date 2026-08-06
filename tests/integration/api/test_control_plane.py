@@ -77,7 +77,7 @@ from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
 from riftx.capabilities import CapabilityKind, PackLockOwnerKind
-from riftx.context import ContextApplicationService
+from riftx.context import ContextApplicationService, ContextCompilation, ContextManifest
 from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     RUNNER_STOP_ACK_EXECUTION_SCHEMA,
@@ -183,6 +183,7 @@ from riftx.runtime import (
     AgentStepType,
     RuntimeApprovalRequest,
     ToolCallIntent,
+    ToolCallStatus,
 )
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
@@ -1069,6 +1070,72 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
                 "eval.pentest-foundation.baseline",
             }
 
+            status_response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert status_response.status_code == 200, status_response.text
+            pentest_status = status_response.json()
+            assert pentest_status["run"]["id"] == request_id
+            assert pentest_status["admission"] == run["pentest_admission"]
+            assert pentest_status["primary_session"] == {
+                "id": f"{request_id}:primary",
+                "agent_type": "primary",
+                "model_profile": "fast",
+                "status": "created",
+                "turn_count": 0,
+                "model_call_count": 0,
+                "tool_call_count": 0,
+                "created_at": run["created_at"],
+                "closed_at": None,
+            }
+            assert [
+                (item["kind"], item["capability_id"])
+                for item in pentest_status["capabilities"]["selections"]
+            ] == [
+                ("skill", "pentest-foundation"),
+                ("technique", "pentest-foundation.technique"),
+            ]
+            assert pentest_status["capabilities"]["allowlists"] == {
+                "tool": [],
+                "skill": ["pentest-foundation"],
+                "technique": ["pentest-foundation.technique"],
+            }
+            assert {
+                item["capability_id"]
+                for item in pentest_status["capabilities"]["pack_locks"]
+            } == {
+                "pentest-foundation",
+                "pentest-foundation.technique",
+                "eval.pentest-foundation.baseline",
+            }
+            assert pentest_status["budget"] | {"elapsed_seconds": 0} == {
+                "limits": run["pentest_admission"]["budget"],
+                "elapsed_seconds": 0,
+                "model_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "tokens": 0,
+                "token_usage_complete": True,
+                "tool_calls": 0,
+                "observed_target_interactions": 0,
+                "active_target_interactions": 0,
+            }
+            assert pentest_status["workflow"] == {
+                "workflow_id": f"riftx-pentest-{request_id}",
+                "persisted_started": True,
+            }
+            assert pentest_status["runner"] == {
+                "execution_status_counts": {},
+                "node_ids": [],
+            }
+            assert pentest_status["stop"] == {
+                "latest_event_type": None,
+                "confirmed": False,
+                "workflow_synced": None,
+                "failed_resource_types": [],
+            }
+            assert pentest_status["attack_surface"]["declared_entry_points"] == run[
+                "entry_points"
+            ]
+
             events = await client.get(f"/api/v1/runs/{request_id}/events")
             assert events.status_code == 200
             items = events.json()["items"]
@@ -1102,6 +1169,193 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
                 json={"objective": "Bypass Pentest admission", "kind": "pentest"},
             )
             assert bypass.status_code == 422
+
+            general = await client.post(
+                "/api/v1/runs",
+                json={"objective": "General status type guard"},
+            )
+            assert general.status_code == 201, general.text
+            wrong_kind = await client.get(
+                f"/api/v1/pentests/{general.json()['id']}/status"
+            )
+            assert wrong_kind.status_code == 409
+            assert (
+                wrong_kind.json()["error"]["code"]
+                == "pentest_status_requires_pentest_run"
+            )
+            missing = await client.get("/api/v1/pentests/run-missing/status")
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "resource_not_accessible"
+
+            stopped = await client.post(f"/api/v1/runs/{request_id}/cancel")
+            assert stopped.status_code == 202, stopped.text
+            assert stopped.json()["run"]["status"] == "cancelled"
+            stopped_status = await client.get(
+                f"/api/v1/pentests/{request_id}/status"
+            )
+            assert stopped_status.status_code == 200, stopped_status.text
+            assert stopped_status.json()["stop"] == {
+                "latest_event_type": "run.cancel_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_is_rebuilt_after_control_plane_restart(
+    tmp_path: Path,
+) -> None:
+    request_id = str(uuid4())
+    first = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(first.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+    finally:
+        await first.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["run"]["id"] == request_id
+            assert payload["primary_session"]["id"] == f"{request_id}:primary"
+            assert payload["workflow"] == {
+                "workflow_id": f"riftx-pentest-{request_id}",
+                "persisted_started": True,
+            }
+            assert payload["capabilities"]["allowlists"]["skill"] == [
+                "pentest-foundation"
+            ]
+            assert payload["attack_surface"]["declared_entry_points"] == [
+                {
+                    "kind": "url",
+                    "value": "http://127.0.0.1:8080",
+                    "metadata": {},
+                }
+            ]
+    finally:
+        await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_projects_durable_usage_and_runner_state(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    session_id = f"{request_id}:primary"
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+
+            database = runtime.control_plane.database
+            session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
+            primary = await session_repository.get(session_id)
+            assert primary is not None
+            await session_repository.save(
+                primary.model_copy(update={"model_call_count": 1, "tool_call_count": 1})
+            )
+            manifest = ContextManifest.empty(
+                run_id=request_id,
+                session_id=session_id,
+                agent_id="primary",
+                model_profile="fast",
+                purpose="pentest-cycle",
+            )
+            await SQLAlchemyContextCompilationRepository(database.session_factory).create(
+                ContextCompilation(
+                    id=f"{request_id}:context:1",
+                    run_id=request_id,
+                    session_id=session_id,
+                    agent_id="primary",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                    manifest=manifest,
+                    actual_input_tokens=120,
+                    actual_output_tokens=30,
+                )
+            )
+            cycle_id = f"{request_id}:cycle:1"
+            step_id = f"{request_id}:step:1"
+            intent_id = f"{request_id}:intent:1"
+            await SQLAlchemyAgentCycleRepository(database.session_factory).create(
+                RuntimeAgentCycle(
+                    id=cycle_id,
+                    run_id=request_id,
+                    session_id=session_id,
+                    sequence=1,
+                )
+            )
+            await SQLAlchemyAgentStepRepository(database.session_factory).create(
+                AgentStep(
+                    id=step_id,
+                    cycle_id=cycle_id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_EXECUTION,
+                )
+            )
+            await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+                ToolCallIntent(
+                    id=intent_id,
+                    run_id=request_id,
+                    session_id=session_id,
+                    cycle_id=cycle_id,
+                    step_id=step_id,
+                    tool_id="python",
+                    target_summary="url:http://127.0.0.1:8080",
+                    status=ToolCallStatus.EXECUTING,
+                )
+            )
+            await runtime.execution_repository.create_if_absent(
+                Execution(
+                    id=f"{request_id}:execution:1",
+                    execution_key=f"{request_id}:execution-key:1",
+                    run_id=request_id,
+                    session_id=session_id,
+                    tool_call_id=intent_id,
+                    node_id="local",
+                    executor_type=ExecutorType.PROCESS,
+                    argv=["python", "probe.py"],
+                    cwd=str(tmp_path),
+                    status=ExecutionStatus.RUNNING,
+                    started_at=datetime.now(UTC),
+                    stdout_path=str(tmp_path / "stdout.log"),
+                    stderr_path=str(tmp_path / "stderr.log"),
+                )
+            )
+
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["budget"] | {"elapsed_seconds": 0} == {
+                "limits": created.json()["pentest_admission"]["budget"],
+                "elapsed_seconds": 0,
+                "model_calls": 1,
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "tokens": 150,
+                "token_usage_complete": True,
+                "tool_calls": 1,
+                "observed_target_interactions": 1,
+                "active_target_interactions": 1,
+            }
+            assert payload["runner"] == {
+                "execution_status_counts": {"running": 1},
+                "node_ids": ["local"],
+            }
     finally:
         await runtime.control_plane.close()
 

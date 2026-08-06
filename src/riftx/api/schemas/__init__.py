@@ -100,7 +100,7 @@ from .nodes import (
     RegisterNodeRequest,
 )
 from .observer import ObserverProjection, ObserverProjectionQuery
-from .pentests import CreatePentestRequest
+from .pentests import CreatePentestRequest, PentestStatusResponse
 from .reports import GenerateReportsRequest, ReportListResponse, ReportResponse
 from .runner_control import (
     ExecutionOutputReportRequest,
@@ -177,6 +177,7 @@ __all__ = [
     "CreateAuditDraftRequestV2",
     "CreateMemoryRequest",
     "CreatePentestRequest",
+    "PentestStatusResponse",
     "CreateLocalAuditRequest",
     "CompactRunRequest",
     "CreateFindingRequest",
