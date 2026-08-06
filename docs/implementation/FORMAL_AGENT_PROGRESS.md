@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`，以及 Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器，均不依赖 Control Plane、Temporal 或模型；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`。
-- Verification：全仓 `5264 passed, 5 skipped, 17 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 端到端验收、发行 wheel Tool 模板与 Demo 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
-- Next delivery slice：完成 Capability/Pack 管理命令验收。
+- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`，以及本地只读 `riftx capabilities list`、`riftx capabilities verify` 和 `riftx packs list`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器；Capability/Pack 命令复用权威 Repository、Official Catalog 与 System Diagnostics，数据库缺失时不创建文件，锁或 Digest 漂移时失败关闭；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`。
+- Verification：全仓 `5269 passed, 5 skipped, 18 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo/Capability Management Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 与 Capability/Pack 命令端到端验收、发行 wheel Tool 模板、Demo 与 Capability Management 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
+- Next delivery slice：为 `packs install/update/rollback` 完成停服探测、SQLite 一致性备份、写后验证和失败恢复后再开放写命令。
 
 ## 3. 研究与实现基线
 
@@ -138,7 +138,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a` |
+| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a`, `faf12c50` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -973,8 +973,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check .`：passed；
   - `conda run --no-capture-output -n agent pytest -q`：`5264 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`。
-- Remaining：Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
+- Read-only Capability/Pack management checks：
+  - 测试先行验证：新增 Capability Management 合同在实现前以 `ModuleNotFoundError: riftx.capability_management` 产生 2 个预期收集错误；实现后 Capability Management/CLI 定向回归 `5 passed, 66 deselected`；
+  - 新增 `riftx capabilities list`，通过 `SQLAlchemyCapabilityRepository.list_active_versions` 读取全部 active Capability Version，展示 ID、Version、Kind、Source 与 Trust Tier，不从 Pack YAML 推测数据库状态；
+  - 新增 `riftx capabilities verify`，复用 `SystemDiagnosticsService` 同时验证 Alembic head、Official Pack/Version/Member immutable Digest、22 个 install 与 66 个 active lock；任一 issue 明确输出并退出 1；
+  - 新增 `riftx packs list`，复用同一份 Official Catalog 与 Diagnostics 展示每个 Pack 的 packaged version、Capability 数量和 `ready/missing/drifted/unavailable` 持久化状态；
+  - 所有命令只支持已到 Alembic head 的 file-backed SQLite；数据库缺失时不创建文件，mismatch/unmanaged/invalid 时要求先运行 Doctor；不连接 Control Plane，不写 Capability/Pack 状态；
+  - 锁删除回归确定性产生 `lock_set_drift:pentest-foundation`，Capability verify 失败关闭，Pack list 将对应 Pack 标记为 drifted；
+  - 隔离 XDG 真实 Onboard 后，`capabilities verify` 输出 66 active Capability 与 22 Official Pack 并退出 0，`capabilities list` 和 `packs list` 分别展示 66/22 条权威记录；
+  - Capability Management、CLI、System Diagnostics、Official Pack Catalog/Repair、Capability Repository、Onboarding 与 Doctor 关联回归：`110 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/capability_management.py`：`Success: no issues found in 1 source file`；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack302-capability-wheel`：passed；wheel 包含 `riftx/capability_management.py`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5269 passed, 5 skipped, 18 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个 SQLite datetime adapter 与 1 个既有 Pydantic alias 警告均与本切片无关；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`。
+- Remaining：`packs install/update/rollback` 的安全写入闭环与 Backup/Restore 可用性验收仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
