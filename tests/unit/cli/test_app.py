@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 import riftx.cli.app as cli_module
 from riftx.cli.client import RiftXAPIError
 from riftx.cli.render import render_error
-from riftx.doctor import DoctorCheck, DoctorReport, DoctorStatus
+from riftx.doctor import DoctorCheck, DoctorFix, DoctorReport, DoctorStatus
 
 runner = CliRunner()
 
@@ -1076,6 +1076,51 @@ def test_top_level_doctor_allows_degraded_exit_code(
 
     assert result.exit_code == 0
     assert "Overall: degraded" in result.output
+
+
+def test_top_level_doctor_fix_applies_local_repairs_before_rechecking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reports = iter(
+        (
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="skills",
+                        status=DoctorStatus.DEGRADED,
+                        detail="operator Skill root is absent",
+                        fixable=True,
+                    ),
+                )
+            ),
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="skills",
+                        status=DoctorStatus.READY,
+                        detail="operator Skill root exists",
+                    ),
+                )
+            ),
+        )
+    )
+    fixed = tmp_path / "skills"
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: next(reports))
+    monkeypatch.setattr(
+        cli_module,
+        "apply_local_doctor_fixes",
+        lambda *_args, **_kwargs: (
+            DoctorFix(check_id="skills", path=fixed),
+        ),
+    )
+
+    result = runner.invoke(cli_module.app, ["doctor", "--fix"])
+
+    assert result.exit_code == 0, result.output
+    assert "Fixed skills" in result.output
+    assert fixed.name in result.output
+    assert "Overall: ready" in result.output
 
 
 def test_approval_commands_delegate_to_shared_http_client() -> None:

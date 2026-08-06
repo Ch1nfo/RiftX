@@ -23,7 +23,12 @@ from typer.core import TyperGroup
 
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
-from riftx.doctor import run_live_doctor, run_local_doctor
+from riftx.doctor import (
+    DoctorFixError,
+    apply_local_doctor_fixes,
+    run_live_doctor,
+    run_local_doctor,
+)
 from riftx.domain import ApprovalMode, EntryPointKind, RunKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
@@ -187,11 +192,27 @@ def interactive(context: typer.Context) -> None:
 
 
 @app.command()
-def doctor(context: typer.Context) -> None:
-    """Inspect local RiftX readiness without changing host state."""
+def doctor(
+    context: typer.Context,
+    fix: Annotated[
+        bool,
+        typer.Option("--fix", help="Create safely repairable local directories."),
+    ] = False,
+) -> None:
+    """Inspect RiftX readiness and optionally apply bounded local repairs."""
 
     state = _state(context)
     report = run_local_doctor(state.config)
+    if fix:
+        try:
+            fixes = apply_local_doctor_fixes(state.config, report)
+        except DoctorFixError as exc:
+            console.print(f"[red]Doctor fix failed:[/red] {exc}")
+            render_doctor_report(console, report)
+            raise typer.Exit(1) from exc
+        for applied in fixes:
+            console.print(f"Fixed {applied.check_id}: created {applied.path}")
+        report = run_local_doctor(state.config)
     with APIClient(state.api_url, timeout_seconds=3) as client:
         report = run_live_doctor(state.config, report, client)
     render_doctor_report(console, report)

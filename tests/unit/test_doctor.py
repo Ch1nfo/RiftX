@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
+import pytest
 import yaml
 
+import riftx.doctor as doctor_module
 from riftx.config import RiftXConfig
 from riftx.doctor import (
     DOCTOR_CHECK_IDS,
+    DoctorCheck,
+    DoctorFixError,
     DoctorStatus,
+    apply_local_doctor_fixes,
     run_live_doctor,
     run_local_doctor,
 )
@@ -142,6 +148,78 @@ def test_doctor_fails_when_official_pack_catalog_is_unavailable(tmp_path: Path) 
     assert report.by_id("pack_integrity").status is DoctorStatus.FAILED
     assert report.by_id("skills").status is DoctorStatus.FAILED
     assert report.failed
+
+
+def test_doctor_fix_creates_only_supported_local_directories(tmp_path: Path) -> None:
+    config = _write_runtime_configs(tmp_path)
+    report = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    fixes = apply_local_doctor_fixes(config, report, cwd=tmp_path)
+
+    assert {(fix.check_id, fix.path) for fix in fixes} == {
+        ("skills", config.skills.path),
+        ("storage_permissions", config.workspace.root),
+    }
+    for fix in fixes:
+        assert fix.path.is_dir()
+        assert stat.S_IMODE(fix.path.stat().st_mode) == 0o700
+    assert not (tmp_path / "riftx.db").exists()
+
+
+def test_doctor_fix_rolls_back_all_created_directories_on_failure(tmp_path: Path) -> None:
+    config = _write_runtime_configs(tmp_path)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    raw = config.model_dump(mode="python")
+    raw["workspace"] = {"root": blocker / "workspaces"}
+    config = RiftXConfig.model_validate(raw)
+    report = doctor_module.DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="skills",
+                status=DoctorStatus.DEGRADED,
+                detail="missing",
+                fixable=True,
+            ),
+            DoctorCheck(
+                id="storage_permissions",
+                status=DoctorStatus.DEGRADED,
+                detail="missing",
+                fixable=True,
+            ),
+        )
+    )
+
+    with pytest.raises(DoctorFixError, match="rolled back"):
+        apply_local_doctor_fixes(config, report, cwd=tmp_path)
+
+    assert not config.skills.path.exists()
+
+
+def test_doctor_fix_rejects_symbolic_link_components(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(real, target_is_directory=True)
+    config = _write_runtime_configs(tmp_path)
+    raw = config.model_dump(mode="python")
+    raw["skills"] = {"path": link / "skills"}
+    config = RiftXConfig.model_validate(raw)
+    report = doctor_module.DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="skills",
+                status=DoctorStatus.DEGRADED,
+                detail="missing",
+                fixable=True,
+            ),
+        )
+    )
+
+    with pytest.raises(DoctorFixError, match="symbolic links"):
+        apply_local_doctor_fixes(config, report, cwd=tmp_path)
+
+    assert not (real / "skills").exists()
 
 
 class _LiveClient:
