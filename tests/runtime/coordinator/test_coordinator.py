@@ -10,7 +10,11 @@ from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
 )
-from riftx.application.services import ResourceStopDisposition, SafetyStopResult
+from riftx.application.services import (
+    ClosureVerifierApplicationService,
+    ResourceStopDisposition,
+    SafetyStopResult,
+)
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
 from riftx.domain import DomainError, Engagement, Objective, Run, RunKind, RunStatus
 from riftx.hooks import (
@@ -35,10 +39,13 @@ from riftx.persistence import (
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyProviderStateRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunLeaseRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTaskGraphRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runtime.coordinator import RuntimeCoordinator
@@ -138,10 +145,18 @@ class RecordingObserver:
 
 
 class RecordingSafetyStopper:
-    def __init__(self, runs: SQLAlchemyRunRepository, *, confirmed: bool = True) -> None:
+    def __init__(
+        self,
+        runs: SQLAlchemyRunRepository,
+        events: SQLAlchemyRunEventRepository,
+        *,
+        confirmed: bool = True,
+    ) -> None:
         self._runs = runs
+        self._events = events
         self.confirmed = confirmed
         self.observed_statuses: list[RunStatus] = []
+        self.observed_closure_event_counts: list[int] = []
         self.calls: list[str] = []
 
     async def stop_run(self, run_id: str, *, drain: bool = True) -> SafetyStopResult:
@@ -150,6 +165,10 @@ class RecordingSafetyStopper:
         run = await self._runs.get(run_id)
         assert run is not None
         self.observed_statuses.append(run.status)
+        events = await self._events.list_after(run_id)
+        self.observed_closure_event_counts.append(
+            sum(event.event_type == "run.closure_evaluated" for event in events)
+        )
         failures = {} if self.confirmed else {"browser-1": "owner ACK pending"}
         return SafetyStopResult(
             resources={
@@ -205,6 +224,9 @@ async def build_runtime(
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
     await sessions.create(AgentSession(id="session-1", run_id="run-1", model_profile="fake-model"))
     engine = FakeEngine(events, start_error=start_error)
+    task_graphs = SQLAlchemyTaskGraphRepository(database.session_factory)
+    reasoning_graphs = SQLAlchemyReasoningGraphRepository(database.session_factory)
+    evidence = SQLAlchemyEvidenceLedgerRepository(database.session_factory)
     repos: dict[str, object] = {
         "runs": runs,
         "sessions": sessions,
@@ -213,8 +235,13 @@ async def build_runtime(
         "providers": SQLAlchemyProviderStateRepository(database.session_factory),
         "events": SQLAlchemyRunEventRepository(database.session_factory),
         "leases": SQLAlchemyRunLeaseRepository(database.session_factory),
+        "task_graphs": task_graphs,
+        "reasoning_graphs": reasoning_graphs,
+        "evidence": evidence,
     }
-    safety_stopper = RecordingSafetyStopper(runs)
+    event_repository = repos["events"]
+    assert isinstance(event_repository, SQLAlchemyRunEventRepository)
+    safety_stopper = RecordingSafetyStopper(runs, event_repository)
     repos["safety_stopper"] = safety_stopper
     resolved_context_compiler = context_compiler or MinimalContextCompiler()
     if observable_context:
@@ -236,6 +263,12 @@ async def build_runtime(
         agent_engine=engine,
         hooks=hooks,
         observer=observer,  # type: ignore[arg-type]
+        closure_verifier=ClosureVerifierApplicationService(
+            runs=runs,
+            task_graphs=task_graphs,
+            reasoning_graphs=reasoning_graphs,
+            evidence=evidence,
+        ),
         **({"safety_stopper": safety_stopper} if with_safety_stopper else {}),
         **({"subagent_executor": subagent_executor} if subagent_executor is not None else {}),
         limits=limits,
@@ -581,6 +614,7 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert isinstance(stopper, RecordingSafetyStopper)
     assert stopper.calls == ["run-1"]
     assert stopper.observed_statuses == [RunStatus.COMPLETING]
+    assert stopper.observed_closure_event_counts == [1]
     await database.dispose()
 
 
@@ -609,6 +643,12 @@ async def test_non_deferred_cycle_without_safety_stopper_stays_fenced(
     assert result.yield_reason is YieldReason.RUN_COMPLETED
     assert run is not None and run.status is RunStatus.COMPLETING
     assert intent is not None and intent.target is RunStatus.COMPLETED
+    closure_events = [
+        event
+        for event in await repos["events"].list_after("run-1")
+        if event.event_type == "run.closure_evaluated"
+    ]
+    assert len(closure_events) == 1
     await database.dispose()
 
 
@@ -646,6 +686,13 @@ async def test_non_deferred_cycle_retry_resumes_stop_gate_without_rerunning_mode
     assert completed is not None and completed.status is RunStatus.COMPLETED
     assert len(engine.requests) == 1
     assert stopper.observed_statuses == [RunStatus.COMPLETING, RunStatus.COMPLETING]
+    assert stopper.observed_closure_event_counts == [1, 1]
+    closure_events = [
+        event
+        for event in await repos["events"].list_after("run-1")
+        if event.event_type == "run.closure_evaluated"
+    ]
+    assert len(closure_events) == 1
     await database.dispose()
 
 

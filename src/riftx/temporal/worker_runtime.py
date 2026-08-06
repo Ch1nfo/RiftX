@@ -24,6 +24,7 @@ from riftx.application.services import (
     AuditApplicationService,
     AuditControlApplicationService,
     AuditRunStateProjector,
+    ClosureVerifierApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     NodeHeartbeat,
@@ -858,6 +859,12 @@ async def build_temporal_worker(
             events=event_repository,
             takeovers=SQLAlchemyActiveTakeoverReader(database.session_factory),
         )
+        closure_verifier = ClosureVerifierApplicationService(
+            runs=run_repository,
+            task_graphs=task_graph_repository,
+            reasoning_graphs=reasoning_graph_repository,
+            evidence=evidence_ledger_repository,
+        )
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
@@ -1298,6 +1305,7 @@ async def build_temporal_worker(
             safety_stopper=safety_stopper,
             hooks=hooks,
             observer=observer,
+            closure_verifier=closure_verifier,
         )
         session_manager = SessionManager(
             run_repository=run_repository,
@@ -1364,6 +1372,7 @@ async def build_temporal_worker(
                 event_repository=event_repository,
                 tool_registry=registry,
             ),
+            closure_verifier=closure_verifier,
             report_service=report_service,
             session_factory=database.session_factory,
             compaction_manager=ContextCompactionManager(

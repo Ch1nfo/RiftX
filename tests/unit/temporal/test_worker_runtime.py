@@ -14,7 +14,11 @@ from agents import OpenAIChatCompletionsModel, OpenAIResponsesModel
 from pydantic import SecretStr
 from temporalio.client import TLSConfig
 
-from riftx.application.services import ResourceStopDisposition, SafetyStopResult
+from riftx.application.services import (
+    ClosureVerifierApplicationService,
+    ResourceStopDisposition,
+    SafetyStopResult,
+)
 from riftx.config import (
     AgentConfig,
     DatabaseConfig,
@@ -229,6 +233,9 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert len(captured["activities"].registered()) > 0
     assert captured["runtime_cycle_activities"] is not None
     assert len(captured["runtime_cycle_activities"].registered()) == 1
+    closure_verifier = captured["activities"]._closure_verifier
+    assert isinstance(closure_verifier, ClosureVerifierApplicationService)
+    assert captured["runtime_cycle_activities"]._coordinator._closure_verifier is closure_verifier
     assert runtime.run_repository is not None
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None

@@ -52,6 +52,7 @@ from riftx.application.services import (
     ArtifactApplicationService,
     AuditApplicationService,
     AuditPreflightApplicationService,
+    ClosureVerifierApplicationService,
     EventApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
@@ -119,16 +120,19 @@ from riftx.persistence import (
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemyTaskGraphRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyWorkflowSignalIntentRepository,
@@ -6262,6 +6266,18 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                 event_repository=event_repository,
                 tool_registry=registry,
             ),
+            closure_verifier=ClosureVerifierApplicationService(
+                runs=runtime.run_repository,
+                task_graphs=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                reasoning_graphs=SQLAlchemyReasoningGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                evidence=SQLAlchemyEvidenceLedgerRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+            ),
             report_service=runtime.control_plane.report_service,
             session_factory=runtime.control_plane.database.session_factory,
         )
@@ -6348,6 +6364,7 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                 markdown_report = next(item for item in reports if item["format"] == "markdown")
                 report_content = await client.get(markdown_report["content_url"])
                 assert "Deterministic test service exposure" in report_content.text
+                assert "Closure outcome:** `partial`" in report_content.text
 
                 events = events_response.json()["items"]
                 event_types = [item["event_type"] for item in events]
@@ -6358,11 +6375,20 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                     "finding.created",
                     "agent.completion_requested",
                     "agent.cycle_completed",
+                    "run.closure_evaluated",
                     "report.generated",
                     "run.cleaned_up",
                 ]
                 positions = [event_types.index(event_type) for event_type in ordered_types]
                 assert positions == sorted(positions)
+                closure_event = next(
+                    item for item in events if item["event_type"] == "run.closure_evaluated"
+                )
+                assert closure_event["payload"]["outcome"] == "partial"
+                assert closure_event["payload"]["reason_codes"] == [
+                    "success_criterion_unmapped",
+                    "task_graph_missing",
+                ]
                 assert sse_response.status_code == 200
                 sse_event_types = [
                     line.removeprefix("event: ")

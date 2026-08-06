@@ -38,6 +38,7 @@ from riftx.domain import (
 from riftx.domain.base import utc_now
 
 from .artifacts import ArtifactApplicationService, RegisterArtifactContent
+from .closure import CLOSURE_EVALUATED_EVENT_TYPE, ClosureOutcome
 from .runs import require_general_run_operation
 
 _MAX_SUMMARY_LENGTH = 2_000
@@ -82,6 +83,20 @@ _REPORT_EVENT_FIELDS: Mapping[str, frozenset[str]] = {
     ),
     "agent.tool_failed": frozenset(
         {"agent_step_id", "tool", "registered_tool_id", "tool_call_id", "error_type"}
+    ),
+    CLOSURE_EVALUATED_EVENT_TYPE: frozenset(
+        {
+            "outcome",
+            "reason_codes",
+            "report_digest",
+            "task_graph_version",
+            "reasoning_graph_version",
+            "success_criterion_count",
+            "satisfied_success_criterion_count",
+            "incomplete_task_count",
+            "confirmed_finding_count",
+            "replayable_confirmed_finding_count",
+        }
     ),
 }
 
@@ -132,6 +147,10 @@ class ReportSource(BaseModel):
     success_criteria: list[dict[str, object]] = Field(default_factory=list)
     run_status: str
     run_summary: str
+    closure_outcome: ClosureOutcome = ClosureOutcome.PARTIAL
+    closure_reason_codes: list[str] = Field(
+        default_factory=lambda: ["closure_verification_missing"]
+    )
     findings: list[ReportFinding] = Field(default_factory=list)
     artifacts: list[ReportArtifactSummary] = Field(default_factory=list)
     key_events: list[ReportEventSummary] = Field(default_factory=list)
@@ -163,6 +182,8 @@ class DeterministicReportComposer:
         )
         if critical_count:
             summary = f"{summary} {critical_count} high or critical finding(s) require attention."
+        if source.closure_outcome is ClosureOutcome.PARTIAL:
+            summary = f"{summary} Closure verification returned a partial outcome."
         return StructuredReport(
             title=f"RiftX Run Report — {source.objective}",
             executive_summary=_truncate(summary, _MAX_SUMMARY_LENGTH),
@@ -319,6 +340,7 @@ class ReportApplicationService:
             _finding_for_report(item, artifact_ids=artifact_ids) for item in findings
         ]
         summary = _run_summary(events)
+        closure_outcome, closure_reason_codes = _closure_summary(events)
         return ReportSource(
             run_id=target.id,
             objective=_truncate(target.objective.description, _MAX_TEXT_LENGTH),
@@ -326,6 +348,8 @@ class ReportApplicationService:
             success_criteria=[item.model_dump(mode="json") for item in target.success_criteria],
             run_status=target.status.value,
             run_summary=_truncate(summary, _MAX_SUMMARY_LENGTH),
+            closure_outcome=closure_outcome,
+            closure_reason_codes=closure_reason_codes,
             findings=report_findings,
             artifacts=[
                 ReportArtifactSummary(
@@ -358,7 +382,7 @@ class ReportApplicationService:
             raise EntityNotFoundError("Run", run_id)
         return run
 
-    async def _all_events(self, run_id: str) -> list[RunEvent]:
+    async def _all_events(self, run_id: str) -> Sequence[RunEvent]:
         events: list[RunEvent] = []
         after_sequence = 0
         while True:
@@ -414,17 +438,27 @@ def _render_markdown(report: StructuredReport) -> str:
         "",
         f"- **Run ID:** `{source.run_id}`",
         f"- **Status:** `{source.run_status}`",
+        f"- **Closure outcome:** `{source.closure_outcome.value}`",
         f"- **Objective:** {source.objective}",
-        "",
-        "### Scope",
-        "",
-        "```json",
-        json.dumps(source.scope, ensure_ascii=False, indent=2),
-        "```",
-        "",
-        "## Findings",
-        "",
     ]
+    if source.closure_reason_codes:
+        lines.append(
+            "- **Closure reasons:** "
+            + ", ".join(f"`{item}`" for item in source.closure_reason_codes)
+        )
+    lines.extend(
+        [
+            "",
+            "### Scope",
+            "",
+            "```json",
+            json.dumps(source.scope, ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## Findings",
+            "",
+        ]
+    )
     if not source.findings:
         lines.extend(["No structured findings were recorded.", ""])
     for index, finding in enumerate(source.findings, start=1):
@@ -525,6 +559,8 @@ def _render_html(report: StructuredReport) -> str:
     title = html.escape(report.title)
     run_id = html.escape(source.run_id)
     run_status = html.escape(source.run_status)
+    closure_outcome = html.escape(source.closure_outcome.value)
+    closure_reasons = html.escape(", ".join(source.closure_reason_codes) or "none")
     executive_summary = html.escape(report.executive_summary)
     objective = html.escape(source.objective)
     generated_at = html.escape(source.generated_at.isoformat())
@@ -551,12 +587,14 @@ a {{ color: #3b82f6; }}
 <h1>{title}</h1>
 <div class="meta">
 <span class="chip">Run {run_id}</span><span class="chip">{run_status}</span>
+<span class="chip">closure: {closure_outcome}</span>
 </div>
 </header>
 <main>
 <section><h2>Executive Summary</h2><p>{executive_summary}</p></section>
 <section><h2>Run Context</h2>
-<p><strong>Objective:</strong> {objective}</p><h3>Scope</h3><pre>{scope}</pre>
+<p><strong>Objective:</strong> {objective}</p>
+<p><strong>Closure reasons:</strong> {closure_reasons}</p><h3>Scope</h3><pre>{scope}</pre>
 </section>
 <section><h2>Findings</h2>{findings}</section>
 <section><h2>Artifact Index</h2><ul>{artifacts}</ul></section>
@@ -685,6 +723,33 @@ def _run_summary(events: Sequence[RunEvent]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _closure_summary(events: Sequence[RunEvent]) -> tuple[ClosureOutcome, list[str]]:
+    event = next(
+        (item for item in reversed(events) if item.event_type == CLOSURE_EVALUATED_EVENT_TYPE),
+        None,
+    )
+    if event is None:
+        return ClosureOutcome.PARTIAL, ["closure_verification_missing"]
+    raw_outcome = event.payload.get("outcome")
+    if not isinstance(raw_outcome, str):
+        return ClosureOutcome.PARTIAL, ["closure_verification_invalid"]
+    try:
+        outcome = ClosureOutcome(raw_outcome)
+    except (TypeError, ValueError):
+        return ClosureOutcome.PARTIAL, ["closure_verification_invalid"]
+    raw_reasons = event.payload.get("reason_codes")
+    if not isinstance(raw_reasons, list) or any(
+        not isinstance(item, str) or not item for item in raw_reasons
+    ):
+        return ClosureOutcome.PARTIAL, ["closure_verification_invalid"]
+    reasons = list(dict.fromkeys(raw_reasons))
+    if outcome is ClosureOutcome.COMPLETE and reasons:
+        return ClosureOutcome.PARTIAL, ["closure_verification_invalid"]
+    if outcome is ClosureOutcome.PARTIAL and not reasons:
+        return ClosureOutcome.PARTIAL, ["closure_partial_unspecified"]
+    return outcome, reasons
 
 
 def _normalize_formats(formats: Sequence[ReportFormat]) -> list[ReportFormat]:

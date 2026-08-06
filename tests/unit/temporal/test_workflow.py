@@ -1319,6 +1319,7 @@ async def test_pre_patch_cleanup_exhaustion_keeps_intent_for_worker_recovery(
         safety_stopper=safety_stopper,  # type: ignore[arg-type]
         agent_cycle=AsyncMock(),
         approval_recorder=AsyncMock(),
+        closure_verifier=AsyncMock(),
         report_service=AsyncMock(),
         session_factory=database.session_factory,
     )

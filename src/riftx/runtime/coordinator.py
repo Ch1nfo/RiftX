@@ -12,10 +12,14 @@ from typing import Protocol, cast
 from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
+    ClosureVerifierApplicationService,
     CreateTerminal,
     RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
     TerminalApplicationService,
+    closure_event_id,
+    closure_event_payload,
     stop_resources_payload,
 )
 from riftx.domain import (
@@ -158,6 +162,7 @@ class RuntimeCoordinator:
         safety_stopper: RunSafetyStopService | None = None,
         hooks: HookBus | None = None,
         observer: RuntimeObserver | None = None,
+        closure_verifier: ClosureVerifierApplicationService | None = None,
         subagent_executor: SubagentBatchExecutor | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
@@ -188,6 +193,7 @@ class RuntimeCoordinator:
         self._safety_stopper = safety_stopper
         self._hooks = hooks
         self._observer = observer
+        self._closure_verifier = closure_verifier
         self._subagent_executor = subagent_executor
         self._limits = limits or CycleLimits()
         self._clock = clock
@@ -1018,6 +1024,14 @@ class RuntimeCoordinator:
             # without having to infer whether this Run meant COMPLETED or
             # FAILED from an in-memory cycle result.
             run = await self._runs.fence_finalization(run.id, target)
+        if target is RunStatus.COMPLETED and self._closure_verifier is not None:
+            report = await self._closure_verifier.verify(run.id)
+            await self._events.append(
+                run.id,
+                CLOSURE_EVALUATED_EVENT_TYPE,
+                closure_event_payload(report),
+                event_id=closure_event_id(report),
+            )
 
         # A coordinator assembled without every resource controller cannot
         # prove physical termination. COMPLETING is therefore the only safe
