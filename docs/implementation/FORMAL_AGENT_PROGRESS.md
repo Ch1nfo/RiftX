@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S2 — 认知运行时`
-- Current task：`COG-202 — Reasoning Graph`
+- Current task：`COG-203 — Primary Agent Proposal Tools`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -39,11 +39,12 @@
 - Completed predecessor：CAP-104，implementation commits `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
 - Completed predecessor：COG-200，implementation commits `20b8dc92`、`099ae428`、`cc48c32a`。
 - Completed predecessor：COG-201，implementation commits `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit `666d055a`。
+- Completed predecessor：COG-202，implementation commits `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Evidence Ledger 已成为 Task completion evidence 的权威引用源。统一 Evidence 记录 ID、来源 URI、内容与账本 Digest、Run/Session/Task、创建主体、Trust、Scope、Redaction、Replay 与 Artifact 引用；Artifact Span 和 Code Location 由服务端重新读取 owner-bound 权威内容并计算摘要，拒绝来源漂移、越权 Session/Task/Audit 和非规范坐标。Task 完成只接受当前 Run 的 Run 级或当前 Task 级 Evidence ID。模型通用写入口仍保持关闭，等待 COG-203。
-- Current implementation commits：COG-201 `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification `666d055a`。
-- Verification：全仓 `5109 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-201 Scoped mypy、Alembic 单 head、完整升级/降级链与跨版本迁移回归通过。
-- Next delivery slice：开始 COG-202，建立 Observation、Fact Candidate、Confirmed Fact、Hypothesis、Vulnerability Candidate、Finding、Proof 与 Negative Result 的耐久 Reasoning Graph、关系边和 Evidence 驱动晋升规则。
+- Product behavior：Reasoning Graph 已成为 Fact、Hypothesis 和 Finding 的权威认知状态。八类 Node、八类结构化 Edge、Evidence lineage、Reproduction Contract、Graph/Node CAS 和原子晋升均已耐久化；External Research、CVE 页面、PoC 描述和 User Decision 不能单独确认目标 Finding。生产 Context 优先消费 Reasoning Graph，旧 Working Memory Fact/Hypothesis 仅在新图不存在时兼容回退；Evidence Graph 只读取 ID、类型、状态和 Evidence lineage，不读取 claim、structured data 或 Reproduction Contract。模型通用写入口仍保持关闭，等待 COG-203。
+- Current implementation commits：COG-202 `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
+- Verification：全仓 `5135 passed, 5 skipped, 18 warnings`；全仓 Ruff、COG-202 Scoped mypy、Alembic 单 head、Reasoning migration/Repository/Reducer、Context、Graph Repository/Application/API 与跨版本迁移关联回归通过。
+- Next delivery slice：开始 COG-203，为 Primary Agent 增加只提交 Proposal 的 Reasoning/Working Memory 工具，并由既有 Reducer 校验后提交；模型不得直接覆盖权威图状态。
 
 ## 3. 研究与实现基线
 
@@ -126,7 +127,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
 | COG-200 | CAP-104 | completed | `20b8dc92`, `099ae428`, `cc48c32a` |
 | COG-201 | COG-200 | completed | `d9c2e530`, `f54b1ed8`, `97cd44d7` |
-| COG-202 | COG-201 | pending | — |
+| COG-202 | COG-201 | completed | `4413c1f3`, `e21a6d7f`, `eb1d30b5`, `317a20f7` |
 | COG-203 | COG-202 | pending | — |
 | COG-204 | COG-203 | pending | — |
 | COG-205 | COG-204 | pending | — |
@@ -570,6 +571,36 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5109 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit：`666d055a`。
+
+### COG-202：Reasoning Graph
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：COG-201、Task Graph、Agent Session、Working Memory、Context Compiler、Evidence Graph 与 SQLAlchemy 聚合事务边界。
+- Domain and persistence slice：
+  - 新增 Observation、Fact Candidate、Confirmed Fact、Hypothesis、Vulnerability Candidate、Finding、Proof 与 Negative Result 八类 Reasoning Node，以及 supports、contradicts、derived_from、discovered_on、validates、exploits、invalidates 与 depends_on 八类 Edge；
+  - Evidence-free Hypothesis 只能保持 unverified；Confirmed Fact 必须由 Fact Candidate 派生，Promoted Candidate 必须保留派生 lineage，Validated Proof 必须 validate Finding，Negative Result 必须 invalidate 或 contradict 既有 claim；
+  - Confirmed Finding 必须同时绑定 Evidence 与 Reproduction Contract；Node/Edge Evidence 使用归一化关联表和同 Run 复合外键，不藏入 JSON；
+  - 新增 Reasoning Graph、Node、Edge 和 Evidence association 表、SQLAlchemy Repository 与 Alembic revision `8b1d3f5a7c20`；持久化损坏或非法状态重建时失败关闭。
+- Reducer and integrity slice：
+  - 新增内部确定性 `ReasoningGraphApplicationService`，提供 Node/Edge 创建、Fact/Vulnerability 原子晋升、Proof、Negative Result 与受控状态转换；未开放 COG-203 的模型 proposal/query tools；
+  - 所有聚合修改执行 Graph version CAS；既有 Node 修改执行 Node version CAS，禁止删除 Node/Edge、修改 Edge、漂移 Node identity、伪造时间戳、回退 Evidence lineage 或跳跃初始版本；
+  - Node 绑定的 Session/Task 必须属于同 Run；绑定节点只接受 Run 级或自身 Session/Task 的 Evidence，跨 Run、Sibling Session 和其他 Task 引用失败关闭；
+  - Finding 从 Candidate 晋升为 Confirmed 时，必须至少包含目标直接 Execution、Artifact Span、HTTP、Browser、Code Location/Flow、Scanner 或 deterministic parser Evidence；External Research、CVE 页面、PoC 描述和 User Decision 不能单独完成确认。
+- Runtime and projection slice：
+  - 生产 Temporal Worker 将 Reasoning Graph Repository 接入 Context Compiler；主 Agent 获取完整耐久认知图，Subagent Delegation 只获取显式选择的 Confirmed Fact；
+  - Reasoning Graph 存在时抑制旧 Working Memory Fact/Hypothesis，旧 Run 缺少新图时继续兼容读取；Task Plan、Attempt、Approval 和其他 Working Memory 状态保持原有权威边界；
+  - Evidence Graph 优先从 Reasoning Graph 有界读取 Node/Edge 的 ID、类型、状态与 Evidence ID；不选择 claim、structured data 或 Reproduction Contract；旧 Fact/Hypothesis/Finding 仅在新图不存在时回退；
+  - Graph 投影保留全部 Reasoning relation、稳定 namespace、Evidence lineage 与 truncation/coverage 语义，截断或不可解析端点不会生成孤立 Edge。
+- Checks：
+  - Reasoning domain、Repository、Migration、Reducer、跨版本迁移关联回归：`86 passed`；
+  - Context、Subagent 与生产 Worker Runtime 关联回归：`68 passed`；
+  - Graph Repository、Application 与 API 关联回归：`57 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/reasoning src/riftx/application/graphs.py src/riftx/application/services/reasoning.py src/riftx/application/services/graphs.py src/riftx/context/items.py src/riftx/context/sources.py src/riftx/persistence/reasoning_repository.py src/riftx/persistence/graph_repositories.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 10 source files`；
+  - `conda run --no-capture-output -n agent alembic heads`：`8b1d3f5a7c20 (head)`；
+  - `conda run --no-capture-output -n agent pytest -q`：`5135 passed, 5 skipped, 18 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 与 Pydantic Field alias 提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
 
 ## 9. Known pre-existing worktree state
 
