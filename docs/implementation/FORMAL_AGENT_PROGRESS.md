@@ -32,9 +32,9 @@
 
 ## 2. Current wave
 
-- Stage：`S3 — Official Packs 与开箱即用`
-- Current task：`PACK-302 — Onboard 和 Doctor`
-- Status：`in_progress`
+- Stage：`P1 — 真实 Pentest Run`
+- Current task：`PEN-500 — Pentest Admission 与 Attack Surface`
+- Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
@@ -50,10 +50,11 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的 `riftx demo pentest` / `riftx demo code-audit`，以及本地只读 `riftx capabilities list`、`riftx capabilities verify` 和 `riftx packs list`；Onboard 生成现有 Runtime/Model/Tool Registry 可直接读取的用户级权威配置，按主机可用性禁用缺失的可选工具，并复用 Doctor 初始化本地目录、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；渗透 Demo 只播放 `demo.invalid` 的 Official Pack 脱敏离线证据，代码审计 Demo 真实运行生产内置静态检测器；Capability/Pack 命令复用权威 Repository、Official Catalog 与 System Diagnostics，数据库缺失时不创建文件，锁或 Digest 漂移时失败关闭；Pack 持久化写入已具备 SQLite 一致性备份、双端 inode identity 校验、恢复后完整性复检和 Doctor 失败自动回滚；14 个稳定检查继续覆盖 Runtime Config Migration、Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
-- Verification：全仓 `5273 passed, 5 skipped, 17 warnings`；全仓 Ruff、Onboarding/Config Maintenance/Doctor/Database Maintenance/Local FS/Model/Tool Config/Demo/Capability Management Scoped mypy、真实首次启动与重复运行 CLI 冒烟、Onboard 后双 Demo 与 Capability/Pack 命令端到端验收、发行 wheel Tool 模板、Demo 与 Capability Management 模块、14 类稳定检查、Alembic head、Official Pack immutable/install/lock/digest、SQLite 一致性备份/恢复、配置精确迁移/备份/回滚和 owner-only 初始化验证通过。
-- Next delivery slice：将 Doctor `backup_restore` 从固定占位状态改为基于现有 SQLite 备份/恢复原语的真实检查并完成 PACK-302；随后直接进入 PEN-500，交付 Pentest admission、真实 Run 入口与持久 Attack Surface。`packs install/update/rollback` 延后至 ECO-800，不再阻塞 V1。
+- Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
+- Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
+- Verification：全仓 `5275 passed, 5 skipped, 17 warnings`；全仓 Ruff；Database Maintenance/Doctor 目标回归 `27 passed`；Database Maintenance/Doctor Scoped mypy；只读 readiness、备份目录 `0700`、不安全目录失败关闭、备份/恢复 identity 与 Pack 修复回滚回归均通过。
+- Next delivery slice：进入 PEN-500，先固化 Pentest workload 边界与 admission，再交付 `riftx pentest start/status/resume/stop`、持久 Attack Surface 和一个隔离授权目标 E2E。`packs install/update/rollback` 延后至 ECO-800，不阻塞 V1。
 
 ## 3. 研究与实现基线
 
@@ -115,7 +116,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | Milestone | Status | Exit condition |
 | --- | --- | --- |
 | O0 平台根基与计划迁移 | completed | S0-S2 已完成；优化计划、ADR、账本和文档合同完成迁移 |
-| O1 开箱即用收口 | in_progress | PACK-302 的真实 Backup/Restore Doctor 检查通过 |
+| O1 开箱即用收口 | completed | PACK-302 的真实 Backup/Restore Doctor 检查通过 |
 | P1 真实 Pentest Run | pending | 非空 Scope admission、Pentest CLI、真实隔离目标和重启恢复 |
 | P2 专业验证闭环 | pending | 状态化 Web、Attack Surface、Hypothesis、Evidence 与 Negative Result |
 | P3 Attack Chain 与收口 | pending | Report、Coverage、Attack Chain 和 Stop Proof |
@@ -145,7 +146,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a`, `faf12c50`, `ab3f50b6` |
+| PACK-302 | PACK-300, PACK-301 | completed | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896`, `36100d47`, `0c70cf2e`, `3a1f0fc8`, `e4281b2f`, `6550f85a`, `faf12c50`, `ab3f50b6`, `4ba069e4` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -847,7 +848,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### PACK-302：Onboard 和 Doctor
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-06
 - Inputs：PACK-300/PACK-301 Official Pack、严格 RiftX/Model/Tool 配置加载器、Progressive Skill Registry、MCP/LSP 配置、Runner/Workspace/Audit Storage 与既有 `riftx tools doctor`。
 - Offline Doctor slice：
@@ -1006,9 +1007,16 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent ruff check src/riftx/database_maintenance.py src/riftx/doctor.py tests/unit/test_database_maintenance.py tests/unit/test_doctor.py`：passed；
   - `conda run --no-capture-output -n agent python -m pytest`：`5273 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`。
+- Backup/Restore readiness slice：
+  - 新增只读 `inspect_sqlite_backup_readiness`，复用现有 migration inspection 和数据库 file identity，同时验证备份目录的非符号链接路径、所有者、可写性与已存在目录的精确 `0700` mode；检查本身不创建目录或备份；
+  - `backup_sqlite_database` 复用同一 readiness，Doctor 与真实写路径不会对不安全备份目录给出不同结论；既有 receipt-bound restore 继续在恢复前后校验 identity 和 SQLite 完整性；
+  - Doctor 对未初始化的 file-backed SQLite 返回可修复降级，对非 file-backed 数据库要求外部备份策略，对 migration/identity/目录安全失败关闭，仅安全且已就绪的 SQLite 返回 `ready`；
+  - Database Maintenance/Doctor 定向回归：`27 passed`；`conda run --no-capture-output -n agent python -m mypy src/riftx/database_maintenance.py src/riftx/doctor.py`：`Success: no issues found in 2 source files`；
+  - `conda run --no-capture-output -n agent python -m ruff check .`：passed；`conda run --no-capture-output -n agent python -m pytest`：`5275 passed, 5 skipped, 17 warnings`；跳过和警告原因与前一切片一致；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Plan rebaseline：`9424b82b` 将正式版发布线调整为专业纵向闭环优先；内嵌 Official Packs 的 `packs install/update/rollback` 不再作为 PACK-302 或 V1 blocker，待 ECO-800 出现真实第三方来源、签名分发和多版本缓存边界后实现。
-- Remaining：Doctor `backup_restore` 仍是旧的固定 `degraded` 占位；下一切片只将其接到现有 SQLite Backup/Restore 原语并完成 PACK-302，随后进入 PEN-500 Pentest admission、真实 Run 与 Attack Surface。
+- Completion：PACK-302 计划范围已完成；下一任务是 PEN-500 Pentest admission、真实 Run 与 Attack Surface。
 
 ## 9. Known pre-existing worktree state
 
