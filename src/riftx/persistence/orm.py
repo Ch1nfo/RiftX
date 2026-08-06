@@ -2650,6 +2650,10 @@ class TaskEvidenceRequirementRecord(Base):
     __tablename__ = "task_evidence_requirements"
     __table_args__ = (
         CheckConstraint("minimum_count >= 1", name="ck_task_evidence_minimum_count"),
+        CheckConstraint(
+            "success_criterion_index IS NULL OR success_criterion_index >= 0",
+            name="ck_task_evidence_success_criterion_index",
+        ),
         ForeignKeyConstraint(
             ["run_id", "task_id"],
             ["tasks.run_id", "tasks.id"],
@@ -2657,6 +2661,11 @@ class TaskEvidenceRequirementRecord(Base):
         ),
         UniqueConstraint("run_id", "task_id", "id", name="uq_task_evidence_requirements_owner_id"),
         Index("ix_task_evidence_requirements_run_task", "run_id", "task_id"),
+        Index(
+            "ix_task_evidence_requirements_run_criterion",
+            "run_id",
+            "success_criterion_index",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
@@ -2665,6 +2674,7 @@ class TaskEvidenceRequirementRecord(Base):
     evidence_type: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     minimum_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    success_criterion_index: Mapped[int | None] = mapped_column(Integer)
     evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

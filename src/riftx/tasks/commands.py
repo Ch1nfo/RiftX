@@ -35,6 +35,7 @@ class TaskEvidenceRequirementInput(DomainModel):
     evidence_type: str = Field(min_length=1)
     description: str = Field(min_length=1)
     minimum_count: int = Field(default=1, ge=1)
+    success_criterion_index: int | None = Field(default=None, ge=0)
 
 
 class AddTaskCommand(DomainModel):

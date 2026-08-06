@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from riftx.application.errors import RepositoryConflictError
-from riftx.domain import Engagement, Objective, Run
+from riftx.domain import Engagement, Objective, Run, SuccessCriterion
 from riftx.evidence import (
     Evidence,
     EvidenceCreatorType,
@@ -52,6 +52,7 @@ async def create_planner(tmp_path: Path) -> tuple[Database, SQLAlchemyTaskPlanne
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Exercise the durable Task Planner"),
+            success_criteria=[SuccessCriterion(description="Preserve verified evidence")],
             workspace_path=str(tmp_path / "workspace"),
         )
     )
@@ -98,11 +99,15 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
                         evidence_type="artifact",
                         description="Preserve discovery output",
                         minimum_count=2,
+                        success_criterion_index=0,
                     )
                 ],
             )
         )
         assert result.graph_version == 1
+        persisted = await SQLAlchemyTaskGraphRepository(database.session_factory).get("run-1")
+        assert persisted is not None
+        assert persisted.evidence_requirements[0].success_criterion_index == 0
         result = await planner.add_task(
             AddTaskCommand(
                 run_id="run-1",
@@ -177,9 +182,7 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
                     task_id="discover",
                     attempt_id=discover_attempt.id,
                     completion_summary="Discovery completed",
-                    evidence_refs_by_requirement={
-                        "discover-output": ["research-evidence"]
-                    },
+                    evidence_refs_by_requirement={"discover-output": ["research-evidence"]},
                 )
             )
         await evidence_ledger.create(task_evidence("discover-evidence", task_id="discover"))
@@ -240,6 +243,30 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
             "worker-b",
             "worker-c",
         }
+    finally:
+        await database.dispose()
+
+
+async def test_task_evidence_rejects_unknown_success_criterion(tmp_path: Path) -> None:
+    database, planner = await create_planner(tmp_path)
+    try:
+        with pytest.raises(RepositoryConflictError, match="unknown Success Criteria"):
+            await planner.add_task(
+                AddTaskCommand(
+                    run_id="run-1",
+                    expected_graph_version=0,
+                    task_id="invalid-criterion",
+                    title="Invalid criterion mapping",
+                    evidence_requirements=[
+                        TaskEvidenceRequirementInput(
+                            id="invalid-criterion-evidence",
+                            evidence_type="artifact",
+                            description="Cannot map outside the Run contract",
+                            success_criterion_index=1,
+                        )
+                    ],
+                )
+            )
     finally:
         await database.dispose()
 

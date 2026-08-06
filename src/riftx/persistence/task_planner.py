@@ -74,6 +74,7 @@ class SQLAlchemyTaskPlanner:
                 )
                 if command.parent_task_id is not None:
                     await _require_task(session, command.run_id, command.parent_task_id)
+                await _validate_success_criterion_indexes(session, command)
                 sequence = command.sequence
                 if sequence is None:
                     sequence = (
@@ -667,6 +668,27 @@ def _ready_tasks_statement(run_id: str):
         )
         .order_by(TaskRecord.sequence, TaskRecord.id)
     )
+
+
+async def _validate_success_criterion_indexes(
+    session: AsyncSession,
+    command: AddTaskCommand,
+) -> None:
+    indexes = {
+        requirement.success_criterion_index
+        for requirement in command.evidence_requirements
+        if requirement.success_criterion_index is not None
+    }
+    if not indexes:
+        return
+    run = await session.get(RunRecord, command.run_id)
+    if run is None:
+        raise EntityNotFoundError("Run", command.run_id)
+    invalid = sorted(index for index in indexes if index >= len(run.success_criteria_json))
+    if invalid:
+        raise RepositoryConflictError(
+            f"Task Evidence Requirements reference unknown Success Criteria: {invalid}"
+        )
 
 
 def _require_status(

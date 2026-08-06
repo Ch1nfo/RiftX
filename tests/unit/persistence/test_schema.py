@@ -550,7 +550,10 @@ def test_task_graph_schema_separates_topology_attempts_budgets_and_evidence() ->
         "run_id",
         "task_id",
     }
-    assert "evidence_refs_json" in Base.metadata.tables["task_evidence_requirements"].columns.keys()
+    assert {
+        "success_criterion_index",
+        "evidence_refs_json",
+    } <= set(Base.metadata.tables["task_evidence_requirements"].columns.keys())
 
 
 def test_evidence_ledger_schema_preserves_identity_scope_and_replay_metadata() -> None:
