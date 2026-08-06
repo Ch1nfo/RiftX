@@ -8,6 +8,8 @@
 >
 > 当前代码基线：`e40af267`
 >
+> 交付重基线：2026-08-06（专业纵向闭环优先；实时进度以实施账本为准）
+>
 > 产品目标：在明确授权的渗透测试与代码审计工作负载中，持续追求比直接使用 Codex、Claude Code 与 OpenCode 更强的专业能力和更高的长期能力上限
 
 ---
@@ -30,6 +32,14 @@ RiftX 正式版需要同时兑现两个基础属性：
 - 如何测试；
 - 如何验证质量、发现退化；
 - 如何回滚。
+
+同时，每项工作必须被归入以下交付层级之一：
+
+- **V1 blocker**：没有它，新用户无法完成真实、可验证的基础渗透测试或代码审计闭环；
+- **V1 enhancement**：能明显增强专业能力，但存在安全、明确的降级路径；
+- **Post-V1 ecosystem**：只有出现真实分发、多人协作或规模化运营需求后才建设。
+
+“最终架构中有价值”不等于“必须在正式版首发前完成”。
 
 ---
 
@@ -66,18 +76,28 @@ RiftX 必须形成三个互相闭合的系统：
 
 尚未达到。
 
-当前 RiftX 的耐久运行、安全边界、审批、执行、停止证明、Artifact、Context 和审计控制面已经很强，但生产 Agent 的专业能力闭环尚未完成：
+当前 RiftX 已经具备耐久运行、安全边界、审批、执行、停止证明、Artifact、原生代码工具、Browser/Web/MCP、Progressive Skill、Task/Evidence/Reasoning Graph、Observer、Closure Verifier、Official Packs、Onboard、Doctor 和本地代码审计基线。权威完成状态和提交证据以 [正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md) 为准。
 
-- Progressive Skill 已有实现，但生产 Worker 尚未把 `skill_context` 接入 `ContextCompiler`。
-- Primary Agent 缺少生产级 Skill 搜索、加载和引用读取工具。
-- Browser、Web Research、MCP 等服务存在，但未成为生产 Primary Agent 的完整工具面。
-- 缺少对标 Codex/OpenCode 的原生代码读取、搜索、Patch、Git 和 LSP 工具。
-- Working Memory 已有 Plan、Fact、Hypothesis 和 Attempt 类型，但 Primary Agent 缺少完整的 Proposal/Reducer 写入闭环。
-- 当前 Code Audit 正式产品主要是安全的本地静态扫描基线，不是 Agentic 深度代码审计系统。
-- 当前 Evaluation 主要覆盖耐久性和恢复能力，对专业安全能力的质量回归、失败模式和长期成长覆盖不足。
-- 尚无完整的 Run Trajectory → Candidate → Replay → Review → Publish → Curate 学习链路。
+当前主要差距已经从“缺少平台基础设施”转变为“专业纵向闭环不够强”：
 
-因此，正式版开发的重点不是继续平行增加模块，而是把已有模块接成生产闭环。
+- 代码审计尚未把 Repository Intelligence、Scanner Signal、Agent 推理、反证验证、Variant Analysis 和 Finding 证据稳定串成一个默认工作流；
+- 渗透测试尚未把授权 Scope、Attack Surface、状态化请求、验证计划、负结果和 Attack Chain 串成可持续推进的真实工作流；
+- 学习能力尚未形成最小的 Trajectory → Review → Candidate → Replay → Approval 闭环；
+- 当前仍有少量开箱即用收尾项，但不应继续以横向基础设施扩张替代专业能力交付。
+
+因此，后续开发默认停止新增通用平台抽象，优先交付代码审计、渗透测试和能力成长三个可运行纵向闭环。
+
+### 2.3 交付重基线与反过度设计规则
+
+后续实施遵守以下约束：
+
+1. **真实工作流优先**：只有直接阻断代码审计、渗透测试或能力成长闭环的问题，才能成为新的平台级 V1 blocker。
+2. **先用现有能力**：新增 Repository、状态机、Graph、Middleware 或抽象前，必须证明现有生产组件不能满足当前纵向场景。
+3. **一个抽象至少有一个当前消费者**：不得只为未来 Marketplace、多租户、远程集群或未知插件预建生产框架。
+4. **降级路径优先于全量适配**：有 built-in、LSP、SARIF 或人工确认路径时，可选 Scanner、动态验证和外部服务不得阻塞 V1。
+5. **安全根基不降级**：Scope、Approval、Evidence、Redaction、Stop Proof、备份、失败恢复和默认只读不因精简计划而削弱。
+6. **任务以用户结果闭合**：任务必须从真实输入开始，以可检查的 Finding、Evidence、Report、Candidate 或恢复结果结束，不能只交付孤立模型或 Service。
+7. **生态需求后置**：Pack 安装、在线更新、签名发布、Marketplace 和跨客户端持续运行统一归入 S8，出现真实第三方分发需求后再实现。
 
 ---
 
@@ -558,6 +578,16 @@ Planner 通过以下命令修改图：
 
 ## 9. 分阶段实施计划
 
+阶段编号描述能力演进，不再代表所有任务都必须串行完成。交付优先级如下：
+
+| 层级 | 范围 | 发布含义 |
+| --- | --- | --- |
+| V1 blocker | PACK-302 最小收尾、AUD-400 至 AUD-404 的默认只读闭环、PEN-500 至 PEN-502 与 PEN-504 的授权验证闭环、LEARN-600 至 LEARN-604 的最小受控成长闭环 | 正式版首发前必须完成 |
+| V1 enhancement | AUD-405、PEN-503、更多 Scanner/语言/协议 Adapter、LEARN-605、公开评测集扩展 | 有明确降级路径时不阻塞首发 |
+| Post-V1 ecosystem | ECO-800 至 ECO-802、第三方 Pack 分发、在线更新、签名发布、Marketplace、多节点规模化运维 | 不属于正式版首发完成条件 |
+
+S4、S5、S6 允许按纵向场景交错推进。例如，代码审计第一个真实闭环所需的 Eval Case 应随 AUD 任务一起加入，不必等待 S7 才开始验证。
+
 ## S0：规格、基线与评测骨架
 
 本阶段的权威设计与进度记录：
@@ -936,7 +966,7 @@ benchmarks/security_agent/
 
 **依赖**：PACK-300、PACK-301。
 
-建议命令：
+V1 必须命令：
 
 ```text
 riftx onboard
@@ -944,10 +974,10 @@ riftx doctor
 riftx doctor --fix
 riftx capabilities list
 riftx capabilities verify
-riftx packs install
-riftx packs update
-riftx packs rollback
+riftx packs list
 ```
+
+`riftx packs install/update/rollback` 延后至 ECO-800。当前 Official Packs 随 RiftX 发行，在没有第三方 Pack 来源、签名分发和多版本本地缓存之前，不建设伪包管理器。V1 使用 Onboard/Doctor 完成 Official Pack 初始化、完整性检查和安全修复。
 
 Doctor 必须检查：
 
@@ -965,15 +995,28 @@ Doctor 必须检查：
 - 数据库迁移；
 - Backup/Restore 可用性。
 
+Backup/Restore 检查必须依据当前 file-backed SQLite、备份目录安全性和实际备份/恢复原语给出 `ready`、`degraded` 或 `failed`，不得保留“尚未实现”的固定占位状态。
+
 **阶段验收**：
 
 - 新用户完成 Onboard 后可以运行基础渗透和代码审计 Demo。
 - 缺少可选工具时给出降级路径。
 - Doctor 能定位并修复常见配置迁移问题。
+- Doctor 能在 Control Plane 停止时安全修复 SQLite/Official Pack 持久化，并在失败时恢复。
+- Capability/Pack 只读命令能够显示真实权威状态；V1 不要求远程 Pack 分发或在线升级。
 
 ---
 
-## S4：代码审计完全体
+## S4：代码审计专业闭环
+
+S4 的目标不是先建成通用静态分析平台，而是让用户提交一个真实仓库后，RiftX 能稳定完成：
+
+```text
+Snapshot → Repository Map → Candidate Search → Evidence/Flow → Skeptic Verification
+→ Variant Search → Confirmed Finding / Negative Result → Report
+```
+
+每个 AUD 任务必须接入这条默认只读链路。不能以“以后可供工作流使用”的孤立索引、Adapter 或角色定义作为完成证据。
 
 ### AUD-400：Repository Intelligence
 
@@ -981,31 +1024,27 @@ Doctor 必须检查：
 
 实现：
 
-- 语言和框架识别；
-- Route/API/Controller 索引；
-- Symbol Graph；
-- Call Graph；
-- Dependency Graph；
-- Data Flow primitives；
-- Config/Secret/CI/CD/Container Surface；
-- Git 历史和 Patch Diff 索引。
+- V1：语言和框架识别、Route/API/Controller/Entrypoint 索引、Symbol/Reference 导航、Config/Secret/CI/CD/Container Surface、Git Diff；
+- V1：为当前审计假设按需生成 Call/Data Flow 证据，不要求预计算全仓完美图；
+- Enhancement：完整 Dependency Graph、跨语言 Call Graph 和更多框架专用索引。
 
 优先集成 LSP、Tree-sitter 和成熟 Scanner，不自行开发通用编译器。
+
+**显式非目标**：V1 不自行实现通用编译器、全语言精确 CPG 或全仓预计算数据流引擎。
 
 ### AUD-401：Scanner Adapter
 
 **依赖**：AUD-400。
 
-支持：
+Adapter 优先级：
 
-- Semgrep；
-- CodeQL；
-- SARIF import；
-- Gitleaks/TruffleHog；
-- Dependency scanners；
-- 可选 Joern/CPG。
+- V1：生产内置检测器、SARIF import、Semgrep；
+- V1 enhancement：Gitleaks/TruffleHog、Dependency scanners、CodeQL；
+- Post-V1/按需：Joern/CPG 和其他重型 Scanner。
 
 Scanner 统一输出 `AuditSignal`，不得直接成为 Confirmed Finding。
+
+缺少任一可选 Scanner 时必须继续使用内置检测器、LSP、代码搜索和人工验证路径，不得阻塞基础代码审计。
 
 ### AUD-402：专业角色工作流
 
@@ -1019,7 +1058,9 @@ Scanner 统一输出 `AuditSignal`，不得直接成为 Confirmed Finding。
 - Chain Analyst；
 - Reporter。
 
-确定性步骤使用服务或 Middleware；只有需要开放式推理的任务才创建 Subagent。
+这些名称表示工作阶段和责任，不要求七个常驻 Agent。确定性步骤使用现有服务或 Middleware；只有上下文隔离、并行探索或独立反证确有收益时才创建 Subagent。
+
+**V1 验收**：至少一条真实仓库审计从 Snapshot 开始，最终生成带精确代码位置、Evidence、反证结果和修复建议的 Confirmed Finding，或生成可解释的 Negative Result/Coverage 报告。
 
 ### AUD-403：代码证据模型
 
@@ -1051,6 +1092,8 @@ Finding 必须绑定：
 - Baseline comparison；
 - Finding identity 跨版本保持。
 
+V1 先覆盖同仓库 Commit/PR Diff 和已确认 Finding 的同类变体搜索；跨仓库大规模变体索引属于后续增强。
+
 ### AUD-405：受控动态验证
 
 **依赖**：CAP-101、AUD-403。
@@ -1064,9 +1107,20 @@ Finding 必须绑定：
 - 检查残留进程和修改；
 - 原 Snapshot 永不修改。
 
+该任务属于 V1 enhancement。没有动态验证环境时，RiftX 必须保留静态证据、明确未验证条件并返回 Partial，不阻塞默认只读审计发布。
+
 ---
 
-## S5：渗透测试完全体
+## S5：渗透测试专业闭环
+
+S5 的目标是让一个明确授权的目标从 Scope 开始，形成可恢复、可审查的最小专业闭环：
+
+```text
+Scope → Attack Surface → Hypothesis → Minimal Verification → Evidence/Negative Result
+→ Finding → Attack Chain → Report/Stop Proof
+```
+
+V1 不追求覆盖所有协议、所有漏洞类别或自动利用；优先保证状态连续、验证纪律和证据质量。
 
 ### PEN-500：Attack Surface Graph
 
@@ -1081,11 +1135,13 @@ Finding 必须绑定：
 - Credential/Privilege；
 - Request/Response/Artifact。
 
+V1 只要求当前 Engagement 实际观察到的节点和关系按需入图，不要求预先建设互联网级资产图谱或全量 CMDB。
+
 ### PEN-501：状态化 Web 测试
 
 **依赖**：CAP-102、PEN-500。
 
-- Browser、Burp、Target HTTP 使用统一 Request Identity。
+- Browser、Target HTTP 和已接入的流量来源使用统一 Request Identity；Burp 等外部代理属于可选 Adapter。
 - Cookie/Token 使用 Secret Reference，不进入普通模型文本。
 - 支持请求 Diff、响应 Diff、重放和最小化。
 - 用户接管后通过 Takeover Summary 恢复。
@@ -1114,6 +1170,8 @@ Finding 必须绑定：
 - PoC 必须先静态审计、参数化、沙箱化并审批。
 - “公开存在 PoC”和“目标可利用”分开记录。
 
+该任务属于 V1 enhancement。没有外部研究能力时，版本线索和目标验证仍可由本地证据推进；不得因缺少 CVE/PoC 搜索阻塞基础渗透闭环。
+
 ### PEN-504：Attack Chain
 
 **依赖**：COG-201、PEN-500、PEN-502。
@@ -1130,9 +1188,20 @@ Finding 必须绑定：
 
 没有 Evidence 的关系边必须标记为 Hypothesis。
 
+**V1 验收**：至少一个隔离授权靶场能够跨请求或浏览器状态持续推进，产生已验证 Finding 或有证据的 Negative Result，并在取消、失败或重启后保持 Stop/Recovery 语义。
+
 ---
 
 ## S6：学习飞轮
+
+S6 的 V1 目标是“越用越顺手，但不会自我污染”，不是一次性完成自治学习平台。最小闭环为：
+
+```text
+Trajectory → Post-run Review → Failure Classification → Capability Candidate
+→ Bounded Replay → Human Approval → Versioned Activation / Rejection
+```
+
+V1 只要求 Operator 层能力成长；Organization/Engagement Profile 的完整导入迁移和跨节点同步属于增强项。
 
 ### LEARN-600：Trajectory Store 与 Session Search
 
@@ -1142,6 +1211,8 @@ Finding 必须绑定：
 - 支持 FTS/CJK 搜索。
 - 返回摘要和引用，而不是整段历史注入。
 - 支持按 Run、资产、Tool、Skill、Finding、失败类型过滤。
+
+V1 可先使用现有持久化与数据库全文检索能力；没有真实规模瓶颈前不引入独立向量数据库或第二套检索基础设施。
 
 ### LEARN-601：Post-run Review
 
@@ -1184,6 +1255,8 @@ Finding 必须绑定：
 - Token、时间、工具调用和结果评分。
 - 失败时保存可诊断 Artifact。
 
+V1 允许对高风险 Capability 使用较小但有负向和旧版本回归的确定性案例集；大规模并行 Benchmark、复杂统计显著性和远程靶场池属于后续增强。
+
 ### LEARN-604：Capability Curator
 
 **依赖**：CAP-001、LEARN-603。
@@ -1211,11 +1284,15 @@ Finding 必须绑定：
 - `doctor --fix` 负责配置迁移。
 - 远程 Runner 仅同步授权能力和 Credential Reference。
 
+该任务属于 V1 enhancement，不阻塞首个 Operator Capability 从 Candidate 安全晋升为 Active。
+
 ---
 
 ## S7：专业能力评测与回归保障
 
 本阶段的目的，是建立稳定的研发反馈系统：发现能力短板、复现失败、检查 RiftX 自身版本回归、评估 Capability Pack 的实际影响，并为安全发布提供证据。本阶段不承担“证明 RiftX 整体超过某个通用 Agent”的任务，也不建设 Codex、Claude Code 或 OpenCode 的对标 Harness。
+
+S7 不是等 S4/S5/S6 全部完成后才开始的独立平台工程。每个专业纵向切片必须同时留下最小可复位 Fixture、负向案例或 Replay；S7 只负责把已经证明有用的案例固化为稳定回归集和发布门。
 
 ### EVAL-700：代码审计语料
 
@@ -1307,6 +1384,13 @@ Finding 必须绑定：
 
 ## S8：Pack 生态与正式版运维
 
+S8 全部属于 Post-V1 ecosystem，不阻塞正式版首发。只有同时满足以下条件才开始：
+
+- 已存在真实的第三方或组织 Pack 来源；
+- 需要在 RiftX 发行周期之外独立安装或更新 Pack；
+- 已明确 Publisher、签名、撤销、依赖和本地多版本缓存的产品边界；
+- S4/S5/S6 的纵向闭环已被真实用户使用并产生可复用 Capability。
+
 ### ECO-800：Pack SDK
 
 **依赖**：CAP-001、LEARN-604。
@@ -1324,6 +1408,8 @@ riftx pack publish
 riftx pack update
 riftx pack rollback
 ```
+
+这些命令在 ECO-801 的信任与供应链边界可用前不得以只修改本地数据库的空壳形式提前发布。
 
 ### ECO-801：信任与供应链
 
@@ -1366,20 +1452,35 @@ conda run --no-capture-output -n agent ruff check <changed-python-files>
 
 ### 10.2 单任务流程
 
-Codex 每个任务必须：
+每个 Task 应对应一个可演示、可回滚的用户结果。正常情况下，一个实现切片只跨越一个主要能力边界；如果需要连续新增多套 Domain、Repository、API 和 UI 才能描述结果，应先拆分任务。
+
+Codex 每个实现任务必须：
 
 1. 阅读 `AGENTS.md`、本文件、相关 ADR 和实施账本。
 2. 检查 `git status --short`，保留所有无关用户改动。
 3. 将任务设为 `in_progress`。
-4. 先建立失败测试、Fixture 或 Benchmark Case。
-5. 实现最小生产闭环，不能只新增孤立类。
-6. 运行目标测试。
-7. 运行关联回归。
-8. 更新 API、配置示例、文档和实施账本。
-9. 执行 `git diff --check`。
-10. 验收门通过后才能将任务标记为 `completed`。
+4. 明确本切片的用户输入、生产路径、权威输出、安全不变量和显式非目标。
+5. 为非平凡逻辑建立能证明行为的失败测试、Fixture 或 Replay Case。
+6. 实现最小生产闭环，优先复用现有组件，不能只新增孤立类。
+7. 运行目标测试、关联回归、静态检查和 `git diff --check`。
+8. 创建独立实现提交；不得把无关改动或多个未闭合方向混入同一提交。
+9. 一个 Task 的实现切片全部完成后，再更新一次 API/配置文档和实施账本并创建任务级文档提交；不为纯粹的微小内部步骤反复更新账本。
+10. 只有验收门、对应验证层级和恢复策略均有证据时，Task 才能标记为 `completed`。
 
-### 10.3 每个任务提示模板
+### 10.3 分层验证门禁
+
+| 层级 | 触发时机 | 必须执行 |
+| --- | --- | --- |
+| Slice gate | 每个实现提交 | 目标测试、受影响模块关联回归、变更文件 Ruff/mypy/typecheck、`git diff --check` |
+| Task gate | 一个 Task 完成 | 该用户工作流 E2E、相关持久化/迁移/恢复测试、受影响子系统完整测试 |
+| Milestone gate | M3/M4/M5 或跨 Runtime/Schema/Security 边界 | 全仓 Python 测试、全仓 Ruff、相关 Web/Desktop build、release gate |
+| Release gate | 正式发布候选 | 全平台可执行检查、关键真实场景 Replay、已知限制审查、完整发布命令 |
+
+以下改动即使很小，也必须提升到 Milestone gate：数据库 migration head、Scope/Approval、进程停止证明、Artifact 访问控制、Credential 边界、全局 Runtime 协议和恢复原语。
+
+全仓 5000+ 测试不再作为每个微小切片的固定前置条件；它用于高风险边界、Task/Milestone 收口和发布验证。任何定向验证都不得被描述成全仓完成证据。
+
+### 10.4 每个任务提示模板
 
 ```text
 Task ID:
@@ -1398,7 +1499,7 @@ Rollback strategy:
 Documentation updates:
 ```
 
-### 10.4 禁止事项
+### 10.5 禁止事项
 
 Codex 不得：
 
@@ -1413,8 +1514,10 @@ Codex 不得：
 - 默认启用深层嵌套多 Agent。
 - 在 Code Audit 默认模式执行目标代码、安装脚本或 Git Hook。
 - 以“工具数量”“Prompt 长度”、单次 Demo 或单一 Benchmark 代替真实能力判断。
+- 在已有安全降级路径时，把可选 Adapter、Marketplace、完整 UI 或远程分发设为 V1 blocker。
+- 为没有当前生产消费者的未来场景新增第二套 Catalog、Repository、Graph 或健康状态。
 
-### 10.5 阶段发布命令
+### 10.6 里程碑与发布命令
 
 ```bash
 conda run --no-capture-output -n agent ruff check src/riftx tests migrations
@@ -1430,29 +1533,35 @@ git diff --check
 
 ## 11. 推荐实施顺序
 
-严格按以下顺序推进：
+已有平台根基的完成状态以实施账本为准，不再重复建设。后续默认顺序调整为：
 
 ```text
-Security Capability Evaluation 骨架
-→ Capability 数据模型
-→ 生产 Progressive Skill
-→ 原生代码工具
-→ Browser/Web/MCP 生产闭环
-→ 持久 Tool/Skill Selection
-→ Task/Evidence/Reasoning Graph
-→ Observer 和 Closure Verifier
-→ Official Baseline Packs
-→ Code Audit 完全体
-→ Penetration Testing 完全体
-→ Learning Flywheel
-→ Pack Registry 与正式版生态
+PACK-302 最小收尾（真实 Backup/Restore Doctor 检查）
+→ Code Audit 第一条真实纵向闭环
+→ Code Audit Diff / Variant / Scanner 增强
+→ Pentest 第一条授权状态化纵向闭环
+→ Attack Chain 与恢复/停止验收
+→ Operator Learning 最小闭环
+→ 专业回归集与发布门
+→ 可选动态验证、CVE Research、Profile 增强
+→ 有真实分发需求后再建设 Pack SDK / Registry / Gateway
 ```
 
-第一阶段不应优先建设 Marketplace、复杂 UI 或多层 Agent Team。首先要证明生产 Agent 能真正发现、加载、执行、记录和恢复专业能力。
+这不是禁止必要的跨阶段反馈：某个真实审计或渗透工作流暴露缺失的 Runtime 能力时，可以补齐根因；但必须以该工作流的通过证据收口，不能重新进入无边界的平台扩张。
+
+近期明确不做：
+
+- 在内嵌 Official Packs 之外没有真实来源时实现 `packs install/update/rollback`；
+- 为所有语言和框架预建完整语义图；
+- 把七个审计角色实现为七个常驻 Agent；
+- 为单机本地操作者提前建设 Marketplace、多租户或远程 Pack 自动更新；
+- 在首个安全 Candidate 晋升闭环前建设大规模自治学习基础设施。
 
 ---
 
 ## 12. 里程碑定义
+
+M1/M2 是平台根基里程碑，M3 是正式版 V1 发布线；M4/M5 是专业能力和成长能力扩展，M6 是长期产品方向，不得用 M4-M6 的最终形态无限推迟 M3。
 
 ### M1：生产能力可加载
 
@@ -1470,7 +1579,8 @@ Security Capability Evaluation 骨架
 
 - Official Pentest/Code Audit Packs。
 - Onboard、Doctor、降级路径。
-- 新用户可以完成基础闭环。
+- 新用户可以对一个安全 Fixture/授权靶场完成真实基础闭环，而不只是播放 Demo。
+- Backup/Restore、配置迁移和失败恢复具有真实检查与证据。
 
 ### M4：专业能力形成优势
 
@@ -1488,24 +1598,35 @@ Security Capability Evaluation 骨架
 - 评测、复盘和用户反馈能够稳定暴露短板并驱动 Capability 演进。
 - Official、Operator 和 Organization Pack 形成通用 Agent 难以自然复制的长期能力积累。
 
+M6 不设“证明超过某个通用 Agent”的量化完成门；它通过长期真实任务质量、复盘、操作者反馈和 Capability 演进持续判断。
+
 ---
 
 ## 13. 正式版完成定义
 
-RiftX 正式版只有同时满足以下条件才算完成：
+RiftX 正式版 V1 只有同时满足以下条件才算完成：
 
-1. 新用户通过 Onboard 和 Doctor 可以运行基础安全任务。
-2. Primary Agent 的 Tool、Skill、Browser、Web、MCP、Code 能力全部走生产 Runtime。
-3. Task、Evidence、Fact、Hypothesis、Finding 和 Attempt 均为耐久状态。
-4. 每个 Confirmed Finding 都有可访问、可验证、可重放的 Evidence。
-5. Worker、Runner 或客户端重启不丢失任务和能力选择。
-6. 用户可以创建 Operator/Organization Pack，并通过 Eval 晋升。
-7. 自动学习不会未经批准污染正式能力库。
-8. Capability 可以版本化、签名、禁用、归档和回滚。
-9. Code Audit 默认只读且不执行目标项目。
-10. 渗透测试所有目标交互受 Scope、Approval 和 Stop Proof 约束。
-11. 专业能力评测能够检查关键场景、复现失败并阻止明显回归。
-12. 正式版发布评审综合功能质量、安全边界、真实任务复盘和已知限制。
+1. 新用户通过 Onboard 和 Doctor 可以运行基础代码审计与授权渗透测试；缺少可选工具时有明确降级路径。
+2. Primary Agent 使用的 Tool、Skill、Browser、Web、MCP 和 Code 能力走生产 Runtime，不存在只在 Demo 中可用的替代实现。
+3. 至少一条代码审计纵向路径能够从真实 Repository Snapshot 生成可验证 Finding、Negative Result 和报告。
+4. 至少一条授权渗透纵向路径能够从 Scope 和 Attack Surface 推进到最小验证、Evidence/Negative Result、Finding/Attack Chain 和 Stop Proof。
+5. Task、Evidence、Fact、Hypothesis、Finding、Attempt 和关键 Capability Selection 为耐久状态；重启不静默丢失或改变它们。
+6. 每个 Confirmed Finding 都有可访问、可验证、可重放或可明确解释不可重放原因的 Evidence。
+7. Code Audit 默认只读，不执行目标项目、安装脚本或 Git Hook；动态验证必须显式批准并隔离。
+8. 渗透测试所有目标交互受 Scope、Approval、预算和 Stop Proof 约束。
+9. 用户可以添加 Operator Skill/Technique，并通过最小 Candidate、Replay 和人工批准流程安全激活；未经批准的学习结果不能污染生产能力。
+10. Capability 具有版本、Digest、Provenance、禁用和恢复能力；V1 不要求远程 Marketplace 或在线 Pack 更新。
+11. Backup/Restore、配置迁移、数据库迁移和关键失败恢复具有真实检查和回归证据。
+12. Slice/Task/Milestone 验证门能够复现关键失败并阻止明显功能或安全回归；发布评审记录真实任务复盘与已知限制。
+
+以下能力明确不属于 V1 完成条件：
+
+- 第三方 Pack Marketplace、在线安装/更新/发布和完整供应链服务；
+- Organization Pack 的规模化协作治理和跨节点同步；
+- 所有 Scanner、语言、框架、协议和 CVE 数据源的全量支持；
+- 默认动态执行目标代码或自动运行外部 PoC；
+- 多租户控制面、复杂 Agent Team 和大规模远程 Runner 集群；
+- 用统一排行榜或总分证明 RiftX 超过 Codex、Claude Code 或 OpenCode。
 
 ---
 
