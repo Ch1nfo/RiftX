@@ -73,6 +73,9 @@ class APIClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def health(self) -> dict[str, Any]:
+        return self._json("GET", "/healthz")
+
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         return self._json("POST", "/api/v1/runs", json=payload)
 
@@ -562,7 +565,7 @@ class APIClient:
             return {}
         return {"Authorization": f"Bearer {self._admin_token}"}
 
-    def _json(self, method: str, path: str, **kwargs: object) -> dict[str, Any]:
+    def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         response = self._client.request(method, path, **kwargs)
         self._raise_for_error(response)
         payload = response.json()
@@ -575,7 +578,7 @@ class APIClient:
             )
         return payload
 
-    def _text(self, method: str, path: str, **kwargs: object) -> str:
+    def _text(self, method: str, path: str, **kwargs: Any) -> str:
         response = self._client.request(method, path, **kwargs)
         self._raise_for_error(response)
         return response.text

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -22,6 +23,14 @@ class DoctorStatus(StrEnum):
     READY = "ready"
     DEGRADED = "degraded"
     FAILED = "failed"
+
+
+class DoctorLiveClient(Protocol):
+    def health(self) -> dict[str, object]: ...
+
+    def get_node(self, node_id: str) -> dict[str, object]: ...
+
+    def list_tools(self, node_id: str) -> dict[str, object]: ...
 
 
 DOCTOR_CHECK_IDS = (
@@ -126,6 +135,232 @@ def run_local_doctor(
         ),
     )
     return DoctorReport(checks=checks)
+
+
+def run_live_doctor(
+    config: RiftXConfig,
+    report: DoctorReport,
+    client: DoctorLiveClient,
+) -> DoctorReport:
+    """Overlay read-only Control Plane evidence onto an offline Doctor report."""
+
+    try:
+        health = client.health()
+    except Exception as exc:  # network/client boundary
+        return _replace_checks(
+            report,
+            {
+                "runner": DoctorCheck(
+                    id="runner",
+                    status=DoctorStatus.FAILED,
+                    detail=f"Control Plane is unreachable: {exc}",
+                    remediation="Start the RiftX Control Plane and retry `riftx doctor`.",
+                )
+            },
+        )
+    if health.get("status") != "ok":
+        return _replace_checks(
+            report,
+            {
+                "runner": DoctorCheck(
+                    id="runner",
+                    status=DoctorStatus.FAILED,
+                    detail="Control Plane health response is not ready.",
+                    remediation="Inspect Control Plane logs and retry `riftx doctor`.",
+                )
+            },
+        )
+
+    try:
+        node = client.get_node(config.runner.node_id)
+    except Exception as exc:  # API boundary
+        node_updates = {
+            "runner": DoctorCheck(
+                id="runner",
+                status=DoctorStatus.FAILED,
+                detail=f"Runner {config.runner.node_id!r} is unavailable: {exc}",
+                remediation="Start or register the configured Runner.",
+            )
+        }
+    else:
+        node_updates = _live_node_checks(config, node)
+
+    try:
+        tools = client.list_tools(config.runner.node_id)
+    except Exception as exc:  # API boundary
+        tool_check = DoctorCheck(
+            id="tools",
+            status=DoctorStatus.FAILED,
+            detail=f"Live Tool Registry is unavailable: {exc}",
+            remediation="Restore the Runner Tool Registry and retry `riftx doctor`.",
+        )
+    else:
+        tool_check = _live_tool_check(tools)
+    return _replace_checks(report, {**node_updates, "tools": tool_check})
+
+
+def _replace_checks(
+    report: DoctorReport,
+    replacements: Mapping[str, DoctorCheck],
+) -> DoctorReport:
+    return DoctorReport(
+        checks=tuple(replacements.get(check.id, check) for check in report.checks)
+    )
+
+
+def _live_node_checks(
+    config: RiftXConfig,
+    node: Mapping[str, object],
+) -> dict[str, DoctorCheck]:
+    status = str(node.get("status", "unknown"))
+    version = str(node.get("runner_version", "unknown"))
+    if status == "online":
+        runner = DoctorCheck(
+            id="runner",
+            status=DoctorStatus.READY,
+            detail=f"Runner {config.runner.node_id!r} is online (version {version}).",
+        )
+    elif status == "degraded":
+        runner = DoctorCheck(
+            id="runner",
+            status=DoctorStatus.DEGRADED,
+            detail=f"Runner {config.runner.node_id!r} reports degraded health.",
+            remediation="Inspect Runner logs and active resource pressure.",
+        )
+    else:
+        runner = DoctorCheck(
+            id="runner",
+            status=DoctorStatus.FAILED,
+            detail=f"Runner {config.runner.node_id!r} is {status}.",
+            remediation="Start or reconnect the configured Runner.",
+        )
+
+    labels = _string_mapping(node.get("labels"))
+    capabilities = _string_set(node.get("capabilities"))
+    updates = {"runner": runner}
+    if status == "online" and labels.get("mode") == "worker-local":
+        updates["temporal"] = DoctorCheck(
+            id="temporal",
+            status=DoctorStatus.READY,
+            detail="The online production Worker provides current Temporal connectivity proof.",
+        )
+    if status == "online" and "browser_playwright" in capabilities:
+        updates["browser"] = DoctorCheck(
+            id="browser",
+            status=DoctorStatus.READY,
+            detail="The online Runner advertises Playwright browser capability.",
+        )
+    if any(server.enabled for server in config.mcp.servers.values()):
+        updates["mcp"] = _live_mcp_check(labels)
+    return updates
+
+
+def _live_mcp_check(labels: Mapping[str, str]) -> DoctorCheck:
+    refresh_status = labels.get("mcp_refresh_status")
+    unavailable = _nonnegative_int(labels.get("mcp_unavailable_server_count"))
+    open_circuits = _nonnegative_int(labels.get("mcp_open_circuit_count"))
+    if refresh_status == "ready" and unavailable == 0 and open_circuits == 0:
+        return DoctorCheck(
+            id="mcp",
+            status=DoctorStatus.READY,
+            detail="Worker MCP discovery is current and all configured Servers are available.",
+        )
+    if refresh_status == "unavailable" or (unavailable is not None and unavailable > 0):
+        return DoctorCheck(
+            id="mcp",
+            status=DoctorStatus.FAILED,
+            detail="One or more enabled MCP Servers are unavailable.",
+            remediation="Restore MCP Server connectivity and inspect Worker refresh logs.",
+        )
+    return DoctorCheck(
+        id="mcp",
+        status=DoctorStatus.DEGRADED,
+        detail="MCP runtime health labels are incomplete or have open circuits.",
+        remediation="Wait for Worker discovery refresh or inspect MCP circuit state.",
+    )
+
+
+def _live_tool_check(payload: Mapping[str, object]) -> DoctorCheck:
+    raw_tools = payload.get("tools")
+    if not isinstance(raw_tools, list):
+        return DoctorCheck(
+            id="tools",
+            status=DoctorStatus.FAILED,
+            detail="Live Tool Registry returned an invalid payload.",
+            remediation="Upgrade or repair the Control Plane and Runner.",
+        )
+    enabled: list[tuple[str, Mapping[str, object], Mapping[str, object]]] = []
+    for item in raw_tools:
+        if not isinstance(item, Mapping):
+            continue
+        definition = item.get("definition")
+        state = item.get("state")
+        if (
+            isinstance(definition, Mapping)
+            and isinstance(state, Mapping)
+            and definition.get("enabled") is True
+        ):
+            enabled.append((str(definition.get("id", "unknown")), definition, state))
+    unavailable = sorted(
+        tool_id
+        for tool_id, _, state in enabled
+        if state.get("availability") != "available"
+    )
+    if unavailable:
+        return DoctorCheck(
+            id="tools",
+            status=DoctorStatus.FAILED,
+            detail="Enabled tools are unavailable: " + ", ".join(unavailable),
+            remediation="Install or repair the unavailable tools, then run `riftx tools doctor`.",
+        )
+    missing_versions = sorted(
+        tool_id
+        for tool_id, definition, state in enabled
+        if definition.get("version_probe") is not None and not state.get("version")
+    )
+    if missing_versions:
+        return DoctorCheck(
+            id="tools",
+            status=DoctorStatus.DEGRADED,
+            detail="Tool versions were not resolved: " + ", ".join(missing_versions),
+            remediation="Run `riftx tools doctor` after restoring each version probe.",
+        )
+    if not enabled:
+        return DoctorCheck(
+            id="tools",
+            status=DoctorStatus.DEGRADED,
+            detail="No external Runner tool is enabled; built-in code tools remain available.",
+            remediation="Enable external tools only when the engagement requires them.",
+        )
+    return DoctorCheck(
+        id="tools",
+        status=DoctorStatus.READY,
+        detail=f"All {len(enabled)} enabled Runner tools are available with required versions.",
+    )
+
+
+def _string_mapping(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, str)
+    }
+
+
+def _string_set(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def _nonnegative_int(value: str | None) -> int | None:
+    try:
+        parsed = int(value) if value is not None else None
+    except ValueError:
+        return None
+    return parsed if parsed is not None and parsed >= 0 else None
 
 
 def _resolve(path: Path, cwd: Path) -> Path:
@@ -479,5 +714,6 @@ __all__ = [
     "DoctorCheck",
     "DoctorReport",
     "DoctorStatus",
+    "run_live_doctor",
     "run_local_doctor",
 ]

@@ -10,6 +10,23 @@ import pytest
 from riftx.cli.client import APIClient, RiftXAPIError, parse_sse_lines
 
 
+def test_api_client_reads_control_plane_health() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok", "trust_profile": "local_trusted"})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        health = client.health()
+
+    assert health["status"] == "ok"
+    assert requests[0].url.path == "/healthz"
+
+
 def test_api_client_uses_shared_run_endpoints() -> None:
     requests: list[httpx.Request] = []
 

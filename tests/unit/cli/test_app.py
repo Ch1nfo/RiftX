@@ -24,7 +24,7 @@ class FakeAPIClient:
     fail = False
     unhealthy = False
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, **_: object) -> None:
         self.base_url = base_url
         self.calls: list[tuple[str, object]] = []
         self.__class__.instances.append(self)
@@ -34,6 +34,10 @@ class FakeAPIClient:
 
     def __exit__(self, *_: object) -> None:
         return None
+
+    def health(self) -> dict[str, Any]:
+        self.calls.append(("health", None))
+        return {"status": "ok", "trust_profile": "local_trusted"}
 
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         self.calls.append(("create_run", payload))
