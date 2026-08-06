@@ -26,6 +26,7 @@ from riftx.database_maintenance import (
     SQLiteBackupError,
     SQLiteMigrationStatus,
     backup_sqlite_database,
+    inspect_sqlite_backup_readiness,
     inspect_sqlite_migration,
     repair_sqlite_database,
     restore_sqlite_database_backup,
@@ -173,12 +174,7 @@ def run_local_doctor(
         _check_storage(config, root),
         _check_pack_integrity(config, root, catalog, official_packs, pack_error),
         _check_database(config, root),
-        DoctorCheck(
-            id="backup_restore",
-            status=DoctorStatus.DEGRADED,
-            detail="Backup and restore verification is not available yet.",
-            remediation="Keep external backups until RiftX backup/restore support is installed.",
-        ),
+        _check_backup_restore(config, root),
     )
     return DoctorReport(checks=checks)
 
@@ -1089,6 +1085,51 @@ def _check_database(config: RiftXConfig, cwd: Path) -> DoctorCheck:
         status=DoctorStatus.DEGRADED,
         detail="Database configuration is valid; the live Alembic revision was not read.",
         remediation="Use a live Doctor probe to compare the database revision with Alembic head.",
+    )
+
+
+def _check_backup_restore(config: RiftXConfig, cwd: Path) -> DoctorCheck:
+    try:
+        url = make_url(config.database.url)
+    except ArgumentError as exc:
+        return DoctorCheck(
+            id="backup_restore",
+            status=DoctorStatus.FAILED,
+            detail=f"Database URL is invalid: {exc}",
+            remediation="Repair database.url before relying on backup and restore.",
+        )
+    if url.get_backend_name() != "sqlite" or url.database in {None, "", ":memory:"}:
+        return DoctorCheck(
+            id="backup_restore",
+            status=DoctorStatus.DEGRADED,
+            detail="Built-in backup and restore only supports file-backed SQLite.",
+            remediation="Configure and verify an external backup policy for this database.",
+        )
+    migration = inspect_sqlite_migration(config.database.url, cwd=cwd)
+    assert migration is not None
+    if migration.status in {SQLiteMigrationStatus.MISSING, SQLiteMigrationStatus.EMPTY}:
+        return DoctorCheck(
+            id="backup_restore",
+            status=DoctorStatus.DEGRADED,
+            detail="SQLite backup and restore will be available after database initialization.",
+            remediation="Run `riftx doctor --fix` while the Control Plane is stopped.",
+        )
+    try:
+        readiness = inspect_sqlite_backup_readiness(config.database.url, cwd=cwd)
+    except SQLiteBackupError as exc:
+        return DoctorCheck(
+            id="backup_restore",
+            status=DoctorStatus.FAILED,
+            detail=f"SQLite backup and restore are not safe to use: {exc}",
+            remediation="Repair the database or owner-only backup directory before continuing.",
+        )
+    return DoctorCheck(
+        id="backup_restore",
+        status=DoctorStatus.READY,
+        detail=(
+            "SQLite backup and receipt-bound restore are ready; backups use "
+            f"{readiness.backup_directory}."
+        ),
     )
 
 

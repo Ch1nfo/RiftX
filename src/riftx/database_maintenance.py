@@ -64,6 +64,12 @@ class SQLiteBackupResult:
     backup_identity: tuple[int, int] = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class SQLiteBackupReadiness:
+    path: Path
+    backup_directory: Path
+
+
 class DatabaseRepairError(RuntimeError):
     def __init__(
         self,
@@ -285,12 +291,12 @@ def repair_sqlite_database(
     )
 
 
-def backup_sqlite_database(
+def inspect_sqlite_backup_readiness(
     database_url: str,
     *,
     cwd: Path,
-) -> SQLiteBackupResult:
-    """Create an owner-only consistent backup of one ready local SQLite database."""
+) -> SQLiteBackupReadiness:
+    """Verify the read-only preconditions shared by SQLite backup and restore."""
 
     state = inspect_sqlite_migration(database_url, cwd=cwd)
     if state is None:
@@ -299,7 +305,27 @@ def backup_sqlite_database(
         raise SQLiteBackupError(
             f"SQLite database is {state.status.value}; migrate it before backup."
         )
-    database_path = state.path
+    backup_directory = state.path.parent / "backups"
+    try:
+        _regular_file_identity(state.path)
+        _verify_backup_directory_target(backup_directory)
+    except (DatabaseRepairError, OSError) as exc:
+        raise SQLiteBackupError(f"SQLite backup destination is unsafe: {exc}") from exc
+    return SQLiteBackupReadiness(
+        path=state.path,
+        backup_directory=backup_directory,
+    )
+
+
+def backup_sqlite_database(
+    database_url: str,
+    *,
+    cwd: Path,
+) -> SQLiteBackupResult:
+    """Create an owner-only consistent backup of one ready local SQLite database."""
+
+    readiness = inspect_sqlite_backup_readiness(database_url, cwd=cwd)
+    database_path = readiness.path
     try:
         source_identity = _regular_file_identity(database_path)
         source = sqlite3.connect(database_path, timeout=1.0)
@@ -413,6 +439,48 @@ def _backup_locked_database(
     except Exception:
         backup_path.unlink(missing_ok=True)
         raise
+
+
+def _verify_backup_directory_target(path: Path) -> None:
+    normalized = Path(os.path.abspath(os.fspath(path)))
+    nearest_existing: Path | None = None
+    missing_parent = False
+    for candidate in reversed((normalized, *normalized.parents)):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            missing_parent = True
+            continue
+        if missing_parent:
+            raise DatabaseRepairError(
+                f"Backup path changed while it was being inspected: {normalized}"
+            )
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise DatabaseRepairError(
+                f"Backup path contains a non-directory or symbolic link: {normalized}"
+            )
+        mode = stat.S_IMODE(metadata.st_mode)
+        trusted_sticky_root = metadata.st_uid == 0 and bool(mode & stat.S_ISVTX)
+        if metadata.st_uid not in {0, os.geteuid()} or (
+            mode & 0o022 and not trusted_sticky_root
+        ):
+            raise DatabaseRepairError(
+                f"Backup path has an unsafe writable ancestor: {normalized}"
+            )
+        nearest_existing = candidate
+    if nearest_existing is None or not os.access(
+        nearest_existing,
+        os.W_OK | os.X_OK,
+    ):
+        raise DatabaseRepairError(
+            f"Backup directory cannot be created or written: {normalized}"
+        )
+    if normalized.exists():
+        metadata = normalized.lstat()
+        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise DatabaseRepairError(
+                f"Existing backup directory must be owner-only (0700): {normalized}"
+            )
 
 
 def _run_upgrade(connection: Connection, config_path: Path) -> None:
@@ -529,10 +597,12 @@ __all__ = [
     "DatabaseRepairError",
     "DatabaseRepairResult",
     "SQLiteBackupError",
+    "SQLiteBackupReadiness",
     "SQLiteBackupResult",
     "SQLiteMigrationState",
     "SQLiteMigrationStatus",
     "backup_sqlite_database",
+    "inspect_sqlite_backup_readiness",
     "inspect_sqlite_migration",
     "repair_sqlite_database",
     "resolve_alembic_config_path",

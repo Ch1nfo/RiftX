@@ -128,6 +128,18 @@ def test_doctor_fails_when_enabled_lsp_socket_or_credential_is_missing(
     assert report.failed
 
 
+def test_doctor_reports_real_sqlite_backup_restore_readiness(tmp_path: Path) -> None:
+    config = _write_runtime_configs(tmp_path)
+    doctor_module.repair_sqlite_database(config.database.url, cwd=tmp_path)
+
+    report = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    backup_restore = report.by_id("backup_restore")
+    assert backup_restore.status is DoctorStatus.READY
+    assert "receipt-bound restore" in backup_restore.detail
+    assert not (tmp_path / "backups").exists()
+
+
 def test_doctor_fails_when_operator_skill_is_invalid(tmp_path: Path) -> None:
     config = _write_runtime_configs(tmp_path)
     skill_root = config.skills.path / "broken"

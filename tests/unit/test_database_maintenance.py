@@ -16,6 +16,7 @@ from riftx.database_maintenance import (
     SQLiteBackupError,
     SQLiteMigrationStatus,
     backup_sqlite_database,
+    inspect_sqlite_backup_readiness,
     inspect_sqlite_migration,
     repair_sqlite_database,
     restore_sqlite_database_backup,
@@ -147,6 +148,26 @@ def test_ready_sqlite_backup_can_restore_later_mutation(tmp_path: Path) -> None:
     assert stat.S_IMODE(backup.backup_path.parent.stat().st_mode) == 0o700
     with sqlite3.connect(database_path) as restored:
         assert restored.execute("SELECT value FROM pack_marker").fetchone() == ("before",)
+
+
+def test_sqlite_backup_readiness_is_read_only_and_rejects_unsafe_directory(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "riftx.db"
+    repair_sqlite_database(_url(database_path), cwd=tmp_path)
+
+    readiness = inspect_sqlite_backup_readiness(_url(database_path), cwd=tmp_path)
+
+    assert readiness.path == database_path
+    assert readiness.backup_directory == tmp_path / "backups"
+    assert not readiness.backup_directory.exists()
+
+    readiness.backup_directory.mkdir(mode=0o755)
+    readiness.backup_directory.chmod(0o755)
+    with pytest.raises(SQLiteBackupError, match="owner-only"):
+        inspect_sqlite_backup_readiness(_url(database_path), cwd=tmp_path)
+    with pytest.raises(SQLiteBackupError, match="owner-only"):
+        backup_sqlite_database(_url(database_path), cwd=tmp_path)
 
 
 def test_ready_sqlite_restore_rejects_database_identity_drift(tmp_path: Path) -> None:
