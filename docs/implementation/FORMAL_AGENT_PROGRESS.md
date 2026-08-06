@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S2 — 认知运行时`
-- Current task：`COG-201 — Evidence Ledger`
+- Current task：`COG-202 — Reasoning Graph`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -38,11 +38,12 @@
 - Completed predecessor：CAP-103，implementation commits `2c784d8d`、`94d71f3b`、`483ddb81`。
 - Completed predecessor：CAP-104，implementation commits `7fc96d33`、`ab9c2f3c`、`fe5e9a86`、`62627843`。
 - Completed predecessor：COG-200，implementation commits `20b8dc92`、`099ae428`、`cc48c32a`。
+- Completed predecessor：COG-201，implementation commits `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit `666d055a`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Task Graph 已成为 Primary Agent 的权威当前计划；Task、依赖、Attempt、Budget 和 Evidence Requirement 持久化并支持版本 CAS、Ready resolver、原子 claim、并行隔离、reopen/retry lineage 与 Session Attempt ownership。生产 Runtime 提供类型化 Planner control tools，Subagent 只能领取和结算自身任务，不能修改图拓扑；旧 Working Memory plan 保持兼容读取，Graph API 投影真实 Task dependency 而不猜测阻塞原因。
-- Current implementation commits：COG-200 `20b8dc92`、`099ae428`、`cc48c32a`。
-- Verification：全仓 `5096 passed, 5 skipped, 17 warnings`；全仓 Ruff、核心 Scoped mypy、Alembic 单 head 与跨版本迁移降级回归通过。
-- Next delivery slice：开始 COG-201，建立统一 Evidence Ledger、精确 Artifact Span/Code Location、Digest、Trust、Scope、Redaction 与 Replay metadata。
+- Product behavior：Evidence Ledger 已成为 Task completion evidence 的权威引用源。统一 Evidence 记录 ID、来源 URI、内容与账本 Digest、Run/Session/Task、创建主体、Trust、Scope、Redaction、Replay 与 Artifact 引用；Artifact Span 和 Code Location 由服务端重新读取 owner-bound 权威内容并计算摘要，拒绝来源漂移、越权 Session/Task/Audit 和非规范坐标。Task 完成只接受当前 Run 的 Run 级或当前 Task 级 Evidence ID。模型通用写入口仍保持关闭，等待 COG-203。
+- Current implementation commits：COG-201 `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification `666d055a`。
+- Verification：全仓 `5109 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-201 Scoped mypy、Alembic 单 head、完整升级/降级链与跨版本迁移回归通过。
+- Next delivery slice：开始 COG-202，建立 Observation、Fact Candidate、Confirmed Fact、Hypothesis、Vulnerability Candidate、Finding、Proof 与 Negative Result 的耐久 Reasoning Graph、关系边和 Evidence 驱动晋升规则。
 
 ## 3. 研究与实现基线
 
@@ -124,7 +125,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
 | CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
 | COG-200 | CAP-104 | completed | `20b8dc92`, `099ae428`, `cc48c32a` |
-| COG-201 | COG-200 | pending | — |
+| COG-201 | COG-200 | completed | `d9c2e530`, `f54b1ed8`, `97cd44d7` |
 | COG-202 | COG-201 | pending | — |
 | COG-203 | COG-202 | pending | — |
 | COG-204 | COG-203 | pending | — |
@@ -540,6 +541,35 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5096 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`20b8dc92`、`099ae428`、`cc48c32a`。
+
+### COG-201：Evidence Ledger
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：COG-200、Artifact immutable content store、owner-bound Code Workspace/Snapshot、Agent Session 与 Task Graph persistence。
+- Domain and persistence slice：
+  - 新增十类统一 Evidence、Source/Artifact Span/Code Location locator、Trust、Scope、Redaction、Replay metadata 与 canonical Ledger Digest；Evidence 领域对象不可变并拒绝未知字段；
+  - Artifact Span 使用 `artifact://<id>#bytes=<start>-<end>`，Code Location 使用规范化相对 POSIX 路径与 end-exclusive 行列坐标；
+  - 新增 `evidence_ledger`、SQLAlchemy Repository 与 Alembic revision `5e8a2c4d7f10`，Run/Session/Task/Artifact 外键、枚举/摘要/脱敏约束、索引和非空降级保护完整落库；
+  - Repository 重建时重新校验 canonical Ledger Digest，持久化记录被篡改时失败关闭。
+- Source verification slice：
+  - 新增内部 Evidence Application Service，只开放服务端可复核的 Artifact Span 和 Code Location 注册，不提前开放 COG-203 的模型通用 proposal/write tools；
+  - Artifact Span 通过既有 Artifact content lease 重新读取并验证 immutable storage、Run/Audit owner、精确 offset 和内容摘要；
+  - Code Location 复用 owner-bound Workspace/SourceSnapshot resolver，拒绝绝对路径、非规范路径、Symlink、特殊文件、非 UTF-8 源码、越界行列和来源漂移；
+  - Code Location 记录完整文件 Digest、Snapshot/Workspace replay source、精确位置参数 Digest 和选中内容 Digest；Workspace 文件读取期间继续使用 FD 与文件指纹防止 TOCTOU；
+  - Engagement Scope 由 Run 服务端填充；Session、Task、Audit 和 Artifact ownership 在落账前校验，Redaction 与 Replay shape 由类型契约验证。
+- Runtime consumption slice：
+  - Task Planner 在同一完成事务中验证 Requirement 的全部新旧引用；任意字符串、缺失 Evidence、其他 Run 或其他 Task 的 Evidence 均不能满足完成条件；
+  - 当前 Task 可消费当前 Run 的 Run 级 Evidence 或自身 Task 级 Evidence；其他 Task 的 Evidence 被拒绝；
+  - 该绑定使 Runtime `complete_task` 通过既有 Planner 路径直接消费 Evidence Ledger，不新增旁路状态。
+- Checks：
+  - Evidence domain、Repository、Migration、Application Service、Code Location 与 Task Planner 定向回归：passed；
+  - 迁移 head 关联文件：`42 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/evidence src/riftx/application/services/evidence.py src/riftx/persistence/evidence_repository.py src/riftx/persistence/task_planner.py`：`Success: no issues found in 5 source files`；
+  - `conda run --no-capture-output -n agent alembic heads`：`5e8a2c4d7f10 (head)`；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5109 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit：`666d055a`。
 
 ## 9. Known pre-existing worktree state
 
