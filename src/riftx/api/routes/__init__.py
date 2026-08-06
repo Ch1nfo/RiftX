@@ -18,6 +18,7 @@ from .models import router as models_router
 from .nodes import router as nodes_router
 from .observability import router as observability_router
 from .observer import router as observer_router
+from .pentests import router as pentests_router
 from .reports import router as reports_router
 from .runner_control import router as runner_control_router
 from .runs import router as runs_router
@@ -46,6 +47,7 @@ __all__ = [
     "nodes_router",
     "observability_router",
     "observer_router",
+    "pentests_router",
     "reports_router",
     "runner_control_router",
     "runs_router",

@@ -59,6 +59,7 @@ from riftx.application.services import (
     ModelProfileApplicationService,
     NodeApplicationService,
     NodeRegistration,
+    PentestApplicationService,
     ReportApplicationService,
     ResourceStopDisposition,
     RunApplicationService,
@@ -80,6 +81,7 @@ from riftx.domain import (
     RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     RUNNER_STOP_ACK_TERMINAL_SCHEMA,
     Approval,
+    Engagement,
     Execution,
     ExecutionStatus,
     ExecutorType,
@@ -125,6 +127,7 @@ from riftx.persistence import (
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyPentestCreationUnitOfWork,
     SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
@@ -799,6 +802,14 @@ tools:
                 execution_cancel_timeout_seconds=0.2,
                 execution_cancel_poll_seconds=0.01,
             ),
+            pentest_service=PentestApplicationService(
+                creation_uow=SQLAlchemyPentestCreationUnitOfWork(database.session_factory),
+                engagement_repository=engagement_repository,
+                event_repository=event_repository,
+                workflow_client=workflow_router,
+                workspace_root=settings.workspace_root,
+                model_profiles=model_profile_service,
+            ),
             audit_service=AuditApplicationService(
                 creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
                 aggregate_repository=audit_aggregate_repository,
@@ -946,6 +957,205 @@ async def _create_run(client: httpx.AsyncClient) -> dict[str, object]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _pentest_request(
+    request_id: str,
+    *,
+    target: str = "http://127.0.0.1:8080",
+) -> dict[str, object]:
+    return {
+        "request_id": request_id,
+        "objective": "Assess the authorized local test service",
+        "model_profile": "fast",
+        "engagement": {
+            "name": "Authorized local Pentest",
+            "authorization_reference": "ticket://pentest-123",
+        },
+        "success_criteria": [
+            {"description": "Record supported service exposure", "required": True}
+        ],
+        "entry_points": [{"kind": "url", "value": target}],
+        "scope": {"ips": ["127.0.0.1"]},
+        "admission": {
+            "budget": {
+                "max_duration_seconds": 900,
+                "max_model_calls": 20,
+                "max_tokens": 100000,
+                "max_tool_calls": 50,
+                "max_target_interactions": 100,
+                "max_concurrent_target_interactions": 2,
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+            run = created.json()
+            assert run["id"] == request_id
+            assert run["kind"] == "pentest"
+            assert run["status"] == "waiting_user"
+            assert run["model_profile"] == "fast"
+            assert run["temporal_workflow_id"] == f"riftx-pentest-{request_id}"
+            assert run["pentest_admission"]["budget"]["max_target_interactions"] == 100
+
+            session = await SQLAlchemyAgentSessionRepository(
+                runtime.control_plane.database.session_factory
+            ).get(f"{request_id}:primary")
+            assert session is not None
+            assert session.run_id == request_id
+            assert session.model_profile == "fast"
+
+            events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert events.status_code == 200
+            items = events.json()["items"]
+            assert [item["event_type"] for item in items] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+                "workflow.started",
+            ]
+            message_event_id = items[2]["id"]
+            assert items[2]["payload"] == {
+                "message": "Assess the authorized local test service"
+            }
+            assert runtime.workflow.calls == [("message", request_id, message_event_id)]
+            assert runtime.workflow.workflow_ids == [
+                ("message", request_id, f"riftx-pentest-{request_id}")
+            ]
+
+            replay = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert replay.status_code == 201, replay.text
+            assert replay.json()["id"] == request_id
+            replay_events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert len(replay_events.json()["items"]) == 4
+            assert runtime.workflow.calls[-1] == ("message", request_id, message_event_id)
+
+            bypass = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Bypass Pentest admission", "kind": "pentest"},
+            )
+            assert bypass.status_code == 422
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_rejects_missing_authorization_and_out_of_scope_target(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            missing_authorization = _pentest_request(str(uuid4()))
+            engagement = missing_authorization["engagement"]
+            assert isinstance(engagement, dict)
+            engagement["authorization_reference"] = "  "
+            response = await client.post(
+                "/api/v1/pentests",
+                json=missing_authorization,
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "pentest_authorization_required"
+
+            unauthorized_engagement = Engagement(name="Missing authorization")
+            await SQLAlchemyEngagementRepository(
+                runtime.control_plane.database.session_factory
+            ).create(unauthorized_engagement)
+            existing_engagement_request = _pentest_request(str(uuid4()))
+            existing_engagement_request.pop("engagement")
+            existing_engagement_request["engagement_id"] = unauthorized_engagement.id
+            existing_response = await client.post(
+                "/api/v1/pentests",
+                json=existing_engagement_request,
+            )
+            assert existing_response.status_code == 409
+            assert (
+                existing_response.json()["error"]["code"]
+                == "pentest_authorization_required"
+            )
+
+            outside = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(str(uuid4()), target="http://10.0.0.1"),
+            )
+            assert outside.status_code == 409
+            assert outside.json()["error"]["code"] == "pentest_entry_point_out_of_scope"
+
+            weakened_contract = _pentest_request(str(uuid4()))
+            admission = weakened_contract["admission"]
+            assert isinstance(admission, dict)
+            admission["prohibited_actions"] = ["denial_of_service"]
+            weakened = await client.post(
+                "/api/v1/pentests",
+                json=weakened_contract,
+            )
+            assert weakened.status_code == 422
+
+            listed = await client.get("/api/v1/runs", params={"kind": "pentest"})
+            assert listed.status_code == 200
+            assert listed.json()["items"] == []
+            assert runtime.workflow.calls == []
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_retries_the_same_durable_instruction_after_temporal_outage(
+    tmp_path: Path,
+) -> None:
+    workflow = FakeWorkflowClient(fail=True)
+    runtime = await _build_runtime(tmp_path, workflow=workflow)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            unavailable = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert unavailable.status_code == 409
+            error = unavailable.json()["error"]
+            assert error["code"] == "pentest_workflow_start_failed"
+            assert error["details"]["run_id"] == request_id
+            assert error["details"]["retry_same_request"] is True
+
+            persisted = await client.get(f"/api/v1/runs/{request_id}")
+            assert persisted.status_code == 200
+            events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert [item["event_type"] for item in events.json()["items"]] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+            ]
+
+            workflow.fail = False
+            recovered = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert recovered.status_code == 201, recovered.text
+            recovered_events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert [item["event_type"] for item in recovered_events.json()["items"]] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+                "workflow.started",
+            ]
+    finally:
+        await runtime.control_plane.close()
 
 
 @pytest.mark.asyncio

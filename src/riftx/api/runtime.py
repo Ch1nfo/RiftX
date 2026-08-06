@@ -33,6 +33,7 @@ from riftx.application.services import (
     ModelProfileApplicationService,
     NodeApplicationService,
     NodeRegistration,
+    PentestApplicationService,
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
@@ -93,6 +94,7 @@ from riftx.persistence import (
     SQLAlchemyGraphReadRepository,
     SQLAlchemyLocalAuditJobRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyPentestCreationUnitOfWork,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunnerCommandRepository,
@@ -499,6 +501,7 @@ class ControlPlane:
     terminal_supervisor: TerminalSupervisor
     graph_repository: SQLAlchemyGraphReadRepository
     traffic_repository: SQLAlchemyTrafficMetadataReadRepository
+    pentest_service: PentestApplicationService | None = None
     local_audit_job_service: LocalAuditJobService | None = None
     audit_control_service: AuditControlApplicationService | None = None
     audit_preflight_service: AuditPreflightApplicationService | None = None
@@ -993,6 +996,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         model_profiles=model_profile_service,
         safety_stopper=safety_stopper,
     )
+    pentest_service = PentestApplicationService(
+        creation_uow=SQLAlchemyPentestCreationUnitOfWork(database.session_factory),
+        engagement_repository=engagement_repository,
+        event_repository=event_repository,
+        workflow_client=workflow_router,
+        workspace_root=settings.workspace_root,
+        model_profiles=model_profile_service,
+    )
     audit_control_service = AuditControlApplicationService(
         audits=audit_service,
         projector=AuditRunStateProjector(
@@ -1024,6 +1035,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         settings=settings,
         database=database,
         run_service=run_service,
+        pentest_service=pentest_service,
         audit_service=audit_service,
         action_service=ActionApplicationService(
             action_read_repository,

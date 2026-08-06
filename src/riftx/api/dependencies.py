@@ -26,6 +26,7 @@ from riftx.application.services import (
     FindingApplicationService,
     ModelProfileApplicationService,
     NodeApplicationService,
+    PentestApplicationService,
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
@@ -145,6 +146,16 @@ def get_control_plane(request: Request) -> object:
 
 def get_run_service(request: Request) -> RunApplicationService:
     return request.app.state.control_plane.run_service
+
+
+def get_pentest_service(request: Request) -> PentestApplicationService:
+    service = getattr(request.app.state.control_plane, "pentest_service", None)
+    if service is None:
+        raise ServiceUnavailableError(
+            "pentest_service_unavailable",
+            "RiftX Pentest admission is temporarily unavailable",
+        )
+    return service
 
 
 def get_audit_service(request: Request) -> AuditApplicationService:
@@ -331,6 +342,10 @@ def authorize_admin(
 
 
 RunServiceDependency = Annotated[RunApplicationService, Depends(get_run_service)]
+PentestServiceDependency = Annotated[
+    PentestApplicationService,
+    Depends(get_pentest_service),
+]
 AuditServiceDependency = Annotated[AuditApplicationService, Depends(get_audit_service)]
 AuditControlServiceDependency = Annotated[
     AuditControlApplicationService,

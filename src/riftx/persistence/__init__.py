@@ -46,6 +46,7 @@ from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .observer_repositories import SQLAlchemyActiveTakeoverReader
 from .orm import Base
+from .pentest_uow import PentestCreationFailpoint, SQLAlchemyPentestCreationUnitOfWork
 from .reasoning_repository import SQLAlchemyReasoningGraphRepository
 from .repositories import (
     SQLAlchemyApprovalRepository,
@@ -114,6 +115,7 @@ __all__ = [
     "SQLAlchemyGraphReadRepository",
     "SQLAlchemyLocalAuditJobRepository",
     "SQLAlchemyNodeRepository",
+    "SQLAlchemyPentestCreationUnitOfWork",
     "SQLAlchemyProviderStateRepository",
     "SQLAlchemyReportRepository",
     "SQLAlchemyReasoningGraphRepository",
@@ -138,6 +140,7 @@ __all__ = [
     "SQLAlchemySourceSnapshotSealUnitOfWork",
     "SourceSnapshotSealResult",
     "AuditCreationFailpoint",
+    "PentestCreationFailpoint",
     "compare_and_set_audit_contract",
     "compare_and_set_audit_scan",
     "create_audit_project",

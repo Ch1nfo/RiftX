@@ -333,6 +333,7 @@ class RunEffectOperation(StrEnum):
     ISSUE_AUDIT_PREFLIGHT_PLAN = "issue_audit_preflight_plan"
     CREATE_FINDING = "create_finding"
     CREATE_MEMORY = "create_memory"
+    CREATE_PENTEST = "create_pentest"
     CREATE_RUN = "create_run"
     CREATE_TERMINAL = "create_terminal"
     DELETE_MEMORY = "delete_memory"
@@ -434,6 +435,7 @@ class RunEffectOperation(StrEnum):
 
     # Application service entrypoints.
     SERVICE_RUN_CREATE = "service.run.create"
+    SERVICE_PENTEST_CREATE = "service.pentest.create"
     SERVICE_RUN_PAUSE = "service.run.pause"
     SERVICE_RUN_RESUME = "service.run.resume"
     SERVICE_RUN_CANCEL = "service.run.cancel"
@@ -773,7 +775,7 @@ class ManagedEffectType:
 
 # Explicit capability sets keep newly introduced Run kinds fail-closed until
 # each effect family is audited. Pentest-specific operations use
-# _PENTEST_ONLY once their dedicated ingress exists.
+# _PENTEST_ONLY after their dedicated ingress resolves the persisted owner.
 _READABLE_RUNS = frozenset(RunKind)
 _INTERACTIVE_RUNS = frozenset({RunKind.GENERAL, RunKind.PENTEST})
 _PENTEST_ONLY = frozenset({RunKind.PENTEST})
@@ -1348,6 +1350,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
+        RunEffectOperation.CREATE_PENTEST,
+        EffectOrigin.LOCAL_OPERATOR_API,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _dedicated(RunEffectOperation.CREATE_AUDIT),
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
         RunEffectOperation.CREATE_AUDIT,
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.RUN_LIFECYCLE,
@@ -1773,6 +1786,17 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
 _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
     _rule(
         RunEffectOperation.SERVICE_RUN_CREATE,
+        EffectOrigin.APPLICATION_SERVICE,
+        RunEffectFamily.RUN_LIFECYCLE,
+        _NO_RUN_KIND,
+        OperationEffect.DURABLE_WRITE,
+        OwnershipResolverKind.NONE,
+        EffectMode.GLOBAL,
+        _dedicated(RunEffectOperation.SERVICE_AUDIT_CREATE_DRAFT),
+        owner_kind=EffectOwnerKind.GLOBAL,
+    ),
+    _rule(
+        RunEffectOperation.SERVICE_PENTEST_CREATE,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.RUN_LIFECYCLE,
         _NO_RUN_KIND,
@@ -2820,6 +2844,11 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
     _entry(
         "riftx.application.services.runs:RunApplicationService.create_run",
         RunEffectOperation.SERVICE_RUN_CREATE,
+        EffectOrigin.APPLICATION_SERVICE,
+    ),
+    _entry(
+        "riftx.application.services.pentests:PentestApplicationService.create",
+        RunEffectOperation.SERVICE_PENTEST_CREATE,
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(

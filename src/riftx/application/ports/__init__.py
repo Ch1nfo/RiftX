@@ -50,6 +50,11 @@ from .audits import (
     SnapshotRepository,
     StoredAuditEntity,
 )
+from .pentests import (
+    PentestCreationEnvelope,
+    PentestCreationResult,
+    PentestCreationUnitOfWork,
+)
 from .repositories import (
     ActionReadRepository,
     ApprovalRepository,
@@ -124,6 +129,9 @@ __all__ = [
     "ExecutionRepository",
     "FindingRepository",
     "NodeRepository",
+    "PentestCreationEnvelope",
+    "PentestCreationResult",
+    "PentestCreationUnitOfWork",
     "ReportRepository",
     "RunnerCommandRepository",
     "RunnerCredentialRepository",

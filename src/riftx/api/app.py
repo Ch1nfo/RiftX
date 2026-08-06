@@ -36,6 +36,7 @@ from .routes import (
     nodes_router,
     observability_router,
     observer_router,
+    pentests_router,
     reports_router,
     runner_control_router,
     runs_router,
@@ -109,6 +110,7 @@ def create_app(
             allow_headers=["*"],
         )
     app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(pentests_router, prefix="/api/v1")
     app.include_router(audit_preflight_router, prefix="/api/v1")
     app.include_router(audits_router, prefix="/api/v1")
     app.include_router(actions_router, prefix="/api/v1")
