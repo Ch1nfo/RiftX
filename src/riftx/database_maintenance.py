@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import sysconfig
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import quote
@@ -56,6 +56,14 @@ class DatabaseRepairResult:
     previous_revisions: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SQLiteBackupResult:
+    path: Path
+    backup_path: Path
+    source_identity: tuple[int, int] = field(repr=False)
+    backup_identity: tuple[int, int] = field(repr=False)
+
+
 class DatabaseRepairError(RuntimeError):
     def __init__(
         self,
@@ -67,6 +75,14 @@ class DatabaseRepairError(RuntimeError):
         super().__init__(message)
         self.backup_path = backup_path
         self.rollback_complete = rollback_complete
+
+
+class SQLiteBackupError(RuntimeError):
+    """Raised when a ready SQLite backup or restore cannot be proven safe."""
+
+    def __init__(self, message: str, *, backup_path: Path | None = None) -> None:
+        super().__init__(message)
+        self.backup_path = backup_path
 
 
 def inspect_sqlite_migration(
@@ -269,6 +285,77 @@ def repair_sqlite_database(
     )
 
 
+def backup_sqlite_database(
+    database_url: str,
+    *,
+    cwd: Path,
+) -> SQLiteBackupResult:
+    """Create an owner-only consistent backup of one ready local SQLite database."""
+
+    state = inspect_sqlite_migration(database_url, cwd=cwd)
+    if state is None:
+        raise SQLiteBackupError("SQLite backup requires file-backed SQLite.")
+    if state.status is not SQLiteMigrationStatus.READY:
+        raise SQLiteBackupError(
+            f"SQLite database is {state.status.value}; migrate it before backup."
+        )
+    database_path = state.path
+    try:
+        source_identity = _regular_file_identity(database_path)
+        source = sqlite3.connect(database_path, timeout=1.0)
+        try:
+            source.execute("PRAGMA busy_timeout=1000")
+            source.execute("PRAGMA locking_mode=EXCLUSIVE")
+            source.execute("BEGIN EXCLUSIVE")
+            source.commit()
+            backup_path = _backup_locked_database(source, database_path)
+        finally:
+            source.close()
+        if _regular_file_identity(database_path) != source_identity:
+            raise SQLiteBackupError(
+                "SQLite database identity changed during backup.",
+                backup_path=backup_path,
+            )
+        return SQLiteBackupResult(
+            path=database_path,
+            backup_path=backup_path,
+            source_identity=source_identity,
+            backup_identity=_regular_file_identity(backup_path),
+        )
+    except SQLiteBackupError:
+        raise
+    except (DatabaseRepairError, OSError, sqlite3.Error) as exc:
+        raise SQLiteBackupError(f"SQLite backup failed: {exc}") from exc
+
+
+def restore_sqlite_database_backup(backup: SQLiteBackupResult) -> Path:
+    """Restore a backup only while both source and backup identities still match."""
+
+    if not isinstance(backup, SQLiteBackupResult):
+        raise SQLiteBackupError("SQLite backup receipt is invalid.")
+    try:
+        if _regular_file_identity(backup.path) != backup.source_identity:
+            raise SQLiteBackupError("SQLite database identity changed before restore.")
+        if _regular_file_identity(backup.backup_path) != backup.backup_identity:
+            raise SQLiteBackupError("SQLite backup identity changed before restore.")
+        _verify_sqlite_file(backup.backup_path)
+        _restore_backup(
+            backup.backup_path,
+            backup.path,
+            expected_identity=backup.source_identity,
+            expected_backup_identity=backup.backup_identity,
+        )
+        _verify_sqlite_file(backup.path)
+        return backup.path
+    except SQLiteBackupError:
+        raise
+    except (DatabaseRepairError, OSError, sqlite3.Error) as exc:
+        raise SQLiteBackupError(
+            f"SQLite backup restore failed: {exc}",
+            backup_path=backup.backup_path,
+        ) from exc
+
+
 def resolve_alembic_config_path(explicit_path: Path | None = None) -> Path:
     candidates = (
         (explicit_path,) if explicit_path is not None else (
@@ -341,12 +428,30 @@ def _restore_backup(
     database_path: Path,
     *,
     expected_identity: tuple[int, int] | None,
+    expected_backup_identity: tuple[int, int] | None = None,
 ) -> None:
     if expected_identity is None or _regular_file_identity(database_path) != expected_identity:
         raise DatabaseRepairError("Database identity changed before rollback.")
     temporary_name: str | None = None
     try:
-        with backup_path.open("rb") as source, tempfile.NamedTemporaryFile(
+        source_descriptor = os.open(backup_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            source_metadata = os.fstat(source_descriptor)
+        except Exception:
+            os.close(source_descriptor)
+            raise
+        if (
+            not stat.S_ISREG(source_metadata.st_mode)
+            or source_metadata.st_uid != os.geteuid()
+            or (
+                expected_backup_identity is not None
+                and (source_metadata.st_dev, source_metadata.st_ino)
+                != expected_backup_identity
+            )
+        ):
+            os.close(source_descriptor)
+            raise DatabaseRepairError("SQLite backup identity changed before restore.")
+        with os.fdopen(source_descriptor, "rb") as source, tempfile.NamedTemporaryFile(
             mode="wb",
             dir=database_path.parent,
             prefix=f".{database_path.name}.",
@@ -365,6 +470,15 @@ def _restore_backup(
     finally:
         if temporary_name is not None:
             Path(temporary_name).unlink(missing_ok=True)
+
+
+def _verify_sqlite_file(path: Path) -> None:
+    connection = sqlite3.connect(_readonly_sqlite_uri(path), uri=True, timeout=1.0)
+    try:
+        if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+            raise SQLiteBackupError(f"SQLite integrity_check failed for {path}.")
+    finally:
+        connection.close()
 
 
 def _remove_created_database(
@@ -414,9 +528,13 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "DatabaseRepairError",
     "DatabaseRepairResult",
+    "SQLiteBackupError",
+    "SQLiteBackupResult",
     "SQLiteMigrationState",
     "SQLiteMigrationStatus",
+    "backup_sqlite_database",
     "inspect_sqlite_migration",
     "repair_sqlite_database",
     "resolve_alembic_config_path",
+    "restore_sqlite_database_backup",
 ]

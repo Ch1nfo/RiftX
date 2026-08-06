@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 import riftx.doctor as doctor_module
+from riftx.application.errors import RepositoryConflictError
 from riftx.config import AuditSourceIngestConfig, RiftXConfig
 from riftx.database_maintenance import DatabaseRepairResult
 from riftx.doctor import (
@@ -170,7 +172,10 @@ def test_doctor_fix_creates_supported_directories_and_repairs_database(
     monkeypatch.setattr(
         doctor_module,
         "_repair_official_pack_persistence",
-        lambda *_args, **_kwargs: database_path,
+        lambda *_args, **_kwargs: doctor_module.PackPersistenceRepairResult(
+            path=database_path,
+            backup_path=tmp_path / "pack-backup.db",
+        ),
     )
 
     fixes = apply_local_doctor_fixes(config, report, cwd=tmp_path)
@@ -292,8 +297,35 @@ def test_doctor_repairs_official_pack_persistence_and_rechecks_ready(
     fixes = apply_local_doctor_fixes(config, before, cwd=tmp_path)
     after = run_local_doctor(config, environment={}, cwd=tmp_path)
 
-    assert any(fix.check_id == "pack_integrity" for fix in fixes)
+    pack_fix = next(fix for fix in fixes if fix.check_id == "pack_integrity")
+    assert pack_fix.backup_path is not None and pack_fix.backup_path.is_file()
     assert after.by_id("pack_integrity").status is DoctorStatus.READY
+
+
+def test_doctor_restores_pack_database_when_reconciliation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _write_runtime_configs(tmp_path)
+    database_path = tmp_path / "riftx.db"
+    doctor_module.repair_sqlite_database(config.database.url, cwd=tmp_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE pack_marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO pack_marker VALUES ('before')")
+
+    async def fail_reconciliation(*_args: object, **_kwargs: object) -> None:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("UPDATE pack_marker SET value = 'after'")
+        raise RepositoryConflictError("injected pack failure")
+
+    monkeypatch.setattr(doctor_module, "bootstrap_official_packs", fail_reconciliation)
+    report = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    with pytest.raises(DoctorFixError, match="restored"):
+        apply_local_doctor_fixes(config, report, cwd=tmp_path)
+
+    with sqlite3.connect(database_path) as restored:
+        assert restored.execute("SELECT value FROM pack_marker").fetchone() == ("before",)
 
 
 def test_doctor_fix_rolls_back_all_created_directories_on_failure(tmp_path: Path) -> None:

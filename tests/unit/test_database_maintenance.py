@@ -13,9 +13,12 @@ from sqlalchemy import Connection
 import riftx.database_maintenance as maintenance
 from riftx.database_maintenance import (
     DatabaseRepairError,
+    SQLiteBackupError,
     SQLiteMigrationStatus,
+    backup_sqlite_database,
     inspect_sqlite_migration,
     repair_sqlite_database,
+    restore_sqlite_database_backup,
 )
 
 
@@ -126,6 +129,49 @@ def test_repair_sqlite_database_backup_is_owner_only(
         assert backup.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "old-revision",
         )
+
+
+def test_ready_sqlite_backup_can_restore_later_mutation(tmp_path: Path) -> None:
+    database_path = tmp_path / "riftx.db"
+    repair_sqlite_database(_url(database_path), cwd=tmp_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE pack_marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO pack_marker VALUES ('before')")
+
+    backup = backup_sqlite_database(_url(database_path), cwd=tmp_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("UPDATE pack_marker SET value = 'after'")
+    restore_sqlite_database_backup(backup)
+
+    assert stat.S_IMODE(backup.backup_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(backup.backup_path.parent.stat().st_mode) == 0o700
+    with sqlite3.connect(database_path) as restored:
+        assert restored.execute("SELECT value FROM pack_marker").fetchone() == ("before",)
+
+
+def test_ready_sqlite_restore_rejects_database_identity_drift(tmp_path: Path) -> None:
+    database_path = tmp_path / "riftx.db"
+    repair_sqlite_database(_url(database_path), cwd=tmp_path)
+    backup = backup_sqlite_database(_url(database_path), cwd=tmp_path)
+    replacement = tmp_path / "replacement.db"
+    with sqlite3.connect(replacement) as connection:
+        connection.execute("CREATE TABLE replacement (id INTEGER PRIMARY KEY)")
+    replacement.replace(database_path)
+
+    with pytest.raises(SQLiteBackupError, match="identity changed"):
+        restore_sqlite_database_backup(backup)
+
+
+def test_ready_sqlite_restore_rejects_backup_identity_drift(tmp_path: Path) -> None:
+    database_path = tmp_path / "riftx.db"
+    repair_sqlite_database(_url(database_path), cwd=tmp_path)
+    backup = backup_sqlite_database(_url(database_path), cwd=tmp_path)
+    replacement = tmp_path / "replacement.bak"
+    replacement.write_bytes(backup.backup_path.read_bytes())
+    replacement.replace(backup.backup_path)
+
+    with pytest.raises(SQLiteBackupError, match="identity changed"):
+        restore_sqlite_database_backup(backup)
 
 
 def test_wheel_configuration_includes_all_alembic_assets() -> None:

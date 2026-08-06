@@ -23,9 +23,12 @@ from riftx.config_maintenance import (
 )
 from riftx.database_maintenance import (
     DatabaseRepairError,
+    SQLiteBackupError,
     SQLiteMigrationStatus,
+    backup_sqlite_database,
     inspect_sqlite_migration,
     repair_sqlite_database,
+    restore_sqlite_database_backup,
 )
 from riftx.diagnostics import OfficialPackDiagnostics, SystemDiagnosticsService
 from riftx.local_fs import OwnerDirectoryBatch, OwnerDirectoryError
@@ -92,6 +95,12 @@ class DoctorFix:
     check_id: str
     path: Path
     backup_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PackPersistenceRepairResult:
+    path: Path
+    backup_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,12 +244,18 @@ def apply_local_doctor_fixes(
                     )
                 )
             if "pack_integrity" in fixable:
-                path = _repair_official_pack_persistence(
+                repaired_pack = _repair_official_pack_persistence(
                     config,
                     root,
                     official_pack_catalog or OfficialPackCatalog(),
                 )
-                fixes.append(DoctorFix(check_id="pack_integrity", path=path))
+                fixes.append(
+                    DoctorFix(
+                        check_id="pack_integrity",
+                        path=repaired_pack.path,
+                        backup_path=repaired_pack.backup_path,
+                    )
+                )
             if "config_migrations" in fixable:
                 if runtime_config_path is None:
                     raise DoctorFixError(
@@ -260,6 +275,7 @@ def apply_local_doctor_fixes(
         OwnerDirectoryError,
         RepositoryError,
         RuntimeConfigMigrationError,
+        SQLiteBackupError,
     ) as exc:
         raise DoctorFixError(
             f"Doctor fix failed; created directories were rolled back: {exc}"
@@ -970,8 +986,9 @@ def _repair_official_pack_persistence(
     config: RiftXConfig,
     cwd: Path,
     catalog: OfficialPackCatalog,
-) -> Path:
+) -> PackPersistenceRepairResult:
     database_url, database_path = _absolute_sqlite_database(config.database.url, cwd)
+    backup = backup_sqlite_database(database_url, cwd=cwd)
 
     async def repair() -> None:
         database = Database(database_url)
@@ -993,8 +1010,24 @@ def _repair_official_pack_persistence(
         finally:
             await database.dispose()
 
-    asyncio.run(repair())
-    return database_path
+    try:
+        asyncio.run(repair())
+    except Exception as exc:
+        try:
+            restore_sqlite_database_backup(backup)
+        except SQLiteBackupError as rollback_error:
+            raise DoctorFixError(
+                "Official Pack repair failed and database rollback was incomplete; "
+                f"backup retained at {backup.backup_path}."
+            ) from rollback_error
+        raise DoctorFixError(
+            "Official Pack repair failed and the database was restored from "
+            f"{backup.backup_path}."
+        ) from exc
+    return PackPersistenceRepairResult(
+        path=database_path,
+        backup_path=backup.backup_path,
+    )
 
 
 def _absolute_sqlite_database(database_url: str, cwd: Path) -> tuple[str, Path]:
