@@ -29,7 +29,7 @@
 ## 2. Current wave
 
 - Stage：`S2 — 认知运行时`
-- Current task：`COG-204 — Observer Supervisor 与 Projector`
+- Current task：`COG-205 — Closure Verifier`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -41,11 +41,12 @@
 - Completed predecessor：COG-201，implementation commits `d9c2e530`、`f54b1ed8`、`97cd44d7`；migration-head verification commit `666d055a`。
 - Completed predecessor：COG-202，implementation commits `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
 - Completed predecessor：COG-203，implementation commits `a8dbdf50`、`87c7381d`、`d369b684`。
+- Completed predecessor：COG-204，implementation commits `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：Primary Agent 已获得 `propose_plan_update`、`record_observation`、`propose_fact`、`propose_hypothesis`、`record_attempt`、`propose_finding`、`record_negative_result` 与 `query_reasoning_graph` 八个生产工具。Run、Session、creator、Node 类型和初始状态由 Runtime 注入；模型只能提交 Candidate/Unverified/Recorded Proposal，不能伪造 Confirmed 状态。Reasoning 写入继续经过 COG-202 的 Evidence/owner/CAS 约束；Working Memory 写入经过既有 Reducer，Task Graph 存在时拒绝旧计划拓扑写入，重复失败操作必须携带合法 Retry relation。八个工具只对 Primary 可见，Subagent 工具面不包含这些入口。
-- Current implementation commits：COG-203 `a8dbdf50`、`87c7381d`、`d369b684`。
-- Verification：全仓 `5141 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-203 Scoped mypy、Working Memory Proposal、Reasoning Query、Runtime Control Tools、Tool Discovery/Policy、Agent Factory、生产 Worker 与 Context gate 回归通过。
-- Next delivery slice：开始 COG-204，复用现有 Runtime Event、Task/Reasoning/Evidence Graph 与 Context 投影边界，实现 Observer Supervisor 检查和受限 Projector，不引入第二套权威状态。
+- Product behavior：生产 Runtime 在模型调用前和 Tool Intent 持久化后收集 Working Memory、Task/Reasoning Graph、Tool Intent、Approval、User Input、Run Event 与 Takeover 的有界快照，并执行 Scope、Approval、重复尝试、Evidence 缺失、Capability mismatch、Budget、死循环和人工接管八类确定性 Observer 检查；结果稳定收敛到 `CONTINUE`、`YIELD` 或 `BLOCK`，写入脱敏 `runtime.observer_inspected`，BLOCK 转为 `FATAL_FAILURE`，Approval/User Input yield 保留对应 durable waiting object ID。只读 Projector 复用既有 Graph/Report Application Service 输出 Task、Reasoning、Evidence、Attack、Code、Operation、Coverage、Timeline 与可再生成 Report draft；Reasoning/Attack 是 Evidence Graph 的有界派生切片，Code Graph 在 AUD 权威来源尚未接入前明确标记 `code_graph_authoritative_source_unavailable` partial。只读接口为 `GET /api/v1/runs/{run_id}/projection`，已进入 fail-closed API policy 和 RunKind effect inventory。
+- Current implementation commits：COG-204 `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
+- Verification：全仓 `5157 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-204 Scoped mypy、Observer Supervisor/Application/Projector、Runtime Coordinator/Deferred Runtime、Projection API、API Policy、RunKind Effect Policy 与生产 Worker 回归通过。
+- Next delivery slice：开始 COG-205，复用 Task/Evidence/Reasoning Graph、Report Source 与既有 Safety Stop/finalization fence，实现确定性 Closure 报告和 Run completion gate，不引入第二套 Closure 权威状态。
 
 ## 3. 研究与实现基线
 
@@ -130,7 +131,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-201 | COG-200 | completed | `d9c2e530`, `f54b1ed8`, `97cd44d7` |
 | COG-202 | COG-201 | completed | `4413c1f3`, `e21a6d7f`, `eb1d30b5`, `317a20f7` |
 | COG-203 | COG-202 | completed | `a8dbdf50`, `87c7381d`, `d369b684` |
-| COG-204 | COG-203 | pending | — |
+| COG-204 | COG-203 | completed | `16a1d800`, `a03654e0`, `21e28b3e`, `de863606`, `7a70ef6f`, `465ea1f0`, `65f12b02` |
 | COG-205 | COG-204 | pending | — |
 | PACK-300 | CAP-102, CAP-104, COG-205 | pending | — |
 | PACK-301 | CAP-101, CAP-104, COG-205 | pending | — |
@@ -628,6 +629,37 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5141 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff、`git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`a8dbdf50`、`87c7381d`、`d369b684`。
+
+### COG-204：Observer Supervisor 与 Projector
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：COG-203、Working Memory、Task/Reasoning/Evidence Graph、Runtime Event、Tool Intent、Approval、User Input、Takeover、Graph/Report Application Service 与生产 Temporal Worker。
+- Supervisor slice：
+  - 新增确定性 Observer Supervisor，统一检查 Scope、Approval、重复尝试、Evidence 缺失、Capability mismatch、Budget、死循环和用户输入/人工接管；输出稳定 `CONTINUE`、`YIELD` 或 `BLOCK`，不调用模型；
+  - 检查只消费既有权威状态的有界快照，不创建 Observer 数据表或第二套授权、预算、任务、证据和接管状态；
+  - 新增 Engine Event、Run Event、Takeover 与 Intent 的 bounded history read，快照收集并发执行，缺失或不一致的安全关键输入失败关闭。
+- Runtime slice：
+  - Runtime Coordinator 在模型调用前和 Tool Intent 持久化后执行 Observer；BLOCK 转为 `FATAL_FAILURE`，YIELD 复用既有 durable waiting object；
+  - Approval/User Input YIELD 保留真实 Approval Request/User Input Request ID，避免只暂停而无法恢复；
+  - 每次检查写入脱敏 `runtime.observer_inspected`，只记录 phase、disposition、稳定 reason/check code 和有界计数，不写 Prompt、Tool arguments、Evidence 内容或 Secret；
+  - 生产 Temporal Worker 装配真实 Observer Application Service。
+- Projector/API slice：
+  - 新增只读 Observer Projector，复用授权 `GraphApplicationService` 与 `ReportApplicationService` 输出 Task、Reasoning、Evidence、Attack、Code、Operation、Coverage、Timeline 和可再生成 Report draft；
+  - Reasoning/Attack Graph 是 Evidence Graph 的有界派生切片，不成为新权威图；Code Graph 在 AUD 权威来源未接入前稳定返回 partial reason `code_graph_authoritative_source_unavailable`；
+  - 新增 `GET /api/v1/runs/{run_id}/projection`，复用 API Principal/Run owner 授权，路由进入 fail-closed API policy 和 RunKind effect inventory；
+  - Projector 不持久化派生结果，Report draft 继续可从权威来源重新生成。
+- Safety boundaries：
+  - Observer 不授予 Scope、Approval、Capability 或 Budget，只能在已有状态上继续、暂停或阻断；
+  - 任何缺失的授权服务、Run owner、图来源或安全关键快照不会回退为允许；
+  - Projection 只暴露有界、脱敏的应用层视图，不暴露 Evidence 原文、Tool arguments、Prompt、Credential 或本地绝对路径。
+- Checks：
+  - Observer Supervisor/Application/Projector、bounded repository、Runtime Coordinator/Deferred Runtime、Projection API、API Policy、RunKind Effect Policy 与生产 Worker 定向回归：passed；
+  - `conda run --no-capture-output -n agent python -m mypy ...`（COG-204 关联模块）：`Success: no issues found`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5157 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit：`654a72bd`。
 
 ## 9. Known pre-existing worktree state
 
