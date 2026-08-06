@@ -51,7 +51,12 @@ from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .models import ModelProfileApplicationService, ModelProfilesView, ModelProfileView
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
-from .reasoning import ReasoningGraphApplicationService, TransitionReasoningNode
+from .reasoning import (
+    QueryReasoningGraph,
+    ReasoningGraphApplicationService,
+    ReasoningGraphQueryResult,
+    TransitionReasoningNode,
+)
 from .reports import (
     DeterministicReportComposer,
     GenerateReports,
@@ -92,6 +97,7 @@ from .workflow_signals import (
     WorkflowSignalTransport,
     WorkflowSignalTransportReceipt,
 )
+from .working_memory import WorkingMemoryProposalApplicationService
 
 __all__ = [
     "ActionApplicationService",
@@ -145,6 +151,7 @@ __all__ = [
     "RegisterCodeLocationEvidence",
     "ReportApplicationService",
     "ReasoningGraphApplicationService",
+    "ReasoningGraphQueryResult",
     "ReportComposer",
     "ReportSource",
     "StructuredReport",
@@ -170,6 +177,8 @@ __all__ = [
     "TerminalView",
     "TrafficMetadataApplicationService",
     "TransitionReasoningNode",
+    "QueryReasoningGraph",
+    "WorkingMemoryProposalApplicationService",
     "WorkflowSignalBatchResult",
     "WorkflowSignalDefinitelyNotDelivered",
     "WorkflowSignalDispatcher",

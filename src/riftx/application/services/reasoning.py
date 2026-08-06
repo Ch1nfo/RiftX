@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from riftx.application.errors import (
     ApplicationConflictError,
@@ -94,6 +97,34 @@ class TransitionReasoningNode:
     reproduction_contract: ReproductionContract | None = None
 
 
+class QueryReasoningGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str = Field(min_length=1, max_length=64)
+    node_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    kinds: tuple[ReasoningNodeKind, ...] = Field(default=(), max_length=8)
+    statuses: tuple[ReasoningNodeStatus, ...] = Field(default=(), max_length=16)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
+    evidence_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    query: str = Field(default="", max_length=2_000)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=100)
+    edge_limit: int = Field(default=100, ge=0, le=200)
+
+
+class ReasoningGraphQueryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str
+    graph_version: int = Field(ge=0)
+    total_matching_nodes: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    nodes: tuple[ReasoningNode, ...] = ()
+    edges: tuple[ReasoningEdge, ...] = ()
+    nodes_truncated: bool = False
+    edges_truncated: bool = False
+
+
 class ReasoningGraphApplicationService:
     def __init__(
         self,
@@ -143,6 +174,61 @@ class ReasoningGraphApplicationService:
         return await self._save(
             _replace_graph(graph, nodes=[*graph.nodes, node]),
             expected_version=expected_graph_version,
+        )
+
+    async def query(self, command: QueryReasoningGraph) -> ReasoningGraphQueryResult:
+        if await self._runs.get(command.run_id) is None:
+            raise EntityNotFoundError("Run", command.run_id)
+        graph = await self._graphs.get(command.run_id)
+        if graph is None:
+            return ReasoningGraphQueryResult(
+                run_id=command.run_id,
+                graph_version=0,
+                total_matching_nodes=0,
+                offset=command.offset,
+            )
+
+        node_ids = set(command.node_ids)
+        kinds = set(command.kinds)
+        statuses = set(command.statuses)
+        evidence_ids = set(command.evidence_ids)
+        query = command.query.casefold().strip()
+        matching = [
+            node
+            for node in graph.nodes
+            if (not node_ids or node.id in node_ids)
+            and (not kinds or node.kind in kinds)
+            and (not statuses or node.status in statuses)
+            and (command.task_id is None or node.task_id == command.task_id)
+            and (not evidence_ids or evidence_ids.intersection(node.evidence_ids))
+            and (
+                not query
+                or query in node.claim.casefold()
+                or query
+                in json.dumps(
+                    node.structured_data,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).casefold()
+            )
+        ]
+        selected = matching[command.offset : command.offset + command.limit]
+        selected_ids = {node.id for node in selected}
+        related_edges = [
+            edge
+            for edge in graph.edges
+            if edge.source_node_id in selected_ids or edge.target_node_id in selected_ids
+        ]
+        return ReasoningGraphQueryResult(
+            run_id=command.run_id,
+            graph_version=graph.version,
+            total_matching_nodes=len(matching),
+            offset=command.offset,
+            nodes=tuple(selected),
+            edges=tuple(related_edges[: command.edge_limit]),
+            nodes_truncated=command.offset + len(selected) < len(matching),
+            edges_truncated=len(related_edges) > command.edge_limit,
         )
 
     async def create_edge(

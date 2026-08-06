@@ -7,6 +7,7 @@ import pytest
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
+    QueryReasoningGraph,
     ReasoningGraphApplicationService,
     TransitionReasoningNode,
 )
@@ -234,6 +235,50 @@ async def test_create_core_reasoning_nodes_and_keep_empty_hypothesis_unverified(
                 ),
                 expected_graph_version=graph.version,
             )
+    finally:
+        await harness.database.dispose()
+
+
+async def test_query_reasoning_graph_is_filtered_and_bounded(tmp_path: Path) -> None:
+    harness = await create_harness(tmp_path)
+    try:
+        graph = await harness.service.create_node(
+            node(
+                "observation-1",
+                ReasoningNodeKind.OBSERVATION,
+                ReasoningNodeStatus.RECORDED,
+                evidence_ids=("direct",),
+                task_id="task-1",
+            ).model_copy(update={"claim": "Admin endpoint returned HTTP 200"}),
+            expected_graph_version=0,
+        )
+        await harness.service.create_node(
+            node(
+                "observation-2",
+                ReasoningNodeKind.OBSERVATION,
+                ReasoningNodeStatus.RECORDED,
+                evidence_ids=("direct-2",),
+                task_id="task-2",
+            ).model_copy(update={"claim": "Health endpoint returned HTTP 200"}),
+            expected_graph_version=graph.version,
+        )
+
+        result = await harness.service.query(
+            QueryReasoningGraph(
+                run_id="run-1",
+                kinds=(ReasoningNodeKind.OBSERVATION,),
+                task_id="task-1",
+                query="admin",
+                limit=1,
+            )
+        )
+        assert result.graph_version == 2
+        assert result.total_matching_nodes == 1
+        assert [item.id for item in result.nodes] == ["observation-1"]
+
+        empty = await harness.service.query(QueryReasoningGraph(run_id="run-2"))
+        assert empty.graph_version == 0
+        assert empty.nodes == ()
     finally:
         await harness.database.dispose()
 
