@@ -8,7 +8,7 @@
 >
 > 当前实现分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前进度基线：`55a7615a`；PEN-500 已完成实现基线：`86aaecdf`
+> 当前进度基线：`e2314e9b`；PEN-500 已完成 Admission/Persistence 与 Workflow/Runner Identity 两个实现切片
 >
 > 实施证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -67,10 +67,10 @@ RiftX 正式版只兑现一个结果：
 最近完整验证证据：
 
 ```text
-5284 passed, 5 skipped, 17 warnings
+5297 passed, 5 skipped, 17 warnings
 Full Ruff passed
-PEN-500 scoped mypy passed
-Alembic single head: 6f2a9c4d8e17
+PEN-500 scoped mypy（不含 daemon）passed；daemon 纳入时仅有一个既有无关 protocol 缺口
+Alembic single head: 7b3d1e5f9a24
 ```
 
 这些结果证明底座较稳定，不证明真实渗透测试产品已经完成。
@@ -84,14 +84,15 @@ Alembic single head: 6f2a9c4d8e17
 - Pentest Run 的具体正向网络 Scope 与网络 Entry Point 约束；
 - ORM、Mapper、Repository、API 只读投影；
 - `runs.pentest_admission_json` 与数据库一致性约束；
-- migration `6f2a9c4d8e17`；
+- Pentest Workflow signal protocol、owner kind、owner identity 与 workflow ID；
+- Pentest Runner effect binding、恢复绑定与 stop reconciliation；
+- General/Pentest/Code Audit 三个显式 Workflow validator 分支；
+- migrations `6f2a9c4d8e17` 与 `7b3d1e5f9a24`；
 - 有 Pentest 权威数据时拒绝有损 downgrade；
 - 未审计 Pentest 副作用继续失败关闭。
 
 尚未完成：
 
-- Pentest Workflow signal identity；
-- Pentest Runner effect binding 和恢复对账；
 - General/Pentest 共享交互路径的逐项 Effect allowlist；
 - 专用 Pentest Application/API 创建入口；
 - `riftx pentest start/status/resume/stop/report`；
@@ -105,12 +106,12 @@ Alembic single head: 6f2a9c4d8e17
 截至本次校准，仓库约有：
 
 ```text
-src/riftx Python: 175054 行
-tests Python: 144875 行
+src/riftx Python: 175158 行
+tests Python: 145496 行
 src/riftx 文件: 594
-tests 文件: 310
+tests 文件: 311
 Official Packs: 22
-Alembic migrations: 50
+Alembic migrations: 51
 引用 general-only 交互 guard 的生产模块: 28
 ```
 
@@ -236,7 +237,7 @@ riftx pentest start \
 ## 5. 唯一开发关键路径
 
 ```text
-P0 贯通 Pentest 身份与控制面（当前）
+P0 贯通 Pentest 身份与控制面（当前：仅剩 Effect Policy/guard）
 → P1 交付可运行 Pentest CLI 与 Admission
 → P2 完成一个真实网络服务闭环
 → P3 完成一个状态化 Web 验证闭环
@@ -260,6 +261,8 @@ P0 贯通 Pentest 身份与控制面（当前）
 
 ### 6.1 Workflow signal identity
 
+**状态：completed（`e2314e9b`）。**
+
 新增并精确绑定：
 
 ```text
@@ -282,6 +285,8 @@ workflow_id: riftx-pentest-<run_id>
 
 ### 6.2 Runner ownership
 
+**状态：completed（`e2314e9b`）。**
+
 `RunnerEffectBinding` 使用三个显式分支：
 
 ```text
@@ -300,6 +305,8 @@ unknown    -> fail closed
 - Pentest binding 不得被序列化或恢复为 General。
 
 ### 6.3 Effect Policy 与交互 guard
+
+**状态：in_progress，这是当前唯一实现切片。**
 
 使用清晰集合，不再用含义模糊的 `_ALL_RUN_KINDS` 表达权限：
 
@@ -323,12 +330,14 @@ _AUDIT_ONLY       = {code_audit}
 
 ### 6.4 Migration
 
-从 `6f2a9c4d8e17` 新增一个 migration，同时更新：
+**状态：completed（`e2314e9b`）。**
+
+已从 `6f2a9c4d8e17` 新增 migration `7b3d1e5f9a24`，同时更新：
 
 - `workflow_signal_intents`；
 - `runner_effect_bindings`。
 
-Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，并延续现有跨多级 downgrade guard：任何权威数据风险都必须在 DDL 前发现。
+Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，并延续现有跨多级 downgrade guard：任何权威数据风险都必须在 DDL 前发现。当前 Alembic 单 head 为 `7b3d1e5f9a24`。
 
 ### 6.5 P0 完成门
 
@@ -669,7 +678,7 @@ conda run --no-capture-output -n agent ...
 **依赖**：CAP-101、AUD-403。状态：frozen；不得成为默认执行未知目标代码的入口。
 
 ### PEN-500：Pentest Admission 与 Attack Surface
-**依赖**：CAP-102、COG-202。状态：in_progress；当前唯一实现主线，按 P0/P1 完成。
+**依赖**：CAP-102、COG-202。状态：in_progress；Admission/Persistence 与 Workflow/Runner Identity 已完成，当前只审计 Effect Policy 与 General+Pentest 交互 guard，随后进入专用创建入口、CLI、Attack Surface 与真实 E2E。
 
 ### PEN-501：状态化 Web 测试
 **依赖**：CAP-102、PEN-500。状态：pending；只交付一个真实身份/授权场景。
