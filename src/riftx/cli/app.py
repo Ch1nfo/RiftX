@@ -22,7 +22,12 @@ from rich.console import Console
 from typer.core import TyperGroup
 
 from riftx.api import APISettings, create_app
-from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
+from riftx.config import (
+    RiftXConfig,
+    RiftXConfigError,
+    default_user_config_path,
+    load_riftx_config,
+)
 from riftx.doctor import (
     DoctorFixError,
     apply_local_doctor_fixes,
@@ -202,11 +207,17 @@ def doctor(
     """Inspect RiftX readiness and optionally apply bounded local repairs."""
 
     state = _state(context)
-    report = run_local_doctor(state.config)
+    runtime_config_path = _doctor_runtime_config_path(state)
+    report = run_local_doctor(
+        state.config,
+        runtime_config_path=runtime_config_path,
+    )
     with APIClient(state.api_url, timeout_seconds=3) as client:
         if fix:
             persistence_fix = any(
-                check.id in {"database_migrations", "pack_integrity"} and check.fixable
+                check.id
+                in {"config_migrations", "database_migrations", "pack_integrity"}
+                and check.fixable
                 for check in report.checks
             )
             control_plane_reachable = False
@@ -223,6 +234,7 @@ def doctor(
                 fixes = apply_local_doctor_fixes(
                     state.config,
                     report,
+                    runtime_config_path=runtime_config_path,
                     allow_persistence_fix=not control_plane_reachable,
                 )
             except DoctorFixError as exc:
@@ -233,11 +245,21 @@ def doctor(
                 console.print(f"Fixed {applied.check_id}: repaired {applied.path}")
                 if applied.backup_path is not None:
                     console.print(f"Backup retained: {applied.backup_path}")
-            report = run_local_doctor(state.config)
+            report = run_local_doctor(
+                state.config,
+                runtime_config_path=runtime_config_path,
+            )
         report = run_live_doctor(state.config, report, client)
     render_doctor_report(console, report)
     if report.failed:
         raise typer.Exit(1)
+
+
+def _doctor_runtime_config_path(state: CLIState) -> Path | None:
+    if state.config_path is not None:
+        return state.config_path
+    user_path = default_user_config_path()
+    return user_path if user_path.exists() or user_path.is_symlink() else None
 
 
 @app.command()

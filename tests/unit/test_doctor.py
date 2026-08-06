@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 import riftx.doctor as doctor_module
-from riftx.config import RiftXConfig
+from riftx.config import AuditSourceIngestConfig, RiftXConfig
 from riftx.database_maintenance import DatabaseRepairResult
 from riftx.doctor import (
     DOCTOR_CHECK_IDS,
@@ -184,6 +184,79 @@ def test_doctor_fix_creates_supported_directories_and_repairs_database(
     for fix in fixes[:2]:
         assert fix.path.is_dir()
         assert stat.S_IMODE(fix.path.stat().st_mode) == 0o700
+
+
+def test_doctor_repairs_exact_legacy_runtime_config_and_rechecks_ready(
+    tmp_path: Path,
+) -> None:
+    config = _write_runtime_configs(tmp_path)
+    runtime_config_path = tmp_path / "riftx.yaml"
+    runtime_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "server": {"port": 9000},
+                "audit": {
+                    "source_ingest": AuditSourceIngestConfig().model_dump(mode="json"),
+                    "validation": {"default_policy": "static_only"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    before = run_local_doctor(
+        config,
+        environment={},
+        cwd=tmp_path,
+        runtime_config_path=runtime_config_path,
+    )
+    migration = before.by_id("config_migrations")
+
+    assert migration.status is DoctorStatus.DEGRADED
+    assert migration.fixable
+
+    fixes = apply_local_doctor_fixes(
+        config,
+        doctor_module.DoctorReport(checks=(migration,)),
+        cwd=tmp_path,
+        runtime_config_path=runtime_config_path,
+    )
+    after = run_local_doctor(
+        config,
+        environment={},
+        cwd=tmp_path,
+        runtime_config_path=runtime_config_path,
+    )
+
+    assert len(fixes) == 1
+    assert fixes[0].check_id == "config_migrations"
+    assert fixes[0].path == runtime_config_path
+    assert fixes[0].backup_path is not None
+    assert after.by_id("config_migrations").status is DoctorStatus.READY
+
+
+def test_doctor_requires_manual_review_for_customized_legacy_config(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path = tmp_path / "riftx.yaml"
+    source_ingest = AuditSourceIngestConfig().model_dump(mode="json")
+    source_ingest["max_pids"] = 16
+    runtime_config_path.write_text(
+        yaml.safe_dump({"audit": {"source_ingest": source_ingest}}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    report = run_local_doctor(
+        _write_runtime_configs(tmp_path),
+        environment={},
+        cwd=tmp_path,
+        runtime_config_path=runtime_config_path,
+    )
+    migration = report.by_id("config_migrations")
+
+    assert migration.status is DoctorStatus.FAILED
+    assert not migration.fixable
+    assert "manual" in migration.detail
 
 
 def test_doctor_fix_refuses_persistence_repair_while_control_plane_is_reachable(

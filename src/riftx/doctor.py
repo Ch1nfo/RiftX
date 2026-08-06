@@ -15,6 +15,12 @@ from sqlalchemy.exc import ArgumentError
 
 from riftx.application.errors import RepositoryError
 from riftx.config import RiftXConfig
+from riftx.config_maintenance import (
+    RuntimeConfigMigrationError,
+    RuntimeConfigMigrationStatus,
+    inspect_runtime_config_migration,
+    repair_runtime_config,
+)
 from riftx.database_maintenance import (
     DatabaseRepairError,
     SQLiteMigrationStatus,
@@ -55,6 +61,7 @@ class DoctorLiveClient(Protocol):
 
 
 DOCTOR_CHECK_IDS = (
+    "config_migrations",
     "model_provider",
     "temporal",
     "runner",
@@ -111,6 +118,7 @@ class DoctorReport:
 def run_local_doctor(
     config: RiftXConfig,
     *,
+    runtime_config_path: Path | None = None,
     environment: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     official_pack_catalog: OfficialPackCatalog | None = None,
@@ -128,6 +136,7 @@ def run_local_doctor(
         pack_error = exc
 
     checks = (
+        _check_config_migrations(runtime_config_path),
         _check_model_provider(config, env, root),
         _check_temporal(config, root),
         _check_runner(config, root),
@@ -169,6 +178,7 @@ def apply_local_doctor_fixes(
     config: RiftXConfig,
     report: DoctorReport,
     *,
+    runtime_config_path: Path | None = None,
     cwd: Path | None = None,
     allow_persistence_fix: bool = True,
     official_pack_catalog: OfficialPackCatalog | None = None,
@@ -177,7 +187,11 @@ def apply_local_doctor_fixes(
 
     root = Path.cwd() if cwd is None else cwd
     fixable = {check.id for check in report.checks if check.fixable}
-    persistence_fixes = {"database_migrations", "pack_integrity"}.intersection(fixable)
+    persistence_fixes = {
+        "config_migrations",
+        "database_migrations",
+        "pack_integrity",
+    }.intersection(fixable)
     if persistence_fixes and not allow_persistence_fix:
         raise DoctorFixError(
             "Stop the reachable RiftX Control Plane before repairing persistence."
@@ -227,8 +241,26 @@ def apply_local_doctor_fixes(
                     official_pack_catalog or OfficialPackCatalog(),
                 )
                 fixes.append(DoctorFix(check_id="pack_integrity", path=path))
+            if "config_migrations" in fixable:
+                if runtime_config_path is None:
+                    raise DoctorFixError(
+                        "Doctor selected a configuration migration without a file path."
+                    )
+                repaired_config = repair_runtime_config(runtime_config_path)
+                fixes.append(
+                    DoctorFix(
+                        check_id="config_migrations",
+                        path=repaired_config.path,
+                        backup_path=repaired_config.backup_path,
+                    )
+                )
             return tuple(fixes)
-    except (DatabaseRepairError, OwnerDirectoryError, RepositoryError) as exc:
+    except (
+        DatabaseRepairError,
+        OwnerDirectoryError,
+        RepositoryError,
+        RuntimeConfigMigrationError,
+    ) as exc:
         raise DoctorFixError(
             f"Doctor fix failed; created directories were rolled back: {exc}"
         ) from exc
@@ -515,6 +547,36 @@ def _nonnegative_int(value: str | None) -> int | None:
 def _resolve(path: Path, cwd: Path) -> Path:
     expanded = path.expanduser()
     return expanded if expanded.is_absolute() else cwd / expanded
+
+
+def _check_config_migrations(path: Path | None) -> DoctorCheck:
+    if path is None:
+        return DoctorCheck(
+            id="config_migrations",
+            status=DoctorStatus.READY,
+            detail="No operator-owned runtime configuration file requires migration.",
+        )
+    state = inspect_runtime_config_migration(path)
+    if state.status is RuntimeConfigMigrationStatus.READY:
+        return DoctorCheck(
+            id="config_migrations",
+            status=DoctorStatus.READY,
+            detail=state.detail,
+        )
+    if state.status is RuntimeConfigMigrationStatus.MIGRATABLE:
+        return DoctorCheck(
+            id="config_migrations",
+            status=DoctorStatus.DEGRADED,
+            detail=state.detail,
+            remediation="Run `riftx doctor --fix` while the Control Plane is stopped.",
+            fixable=True,
+        )
+    return DoctorCheck(
+        id="config_migrations",
+        status=DoctorStatus.FAILED,
+        detail=state.detail,
+        remediation="Review and migrate the customized runtime configuration manually.",
+    )
 
 
 def _check_model_provider(

@@ -1084,6 +1084,61 @@ def test_top_level_doctor_allows_degraded_exit_code(
     assert "Overall: degraded" in result.output
 
 
+def test_top_level_doctor_passes_explicit_runtime_config_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    observed: list[Path | None] = []
+
+    def local_report(
+        *_args: object,
+        runtime_config_path: Path | None = None,
+        **_kwargs: object,
+    ) -> DoctorReport:
+        observed.append(runtime_config_path)
+        return DoctorReport(
+            checks=(
+                DoctorCheck(
+                    id="config_migrations",
+                    status=DoctorStatus.READY,
+                    detail="No migration required.",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(cli_module, "run_local_doctor", local_report)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "doctor"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed == [config_path]
+
+
+def test_doctor_selects_existing_default_user_config_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    user_config = tmp_path / "riftx.yaml"
+    state = cli_module.CLIState(
+        api_url="http://127.0.0.1:8787",
+        config=cli_module.RiftXConfig(),
+        config_path=None,
+        language="en",
+    )
+    monkeypatch.setattr(cli_module, "default_user_config_path", lambda: user_config)
+
+    assert cli_module._doctor_runtime_config_path(state) is None
+
+    user_config.write_text("{}\n", encoding="utf-8")
+
+    assert cli_module._doctor_runtime_config_path(state) == user_config
+
+
 def test_top_level_doctor_fix_applies_local_repairs_before_rechecking(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
