@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前基线：`42b1b6ac`
+> 当前基线：`2271bc8e`
 >
 > 实施账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -82,6 +82,7 @@ RiftX 正式版只兑现一个核心结果：
 Full Ruff passed
 PEN-500 scoped mypy passed
 Alembic single head: 7b3d1e5f9a24
+P1 affected regression: 283 passed
 ```
 
 这些结果证明底座稳定，不代表 Pentest 产品已经完成。
@@ -96,6 +97,8 @@ e2314e9b  Pentest Workflow/Runner identity
 8b9ef440  Pentest Effect Policy 与 interactive guard
 8f1b2554  专用 Pentest Admission 创建入口
 33c863ea  Admission Capability Selection 原子绑定
+70f6f4a0  Pentest status 权威只读聚合与 API
+2271bc8e  pentest start/status/resume/stop CLI
 ```
 
 当前已具备：
@@ -110,15 +113,18 @@ e2314e9b  Pentest Workflow/Runner identity
 - 空 Tool allowlist 失败关闭；
 - Temporal 启动失败后，同一 `request_id` 保持同一语义身份并可恢复；
 - Pentest Workflow、Runner、Signal、Effect 全链路保持 `pentest` 身份；
+- `GET /api/v1/pentests/{run_id}/status` 从现有持久事实聚合 Admission、Selection、预算使用、Workflow、Runner、Stop 与 declared entry points；
+- `riftx pentest start/status/resume/stop` 已交付，CLI 通过专用 status 做类型保护，并复用既有 Run resume/cancel 控制路径；
+- status 可在 Control Plane 重启后重建，Token、Tool、目标交互、Execution 与停止状态只陈述已持久化证据；
 - 未审计的 Pentest 副作用继续失败关闭。
 
 ### 2.3 尚未完成
 
 | 用户结果 | 状态 | 是否阻塞 V1 |
 | --- | --- | --- |
-| `riftx pentest start/status/resume/stop` | 当前切片 | 是 |
-| Pentest status 权威聚合 | 未完成 | 是 |
-| declared/observed Attack Surface 投影 | 未完成 | 是 |
+| `riftx pentest start/status/resume/stop` | 已完成 | 否 |
+| Pentest status 权威聚合 | 已完成 | 否 |
+| declared/observed Attack Surface 投影 | declared entry points 已完成；observed 未完成 | 是 |
 | 隔离授权目标 E2E | 未完成 | 是 |
 | 一个网络服务闭环 | 未完成 | 是 |
 | 一个状态化 Web 身份/授权闭环 | 未完成 | 是 |
@@ -252,8 +258,8 @@ Pentest 必须复用现有：
 ## 5. 唯一开发关键路径
 
 ```text
-P1 CLI 与状态聚合（当前）
-→ P2 Attack Surface 与 Pentest E2E
+P1 CLI 与状态聚合（completed）
+→ P2 Attack Surface 与 Pentest E2E（当前）
 → P3 网络服务专业闭环
 → P4 状态化 Web 与专业报告
 → P5 Operator Capability 成长闭环
@@ -272,6 +278,8 @@ P1 CLI 与状态聚合（当前）
 ---
 
 ## 6. P1：CLI 与 Pentest 状态聚合
+
+**状态：completed（`70f6f4a0`、`2271bc8e`）。**
 
 ### 6.1 用户结果
 
@@ -302,7 +310,7 @@ CLI 只负责输入、调用和展示，不复制 Admission、Scope、Selection�
 
 `status` 需要一个服务端只读聚合，避免 CLI 拼接多个易失请求。它不是第二套状态数据库，只允许从现有持久事实读取或确定性计算。
 
-建议的最小响应：
+已交付的最小响应：
 
 ```text
 run
@@ -345,6 +353,8 @@ attack_surface:
 - 不为 status 引入事件流平台、缓存层或新的后台 Worker。
 
 ### 6.4 P1 验收
+
+**状态：completed。**
 
 - `start` 调用专用 Pentest API；
 - 普通 `run create --kind pentest` 仍失败；
@@ -651,21 +661,20 @@ Ledger commit:
 
 当前唯一允许开始的开发切片是：
 
-> **交付 `riftx pentest start/status/resume/stop`，以及只读 Pentest status 聚合。**
+> **完成 declared/observed Attack Surface 最小投影，并在隔离授权目标上跑通 Pentest 创建、查询、恢复、停止和跨进程重读 E2E。**
 
 推荐拆分为两个实现提交：
 
-1. Pentest status 服务端只读聚合、API 合同与测试；
-2. CLI `start/status/resume/stop` 薄适配、渲染与失败测试。
+1. 从 Admission、Scope、Traffic、Execution、Artifact 和 Evidence 确定性投影 declared/observed Attack Surface，不新建事实表；
+2. 固化一个可复位隔离靶场的 Admission、越界拒绝、恢复、停止和跨进程 E2E。
 
 完成后：
 
-1. 运行 P1 目标与受影响回归；
+1. 运行 P2 目标与受影响回归；
 2. 提交实现；
 3. 单独更新实施账本；
-4. 进入 declared Attack Surface；
-5. 完成隔离授权目标 E2E；
-6. 只有 E2E 通过后才将 PEN-500 标记 completed。
+4. 只有 Attack Surface 和隔离授权 E2E 同时通过后才将 PEN-500 标记 completed；
+5. 随后进入 P3 的一个网络服务专业闭环。
 
 在此之前，不启动 Code Audit、学习系统、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。
 
@@ -745,7 +754,7 @@ Ledger commit:
 **依赖**：CAP-101、AUD-403。冻结，不增加未知代码默认执行入口。
 
 ### PEN-500：Pentest Admission 与 Attack Surface
-**依赖**：CAP-102、COG-202。进行中，对应 P1-P2。
+**依赖**：CAP-102、COG-202。进行中；P1 已完成，当前对应 P2。
 
 ### PEN-501：状态化 Web 测试
 **依赖**：CAP-102、PEN-500。待完成，对应 P4。
