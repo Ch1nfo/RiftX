@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`2c0f8004`
+> 当前实现基线：`1c379dcc`
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -32,12 +32,12 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 当前最重要的判断：
 
 - Pentest Admission、控制命令、状态聚合、Attack Surface、隔离生命周期和目标交互预算已经具备；
-- `max_model_calls`、`max_tool_calls`、`max_tokens`、`max_duration_seconds` 尚未成为完整的执行前门禁；
+- Model、Tool、Token、Duration 和 Target Interaction 已形成 Run 级持久执行前门禁；
 - Evidence、Negative Result、Finding、Report 等底层能力已经存在，但尚未在一个真实 Pentest 场景中形成可重复的生产闭环；
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。当前应先完成剩余预算门禁，然后依次完成网络服务闭环、状态化 Web 与报告、用户驱动的能力成长、默认产品面收缩。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A 已完成；下一步只做一个网络服务专业闭环，然后依次完成状态化 Web 与报告、用户驱动的能力成长、默认产品面收缩。**
 
 ---
 
@@ -91,36 +91,37 @@ RiftX 正式版要成为：
 | 状态与资产面 | 权威 status 和 declared/observed/verified Attack Surface 可跨重启重建 | 不新建资产事实库 |
 | 真实目标交互 | 隔离授权 HTTP 生命周期已覆盖成功、超时、越界、暂停、恢复、取消和重启 | 可作为后续 E2E 基座 |
 | 目标交互预算 | 总量和并发预算在持久事务中原子占用；总量耗尽复用 pause、Safety Stop 和 Stop Proof | 已完成 |
+| Admission 全预算 | Model、Tool、Token、Duration 和 Target Interaction 在模型或 Tool 副作用前持久检查；耗尽统一暂停并保留 Stop Proof | 已完成 |
 | 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 需要生产消费者 |
 | 能力底座 | Capability、Version、Digest、Provenance、Candidate、Selection、Pack、Progressive Skill 已存在 | 需要用户成长闭环 |
 
-目标交互预算最近实现：
+阶段 A 最近实现：
 
 ```text
 ad91c3f4  enforce target interaction budget
 2c0f8004  stop on exhausted target budget
+73288673  project live run usage
+b6b5f739  enforce model token duration budgets
+53812397  enforce tool execution budgets
+1c379dcc  unify budget exhaustion handling
 ```
 
 最近已验证的相关回归包括：
 
 ```text
-Target HTTP: 56 passed
-Execution/Runtime affected tests: 140 passed
-Pentest/Target HTTP Control Plane: 10 passed
-Full Control Plane: 66 passed
-Temporal Worker/Runtime: 25 passed
-Combined regression: 81 passed
+Full Control Plane: 67 passed
+Runtime/Execution/Target HTTP/Worker: 467 passed
+Budget handling focused regression: 215 passed
 Full Ruff: passed
 Changed production files scoped mypy: passed
 ```
 
-实施账本尚未回填 `9a4714fc`、`ca12ad9b`、`ad91c3f4` 和 `2c0f8004`；只有剩余预算门禁完成并形成独立实现提交后，才单独同步账本并关闭 PEN-500。
+实施账本已回填 Attack Surface、隔离生命周期和全部预算提交；PEN-500 已满足关闭条件。
 
 ### 2.2 尚未完成的核心结果
 
 | 缺口 | 当前状态 | V1 必须 |
 | --- | --- | --- |
-| Model/Tool/Token/Duration 预算 | 有配置和部分用量事实，缺少统一执行前约束 | 是 |
 | 网络服务专业闭环 | Pack、Runner、Evidence 等组件存在，未形成生产 E2E | 是 |
 | 状态化 Web 闭环 | Browser、Traffic、Target HTTP 已存在，身份/授权场景未闭环 | 是 |
 | 专业报告 | 通用报告能力已存在，Pentest 事实组合与 E2E 未验收 | 是 |
@@ -298,8 +299,8 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
-| A. 剩余 Pentest 预算收口 | in progress | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | pending | 一个真实服务从枚举走到证据化结论 |
+| A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
+| B. 网络服务专业闭环 | in progress | 一个真实服务从枚举走到证据化结论 |
 | C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
@@ -309,6 +310,8 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 ---
 
 ## 7. 阶段 A：完成剩余预算门禁
+
+阶段 A 已于 `1c379dcc` 完成。实现提交为 `73288673`、`b6b5f739`、`53812397` 和 `1c379dcc`；本节保留为预算语义与回归合同，不再是待施工清单。
 
 ### 7.1 已完成部分
 
@@ -342,7 +345,7 @@ V1 不为“只计算活跃运行时间”增加 pause accounting 表。若未�
 
 ### 7.3 最小实现切片
 
-#### A1. 运行中用量成为权威事实
+#### A1. 运行中用量成为权威事实（completed）
 
 - 修正只读取主 Agent Session 导致运行中 Cycle 计数滞后的问题；
 - Run 级用量必须覆盖主 Session、允许存在的子 Session 和尚未 yield 的 Cycle；
@@ -352,7 +355,7 @@ V1 不为“只计算活跃运行时间”增加 pause accounting 表。若未�
 
 验收：运行中 status、重启后 status 和预算 admission 对同一用量给出一致结果。
 
-#### A2. Model、Token 和 Duration 执行前门禁
+#### A2. Model、Token 和 Duration 执行前门禁（completed）
 
 - 在 `agent_engine.start/resume` 之前读取并原子占用本次模型轮次；
 - 删除或调整 `RUN_STARTED` 后置重复计数，保持唯一计数语义；
@@ -362,7 +365,7 @@ V1 不为“只计算活跃运行时间”增加 pause accounting 表。若未�
 
 验收：预算外请求不会到达假 Provider；最后一个配额并发竞争只允许一个调用；重启后继续拒绝。
 
-#### A3. Tool 和 Duration 执行前门禁
+#### A3. Tool 和 Duration 执行前门禁（completed）
 
 - 在所有真实 Tool execution claim 的共享边界检查 Run 级 `max_tool_calls`；
 - Proposal、等待批准和被 Scope 拒绝的调用不消耗 Tool 预算；
@@ -373,7 +376,7 @@ V1 不为“只计算活跃运行时间”增加 pause accounting 表。若未�
 
 验收：最后一个配额并发竞争不超额；无 claim 的调用不误计；执行失败和重启不退回配额。
 
-#### A4. 停止、状态和账本收口
+#### A4. 停止、状态和账本收口（completed）
 
 - 总量、Model、Tool、Token、Duration 耗尽使用统一的 `pentest.budget_exhausted` 事实结构；
 - 并发容量满继续使用 `pentest.budget_capacity_reached`，不升级为硬停止；
@@ -684,18 +687,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从 `2c0f8004` 继续，只做以下工作：
+从 `1c379dcc` 继续，只做阶段 B 的一个网络服务专业闭环：
 
-1. 明确 Model、Tool、Token 和 Duration 的 Run 级持久计数语义；
-2. 修正运行中 Cycle 导致 Session/status 用量滞后的问题；
-3. 在 `agent_engine.start/resume` 前接通 Model、Token、Duration 门禁；
-4. 在共享 Tool execution claim 前接通 Tool 和 Duration 门禁；
-5. 预算耗尽时拒绝新副作用，写结构化事件，复用 pause、Safety Stop 和 Stop Proof；
-6. 补齐边界、并发、重试、Token 不完整、时间到期和重启测试；
-7. 使用 conda `agent` 环境完成目标测试、受影响回归、Ruff 和 scoped mypy；
-8. 形成剩余预算实现提交；
-9. 单独更新实施账本，回填 Attack Surface、隔离 E2E 和全部预算提交，将 PEN-500 标记为 `completed`；
-10. 然后进入阶段 B，不启动 Code Audit、学习平台、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。
+1. 先从现有 Official Pack、Tool Registry 和仓库测试资产中选择一个可复位、明确授权、默认离线的网络服务靶场；
+2. 固定唯一用户结果：从目标解析、可达性和服务发现走到一个 Evidence 支撑的 Finding，或一个证据充分的 Negative Result；
+3. 复用现有 Runner、Execution、Artifact、Evidence、Reasoning、Finding、Closure 和 Report，不新增 Scanner Framework、Planner、Graph 或事实表；
+4. 只接通一个生产 Tool 输出解析路径，扫描结果先成为 Observation/Hypothesis，最小验证后才能形成 Confirmed Finding；
+5. 记录前置条件、Approval、正负判据、Evidence capture、stop condition、未执行能力和失败原因；
+6. 证明预算、Scope、暂停、工具故障和重启不会丢失专业状态，也不会绕过副作用门禁；
+7. 提供一个生产 CLI/API 启动入口和一个可读取该结论的结构化 Report；
+8. 使用 conda `agent` 环境运行目标 E2E、失败路径、受影响回归、全仓 Ruff 和 scoped mypy；
+9. 每个纵向切片独立提交，阶段 B 完成后再单独更新实施账本；
+10. 不启动状态化 Web、Code Audit、学习平台、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。
 
 ---
 
