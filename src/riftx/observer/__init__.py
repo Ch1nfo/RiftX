@@ -9,15 +9,27 @@ from .models import (
     SupervisorSignal,
     SupervisorSnapshot,
 )
+from .projector import (
+    ObserverProjection,
+    ObserverProjectorApplicationService,
+    ProjectedGraph,
+    ProjectionCoverage,
+    TimelineEntry,
+)
 from .supervisor import ObserverSupervisor
 
 __all__ = [
     "ObserverSupervisor",
     "ObserverSupervisorApplicationService",
+    "ObserverProjection",
+    "ObserverProjectorApplicationService",
+    "ProjectedGraph",
+    "ProjectionCoverage",
     "SupervisorCheck",
     "SupervisorDisposition",
     "SupervisorReport",
     "SupervisorSeverity",
     "SupervisorSignal",
     "SupervisorSnapshot",
+    "TimelineEntry",
 ]
