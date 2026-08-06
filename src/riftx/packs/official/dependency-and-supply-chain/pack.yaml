@@ -1,0 +1,109 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: dependency-and-supply-chain
+version: 1.0.0
+title: Dependency and Supply Chain Audit
+description: Offline evidence-backed review of dependency identity, source, lock integrity, install behavior, provenance, and reachable use.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - list_files
+  - glob
+  - grep
+  - read_many_files
+  - symbol_search
+  - find_references
+  - record_observation
+  - propose_hypothesis
+  - propose_finding
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - manifest_or_lock_location
+    - dependency_identity_and_source
+    - reachable_consumer_or_build_path
+    - integrity_or_control_evidence
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [dependency-and-supply-chain]
+capabilities:
+  - capability_id: dependency-and-supply-chain
+    kind: skill
+    title: Dependency and Supply Chain Audit Procedure
+    description: Reconcile manifests, locks, sources, scripts, build inputs, and reachable consumers without contacting package registries or executing installers.
+    domains: [code-audit, dependencies, supply-chain]
+    triggers: [dependency audit, lockfile review, build provenance]
+    dependencies:
+      - {kind: tool, reference: list_files}
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [source_snapshot, repository_map]
+      properties:
+        source_snapshot: {type: string}
+        repository_map: {type: object}
+        ecosystems: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [dependency_inventory, source_and_lock_findings, build_risks, negative_results, coverage_gaps]
+      properties:
+        dependency_inventory: {type: array, items: {type: object}}
+        source_and_lock_findings: {type: array, items: {type: object}}
+        build_risks: {type: array, items: {type: object}}
+        negative_results: {type: array, items: {type: object}}
+        coverage_gaps: {type: array, items: {type: object}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.dependency-and-supply-chain.baseline]
+  - capability_id: dependency-and-supply-chain.technique
+    kind: technique
+    title: Manifest-Lock-Source-Reachability Reconciliation
+    description: Establish the resolved dependency identity, source, integrity, install behavior, build role, and reachable production consumer before proposing supply-chain risk.
+    domains: [code-audit, dependency-integrity, build-security]
+    triggers: [unpinned dependency, alternate source, install script]
+    dependencies:
+      - {kind: tool, reference: list_files}
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.dependency-and-supply-chain.baseline]
+  - capability_id: eval.dependency-and-supply-chain.baseline
+    kind: eval_case
+    title: Dependency and Supply Chain Baseline Case
+    description: Checks manifest-lock reconciliation, alternate sources, integrity, install scripts, production reachability, and unsupported advisory claims.
+    domains: [code-audit, dependencies, supply-chain, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

@@ -25,8 +25,10 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
         "authn-authz-audit",
         "code-audit-foundation",
         "credential-handling",
+        "dependency-and-supply-chain",
         "entrypoint-discovery",
         "evidence-and-reporting",
+        "file-upload-and-path-audit",
         "injection-audit",
         "negative-results",
         "passive-recon",
@@ -35,6 +37,7 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
         "scope-and-safety",
         "secret-and-config-audit",
         "service-enumeration",
+        "ssrf-and-outbound-request-audit",
         "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
@@ -74,10 +77,13 @@ def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
     pack_ids = {
         "authn-authz-audit",
         "code-audit-foundation",
+        "dependency-and-supply-chain",
         "entrypoint-discovery",
+        "file-upload-and-path-audit",
         "injection-audit",
         "repository-mapping",
         "secret-and-config-audit",
+        "ssrf-and-outbound-request-audit",
     }
     bundles = {
         bundle.source.pack_id: bundle
@@ -111,14 +117,17 @@ def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
             "complete_task",
             "complete_run",
         },
+        "dependency-and-supply-chain": analysis_tools | {"list_files"},
         "entrypoint-discovery": analysis_tools
         - {"propose_finding"}
         | {"call_hierarchy"},
+        "file-upload-and-path-audit": analysis_tools | {"call_hierarchy"},
         "injection-audit": analysis_tools | {"call_hierarchy"},
         "repository-mapping": analysis_tools
         - {"propose_hypothesis", "propose_finding"}
         | {"list_files"},
         "secret-and-config-audit": analysis_tools | {"list_files"},
+        "ssrf-and-outbound-request-audit": analysis_tools | {"call_hierarchy"},
     }
     for pack_id, bundle in bundles.items():
         assert set(bundle.source.tool_requirements) == expected_tools[pack_id]

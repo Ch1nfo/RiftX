@@ -1,0 +1,110 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: file-upload-and-path-audit
+version: 1.0.0
+title: File Upload and Path Audit
+description: Evidence-backed review of file ingestion, archive handling, path resolution, storage boundaries, serving, and filesystem side effects.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - glob
+  - grep
+  - read_many_files
+  - symbol_search
+  - find_references
+  - call_hierarchy
+  - record_observation
+  - propose_hypothesis
+  - propose_finding
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - attacker_controlled_file_or_path
+    - normalization_and_validation_path
+    - filesystem_archive_or_serving_sink
+    - effective_root_or_impact_evidence
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [file-upload-and-path-audit]
+capabilities:
+  - capability_id: file-upload-and-path-audit
+    kind: skill
+    title: File Upload and Path Audit Procedure
+    description: Trace attacker-controlled file content, metadata, names, archive entries, and paths through normalization into storage, extraction, reading, writing, deletion, execution, or serving behavior.
+    domains: [code-audit, file-upload, path-security]
+    triggers: [file upload audit, path traversal, archive extraction]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [source_snapshot, entrypoint_catalog]
+      properties:
+        source_snapshot: {type: string}
+        entrypoint_catalog: {type: object}
+        filesystem_surfaces: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [file_flows, path_boundaries, candidate_findings, defenses, negative_results, coverage_gaps]
+      properties:
+        file_flows: {type: array, items: {type: object}}
+        path_boundaries: {type: array, items: {type: object}}
+        candidate_findings: {type: array, items: {type: object}}
+        defenses: {type: array, items: {type: object}}
+        negative_results: {type: array, items: {type: object}}
+        coverage_gaps: {type: array, items: {type: object}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.file-upload-and-path-audit.baseline]
+  - capability_id: file-upload-and-path-audit.technique
+    kind: technique
+    title: Untrusted File and Path Boundary Tracing
+    description: Establish input control, decoding, normalization, canonicalization, containment, race and link behavior, sink semantics, and effective filesystem or serving impact.
+    domains: [code-audit, filesystem, upload-security]
+    triggers: [untrusted filename, archive entry, filesystem sink]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.file-upload-and-path-audit.baseline]
+  - capability_id: eval.file-upload-and-path-audit.baseline
+    kind: eval_case
+    title: File Upload and Path Audit Baseline Case
+    description: Checks file and path control, decoding and normalization order, containment, archive entries, symlink or race assumptions, sink semantics, and durable negative paths.
+    domains: [code-audit, file-upload, path-security, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

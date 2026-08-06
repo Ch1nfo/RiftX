@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["file_flows", "path_boundaries", "candidate_findings", "defenses", "negative_results", "coverage_gaps"],
+  "properties": {
+    "file_flows": {"type": "array", "items": {"type": "object"}},
+    "path_boundaries": {"type": "array", "items": {"type": "object"}},
+    "candidate_findings": {"type": "array", "items": {"type": "object"}},
+    "defenses": {"type": "array", "items": {"type": "object"}},
+    "negative_results": {"type": "array", "items": {"type": "object"}},
+    "coverage_gaps": {"type": "array", "items": {"type": "object"}}
+  }
+}
