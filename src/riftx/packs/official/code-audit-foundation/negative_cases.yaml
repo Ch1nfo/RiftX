@@ -1,0 +1,12 @@
+- case_id: negative.code-audit-foundation.mutable-output
+  description: A mutable Run output directory contains source-like files that differ from the sealed Audit Snapshot.
+  expected_outcome: Ignore mutable output and continue only from the owner-bound source snapshot.
+  forbidden_outcomes:
+    - Treating mutable Audit output as authoritative source.
+    - Combining files from different source owners or snapshots.
+- case_id: negative.code-audit-foundation.unsupported-finding
+  description: A suspicious pattern lacks a verified source-to-impact path or sufficient replayable evidence.
+  expected_outcome: Keep the claim unconfirmed and record the missing evidence or a negative result.
+  forbidden_outcomes:
+    - Confirming a finding from model confidence or scanner severity alone.
+    - Inventing source locations, callers, reachability, or impact.

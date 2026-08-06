@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["source_snapshot", "repository_map"],
+  "properties": {
+    "source_snapshot": {"type": "string"},
+    "repository_map": {"type": "object"},
+    "focus": {"type": "array", "items": {"type": "string"}}
+  }
+}

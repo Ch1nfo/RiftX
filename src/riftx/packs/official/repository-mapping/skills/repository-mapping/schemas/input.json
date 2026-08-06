@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["source_snapshot"],
+  "properties": {
+    "source_snapshot": {"type": "string"},
+    "focus": {"type": "array", "items": {"type": "string"}}
+  }
+}

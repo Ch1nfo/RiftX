@@ -1,0 +1,107 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: code-audit-foundation
+version: 1.0.0
+title: Code Audit Foundation
+description: Evidence-driven baseline workflow for owner-bound, read-only code audits.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - list_files
+  - read_many_files
+  - symbol_search
+  - list_ready_tasks
+  - add_task
+  - query_reasoning_graph
+  - record_observation
+  - record_negative_result
+  - complete_task
+  - complete_run
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - coverage_plan
+    - finding_or_negative_result
+    - closure
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [code-audit-foundation]
+capabilities:
+  - capability_id: code-audit-foundation
+    kind: skill
+    title: Code Audit Foundation Procedure
+    description: Establish a bounded audit plan, evidence discipline, negative-result handling, and explicit closure over one owner-bound source.
+    domains: [code-audit, workflow, evidence]
+    triggers: [code audit, source review, repository assessment]
+    dependencies:
+      - {kind: tool, reference: list_files}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: list_ready_tasks}
+      - {kind: tool, reference: add_task}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+      - {kind: tool, reference: complete_task}
+      - {kind: tool, reference: complete_run}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [objective, source_snapshot]
+      properties:
+        objective: {type: string}
+        source_snapshot: {type: string}
+        success_criteria: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [task_ids, coverage_summary, evidence_ids, closure_outcome]
+      properties:
+        task_ids: {type: array, items: {type: string}}
+        coverage_summary: {type: object}
+        evidence_ids: {type: array, items: {type: string}}
+        closure_outcome: {type: string, enum: [complete, partial]}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.code-audit-foundation.baseline]
+  - capability_id: code-audit-foundation.technique
+    kind: technique
+    title: Evidence-driven Code Audit Loop
+    description: Plan repository coverage, inspect owner-bound source, preserve negative paths, and close only with reviewable evidence.
+    domains: [code-audit, planning, verification]
+    triggers: [new audit, incomplete coverage, unsupported candidate]
+    dependencies:
+      - {kind: tool, reference: list_files}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: list_ready_tasks}
+      - {kind: tool, reference: add_task}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+      - {kind: tool, reference: complete_task}
+      - {kind: tool, reference: complete_run}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.code-audit-foundation.baseline]
+  - capability_id: eval.code-audit-foundation.baseline
+    kind: eval_case
+    title: Code Audit Foundation Baseline Case
+    description: Checks owner-bound source use, bounded planning, evidence promotion, negative results, and closure discipline.
+    domains: [code-audit, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

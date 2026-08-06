@@ -1,0 +1,12 @@
+- case_id: eval.entrypoint-discovery.baseline
+  capability_ids: [entrypoint-discovery, entrypoint-discovery.technique]
+  description: Discover HTTP, CLI, queue, scheduled, file-processing, and administrative entrypoints in a mixed service repository.
+  scenario: builtin://eval/entrypoint-discovery/baseline-v1
+  assertions:
+    - Every accepted entrypoint has a source location and registration, reference, caller, or framework configuration evidence.
+    - Input channels, authentication context, privilege level, and downstream subsystem are recorded when visible.
+    - Duplicate aliases and generated wrappers are linked rather than counted as independent attack surfaces.
+    - Name-only, unreachable, test-only, and unsupported candidates remain unresolved or negative results.
+  negative_case_ids:
+    - negative.entrypoint-discovery.name-only
+    - negative.entrypoint-discovery.unreachable-handler

@@ -1,0 +1,12 @@
+- case_id: eval.repository-mapping.baseline
+  capability_ids: [repository-mapping, repository-mapping.technique]
+  description: Map a mixed monorepo containing first-party services, generated clients, vendored code, tests, deployment files, and ambiguous framework markers.
+  scenario: builtin://eval/repository-mapping/baseline-v1
+  assertions:
+    - First-party, generated, vendored, test, and deployment roots are distinguished with source evidence.
+    - Languages and frameworks are reported only when supported by manifests, imports, symbols, or configuration.
+    - Trust boundaries identify input adapters, privileged services, persistence, outbound integrations, and secret-bearing configuration.
+    - Unknown or truncated regions remain explicit and influence later coverage planning.
+  negative_case_ids:
+    - negative.repository-mapping.generated-as-first-party
+    - negative.repository-mapping.guessed-framework

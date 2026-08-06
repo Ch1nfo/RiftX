@@ -25,11 +25,14 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
 
     assert first == second
     assert [install.pack_id for install in first] == [
+        "code-audit-foundation",
         "credential-handling",
+        "entrypoint-discovery",
         "evidence-and-reporting",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
+        "repository-mapping",
         "scope-and-safety",
         "service-enumeration",
         "vulnerability-verification",
@@ -40,11 +43,14 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         session_id="session-1"
     )
     assert [technique.id for technique in techniques] == [
+        "code-audit-foundation.technique",
         "credential-handling.technique",
+        "entrypoint-discovery.technique",
         "evidence-and-reporting.technique",
         "negative-results.technique",
         "passive-recon.technique",
         "pentest-foundation.technique",
+        "repository-mapping.technique",
         "scope-and-safety.technique",
         "service-enumeration.technique",
         "vulnerability-verification.technique",
@@ -64,12 +70,12 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
             )
         }
     assert counts == {
-        "capabilities": 30,
-        "capability_versions": 30,
-        "capability_packs": 10,
-        "capability_pack_members": 30,
-        "capability_pack_installs": 10,
-        "capability_pack_locks": 30,
+        "capabilities": 39,
+        "capability_versions": 39,
+        "capability_packs": 13,
+        "capability_pack_members": 39,
+        "capability_pack_installs": 13,
+        "capability_pack_locks": 39,
     }
     await database.dispose()
 

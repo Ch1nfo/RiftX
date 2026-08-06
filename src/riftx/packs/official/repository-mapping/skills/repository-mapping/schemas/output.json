@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["roots", "languages", "frameworks", "trust_boundaries", "exclusions"],
+  "properties": {
+    "roots": {"type": "array", "items": {"type": "object"}},
+    "languages": {"type": "array", "items": {"type": "object"}},
+    "frameworks": {"type": "array", "items": {"type": "object"}},
+    "trust_boundaries": {"type": "array", "items": {"type": "object"}},
+    "exclusions": {"type": "array", "items": {"type": "object"}}
+  }
+}

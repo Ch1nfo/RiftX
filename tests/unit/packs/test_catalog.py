@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 from riftx.capabilities import (
+    CapabilityEffectClass,
     CapabilityKind,
     CapabilitySource,
     CapabilityTrustTier,
     CapabilityVersionStatus,
     capability_pack_digest,
 )
+from riftx.domain.enums import ApprovalLevel
 from riftx.packs import OFFICIAL_PACK_ROOT, OfficialPackCatalog
 
 
@@ -20,11 +22,14 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
     second = OfficialPackCatalog().load()
 
     assert [bundle.source.pack_id for bundle in first] == [
+        "code-audit-foundation",
         "credential-handling",
+        "entrypoint-discovery",
         "evidence-and-reporting",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
+        "repository-mapping",
         "scope-and-safety",
         "service-enumeration",
         "vulnerability-verification",
@@ -60,6 +65,74 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
             assert document.source is CapabilitySource.OFFICIAL
             assert version.manifest.kind is CapabilityKind.SKILL
             assert version.manifest.provenance.source_digest == document.digest
+
+
+def test_code_audit_foundation_packs_use_only_production_safe_code_workflows() -> None:
+    bundles = {
+        bundle.source.pack_id: bundle
+        for bundle in OfficialPackCatalog().load()
+        if bundle.source.pack_id
+        in {"code-audit-foundation", "repository-mapping", "entrypoint-discovery"}
+    }
+
+    assert set(bundles) == {
+        "code-audit-foundation",
+        "repository-mapping",
+        "entrypoint-discovery",
+    }
+    expected_tools = {
+        "code-audit-foundation": {
+            "list_files",
+            "read_many_files",
+            "symbol_search",
+            "list_ready_tasks",
+            "add_task",
+            "query_reasoning_graph",
+            "record_observation",
+            "record_negative_result",
+            "complete_task",
+            "complete_run",
+        },
+        "repository-mapping": {
+            "list_files",
+            "glob",
+            "read_many_files",
+            "grep",
+            "symbol_search",
+            "find_references",
+            "record_observation",
+            "record_negative_result",
+        },
+        "entrypoint-discovery": {
+            "glob",
+            "grep",
+            "read_many_files",
+            "symbol_search",
+            "find_references",
+            "call_hierarchy",
+            "record_observation",
+            "propose_hypothesis",
+            "record_negative_result",
+        },
+    }
+    for pack_id, bundle in bundles.items():
+        assert set(bundle.source.tool_requirements) == expected_tools[pack_id]
+        assert len(bundle.capability_versions) == 3
+        assert len(bundle.skill_documents) == 1
+        assert len(bundle.negative_cases) >= 2
+        assert len(bundle.evaluation_cases) == 1
+        assert all(
+            version.manifest.permission.approval_level is ApprovalLevel.NEVER
+            and not version.manifest.permission.requires_scope
+            and not version.manifest.permission.credential_references
+            and version.manifest.permission.effect_class
+            is (
+                CapabilityEffectClass.READ_ONLY
+                if version.manifest.kind is CapabilityKind.EVAL_CASE
+                else CapabilityEffectClass.LOCAL_MUTATION
+            )
+            for version in bundle.capability_versions
+        )
 
 
 def test_official_catalog_rejects_missing_negative_cases(tmp_path: Path) -> None:
