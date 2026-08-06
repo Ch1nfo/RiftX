@@ -8,7 +8,12 @@ from riftx.capabilities import (
     CapabilitySelectionStore,
     SessionCapabilitySelection,
 )
-from riftx.skills import SkillDocument, SkillReference, SkillSelectionState
+from riftx.skills import (
+    SkillDocument,
+    SkillReference,
+    SkillSelectionState,
+    skill_capability_selection,
+)
 
 from .capability_selection_repository import SQLAlchemyCapabilitySelectionStore
 from .transactions import SessionFactory
@@ -40,7 +45,7 @@ class SQLAlchemySkillSelectionStore:
         return [_from_selection(selection) for selection in selections]
 
     async def save_selection(self, selection: SkillSelectionState) -> None:
-        await self._store.save_selection(_to_selection(selection))
+        await self._store.save_selection(skill_capability_selection(selection))
 
     async def replace_selection(
         self,
@@ -49,7 +54,7 @@ class SQLAlchemySkillSelectionStore:
         expected_digest: str,
     ) -> None:
         await self._store.replace_selection(
-            _to_selection(selection),
+            skill_capability_selection(selection),
             expected_digest=expected_digest,
         )
 
@@ -71,33 +76,6 @@ class SQLAlchemySkillSelectionStore:
             kind=CapabilityKind.SKILL,
             capability_ids=skill_ids,
         )
-
-
-def _to_selection(selection: SkillSelectionState) -> SessionCapabilitySelection:
-    return SessionCapabilitySelection(
-        run_id=selection.run_id,
-        session_id=selection.session_id,
-        agent_id=selection.agent_id,
-        kind=CapabilityKind.SKILL,
-        capability_id=selection.skill_id,
-        version=selection.version,
-        digest=selection.digest,
-        source=selection.source,
-        reason=selection.reason,
-        snapshot={
-            "document": selection.document.model_dump(mode="json"),
-            "reference": (
-                selection.reference.model_dump(mode="json")
-                if selection.reference is not None
-                else None
-            ),
-        },
-        state={"references_loaded": selection.references_loaded},
-        active=selection.active,
-        selected_at=selection.selected_at,
-        updated_at=selection.updated_at,
-        unloaded_at=selection.unloaded_at,
-    )
 
 
 def _from_selection(selection: SessionCapabilitySelection) -> SkillSelectionState:

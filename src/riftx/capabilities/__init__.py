@@ -51,6 +51,7 @@ from .techniques import (
     TechniqueSelectionManifest,
     TechniqueSummary,
     TechniqueVisibilitySnapshot,
+    build_technique_selection,
 )
 
 __all__ = [
@@ -95,6 +96,7 @@ __all__ = [
     "TechniqueSelectionManifest",
     "TechniqueSummary",
     "TechniqueVisibilitySnapshot",
+    "build_technique_selection",
     "capability_manifest_digest",
     "capability_pack_digest",
     "canonical_payload_digest",

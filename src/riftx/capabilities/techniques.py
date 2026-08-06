@@ -112,7 +112,7 @@ class TechniqueContextManager:
         version = await self._active_version(technique_id)
         now = selected_at or utc_now()
         await self._store.save_selection(
-            _selection(
+            build_technique_selection(
                 version,
                 run_id=run_id,
                 session_id=session_id,
@@ -144,7 +144,7 @@ class TechniqueContextManager:
             raise ValueError(f"Technique {technique_id!r} is not selected")
         self._require_scope(existing, run_id=run_id, agent_id=agent_id)
         version = await self._active_version(technique_id)
-        replacement = _selection(
+        replacement = build_technique_selection(
             version,
             run_id=run_id,
             session_id=session_id,
@@ -284,7 +284,7 @@ class TechniqueContextManager:
             )
 
 
-def _selection(
+def build_technique_selection(
     version: CapabilityVersion,
     *,
     run_id: str,
@@ -294,6 +294,8 @@ def _selection(
     selected_at: datetime,
     updated_at: datetime,
 ) -> SessionCapabilitySelection:
+    """Pin one exact Technique version for a Session."""
+
     if version.manifest.kind is not CapabilityKind.TECHNIQUE:
         raise ValueError("Capability version is not a Technique")
     return SessionCapabilitySelection(

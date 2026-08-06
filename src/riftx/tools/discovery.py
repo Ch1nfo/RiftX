@@ -785,21 +785,15 @@ class ToolContextManager:
         selected_at: datetime | None = None,
         updated_at: datetime | None = None,
     ) -> SessionCapabilitySelection:
-        pinned, digest = _current_tool_snapshot(self.registry, tool_id)
-        now = updated_at or utc_now()
-        return SessionCapabilitySelection(
+        return build_tool_selection(
+            self.registry,
+            tool_id,
             run_id=run_id,
             session_id=session_id,
             agent_id=agent_id,
-            kind=CapabilityKind.TOOL,
-            capability_id=tool_id,
-            version=pinned.version,
-            digest=digest,
-            source=CapabilitySource.OPERATOR,
             reason=reason,
-            snapshot=pinned.model_dump(mode="json"),
-            selected_at=selected_at or now,
-            updated_at=now,
+            selected_at=selected_at,
+            updated_at=updated_at,
         )
 
     def _is_stale(self, tool_id: str, digest: str) -> bool:
@@ -847,6 +841,37 @@ def _current_tool_snapshot(
     return pinned, canonical_payload_digest(
         pinned.model_dump(mode="json"),
         domain=_TOOL_SELECTION_DIGEST_DOMAIN,
+    )
+
+
+def build_tool_selection(
+    registry: ToolRegistry,
+    tool_id: str,
+    *,
+    run_id: str,
+    session_id: str,
+    agent_id: str,
+    reason: str,
+    selected_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> SessionCapabilitySelection:
+    """Resolve one current Tool into the same immutable snapshot used at runtime."""
+
+    pinned, digest = _current_tool_snapshot(registry, tool_id)
+    now = updated_at or utc_now()
+    return SessionCapabilitySelection(
+        run_id=run_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        kind=CapabilityKind.TOOL,
+        capability_id=tool_id,
+        version=pinned.version,
+        digest=digest,
+        source=CapabilitySource.OPERATOR,
+        reason=reason,
+        snapshot=pinned.model_dump(mode="json"),
+        selected_at=selected_at or now,
+        updated_at=now,
     )
 
 

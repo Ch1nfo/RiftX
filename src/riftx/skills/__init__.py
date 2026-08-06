@@ -9,6 +9,8 @@ from .context import (
     SkillSelectionState,
     SkillSelectionStore,
     SkillVisibilitySnapshot,
+    build_skill_selection_state,
+    skill_capability_selection,
 )
 from .generic import (
     PortScanArguments,
@@ -66,6 +68,8 @@ __all__ = [
     "SkillSelectionStore",
     "SkillSummary",
     "SkillVisibilitySnapshot",
+    "build_skill_selection_state",
+    "skill_capability_selection",
     "PortScanSkill",
     "RegisteredToolArguments",
     "RegisteredToolSkill",

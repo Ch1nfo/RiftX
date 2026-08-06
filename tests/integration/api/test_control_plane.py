@@ -60,6 +60,7 @@ from riftx.application.services import (
     NodeApplicationService,
     NodeRegistration,
     PentestApplicationService,
+    PentestCapabilityResolver,
     ReportApplicationService,
     ResourceStopDisposition,
     RunApplicationService,
@@ -75,6 +76,7 @@ from riftx.application.services import (
 from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
+from riftx.capabilities import CapabilityKind, PackLockOwnerKind
 from riftx.context import ContextApplicationService
 from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
@@ -110,6 +112,7 @@ from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
 from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
+from riftx.packs import OfficialPackCatalog, bootstrap_official_packs
 from riftx.persistence import (
     Database,
     SQLAlchemyActionReadRepository,
@@ -121,6 +124,8 @@ from riftx.persistence import (
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
+    SQLAlchemyCapabilityRepository,
+    SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyEngagementRepository,
     SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
@@ -140,6 +145,7 @@ from riftx.persistence import (
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyWorkflowSignalIntentRepository,
 )
+from riftx.persistence.capability_records import CapabilityPackLockRecord
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.observability_repository import (
@@ -614,6 +620,9 @@ async def _build_runtime(
     db_path = database_path or (tmp_path / "riftx.db")
     database = Database(f"sqlite+aiosqlite:///{db_path}")
     await database.create_schema()
+    capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
+    official_pack_catalog = OfficialPackCatalog()
+    await bootstrap_official_packs(capability_repository, official_pack_catalog)
 
     tools_path = tmp_path / "tools.yaml"
     if not tools_path.exists():
@@ -629,6 +638,10 @@ tools:
         )
     registry = ToolRegistry(tools_path, node_id="local")
     await registry.refresh()
+    skill_registry = create_default_skill_registry(
+        tmp_path / "skills",
+        official_skill_roots=official_pack_catalog.skill_roots(),
+    )
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
@@ -668,6 +681,7 @@ tools:
         local_principal_path=tmp_path / "secrets" / "local-principal.json",
         database_url=database.url,
         tools_config_path=tools_path,
+        skills_config_path=tmp_path / "skills",
         models_config_path=tmp_path / "models.yaml",
         model_secrets_path=tmp_path / "secrets" / "models.json",
         model_profile_override=model_profile_override,
@@ -809,6 +823,12 @@ tools:
                 workflow_client=workflow_router,
                 workspace_root=settings.workspace_root,
                 model_profiles=model_profile_service,
+                capability_resolver=PentestCapabilityResolver(
+                    tools=registry,
+                    skills=skill_registry,
+                    capabilities=capability_repository,
+                    packs=official_pack_catalog,
+                ),
             ),
             audit_service=AuditApplicationService(
                 creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
@@ -1016,6 +1036,39 @@ async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path)
             assert session.run_id == request_id
             assert session.model_profile == "fast"
 
+            capability_store = SQLAlchemyCapabilitySelectionStore(
+                runtime.control_plane.database.session_factory
+            )
+            selections = await capability_store.list_selections(session.id)
+            assert [(item.kind, item.capability_id) for item in selections] == [
+                (CapabilityKind.SKILL, "pentest-foundation"),
+                (CapabilityKind.TECHNIQUE, "pentest-foundation.technique"),
+            ]
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.TOOL
+            ) == frozenset()
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.SKILL
+            ) == frozenset({"pentest-foundation"})
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.TECHNIQUE
+            ) == frozenset({"pentest-foundation.technique"})
+            async with runtime.control_plane.database.session_factory() as db_session:
+                locks = (
+                    await db_session.scalars(
+                        select(CapabilityPackLockRecord).where(
+                            CapabilityPackLockRecord.owner_kind
+                            == PackLockOwnerKind.RUN_SESSION.value,
+                            CapabilityPackLockRecord.owner_id == session.id,
+                        )
+                    )
+                ).all()
+            assert {lock.capability_id for lock in locks} == {
+                "pentest-foundation",
+                "pentest-foundation.technique",
+                "eval.pentest-foundation.baseline",
+            }
+
             events = await client.get(f"/api/v1/runs/{request_id}/events")
             assert events.status_code == 200
             items = events.json()["items"]
@@ -1105,10 +1158,52 @@ async def test_pentest_create_rejects_missing_authorization_and_out_of_scope_tar
             )
             assert weakened.status_code == 422
 
+            unknown_pack_request = _pentest_request(str(uuid4()))
+            unknown_pack_request["capabilities"] = {"pack_ids": ["missing-pack"]}
+            unknown_pack = await client.post(
+                "/api/v1/pentests",
+                json=unknown_pack_request,
+            )
+            assert unknown_pack.status_code == 409
+            assert (
+                unknown_pack.json()["error"]["code"]
+                == "pentest_capability_pack_not_found"
+            )
+
             listed = await client.get("/api/v1/runs", params={"kind": "pentest"})
             assert listed.status_code == 200
             assert listed.json()["items"] == []
             assert runtime.workflow.calls == []
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_pins_explicit_dynamic_tool(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            request = _pentest_request(request_id)
+            request["capabilities"] = {"tool_ids": ["python"]}
+            response = await client.post("/api/v1/pentests", json=request)
+            assert response.status_code == 201, response.text
+
+            store = SQLAlchemyCapabilitySelectionStore(
+                runtime.control_plane.database.session_factory
+            )
+            session_id = f"{request_id}:primary"
+            tool = await store.get_selection(
+                session_id,
+                CapabilityKind.TOOL,
+                "python",
+            )
+            assert tool is not None
+            assert tool.snapshot["definition"]["id"] == "python"
+            assert await store.get_allowlist(
+                session_id,
+                CapabilityKind.TOOL,
+            ) == frozenset({"python"})
     finally:
         await runtime.control_plane.close()
 

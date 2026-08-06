@@ -34,6 +34,7 @@ from riftx.application.services import (
     NodeApplicationService,
     NodeRegistration,
     PentestApplicationService,
+    PentestCapabilityResolver,
     ReportApplicationService,
     RunApplicationService,
     RunnerControlService,
@@ -77,6 +78,7 @@ from riftx.hooks import HookBus, RunEventHookAuditSink
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfileRegistry
 from riftx.observability import RuntimeObservabilityService
+from riftx.packs import OfficialPackCatalog, bootstrap_official_packs
 from riftx.persistence import (
     Database,
     SQLAlchemyActionReadRepository,
@@ -88,6 +90,7 @@ from riftx.persistence import (
     SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyAuditPreflightPlanRepository,
     SQLAlchemyAuditPreflightRepository,
+    SQLAlchemyCapabilityRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
@@ -140,6 +143,7 @@ from riftx.security import (
     validate_deployment_profile,
     validate_operator_runner_credential_separation,
 )
+from riftx.skills import create_default_skill_registry
 from riftx.target_http.service import TargetHttpApplicationService
 from riftx.temporal.connection import TemporalConnectionSettings, connect_temporal
 from riftx.temporal.runtime import LazyTemporalRunClient, TemporalRuntimeConfig
@@ -164,6 +168,7 @@ class APISettings:
     )
     database_url: str = "sqlite+aiosqlite:///./.riftx/riftx.db"
     tools_config_path: Path = Path("configs/tools.yaml")
+    skills_config_path: Path = Path(".riftx/skills")
     models_config_path: Path = Path("configs/models.yaml")
     model_secrets_path: Path = Path(".riftx/secrets/models.json")
     model_profile_override: str | None = None
@@ -212,6 +217,7 @@ class APISettings:
             local_operator_capabilities=config.security.local_operator_capabilities,
             database_url=config.database.url,
             tools_config_path=config.tools.path.expanduser(),
+            skills_config_path=config.skills.path.expanduser(),
             models_config_path=config.models.path.expanduser(),
             model_secrets_path=config.models.secrets_path.expanduser(),
             model_profile_override=config.models.profile,
@@ -735,8 +741,16 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     database = Database(settings.database_url)
     await database.create_schema()
 
+    capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
+    official_pack_catalog = OfficialPackCatalog()
+    await bootstrap_official_packs(capability_repository, official_pack_catalog)
     registry = ToolRegistry(settings.tools_config_path, node_id=settings.node_id)
     tool_snapshot = await registry.refresh()
+    skill_registry = create_default_skill_registry(
+        settings.skills_config_path,
+        official_skill_roots=official_pack_catalog.skill_roots(),
+    )
+    skill_registry.load_entry_points()
     model_registry = ModelProfileRegistry(
         settings.models_config_path,
         settings.model_secrets_path,
@@ -1003,6 +1017,12 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         workflow_client=workflow_router,
         workspace_root=settings.workspace_root,
         model_profiles=model_profile_service,
+        capability_resolver=PentestCapabilityResolver(
+            tools=registry,
+            skills=skill_registry,
+            capabilities=capability_repository,
+            packs=official_pack_catalog,
+        ),
     )
     audit_control_service = AuditControlApplicationService(
         audits=audit_service,

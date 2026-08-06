@@ -63,7 +63,13 @@ from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .models import ModelProfileApplicationService, ModelProfilesView, ModelProfileView
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
-from .pentests import CreatePentest, PentestApplicationService
+from .pentests import (
+    CreatePentest,
+    PentestApplicationService,
+    PentestCapabilityResolver,
+    PentestCapabilitySelection,
+    ResolvedPentestCapabilities,
+)
 from .reasoning import (
     QueryReasoningGraph,
     ReasoningGraphApplicationService,
@@ -165,6 +171,9 @@ __all__ = [
     "NodeRegistration",
     "CreatePentest",
     "PentestApplicationService",
+    "PentestCapabilityResolver",
+    "PentestCapabilitySelection",
+    "ResolvedPentestCapabilities",
     "RegisteredToolView",
     "RegisterArtifact",
     "RegisterArtifactContent",

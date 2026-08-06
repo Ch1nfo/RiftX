@@ -22,6 +22,7 @@ from .discovery import (
     ToolSearchResult,
     ToolSelection,
     ToolVisibilitySnapshot,
+    build_tool_selection,
 )
 from .models import (
     ExecutionPolicy,
@@ -50,6 +51,7 @@ __all__ = [
     "ToolSearchRequest",
     "ToolSearchResult",
     "ToolVisibilitySnapshot",
+    "build_tool_selection",
     "PlatformShells",
     "RawToolDefinition",
     "ShellConfig",

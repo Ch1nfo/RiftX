@@ -8,7 +8,11 @@ from typing import Protocol
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from riftx.application.errors import RepositoryConflictError
-from riftx.capabilities import CapabilitySource
+from riftx.capabilities import (
+    CapabilityKind,
+    CapabilitySource,
+    SessionCapabilitySelection,
+)
 from riftx.domain.base import utc_now
 
 from .models import SkillDocument, SkillReference, SkillSearchResult, SkillSummary
@@ -259,28 +263,17 @@ class ProgressiveSkillContextManager:
                 await self._store.save_selection(existing)
             return existing.document
 
-        document = self.registry.load_skill_document(skill_id)
-        try:
-            reference = self.registry.load_skill_references(skill_id)
-        except SkillReferenceNotFoundError:
-            reference = None
-        await self._store.save_selection(
-            SkillSelectionState(
-                run_id=run_id,
-                session_id=session_id,
-                agent_id=agent_id,
-                skill_id=skill_id,
-                version=document.version,
-                digest=document.digest,
-                source=document.source,
-                reason=reason,
-                document=document,
-                reference=reference,
-                selected_at=now,
-                updated_at=now,
-            )
+        selection = build_skill_selection_state(
+            self.registry,
+            skill_id,
+            run_id=run_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            reason=reason,
+            selected_at=now,
         )
-        return document
+        await self._store.save_selection(selection)
+        return selection.document
 
     async def load_references(
         self,
@@ -487,6 +480,71 @@ class ProgressiveSkillContextManager:
     ) -> None:
         if selection.run_id != run_id or selection.agent_id != agent_id:
             raise PermissionError("Skill selection belongs to a different Agent Session scope")
+
+
+def build_skill_selection_state(
+    registry: SkillRegistry,
+    skill_id: str,
+    *,
+    run_id: str,
+    session_id: str,
+    agent_id: str,
+    reason: str,
+    selected_at: datetime | None = None,
+) -> SkillSelectionState:
+    """Resolve one current Skill package into the runtime's pinned state."""
+
+    document = registry.load_skill_document(skill_id)
+    try:
+        reference = registry.load_skill_references(skill_id)
+    except SkillReferenceNotFoundError:
+        reference = None
+    now = selected_at or utc_now()
+    return SkillSelectionState(
+        run_id=run_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        version=document.version,
+        digest=document.digest,
+        source=document.source,
+        reason=reason,
+        document=document,
+        reference=reference,
+        selected_at=now,
+        updated_at=now,
+    )
+
+
+def skill_capability_selection(
+    selection: SkillSelectionState,
+) -> SessionCapabilitySelection:
+    """Project a Skill state into the unified Session Capability table shape."""
+
+    return SessionCapabilitySelection(
+        run_id=selection.run_id,
+        session_id=selection.session_id,
+        agent_id=selection.agent_id,
+        kind=CapabilityKind.SKILL,
+        capability_id=selection.skill_id,
+        version=selection.version,
+        digest=selection.digest,
+        source=selection.source,
+        reason=selection.reason,
+        snapshot={
+            "document": selection.document.model_dump(mode="json"),
+            "reference": (
+                selection.reference.model_dump(mode="json")
+                if selection.reference is not None
+                else None
+            ),
+        },
+        state={"references_loaded": selection.references_loaded},
+        active=selection.active,
+        selected_at=selection.selected_at,
+        updated_at=selection.updated_at,
+        unloaded_at=selection.unloaded_at,
+    )
 
 
 def _pinned_skill_fields(selection: SkillSelectionState) -> tuple[object, ...]:
