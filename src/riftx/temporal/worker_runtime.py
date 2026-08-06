@@ -109,6 +109,7 @@ from riftx.persistence import (
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyProviderStateRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunLeaseRepository,
@@ -822,6 +823,9 @@ async def build_temporal_worker(
             database.session_factory
         )
         working_memory_repository = SQLAlchemyWorkingMemoryRepository(database.session_factory)
+        reasoning_graph_repository = SQLAlchemyReasoningGraphRepository(
+            database.session_factory
+        )
         task_graph_repository = SQLAlchemyTaskGraphRepository(database.session_factory)
         task_planner = SQLAlchemyTaskPlanner(database.session_factory)
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
@@ -1184,6 +1188,7 @@ async def build_temporal_worker(
                 WorkingMemoryContextSource(
                     working_memory_repository,
                     task_graph_repository,
+                    reasoning_graph_repository,
                 ),
                 RetrievedMemoryContextSource(memory_service),
             ],

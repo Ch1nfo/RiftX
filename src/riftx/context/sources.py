@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Iterable
+from typing import Protocol, cast
+
+from pydantic import JsonValue
 
 from riftx.domain import AgentMessage, MessageRole, MessageType
+from riftx.reasoning import ReasoningGraph, ReasoningGraphRepository, ReasoningNodeKind
 from riftx.runtime.lifecycle import ContextCompileRequest, ContextPurpose
 from riftx.tasks import TaskGraphRepository
 
@@ -29,25 +33,60 @@ class WorkingMemoryContextSource:
         self,
         repository: WorkingMemoryRepository,
         task_graphs: TaskGraphRepository | None = None,
+        reasoning_graphs: ReasoningGraphRepository | None = None,
     ) -> None:
         self._repository = repository
         self._task_graphs = task_graphs
+        self._reasoning_graphs = reasoning_graphs
 
     async def load(self, request: ContextCompileRequest) -> list[ContextItem]:
         memory = await self._repository.get_for_run(request.run_id)
-        if memory is None:
+        reasoning = (
+            await self._reasoning_graphs.get(request.run_id)
+            if self._reasoning_graphs is not None
+            else None
+        )
+        if memory is None and reasoning is None:
             return []
-        ref = f"working-memory://{memory.id}/versions/{memory.version}"
         if request.purpose is ContextPurpose.SUBAGENT_DELEGATION:
             selected = set(request.selected_fact_ids)
-            facts = [fact for fact in memory.confirmed_facts if fact.id in selected]
-            if not facts:
+            if reasoning is not None:
+                facts = [
+                    node
+                    for node in reasoning.nodes
+                    if node.kind is ReasoningNodeKind.CONFIRMED_FACT
+                    and node.id in selected
+                ]
+                if not facts:
+                    return []
+                return [
+                    _reasoning_item(
+                        reasoning,
+                        suffix="selected-facts",
+                        content=[fact.model_dump(mode="json") for fact in facts],
+                        kind=ContextItemKind.CONFIRMED_FACT,
+                        priority=100,
+                        required=True,
+                        compressible=False,
+                        evidence_ids=(
+                            evidence_id
+                            for fact in facts
+                            for evidence_id in fact.evidence_ids
+                        ),
+                    )
+                ]
+            assert memory is not None
+            legacy_facts = [
+                fact for fact in memory.confirmed_facts if fact.id in selected
+            ]
+            if not legacy_facts:
                 return []
+            ref = f"working-memory://{memory.id}/versions/{memory.version}"
             return [
                 _memory_item(
                     memory.id,
                     "selected-facts",
-                    [fact.model_dump(mode="json") for fact in facts],
+                    [fact.model_dump(mode="json") for fact in legacy_facts],
                     ref,
                     kind=ContextItemKind.CONFIRMED_FACT,
                     priority=100,
@@ -55,7 +94,10 @@ class WorkingMemoryContextSource:
                     compressible=False,
                 )
             ]
-        items: list[ContextItem] = []
+        items = [_reasoning_item(reasoning)] if reasoning is not None else []
+        if memory is None:
+            return items
+        ref = f"working-memory://{memory.id}/versions/{memory.version}"
         if memory.current_focus is not None:
             items.append(
                 _memory_item(
@@ -85,7 +127,7 @@ class WorkingMemoryContextSource:
                     compressible=False,
                 )
             )
-        if memory.confirmed_facts:
+        if reasoning is None and memory.confirmed_facts:
             items.append(
                 _memory_item(
                     memory.id,
@@ -96,7 +138,7 @@ class WorkingMemoryContextSource:
                     priority=94,
                 )
             )
-        if memory.hypotheses:
+        if reasoning is None and memory.hypotheses:
             items.append(
                 _memory_item(
                     memory.id,
@@ -268,15 +310,18 @@ class TranscriptContextSource:
             kind = ContextItemKind.ASSISTANT_DETAIL
         elif message.role is MessageRole.USER and not required:
             kind = ContextItemKind.CHITCHAT
-        content: object
+        content: JsonValue
         if message.structured_content is not None:
-            content = message.structured_content
+            content = cast(JsonValue, message.structured_content)
         else:
-            content = {
-                "role": message.role.value,
-                "content": message.content or "",
-                "message_type": message.message_type.value,
-            }
+            content = cast(
+                JsonValue,
+                {
+                    "role": message.role.value,
+                    "content": message.content or "",
+                    "message_type": message.message_type.value,
+                },
+            )
         return ContextItem(
             id=message.id,
             layer=layer,
@@ -303,14 +348,17 @@ def processed_tool_result_context_item(
         id=f"tool-result:{result.execution_id}",
         layer=ContextLayer.RELEVANT_TOOL_RESULTS,
         kind=ContextItemKind.TOOL_PREVIEW,
-        content={
-            "execution_id": result.execution_id,
-            "tool_id": result.tool_id,
-            "status": result.status.value,
-            "exit_code": result.exit_code,
-            "context_summary": result.context_summary,
-            "artifact_refs": artifact_refs,
-        },
+        content=cast(
+            JsonValue,
+            {
+                "execution_id": result.execution_id,
+                "tool_id": result.tool_id,
+                "status": result.status.value,
+                "exit_code": result.exit_code,
+                "context_summary": result.context_summary,
+                "artifact_refs": artifact_refs,
+            },
+        ),
         priority=75,
         compressible=True,
         removable=True,
@@ -335,11 +383,47 @@ def _memory_item(
         id=f"{memory_id}:{suffix}",
         layer=ContextLayer.WORKING_MEMORY,
         kind=kind,
-        content=content,
+        content=cast(JsonValue, content),
         priority=priority,
         required=required,
         compressible=compressible,
         removable=not required,
         source_refs=[source_ref],
         metadata={"working_memory_id": memory_id},
+    )
+
+
+def _reasoning_item(
+    graph: ReasoningGraph,
+    *,
+    suffix: str = "state",
+    content: object | None = None,
+    kind: ContextItemKind = ContextItemKind.REASONING_GRAPH,
+    priority: int = 95,
+    required: bool = False,
+    compressible: bool = True,
+    evidence_ids: Iterable[str] = (),
+) -> ContextItem:
+    source_ref = f"reasoning-graph://runs/{graph.run_id}/versions/{graph.version}"
+    return ContextItem(
+        id=f"reasoning-graph:{graph.run_id}:v{graph.version}:{suffix}",
+        layer=ContextLayer.WORKING_MEMORY,
+        kind=kind,
+        content=(
+            cast(JsonValue, graph.model_dump(mode="json"))
+            if content is None
+            else cast(JsonValue, content)
+        ),
+        priority=priority,
+        required=required,
+        compressible=compressible,
+        removable=not required,
+        source_refs=[
+            source_ref,
+            *(f"evidence://{evidence_id}" for evidence_id in evidence_ids),
+        ],
+        metadata={
+            "reasoning_graph_run_id": graph.run_id,
+            "reasoning_graph_version": graph.version,
+        },
     )

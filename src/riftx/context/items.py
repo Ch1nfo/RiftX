@@ -42,6 +42,7 @@ class ContextItemKind(StrEnum):
     ACTIVE_TERMINAL = "active_terminal"
     FAILED_ATTEMPT = "failed_attempt"
     CURRENT_FOCUS = "current_focus"
+    REASONING_GRAPH = "reasoning_graph"
     CONFIRMED_FACT = "confirmed_fact"
     HYPOTHESIS = "hypothesis"
     CHECKPOINT = "checkpoint"

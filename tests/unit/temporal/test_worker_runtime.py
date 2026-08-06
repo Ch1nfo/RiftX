@@ -243,6 +243,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         if isinstance(source, worker_runtime.WorkingMemoryContextSource)
     )
     assert working_memory_source._task_graphs is not None
+    assert working_memory_source._reasoning_graphs is not None
     assert runtime.mcp_registry is not None
     assert runtime.mcp_registry.snapshot.servers == []
     assert runtime.mcp_registry.snapshot.tools == []
