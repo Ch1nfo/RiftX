@@ -7,12 +7,13 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from time import monotonic
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
     PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
 )
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
@@ -477,21 +478,7 @@ class RuntimeCoordinator:
                         compilation_id=compiled.compilation_id,
                     )
                 except PentestBudgetExceededError as exc:
-                    details = {
-                        "run_id": run.id,
-                        "budget_name": exc.budget_name,
-                        "limit": exc.limit,
-                        "used": exc.used,
-                        "reason": exc.reason,
-                    }
-                    await self._append(run.id, "pentest.budget_exhausted", details)
-                    if self._budget_exhaustion_handler is not None:
-                        await self._budget_exhaustion_handler(run.id)
-                    raise ApplicationConflictError(
-                        "pentest_budget_exhausted",
-                        "Pentest model execution budget is exhausted",
-                        details=details,
-                    ) from exc
+                    await self._raise_pentest_budget_exhausted(run.id, exc)
             if session.provider_state_id is not None and not has_new_canonical_input:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
@@ -1438,7 +1425,10 @@ class RuntimeCoordinator:
             if intent.execution_spec is None:
                 continue
             first_dispatch = intent.status is ToolCallStatus.READY
-            reason, execution_id = await self._execute_prepared_intent(run, intent)
+            try:
+                reason, execution_id = await self._execute_prepared_intent(run, intent)
+            except PentestBudgetExceededError as exc:
+                await self._raise_pentest_budget_exhausted(run.id, exc)
             if first_dispatch:
                 await self._dispatch_hook(
                     HookPoint.AFTER_TOOL_EXECUTION,
@@ -1653,6 +1643,21 @@ class RuntimeCoordinator:
             raise
         await self._deferred_executions.sync_intent_execution(claim.intent, view.execution)
         return YieldReason.TERMINAL_OPEN, view.execution.id
+
+    async def _raise_pentest_budget_exhausted(
+        self,
+        run_id: str,
+        error: PentestBudgetExceededError,
+    ) -> NoReturn:
+        details = pentest_budget_exhaustion_details(run_id, error)
+        await self._append(run_id, "pentest.budget_exhausted", details)
+        if self._budget_exhaustion_handler is not None:
+            await self._budget_exhaustion_handler(run_id)
+        raise ApplicationConflictError(
+            "pentest_budget_exhausted",
+            "Pentest execution budget is exhausted",
+            details=details,
+        ) from error
 
     async def _append_engine_event(
         self, run_id: str, cycle_id: str, event: AgentEngineEvent

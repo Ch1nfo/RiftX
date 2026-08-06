@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 from tests.integration.persistence.test_capability_repository import version
 
-from riftx.application.errors import ApplicationConflictError
+from riftx.application.errors import ApplicationConflictError, PentestBudgetExceededError
 from riftx.application.services import (
     QueryReasoningGraph,
     ReasoningGraphQueryResult,
@@ -539,6 +539,15 @@ class FakeControlIntents:
         self.calls.append((outcome, str(kwargs["engine_call_id"])))
 
 
+class ExhaustedControlIntents(FakeControlIntents):
+    async def begin_control_intent(self, **kwargs: object) -> object:
+        raise PentestBudgetExceededError(
+            "max_tool_calls",
+            limit=1,
+            used=1,
+        )
+
+
 class FakeMCP:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -1059,6 +1068,7 @@ def service(
     task_planner: FakeTaskPlanner | None = None,
     working_memory_proposals: FakeWorkingMemoryProposals | None = None,
     reasoning_proposals: FakeReasoningProposals | None = None,
+    budget_exhaustion_handler: object | None = None,
     worker_id: str = "runtime",
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
     events = FakeEvents()
@@ -1085,6 +1095,7 @@ def service(
         task_planner=task_planner,  # type: ignore[arg-type]
         working_memory_proposals=working_memory_proposals,
         reasoning_proposals=reasoning_proposals,
+        budget_exhaustion_handler=budget_exhaustion_handler,  # type: ignore[arg-type]
         worker_id=worker_id,
     )
     return control, events, transcript, execution_service
@@ -1435,6 +1446,44 @@ async def test_web_search_and_research_have_no_egress_without_approval(
     assert web_research.calls == []
     assert transcript.rows == []
     assert events.rows[-1][2]["error_code"] == "control_tool_approval_missing"
+
+
+async def test_control_tool_budget_exhaustion_stops_before_effect() -> None:
+    code = FakeCode()
+    paused: list[str] = []
+
+    async def pause(run_id: str) -> None:
+        paused.append(run_id)
+
+    control, events, transcript, _ = service(
+        code=code,
+        control_intents=ExhaustedControlIntents(),
+        budget_exhaustion_handler=pause,
+    )
+
+    with pytest.raises(ApplicationConflictError) as exhausted:
+        await control(
+            SCOPE,
+            "apply_patch",
+            {"patch": "*** Begin Patch\n*** End Patch"},
+            "patch-budget-call",
+        )
+
+    assert exhausted.value.code == "pentest_budget_exhausted"
+    assert exhausted.value.details == {
+        "run_id": "run-1",
+        "budget_name": "max_tool_calls",
+        "limit": 1,
+        "used": 1,
+        "reason": "exhausted",
+    }
+    assert code.calls == []
+    assert paused == ["run-1"]
+    assert transcript.rows == []
+    assert [row[1] for row in events.rows[-2:]] == [
+        "pentest.budget_exhausted",
+        "runtime.control_tool_failed",
+    ]
 
 
 async def test_approved_patch_and_revert_are_receipt_bound_and_transcripted() -> None:

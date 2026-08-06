@@ -784,6 +784,7 @@ class SQLAlchemyToolCallIntentRepository:
                                 admission.budget.max_concurrent_target_interactions
                             ),
                             used=used_active,
+                            reason="capacity",
                         )
 
             record.status = ToolCallStatus.EXECUTING.value

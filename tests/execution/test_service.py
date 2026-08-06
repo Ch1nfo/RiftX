@@ -10,7 +10,6 @@ import pytest
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
-    PentestBudgetExceededError,
     ServiceUnavailableError,
 )
 from riftx.application.ports import (
@@ -453,12 +452,14 @@ async def build_service(
         )
     )
     executions = SQLAlchemyExecutionRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
     runner = RecordingRunner(executions)
     service = ExecutionService(
         execution_repository=executions,
         session_repository=sessions,
         tool_call_repository=tool_calls,
         runner=runner,
+        event_repository=events,
         run_repository=runs,
     )
     return (
@@ -470,6 +471,7 @@ async def build_service(
             "runs": runs,
             "sessions": sessions,
             "tool_calls": tool_calls,
+            "events": events,
         },
     )
 
@@ -496,13 +498,23 @@ async def test_pentest_tool_budget_stops_before_runner_start(tmp_path: Path) -> 
     session.tool_call_count = 1
     await sessions.save(session)
 
-    with pytest.raises(PentestBudgetExceededError) as exhausted:
+    with pytest.raises(ApplicationConflictError) as exhausted:
         await service.submit(request(tmp_path))
 
-    assert exhausted.value.budget_name == "max_tool_calls"
+    assert exhausted.value.code == "pentest_budget_exhausted"
+    assert exhausted.value.details == {
+        "run_id": "run-1",
+        "budget_name": "max_tool_calls",
+        "limit": 1,
+        "used": 1,
+        "reason": "exhausted",
+    }
     assert runner.launches == 0
     intent = await tool_calls.get("tool-call-1")
     assert intent is not None and intent.status is ToolCallStatus.READY
+    events = await repos["events"].list_after("run-1")
+    assert events[-1].event_type == "pentest.budget_exhausted"
+    assert events[-1].payload == exhausted.value.details
     await database.dispose()
 
 

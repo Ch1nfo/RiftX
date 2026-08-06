@@ -729,8 +729,9 @@ async def test_pentest_target_interaction_total_budget_survives_service_restart(
         assert caught.value.details == {
             "run_id": "run-1",
             "budget_name": "max_target_interactions",
-            "limit": 1,
-            "used": 1,
+                "limit": 1,
+                "used": 1,
+                "reason": "exhausted",
         }
         assert restarted_runner.launches == []
         second = await restarted_tool_calls.get("tool-call-2")
@@ -776,8 +777,9 @@ async def test_pentest_target_interaction_concurrency_is_claimed_atomically(
         assert caught.value.details == {
             "run_id": "run-1",
             "budget_name": "max_concurrent_target_interactions",
-            "limit": 1,
-            "used": 1,
+                "limit": 1,
+                "used": 1,
+                "reason": "capacity",
         }
         assert len(runner.launches) == 1
         second = await tool_calls.get("tool-call-2")

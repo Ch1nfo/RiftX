@@ -224,7 +224,9 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         captured["reasoning_proposals"] = kwargs["reasoning_proposals"]
         captured["task_worker_id"] = kwargs["worker_id"]
         captured["code_workspace"] = kwargs["code"]
-        return real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
+        control_tools = real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
+        captured["control_tools"] = control_tools
+        return control_tools
 
     monkeypatch.setattr(worker_runtime, "create_worker", fake_create_worker)
     monkeypatch.setattr(
@@ -279,6 +281,12 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         captured["runtime_cycle_activities"]._coordinator._budget_exhaustion_handler
         is not None
     )
+    assert (
+        captured["runtime_cycle_activities"]
+        ._coordinator._deferred_executions._executions._budget_exhaustion_handler
+        is not None
+    )
+    assert captured["control_tools"]._budget_exhaustion_handler is not None
     assert runtime.run_repository is not None
     assert captured["web_artifact_runs"] is runtime.run_repository
     assert captured["web_artifact_audits"] is not None

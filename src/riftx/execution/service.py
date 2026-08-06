@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
+    PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
 )
 from riftx.application.ports import (
     ExecutionAdmissionIdentity,
@@ -67,6 +70,8 @@ _EXECUTION_BLOCKED_RUN_STATUSES = {
     RunStatus.FAILED,
 }
 
+BudgetExhaustionHandler = Callable[[str], Awaitable[object]]
+
 
 class ExecutionService:
     """Turn persisted Tool Call intents into idempotent Runner executions."""
@@ -80,6 +85,7 @@ class ExecutionService:
         runner: ExecutionRunner,
         event_repository: RunEventRepository | None = None,
         run_repository: RunRepository | None = None,
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
     ) -> None:
         self._executions = execution_repository
         self._sessions = session_repository
@@ -87,6 +93,7 @@ class ExecutionService:
         self._runner = runner
         self._events = event_repository
         self._runs = run_repository
+        self._budget_exhaustion_handler = budget_exhaustion_handler
 
     @property
     def run_repository(self) -> RunRepository | None:
@@ -97,6 +104,9 @@ class ExecutionService:
     async def submit(self, request: SubmitExecutionRequest) -> Execution:
         launch = _freeze_launch_request(request.to_launch_request())
         admission = _launch_admission_identity(launch)
+        assert admission.session_id is not None
+        assert admission.tool_call_id is not None
+        assert admission.attempt_group is not None
         intent = await self._require_intent(admission)
         existing = await self._executions.get_by_key(admission.execution_key)
         if existing is not None:
@@ -113,11 +123,26 @@ class ExecutionService:
             return existing
 
         self._require_execution_allowed(run)
-        claim = await self._tool_calls.claim_execution(
-            intent.id,
-            execution_key=admission.execution_key,
-            attempt_group=admission.attempt_group,
-        )
+        try:
+            claim = await self._tool_calls.claim_execution(
+                intent.id,
+                execution_key=admission.execution_key,
+                attempt_group=admission.attempt_group,
+            )
+        except PentestBudgetExceededError as exc:
+            details = pentest_budget_exhaustion_details(admission.run_id, exc)
+            await self._append_event(
+                admission.run_id,
+                "pentest.budget_exhausted",
+                details,
+            )
+            if self._budget_exhaustion_handler is not None:
+                await self._budget_exhaustion_handler(admission.run_id)
+            raise ApplicationConflictError(
+                "pentest_budget_exhausted",
+                "Pentest Tool execution budget is exhausted",
+                details=details,
+            ) from exc
         if not claim.acquired:
             raise ApplicationConflictError(
                 "tool_call_not_ready",
@@ -136,7 +161,7 @@ class ExecutionService:
             if not await self._tool_calls.execution_claim_is_current(
                 intent.id,
                 execution_key=admission.execution_key,
-                attempt_group=admission.attempt_group,
+                attempt_group=claim.attempt_group,
             ):
                 raise ApplicationConflictError(
                     "tool_call_execution_claim_lost",
@@ -284,13 +309,20 @@ class ExecutionService:
         self,
         admission: ExecutionAdmissionIdentity,
     ) -> ToolCallIntent:
-        session = await self._sessions.get(admission.session_id)
+        session_id = admission.session_id
+        tool_call_id = admission.tool_call_id
+        if session_id is None or tool_call_id is None:
+            raise ApplicationConflictError(
+                "execution_identity_incomplete",
+                "Execution admission requires a Session and Tool Call identity",
+            )
+        session = await self._sessions.get(session_id)
         if session is None or session.run_id != admission.run_id:
-            raise EntityNotFoundError("AgentSession", admission.session_id)
-        intent = await self._tool_calls.get(admission.tool_call_id)
+            raise EntityNotFoundError("AgentSession", session_id)
+        intent = await self._tool_calls.get(tool_call_id)
         if intent is None:
-            raise EntityNotFoundError("ToolCallIntent", admission.tool_call_id)
-        if intent.run_id != admission.run_id or intent.session_id != admission.session_id:
+            raise EntityNotFoundError("ToolCallIntent", tool_call_id)
+        if intent.run_id != admission.run_id or intent.session_id != session_id:
             raise ApplicationConflictError(
                 "execution_identity_mismatch",
                 "Tool Call intent does not belong to the requested Run and Session",

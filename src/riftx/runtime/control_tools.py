@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -14,6 +14,8 @@ from riftx.application.errors import (
     ApplicationConflictError,
     ApplicationServiceError,
     EntityNotFoundError,
+    PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
 )
 from riftx.application.services import (
     ArtifactApplicationService,
@@ -94,6 +96,7 @@ from riftx.web import (
 )
 
 _MAX_CONTROL_RESULT_BYTES = 256 * 1024
+BudgetExhaustionHandler = Callable[[str], Awaitable[object]]
 
 
 class RunEventWriter(Protocol):
@@ -661,6 +664,7 @@ class RuntimeControlToolService:
         task_planner: TaskPlanner | None = None,
         working_memory_proposals: WorkingMemoryProposalService | None = None,
         reasoning_proposals: ReasoningProposalService | None = None,
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
         worker_id: str = "runtime",
     ) -> None:
         self._tools = tools
@@ -683,6 +687,7 @@ class RuntimeControlToolService:
         self._task_planner = task_planner
         self._working_memory_proposals = working_memory_proposals
         self._reasoning_proposals = reasoning_proposals
+        self._budget_exhaustion_handler = budget_exhaustion_handler
         self._worker_id = worker_id
 
     async def __call__(
@@ -745,6 +750,20 @@ class RuntimeControlToolService:
             )
             result = _bounded_result(result)
         except Exception as exc:
+            if isinstance(exc, PentestBudgetExceededError):
+                details = pentest_budget_exhaustion_details(scope.run_id, exc)
+                await self._events.append(
+                    scope.run_id,
+                    "pentest.budget_exhausted",
+                    details,
+                )
+                if self._budget_exhaustion_handler is not None:
+                    await self._budget_exhaustion_handler(scope.run_id)
+                exc = ApplicationConflictError(
+                    "pentest_budget_exhausted",
+                    "Pentest Tool execution budget is exhausted",
+                    details=details,
+                )
             if approval_claimed:
                 assert self._control_intents is not None
                 await self._control_intents.finish_control_intent(
@@ -766,7 +785,7 @@ class RuntimeControlToolService:
                     "error_code": error_code,
                 },
             )
-            raise
+            raise exc
 
         if approval_claimed:
             assert self._control_intents is not None

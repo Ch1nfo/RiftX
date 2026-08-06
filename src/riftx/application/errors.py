@@ -36,6 +36,19 @@ class PentestBudgetExceededError(RepositoryConflictError):
         self.reason = reason
 
 
+def pentest_budget_exhaustion_details(
+    run_id: str,
+    error: PentestBudgetExceededError,
+) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "budget_name": error.budget_name,
+        "limit": error.limit,
+        "used": error.used,
+        "reason": error.reason,
+    }
+
+
 class RepositoryUnavailableError(RepositoryError):
     """A persistence operation failed without exposing driver diagnostics."""
 

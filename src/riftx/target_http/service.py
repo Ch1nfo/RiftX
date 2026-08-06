@@ -12,6 +12,7 @@ from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
     PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
 )
 from riftx.application.ports import RunEventRepository
 from riftx.application.services.artifacts import (
@@ -209,12 +210,10 @@ class TargetHttpApplicationService:
                         target_interaction_tool_ids=self._target_http_tool_ids,
                     )
                 except PentestBudgetExceededError as exc:
-                    details = {
-                        "run_id": submission.run_id,
-                        "budget_name": exc.budget_name,
-                        "limit": exc.limit,
-                        "used": exc.used,
-                    }
+                    details = pentest_budget_exhaustion_details(
+                        submission.run_id,
+                        exc,
+                    )
                     concurrency_limited = (
                         exc.budget_name == "max_concurrent_target_interactions"
                     )

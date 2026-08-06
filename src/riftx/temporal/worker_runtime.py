@@ -1296,6 +1296,7 @@ async def build_temporal_worker(
             runner=execution_runner,
             event_repository=event_repository,
             run_repository=run_repository,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         deferred_dispatcher = DeferredExecutionDispatcher(
             tool_call_repository=tool_call_intent_repository,
@@ -1327,6 +1328,7 @@ async def build_temporal_worker(
             task_planner=task_planner,
             working_memory_proposals=working_memory_proposals,
             reasoning_proposals=reasoning_proposals,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
             worker_id=config.runner.node_id,
         )
         runtime_coordinator = RuntimeCoordinator(
