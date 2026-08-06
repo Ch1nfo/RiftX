@@ -11,6 +11,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from riftx.doctor import DoctorReport
+
 from .i18n import tr
 
 _CONTEXT_CATEGORY_LABELS = {
@@ -66,6 +68,23 @@ def render_nodes(console: Console, nodes: Iterable[dict[str, Any]]) -> None:
             str(node.get("last_seen_at") or "—"),
         )
     console.print(table)
+
+
+def render_doctor_report(console: Console, report: DoctorReport) -> None:
+    table = Table(title=tr("RiftX Doctor"), expand=True)
+    table.add_column(tr("Check"), style="cyan", no_wrap=True)
+    table.add_column(tr("Status"), no_wrap=True)
+    table.add_column(tr("Detail"), overflow="fold")
+    table.add_column(tr("Remediation"), overflow="fold")
+    for check in report.checks:
+        table.add_row(
+            check.id,
+            _status_text(check.status.value),
+            check.detail,
+            check.remediation or "—",
+        )
+    console.print(table)
+    console.print(f"{tr('Overall')}: {_status_text(report.status.value)}")
 
 
 def render_node(console: Console, node: dict[str, Any]) -> None:
@@ -615,6 +634,7 @@ def _string_map(value: object) -> dict[str, str]:
 
 def _status_text(status: str) -> Text:
     colors = {
+        "ready": "green",
         "running": "green",
         "completed": "bright_green",
         "waiting_approval": "yellow",

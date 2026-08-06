@@ -23,6 +23,7 @@ from typer.core import TyperGroup
 
 from riftx.api import APISettings, create_app
 from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
+from riftx.doctor import run_local_doctor
 from riftx.domain import ApprovalMode, EntryPointKind, RunKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
@@ -44,6 +45,7 @@ from .render import (
     render_approvals,
     render_artifact,
     render_artifacts,
+    render_doctor_report,
     render_error,
     render_event,
     render_execution,
@@ -182,6 +184,16 @@ def interactive(context: typer.Context) -> None:
     state = _state(context)
     with APIClient(state.api_url) as client:
         run_interactive(client, console)
+
+
+@app.command()
+def doctor(context: typer.Context) -> None:
+    """Inspect local RiftX readiness without changing host state."""
+
+    report = run_local_doctor(_state(context).config)
+    render_doctor_report(console, report)
+    if report.failed:
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 import riftx.cli.app as cli_module
 from riftx.cli.client import RiftXAPIError
 from riftx.cli.render import render_error
+from riftx.doctor import DoctorCheck, DoctorReport, DoctorStatus
 
 runner = CliRunner()
 
@@ -1004,6 +1005,56 @@ def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:
     FakeAPIClient.unhealthy = True
     result = runner.invoke(cli_module.app, ["tools", "doctor", "--node", "local"])
     assert result.exit_code == 1
+
+
+def test_top_level_doctor_renders_report_and_uses_failed_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="model_provider",
+                status=DoctorStatus.READY,
+                detail="primary is configured",
+            ),
+            DoctorCheck(
+                id="lsp",
+                status=DoctorStatus.FAILED,
+                detail="configured socket is missing",
+                remediation="Start the trusted LSP gateway.",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "model_provider" in result.output
+    assert "lsp" in result.output
+    assert "trusted LSP" in result.output
+    assert "gateway." in result.output
+
+
+def test_top_level_doctor_allows_degraded_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="browser",
+                status=DoctorStatus.DEGRADED,
+                detail="live probe unavailable",
+                remediation="Start the Runner.",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Overall: degraded" in result.output
 
 
 def test_approval_commands_delegate_to_shared_http_client() -> None:
