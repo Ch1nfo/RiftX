@@ -608,6 +608,8 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert engine.requests
     session = await repos["sessions"].get("session-1")
     assert session.status is SessionStatus.ACTIVE
+    assert session.model_call_count == 1
+    assert session.tool_call_count == 0
     run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
     assert run is not None and run.status is RunStatus.COMPLETED
     stopper = repos["safety_stopper"]

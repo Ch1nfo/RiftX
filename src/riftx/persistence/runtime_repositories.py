@@ -22,6 +22,7 @@ from riftx.runtime.types import (
     AgentSession,
     AgentStep,
     ApprovalDecision,
+    CycleStatus,
     ProviderState,
     RunLease,
     RuntimeApprovalRequest,
@@ -155,6 +156,49 @@ class SQLAlchemyAgentCycleRepository:
             if record is None:
                 raise EntityNotFoundError("AgentCycle", cycle.id)
             apply_agent_cycle_to_record(cycle, record)
+            await session.flush()
+        return cycle
+
+    async def save_yield(
+        self,
+        agent_session: AgentSession,
+        cycle: AgentCycle,
+    ) -> AgentCycle:
+        """Persist one yielded Cycle and its Session usage merge atomically."""
+
+        if cycle.status is not CycleStatus.YIELDED:
+            raise ValueError("save_yield requires a yielded AgentCycle")
+        if (
+            cycle.session_id != agent_session.id
+            or cycle.run_id != agent_session.run_id
+        ):
+            raise RepositoryConflictError(
+                "AgentCycle and AgentSession must belong to the same Runtime owner"
+            )
+        async with _serialized_run_write(self._session_factory) as session:
+            session_record = await session.scalar(
+                select(AgentSessionRecord)
+                .where(AgentSessionRecord.id == agent_session.id)
+                .with_for_update()
+            )
+            if session_record is None:
+                raise EntityNotFoundError("AgentSession", agent_session.id)
+            cycle_record = await session.scalar(
+                select(AgentCycleRecord)
+                .where(AgentCycleRecord.id == cycle.id)
+                .with_for_update()
+            )
+            if cycle_record is None:
+                raise EntityNotFoundError("AgentCycle", cycle.id)
+            if (
+                session_record.run_id != cycle_record.run_id
+                or cycle_record.session_id != session_record.id
+            ):
+                raise RepositoryConflictError(
+                    "Persisted AgentCycle and AgentSession ownership does not match"
+                )
+            apply_agent_session_to_record(agent_session, session_record)
+            apply_agent_cycle_to_record(cycle, cycle_record)
             await session.flush()
         return cycle
 

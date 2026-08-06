@@ -193,9 +193,12 @@ from riftx.runtime import (
     AgentSession,
     AgentStep,
     AgentStepType,
+    CycleStatus,
     RuntimeApprovalRequest,
+    SessionStatus,
     ToolCallIntent,
     ToolCallStatus,
+    YieldReason,
 )
 from riftx.scope import ScopeViolationError
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
@@ -1816,6 +1819,162 @@ async def test_pentest_status_projects_durable_usage_and_runner_state(
             }
     finally:
         await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_aggregates_active_failed_and_child_usage_after_restart(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "pentest-run-usage.db"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    request_id = str(uuid4())
+    primary_session_id = f"{request_id}:primary"
+    child_session_id = f"{request_id}:child"
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+
+            database = runtime.control_plane.database
+            sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+            cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+            contexts = SQLAlchemyContextCompilationRepository(database.session_factory)
+
+            primary = await sessions.get(primary_session_id)
+            assert primary is not None
+            await sessions.save(
+                primary.model_copy(update={"model_call_count": 1, "tool_call_count": 2})
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:primary:yielded",
+                    run_id=request_id,
+                    session_id=primary_session_id,
+                    sequence=1,
+                    status=CycleStatus.YIELDED,
+                    yield_reason=YieldReason.CYCLE_LIMIT_REACHED,
+                    model_call_count=1,
+                    tool_call_count=2,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:primary:running",
+                    run_id=request_id,
+                    session_id=primary_session_id,
+                    sequence=2,
+                    status=CycleStatus.RUNNING,
+                    model_call_count=2,
+                    tool_call_count=1,
+                )
+            )
+            await sessions.create(
+                AgentSession(
+                    id=child_session_id,
+                    run_id=request_id,
+                    parent_session_id=primary_session_id,
+                    agent_type="specialist",
+                    model_profile="fast",
+                    status=SessionStatus.ACTIVE,
+                    model_call_count=3,
+                    tool_call_count=4,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:child:yielded",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    sequence=1,
+                    status=CycleStatus.YIELDED,
+                    yield_reason=YieldReason.CYCLE_LIMIT_REACHED,
+                    model_call_count=3,
+                    tool_call_count=4,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:child:failed",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    sequence=2,
+                    status=CycleStatus.FAILED,
+                    model_call_count=1,
+                    tool_call_count=2,
+                )
+            )
+
+            for index in range(7):
+                context_session_id = primary_session_id if index < 3 else child_session_id
+                manifest = ContextManifest.empty(
+                    run_id=request_id,
+                    session_id=context_session_id,
+                    agent_id="primary" if index < 3 else "specialist",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                )
+                await contexts.create(
+                    ContextCompilation(
+                        id=f"{request_id}:context:{index}",
+                        run_id=request_id,
+                        session_id=context_session_id,
+                        agent_id="primary" if index < 3 else "specialist",
+                        model_profile="fast",
+                        purpose="pentest-cycle",
+                        manifest=manifest,
+                        actual_input_tokens=10,
+                        actual_output_tokens=2,
+                    )
+                )
+            incomplete_manifest = ContextManifest.empty(
+                run_id=request_id,
+                session_id=child_session_id,
+                agent_id="specialist",
+                model_profile="fast",
+                purpose="pentest-cycle",
+            )
+            await contexts.create(
+                ContextCompilation(
+                    id=f"{request_id}:context:incomplete",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    agent_id="specialist",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                    manifest=incomplete_manifest,
+                    actual_input_tokens=5,
+                )
+            )
+
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["primary_session"]["model_call_count"] == 1
+            assert payload["primary_session"]["tool_call_count"] == 2
+            assert payload["budget"]["model_calls"] == 7
+            assert payload["budget"]["tool_calls"] == 9
+            assert payload["budget"]["input_tokens"] == 75
+            assert payload["budget"]["output_tokens"] == 14
+            assert payload["budget"]["token_usage_complete"] is False
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            budget = response.json()["budget"]
+            assert budget["model_calls"] == 7
+            assert budget["tool_calls"] == 9
+            assert budget["input_tokens"] == 75
+            assert budget["output_tokens"] == 14
+            assert budget["token_usage_complete"] is False
+    finally:
+        await restarted.control_plane.close()
 
 
 @pytest.mark.asyncio

@@ -1284,7 +1284,6 @@ class RuntimeCoordinator:
                     visibility=MessageVisibility.INTERNAL_STATE,
                 ),
             )
-        await self._sessions.save(session)
         self._state_machine.transition_cycle(
             cycle,
             CycleStatus.YIELDED,
@@ -1292,7 +1291,7 @@ class RuntimeCoordinator:
         )
         cycle.waiting_object_id = waiting_object_id or waiting_execution_id
         cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
-        await self._cycles.save(cycle)
+        await self._cycles.save_yield(session, cycle)
         if session.parent_session_id is None:
             await self._transition_run_for_yield(
                 run_id,

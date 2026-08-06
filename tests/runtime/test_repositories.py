@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from riftx.application.errors import EntityNotFoundError, RepositoryConflictError
 from riftx.domain import ApprovalLevel, ApprovalStatus, Engagement, Objective, Run
@@ -178,6 +180,62 @@ async def test_runtime_repositories_restore_complete_state(tmp_path: Path) -> No
     assert await user_inputs.get_for_cycle("cycle-1") == user_input
     assert await user_inputs.pending_for_session("run-1", "session-1") == user_input
 
+    await database.dispose()
+
+
+async def test_yield_usage_merge_rolls_back_session_when_cycle_update_fails(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'yield-atomic.db'}")
+    await database.create_schema()
+    await create_run(database)
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+    agent_session = AgentSession(
+        id="session-1",
+        run_id="run-1",
+        model_profile="default",
+    )
+    cycle = AgentCycle(
+        id="cycle-1",
+        run_id="run-1",
+        session_id="session-1",
+        sequence=1,
+        status=CycleStatus.RUNNING,
+        model_call_count=1,
+        tool_call_count=2,
+    )
+    await sessions.create(agent_session)
+    await cycles.create(cycle)
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                CREATE TRIGGER reject_cycle_yield
+                BEFORE UPDATE ON agent_cycles
+                WHEN NEW.status = 'yielded'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected cycle yield failure');
+                END
+                """
+            )
+        )
+
+    agent_session.model_call_count = 1
+    agent_session.tool_call_count = 2
+    cycle.status = CycleStatus.YIELDED
+    cycle.yield_reason = YieldReason.CYCLE_LIMIT_REACHED
+    with pytest.raises(SQLAlchemyError, match="injected cycle yield failure"):
+        await cycles.save_yield(agent_session, cycle)
+
+    stored_session = await sessions.get(agent_session.id)
+    stored_cycle = await cycles.get(cycle.id)
+    assert stored_session is not None
+    assert stored_session.model_call_count == 0
+    assert stored_session.tool_call_count == 0
+    assert stored_cycle is not None
+    assert stored_cycle.status is CycleStatus.RUNNING
+    assert stored_cycle.yield_reason is None
     await database.dispose()
 
 
