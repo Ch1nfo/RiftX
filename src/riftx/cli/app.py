@@ -29,6 +29,7 @@ from riftx.config import (
     default_user_config_path,
     load_riftx_config,
 )
+from riftx.demo import DemoError, run_code_audit_demo, run_pentest_demo
 from riftx.doctor import (
     DoctorFixError,
     DoctorReport,
@@ -118,6 +119,7 @@ artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
 model_app = typer.Typer(help="Configure model provider profiles.")
+demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
 audit_app = typer.Typer(
     cls=_AuditGroup,
     help="Audit a local folder with read-only static analysis.",
@@ -131,6 +133,7 @@ app.add_typer(artifact_app, name="artifact")
 app.add_typer(report_app, name="report")
 app.add_typer(memory_app, name="memory")
 app.add_typer(model_app, name="model")
+app.add_typer(demo_app, name="demo")
 app.add_typer(audit_app, name="audit")
 
 
@@ -552,6 +555,54 @@ def web(
     console.print(url)
     if open_browser:
         webbrowser.open(url)
+
+
+@demo_app.command("pentest")
+def demo_pentest(context: typer.Context) -> None:
+    """Play an offline authorized-pentest transcript without touching a target."""
+
+    try:
+        result = run_pentest_demo(_state(context).config)
+    except DemoError as exc:
+        console.print(f"[red]Pentest Demo failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[bold]SANITIZED OFFLINE PENTEST DEMO[/bold]")
+    console.print(f"Target: {result.target} (reserved, never contacted)")
+    console.print("Official Packs: " + ", ".join(result.pack_ids))
+    for step in result.steps:
+        console.print(f"- {step.activity} [{step.pack_id}]: {step.evidence}", markup=False)
+    if result.available_optional_tools:
+        console.print(
+            "Optional tools available: " + ", ".join(result.available_optional_tools)
+        )
+    if result.unavailable_optional_tools:
+        console.print(
+            "Optional tools unavailable: " + ", ".join(result.unavailable_optional_tools)
+        )
+        console.print("Degradation path: " + result.degradation_path)
+    if result.tool_config_issue:
+        console.print("Tool configuration note: " + result.tool_config_issue, markup=False)
+
+
+@demo_app.command("code-audit")
+def demo_code_audit() -> None:
+    """Run real built-in static detectors over a bundled safe fixture."""
+
+    try:
+        result = run_code_audit_demo()
+    except DemoError as exc:
+        console.print(f"[red]Code Audit Demo failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[bold]SANITIZED LOCAL CODE AUDIT DEMO[/bold]")
+    console.print(f"Official Pack: {result.pack_id}")
+    console.print(f"Files scanned: {result.files_scanned}; findings: {len(result.findings)}")
+    for finding in result.findings:
+        console.print(
+            f"- {finding.rule_id} {finding.relative_path}:{finding.line} "
+            f"{finding.message} | {finding.evidence}",
+            markup=False,
+        )
+    console.print("Degradation path: " + result.degradation_path)
 
 
 @audit_app.command("scan")

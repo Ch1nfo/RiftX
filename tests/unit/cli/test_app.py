@@ -498,6 +498,97 @@ def test_local_audit_commands_delegate_to_minimal_api(
     assert FakeAPIClient.instances[4].calls == [("cancel_local_audit", "audit-1")]
 
 
+def test_offline_security_demos_do_not_call_control_plane(tmp_path: Path) -> None:
+    tool_path = tmp_path / "tools.yaml"
+    tool_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "tools": {
+                    "nmap": {"enabled": False, "command": ["nmap"]},
+                    "nuclei": {"enabled": False, "command": ["nuclei"]},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    config = cli_module.RiftXConfig.model_validate({"tools": {"path": str(tool_path)}})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli_module, "load_riftx_config", lambda **_: config)
+        pentest = runner.invoke(cli_module.app, ["demo", "pentest"])
+        code_audit = runner.invoke(cli_module.app, ["demo", "code-audit"])
+
+    assert pentest.exit_code == 0, pentest.output
+    assert code_audit.exit_code == 0, code_audit.output
+    assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
+    assert "nmap, nuclei" in pentest.output
+    assert "SANITIZED LOCAL CODE AUDIT DEMO" in code_audit.output
+    assert "secret.hardcoded_credential" in code_audit.output
+    assert "demo-secret-value" not in code_audit.output
+    assert FakeAPIClient.instances == []
+
+
+def test_new_user_can_run_both_demos_after_onboard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "riftx.yaml"
+    ready = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.READY,
+                detail="database ready",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: ready)
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", lambda *_args, **_kwargs: ())
+
+    onboard = runner.invoke(
+        cli_module.app,
+        [
+            "onboard",
+            "--non-interactive",
+            "--config-path",
+            str(config_path),
+            "--provider",
+            "openai_compatible",
+            "--model",
+            "qwen-local",
+            "--base-url",
+            "http://127.0.0.1:11434/v1",
+            "--no-api-key",
+        ],
+        env={
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "PATH": "",
+        },
+    )
+    pentest = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "demo", "pentest"],
+    )
+    code_audit = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "demo", "code-audit"],
+    )
+
+    assert onboard.exit_code == 0, onboard.output
+    assert pentest.exit_code == 0, pentest.output
+    assert code_audit.exit_code == 0, code_audit.output
+    assert "Onboarding complete" in onboard.output
+    assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
+    assert "Degradation path" in pentest.output
+    assert "SANITIZED LOCAL CODE AUDIT DEMO" in code_audit.output
+    assert "Built-in static detectors remain available" in code_audit.output
+    assert FakeAPIClient.instances == []
+
+
 def test_run_create_builds_api_payload() -> None:
     result = runner.invoke(
         cli_module.app,
