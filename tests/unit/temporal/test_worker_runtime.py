@@ -199,6 +199,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
 
     def capture_context_compiler(*args: object, **kwargs: object) -> object:
         captured["context_sources"] = kwargs["sources"]
+        captured["skill_context"] = kwargs["skill_context"]
         return real_context_compiler(*args, **kwargs)  # type: ignore[arg-type]
 
     def capture_control_tools(*args: object, **kwargs: object) -> object:
@@ -283,6 +284,11 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert [version.manifest.capability_id for version in official_techniques] == [
         "pentest-foundation.technique",
         "scope-and-safety.technique",
+    ]
+    official_skills = await captured["skill_context"].list_skills(session_id="session-1")
+    assert [skill.id for skill in official_skills] == [
+        "pentest-foundation",
+        "scope-and-safety",
     ]
     assert (tmp_path / "workspaces").is_dir()
     assert (tmp_path / "runner").is_dir()

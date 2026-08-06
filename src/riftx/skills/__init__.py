@@ -28,13 +28,21 @@ from .models import (
 from .progressive import (
     ProgressiveSkillRegistry,
     SkillDocumentError,
+    SkillPackageRoot,
     SkillReferenceNotFoundError,
 )
 from .registry import DuplicateSkillError, SkillNotFoundError, SkillRegistry
 
 
-def create_default_skill_registry(skill_root: Path | None = None) -> SkillRegistry:
-    registry = SkillRegistry(skill_root)
+def create_default_skill_registry(
+    skill_root: Path | None = None,
+    *,
+    official_skill_roots: tuple[Path, ...] = (),
+) -> SkillRegistry:
+    registry = SkillRegistry(
+        skill_root,
+        official_skill_roots=official_skill_roots,
+    )
     registry.register(RegisteredToolSkill())
     registry.register(ShellSkill())
     registry.register(PortScanSkill())
@@ -65,6 +73,7 @@ __all__ = [
     "ShellSkill",
     "SkillContext",
     "SkillNotFoundError",
+    "SkillPackageRoot",
     "SkillRegistry",
     "SkillResult",
     "create_default_skill_registry",

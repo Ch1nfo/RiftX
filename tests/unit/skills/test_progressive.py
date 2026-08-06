@@ -70,6 +70,31 @@ approval_level: sensitive
     return directory
 
 
+def _write_named_skill(
+    root: Path,
+    skill_id: str,
+    *,
+    source: str,
+    description: str,
+) -> Path:
+    directory = root / skill_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(
+        f"""---
+name: {skill_id}
+description: {description}
+version: 1.0.0
+source: {source}
+required_capabilities:
+  - http_request
+---
+{_REQUIRED_BODY}
+"""
+    )
+    (directory / "REFERENCES.md").write_text(f"reference:{description}")
+    return directory
+
+
 def test_progressive_skill_loads_metadata_body_and_references_in_stages(tmp_path: Path) -> None:
     _write_skill(tmp_path)
     catalog = ProgressiveSkillRegistry(tmp_path)
@@ -116,6 +141,94 @@ def test_skill_registry_integrates_progressive_search_and_selection(tmp_path: Pa
     assert results[0].skill.id == "ssrf-validation"
     assert selected.approval_level.value == "sensitive"
     assert registry.load_skill_references(selected.id).content == "REFERENCE SENTINEL"
+
+
+def test_skill_registry_prefers_operator_overlay_over_official_roots(
+    tmp_path: Path,
+) -> None:
+    official_root = tmp_path / "official"
+    operator_root = tmp_path / "operator"
+    _write_named_skill(
+        official_root,
+        "shared-skill",
+        source="official",
+        description="official procedure",
+    )
+    _write_named_skill(
+        official_root,
+        "official-only",
+        source="official",
+        description="official baseline",
+    )
+    _write_named_skill(
+        operator_root,
+        "shared-skill",
+        source="operator",
+        description="operator procedure",
+    )
+
+    registry = SkillRegistry(
+        operator_root,
+        official_skill_roots=(official_root,),
+    )
+
+    summaries = {summary.id: summary for summary in registry.list_skill_summaries()}
+    assert summaries["official-only"].source.value == "official"
+    assert summaries["shared-skill"].source.value == "operator"
+    assert registry.load_skill_document("shared-skill").description == "operator procedure"
+
+
+def test_operator_skill_root_cannot_spoof_official_source(tmp_path: Path) -> None:
+    operator_root = tmp_path / "operator"
+    _write_named_skill(
+        operator_root,
+        "spoofed-skill",
+        source="official",
+        description="spoofed procedure",
+    )
+
+    with pytest.raises(SkillDocumentError, match="source=operator"):
+        SkillRegistry(operator_root).list_skill_summaries()
+
+
+@pytest.mark.asyncio
+async def test_operator_overlay_does_not_replace_running_session_snapshot(
+    tmp_path: Path,
+) -> None:
+    official_root = tmp_path / "official"
+    operator_root = tmp_path / "operator"
+    _write_named_skill(
+        official_root,
+        "shared-skill",
+        source="official",
+        description="official procedure",
+    )
+    context = ProgressiveSkillContextManager(
+        SkillRegistry(operator_root, official_skill_roots=(official_root,))
+    )
+    selected = await context.select_skill(
+        "shared-skill",
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="primary",
+    )
+
+    _write_named_skill(
+        operator_root,
+        "shared-skill",
+        source="operator",
+        description="operator procedure",
+    )
+    visibility = await context.visibility(
+        run_id="run-1",
+        session_id="session-1",
+        agent_id="primary",
+    )
+
+    assert selected.source.value == "official"
+    assert visibility.loaded_skill_documents == [selected]
+    assert visibility.available_skills[0].source.value == "operator"
+    assert visibility.loaded_skills[0].stale is True
 
 
 @pytest.mark.parametrize(

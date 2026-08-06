@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import builtins
 from importlib import metadata
 from pathlib import Path
 
+from riftx.capabilities import CapabilitySource
 from riftx.domain import ToolAvailability
 from riftx.tools import ToolDefinition, ToolRegistry, ToolUnavailableError
 
 from .base import BaseSkill
 from .models import SkillDocument, SkillReference, SkillSearchResult, SkillSummary
-from .progressive import ProgressiveSkillRegistry
+from .progressive import ProgressiveSkillRegistry, SkillPackageRoot
 
 
 class SkillNotFoundError(KeyError):
@@ -22,11 +24,29 @@ class DuplicateSkillError(ValueError):
 
 
 class SkillRegistry:
-    def __init__(self, skill_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        skill_root: Path | None = None,
+        *,
+        official_skill_roots: tuple[Path, ...] = (),
+    ) -> None:
         self._skills: dict[str, BaseSkill] = {}
-        self._progressive = (
-            ProgressiveSkillRegistry(skill_root) if skill_root is not None else None
+        roots = tuple(
+            SkillPackageRoot(
+                path=root,
+                expected_source=CapabilitySource.OFFICIAL,
+            )
+            for root in official_skill_roots
         )
+        if skill_root is not None:
+            roots += (
+                SkillPackageRoot(
+                    path=skill_root,
+                    expected_source=CapabilitySource.OPERATOR,
+                    priority=100,
+                ),
+            )
+        self._progressive = ProgressiveSkillRegistry(roots) if roots else None
 
     def register(self, skill: BaseSkill, *, replace: bool = False) -> None:
         if skill.id in self._skills and not replace:
@@ -42,13 +62,13 @@ class SkillRegistry:
     def list(self) -> list[BaseSkill]:
         return list(self._skills.values())
 
-    def find_for_capability(self, capability: str) -> list[BaseSkill]:
+    def find_for_capability(self, capability: str) -> builtins.list[BaseSkill]:
         return [
             skill for skill in self._skills.values() if capability in skill.required_capabilities
         ]
 
-    def load_entry_points(self, *, group: str = "riftx.skills") -> list[BaseSkill]:
-        loaded: list[BaseSkill] = []
+    def load_entry_points(self, *, group: str = "riftx.skills") -> builtins.list[BaseSkill]:
+        loaded: builtins.list[BaseSkill] = []
         for entry_point in metadata.entry_points(group=group):
             candidate = entry_point.load()
             skill = candidate() if isinstance(candidate, type) else candidate
@@ -68,7 +88,7 @@ class SkillRegistry:
     def reload_documents_if_changed(self) -> int:
         return self._require_progressive().reload_if_changed()
 
-    def list_skill_summaries(self) -> list[SkillSummary]:
+    def list_skill_summaries(self) -> builtins.list[SkillSummary]:
         return self._require_progressive().list_summaries()
 
     def search_skill_documents(
@@ -77,7 +97,7 @@ class SkillRegistry:
         *,
         capability: str | None = None,
         max_results: int = 8,
-    ) -> list[SkillSearchResult]:
+    ) -> builtins.list[SkillSearchResult]:
         return self._require_progressive().search(
             query,
             capability=capability,
@@ -90,7 +110,7 @@ class SkillRegistry:
     def load_skill_references(self, skill_id: str) -> SkillReference:
         return self._require_progressive().load_references(skill_id)
 
-    def validate_skill_documents(self) -> list[SkillDocument]:
+    def validate_skill_documents(self) -> builtins.list[SkillDocument]:
         return self._require_progressive().validate()
 
     def _require_progressive(self) -> ProgressiveSkillRegistry:
@@ -103,7 +123,7 @@ class SkillRegistry:
         tool_registry: ToolRegistry,
         *,
         required_capabilities: set[str] | frozenset[str],
-        preferred_tools: tuple[str, ...] | list[str] = (),
+        preferred_tools: tuple[str, ...] | builtins.list[str] = (),
         requested_tool_id: str | None = None,
     ) -> ToolDefinition:
         if requested_tool_id is not None:

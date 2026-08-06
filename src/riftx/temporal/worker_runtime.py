@@ -97,7 +97,7 @@ from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
 from riftx.observer import ObserverSupervisorApplicationService
-from riftx.packs import bootstrap_official_packs
+from riftx.packs import OfficialPackCatalog, bootstrap_official_packs
 from riftx.persistence import (
     Database,
     SQLAlchemyActiveTakeoverReader,
@@ -781,7 +781,8 @@ async def build_temporal_worker(
     try:
         await database.create_schema()
         capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
-        await bootstrap_official_packs(capability_repository)
+        official_pack_catalog = OfficialPackCatalog()
+        await bootstrap_official_packs(capability_repository, official_pack_catalog)
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
         mcp_registry = MCPServerRegistry(config.mcp)
@@ -1141,7 +1142,10 @@ async def build_temporal_worker(
             hooks=hooks,
         )
 
-        skill_registry = create_default_skill_registry(config.skills.path.expanduser())
+        skill_registry = create_default_skill_registry(
+            config.skills.path.expanduser(),
+            official_skill_roots=official_pack_catalog.skill_roots(),
+        )
         skill_registry.load_entry_points()
         skill_context = ProgressiveSkillContextManager(
             skill_registry,

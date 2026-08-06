@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
+
+from riftx.capabilities import CapabilitySource
 
 from .models import (
     SkillDocument,
@@ -39,11 +43,31 @@ class SkillReferenceNotFoundError(FileNotFoundError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class SkillPackageRoot:
+    path: Path
+    expected_source: CapabilitySource | None = None
+    priority: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscoveredSkill:
+    path: Path
+    expected_source: CapabilitySource | None
+    priority: int
+
+
 class ProgressiveSkillRegistry:
     """Index front matter eagerly while keeping Skill bodies and references lazy."""
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path | Sequence[SkillPackageRoot]) -> None:
+        self.roots = (
+            (SkillPackageRoot(root),)
+            if isinstance(root, Path)
+            else tuple(root)
+        )
+        if not self.roots:
+            raise ValueError("Progressive Skill registry requires at least one root")
         self._fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._generation = 0
         self._front_matter: dict[str, SkillFrontMatter] = {}
@@ -66,7 +90,8 @@ class ProgressiveSkillRegistry:
         return frozenset(self._references)
 
     def refresh(self) -> int:
-        paths = _discover_skill_paths(self.root)
+        discovered = _discover_skill_paths(self.roots)
+        paths = {skill_id: item.path for skill_id, item in discovered.items()}
         front_matter: dict[str, SkillFrontMatter] = {}
         digests: dict[str, str] = {}
         for skill_id, path in paths.items():
@@ -75,17 +100,26 @@ class ProgressiveSkillRegistry:
                 digests[skill_id] = _skill_digest(path)
             except (OSError, UnicodeError, yaml.YAMLError, ValidationError) as exc:
                 raise SkillDocumentError(f"invalid Skill front matter in {path}: {exc}") from exc
+            expected_source = discovered[skill_id].expected_source
+            if (
+                expected_source is not None
+                and front_matter[skill_id].source is not expected_source
+            ):
+                raise SkillDocumentError(
+                    f"Skill package in {path.parent} must declare "
+                    f"source={expected_source.value}"
+                )
         self._paths = paths
         self._front_matter = front_matter
         self._digests = digests
-        self._fingerprint = _fingerprint(self.root)
+        self._fingerprint = _fingerprint(self.roots)
         self._documents.clear()
         self._references.clear()
         self._generation += 1
         return self._generation
 
     def reload_if_changed(self) -> int:
-        current = _fingerprint(self.root)
+        current = _fingerprint(self.roots)
         if self._fingerprint is not None and current == self._fingerprint:
             return self._generation
         return self.refresh()
@@ -211,7 +245,27 @@ class ProgressiveSkillRegistry:
             self.refresh()
 
 
-def _discover_skill_paths(root: Path) -> dict[str, Path]:
+def _discover_skill_paths(
+    roots: Sequence[SkillPackageRoot],
+) -> dict[str, _DiscoveredSkill]:
+    discovered: dict[str, _DiscoveredSkill] = {}
+    for root in sorted(roots, key=lambda item: (item.priority, str(item.path))):
+        for skill_id, path in _discover_root_paths(root.path).items():
+            existing = discovered.get(skill_id)
+            if existing is not None and existing.priority == root.priority:
+                raise SkillDocumentError(
+                    f"Skill {skill_id!r} is duplicated across equal-priority roots"
+                )
+            if existing is None or root.priority > existing.priority:
+                discovered[skill_id] = _DiscoveredSkill(
+                    path=path,
+                    expected_source=root.expected_source,
+                    priority=root.priority,
+                )
+    return discovered
+
+
+def _discover_root_paths(root: Path) -> dict[str, Path]:
     if not root.exists():
         return {}
     if not root.is_dir():
@@ -230,9 +284,9 @@ def _discover_skill_paths(root: Path) -> dict[str, Path]:
     return discovered
 
 
-def _fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
-    if not root.exists():
-        return ()
+def _fingerprint(
+    roots: Sequence[SkillPackageRoot],
+) -> tuple[tuple[str, int, int], ...]:
     entries: list[tuple[str, int, int]] = []
     patterns = (
         "*/SKILL.md",
@@ -240,11 +294,27 @@ def _fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
         "*/schemas/input.json",
         "*/schemas/output.json",
     )
-    for pattern in patterns:
-        for path in root.glob(pattern):
-            if path.is_file():
-                stat = path.stat()
-                entries.append((str(path.relative_to(root)), stat.st_mtime_ns, stat.st_size))
+    for root in roots:
+        source = root.expected_source.value if root.expected_source is not None else "any"
+        prefix = f"{root.priority}:{source}:{root.path}"
+        if not root.path.exists():
+            entries.append((f"{prefix}:missing", 0, 0))
+            continue
+        if not root.path.is_dir():
+            stat = root.path.stat()
+            entries.append((f"{prefix}:not-directory", stat.st_mtime_ns, stat.st_size))
+            continue
+        for pattern in patterns:
+            for path in root.path.glob(pattern):
+                if path.is_file():
+                    stat = path.stat()
+                    entries.append(
+                        (
+                            f"{prefix}:{path.relative_to(root.path)}",
+                            stat.st_mtime_ns,
+                            stat.st_size,
+                        )
+                    )
     return tuple(sorted(entries))
 
 
