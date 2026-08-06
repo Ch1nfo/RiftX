@@ -22,15 +22,18 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
     second = OfficialPackCatalog().load()
 
     assert [bundle.source.pack_id for bundle in first] == [
+        "authn-authz-audit",
         "code-audit-foundation",
         "credential-handling",
         "entrypoint-discovery",
         "evidence-and-reporting",
+        "injection-audit",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
         "repository-mapping",
         "scope-and-safety",
+        "secret-and-config-audit",
         "service-enumeration",
         "vulnerability-verification",
         "web-attack-surface",
@@ -67,20 +70,35 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
             assert version.manifest.provenance.source_digest == document.digest
 
 
-def test_code_audit_foundation_packs_use_only_production_safe_code_workflows() -> None:
+def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
+    pack_ids = {
+        "authn-authz-audit",
+        "code-audit-foundation",
+        "entrypoint-discovery",
+        "injection-audit",
+        "repository-mapping",
+        "secret-and-config-audit",
+    }
     bundles = {
         bundle.source.pack_id: bundle
         for bundle in OfficialPackCatalog().load()
-        if bundle.source.pack_id
-        in {"code-audit-foundation", "repository-mapping", "entrypoint-discovery"}
+        if bundle.source.pack_id in pack_ids
     }
 
-    assert set(bundles) == {
-        "code-audit-foundation",
-        "repository-mapping",
-        "entrypoint-discovery",
+    assert set(bundles) == pack_ids
+    analysis_tools = {
+        "glob",
+        "grep",
+        "read_many_files",
+        "symbol_search",
+        "find_references",
+        "record_observation",
+        "propose_hypothesis",
+        "propose_finding",
+        "record_negative_result",
     }
     expected_tools = {
+        "authn-authz-audit": analysis_tools | {"call_hierarchy"},
         "code-audit-foundation": {
             "list_files",
             "read_many_files",
@@ -93,27 +111,14 @@ def test_code_audit_foundation_packs_use_only_production_safe_code_workflows() -
             "complete_task",
             "complete_run",
         },
-        "repository-mapping": {
-            "list_files",
-            "glob",
-            "read_many_files",
-            "grep",
-            "symbol_search",
-            "find_references",
-            "record_observation",
-            "record_negative_result",
-        },
-        "entrypoint-discovery": {
-            "glob",
-            "grep",
-            "read_many_files",
-            "symbol_search",
-            "find_references",
-            "call_hierarchy",
-            "record_observation",
-            "propose_hypothesis",
-            "record_negative_result",
-        },
+        "entrypoint-discovery": analysis_tools
+        - {"propose_finding"}
+        | {"call_hierarchy"},
+        "injection-audit": analysis_tools | {"call_hierarchy"},
+        "repository-mapping": analysis_tools
+        - {"propose_hypothesis", "propose_finding"}
+        | {"list_files"},
+        "secret-and-config-audit": analysis_tools | {"list_files"},
     }
     for pack_id, bundle in bundles.items():
         assert set(bundle.source.tool_requirements) == expected_tools[pack_id]

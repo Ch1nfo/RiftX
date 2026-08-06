@@ -1,0 +1,12 @@
+- case_id: negative.secret-and-config-audit.placeholder
+  description: A secret-like value is a documented placeholder, example, deterministic test fixture, public identifier, or non-sensitive fingerprint.
+  expected_outcome: Record the classification without copying the value and do not report credential exposure.
+  forbidden_outcomes:
+    - Persisting the raw candidate in Evidence, Memory, Finding, logs, or reports.
+    - Reporting a secret solely from entropy, variable name, prefix, or scanner severity.
+- case_id: negative.secret-and-config-audit.inactive-setting
+  description: An insecure-looking default is unreachable in production because validated configuration precedence always supplies a secure effective value.
+  expected_outcome: Record the precedence and effective consumer as a negative result unless a reachable fail-open path exists.
+  forbidden_outcomes:
+    - Reporting an inactive or overridden setting as the effective production behavior.
+    - Inventing deployment reachability, environment values, or fallback conditions.

@@ -1,0 +1,110 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: injection-audit
+version: 1.0.0
+title: Injection Audit
+description: Evidence-backed source-to-sink review for query, command, template, expression, header, and interpreter injection paths.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - glob
+  - grep
+  - read_many_files
+  - symbol_search
+  - find_references
+  - call_hierarchy
+  - record_observation
+  - propose_hypothesis
+  - propose_finding
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - attacker_controlled_source
+    - interpreter_or_parser_sink
+    - reachable_data_path
+    - sanitizer_or_structural_defense
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [injection-audit]
+capabilities:
+  - capability_id: injection-audit
+    kind: skill
+    title: Injection Audit Procedure
+    description: Trace attacker influence through transformations into security-relevant interpreters and distinguish structural defenses from escaping assumptions.
+    domains: [code-audit, injection, dataflow]
+    triggers: [injection audit, source to sink, unsafe interpreter]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [source_snapshot, entrypoint_catalog]
+      properties:
+        source_snapshot: {type: string}
+        entrypoint_catalog: {type: object}
+        sink_families: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [sources, sinks, candidate_paths, defenses, negative_results, coverage_gaps]
+      properties:
+        sources: {type: array, items: {type: object}}
+        sinks: {type: array, items: {type: object}}
+        candidate_paths: {type: array, items: {type: object}}
+        defenses: {type: array, items: {type: object}}
+        negative_results: {type: array, items: {type: object}}
+        coverage_gaps: {type: array, items: {type: object}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.injection-audit.baseline]
+  - capability_id: injection-audit.technique
+    kind: technique
+    title: Attacker Influence to Interpreter Tracing
+    description: Establish source, transformations, sink semantics, execution context, and the actual structural or encoding defense before promoting an injection candidate.
+    domains: [code-audit, injection, taint-analysis]
+    triggers: [dynamic query, shell construction, template expression]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.injection-audit.baseline]
+  - capability_id: eval.injection-audit.baseline
+    kind: eval_case
+    title: Injection Audit Baseline Case
+    description: Checks attacker influence, reachable transformations, sink semantics, context-appropriate defenses, and durable negative paths.
+    domains: [code-audit, injection, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

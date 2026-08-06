@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["source_snapshot", "entrypoint_catalog"],
+  "properties": {
+    "source_snapshot": {"type": "string"},
+    "entrypoint_catalog": {"type": "object"},
+    "sink_families": {"type": "array", "items": {"type": "string"}}
+  }
+}

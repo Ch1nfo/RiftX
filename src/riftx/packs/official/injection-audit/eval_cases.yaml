@@ -1,0 +1,12 @@
+- case_id: eval.injection-audit.baseline
+  capability_ids: [injection-audit, injection-audit.technique]
+  description: Review SQL, document query, shell, template, expression, header, log, and interpreter candidates with real and defended paths.
+  scenario: builtin://eval/injection-audit/baseline-v1
+  assertions:
+    - Every candidate identifies an attacker-controlled source, reachable transformations, sink semantics, and execution context.
+    - Parameterization, argument separation, allowlists, encoding, and sandboxing are evaluated against the specific sink context.
+    - String construction or a dangerous API name alone does not become an injection finding.
+    - Unreachable, constant-only, structurally separated, or correctly sanitized paths become durable negative results.
+  negative_case_ids:
+    - negative.injection-audit.constant-construction
+    - negative.injection-audit.structural-separation

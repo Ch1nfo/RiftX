@@ -1,0 +1,12 @@
+- case_id: eval.authn-authz-audit.baseline
+  capability_ids: [authn-authz-audit, authn-authz-audit.technique]
+  description: Review mixed public, authenticated, administrative, service, and tenant-bound paths with centralized and inline access controls.
+  scenario: builtin://eval/authn-authz-audit/baseline-v1
+  assertions:
+    - Protected entrypoints identify the authoritative identity or session source and its trust transition.
+    - Authorization evidence binds subject, action, resource, tenant or object selector, and enforcement result on the reachable path.
+    - Framework annotations or middleware names alone do not prove that the effective path is protected.
+    - Bypasses and non-findings preserve source, reachability, defense, and negative evidence.
+  negative_case_ids:
+    - negative.authn-authz-audit.annotation-only
+    - negative.authn-authz-audit.bound-resource

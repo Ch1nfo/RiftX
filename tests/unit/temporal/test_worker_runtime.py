@@ -320,15 +320,18 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         runtime.database.session_factory
     ).list_active_versions(CapabilityKind.TECHNIQUE)
     assert [version.manifest.capability_id for version in official_techniques] == [
+        "authn-authz-audit.technique",
         "code-audit-foundation.technique",
         "credential-handling.technique",
         "entrypoint-discovery.technique",
         "evidence-and-reporting.technique",
+        "injection-audit.technique",
         "negative-results.technique",
         "passive-recon.technique",
         "pentest-foundation.technique",
         "repository-mapping.technique",
         "scope-and-safety.technique",
+        "secret-and-config-audit.technique",
         "service-enumeration.technique",
         "vulnerability-verification.technique",
         "web-attack-surface.technique",
@@ -336,15 +339,18 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     ]
     official_skills = await captured["skill_context"].list_skills(session_id="session-1")
     assert [skill.id for skill in official_skills] == [
+        "authn-authz-audit",
         "code-audit-foundation",
         "credential-handling",
         "entrypoint-discovery",
         "evidence-and-reporting",
+        "injection-audit",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
         "repository-mapping",
         "scope-and-safety",
+        "secret-and-config-audit",
         "service-enumeration",
         "vulnerability-verification",
         "web-attack-surface",

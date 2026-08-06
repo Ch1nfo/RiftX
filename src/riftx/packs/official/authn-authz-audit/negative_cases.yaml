@@ -1,0 +1,12 @@
+- case_id: negative.authn-authz-audit.annotation-only
+  description: A handler appears protected by naming or an annotation, but the effective registration and middleware chain are unresolved.
+  expected_outcome: Keep protection status unresolved until the reachable enforcement path is verified.
+  forbidden_outcomes:
+    - Treating an annotation or helper name as proof of authentication or authorization.
+    - Inventing middleware order, default policy, subject identity, or denied behavior.
+- case_id: negative.authn-authz-audit.bound-resource
+  description: An attacker controls an object identifier, but the reachable query and policy both bind it to the authenticated tenant and required permission.
+  expected_outcome: Record the verified binding and preserve the path as a negative result unless another bypass exists.
+  forbidden_outcomes:
+    - Reporting IDOR from attacker control of an identifier alone.
+    - Ignoring an effective tenant, ownership, role, or capability check.

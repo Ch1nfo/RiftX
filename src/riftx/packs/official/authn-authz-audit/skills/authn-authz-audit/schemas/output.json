@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["identity_flows", "enforcement_points", "candidates", "negative_results", "coverage_gaps"],
+  "properties": {
+    "identity_flows": {"type": "array", "items": {"type": "object"}},
+    "enforcement_points": {"type": "array", "items": {"type": "object"}},
+    "candidates": {"type": "array", "items": {"type": "object"}},
+    "negative_results": {"type": "array", "items": {"type": "object"}},
+    "coverage_gaps": {"type": "array", "items": {"type": "object"}}
+  }
+}
