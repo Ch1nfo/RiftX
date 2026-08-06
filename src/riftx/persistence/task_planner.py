@@ -31,6 +31,7 @@ from riftx.tasks import (
 )
 
 from .orm import (
+    EvidenceRecord,
     RunRecord,
     TaskAttemptRecord,
     TaskDependencyRecord,
@@ -275,11 +276,38 @@ class SQLAlchemyTaskPlanner:
                     f"completion references unknown Task Evidence Requirements: {sorted(unknown)}"
                 )
             now = utc_now()
+            candidate_refs: dict[str, list[str]] = {}
             for requirement_id, refs in command.evidence_refs_by_requirement.items():
                 requirement = by_id[requirement_id]
-                requirement.evidence_refs_json = list(
+                candidate_refs[requirement_id] = list(
                     dict.fromkeys([*requirement.evidence_refs_json, *refs])
                 )
+            for requirement in requirements:
+                candidate_refs.setdefault(
+                    requirement.id,
+                    list(requirement.evidence_refs_json),
+                )
+            all_refs = {item for refs in candidate_refs.values() for item in refs}
+            if all_refs:
+                owned = {
+                    evidence_id
+                    for evidence_id, evidence_task_id in await session.execute(
+                        select(EvidenceRecord.id, EvidenceRecord.task_id).where(
+                            EvidenceRecord.run_id == command.run_id,
+                            EvidenceRecord.id.in_(all_refs),
+                        )
+                    )
+                    if evidence_task_id is None or evidence_task_id == command.task_id
+                }
+                invalid = all_refs - owned
+                if invalid:
+                    raise RepositoryConflictError(
+                        "Task completion references Evidence outside the current "
+                        f"Run or Task: {sorted(invalid)}"
+                    )
+            for requirement_id, refs in candidate_refs.items():
+                requirement = by_id[requirement_id]
+                requirement.evidence_refs_json = refs
                 requirement.updated_at = now
             unsatisfied = [
                 requirement.id

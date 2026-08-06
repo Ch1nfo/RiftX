@@ -5,9 +5,21 @@ import pytest
 
 from riftx.application.errors import RepositoryConflictError
 from riftx.domain import Engagement, Objective, Run
+from riftx.evidence import (
+    Evidence,
+    EvidenceCreatorType,
+    EvidenceKind,
+    EvidenceRedactionStatus,
+    EvidenceReplayMetadata,
+    EvidenceReplayStrategy,
+    EvidenceScope,
+    EvidenceTrustClass,
+    SourceLocator,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyTaskGraphRepository,
     SQLAlchemyTaskPlanner,
@@ -46,6 +58,31 @@ async def create_planner(tmp_path: Path) -> tuple[Database, SQLAlchemyTaskPlanne
     return database, SQLAlchemyTaskPlanner(database.session_factory)
 
 
+def task_evidence(evidence_id: str, *, task_id: str | None) -> Evidence:
+    locator = SourceLocator(uri=f"execution://{evidence_id}/stdout")
+    return Evidence(
+        id=evidence_id,
+        kind=EvidenceKind.EXECUTION_OUTPUT,
+        source_uri=locator.source_uri,
+        digest="a" * 64,
+        run_id="run-1",
+        task_id=task_id,
+        creator_type=EvidenceCreatorType.TOOL,
+        created_by="run_shell",
+        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+        scope=EvidenceScope(engagement_id="engagement-1", run_id="run-1"),
+        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+        replay=EvidenceReplayMetadata(
+            strategy=EvidenceReplayStrategy.SOURCE_LOOKUP,
+            replayable=True,
+            expected_digest="a" * 64,
+            source_digest="a" * 64,
+            parameters_digest="b" * 64,
+        ),
+        locator=locator,
+    )
+
+
 async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Path) -> None:
     database, planner = await create_planner(tmp_path)
     try:
@@ -60,6 +97,7 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
                         id="discover-output",
                         evidence_type="artifact",
                         description="Preserve discovery output",
+                        minimum_count=2,
                     )
                 ],
             )
@@ -118,6 +156,34 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
                     completion_summary="Discovery completed",
                 )
             )
+        with pytest.raises(RepositoryConflictError, match="outside the current Run or Task"):
+            await planner.complete_task(
+                CompleteTaskCommand(
+                    run_id="run-1",
+                    expected_graph_version=graph_version,
+                    task_id="discover",
+                    attempt_id=discover_attempt.id,
+                    completion_summary="Discovery completed",
+                    evidence_refs_by_requirement={"discover-output": ["missing-evidence"]},
+                )
+            )
+        evidence_ledger = SQLAlchemyEvidenceLedgerRepository(database.session_factory)
+        await evidence_ledger.create(task_evidence("research-evidence", task_id="research"))
+        with pytest.raises(RepositoryConflictError, match="outside the current Run or Task"):
+            await planner.complete_task(
+                CompleteTaskCommand(
+                    run_id="run-1",
+                    expected_graph_version=graph_version,
+                    task_id="discover",
+                    attempt_id=discover_attempt.id,
+                    completion_summary="Discovery completed",
+                    evidence_refs_by_requirement={
+                        "discover-output": ["research-evidence"]
+                    },
+                )
+            )
+        await evidence_ledger.create(task_evidence("discover-evidence", task_id="discover"))
+        await evidence_ledger.create(task_evidence("run-evidence", task_id=None))
         completed = await planner.complete_task(
             CompleteTaskCommand(
                 run_id="run-1",
@@ -125,7 +191,9 @@ async def test_ready_claim_completion_retry_and_parallel_isolation(tmp_path: Pat
                 task_id="discover",
                 attempt_id=discover_attempt.id,
                 completion_summary="Discovery completed",
-                evidence_refs_by_requirement={"discover-output": ["artifact-1"]},
+                evidence_refs_by_requirement={
+                    "discover-output": ["discover-evidence", "run-evidence"]
+                },
             )
         )
         assert completed.task.status is TaskStatus.COMPLETED
