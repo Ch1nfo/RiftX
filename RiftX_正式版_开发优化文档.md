@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前已提交基线：`c7a79e87`
+> 当前已提交基线：`ca12ad9b`
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -47,7 +47,7 @@ RiftX 不再以“功能最多的安全 Agent 平台”为目标，也不建设�
 
 **存在阶段性过度开发，但不应立即大规模删代码。**
 
-当前项目已经拥有大量平台能力、兼容面、migration 和测试，但用户最需要的完整 Pentest 热路径仍没有跑通。问题不在于安全边界“做得太多”，而在于横向平台建设曾经快于纵向用户结果。
+当前项目已经拥有大量平台能力、兼容面、migration 和测试，Pentest 基础生命周期也已跑通；但用户最需要的专业结果热路径仍未走到 Evidence/Negative Result/Finding/Report。问题不在于安全边界“做得太多”，而在于横向平台建设曾经快于纵向用户结果。
 
 正确处理顺序是：
 
@@ -84,6 +84,13 @@ Full Ruff passed
 PEN-500 scoped mypy passed
 Alembic single head: 7b3d1e5f9a24
 P1 affected regression: 283 passed
+P2-A pure projection: 5 passed
+P2-A affected regression: 112 passed
+P2-B Pentest API: 7 passed
+P2-B Pentest UOW: 1 passed
+P2-B CLI: 71 passed
+P2-B Target HTTP: 54 passed
+P2-B full Control Plane API: 66 passed
 ```
 
 这些结果证明底座和 P1 切片稳定，不代表 Pentest V1 已经完成。
@@ -101,6 +108,8 @@ e2314e9b  Pentest Workflow/Runner identity
 70f6f4a0  Pentest status 权威聚合与 API
 2271bc8e  pentest start/status/resume/stop CLI
 c7a79e87  P1 文档与账本收口
+9a4714fc  可重建 declared/observed/verified Attack Surface 投影
+ca12ad9b  隔离授权 Pentest 生命周期 E2E
 ```
 
 已经具备：
@@ -115,36 +124,26 @@ c7a79e87  P1 文档与账本收口
 - Workflow、Runner、Signal、Effect 全链路保持 Pentest 身份；
 - `GET /api/v1/pentests/{run_id}/status` 可从持久事实重建 Admission、Selection、预算、Workflow、Runner、Stop 与 declared entry points；
 - `riftx pentest start/status/resume/stop` 已交付；
+- Official Pack 的 resident Tool requirements 会进入 Session allowlist，显式注册型 Tool 仍需 Selection；
+- Attack Surface 可从 Admission、持久 Target HTTP 与指定 Evidence 重建 `asset/service/endpoint/parameter`；
+- URL 投影与请求路径会去凭据、去参数值、规范化默认端口，不会把秘密带入 status；
+- 隔离本地 HTTP 目标已证明创建、拒绝越界、真实成功/超时、重启重建、暂停、恢复、取消和 Stop Proof；
 - 未审计的 Pentest 副作用继续失败关闭。
 
-### 2.4 当前工作树中的进行中切片
+### 2.4 当前真实缺口：预算已持久和展示，但尚未成为全链路硬停止
 
-当前工作树存在尚未提交、尚未完成验收的 P2 Attack Surface 实现，涉及：
+`ca12ad9b` 是干净的实现基线，当前未提交变更只应是本指导文档的校准。P2-A Attack Surface 与 P2-B 隔离授权生命周期已提交并验收，但 PEN-500 仍不能标记 `completed`。
 
-```text
-src/riftx/application/ports/pentests.py
-src/riftx/application/ports/__init__.py
-src/riftx/application/services/pentests.py
-src/riftx/application/services/pentest_attack_surface.py
-src/riftx/persistence/pentest_status.py
-src/riftx/api/schemas/pentests.py
-src/riftx/cli/render.py
-```
+原因是 `PentestBudget` 的六个限制当前主要被持久、聚合和展示，尚未证明所有新副作用在执行前会原子检查：
 
-当前实现方向：
+- `max_duration_seconds`；
+- `max_model_calls`；
+- `max_tokens`；
+- `max_tool_calls`；
+- `max_target_interactions`；
+- `max_concurrent_target_interactions`。
 
-- declared：由 Admission Entry Point 与 Scope 确定性生成；
-- observed：由持久化 Target HTTP Request 生成；
-- verified：只由特定 Evidence 引用生成；
-- 节点仅支持 `asset/service/endpoint/parameter`；
-- URL 参数只保留参数名，不保存参数值；
-- 每个节点包含规范化值、来源等级、Scope decision 和来源对象引用；
-- 相同节点合并，来源等级为 `verified > observed > declared`；
-- Scope denied 不能被允许结果覆盖；
-- 投影有容量上限和 `truncated` 标记；
-- 不新增 Attack Surface 表。
-
-该切片当前只能标记为 **in progress**。完成 Ruff、mypy、投影单元测试、API/CLI 集成测试和重启重建测试之前，不能写入已完成清单。
+当前 status 中的 `model_call_count`、`tool_call_count`、Token 用量、observed/active target interactions 是可复用的持久事实，不应新建 Budget Ledger。下一切片必须把这些事实接到真实 Effect admission 和 Safety Stop，并证明竞态下不会超额放行。
 
 ### 2.5 当前缺失的用户结果
 
@@ -152,8 +151,9 @@ src/riftx/cli/render.py
 | --- | --- | --- |
 | Pentest Admission 与控制命令 | 已完成 | 是 |
 | 权威 Pentest status | 已完成 | 是 |
-| declared/observed/verified Attack Surface 投影 | 实现中，未验收 | 是 |
-| 隔离授权目标生命周期 E2E | 未完成 | 是 |
+| declared/observed/verified Attack Surface 投影 | 已完成 | 是 |
+| 隔离授权目标生命周期 E2E | 已完成 | 是 |
+| 全链路 Pentest Budget 执行前硬限制 | 未完成，当前仅可见 | 是 |
 | 一个网络服务专业闭环 | 未完成 | 是 |
 | 一个状态化 Web 身份/授权闭环 | 未完成 | 是 |
 | Negative Result、Finding、Attack Chain、专业报告 | 底座部分已有，产品闭环未完成 | 是 |
@@ -163,7 +163,7 @@ src/riftx/cli/render.py
 | CVE/PoC 自动研究 | 延后 | 否 |
 | Marketplace、多租户、远程集群 | Post-V1 | 否 |
 
-按交付阶段判断，而不是按代码量判断：**P1 已完成，P2 正在进行，P3、P4、P5、P6 和 R1 尚未完成。**
+按交付阶段判断，而不是按代码量判断：**P1 已完成，P2-A/P2-B 已完成，P2-C 预算硬停止待完成；P3、P4、P5、P6 和 R1 尚未完成。**
 
 ---
 
@@ -264,7 +264,7 @@ Admission
 | 阶段 | 状态 | 必须交付的用户结果 |
 | --- | --- | --- |
 | P1 CLI 与状态聚合 | completed | `start/status/resume/stop` 和可重建状态 |
-| P2 Attack Surface 与隔离 E2E | in progress | 可重建投影和完整 Pentest 生命周期 |
+| P2 Pentest 基础闭环收口 | in progress | Attack Surface 和隔离 E2E 已完成，剩余预算硬停止 |
 | P3 网络服务专业闭环 | pending | Recon 到 Evidence/Negative Result/Finding |
 | P4 状态化 Web 与专业报告 | pending | 身份/授权验证、Attack Chain、Report、Stop Proof |
 | P5 Operator Capability 成长 | pending | 一项真实能力的 Review/Replay/批准/回滚 |
@@ -275,9 +275,9 @@ Admission
 
 ---
 
-## 6. P2：完成 Attack Surface 与隔离授权 E2E
+## 6. P2：收口 Pentest 基础闭环
 
-### 6.1 P2-A：先完成当前 Attack Surface 切片
+### 6.1 P2-A：Attack Surface 投影（已完成）
 
 最小事实来源固定为：
 
@@ -314,21 +314,46 @@ Admission
 - Control Plane 重启后重建相同投影；
 - CLI 渲染新结构且不暴露参数值。
 
-P2-A 通过后形成一个独立实现提交，不同时修改实施账本。
+完成证据：实现提交 `9a4714fc`；纯投影 `5 passed`，受影响回归 `112 passed`，Pentest API `6 passed`，完整 Control Plane `65 passed`，全仓 Ruff 和 scoped mypy 通过。
 
-### 6.2 P2-B：固化隔离授权生命周期 E2E
+### 6.2 P2-B：隔离授权生命周期 E2E（已完成）
 
 在可复位、明确授权的本地靶场证明：
 
 - 无授权引用、无正向 Scope、无 Entry Point 或 Entry Point 越界时拒绝创建；
 - Run 可创建、查询、恢复、停止和跨进程重读；
 - Workflow、Runner、Artifact、Tool Intent 全程保持 Pentest 身份；
-- Scope 外 DNS/HTTP/Browser/Runner 副作用在执行前失败关闭；
-- 超预算、取消、失败和人工停止留下可验证事实；
+- Scope 外 HTTP 在执行前失败关闭；DNS/Browser/Runner 继续由既有 Effect Policy 和各自 Scope guard 回归保护；
+- 真实成功、超时失败、取消和人工停止留下可验证事实；
 - declared/observed/verified Attack Surface 可从持久数据重建；
 - 测试结束后靶场可复位，不依赖公网和未授权目标。
 
-P2-B 通过后形成独立实现提交，再单独更新实施账本。Attack Surface 和隔离 E2E 同时通过后，PEN-500 才能标记 `completed`。
+完成证据：实现提交 `ca12ad9b`；Pentest API `7 passed`，Pentest UOW `1 passed`，CLI `71 passed`，Target HTTP `54 passed`，完整 Control Plane `66 passed`，全仓 Ruff 和 scoped mypy 通过。
+
+本 E2E 不能替代预算硬限制验收。它证明预算用量可重建，没有证明超预算时一定会在新副作用前停止。
+
+### 6.3 P2-C：预算执行前硬限制（当前唯一实现切片）
+
+目标是让 Admission 中的预算从“status 可见”变成“副作用执行前必须通过的持久门禁”。
+
+最小实现顺序：
+
+1. 先接通 `max_target_interactions` 和 `max_concurrent_target_interactions`，以 Target HTTP 为第一个真实消费者；
+2. 在既有 Tool Intent/Agent Session 边界接通 `max_tool_calls` 和 `max_model_calls`；
+3. 使用已持久 Context Compilation Token 用量接通 `max_tokens`，Token 不完整时失败关闭；
+4. 以 Run 持久时间边界接通 `max_duration_seconds`，同时保留 Scope `starts_at/ends_at` 的更严限制；
+5. 任一预算耗尽时原子拒绝新效果，写入结构化 `budget_exhausted` 事件，调用既有 Safety Stop，并在 Pentest status 显示确认结果；
+6. 覆盖并发竞态：两个请求不得同时穿过最后一个配额，重启后不得重置用量。
+
+实现约束：
+
+- 不新建 Budget 表、计数器服务、缓存或定时 Worker；
+- 复用 Run、Agent Session、Context Compilation、Tool Intent、Target HTTP Request 和 Run Event；
+- 检查与当次状态占用必须共享同一持久化串行化边界，不使用“先查 status，再执行”的非原子流程；
+- 预算失败不能被模型、Pack、Skill、MCP 或重试绕过；
+- 只在第一个生产消费者证明共享语义后才抽取公共 Guard。
+
+P2-C 通过后，先形成独立实现提交；然后单独更新 `FORMAL_AGENT_PROGRESS.md`，将 `9a4714fc`、`ca12ad9b` 和预算提交纳入 PEN-500 证据，此时才能标记 `completed`。
 
 ---
 
@@ -597,16 +622,16 @@ Ledger commit:
 
 当前只继续以下工作：
 
-1. 完成工作树中 declared/observed/verified Attack Surface 最小投影；
-2. 使用 `conda` 的 `agent` 环境运行 Ruff、scoped mypy 和目标测试；
-3. 补齐纯投影、API、重启重建和 CLI 渲染测试；
-4. 形成独立 Attack Surface 实现提交；
-5. 固化隔离授权 Pentest 生命周期 E2E；
-6. 形成独立 E2E 实现提交；
-7. 单独更新实施账本并将 PEN-500 标记为 completed；
+1. 从 Target HTTP 生产边界开始，实现总目标交互与并发目标交互的原子预算门禁；
+2. 复用已有持久事实接通 Tool call、Model call、Token 和 Duration 预算；
+3. 预算耗尽时拒绝新副作用，写入结构化事件，复用 Safety Stop 并产生 Stop Proof；
+4. 补齐总量、并发、不完整 Token、时间到期、重启和并发竞态测试；
+5. 使用 `conda` 的 `agent` 环境运行目标测试、受影响回归、Ruff 和 scoped mypy；
+6. 形成独立 P2-C 实现提交；
+7. 单独更新实施账本并将 PEN-500 标记为 `completed`；
 8. 进入 P3 的一个网络服务专业闭环。
 
-在 PEN-500 完成前，不启动 Code Audit、学习系统、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。
+在 PEN-500 完成前，不启动 Code Audit、学习系统、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。P2-C 不新增数据库表，也不借机建设通用 Policy Engine。
 
 ---
 
@@ -786,4 +811,4 @@ RiftX 不应继续成长为“功能很多但主路径不完整”的通用 Agen
 
 > 一个知道授权边界、能够持续执行和恢复、会记录证据与失败、能形成专业报告，并能把操作者方法论沉淀为可审查生产能力的渗透测试工作台。
 
-完成目标的最短路径是：先跑通一条真实 Pentest 闭环，再用真实使用决定保留、优化和删除什么。当前不是继续扩架构的时候，而是完成 P2。
+完成目标的最短路径是：先把已跑通的真实 Pentest 生命周期加上不可绕过的预算硬停止，再进入一个网络服务专业闭环。当前不是继续扩架构或大规模删代码的时候，而是完成 P2-C，然后让真实生产消费者决定后续优化和删减。
