@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 已能初始化本地目录和 SQLite schema，或在停服、一致性备份、exclusive locking 与失败恢复边界内把已管理 SQLite 迁移到 head。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`。
-- Verification：全仓 `5237 passed, 5 skipped, 18 warnings`；全仓 Ruff、Doctor/Database Maintenance/Local FS/CLI Client/Diagnostics/API Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live 状态晋升、Alembic head、Official Pack install/lock/digest、RunKind effect inventory、owner-only 目录、SQLite 备份/迁移/恢复与 wheel 迁移资产验证通过。
-- Next delivery slice：复用 Official Pack Catalog 与 Capability Repository 实现 Pack drift 的离线修复/回滚，再处理常见配置迁移和 `riftx onboard`。
+- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 已能初始化本地目录和 SQLite schema，在停服、一致性备份、exclusive locking 与失败恢复边界内把已管理 SQLite 迁移到 head，并原子修复 Official Pack install/active-lock 投影漂移。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`。
+- Verification：全仓 `5243 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/Database Maintenance/Local FS/CLI Client/Diagnostics/API/Packs Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live/offline 状态晋升、Alembic head、Official Pack immutable/install/lock/digest、原子回滚、RunKind effect inventory、owner-only 目录、SQLite 备份/迁移/恢复与 wheel 迁移资产验证通过。
+- Next delivery slice：实现常见配置迁移，再交付 `riftx onboard`。
 
 ## 3. 研究与实现基线
 
@@ -251,7 +251,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### CAP-101：原生代码工具
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-05
 - Inputs：CAP-001、Code Audit Snapshot 边界、Artifact 限额读取、Runtime control tools 和现有 LSP/Scanner 模块。
 - First delivery slice：
@@ -876,6 +876,12 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 迁移连接切换 SQLite `locking_mode=EXCLUSIVE`，在同一连接上注入 Alembic environment 并执行唯一 migration graph；迁移异常或 head 复检失败时，已有库从备份原子恢复，新库在 inode identity 仍匹配时删除，回滚不完整显式失败；
   - 原有 Doctor 目录安全原语抽取为 `OwnerDirectoryBatch`，数据库修复失败时仍可回滚同批次新建的 Skill/Storage 目录；
   - `alembic.ini`、`env.py`、`script.py.mako` 和 49 个 migration version 使用 setuptools data-files 进入 wheel；源码和安装版都解析同一套资产，不生成第二份 schema 定义。
+- Official Pack drift fix slice：
+  - `bootstrap_official_packs` 改为调用 `SQLAlchemyCapabilityRepository` 的整批对账入口；Catalog 在事务外完整加载，66 个 Capability Version、22 个 Pack、22 个 install 与 66 个 active lock 在单次 `serialized_write` 中注册、校验和修复，避免逐 Pack 提交形成半安装状态；
+  - Capability Version、Pack Manifest 和 Pack Member 继续作为不可变历史权威；任一内容、Digest、状态或成员漂移均拒绝自动覆盖并回滚整批事务；Official scope 出现未被 Catalog 声明的 install 同样失败关闭；
+  - 仅 `missing_install`、`install_drift`、`lock_set_drift` 和 `lock_digest_drift` 属于可重建投影；修复会规范化 install、递增 `state_version`、release 错误 active lock 并创建新的正确 lock，不删除或复活历史 released lock，也不修改 Run Session lock；
+  - 离线 Doctor 在 file-backed SQLite 已到 Alembic head 时复用 `Database`、`SystemDiagnosticsService`、Official Pack Catalog 与 Capability Repository 读取权威状态；可修复漂移才标记 `fixable`，unexpected install、Pack/Version/Member immutable drift 明确要求可信恢复；
+  - `doctor --fix` 将目录、SQLite migration、Official Pack repair 按顺序执行；数据库或 Pack 持久化修复前统一探测 Control Plane，只要服务可达就拒绝动作；Pack 修复提交后再次运行权威 diagnostics，只有 22 个 install 与 66 个 active lock 全部 ready 才算成功。
 - Safety boundaries：
   - 默认 `riftx doctor` 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径/数据库元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；只有显式 `--fix` 才进入已登记的本地修复处理器；
   - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
@@ -918,8 +924,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - 首次全仓回归为 `5236 passed, 5 skipped, 17 warnings, 1 failed`，唯一失败是既有 Runner shell exec-replacement 2 秒观测超时；该用例独立连续 3 次均通过；
   - 二次 `conda run --no-capture-output -n agent pytest -q`：`5237 passed, 5 skipped, 18 warnings`；5 个跳过原因不变，17 个 SQLite datetime adapter 和 1 个既有 Pydantic schema 警告与本切片无关；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`。
-- Remaining：Official Pack drift 修复、常见配置迁移、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
+- Official Pack drift fix checks：
+  - 测试先行验证：新增定向合同在旧逐 Pack bootstrap 下产生 `5 failed, 3 passed`，失败分别证明 mutable drift 无修复、unexpected install 未拒绝、immutable drift 前发生部分提交，以及 diagnostics 未分类 Version/Member 漂移；
+  - Pack Bootstrap/Repair、System Diagnostics、Doctor、CLI 与 Database Maintenance 关联回归：`90 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/doctor.py src/riftx/diagnostics.py src/riftx/packs`：`Success: no issues found in 5 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5243 passed, 5 skipped, 17 warnings`；5 个跳过仍仅为 Windows、PowerShell 或 delegated cgroup 主机条件，17 个警告仍为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`。
+- Remaining：常见配置迁移、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
