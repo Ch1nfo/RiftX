@@ -1218,6 +1218,153 @@ def test_top_level_doctor_fix_blocks_persistence_repair_while_api_is_reachable(
     assert FakeAPIClient.instances[0].calls == [("health", None)]
 
 
+def test_onboard_noninteractive_creates_config_and_runs_registered_fixes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "riftx.yaml"
+    reports = iter(
+        (
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="database_migrations",
+                        status=DoctorStatus.DEGRADED,
+                        detail="database missing",
+                        fixable=True,
+                    ),
+                )
+            ),
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="database_migrations",
+                        status=DoctorStatus.READY,
+                        detail="database ready",
+                    ),
+                )
+            ),
+        )
+    )
+    observed_paths: list[Path | None] = []
+    observed_persistence: list[bool] = []
+
+    def local_report(
+        *_args: object,
+        runtime_config_path: Path | None = None,
+        **_kwargs: object,
+    ) -> DoctorReport:
+        observed_paths.append(runtime_config_path)
+        return next(reports)
+
+    def apply_fixes(
+        *_args: object,
+        allow_persistence_fix: bool,
+        **_kwargs: object,
+    ) -> tuple[DoctorFix, ...]:
+        observed_persistence.append(allow_persistence_fix)
+        return ()
+
+    def offline_health(client: FakeAPIClient) -> dict[str, Any]:
+        client.calls.append(("health", None))
+        raise cli_module.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(cli_module, "run_local_doctor", local_report)
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", apply_fixes)
+    monkeypatch.setattr(FakeAPIClient, "health", offline_health)
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "onboard",
+            "--non-interactive",
+            "--config-path",
+            str(config_path),
+            "--provider",
+            "openai_compatible",
+            "--model",
+            "qwen-local",
+            "--base-url",
+            "http://127.0.0.1:11434/v1",
+            "--no-api-key",
+        ],
+        env={
+            "XDG_CONFIG_HOME": str(tmp_path / "callback-config"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "PATH": "",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert config_path.is_file()
+    assert (config_path.parent / "models.yaml").is_file()
+    assert (config_path.parent / "tools.yaml").is_file()
+    assert observed_paths == [config_path, config_path]
+    assert observed_persistence == [True]
+    assert "Onboarding complete" in result.output
+    assert "disabled because their executables were not found" in result.output
+
+
+def test_onboard_resumes_existing_config_without_overwriting_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "riftx.yaml"
+    cli_module.initialize_local_onboarding(
+        config_path,
+        model_profile=cli_module.ModelProfile(
+            provider=cli_module.ModelProviderKind.OPENAI_COMPATIBLE,
+            model="qwen-local",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key_env=None,
+            requires_api_key=False,
+        ),
+        environment={
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+        },
+    )
+    original = {
+        path: path.read_bytes()
+        for path in (
+            config_path,
+            config_path.parent / "models.yaml",
+            config_path.parent / "tools.yaml",
+        )
+    }
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="config_migrations",
+                status=DoctorStatus.READY,
+                detail="ready",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        cli_module,
+        "apply_local_doctor_fixes",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "initialize_local_onboarding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not overwrite")),
+    )
+
+    result = runner.invoke(
+        cli_module.app,
+        ["onboard", "--non-interactive", "--config-path", str(config_path)],
+        env={"XDG_CONFIG_HOME": str(tmp_path / "callback-config")},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Using existing configuration without overwriting it" in result.output
+    assert {path: path.read_bytes() for path in original} == original
+
+
 def test_approval_commands_delegate_to_shared_http_client() -> None:
     listed = runner.invoke(cli_module.app, ["approvals", "run-1"])
     approved = runner.invoke(cli_module.app, ["approve", "approval-1", "--for-run"])

@@ -59,6 +59,7 @@ where = ["src"]
 
 [tool.setuptools.data-files]
 "share/riftx" = ["alembic.ini"]
+"share/riftx/templates" = ["configs/tools.yaml"]
 "share/riftx/migrations" = ["migrations/env.py", "migrations/script.py.mako"]
 "share/riftx/migrations/versions" = ["migrations/versions/*.py"]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import platform
 import sys
 import webbrowser
@@ -30,6 +31,7 @@ from riftx.config import (
 )
 from riftx.doctor import (
     DoctorFixError,
+    DoctorReport,
     apply_local_doctor_fixes,
     run_live_doctor,
     run_local_doctor,
@@ -39,10 +41,16 @@ from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
     MAX_MODEL_TIMEOUT_SECONDS,
     ModelAPI,
+    ModelProfile,
     ModelProviderKind,
     validate_provider_base_url,
     validate_remote_api_key_env,
     validate_remote_base_url,
+)
+from riftx.onboarding import (
+    OnboardError,
+    initialize_local_onboarding,
+    validate_existing_onboarding,
 )
 from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 from riftx.security import DeploymentProfileError, is_loopback_host
@@ -197,6 +205,167 @@ def interactive(context: typer.Context) -> None:
 
 
 @app.command()
+def onboard(
+    context: typer.Context,
+    non_interactive: Annotated[
+        bool,
+        typer.Option("--non-interactive", help="Use only command options and defaults."),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config-path", help="User configuration file to create or resume."),
+    ] = None,
+    provider: Annotated[
+        ModelProviderKind,
+        typer.Option("--provider", case_sensitive=False),
+    ] = ModelProviderKind.OPENAI,
+    model_name: Annotated[
+        str,
+        typer.Option("--model", help="Primary model identifier."),
+    ] = "gpt-5.6",
+    request_mode: Annotated[
+        ModelAPI,
+        typer.Option("--request-mode", case_sensitive=False),
+    ] = ModelAPI.CHAT_COMPLETIONS,
+    base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    api_key_env: Annotated[
+        str | None,
+        typer.Option("--api-key-env", help="RIFTX_MODEL_* credential environment variable."),
+    ] = "RIFTX_MODEL_API_KEY",
+    requires_api_key: Annotated[
+        bool,
+        typer.Option("--api-key/--no-api-key"),
+    ] = True,
+    workspace_root: Annotated[
+        Path | None,
+        typer.Option("--workspace-root", help="Local workspace root."),
+    ] = None,
+) -> None:
+    """Create or resume a safe local RiftX setup."""
+
+    selected_path = (config_path or default_user_config_path()).expanduser()
+    target = Path(os.path.abspath(os.fspath(selected_path)))
+    created = False
+    disabled_tools: tuple[str, ...] = ()
+    if target.exists() or target.is_symlink():
+        try:
+            target = validate_existing_onboarding(target)
+            config = load_riftx_config(explicit_path=target)
+        except (OnboardError, RiftXConfigError) as exc:
+            console.print(f"[red]Onboarding failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        console.print(f"Using existing configuration without overwriting it: {target}")
+    else:
+        if not non_interactive:
+            try:
+                provider = ModelProviderKind(
+                    typer.prompt("Model provider", default=provider.value).strip().lower()
+                )
+                model_name = typer.prompt("Primary model", default=model_name).strip()
+                request_mode = ModelAPI(
+                    typer.prompt("Model request mode", default=request_mode.value)
+                    .strip()
+                    .lower()
+                )
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            if provider is ModelProviderKind.OPENAI_COMPATIBLE and base_url is None:
+                base_url = typer.prompt(
+                    "OpenAI-compatible base URL",
+                    default="http://127.0.0.1:11434/v1",
+                ).strip()
+            requires_api_key = typer.confirm(
+                "Does this model require an API key?",
+                default=requires_api_key,
+            )
+            if requires_api_key:
+                api_key_env = typer.prompt(
+                    "API key environment variable",
+                    default=api_key_env or "RIFTX_MODEL_API_KEY",
+                ).strip()
+            if not typer.confirm(f"Create local RiftX configuration at {target}?", default=True):
+                raise typer.Abort()
+        try:
+            normalized_base_url = validate_remote_base_url(base_url)
+            validate_provider_base_url(provider, normalized_base_url)
+            normalized_api_key_env = (
+                validate_remote_api_key_env(api_key_env) if requires_api_key else None
+            )
+            if requires_api_key and normalized_api_key_env is None:
+                raise ValueError("API-key-backed onboarding requires --api-key-env")
+            model_profile = ModelProfile(
+                provider=provider,
+                model=model_name,
+                api=request_mode,
+                base_url=normalized_base_url,
+                api_key_env=normalized_api_key_env,
+                requires_api_key=requires_api_key,
+            )
+            initialized = initialize_local_onboarding(
+                target,
+                model_profile=model_profile,
+                workspace_root=workspace_root,
+            )
+            config = load_riftx_config(explicit_path=initialized.config_path)
+        except (OnboardError, RiftXConfigError, ValueError) as exc:
+            console.print(f"[red]Onboarding failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        target = initialized.config_path
+        disabled_tools = initialized.disabled_tools
+        created = True
+        console.print(f"Created runtime configuration: {initialized.config_path}")
+        console.print(f"Created model configuration: {initialized.models_path}")
+        console.print(f"Created Tool Registry configuration: {initialized.tools_path}")
+
+    if not is_loopback_host(config.server.host):
+        console.print(
+            "[red]Onboarding failed:[/red] local onboarding requires a loopback server host."
+        )
+        raise typer.Exit(1)
+    report = run_local_doctor(config, runtime_config_path=target)
+    persistence_fix = _requires_stopped_control_plane(report)
+    control_plane_reachable = False
+    if persistence_fix:
+        api_url = f"http://{config.server.host}:{config.server.port}"
+        with APIClient(api_url, timeout_seconds=3) as client:
+            control_plane_reachable = _control_plane_reachable(client)
+    try:
+        fixes = apply_local_doctor_fixes(
+            config,
+            report,
+            runtime_config_path=target,
+            allow_persistence_fix=not control_plane_reachable,
+        )
+    except DoctorFixError as exc:
+        console.print(f"[red]Onboarding bootstrap failed:[/red] {exc}")
+        console.print(f"Configuration was retained for recovery: {target}")
+        render_doctor_report(console, report)
+        raise typer.Exit(1) from exc
+    for applied in fixes:
+        console.print(f"Initialized {applied.check_id}: {applied.path}")
+    report = run_local_doctor(config, runtime_config_path=target)
+    if disabled_tools:
+        console.print(
+            "Optional tools disabled because their executables were not found: "
+            + ", ".join(disabled_tools)
+        )
+    if (
+        created
+        and requires_api_key
+        and normalized_api_key_env is not None
+        and normalized_api_key_env not in os.environ
+    ):
+        console.print(
+            f"Set {normalized_api_key_env} before starting model-backed tasks."
+        )
+    render_doctor_report(console, report)
+    console.print("[green]Onboarding complete.[/green]")
+    if target != default_user_config_path():
+        console.print(f"Use this setup with RIFTX_CONFIG={target}")
+    console.print("Next: set RIFTX_ADMIN_TOKEN, then run `riftx doctor`.")
+
+
+@app.command()
 def doctor(
     context: typer.Context,
     fix: Annotated[
@@ -214,22 +383,10 @@ def doctor(
     )
     with APIClient(state.api_url, timeout_seconds=3) as client:
         if fix:
-            persistence_fix = any(
-                check.id
-                in {"config_migrations", "database_migrations", "pack_integrity"}
-                and check.fixable
-                for check in report.checks
-            )
+            persistence_fix = _requires_stopped_control_plane(report)
             control_plane_reachable = False
             if persistence_fix:
-                try:
-                    client.health()
-                except httpx.TransportError:
-                    pass
-                except Exception:
-                    control_plane_reachable = True
-                else:
-                    control_plane_reachable = True
+                control_plane_reachable = _control_plane_reachable(client)
             try:
                 fixes = apply_local_doctor_fixes(
                     state.config,
@@ -260,6 +417,24 @@ def _doctor_runtime_config_path(state: CLIState) -> Path | None:
         return state.config_path
     user_path = default_user_config_path()
     return user_path if user_path.exists() or user_path.is_symlink() else None
+
+
+def _requires_stopped_control_plane(report: DoctorReport) -> bool:
+    return any(
+        check.id in {"config_migrations", "database_migrations", "pack_integrity"}
+        and check.fixable
+        for check in report.checks
+    )
+
+
+def _control_plane_reachable(client: APIClient) -> bool:
+    try:
+        client.health()
+    except httpx.TransportError:
+        return False
+    except Exception:
+        return True
+    return True
 
 
 @app.command()
