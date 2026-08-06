@@ -28,8 +28,8 @@
 
 ## 2. Current wave
 
-- Stage：`S1 — 生产 Capability Plane`
-- Current task：`CAP-101 — 原生代码工具`
+- Stage：`S3 — Official Packs 与开箱即用`
+- Current task：`PACK-301 — 基础代码审计 Packs`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -44,10 +44,11 @@
 - Completed predecessor：COG-204，implementation commits `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
-- Product behavior：CAP-101 已交付 owner-bound 代码读取、Git 只读导航、静态语义降级、Patch/Revert Receipt，以及 General Run 的显式批准隔离 Worktree。`create_worktree` 只对 Primary Agent 可见，目标路径由 Run 摘要和安全名称确定，起点仅允许 `HEAD` 或完整本地提交哈希；创建结果为 detached worktree，不执行项目 Hook、插件、构建、测试或安装脚本。Code Audit 与 Subagent 继续拒绝该写能力，Patch/Revert 同时禁止修改任意层级 `.git` 管理状态。
-- Current implementation commits：CAP-101 `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`。
-- Verification：全仓 `5188 passed, 5 skipped, 17 warnings`；全仓 Ruff、Git/Model/Tool/Policy Scoped mypy、Worktree 创建/幂等/回滚/owner 隔离、Patch `.git` 防线、显式批准、Primary/Subagent 可见性和 Runtime Transcript 验证通过。
-- Next delivery slice：接入不执行项目配置、插件、Hook、构建、测试或安装脚本的受控 LSP；CAP-101 完成后才能开始依赖它的 PACK-301。
+- Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
+- Product behavior：CAP-101 已完成 owner-bound Workspace/Audit Snapshot 读取、Git 只读导航、四类语义工具、显式静态降级、Patch/Revert Receipt、批准型隔离 Worktree 与受控 LSP Gateway。RiftX 不启动目标项目 Language Server，而是仅把有界相对路径和源码内容发送给同账号、固定身份/版本、强令牌认证的 Unix Socket Gateway；任何不可用、失信、超限、不支持或越界结果都会整份丢弃，并在同一输入上明确降级为 `builtin_static`。
+- Current implementation commits：PACK-301 尚无。
+- Verification：全仓 `5205 passed, 5 skipped, 17 warnings`；全仓 Ruff、Code/LSP/Config/Worker/Tool Scoped mypy、受控 LSP 四类语义操作、Code Audit Snapshot owner binding、Gateway 身份/摘要/契约、Unix Socket 权限、越界结果丢弃、失败恢复、静态降级、Worktree、Patch/Revert 和 Runtime 装配验证通过。
+- Next delivery slice：交付 `code-audit-foundation`、`repository-mapping`、`entrypoint-discovery` 等首批 Official Code Audit Packs，并复用现有 Pack Catalog、Progressive Skill、Technique、Eval Case、Evidence Contract 与 Session pinning。
 
 ## 3. 研究与实现基线
 
@@ -107,7 +108,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | Stage | Status | Exit condition |
 | --- | --- | --- |
 | S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
-| S1 生产 Capability Plane | in_progress | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
+| S1 生产 Capability Plane | completed | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
 | S2 认知运行时 | completed | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | in_progress | Onboard/Doctor 可完成基础渗透和代码审计流程 |
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
@@ -124,7 +125,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | SEC-001 | SEC-000 | completed | `53161141` |
 | CAP-001 | SEC-000 | completed | `0fd20fda`, `84481149` |
 | CAP-100 | CAP-001 | completed | `bb1b3b03` |
-| CAP-101 | CAP-001 | in_progress | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e`, `8ae9161d` |
+| CAP-101 | CAP-001 | completed | `73ba9900`, `80276a08`, `a83875d1`, `c6de9413`, `b7e4b969`, `cbc2a2e5`, `546f1466`, `08d746ec`, `203f6c1e`, `8ae9161d`, `abed90b4` |
 | CAP-102 | CAP-001 | completed | `69d54ab7`, `e8c047c6`, `c9a6394a`, `27fec108`, `e7fc3461` |
 | CAP-103 | CAP-001 | completed | `2c784d8d`, `94d71f3b`, `483ddb81` |
 | CAP-104 | CAP-100, CAP-103 | completed | `7fc96d33`, `ab9c2f3c`, `fe5e9a86`, `62627843` |
@@ -135,7 +136,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-204 | COG-203 | completed | `16a1d800`, `a03654e0`, `21e28b3e`, `de863606`, `7a70ef6f`, `465ea1f0`, `65f12b02` |
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
-| PACK-301 | CAP-101, CAP-104, COG-205 | pending | — |
+| PACK-301 | CAP-101, CAP-104, COG-205 | in_progress | — |
 | PACK-302 | PACK-300, PACK-301 | pending | — |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
@@ -399,7 +400,20 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5188 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - 全仓 Ruff、`git diff --check` 与 staged `git diff --check`：passed。
 - Tenth delivery implementation commit：`8ae9161d`。
-- Later slice：受控 LSP。
+- Eleventh delivery slice：
+  - `symbol_search`、`find_references`、`call_hierarchy` 和 `diagnostics` 已接入可选的受控 LSP Gateway；四个工具先从既有 owner-bound Workspace 或不可变 Audit Snapshot 构造一次一致的有界源码 Bundle，LSP 失败时使用同一 Bundle 执行 `builtin_static`，不混用两类结果；
+  - Gateway 请求只包含来源类型、Snapshot Digest、相对路径、语言、源码内容、内容 Digest、查询参数和硬上限，不包含 Run ID、Audit ID、Workspace Root 或本地绝对源码路径；Code Audit 继续通过 `Run → AuditScan → SourceSnapshot → SnapshotStore` owner binding，绝不读取可变输出目录；
+  - RiftX 不直接启动 `clangd`、`rust-analyzer` 或其他目标项目 Language Server。生产 Worker 只连接 Operator 管理的 Unix Socket Gateway，并固定 Backend ID/version；Socket 与父目录必须归 Worker 账号所有且不可被组/其他用户写入，Bearer Token 必须来自进程环境且至少 32 字节；
+  - Gateway 必须返回固定 `riftx.controlled-lsp-contract/v1`：content-only、provided-files-only、项目配置关闭、插件/命令关闭、构建/安装/测试/Hook 关闭、网络关闭；请求摘要、Backend 身份/version 或契约不匹配时结果失败关闭；
+  - 请求体、响应体、源文件、总源码字节、文件数和返回结果均有硬上限；Gateway 结果中的路径和行列必须落在本次提供的源码内，来源、统计、Backend 元数据和输入 Digest 由 RiftX 覆盖，Backend 不能伪造；
+  - 结果明确区分 `backend=controlled_lsp` 与 `backend=builtin_static`，并记录 Backend ID/version、`analysis_input_digest` 和 `fallback_reason`；不可用、失信、不支持、无受支持文件或非法响应不会把静态结果冒充 LSP 精度，下一次调用可独立恢复；
+  - 生产配置新增默认关闭的 `code.lsp`，支持 Unix Socket、固定 Backend ID/version、Token 环境引用和请求超时；Temporal Worker 负责创建、注入并在正常关闭或装配失败时释放 Gateway Client。
+- Eleventh delivery checks：
+  - 受控 LSP、Code Workspace、Runtime Config、Temporal Worker、Control Tool、Tool Discovery/Policy 与 Agent visibility 定向/关联回归：`143 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/code/lsp.py src/riftx/code/models.py src/riftx/code/workspace.py src/riftx/config.py src/riftx/temporal/worker_runtime.py src/riftx/tools/discovery.py`：`Success: no issues found in 6 source files`；
+  - `conda run --no-capture-output -n agent pytest -q`：`5205 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - 全仓 Ruff、`git diff --check` 与 staged `git diff --check`：passed。
+- Eleventh delivery implementation commit：`abed90b4`。
 
 ### CAP-102：Browser/Web/Traffic Tool 闭环
 
