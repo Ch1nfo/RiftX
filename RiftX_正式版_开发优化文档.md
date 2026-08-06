@@ -1,194 +1,189 @@
 # RiftX 正式版开发优化文档
 
-> 文档状态：权威优化、开发与收尾指南
+> 文档状态：正式版开发与项目收敛的权威指南
 >
-> 面向对象：Codex 与 RiftX 核心开发者
+> 面向对象：Codex、RiftX 核心开发者与专业渗透测试用户
 >
-> 校准日期：2026-08-06（Asia/Shanghai）
+> 校准日期：2026-08-07（Asia/Shanghai）
 >
 > 当前实现分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前进度基线：`86aaecdf`
+> 当前进度基线：`55a7615a`；PEN-500 已完成实现基线：`86aaecdf`
 >
-> 实际进度与提交证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
+> 实施证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
-> 总体安全边界：[ADR-0012](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
+> 安全边界：[ADR-0012](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
 >
-> Pentest workload 决策：[ADR-0013](docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md)
+> Pentest 决策：[ADR-0013](docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md)
 
 ---
 
-## 1. 最终产品决策
+## 1. 唯一产品目标
 
-RiftX 正式版只聚焦一个产品结果：
+RiftX 正式版只兑现一个结果：
 
-> **成为专业人士手中真正好用、可持续成长的授权渗透测试 Agent。**
+> **成为专业人士手中真正好用、可以持续养成的授权渗透测试 Agent。**
 
-它需要同时具备两个属性：
+正式版必须同时满足两个属性：
 
-1. **开箱即用**：完成 Onboard 后，用户可以在隔离授权目标上启动、观察、恢复和停止一条基础 Pentest 工作流。
-2. **高能力上限**：专业用户可以持续添加 Tool、Skill、Technique、Playbook 和目标知识，并通过 Replay、人工批准、版本化与回滚逐步形成个人方法论。
+1. **开箱即用**：新用户完成 Onboard 和 Doctor 后，可以在隔离、授权、明确 Scope 的目标上启动、观察、恢复、停止一条基础 Pentest 工作流，并得到可审查报告。
+2. **上限足够高**：专业用户可以持续添加 Tool、Skill、Technique 和 Playbook；系统能保留有效经验，通过 Replay、人工批准、版本化、禁用和回滚逐步形成个人方法论。
 
-“超过 Codex、Claude Code、OpenCode”是长期追求，不是正式版的量化发布条件。RiftX 的长期优势来自可持久化的专业状态、证据链、安全边界、工具组合和操作者经验，而不是依赖某个模型短期领先。
+“超过 Codex、Claude Code、OpenCode”是长期追求，不是 V1 的量化发布条件。RiftX 的差异化不来自更长 Prompt 或更多工具，而来自：
 
-正式版不再同时建设通用 Agent 平台、代码审计完全体、Marketplace、多租户、远程集群和大规模排行榜。
+- 持久的专业任务状态；
+- 授权、Scope、Approval 与 Stop Proof；
+- Evidence、Negative Result、Finding 与 Attack Chain；
+- 可组合、可追溯、可回滚的专业能力；
+- 对操作者经验的持续沉淀。
+
+### 1.1 V1 明确不做
+
+- 不建设通用 Agent 平台；
+- 不继续扩建代码审计完全体；
+- 不建设 Marketplace、在线 Registry、远程集群和多租户；
+- 不建设默认多 Agent 团队；
+- 不为了未来需求新建第二套 Run、Evidence、Graph、Skill、Pack 或 Attack Surface 数据库；
+- 不以排行榜或单一分数证明“超过通用 Agent”；
+- 不在 Pentest CLI 和真实 E2E 完成前继续扩 UI。
 
 ---
 
-## 2. 当前真实状态
+## 2. 当前项目的真实状态
 
-### 2.1 已经完成
+### 2.1 已经完成的底座
 
-当前代码已经具备较完整的平台底座：
+当前代码已经具备大量可复用生产能力：
 
-- Durable Run、Temporal Worker、Runner、Execution、Terminal 与 Stop Proof；
-- Scope、Approval、Credential Reference、Redaction 与 RunKind Effect Policy；
+- Durable Run、Temporal Worker、Runner、Execution、Terminal、取消与 Stop Proof；
+- Engagement、Scope、Approval、Credential Reference、Redaction 与 fail-closed Effect Policy；
 - Browser、Target HTTP、HTTP Traffic、Web Research、MCP 与原生 Code Tool；
 - Task Graph、Evidence Ledger、Reasoning Graph、Observer 与 Closure；
 - Progressive Skill、Capability Version、Digest、Provenance、Pack 与 Selection；
+- Onboard、Doctor、SQLite migration、Backup/Restore 与 Pack repair；
 - Official Pentest/Code Audit Packs；
-- Onboard、Doctor、配置迁移、SQLite migration、Backup/Restore 与 Pack repair；
-- 本地离线 Pentest Demo 和真实内置 Detector Code Audit Demo。
+- 本地脱敏 Pentest Demo 与真实内置 Detector Code Audit Demo。
 
-`PACK-302` 已完成。最近全仓验证证据为：
+最近完整验证证据：
 
 ```text
-5275 passed, 5 skipped, 17 warnings
+5284 passed, 5 skipped, 17 warnings
 Full Ruff passed
-Database Maintenance/Doctor 目标回归 27 passed
+PEN-500 scoped mypy passed
+Alembic single head: 6f2a9c4d8e17
 ```
 
-这些结果证明底座稳定，不代表真实 Pentest 产品已经完成。
+这些结果证明底座较稳定，不证明真实渗透测试产品已经完成。
 
-### 2.2 正在进行
+### 2.2 PEN-500 当前进度
 
-当前唯一主线是：
+已经完成：
+
+- `RunKind.PENTEST`；
+- `PentestAdmission`、有界预算、禁止行为和硬停止条件；
+- Pentest Run 的具体正向网络 Scope 与网络 Entry Point 约束；
+- ORM、Mapper、Repository、API 只读投影；
+- `runs.pentest_admission_json` 与数据库一致性约束；
+- migration `6f2a9c4d8e17`；
+- 有 Pentest 权威数据时拒绝有损 downgrade；
+- 未审计 Pentest 副作用继续失败关闭。
+
+尚未完成：
+
+- Pentest Workflow signal identity；
+- Pentest Runner effect binding 和恢复对账；
+- General/Pentest 共享交互路径的逐项 Effect allowlist；
+- 专用 Pentest Application/API 创建入口；
+- `riftx pentest start/status/resume/stop/report`；
+- Attack Surface 投影；
+- 隔离授权目标上的真实 E2E；
+- 状态化 Web、最小验证、Negative Result、Attack Chain 与专业报告；
+- Operator Capability 的真实成长闭环。
+
+### 2.3 复杂度快照
+
+截至本次校准，仓库约有：
 
 ```text
-Stage: P1 — 真实 Pentest Run
-Task: PEN-500 — Pentest Admission 与 Attack Surface
-Status: in_progress
+src/riftx Python: 175054 行
+tests Python: 144875 行
+src/riftx 文件: 594
+tests 文件: 310
+Official Packs: 22
+Alembic migrations: 50
+引用 general-only 交互 guard 的生产模块: 28
 ```
 
-ADR-0013 已完成并明确决定：
+这个比例说明当前主要风险不是“功能太少”，而是“平台底座、兼容面和测试面已经很大，但第一条真实 Pentest 热路径还没有贯通”。
 
-- 新增持久 `RunKind.PENTEST`；
-- Pentest 使用专用 Application/API/CLI 创建入口；
-- Admission 必须持久化预算、禁止行为与硬停止条件；
-- Objective、Scope、Entry Point、Approval 继续复用现有 Run 字段；
-- Workflow、Runner、Effect Policy 必须显式识别 Pentest；
-- Attack Surface 是现有 Run、Artifact/Evidence、Reasoning 与 Traffic 的投影，不建立第二套事实数据库。
+### 2.4 当前结论
 
-首个实现切片也已完成：
-
-- `RunKind.PENTEST`、`PentestAdmission` 和有界预算已进入 Domain；
-- Pentest Run 必须具有具体正向网络 Scope、网络 Entry Point 和 Admission；
-- 非 Pentest Run 不得携带 Pentest Admission；
-- ORM、Mapper、Repository 与通用只读 API 已支持 Pentest 往返；
-- Alembic head 已更新为 `6f2a9c4d8e17`；
-- 未审计的 Pentest Web/MCP/Workflow/Runner 副作用仍保持失败关闭。
-
-### 2.3 尚未完成的核心产品结果
-
-当前还没有生产级的：
-
-- `riftx pentest start/status/resume/stop`；
-- 持久 Pentest Run 和不可绕过的 Admission；
-- 真实授权目标上的 Pentest E2E；
-- 状态化 Web 身份/授权验证闭环；
-- 从 Hypothesis 到 Evidence、Negative Result、Finding 的最小验证闭环；
-- Attack Chain、专业报告与 Pentest Stop Proof；
-- 从真实运行复盘到 Operator Capability 生效、禁用和回滚的完整成长闭环。
-
-因此当前判断是：
-
-> **RiftX 已经有强底座，但还不是一个完成的渗透测试 Agent。后续不应继续横向扩平台，必须把已有能力压到一条真实 Pentest 热路径上。**
+> **RiftX 已经存在阶段性过度开发。现在不需要重写，也不应立即大规模删代码；正确动作是冻结横向扩张、贯通真实 Pentest 热路径，再依据生产消费者证据收缩默认产品面和删除死代码。**
 
 ---
 
-## 3. 过度开发判断与处理原则
+## 3. 优化总原则
 
-### 3.1 已存在的过度开发
+### 3.1 先交付纵向结果
 
-相对当前目标，过度主要来自：
+后续任何改动必须直接推进以下链路之一：
 
-1. 代码审计、通用 Agent、Pack 生态和企业能力曾被同时纳入首发；
-2. Domain、Repository、Graph、API 和恢复设施先于真实 Pentest 闭环大量建设；
-3. 小切片过于频繁运行全仓测试和更新长账本，降低了产品交付速度；
-4. 默认 CLI/API 暴露面大于 Pentest 用户实际需要理解的范围。
+```text
+Admission
+→ Workflow / Runner
+→ Recon / Enumeration
+→ Attack Surface
+→ Hypothesis
+→ Minimal Verification
+→ Evidence / Negative Result
+→ Finding / Attack Chain
+→ Report / Stop Proof
+→ Review / Replay / Capability Promotion
+```
 
-### 3.2 不应删除的部分
+只增加 Model、Repository、Schema、Graph 节点、Adapter、空 CLI 或设计文档，不算交付结果。
 
-以下内容即使复杂，也属于授权安全测试的必要边界：
+### 3.2 复用现有事实系统
 
-- Scope、Approval、Credential、Redaction；
-- RunKind Effect Policy 与 fail-closed 分支；
+Pentest 必须复用：
+
+- `Run`、`Engagement`、`Scope`、Approval；
+- Temporal Workflow 与 Runner；
+- Browser、Target HTTP、Traffic、Execution、Artifact；
+- Task、Evidence、Reasoning、Observer、Closure；
+- Capability、Pack、Selection、Progressive Skill；
+- migration、Backup/Restore、Doctor。
+
+没有真实消费者证明前，不新增平行系统。
+
+### 3.3 安全能力不能因“简化”被删除
+
+以下内容不是过度设计：
+
+- Scope、授权引用、Approval、Credential、Redaction；
+- RunKind Effect Policy 与未知类型 fail-closed；
 - Execution、Artifact、Evidence、Negative Result；
 - Runner ownership、恢复、取消与 Stop Proof；
-- migration、Backup/Restore 与数据兼容；
-- Capability Version、Digest、Provenance、人工批准和回滚。
+- migration、Backup/Restore 与旧数据兼容；
+- Capability Version、Digest、Provenance、人工批准与回滚。
 
-### 3.3 当前处理方式
+### 3.4 YAGNI 门
 
-现在不做大规模删代码，顺序固定为：
+新增抽象、表、服务或依赖前必须回答：
 
-```text
-冻结非主线功能
-→ 完成真实 Pentest 热路径
-→ 记录生产调用与默认加载范围
-→ 收缩默认产品面
-→ 隔离可选模块
-→ 删除无消费者代码
-→ 全量迁移和回归验证
-```
+1. 哪个当前 Pentest 用户流程无法使用现有组件完成？
+2. 第一个生产消费者是谁？
+3. 不实现会造成什么当前用户失败？
+4. 能否使用标准库、现有 Service、Repository、Tool 或投影？
+5. 是否扩大权限、migration、恢复和测试面积？
 
-在完成 Pentest 报告闭环前，只允许两种清理：
-
-- 当前改动触及模块中的局部重复和错误命名；
-- 能证明没有兼容、安全或生产消费者的低风险死代码。
+不能给出具体答案时，不实现。
 
 ---
 
-## 4. 正式版范围
+## 4. V1 产品完成定义
 
-### 4.1 V1 必须交付
-
-- 新用户可通过 `riftx onboard` 和 `riftx doctor` 完成可用环境初始化；
-- 用户可创建具有授权引用、具体 Scope、Entry Point、预算、Approval、禁止行为和停止条件的 Pentest Run；
-- Agent 可执行基础被动侦察、服务枚举、状态化 Web 测试和最小漏洞验证；
-- Browser、Target HTTP、Runner Tool 和 Scanner 产生统一 Execution、Artifact 与 Evidence；
-- Agent 可维护 Attack Surface、Hypothesis、Attempt、Negative Result、Finding 与 Attack Chain；
-- 失败、取消、重启与人工接管后可以恢复或证明已经停止；
-- 至少两个真实隔离场景形成可审查报告；
-- 专业用户可以添加 Operator Tool/Skill/Technique；
-- 至少一个 Operator Capability 完成 Review、Replay、批准、生效、禁用和回滚。
-
-### 4.2 V1 不阻塞项
-
-- CVE/PoC 自动研究；
-- 更多 Scanner、协议与商业工具 Adapter；
-- 多 Agent 并行探索；
-- 自动生成复杂验证脚本；
-- 高级 Attack Graph UI；
-- Organization/Engagement Profile 完整导入导出；
-- 远程 Runner 能力同步；
-- Code Audit 新功能。
-
-### 4.3 Post-V1
-
-- Pack Marketplace 与在线 install/update/publish；
-- 第三方 Pack 签名、撤销和供应链服务；
-- 多租户控制面；
-- 大规模远程 Runner 集群；
-- 默认深层 Agent Team；
-- 代码审计完全体；
-- 对标通用 Agent 的排行榜。
-
----
-
-## 5. 最小用户闭环
-
-### 5.1 开箱即用路径
+### 4.1 最小用户入口
 
 ```text
 riftx onboard
@@ -196,8 +191,8 @@ riftx doctor
 riftx pentest start
 riftx pentest status
 riftx pentest resume
-riftx pentest report
 riftx pentest stop
+riftx pentest report
 ```
 
 最小启动示例：
@@ -210,202 +205,163 @@ riftx pentest start \
   --approval balanced
 ```
 
-启动前必须显示并持久化：
+`start` 必须显示并持久化：
 
 - Engagement 与 `authorization_reference`；
-- 允许的 Domain/IP/CIDR/URL prefix 和 exclusions；
-- Entry Point、Objective 与 Success Criteria；
-- 时间、Model/Token、Tool、并发和目标交互预算；
-- Approval Mode、禁止行为和硬停止条件；
-- 最终选中的 Model、Tool、Skill、Technique 和 Pack 版本。
+- 允许的 Domain/IP/CIDR/URL prefix 与 exclusions；
+- Entry Point、Objective、Success Criteria；
+- 时间、Model/Token、Tool、并发、目标交互预算；
+- Approval Mode、禁止行为、硬停止条件；
+- 最终 Model、Tool、Skill、Technique、Pack 版本与 digest。
 
-### 5.2 专业执行闭环
+### 4.2 开箱即用标准
 
-```text
-Admission
-→ Recon / Enumeration
-→ Attack Surface
-→ Hypothesis
-→ Minimal Verification Plan
-→ Tool Execution
-→ Evidence / Negative Result
-→ Finding
-→ Variant / Chain Analysis
-→ Report
-→ Stop Proof / Review
-```
+- Onboard 后必须存在可解析的模型配置；模型 ID、Provider 或 Profile 不匹配时，Doctor 给出准确原因和可执行修复建议，不能只返回 `Configured model not found`；
+- 没有可选 Scanner 时允许降级，但必须说明缺失能力，不能伪装已执行；
+- 默认帮助和默认 UI 优先展示 Pentest 主路径，不要求用户理解 Code Audit、Marketplace 或远程控制面；
+- Scope、授权、预算或停止条件不完整时拒绝启动；
+- 失败、取消、重启和人工接管后状态可恢复或可证明已经停止。
 
-每一步必须可持久化、可恢复、可审查，不能只存在于聊天历史。
+### 4.3 专业结果标准
 
-### 5.3 V1 真实场景
-
-首批只做三类，并至少完成其中两类：
-
-1. **网络服务**：解析、端口/服务发现、版本线索、可达性与最小验证；
-2. **Web 身份**：登录状态、角色差异、对象访问、会话和授权边界；
-3. **请求差异**：参数、Header、Method、身份或状态变化引起的响应差异。
-
-所有场景必须运行在可复位、隔离、明确授权的目标中，不能以固定 transcript 代替生产 E2E。
+- 至少两个可复位、隔离、明确授权的真实场景走完整链路；
+- 至少覆盖一个网络服务场景和一个状态化 Web 身份/授权场景；
+- 工具信号、搜索结果和模型猜测不能直接成为 Confirmed Finding；
+- 每个 Finding 可追溯到 Execution、Artifact、Evidence 和验证判据；
+- Negative Result、覆盖限制、阻断点和未完成项进入报告；
+- 至少一个用户添加的 Operator Capability 完成 Review、Replay、批准、生效、禁用和回滚。
 
 ---
 
-## 6. 架构收敛规则
-
-### 6.1 只复用一套核心事实
-
-Pentest 必须复用：
-
-- `Run`、`Engagement`、`Scope` 与 Approval；
-- Temporal Workflow 与 Runner；
-- Browser、Target HTTP、Traffic、Execution 与 Artifact；
-- Task、Evidence、Reasoning、Observer 与 Closure；
-- Capability、Pack、Selection 与 Progressive Skill；
-- SQLite migration、Backup/Restore 与 Doctor。
-
-不得为 Pentest 新建第二套 Run、Execution、Artifact、Evidence、Skill、Pack、Graph 或健康状态系统。
-
-### 6.2 Pentest 身份必须贯穿边界
-
-Pentest 固定使用：
+## 5. 唯一开发关键路径
 
 ```text
-run_kind: pentest
-owner_kind: pentest_run
-workflow_protocol_version: riftx.pentest-run-workflow/v1
-workflow_id: riftx-pentest-<run_id>
-```
-
-数据库约束、Domain validator、Workflow signal、Runner binding、Artifact ownership、API projection 和 Effect Policy 都必须显式支持该身份。未知 RunKind 不得 fallback 为 General。
-
-### 6.3 Attack Surface 只做投影
-
-PEN-500 初始投影只从 Run Scope 与 Entry Point 生成 declared 节点：
-
-- `asset`；
-- `service`；
-- `endpoint`；
-- `parameter`。
-
-节点记录规范化值、`declared/observed/verified` 来源等级、Scope decision 和来源对象。后续 observed/verified 节点只能来自现有 Artifact/Evidence、Reasoning 或 Traffic，不新建主事实表。
-
-### 6.4 Skill 只表达可复用方法
-
-适合成为 Skill/Technique 的内容：
-
-- 可重复的验证步骤；
-- 特定框架、设备或协议的方法；
-- 工具参数与输出解释纪律；
-- 常见失败后的替代路径；
-- 证据与报告要求。
-
-不应成为 Skill 的内容：目标秘密、凭据、未经验证的猜测、一次偶然成功、大段原始聊天、确定性解析逻辑，以及任何扩大 Scope 或降低 Approval 的提示文本。
-
----
-
-## 7. 唯一关键路径
-
-```text
-O0 计划迁移（completed）
-→ O1 Onboard/Doctor（completed）
-→ P1 PEN-500 真实 Pentest Run（in_progress）
-→ P2 PEN-501/502 状态化验证闭环
-→ P3 PEN-504 Report + Stop Proof
-→ P4 LEARN-600~604 Operator 能力成长
-→ R1 EVAL-701~703 Pentest 发布门
-→ O2 默认产品面收缩与安全删减
+P0 贯通 Pentest 身份与控制面（当前）
+→ P1 交付可运行 Pentest CLI 与 Admission
+→ P2 完成一个真实网络服务闭环
+→ P3 完成一个状态化 Web 验证闭环
+→ P4 完成报告、Stop Proof 与 Operator 成长闭环
+→ P5 收缩默认产品面并删除已证明无消费者代码
+→ R1 发布检查
 → V1 Release
 ```
 
-执行约束：
+执行规则：
 
-- P1 完成前不启动 PEN-501 之后的生产实现；
-- P3 完成前不开展目录级删除或大规模重构；
-- P4 完成前不建设 Marketplace；
-- R1 完成前不宣称正式版完成；
-- AUD、ECO 和与 Pentest 无关的 UI/API 只修复安全、兼容和阻断问题。
+- P1 前不扩 Planner、Attack Graph UI、Scanner 数量或 Pack 数量；
+- P3 前不新增 Agent 角色；
+- P4 前不建设 Marketplace、组织 Profile 或远程同步；
+- P5 前不做目录级删除或大规模重构；
+- R1 前不宣称正式版完成。
 
 ---
 
-## 8. 当前任务 PEN-500 施工方案
+## 6. P0：完成 PEN-500 安全边界
 
-### 8.1 已完成切片
+### 6.1 Workflow signal identity
 
-- ADR-0013 已接受；
-- 已决定新增 `RunKind.PENTEST`；
-- 已决定 Pentest admission 的持久边界；
-- 已决定独立 Workflow identity 与 Runner ownership；
-- 已决定 Attack Surface 采用可重建投影。
-- 已新增持久 `RunKind.PENTEST`；
-- 已新增结构化 Admission、预算、禁止行为与停止条件；
-- 已完成 ORM、Mapper、Repository、API 只读投影和 migration；
-- 已完成 upgrade/downgrade、跨级降级保护与全仓回归。
-
-### 8.2 已完成：切片 A — Domain 与持久化
-
-最小实现：
-
-- 在 `src/riftx/domain/enums.py` 新增 `RunKind.PENTEST`；
-- 在 `src/riftx/domain/run.py` 增加结构化 `PentestAdmission`；
-- Admission 只保存预算、禁止行为和停止条件，不复制 Objective、Scope、Entry Point；
-- Pentest Run 必须携带 Admission，非 Pentest Run 不得携带；
-- Pentest 必须存在具体正向网络 Scope 和至少一个网络 Entry Point；
-- 在 `runs` 增加 nullable JSON 字段并建立 kind/admission 一致性约束；
-- mapper、API schema 与 repository 完整往返；
-- Alembic 已从 `3c6e8a1f2b40` 迁移到新 head `6f2a9c4d8e17`；
-- downgrade 在存在 Pentest 权威数据时拒绝，不改写为 General。
-
-建议最小预算字段：
+新增并精确绑定：
 
 ```text
-max_duration_seconds
-max_model_calls
-max_tokens
-max_tool_calls
-max_target_interactions
-max_concurrent_target_interactions
+owner_kind: pentest_run
+run_kind: pentest
+workflow_protocol_version: riftx.pentest-run-workflow/v1
+owner_identity: pentest_run:<run_id>
+workflow_id: riftx-pentest-<run_id>
 ```
 
-Domain 只验证结构不变量。Entry Point 与 Scope 的精确匹配由 Application Service 调用现有 `ScopeGuard` 完成，避免 `domain.run` 与 `riftx.scope` 循环依赖。
+实现要求：
 
-### 8.3 当前下一步：切片 B — 安全边界贯通
+- 在 Domain 增加 Pentest protocol、owner kind 和 factory；
+- General、Pentest、Code Audit 使用三个显式 validator 分支；
+- General 不得使用 `riftx-code-audit-` 或 `riftx-pentest-` 保留前缀；
+- Pentest 不得 fallback 为 `general_run` owner；
+- Transport 可复用 General 的暂停、恢复、取消、批准、拒绝和完成信号发送逻辑，但持久身份不能复用；
+- Repository 创建 Approval decision 与 Execution terminal signal 时必须按 RunKind 选择 factory；
+- 数据库约束精确绑定 owner kind、run kind、protocol、owner identity 和 workflow ID。
 
-必须显式更新：
+### 6.2 Runner ownership
 
-- `src/riftx/domain/workflow_signal.py`；
-- `src/riftx/domain/runner.py`；
-- `src/riftx/persistence/workflow_signals.py`；
-- `src/riftx/application/run_kind_effects.py`；
-- Workflow transport、router、worker runtime 与 reconciliation；
-- Artifact、Memory、Execution、Terminal、Browser、Target HTTP、Finding 与 Report 的 RunKind guard。
-
-将只接受 General 的共享交互 helper 改成语义明确的 General+Pentest helper，例如 `require_interactive_run_operation`。不要让名称为 `require_general_run_operation` 的函数暗中接受 Pentest。
-
-Effect Policy 至少区分：
+`RunnerEffectBinding` 使用三个显式分支：
 
 ```text
+GENERAL    -> audit_id/plan_digest 必须为空
+PENTEST    -> audit_id/plan_digest 必须为空
+CODE_AUDIT -> audit_id/plan_digest 必须存在
+unknown    -> fail closed
+```
+
+实现要求：
+
+- 数据库 `run_kind` 允许 `general/pentest/code_audit`；
+- owner shape 允许 General/Pentest 无 Audit 身份，Code Audit 必须有完整计划身份；
+- Runner daemon 显式允许 General 与 Pentest，继续拒绝 Code Audit 走通用交互 Runner；
+- `_general_runs_for_node` 改为语义准确的 interactive-run 查询，覆盖 Pentest stop reconciliation；
+- Pentest binding 不得被序列化或恢复为 General。
+
+### 6.3 Effect Policy 与交互 guard
+
+使用清晰集合，不再用含义模糊的 `_ALL_RUN_KINDS` 表达权限：
+
+```text
+_READABLE_RUNS    = {general, pentest, code_audit}
 _INTERACTIVE_RUNS = {general, pentest}
-_PENTEST_ONLY = {pentest}
-_AUDIT_ONLY = {code_audit}
+_PENTEST_ONLY     = {pentest}
+_AUDIT_ONLY       = {code_audit}
 ```
 
-新增 enum 后，逐项审计 `_ALL_RUN_KINDS`；不能因为集合自动包含 Pentest 就默认获得权限。
+逐项审计：
 
-### 8.4 切片 C：专用 Application/API
+- Run lifecycle、Workflow control、Approval；
+- Execution、Artifact、Finding、Report；
+- Memory、Context、Task/Reasoning Graph；
+- Terminal、Browser、Target HTTP、Traffic；
+- Web Research、MCP、Connector、Runner command；
+- Safety stop 与 reconciliation。
 
-实现一个权威 Pentest 创建服务，职责仅包括：
+将 `require_general_run_operation` 重命名为 `require_interactive_run_operation`，只迁移确实允许 General+Pentest 的调用者。Code Audit 专属路径继续拒绝 Pentest。未知 RunKind 永远失败关闭。
 
-- 验证 Engagement 授权引用；
-- 拒绝空 Objective、空正向 Scope 和无效 Entry Point；
-- 对每个 Entry Point 执行 `ScopeGuard`；
-- 验证预算、禁止行为、停止条件和 Approval；
-- 解析 Official Pentest Pack 与 Capability Selection；
-- 原子创建 Pentest Run 并启动独立 workflow identity。
+### 6.4 Migration
 
-不要允许普通 `POST /runs` 通过任意 `kind=pentest` 绕过该服务。
+从 `6f2a9c4d8e17` 新增一个 migration，同时更新：
 
-### 8.5 切片 D：CLI 与 Attack Surface
+- `workflow_signal_intents`；
+- `runner_effect_bindings`。
 
-实现：
+Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，并延续现有跨多级 downgrade guard：任何权威数据风险都必须在 DDL 前发现。
+
+### 6.5 P0 完成门
+
+- Domain/ORM/Mapper/Repository round-trip；
+- Workflow signal、Runner binding、reconciliation 目标测试；
+- migration upgrade/downgrade、SQLite 与 PostgreSQL offline compile；
+- Effect inventory 完整性测试；
+- 未列入 allowlist 的 Pentest 副作用失败关闭；
+- 受影响回归、Ruff、scoped mypy、`git diff --check`；
+- 该边界涉及 migration、Runner 和安全策略，完成时运行全仓 Python gate。
+
+---
+
+## 7. P1：交付真实 Pentest Run
+
+### 7.1 专用 Application Service
+
+只实现一个权威创建入口，职责包括：
+
+- 验证 Engagement 存在非空授权引用；
+- 验证 Objective、Success Criteria；
+- 拒绝空正向 Scope；
+- 验证 CIDR/IP/Domain/URL Entry Point；
+- 对每个 Entry Point 调用现有 `ScopeGuard`；
+- 验证预算、禁止行为、停止条件与 Approval；
+- 解析并锁定 Model、Tool、Skill、Technique、Pack Selection；
+- 原子创建 Pentest Run，并以 Pentest workflow identity 启动。
+
+普通 `POST /runs` 不得通过任意 `kind=pentest` 绕过该服务。
+
+### 7.2 API 与 CLI
+
+实现专用创建 API 和以下 CLI：
 
 ```text
 riftx pentest start
@@ -414,107 +370,177 @@ riftx pentest resume
 riftx pentest stop
 ```
 
-CLI 只调用 Application/API，不复制 Admission 逻辑。`status` 至少展示 Run、Admission、Selection、预算状态、Stop 状态和 declared Attack Surface。
+CLI 只做输入、展示和调用，不复制 Admission、Scope 或 Selection 业务规则。
 
-PEN-500 不创建完整 Attack Surface 数据库，只实现从 Run 可确定性重建的初始投影。
+`status` 至少展示：Run、Admission、Selection、预算使用、Workflow/Runner 状态、Stop 状态和 declared Attack Surface。
 
-### 8.6 切片 E：真实 E2E 与完成条件
+### 7.3 Attack Surface 最小投影
 
-在隔离授权目标中证明：
+P1 只实现可从 Run 确定性重建的 declared 节点：
 
-- 无授权引用、无具体 Scope、无 Entry Point 或越界 Entry Point 时拒绝创建；
-- Pentest Run 可以启动、查询、停止和跨进程重读；
-- Workflow、Runner binding 与 Effect Policy 保持 `pentest` 身份；
+- `asset`；
+- `service`；
+- `endpoint`；
+- `parameter`。
+
+节点记录规范化值、`declared/observed/verified` 来源等级、Scope decision 和来源对象。Observed/verified 节点必须先进入现有 Artifact/Evidence/Reasoning/Traffic 权威路径，不新建事实表。
+
+### 7.4 P1 E2E
+
+在隔离授权目标证明：
+
+- 无授权引用、无 Scope、无 Entry Point、越界 Entry Point 时拒绝创建；
+- Pentest Run 可启动、查询、恢复、停止和跨进程重读；
+- Workflow、Runner、Artifact、Effect Policy 全程保持 `pentest` 身份；
 - Scope 外请求在 DNS/HTTP/Browser/Runner 副作用前失败关闭；
-- 取消和停止产生可验证状态；
+- 取消和停止产生可验证结果；
 - declared Attack Surface 可从持久 Run 重建。
-
-PEN-500 完成前不得提前建设复杂 Planner、Attack Graph UI 或新事实表。
 
 ---
 
-## 9. 后续阶段施工指南
+## 8. P2/P3：形成真正好用的专业闭环
 
-### 9.1 P2：状态化验证闭环
+### 8.1 网络服务场景
 
-PEN-501 先完成一个 Web 身份/授权靶场：
+只选一个可复位靶场，贯通：
 
-- Browser、Target HTTP 与 Traffic 使用统一 Request/Session identity；
+```text
+解析
+→ 可达性
+→ 端口/服务发现
+→ 版本线索
+→ Hypothesis
+→ 最小验证
+→ Evidence 或 Negative Result
+→ Finding
+```
+
+优先复用已有 Runner Tool、MCP、Pack、Execution 和 Evidence，不为单个工具新建框架。可选工具缺失时明确降级。
+
+### 8.2 状态化 Web 场景
+
+只选一个登录/角色/对象授权靶场，完成：
+
+- Browser、Target HTTP、Traffic 使用统一 Request/Session identity；
 - Cookie/Token 只通过 Secret Reference 使用；
-- 登录、角色、会话和请求状态可恢复；
-- 支持请求/响应 Diff、重放和最小化；
-- 人工接管后生成 Takeover Summary。
+- 登录、角色、会话、请求状态可恢复；
+- 请求/响应 Diff、重放和最小化；
+- 人工接管后生成 Takeover Summary；
+- 身份或状态变化导致的响应差异形成 Evidence。
 
-PEN-502 再把 Hypothesis 转成最小验证计划：
+### 8.3 最小验证规划
 
-- 前置条件、动作、正向/负向判据；
-- 风险、Approval、Evidence capture；
-- Stop condition 与 Retry relation；
-- 失败产生 Negative Result；
-- 扫描信号、搜索结果和模型猜测不得直接成为 Confirmed Finding。
+复用现有 Task/Reasoning Graph，只补齐 Pentest 所需语义：
 
-### 9.2 P3：收口与报告
+- Hypothesis；
+- 前置条件；
+- 最小动作；
+- 正向与负向判据；
+- 风险与 Approval；
+- Evidence capture；
+- Stop condition；
+- Retry/Variant relation。
 
-PEN-504 必须交付：
+失败必须产生 Negative Result，不能只写进聊天。扫描器命中、搜索结果和模型判断只能生成待验证线索。
 
-- Finding 与 Exploit/Proof 分离；
-- Attack Chain 区分已确认段、假设段、前置条件、阻断点和权限变化；
-- Coverage、Negative Result、限制和未完成项进入报告；
-- `pentest report`；
-- 失败、取消、超时、重启和人工停止后的 Stop Proof；
-- 至少两个真实场景从 Admission 走到报告。
+### 8.4 报告与停止
 
-### 9.3 P4：越用越好用
+实现 `riftx pentest report`，至少包含：
 
-最小成长闭环：
+- Engagement、Scope、Admission 与 Selection；
+- Attack Surface 与 Coverage；
+- Finding、证据、影响、复现和修复建议；
+- Negative Result、限制、阻断点、未完成项；
+- Attack Chain 的已确认段、假设段和前置条件；
+- 取消、失败、超时、重启和人工停止后的 Stop Proof。
+
+---
+
+## 9. P4：兑现“越用越好用”
+
+V1 只证明一个真实 Operator Capability 的成长闭环：
 
 ```text
 Sanitized Trajectory
 → Post-run Review
-→ Failure/Success Classification
+→ Success/Failure Classification
 → Capability Candidate
 → Original + Variant + Negative + Regression Replay
 → Human Approve/Reject
-→ Activate/Disable/Rollback
+→ Activate
+→ Disable/Rollback
 ```
 
-约束：
+### 9.1 最小实现边界
 
-- 后台 Review 不得调用目标交互工具；
-- Candidate 不得直接变成 Active；
-- 不引入第二套向量数据库，先用现有数据库与 FTS；
-- V1 只需证明一个 Operator Skill 的真实晋升闭环；
-- 不建设 Organization Marketplace。
+- 复用现有 Capability、Candidate、Version、Digest、Provenance、Pack Lock；
+- Trajectory 只保存脱敏、结构化、可检索事实；
+- 先用现有数据库和 FTS，不引入第二套向量数据库；
+- Review 后台不能调用目标交互工具；
+- Candidate 不能直接变成 Active；
+- Skill/Technique 不能扩大 Scope、降低 Approval 或获得未授权 Tool；
+- 用户可以明确查看、启用、禁用和回滚；
+- 不建设 Organization Profile、在线 Marketplace 或自动发布。
 
-### 9.4 R1：发布门
+### 9.2 可沉淀内容
 
-固定可复位的 Pentest 场景，覆盖：
+适合沉淀：
 
-- 授权 Scope 与越界拒绝；
-- 真实工具路径与 Evidence；
-- 状态恢复、取消和 Stop Proof；
-- Operator Capability 启用前后差异；
-- migration、Backup/Restore 和已知限制。
+- 可重复验证步骤；
+- 特定框架、设备、协议的方法；
+- 工具参数、输出解析和证据要求；
+- 常见失败后的替代路径；
+- 报告与复盘规则。
 
-评测用于 RiftX 自身回归和诊断，不用于证明超过通用 Agent。
+禁止沉淀为能力：
 
-### 9.5 O2：代码优化
-
-只有在真实热路径稳定后才执行：
-
-1. 记录默认 CLI/API/UI/Worker 实际消费者；
-2. 默认隐藏 Advanced、Legacy、Audit 与非 Pentest 命令；
-3. 将 Code Audit Runtime、routes 和 worker 初始化改为按需；
-4. 延迟加载可选 Scanner、Connector 和 Adapter；
-5. 对无生产消费者模块做删除准入审查；
-6. 每次删除提供数据兼容、升级和回滚说明；
-7. 用迁移、目标回归和全仓门禁证明没有削弱安全边界。
-
-删除代码不是目标；降低默认认知、初始化和维护负担才是目标。
+- 目标秘密或凭据；
+- 未验证猜测；
+- 一次偶然成功；
+- 大段原始聊天；
+- Scope 绕过或降低 Approval 的提示；
+- 应由确定性代码完成的解析逻辑。
 
 ---
 
-## 10. 删除与隔离准入门
+## 10. P5：项目级优化与删减
+
+### 10.1 现在立即执行
+
+- 冻结 Code Audit、Marketplace、多租户、远程集群和多 Agent 新功能；
+- 禁止增加 Official Pack 数量，先证明现有 Pack 影响生产执行；
+- 普通改动使用目标测试和受影响回归，不为每个小切片重复跑 5000+ 全仓测试；
+- 只清理当前触及模块中的重复、错误命名、不可达分支；
+- 默认初始化改为按 Pentest 热路径需要加载，避免无关模块 eager startup；
+- 新 UI 功能暂停，CLI/E2E 先完成。
+
+### 10.2 Pentest 热路径稳定后执行
+
+按以下顺序优化：
+
+```text
+记录真实生产消费者
+→ 收缩默认 CLI/API/UI 暴露面
+→ 将 Code Audit 与高级 Connector 改为按需加载
+→ 测量启动、内存、依赖与维护热点
+→ 隔离可选模块
+→ 删除无消费者代码
+→ 迁移与全仓回归
+```
+
+优先审计：
+
+- 默认 CLI 命令面；
+- 默认 API routes；
+- `runtime/control_tools.py` 的 Pentest 实际子集；
+- `application/run_kind_effects.py` 的重复规则和模糊集合；
+- Worker Runtime eager 初始化；
+- Code Audit 专属 Runtime、routes、preflight、snapshot 和 source materialization；
+- 没有生产消费者的 Connector、Adapter、Demo 或 UI 页面。
+
+这些是候选项，不是预先批准的删除清单。
+
+### 10.3 删除准入门
 
 一段生产代码只有同时满足以下条件才允许删除：
 
@@ -522,353 +548,183 @@ Sanitized Trajectory
 2. 没有默认 CLI/API/UI 消费者；
 3. 不是 migration 或旧数据兼容读取所需；
 4. 不是安全、审计、恢复、Evidence 或 Provenance 所需；
-5. 没有仍受支持的用户数据依赖；
-6. 可选功能已有明确禁用、导出或升级路径；
-7. 目标测试、关联回归和 milestone gate 通过。
+5. 没有受支持用户数据依赖；
+6. 可选功能已有禁用、导出或升级路径；
+7. 目标测试、迁移回归和 milestone gate 通过。
 
-优先优化热点：
-
-- 默认 CLI 命令面；
-- 默认 API route 面；
-- `runtime/control_tools.py` 的 Pentest 子集；
-- `application/run_kind_effects.py` 的规则组织与命名；
-- Worker Runtime eager 初始化；
-- Code Audit 专属 Runtime/Repository/API；
-- 无生产消费者的 Connector、Model、UI 或 Adapter。
-
-禁止以“文件大”“测试只引用”或“当前没用到”作为单独删除理由。
+禁止仅以“文件大”“测试只引用”“现在看起来没用”为理由删除。Migration 历史不得删除或重写。
 
 ---
 
-## 11. 开发与验证纪律
+## 11. 验证、提交与施工纪律
 
-### 11.1 每个切片必须形成结果
+### 11.1 分层验证
 
-每个实现切片必须说明：
-
-- 用户输入和可见输出；
-- 生产调用路径；
-- 持久状态；
-- 工具副作用；
-- Scope/Approval 影响；
-- Evidence；
-- 失败、停止与恢复；
-- 显式非目标。
-
-只新增 Model、Repository、API Schema、Graph 节点或空 CLI 命令不算完成。
-
-### 11.2 YAGNI 门
-
-新增抽象前回答：
-
-1. 哪个当前 Pentest 场景无法使用现有组件实现？
-2. 第一个生产消费者是谁？
-3. 不实现会造成什么当前用户失败？
-4. 能否复用标准库、现有 Repository 或 Tool？
-5. 是否扩大 migration、权限或恢复面积？
-
-不能明确回答时不实现。
-
-### 11.3 分层测试
-
-| Gate | 触发 | 要求 |
+| Gate | 触发条件 | 要求 |
 | --- | --- | --- |
-| Slice | 每个实现提交 | 目标测试、受影响模块回归、Ruff/mypy/typecheck、`git diff --check` |
-| Task | 一个 Task 完成 | 用户工作流 E2E、持久化、权限、失败与恢复测试 |
-| Milestone | P1/P2/P3/P4 或高风险边界完成 | 全仓 Python、相关前端/桌面 build、release checks |
-| Release | 发布候选 | 真实靶场、升级/恢复、安全评审和已知限制 |
+| Slice | 每个实现提交 | 目标测试、受影响回归、Ruff、必要的 mypy/typecheck、`git diff --check` |
+| Task | 一个 Task 完成 | 用户流程 E2E、持久化、权限、失败、恢复 |
+| Milestone | P0-P5 或高风险边界完成 | 全仓 Python、相关前端/桌面 build、migration/release checks |
+| Release | 发布候选 | 两个真实靶场、升级恢复、安全评审、已知限制 |
 
-数据库 migration、Scope/Approval、Credential、Artifact ACL、Stop Proof 和恢复原语修改必须执行 Milestone gate。普通文档或低风险局部修改不重复运行 5000+ 全仓测试。
-
-所有 Agent 相关运行与测试使用：
+Agent 相关测试与运行必须使用：
 
 ```bash
 conda run --no-capture-output -n agent ...
 ```
 
-### 11.4 Git 纪律
+### 11.2 Git 纪律
 
-- 一个提交只表达一个可解释结果；
-- 实现与 Task 级账本更新分开提交；
-- Task 完成时更新账本，不为每个内部小步骤重复写长记录；
+- 一个提交只表达一个用户可解释或安全可验证的结果；
+- 实现提交与 Task 级账本提交分开；
+- Task 完成时更新账本，不为每个内部动作复制长记录；
 - 不提交无关用户改动；
 - 不使用破坏性 reset/checkout 清理工作树；
 - 提交前运行 staged `git diff --check`。
 
+### 11.3 每个切片必须回答
+
+- 用户输入和可见输出是什么？
+- 真实生产调用路径是什么？
+- 哪些状态被持久化？
+- 有哪些目标或主机副作用？
+- Scope/Approval 如何执行？
+- Evidence 如何产生？
+- 失败、停止、重启如何处理？
+- 本切片明确不做什么？
+
 ---
 
-## 12. 任务目录
+## 12. 任务目录与处置
 
-本节保留历史 Task ID 与依赖关系，用于与提交、ADR、migration 和实施账本对账。状态以实施账本为最终权威。
+本节保留既有 Task ID 和依赖，用于提交、ADR、migration 和实施账本对账。状态与实现提交以实施账本为准。
 
 ### SEC-000：正式版 ADR 与实施账本
-
-**依赖**：无。
-
-状态：completed。只维护边界与账本一致性。
+**依赖**：无。状态：completed；只维护权威边界一致性。
 
 ### SEC-001：Security Capability Evaluation 骨架
-
-**依赖**：SEC-000。
-
-状态：completed。只为真实 Pentest 场景增加 Fixture/Replay。
+**依赖**：SEC-000。状态：completed；只为真实 Pentest 增加 Fixture/Replay。
 
 ### CAP-001：Capability Domain 与持久化
-
-**依赖**：SEC-000。
-
-状态：completed。保留 Version、Digest、Provenance、Candidate 与 Lock。
+**依赖**：SEC-000。状态：completed；保留版本、Digest、Provenance、Candidate 与 Lock。
 
 ### CAP-100：接通生产 Progressive Skill
-
-**依赖**：CAP-001。
-
-状态：completed。后续由 Operator 成长闭环证明价值。
+**依赖**：CAP-001。状态：completed；由 P4 证明实际价值。
 
 ### CAP-101：原生代码工具
-
-**依赖**：CAP-001。
-
-状态：completed。只支持 Pentest 所需脚本/PoC 审查，不扩建通用 IDE。
+**依赖**：CAP-001。状态：completed；只支持 Pentest 脚本/PoC 审查，不扩通用 IDE。
 
 ### CAP-102：Browser/Web/Traffic Tool 闭环
-
-**依赖**：CAP-001。
-
-状态：completed。PEN-500/501 的主要执行面。
+**依赖**：CAP-001。状态：completed；P1-P3 主要执行面。
 
 ### CAP-103：MCP 生产接入
-
-**依赖**：CAP-001。
-
-状态：completed。只接入真实使用的专业工具。
+**依赖**：CAP-001。状态：completed；只接入真实使用的专业工具。
 
 ### CAP-104：持久化 Tool/Skill Selection
-
-**依赖**：CAP-100、CAP-103。
-
-状态：completed。Pentest Run 必须记录最终选择与版本。
+**依赖**：CAP-100、CAP-103。状态：completed；Pentest Run 必须记录最终选择。
 
 ### COG-200：Task Graph
-
-**依赖**：CAP-104。
-
-状态：completed。复用，不建立第二套 Pentest Planner 状态。
+**依赖**：CAP-104。状态：completed；复用，不建立 Pentest 平行 Planner 状态。
 
 ### COG-201：Evidence Ledger
-
-**依赖**：COG-200。
-
-状态：completed。所有 Target Interaction 必须引用 Evidence。
+**依赖**：COG-200。状态：completed；目标交互必须引用 Evidence。
 
 ### COG-202：Reasoning Graph
-
-**依赖**：COG-201。
-
-状态：completed。优先复用现有节点语义。
+**依赖**：COG-201。状态：completed；优先复用现有节点语义。
 
 ### COG-203：Primary Agent Proposal Tools
-
-**依赖**：COG-202。
-
-状态：completed。PEN-502 直接复用。
+**依赖**：COG-202。状态：completed；PEN-502 直接复用。
 
 ### COG-204：Observer Supervisor 与 Projector
-
-**依赖**：COG-203。
-
-状态：completed。Pentest 重点验证 Scope、预算、重复尝试和证据门。
+**依赖**：COG-203。状态：completed；重点验证 Scope、预算、重复和证据门。
 
 ### COG-205：Closure Verifier
-
-**依赖**：COG-204。
-
-状态：completed。报告必须经过 Closure。
+**依赖**：COG-204。状态：completed；报告必须经过 Closure。
 
 ### PACK-300：基础渗透 Packs
-
-**依赖**：CAP-102、CAP-104、COG-205。
-
-状态：completed。后续证明 Pack 真正影响生产计划与执行。
+**依赖**：CAP-102、CAP-104、COG-205。状态：completed/frozen；禁止继续增量，先证明生产效果。
 
 ### PACK-301：基础代码审计 Packs
-
-**依赖**：CAP-101、CAP-104、COG-205。
-
-状态：completed/frozen。保留兼容，不阻塞 Pentest V1。
+**依赖**：CAP-101、CAP-104、COG-205。状态：completed/frozen；只保留兼容。
 
 ### PACK-302：Onboard 和 Doctor
-
-**依赖**：PACK-300、PACK-301。
-
-状态：completed。真实 Backup/Restore readiness 已接通；Pack Marketplace 后置。
-
-### PEN-500：Pentest Admission 与 Attack Surface
-
-**依赖**：CAP-102、COG-202。
-
-状态：in_progress。Domain/持久化已完成，当前进入 Workflow/Runner/Effect Policy 安全边界贯通。
-
-### PEN-501：状态化 Web 测试
-
-**依赖**：CAP-102、PEN-500。
-
-状态：pending。完成 Web 身份/授权靶场和统一 Session/Request 状态。
-
-### PEN-502：验证规划器
-
-**依赖**：COG-203、PEN-500、PEN-501。
-
-状态：pending。交付最小验证动作、证据判据和 Negative Result。
-
-### PEN-503：CVE/PoC Research
-
-**依赖**：CAP-102、PEN-502。
-
-状态：deferred enhancement。不得阻塞 V1。
-
-### PEN-504：Attack Chain、Report 与 Stop Proof
-
-**依赖**：COG-201、PEN-500、PEN-502。
-
-状态：pending。完成至少两个真实场景的专业收口。
-
-### LEARN-600：Trajectory Store 与 Session Search
-
-**依赖**：COG-205。
-
-状态：pending。只保存脱敏结构化 Trajectory，优先使用现有数据库与 FTS。
-
-### LEARN-601：Post-run Review
-
-**依赖**：LEARN-600。
-
-状态：pending。只能产出 Candidate，不能调用目标工具或直接激活能力。
-
-### LEARN-602：Failure Taxonomy
-
-**依赖**：LEARN-601。
-
-状态：pending。先覆盖工具、Skill、规划、重复、证据、Scope、误报和环境失败。
-
-### LEARN-603：Replay Lab
-
-**依赖**：SEC-001、LEARN-601、LEARN-602。
-
-状态：pending。最小 Replay 包含原始、变体、负向和旧版本回归案例。
-
-### LEARN-604：Capability Curator
-
-**依赖**：CAP-001、LEARN-603。
-
-状态：pending。交付人工批准、激活、禁用和回滚。
-
-### LEARN-605：Profile、导入和迁移
-
-**依赖**：LEARN-604、PACK-302。
-
-状态：deferred enhancement。V1 不建设 Organization/远程同步。
-
-### EVAL-701：渗透测试靶场
-
-**依赖**：SEC-001、PEN-504。
-
-状态：pending。固化可复位、隔离、授权并有 Ground Truth 的场景。
-
-### EVAL-702：版本、配置与能力包回归 Harness
-
-**依赖**：EVAL-701、LEARN-603。
-
-状态：pending。只比较 RiftX 自身版本和 Operator Capability 差异。
-
-### EVAL-703：质量与安全发布检查
-
-**依赖**：EVAL-702、PACK-302。
-
-状态：pending。覆盖 Pentest 功能、安全、恢复、能力污染与已知限制。
+**依赖**：PACK-300、PACK-301。状态：completed；后续只修复真实 Onboard/Doctor 阻断。
 
 ### AUD-400：Repository Intelligence
-
-**依赖**：CAP-101、COG-202。
-
-状态：frozen。只修复安全、兼容和现有用户阻断。
+**依赖**：CAP-101、COG-202。状态：frozen；只修安全、兼容和已有用户阻断。
 
 ### AUD-401：Scanner Adapter
-
-**依赖**：AUD-400。
-
-状态：frozen。Pentest Scanner 通过 Tool/MCP 接入。
+**依赖**：AUD-400。状态：frozen；Pentest Scanner 通过现有 Tool/MCP 接入。
 
 ### AUD-402：专业角色工作流
-
-**依赖**：AUD-400、AUD-401、COG-205、PACK-301。
-
-状态：frozen。不实现七个常驻审计 Agent。
+**依赖**：AUD-400、AUD-401、COG-205、PACK-301。状态：frozen；不实现常驻审计 Agent 团队。
 
 ### AUD-403：代码证据模型
-
-**依赖**：COG-201、AUD-400、AUD-401。
-
-状态：frozen。只保留现有数据兼容。
+**依赖**：COG-201、AUD-400、AUD-401。状态：frozen；只保留现有兼容。
 
 ### AUD-404：Diff Audit 与 Variant Analysis
-
-**依赖**：AUD-400、AUD-403。
-
-状态：frozen。Pentest 脚本审查复用 CAP-101。
+**依赖**：AUD-400、AUD-403。状态：frozen。
 
 ### AUD-405：受控动态验证
+**依赖**：CAP-101、AUD-403。状态：frozen；不得成为默认执行未知目标代码的入口。
 
-**依赖**：CAP-101、AUD-403。
+### PEN-500：Pentest Admission 与 Attack Surface
+**依赖**：CAP-102、COG-202。状态：in_progress；当前唯一实现主线，按 P0/P1 完成。
 
-状态：frozen。不得成为默认执行目标代码的后门。
+### PEN-501：状态化 Web 测试
+**依赖**：CAP-102、PEN-500。状态：pending；只交付一个真实身份/授权场景。
+
+### PEN-502：验证规划器
+**依赖**：COG-203、PEN-500、PEN-501。状态：pending；复用现有图，只补最小验证语义。
+
+### PEN-503：CVE/PoC Research
+**依赖**：CAP-102、PEN-502。状态：deferred；不得阻塞 V1。
+
+### PEN-504：Attack Chain、Report 与 Stop Proof
+**依赖**：COG-201、PEN-500、PEN-502。状态：pending；完成两个真实场景的专业收口。
+
+### LEARN-600：Trajectory Store 与 Session Search
+**依赖**：COG-205。状态：pending；使用现有数据库与 FTS。
+
+### LEARN-601：Post-run Review
+**依赖**：LEARN-600。状态：pending；只产出 Candidate。
+
+### LEARN-602：Failure Taxonomy
+**依赖**：LEARN-601。状态：pending；先覆盖真实运行中出现的失败。
+
+### LEARN-603：Replay Lab
+**依赖**：SEC-001、LEARN-601、LEARN-602。状态：pending；只实现一个 Operator Capability 的 Replay 门。
+
+### LEARN-604：Capability Curator
+**依赖**：CAP-001、LEARN-603。状态：pending；交付人工批准、激活、禁用、回滚。
+
+### LEARN-605：Profile、导入和迁移
+**依赖**：LEARN-604、PACK-302。状态：deferred；V1 不建设组织/远程同步。
 
 ### EVAL-700：代码审计语料
+**依赖**：SEC-001、AUD-403、AUD-404。状态：frozen。
 
-**依赖**：SEC-001、AUD-403、AUD-404。
+### EVAL-701：渗透测试靶场
+**依赖**：SEC-001、PEN-504。状态：pending；固化两个可复位真实场景。
 
-状态：frozen。保留 Fixture，不阻塞 Pentest 发布。
+### EVAL-702：版本、配置与能力包回归 Harness
+**依赖**：EVAL-701、LEARN-603。状态：pending；只比较 RiftX 自身版本与能力变化。
+
+### EVAL-703：质量与安全发布检查
+**依赖**：EVAL-702、PACK-302。状态：pending；作为内部发布门，不用于证明超过通用 Agent。
 
 ### ECO-800：Pack SDK
-
-**依赖**：CAP-001、LEARN-604。
-
-状态：post-V1。出现真实第三方/组织 Pack 来源后再启动。
+**依赖**：CAP-001、LEARN-604。状态：post-V1。
 
 ### ECO-801：信任与供应链
-
-**依赖**：ECO-800。
-
-状态：post-V1。与真实分发渠道一起设计。
+**依赖**：ECO-800。状态：post-V1。
 
 ### ECO-802：Gateway 与持续运行
-
-**依赖**：LEARN-605、ECO-801。
-
-状态：post-V1。单机 Pentest 体验稳定后再建设。
+**依赖**：LEARN-605、ECO-801。状态：post-V1。
 
 ---
 
-## 13. 正式版完成定义
-
-只有同时满足以下条件，RiftX Pentest-first V1 才算完成：
-
-1. 新用户通过 Onboard 和 Doctor 可以启动真实授权 Pentest Run；
-2. 所有目标交互都有非空 Scope、预算、Approval 和 Stop condition；
-3. Browser、Target HTTP、Runner Tool 与 Scanner 走生产 Runtime；
-4. 至少两个隔离场景从 Admission 推进到 Evidence/Negative Result/Finding/Report；
-5. 扫描信号、外部搜索和模型猜测不能直接成为 Confirmed Finding；
-6. Task、Hypothesis、Attempt、Evidence、Finding 与 Selection 可跨重启恢复；
-7. 取消、失败和超时具有可验证 Stop Proof；
-8. 专业人士可以添加自己的 Tool、Skill 或 Technique；
-9. 至少一个 Operator Capability 完成 Review、Replay、批准、生效、禁用和回滚；
-10. 默认产品面不再要求用户理解与 Pentest 无关的大量命令和模块；
-11. Code Audit、Marketplace、多租户与远程集群不阻塞发布；
-12. 发布检查覆盖功能、安全、恢复、真实任务复盘和已知限制。
-
----
-
-## 14. Codex 每轮施工模板
+## 13. Codex 每轮执行模板
 
 ```text
 Current milestone/task:
@@ -876,35 +732,46 @@ Pentest user outcome:
 Authoritative code/ADR/ledger evidence:
 Existing components to reuse:
 Smallest production slice:
-Allowed files/modules:
+Files/modules to touch:
 Explicit non-goals:
 Scope/Approval impact:
 Persistence/migration impact:
-Evidence and recovery requirements:
+Evidence and recovery behavior:
 Target tests:
 Task/Milestone gate:
-Rollback strategy:
 Implementation commit boundary:
 Ledger update commit:
 ```
 
-开始前检查：
+开始前必须检查：
 
 - 是否直接推进当前里程碑；
 - 是否正在为 frozen/post-V1 范围新增功能；
-- 是否复用了已有生产组件；
+- 是否复用了已有组件；
+- 是否新增了没有生产消费者的抽象；
 - 是否把未来需求误当成当前 blocker；
-- 是否新增了没有首个生产消费者的抽象；
-- 是否可以通过更小的端到端结果完成同一目标。
+- 是否可以用更小的端到端切片完成同一结果。
 
-不能直接推进当前里程碑时，默认停止扩张，回到本文件重新判断。
+若不能直接推进当前里程碑，默认停止扩张并重新审查。
 
 ---
 
-## 15. 最终定位
+## 14. 正式版最终完成门
 
-RiftX 不是“工具更多、Prompt 更长”的通用 Agent。
+只有同时满足以下条件，RiftX Pentest-first V1 才算完成：
 
-它应成为专业人士的渗透测试工作台：知道授权边界，能够持续运行和恢复，会记录证据、反证与失败路径，能把工具信号转化为最小验证，能形成 Attack Surface、Finding、Attack Chain 与报告，并能把操作者的方法论沉淀为有版本、有 Replay、可批准、可禁用和可回滚的生产能力。
+1. 新用户通过 Onboard 和 Doctor 可启动真实授权 Pentest Run；
+2. 模型配置错误具有准确诊断和修复路径；
+3. 所有目标交互都有 Scope、预算、Approval 和停止条件；
+4. Browser、Target HTTP、Runner Tool 与至少一个 Scanner 走生产 Runtime；
+5. 网络服务与状态化 Web 两个隔离场景走到报告；
+6. 扫描信号、搜索结果和模型猜测不能直接成为 Confirmed Finding；
+7. Task、Hypothesis、Attempt、Evidence、Finding、Selection 可跨重启恢复；
+8. 取消、失败、超时和人工停止具有可验证 Stop Proof；
+9. 专业用户可以添加自己的 Tool、Skill 或 Technique；
+10. 至少一个 Operator Capability 完成 Review、Replay、批准、生效、禁用和回滚；
+11. 默认产品面不要求用户理解与 Pentest 无关的大量模块；
+12. Code Audit、Marketplace、多租户、远程集群不阻塞发布；
+13. 发布检查覆盖功能、安全、迁移、恢复和已知限制。
 
-这就是项目后续唯一需要兑现的核心能力。
+最终定位不变：RiftX 不是“工具更多、Prompt 更长”的通用 Agent，而是一个知道授权边界、能够持续执行和恢复、会记录证据与失败、能形成专业报告，并能把操作者方法论沉淀成可审查生产能力的渗透测试工作台。
