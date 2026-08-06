@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import update
 
 from riftx.application.errors import RepositoryConflictError, RepositoryIntegrityError
-from riftx.domain import Engagement, Objective, Run
+from riftx.domain import Engagement, Objective, Run, RunKind
 from riftx.evidence import (
     Evidence,
     EvidenceCreatorType,
@@ -61,14 +62,14 @@ def evidence(evidence_id: str, *, run_id: str = "run-1") -> Evidence:
     )
 
 
-def graph(*, evidence_id: str = "evidence-1") -> ReasoningGraph:
+def graph(*, evidence_ids: tuple[str, ...] = ("evidence-1",)) -> ReasoningGraph:
     candidate = ReasoningNode(
         id="candidate-1",
         run_id="run-1",
         kind=ReasoningNodeKind.FACT_CANDIDATE,
         status=ReasoningNodeStatus.PROMOTED,
         claim="Service version candidate",
-        evidence_ids=(evidence_id,),
+        evidence_ids=evidence_ids,
         creator_type=ReasoningCreatorType.PARSER,
         created_by="service-parser",
     )
@@ -78,7 +79,7 @@ def graph(*, evidence_id: str = "evidence-1") -> ReasoningGraph:
         kind=ReasoningNodeKind.CONFIRMED_FACT,
         status=ReasoningNodeStatus.CONFIRMED,
         claim="Service version is nginx 1.24",
-        evidence_ids=(evidence_id,),
+        evidence_ids=evidence_ids,
         creator_type=ReasoningCreatorType.REDUCER,
         created_by="reasoning-reducer",
     )
@@ -92,7 +93,7 @@ def graph(*, evidence_id: str = "evidence-1") -> ReasoningGraph:
                 source_node_id=candidate.id,
                 target_node_id=confirmed.id,
                 relation_type=ReasoningRelationType.DERIVED_FROM,
-                evidence_ids=(evidence_id,),
+                evidence_ids=evidence_ids,
                 creator_type=ReasoningCreatorType.REDUCER,
                 created_by="reasoning-reducer",
             )
@@ -108,7 +109,7 @@ async def database(tmp_path: Path) -> Database:
     )
     await SQLAlchemyRunRepository(value.session_factory).create(
         Run(
-            kind="general",
+            kind=RunKind.GENERAL,
             id="run-1",
             engagement_id="engagement-1",
             node_id="node-1",
@@ -140,7 +141,7 @@ async def test_reasoning_graph_rejects_missing_evidence(tmp_path: Path) -> None:
     try:
         repository = SQLAlchemyReasoningGraphRepository(value.session_factory)
         with pytest.raises(RepositoryConflictError):
-            await repository.create(graph(evidence_id="missing-evidence"))
+            await repository.create(graph(evidence_ids=("missing-evidence",)))
         assert await repository.get("run-1") is None
     finally:
         await value.dispose()
@@ -163,5 +164,145 @@ async def test_reasoning_graph_corruption_fails_closed(tmp_path: Path) -> None:
 
         with pytest.raises(RepositoryIntegrityError):
             await repository.get("run-1")
+    finally:
+        await value.dispose()
+
+
+async def test_reasoning_graph_save_round_trip_and_compare_and_swap(tmp_path: Path) -> None:
+    value = await database(tmp_path)
+    try:
+        await SQLAlchemyEvidenceLedgerRepository(value.session_factory).create(
+            evidence("evidence-1")
+        )
+        repository = SQLAlchemyReasoningGraphRepository(value.session_factory)
+        current = await repository.create(graph())
+        confirmed = current.nodes[1].model_copy(
+            update={
+                "status": ReasoningNodeStatus.INVALIDATED,
+                "version": 2,
+                "updated_at": current.nodes[1].updated_at + timedelta(seconds=1),
+            }
+        )
+        replacement = ReasoningGraph(
+            run_id=current.run_id,
+            version=2,
+            nodes=[current.nodes[0], confirmed],
+            edges=current.edges,
+            created_at=current.created_at,
+            updated_at=current.updated_at + timedelta(seconds=1),
+        )
+
+        saved = await repository.save(replacement, expected_version=1)
+        restarted = SQLAlchemyReasoningGraphRepository(value.session_factory)
+        assert await restarted.get("run-1") == saved
+        with pytest.raises(RepositoryConflictError, match="version conflict"):
+            await repository.save(saved, expected_version=1)
+    finally:
+        await value.dispose()
+
+
+async def test_reasoning_graph_save_rejects_identity_clock_and_lineage_rewrites(
+    tmp_path: Path,
+) -> None:
+    value = await database(tmp_path)
+    try:
+        ledger = SQLAlchemyEvidenceLedgerRepository(value.session_factory)
+        await ledger.create(evidence("evidence-1"))
+        await ledger.create(evidence("evidence-2"))
+        repository = SQLAlchemyReasoningGraphRepository(value.session_factory)
+        current = await repository.create(
+            graph(evidence_ids=("evidence-1", "evidence-2"))
+        )
+
+        drifted_node = current.nodes[0].model_copy(
+            update={"updated_at": current.nodes[0].updated_at + timedelta(seconds=1)}
+        )
+        with pytest.raises(RepositoryConflictError, match="only its updated_at"):
+            await repository.save(
+                ReasoningGraph(
+                    run_id=current.run_id,
+                    version=2,
+                    nodes=[drifted_node, current.nodes[1]],
+                    edges=current.edges,
+                    created_at=current.created_at,
+                    updated_at=current.updated_at + timedelta(seconds=1),
+                ),
+                expected_version=1,
+            )
+
+        with pytest.raises(RepositoryConflictError, match="immutable identity"):
+            await repository.save(
+                ReasoningGraph(
+                    run_id=current.run_id,
+                    version=2,
+                    nodes=current.nodes,
+                    edges=current.edges,
+                    created_at=current.created_at - timedelta(seconds=1),
+                    updated_at=current.updated_at + timedelta(seconds=1),
+                ),
+                expected_version=1,
+            )
+
+        rewritten = current.nodes[1].model_copy(
+            update={
+                "status": ReasoningNodeStatus.INVALIDATED,
+                "evidence_ids": ("evidence-1",),
+                "version": 2,
+                "updated_at": current.nodes[1].updated_at + timedelta(seconds=1),
+            }
+        )
+        with pytest.raises(RepositoryConflictError, match="remove Evidence lineage"):
+            await repository.save(
+                ReasoningGraph(
+                    run_id=current.run_id,
+                    version=2,
+                    nodes=[current.nodes[0], rewritten],
+                    edges=current.edges,
+                    created_at=current.created_at,
+                    updated_at=current.updated_at + timedelta(seconds=1),
+                ),
+                expected_version=1,
+            )
+
+        backwards = current.nodes[1].model_copy(
+            update={
+                "status": ReasoningNodeStatus.INVALIDATED,
+                "version": 2,
+                "updated_at": current.nodes[1].updated_at - timedelta(seconds=1),
+            }
+        )
+        with pytest.raises(RepositoryConflictError, match="moved backwards"):
+            await repository.save(
+                ReasoningGraph(
+                    run_id=current.run_id,
+                    version=2,
+                    nodes=[current.nodes[0], backwards],
+                    edges=current.edges,
+                    created_at=current.created_at,
+                    updated_at=current.updated_at + timedelta(seconds=1),
+                ),
+                expected_version=1,
+            )
+    finally:
+        await value.dispose()
+
+
+async def test_reasoning_graph_create_rejects_non_initial_versions(tmp_path: Path) -> None:
+    value = await database(tmp_path)
+    try:
+        repository = SQLAlchemyReasoningGraphRepository(value.session_factory)
+        with pytest.raises(RepositoryConflictError, match="start at version 1"):
+            await repository.create(graph().model_copy(update={"version": 2}))
+        with pytest.raises(RepositoryConflictError, match="start at version 1"):
+            await repository.create(
+                graph().model_copy(
+                    update={
+                        "nodes": [
+                            graph().nodes[0].model_copy(update={"version": 2}),
+                            graph().nodes[1],
+                        ]
+                    }
+                )
+            )
     finally:
         await value.dispose()

@@ -306,3 +306,10 @@ class ReasoningGraphRepository(Protocol):
     async def create(self, graph: ReasoningGraph) -> ReasoningGraph: ...
 
     async def get(self, run_id: str) -> ReasoningGraph | None: ...
+
+    async def save(
+        self,
+        graph: ReasoningGraph,
+        *,
+        expected_version: int,
+    ) -> ReasoningGraph: ...

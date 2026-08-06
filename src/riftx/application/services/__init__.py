@@ -51,6 +51,7 @@ from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .models import ModelProfileApplicationService, ModelProfilesView, ModelProfileView
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
+from .reasoning import ReasoningGraphApplicationService, TransitionReasoningNode
 from .reports import (
     DeterministicReportComposer,
     GenerateReports,
@@ -143,6 +144,7 @@ __all__ = [
     "RegisterArtifactSpanEvidence",
     "RegisterCodeLocationEvidence",
     "ReportApplicationService",
+    "ReasoningGraphApplicationService",
     "ReportComposer",
     "ReportSource",
     "StructuredReport",
@@ -167,6 +169,7 @@ __all__ = [
     "TerminalApplicationService",
     "TerminalView",
     "TrafficMetadataApplicationService",
+    "TransitionReasoningNode",
     "WorkflowSignalBatchResult",
     "WorkflowSignalDefinitelyNotDelivered",
     "WorkflowSignalDispatcher",
