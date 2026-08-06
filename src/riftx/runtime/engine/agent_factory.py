@@ -10,68 +10,15 @@ from typing import Any
 from agents import Agent, FunctionTool, ModelSettings
 
 from riftx.runtime.lifecycle import CompiledContext
+from riftx.tools import RESIDENT_TOOL_IDS
 from riftx.tools.policy import validate_runtime_tool_inventory
 
 from .types import AgentEngineRequest
 
-_CONTROL_TOOL_NAMES = {
-    "search_tools",
-    "list_tools",
-    "get_tool",
-    "reload_tool",
-    "unload_tool",
-    "search_mcp_tools",
-    "get_mcp_tool",
-    "call_mcp_tool",
-    "search_skills",
-    "list_skills",
-    "load_skill",
-    "load_skill_references",
-    "reload_skill",
-    "unload_skill",
-    "list_techniques",
-    "load_technique",
-    "reload_technique",
-    "unload_technique",
-    "list_files",
-    "read_file",
-    "read_many_files",
-    "grep",
-    "glob",
-    "symbol_search",
-    "find_references",
-    "call_hierarchy",
-    "diagnostics",
-    "apply_patch",
-    "revert_patch",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "open_browser",
-    "observe_browser",
-    "act_browser",
-    "close_browser",
-    "web_fetch",
-    "web_search",
-    "web_research",
-    "query_http_traffic",
-    "read_http_exchange",
-    "target_http_request",
-    "get_execution",
-    "wait_execution",
-    "cancel_execution",
-    "read_artifact",
-    "list_ready_tasks",
-    "add_task",
-    "update_task",
-    "link_tasks",
-    "block_task",
-    "claim_ready_task",
-    "complete_task",
-    "fail_task_attempt",
-    "reopen_task",
-    "cancel_task",
-    "complete_run",
+_CONTROL_TOOL_NAMES = set(RESIDENT_TOOL_IDS) - {
+    "run_registered_tool",
+    "run_shell",
+    "delegate",
 }
 
 _TERMINAL_CONTROL_TOOL_NAMES = {"complete_run"}
