@@ -28,8 +28,8 @@
 
 ## 2. Current wave
 
-- Stage：`S2 — 认知运行时`
-- Current task：`COG-205 — Closure Verifier`
+- Stage：`S3 — Official Baseline Packs 与开箱即用`
+- Current task：`PACK-300 — 基础渗透 Packs`
 - Status：`pending`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -42,11 +42,12 @@
 - Completed predecessor：COG-202，implementation commits `4413c1f3`、`e21a6d7f`、`eb1d30b5`、`317a20f7`。
 - Completed predecessor：COG-203，implementation commits `a8dbdf50`、`87c7381d`、`d369b684`。
 - Completed predecessor：COG-204，implementation commits `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
+- Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
 - Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：生产 Runtime 在模型调用前和 Tool Intent 持久化后收集 Working Memory、Task/Reasoning Graph、Tool Intent、Approval、User Input、Run Event 与 Takeover 的有界快照，并执行 Scope、Approval、重复尝试、Evidence 缺失、Capability mismatch、Budget、死循环和人工接管八类确定性 Observer 检查；结果稳定收敛到 `CONTINUE`、`YIELD` 或 `BLOCK`，写入脱敏 `runtime.observer_inspected`，BLOCK 转为 `FATAL_FAILURE`，Approval/User Input yield 保留对应 durable waiting object ID。只读 Projector 复用既有 Graph/Report Application Service 输出 Task、Reasoning、Evidence、Attack、Code、Operation、Coverage、Timeline 与可再生成 Report draft；Reasoning/Attack 是 Evidence Graph 的有界派生切片，Code Graph 在 AUD 权威来源尚未接入前明确标记 `code_graph_authoritative_source_unavailable` partial。只读接口为 `GET /api/v1/runs/{run_id}/projection`，已进入 fail-closed API policy 和 RunKind effect inventory。
-- Current implementation commits：COG-204 `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
-- Verification：全仓 `5157 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-204 Scoped mypy、Observer Supervisor/Application/Projector、Runtime Coordinator/Deferred Runtime、Projection API、API Policy、RunKind Effect Policy 与生产 Worker 回归通过。
-- Next delivery slice：开始 COG-205，复用 Task/Evidence/Reasoning Graph、Report Source 与既有 Safety Stop/finalization fence，实现确定性 Closure 报告和 Run completion gate，不引入第二套 Closure 权威状态。
+- Product behavior：生产 Runtime 继续使用确定性 Observer 与只读 Projector；Completion 现在在既有 `COMPLETING` admission fence 后读取 Run Success Criteria、Task Graph、Reasoning Graph 与 Evidence Ledger，生成 `complete` 或 `partial` Closure Report。必需 Success Criterion 只有显式映射到真实 Evidence 才算满足；Pending/Blocked/Failed/Cancelled Task 必须具有可审查解释；Confirmed Finding 的 Evidence 必须存在且可重放。Closure 仅以脱敏、确定性的 `run.closure_evaluated` Event 保存摘要和 Digest，不创建第二套权威状态；随后必须取得 Execution、Browser 与 Target HTTP 的物理停止证明，Run 才能进入 `COMPLETED`。Report Source、Markdown、HTML 与 JSON 显式显示 Closure outcome/reason，旧 Run 缺少 Closure Event 时稳定显示 `partial / closure_verification_missing`。
+- Current implementation commits：COG-205 `7849cb2b`、`f09ace2a`、`dc2099a0`。
+- Verification：全仓 `5165 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-205 Scoped mypy、Closure/Application/Report、Temporal Activity/Workflow、Runtime Coordinator、生产 Worker、Observer Projection 与完整 Control Plane 生命周期回归通过。
+- Next delivery slice：开始 PACK-300，基于现有 Capability Manifest、Skill/Technique、Tool Selection、Closure 与渗透工具链交付首批 Official 基础渗透 Packs；先定义 Pack 公共契约和最小 `pentest-foundation`/`scope-and-safety` 垂直切片，不重复实现现有 Tool 或安全状态。
 
 ## 3. 研究与实现基线
 
@@ -107,7 +108,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | --- | --- | --- |
 | S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
 | S1 生产 Capability Plane | in_progress | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
-| S2 认知运行时 | in_progress | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
+| S2 认知运行时 | completed | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
 | S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
 | S5 渗透测试完全体 | pending | Attack Surface、状态 Web、验证规划、Research、Attack Chain 闭环 |
@@ -132,7 +133,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-202 | COG-201 | completed | `4413c1f3`, `e21a6d7f`, `eb1d30b5`, `317a20f7` |
 | COG-203 | COG-202 | completed | `a8dbdf50`, `87c7381d`, `d369b684` |
 | COG-204 | COG-203 | completed | `16a1d800`, `a03654e0`, `21e28b3e`, `de863606`, `7a70ef6f`, `465ea1f0`, `65f12b02` |
-| COG-205 | COG-204 | pending | — |
+| COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | pending | — |
 | PACK-301 | CAP-101, CAP-104, COG-205 | pending | — |
 | PACK-302 | PACK-300, PACK-301 | pending | — |
@@ -660,6 +661,41 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5157 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit：`654a72bd`。
+
+### COG-205：Closure Verifier
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：COG-204、Run Success Criteria、Task Graph/Attempt/Evidence Requirement、Reasoning Graph、Evidence Ledger、Report Source、Run finalization fence 与三类物理资源停止证明。
+- Success Criterion mapping slice：
+  - `TaskEvidenceRequirement` 新增显式 `success_criterion_index`，Planner 校验索引必须落在当前 Run Success Criteria 范围内；Criterion 不再依赖描述文本、Task 顺序或模型推断进行关联；
+  - Alembic revision `3c6e8a1f2b40` 为既有 Requirement 增加可兼容读取的映射字段，并继续在自身 DDL 前执行跨历史版本数据丢失保护；
+  - Requirement 仍引用现有 Evidence Ledger ID，不复制 Evidence 内容，也不建立 Criterion completion 表。
+- Deterministic verifier slice：
+  - 新增只读 `ClosureVerifierApplicationService`，从 Run、Task Graph、Reasoning Graph 与 Evidence Ledger 生成确定性的 `complete` 或 `partial` Closure Report；
+  - 必需 Success Criterion 必须存在显式 Requirement 映射，Requirement 已满足，且全部 Evidence ID 在当前 Run 的 Ledger 中真实存在；可选 Criterion 不阻断整体 Closure，但仍保留自身未满足原因；
+  - Pending Task 使用 `stop_condition`，Blocked Task 使用 `blocked_reason`，Failed Task 使用最新失败 Attempt，Cancelled Task 使用取消历史解释；缺少解释的非完成 Task 使 Closure 降级为 partial；
+  - Confirmed Finding 的全部 Evidence 必须存在且 `replayable=True`；缺失或不可重放时降级为 partial；
+  - Closure Report Digest 和 Event ID 由规范化报告确定性生成，重试不会产生重复 Event；Event 只保存版本、Graph version、计数、稳定 reason code 与报告 Digest，不保存 Criterion 文本、Finding claim、Evidence 内容、Prompt 或 Secret。
+- Completion and report slice：
+  - Temporal Completion Activity 和 standalone/legacy Runtime Coordinator 均在既有 `COMPLETING` admission fence 后写入 `run.closure_evaluated`，随后调用现有 `RunSafetyStopService`；只有 Execution、Browser Session 与 Target HTTP Request 全部取得停止确认后才提交 `COMPLETED`；
+  - Closure `partial` 不伪造新的 Run 终态：物理停止成功后 Run 仍按既有生命周期完成，但 Report Source、Markdown、HTML 和 JSON 明确展示 partial 与 reason codes；
+  - 待处理用户消息使 completion fence 失败时，不提前生成 Closure Event；物理停止失败时 Run 保持 `COMPLETING`，重试复用相同 Closure Event 和 Digest；
+  - 生产 Temporal Worker 创建一个真实 Verifier 实例，同时注入 Runtime Coordinator 与 RiftX Activities；没有新增 Closure Repository、表、状态机或第二套 Completion authority；
+  - 旧 Run 没有 Closure Event 时报告稳定降级为 `partial / closure_verification_missing`；非法 complete/reason 组合和未说明的 partial 均 fail-closed 为稳定报告 reason；
+  - 同步修复 legacy `cancel_current_execution` Activity 遗留的空方法调用，改为复用现有三类资源 Safety Stop 并在停止无法确认时阻止 Agent 继续产生效果。
+- Safety boundaries：
+  - Closure 只判断工作是否具备可审查证据，不授予 Scope、Approval、Capability、Budget 或物理停止证明；
+  - Closure partial 与 Run physical completion 正交：前者必须被报告，后者必须由现有 Safety Stop gate 独立证明；
+  - Closure Event 可公开字段经过 Report Event 白名单过滤，原始 Graph claim、Evidence 内容与内部解释不会进入 Event payload。
+- Checks：
+  - Closure、Report、Temporal Activity/Workflow、Runtime Coordinator、生产 Worker、Observer Projection 与完整 Control Plane 生命周期定向回归：`106 passed`；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/application/services/closure.py src/riftx/application/services/reports.py src/riftx/temporal/activities.py src/riftx/runtime/coordinator.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 5 source files`；
+  - `conda run --no-capture-output -n agent alembic heads`：`3c6e8a1f2b40 (head)`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5165 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`7849cb2b`、`f09ace2a`、`dc2099a0`。
 
 ## 9. Known pre-existing worktree state
 
