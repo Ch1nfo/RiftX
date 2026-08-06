@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`1c379dcc`
+> 当前审计基线：`0b53e43d`（阶段 A/PEN-500 已关闭，工作树干净）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,7 +37,7 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A 已完成；下一步只做一个网络服务专业闭环，然后依次完成状态化 Web 与报告、用户驱动的能力成长、默认产品面收缩。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A 已完成；阶段 B 的代码审计已经确认了最短施工路径：先把现有 Nmap/Tool Result 的原始 Artifact 接入 Evidence Ledger，再走通一个本地网络服务的 Observation → Hypothesis → 最小验证 → Finding/Negative Result → Report。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
 
 ---
 
@@ -128,6 +128,29 @@ Changed production files scoped mypy: passed
 | 用户驱动能力成长 | Capability 底座存在，缺少一次完整添加、选择、复盘、禁用和回滚 | 是 |
 | 默认产品面收缩 | 未按真实消费者审计 | 是 |
 | 大规模代码删除 | 尚无足够消费者证据 | 否，延后到收缩阶段 |
+
+阶段 B 的审计已定位到一个明确断点，不需要再做大范围架构研究：
+
+```text
+Execution
+→ ExecutionArtifactStore（已将 stdout/stderr 注册为不可变 Artifact）
+→ ToolResultProcessor（已确定性解析 Nmap XML）
+→ Agent Tool Result Context（已完成）
+→ Evidence Ledger（生产写入入口未接通）
+→ Reasoning Observation/Negative Result（因缺 Evidence ID 而无法完成真实链路）
+→ Finding/Closure/Report
+```
+
+可直接复用的现有生产事实：
+
+- `service-enumeration` Official Pack 已声明 `port_scan`、`run_registered_tool`、`read_artifact`、`record_observation` 和 `record_negative_result`；
+- `ToolResultProcessor` 已保留原始输出、解析 Nmap XML、生成结构化结果与有界摘要；
+- `EvidenceApplicationService.register_artifact_span` 已能对不可变 Artifact 片段计算 Digest 并登记可回放 Evidence，但尚未被生产 Worker/Control Tool 装配；
+- Reasoning 的 Observation、Fact、Finding Candidate 和 Negative Result 已强制校验 Evidence ID；
+- Finding 当前可引用同 Run 的 Artifact/Execution，Report 已能读取 Finding、Artifact、Event 和 Closure；
+- 现有测试已有 Nmap golden fixture、`fake_nmap.py` 和可复用的本地异步 HTTP 目标生命周期。
+
+因此，下一个提交应该是“生产 Artifact → Evidence 薄接入”，而不是新增扫描框架或自动生成 Finding。
 
 ### 2.3 对“是否过度开发”的最终判断
 
@@ -300,7 +323,7 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | in progress | 一个真实服务从枚举走到证据化结论 |
+| B. 网络服务专业闭环 | in progress；B0 审计 completed，B1 待施工 | 一个真实服务从枚举走到证据化结论 |
 | C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
@@ -309,232 +332,308 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 
 ---
 
-## 7. 阶段 A：完成剩余预算门禁
+## 7. 阶段 A：已完成合同
 
-阶段 A 已于 `1c379dcc` 完成。实现提交为 `73288673`、`b6b5f739`、`53812397` 和 `1c379dcc`；本节保留为预算语义与回归合同，不再是待施工清单。
+阶段 A/PEN-500 已完成并由实施账本记录。后续不得重复实现预算体系，只把以下内容视为必须保持的回归合同：
 
-### 7.1 已完成部分
+- Model/Token/Duration 在 Provider `start/resume` 前检查；
+- Tool/Duration 在共享 execution claim 前检查；
+- Tool Proposal、等待批准、Scope 拒绝不计预算；
+- 新 retry 重新计数，完全相同的幂等重放不重复计数；
+- 总量耗尽使用 `pentest.budget_exhausted`、Pause、Safety Stop 和 Stop Proof；
+- 并发容量使用 `pentest.budget_capacity_reached`，允许重试且不暂停 Run；
+- 状态读取、预算门禁和跨重启恢复读取同一持久事实。
 
-以下内容不得重复实现：
+已完成实现提交：
 
-- `max_target_interactions` 在 Tool Intent execution claim 的持久串行化事务中检查并占用；
-- `max_concurrent_target_interactions` 使用同一权威事实检查活动占用；
-- 总量耗尽写入 `pentest.budget_exhausted` 并复用 Run pause、Safety Stop、Workflow signal 和 Stop Proof；
-- 并发容量满写入 `pentest.budget_capacity_reached`，作为可重试容量错误，不暂停 Run；
-- 重启后总量不重置，并发竞态不会超额放行。
+```text
+73288673  project live run usage
+b6b5f739  enforce model token duration budgets
+53812397  enforce tool execution budgets
+1c379dcc  unify budget exhaustion handling
+0b53e43d  close pentest admission budget stage
+```
 
-### 7.2 先冻结预算语义
-
-实现剩余预算前，先在代码和测试中统一以下语义：
-
-| 预算 | V1 计数语义 | 执行边界 |
-| --- | --- | --- |
-| `max_model_calls` | Run 内实际启动的 Agent Engine 模型轮次；不把同一轮事件重复计数 | `agent_engine.start/resume` 之前 |
-| `max_tool_calls` | Run 内实际获得执行 claim 的 Tool 调用；Proposal 和被拒绝调用不计 | Tool execution claim 之前 |
-| `max_tokens` | 已持久化 actual input + output tokens；不完整时禁止下一次模型调用 | 下一次 `start/resume` 之前 |
-| `max_duration_seconds` | 从持久 Run 创建时间起的 wall-clock 生命周期；Scope 时间窗更严时优先 | 每次模型调用和 Tool 副作用之前 |
-
-V1 不为“只计算活跃运行时间”增加 pause accounting 表。若未来真实用户需要排除暂停时间，再以兼容 migration 增加明确语义。
-
-单次模型调用的最终 Token 只能在 Provider 返回后确认。因此 V1 必须保证：
-
-- 已用量达到或超过上限后，不再启动下一次模型调用；
-- Token 记录不完整时失败关闭；
-- Provider 支持输出上限时，使用剩余预算限制输出；
-- Provider 无法精确限制单次总 Token 时，在已知限制中明确说明，不伪称绝对不会单次越界。
-
-### 7.3 最小实现切片
-
-#### A1. 运行中用量成为权威事实（completed）
-
-- 修正只读取主 Agent Session 导致运行中 Cycle 计数滞后的问题；
-- Run 级用量必须覆盖主 Session、允许存在的子 Session 和尚未 yield 的 Cycle；
-- 已经合并到 Session 的 Cycle 不得重复相加；
-- 复用 `AgentSessionRecord`、`AgentCycleRecord` 和 `ContextCompilationRecord`；
-- 先形成一个持久查询/占用方法，不新建 Budget 表或缓存。
-
-验收：运行中 status、重启后 status 和预算 admission 对同一用量给出一致结果。
-
-#### A2. Model、Token 和 Duration 执行前门禁（completed）
-
-- 在 `agent_engine.start/resume` 之前读取并原子占用本次模型轮次；
-- 删除或调整 `RUN_STARTED` 后置重复计数，保持唯一计数语义；
-- 模型调用前验证 Run 状态、Duration、Model Call 和 Token 完整性/余量；
-- 耗尽或不完整时不接触 Provider，写结构化事件并复用既有暂停和 Stop Proof；
-- 不把每 Cycle 的 `CycleLimits` 误当作 Pentest Admission 总预算。
-
-验收：预算外请求不会到达假 Provider；最后一个配额并发竞争只允许一个调用；重启后继续拒绝。
-
-#### A3. Tool 和 Duration 执行前门禁（completed）
-
-- 在所有真实 Tool execution claim 的共享边界检查 Run 级 `max_tool_calls`；
-- Proposal、等待批准和被 Scope 拒绝的调用不消耗 Tool 预算；
-- claim 成功即消耗一次，执行失败不退款，避免重试绕过；
-- retry 的计数语义必须显式测试；
-- Tool 副作用前同时检查 Duration；
-- Pack、MCP、Runner、Browser 和直接 Service 调用不得绕过共享边界。
-
-验收：最后一个配额并发竞争不超额；无 claim 的调用不误计；执行失败和重启不退回配额。
-
-#### A4. 停止、状态和账本收口（completed）
-
-- 总量、Model、Tool、Token、Duration 耗尽使用统一的 `pentest.budget_exhausted` 事实结构；
-- 并发容量满继续使用 `pentest.budget_capacity_reached`，不升级为硬停止；
-- status 显示 limit、used、complete/incomplete 和 stop confirmation；
-- 覆盖暂停失败、Workflow signal 失败和跨进程 Stop Proof 读取；
-- 实现提交完成后，单独更新实施账本并把 PEN-500 标记为 `completed`。
-
-### 7.4 阶段 A 非目标
-
-- 不新增数据库表；
-- 不新增通用 Policy Engine；
-- 不新增定时 Budget Worker；
-- 不修改 Code Audit Budget；
-- 不建设计费系统；
-- 不为未来分布式数据库设计抽象。
+阶段 B-E 只有在破坏上述语义时才修改预算代码。不得新增 Budget 表、计费系统、定时 Budget Worker 或第二套停止服务。
 
 ---
 
 ## 8. 阶段 B：一个网络服务专业闭环
 
-只选择一个可复位、明确授权、默认不依赖公网的网络服务靶场，贯通：
+阶段 B 只交付一个仓库内可复位、明确授权、默认不依赖公网的网络服务场景：
 
 ```text
-目标解析
-→ 可达性
-→ 端口/服务发现
-→ 版本与配置线索
+Pentest Admission
+→ service-enumeration
+→ Nmap/注册工具真实 Execution
+→ 原始 Artifact
+→ Evidence
+→ Observation
 → Hypothesis
-→ 最小验证
-→ Evidence 或 Negative Result
-→ Finding / Closure
+→ 最小协议验证
+→ Finding 或 Negative Result
+→ Closure / Report
 ```
 
-### 8.1 实现原则
+### 8.1 B0：生产链审计（completed）
 
-- 优先复用 Runner Tool、MCP、Execution、Artifact、Evidence、Reasoning Graph 和现有 Pack；
-- 只接通一个专业工具路径；不存在真实需要时，不新增 Scanner Framework；
-- 可选工具缺失时允许降级，但 status/report 必须说明未执行能力；
-- 扫描输出只能形成 Observation 或 Hypothesis，不能直接成为 Confirmed Finding；
-- 最小验证必须记录前置条件、风险、Approval、正负判据、Evidence capture 和 stop condition；
-- 失败、不可达、无匹配和被安全控制阻断必须形成 Negative Result 或明确未完成原因；
-- 重复动作受预算和已有 Observer/Closure 约束；
-- 至少证明一次工具故障或暂停恢复后的持久继续执行。
+审计结论：
 
-### 8.2 最小交付物
+- 选择现有 `service-enumeration` Pack，不新建 Pack；
+- 选择现有 Nmap XML adapter 和 `ToolResultProcessor`，不新建 Scanner Framework；
+- 选择现有 `ExecutionArtifactStore`，不新建扫描结果表；
+- 选择现有 `EvidenceApplicationService.register_artifact_span`，不新建 Evidence 模型；
+- 选择现有 Reasoning、Finding、Closure 和 Report Service，不新建 Pentest 专用 Graph 或 Report；
+- CI 复用 `tests/tools/fixtures/fake_nmap.py` 和 golden XML；人工发布 Smoke 在系统安装 Nmap 时对同一 localhost 靶场执行真实 Nmap，不把外部工具存在作为普通测试前提。
 
-1. 一个仓库内可复位靶场配方；
-2. 一个生产 CLI/API 启动流程；
-3. 一个真实 Tool 输出进入 Artifact/Evidence 的解析路径；
-4. 一个成立的 Finding 或一个证据充分的 Negative Result；
-5. 跨重启状态读取；
-6. 结构化报告可读取该结果；
-7. 对应 E2E、失败路径和安全回归。
+已确认的首要断点是：`EvidenceApplicationService` 没有生产写入入口，导致 Tool Result 虽然已有 Artifact 和解析结果，Agent 却拿不到可用于 `record_observation` 的 Evidence ID。
 
-阶段 B 的完成门是“一条专业路径可重复”，不是工具或 Pack 数量。
+### 8.2 B1：Artifact → Evidence 生产入口（当前唯一实现切片）
+
+用户结果：Agent 读取一个已完成 Execution 的原始 Artifact 后，可以把精确、不可变、可回放的片段登记为 Evidence，并立即用于 Observation 或 Negative Result。
+
+最小实现：
+
+1. 在生产 Worker 中装配现有 `EvidenceApplicationService`；
+2. 增加一个薄的本地认知 Control Tool，例如 `register_artifact_evidence`；
+3. 在有界 Tool Result Context 中暴露已存在的 opaque Artifact ID；Tool 输入只接受该 ID、精确 byte span、可选 Task ID 和目标引用；
+4. 服务端解析并验证 Artifact owner、Run/Session/Task owner、span 上限、Digest、Redaction 和当前 Run 状态；
+5. 返回稳定的 Evidence ID、canonical source URI 和 Digest；
+6. `record_observation`、`propose_fact`、`propose_finding` 与 `record_negative_result` 继续只接受已存在且同 Run 的 Evidence ID。
+
+优先修改现有装配和薄适配层，预期关注：
+
+- `src/riftx/temporal/worker_runtime.py`
+- `src/riftx/runtime/control_tools.py`
+- `src/riftx/tools/discovery.py`
+- `src/riftx/context/sources.py`
+- `src/riftx/application/services/evidence.py`（只有现有 API 确实无法表达时才改）
+- 对应 runtime、evidence、tool discovery 测试
+
+禁止：
+
+- 自动把所有 stdout/stderr 晋升为专业结论；
+- 让模型提交任意文件路径或伪造 Digest；
+- 复制 Artifact 内容到第二张表；
+- 让 parser 输出绕过 Evidence Ledger 直接成为 Confirmed Finding；
+- 因工具失败自动写“端口关闭”等目标结论。
+
+B1 验收：
+
+- 成功 Execution 的 Artifact span 可登记并跨进程读取；
+- 跨 Run Artifact、越界 span、缺失 Artifact、错误 Session/Task 全部失败关闭；
+- 完全相同 Tool Call 的幂等重放不重复写入；不为新的显式登记另建去重表；
+- Evidence 可被 `record_observation` 消费；
+- parser error 和非零退出只能形成有证据的工具失败 Attempt/Observation，不能伪装成目标 Negative Result；
+- 目标测试、受影响回归、Ruff、scoped mypy 和 `git diff --check` 通过；
+- 单独实现提交，不同时加入靶场或报告改造。
+
+### 8.3 B2：可复位本地服务与枚举 E2E
+
+用户结果：一个 Pentest Run 在明确 localhost Scope 和预算内，能够发现本地服务并形成证据化 Observation 与 Hypothesis。
+
+靶场保持最小：
+
+- 使用仓库测试内的异步 TCP/HTTP 服务，随机监听 localhost 端口；
+- 服务返回确定性、无真实 Secret 的 banner/headers；
+- 提供一个正常端口和一个确定性失败分支；
+- 每次测试结束关闭 socket，不引入 Docker、外部镜像或常驻进程；
+- CI 使用已存在的 fake Nmap 进程验证完整注册工具、Execution、Artifact 和 parser 路径；
+- 系统存在真实 Nmap 时，增加非阻塞的手工 Smoke 说明，不能让默认 CI 因缺少 Nmap 失败。
+
+专业语义：
+
+- 开放端口只形成“端点可达”的 Observation；
+- 服务名、产品和版本是带来源与置信度的 Observation/Hypothesis；
+- 默认端口、banner 或 scanner guess 不能直接变成漏洞；
+- 超时、拒绝、解析失败和工具缺失分别记录，不混写为“目标安全”；
+- Scope、Approval、Tool/Target Interaction/Duration 预算在真实副作用前继续生效。
+
+B2 验收：
+
+- 从 `riftx pentest start` 或等价生产 API 创建 Pentest；
+- 获得真实 Execution、stdout Artifact、Evidence ID 和 Observation；
+- 形成一个明确待验证 Hypothesis；
+- 暂停后不继续发起目标交互，恢复后从持久状态继续；
+- Control Plane/Worker 重建后仍可读取 Run、Execution、Artifact、Evidence、Reasoning 状态；
+- 单独提交靶场与 E2E，不在该提交创建 Confirmed Finding。
+
+### 8.4 B3：最小验证、Finding 与 Negative Result
+
+用户结果：Agent 对 B2 的一个 Hypothesis 执行最小协议验证，并产生一种可审查结论。
+
+推荐靶场事实：本地 HTTP 服务通过 banner 暴露一个只读诊断路径，最小 GET 验证该路径是否匿名泄露确定性部署元数据。数据只使用测试值，不放入真实 Credential 或 Secret。
+
+必须同时证明：
+
+- 正路径：Evidence 支撑一个低风险信息披露 Finding；
+- 负路径：另一个猜测路径返回确定性无匹配，形成 Negative Result；
+- 正负结论都引用精确 Artifact/HTTP Evidence；
+- Finding 先为 Candidate/Draft；只有满足 reproduction contract、Evidence 和最小验证判据后才能 Confirmed；
+- 相同动作不会因模型循环而无限重复；
+- 预算耗尽、Scope 拒绝、Approval 拒绝和工具故障保留各自原因，不能被写成漏洞不存在。
+
+若现有 Finding 与 Reasoning Finding 是两套未完全接通的表示，只做一个确定性投影或薄调用；不得新建第三套 Finding 状态。
+
+### 8.5 B4：Closure、Report 与阶段关闭
+
+用户结果：最终状态下的结构化 Report 能解释做了什么、证据在哪里、什么成立、什么不成立、什么没有执行以及为什么停止。
+
+最小报告内容：
+
+- Engagement、Scope、Admission、固定 Capability 与预算；
+- 发现的端点、服务 Observation 和仍未验证的 Hypothesis；
+- Confirmed/Draft Finding 与精确 Artifact/Execution/Evidence 引用；
+- Negative Result、工具错误、被阻断动作和未测试区域；
+- Run 最终状态、Closure outcome、Safety Stop/Stop Proof；
+- 可复现但不泄露本地路径、Secret 或未脱敏响应。
+
+阶段 B 完成门：
+
+1. B1-B4 每个纵向切片独立提交；
+2. 一个生产 CLI/API 路径可重复完成；
+3. 成功、Negative Result、工具错误、暂停恢复和重启读取均有测试；
+4. 结构化 JSON Report 可由权威持久事实重建；
+5. 实施账本单独更新并提交；
+6. 完成后才允许开始阶段 C。
 
 ---
 
-## 9. 阶段 C：状态化 Web、Attack Chain 与报告
+## 9. 阶段 C：状态化 Web 与 Attack Chain
 
-### 9.1 一个状态化 Web 场景
+阶段 C 只在阶段 B 完成后开始。它不重做报告系统，而是在 B 的证据链上增加身份、会话、授权差异和多步攻击链。
 
-选择一个包含登录、角色或对象授权的本地可复位靶场，完成：
+### 9.1 C1：一个最小身份/对象授权靶场
 
-- Browser、Target HTTP 和 Traffic 使用统一 Run/Session/Request identity；
-- Cookie、Token 和密码只通过 Secret Reference 使用，不进入事件、URL、Artifact 标题或报告；
-- 登录、角色、会话和请求状态可在暂停或重启后恢复；
-- 请求/响应 Diff、重放和最小化复用现有 Traffic/Evidence；
-- 人工接管后生成结构化 Takeover Summary；
-- 身份或状态变化导致的响应差异形成 Evidence；
-- 越界 URL、重定向、子资源和回调继续执行 Scope 检查。
+使用仓库内可复位的本地 Web 服务，只保留：
 
-### 9.2 最小验证语义
+- 两个测试用户、两个对象和一个登录入口；
+- 一个正常访问路径；
+- 一个可验证的对象授权缺陷或明确无缺陷分支；
+- 确定性测试数据，不使用真实账号、Token 或公网服务。
 
-复用现有 Task Graph 和 Reasoning Graph，只补真实场景证明缺少的最小字段或关系：
+先使用 Target HTTP 和 Traffic 完成协议级验证。只有登录流程确实依赖浏览器行为时才启用 Browser；不得为了“覆盖 Browser”强行增加 UI 自动化。
 
-- Hypothesis；
-- prerequisite；
-- minimal action；
-- positive/negative criterion；
-- risk/approval；
-- evidence capture；
-- stop condition；
-- retry/variant relation。
+### 9.2 C2：身份、状态与最小验证
 
-不另建 Pentest Planner、Attack Graph 数据库或常驻多 Agent 团队。
+必须复用现有 Run/Session/Request identity、Traffic Ledger、Secret Reference、Scope、Approval、Evidence 和 Reasoning：
 
-### 9.3 报告收口
+- Cookie、Token 和密码只通过 Secret Reference 使用；
+- 暂停或重启后能够恢复必要的非敏感会话引用；
+- 请求/响应 Diff 形成 Evidence；
+- 越界 URL、重定向、子资源和回调逐次重新检查 Scope；
+- 人工接管后保留结构化 Takeover Summary；
+- Hypothesis 明确 prerequisite、minimal action、正负判据、risk/approval、evidence capture 和 stop condition；
+- 只验证一个授权差异，不扩展成通用 Web Scanner、Crawler 或 Fuzzer。
 
-优先扩展现有通用 Report projection，不复制 Report Service。报告至少包含：
+### 9.3 C3：Attack Chain 与报告扩展
 
-- Engagement、授权、Scope、Admission 和固定 Capability；
-- Attack Surface、Coverage 和未测试区域；
-- Finding、影响、Evidence、复现条件和修复建议；
-- Negative Result、限制、阻断点和未完成项；
-- Attack Chain 的已确认段、假设段和前置条件；
-- 预算耗尽、取消、失败、超时、重启和人工停止的 Stop Proof。
+Attack Chain 只表达已持久存在的 Reasoning Node/Edge：
 
-报告只能读取权威持久事实，不能从最后一段模型文本生成“看起来完整”的结论。
+- 已确认段、假设段和被否定段分开；
+- 每个已确认段引用 Evidence；
+- 前置身份、会话和权限条件明确；
+- 未执行、失败、超时和被安全策略阻断的分支明确；
+- 报告扩展现有 `ReportApplicationService` projection，不复制 Report Service。
+
+阶段 C 完成门：
+
+1. 本地状态化 Web E2E 可重复；
+2. Secret 不进入事件、URL、Artifact 标题、日志或报告；
+3. 成功与无漏洞/被阻断分支都可解释；
+4. 暂停、恢复、取消和跨进程读取保持身份状态与 Stop Proof；
+5. JSON/Markdown Report 能重建 Attack Chain；
+6. 分切片提交，最后单独更新账本。
 
 ---
 
 ## 10. 阶段 D：兑现“越用越好用”
 
-V1 先完成**用户驱动、人工批准**的一项能力成长，不做自动自我修改。
-
-### 10.1 最小成长闭环
+V1 的高上限不依赖 Agent 自动修改自己，而依赖一个足够短、可审查、可回滚的用户能力闭环：
 
 ```text
-用户加入 Tool / Skill / Technique
-→ 静态校验与权限声明
-→ Version / Digest / Provenance
-→ 在测试 Run 中显式 Selection
-→ 使用现有事实进行复盘
-→ 用户批准
-→ 在新 Run 中生效
-→ 禁用或回滚
+专业用户加入一项本地 Skill
+→ 静态校验权限与依赖
+→ 形成 Version / Digest / Provenance
+→ 测试 Run 显式 Selection
+→ 查看使用事实与结果
+→ 用户批准启用
+→ 新 Run 固定使用
+→ 禁用 / 回滚
 ```
 
-### 10.2 最小实现方式
+### 10.1 D1：先证明一项 Skill，不同时建设三种扩展
 
-- Tool 继续使用现有 Tool Registry；
-- Skill 继续使用 Operator Skill root 和 Progressive Skill loader；
-- Technique 继续使用 Capability catalog；
-- 运行选择继续使用 Selection snapshot 和 Pack Lock；
-- 复盘输入优先投影现有 Event、Task、Attempt、Evidence、Negative Result、Finding 和 Closure；
-- 初版复盘可以是确定性导出加人工判断，不先建 Trajectory Store；
-- Capability Candidate 和 Promotion 已有底座时直接接通，不重做生命周期；
-- 若 CLI 缺少必要入口，只增加薄命令调用现有 Application/API。
+首个闭环优先选择 Operator Skill，因为 Tool Registry、Progressive Skill loader、Capability Version、Selection 和 Pack Lock 已存在。只有该 Skill 确实需要新二进制时才同时接入一个注册 Tool。
 
-### 10.3 必须证明
+最小用户结果：
 
-1. 新能力不会扩大 Run Scope；
+- 用户把一个“服务识别/验证方法”目录放入 Operator Skill root；
+- Doctor/verify 能指出 manifest、权限、依赖、Digest 或版本问题；
+- 测试 Run 显式选择该 Skill；
+- Selection snapshot 固定版本和来源；
+- Skill 只能调用当前 Run 已允许的 Tool，不能扩大 Scope 或降低 Approval。
+
+如果现有 CLI 已能完成某一步，只补文档或薄命令；不得新建第二套插件 SDK、Registry 或安装协议。
+
+### 10.2 D2：复盘只做确定性导出加人工判断
+
+初版复盘输入直接读取：
+
+- Event、Task、Attempt；
+- Artifact、Evidence、Observation、Hypothesis、Negative Result、Finding；
+- Closure、Stop Proof；
+- Capability Selection、版本与 Digest。
+
+输出一个脱敏、结构化的 review summary，回答“用了什么、在哪些条件下有效、失败在哪里、是否值得继续启用”。用户作出批准、拒绝或保持测试状态的决定。
+
+不先建设 Trajectory Store、Replay Lab、向量库、自动评分或自动改写 Skill。只有至少两个真实用户流程证明现有持久事实无法支持复盘时，才恢复 LEARN-600 以后相关设计。
+
+### 10.3 D3：禁用与回滚
+
+必须证明：
+
+1. 新能力不扩大 Run Scope；
 2. 新能力不能降低 Approval；
-3. 新能力不能获得未在 Selection/allowlist 中的 Tool；
+3. 新能力不能获得 Selection/allowlist 外的 Tool；
 4. Digest 或版本漂移时失败关闭；
 5. 测试 Run 与生产 Run 的选择可追溯；
 6. 用户能看见变更内容和来源；
 7. 禁用后新 Run 不再选择；
 8. 回滚后恢复旧版本；
-9. 旧 Run 仍能解释当时固定的版本。
+9. 旧 Run 仍能解释当时固定版本；
+10. 删除本地源目录不会破坏旧 Run 的审计记录。
 
-### 10.4 延后项
-
-- Agent 自动写 Skill；
-- 自动批准和自动激活；
-- 在线 Marketplace；
-- 组织级共享 Profile；
-- 第二套向量检索或知识图谱；
-- 未脱敏原始聊天长期保存。
-
-只要专业人士能够安全地把自己的方法加入 RiftX，并在后续 Run 中稳定复用，高上限的核心承诺就已经成立。
+阶段 D 完成后，RiftX 已兑现“专业人士能把自己的方法安全沉淀为下一次生产能力”。自动生成 Skill、自动批准、在线 Marketplace、组织同步和自治进化全部属于 Post-V1。
 
 ---
 
 ## 11. 阶段 E：默认产品面收缩与发布
 
-### 11.1 消费者审计
+### 11.1 先收缩用户看到的产品
+
+默认用户旅程只强调：
+
+```text
+onboard
+→ doctor
+→ model configure/default
+→ pentest start/status
+→ approvals
+→ resume/stop
+→ report
+→ capability verify
+```
+
+必须完成：
+
+- `Configured model not found` 类错误显示配置中的 model/provider/profile、实际可用候选和修复命令；
+- CLI help、README 和示例以 Pentest 为主，Code Audit 和生态功能标记为 frozen/experimental；
+- 当前只播放静态转录的 `demo pentest` 必须明确标记 simulated；阶段 B 完成后优先增加或替换为真实本地靶场 Smoke；
+- 可选 Nmap、Browser 或 Connector 缺失时给出降级路径，不阻塞基础 Pentest；
+- 没有实测启动瓶颈前，不做通用 lazy-loader 重构。
+
+### 11.2 消费者审计
 
 为候选模块建立一次性清单：
 
@@ -547,39 +646,38 @@ V1 先完成**用户驱动、人工批准**的一项能力成长，不做自动�
 - 默认 CLI 命令面和 API routes；
 - Worker Runtime eager 初始化；
 - Code Audit 专属 Runtime、preflight、snapshot 和 source materialization；
-- 未进入两个真实 E2E 的 Connector、Adapter、Demo、Pack 和 UI；
+- 未进入阶段 B/C E2E 的 Connector、Adapter、Demo、Pack 和 UI；
 - 只被测试引用、没有产品入口的辅助层；
 - 语义重复的 Effect Policy 名称、兼容 wrapper 和旧入口。
 
-### 11.2 处理顺序
+### 11.3 处理顺序
 
 ```text
 收缩默认文档和入口
-→ 改为按需加载
 → 测量启动/内存/依赖
-→ 隔离冻结模块
+→ 改为按需加载或隔离冻结模块
 → 删除已证明无消费者的代码
 → migration/恢复/全仓回归
 ```
 
-每次删减独立提交。不得用一次“大清理”同时删除 Domain、migration、API 和测试。
+每次删减独立提交。不得用一次“大清理”同时删除 Domain、migration、API 和测试。Code Audit 代码在消费者审计前只冻结，不删除；Migration 历史永不重写。
 
-### 11.3 发布检查
+### 11.4 发布检查
 
 R1 至少包含：
 
 - 全新环境 Onboard、Doctor 和模型配置错误诊断；
 - 阶段 A 的全部预算与停止检查；
 - 阶段 B 网络服务场景；
-- 阶段 C 状态化 Web 场景与报告；
+- 阶段 C 状态化 Web 场景与 Attack Chain；
 - 阶段 D 用户能力添加、选择、禁用和回滚；
-- Scope、Approval、Credential、Redaction 和 Effect Policy 安全检查；
+- Scope、Approval、Credential、Redaction 和 Effect Policy；
 - 取消、失败、超时、重启和 Stop Proof；
 - migration upgrade、受保护 downgrade、Backup/Restore；
 - 默认 CLI/API 产品面、安装包资产和可选工具降级；
 - 已知限制、未执行能力和不完整 Coverage。
 
-评测用于自身回归、复现、发布检查和能力演进，不承担“量化证明超过通用 Agent”的发布义务。
+评测只用于自身回归、复现、发布检查和能力演进，不承担“量化证明超过通用 Agent”的发布义务。
 
 ---
 
@@ -687,18 +785,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从 `1c379dcc` 继续，只做阶段 B 的一个网络服务专业闭环：
+从审计基线 `0b53e43d` 继续，只做 B1“Artifact → Evidence 生产入口”：
 
-1. 先从现有 Official Pack、Tool Registry 和仓库测试资产中选择一个可复位、明确授权、默认离线的网络服务靶场；
-2. 固定唯一用户结果：从目标解析、可达性和服务发现走到一个 Evidence 支撑的 Finding，或一个证据充分的 Negative Result；
-3. 复用现有 Runner、Execution、Artifact、Evidence、Reasoning、Finding、Closure 和 Report，不新增 Scanner Framework、Planner、Graph 或事实表；
-4. 只接通一个生产 Tool 输出解析路径，扫描结果先成为 Observation/Hypothesis，最小验证后才能形成 Confirmed Finding；
-5. 记录前置条件、Approval、正负判据、Evidence capture、stop condition、未执行能力和失败原因；
-6. 证明预算、Scope、暂停、工具故障和重启不会丢失专业状态，也不会绕过副作用门禁；
-7. 提供一个生产 CLI/API 启动入口和一个可读取该结论的结构化 Report；
-8. 使用 conda `agent` 环境运行目标 E2E、失败路径、受影响回归、全仓 Ruff 和 scoped mypy；
-9. 每个纵向切片独立提交，阶段 B 完成后再单独更新实施账本；
-10. 不启动状态化 Web、Code Audit、学习平台、Marketplace、更多 Pack、更多 Scanner、UI 扩展或大规模代码删除。
+1. 在 Temporal Worker 装配现有 `EvidenceApplicationService`；
+2. 在 Tool Result Context 暴露 opaque Artifact ID，并增加一个薄 Control Tool，让 Primary Agent 对当前 Run 的不可变 Artifact 精确片段登记 Evidence；
+3. 复用 `ExecutionArtifactStore`、Artifact Service、Evidence Ledger、Run/Session/Task owner 校验和现有 Reasoning Proposal Tool；
+4. 返回 Evidence ID 后，证明 `record_observation` 能消费该 ID；
+5. 覆盖成功、跨 Run、越界 span、缺失 Artifact、parser error、重启读取和幂等语义；
+6. 不自动生成 Observation、Negative Result 或 Finding；
+7. 不新增表、migration、Scanner Framework、Pack、Planner、Graph、后台 Worker 或 UI；
+8. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；
+9. 通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后，形成一个独立实现提交；
+10. B1 提交完成后再进入 B2，不提前修改状态化 Web、Code Audit、学习平台或默认产品面。
 
 ---
 
@@ -881,9 +979,9 @@ RiftX 不需要继续证明自己是一个功能更多的通用 Agent 平台。�
 完成目标的最短路径是：
 
 ```text
-完成剩余预算门禁
-→ 完成一个网络服务闭环
-→ 完成一个状态化 Web 与报告闭环
+接通 Artifact → Evidence
+→ 完成一个网络服务的专业事实闭环
+→ 完成一个状态化 Web 与 Attack Chain 闭环
 → 完成一项用户驱动能力成长
 → 收缩默认产品面并发布
 ```
