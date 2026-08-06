@@ -42,6 +42,11 @@ from .audits import (
 )
 from .code_artifacts import ArtifactCodePublisher
 from .events import EventApplicationService
+from .evidence import (
+    EvidenceApplicationService,
+    RegisterArtifactSpanEvidence,
+    RegisterCodeLocationEvidence,
+)
 from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .models import ModelProfileApplicationService, ModelProfilesView, ModelProfileView
@@ -122,6 +127,7 @@ __all__ = [
     "StartAudit",
     "DecideApproval",
     "EventApplicationService",
+    "EvidenceApplicationService",
     "ExecutionApplicationService",
     "CreateFinding",
     "FindingApplicationService",
@@ -134,6 +140,8 @@ __all__ = [
     "RegisteredToolView",
     "RegisterArtifact",
     "RegisterArtifactContent",
+    "RegisterArtifactSpanEvidence",
+    "RegisterCodeLocationEvidence",
     "ReportApplicationService",
     "ReportComposer",
     "ReportSource",

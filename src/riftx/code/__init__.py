@@ -24,7 +24,7 @@ from .models import (
     GitStatusEntry,
     GitStatusResult,
 )
-from .workspace import CodeArtifactPublisher, CodeWorkspaceService
+from .workspace import CodeArtifactPublisher, CodeLocationContent, CodeWorkspaceService
 
 __all__ = [
     "CodeArtifactPublisher",
@@ -36,6 +36,7 @@ __all__ = [
     "CodeGrepMatch",
     "CodeGrepResult",
     "CodeListResult",
+    "CodeLocationContent",
     "CodePatchReceipt",
     "CodePatchResult",
     "CodeReadManyResult",

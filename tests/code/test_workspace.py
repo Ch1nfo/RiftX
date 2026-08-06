@@ -584,6 +584,45 @@ async def test_workspace_rejects_non_normalized_or_absolute_paths(
     assert captured.value.code == "code_path_invalid"
 
 
+async def test_workspace_reads_exact_utf8_code_location(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    content = "αβ\nhello world\n".encode()
+    (root / "source.py").write_bytes(content)
+    service = _general_service(_run("run-1", root))
+
+    location = await service.read_location(
+        "run-1",
+        path="source.py",
+        start_line=1,
+        start_column=1,
+        end_line=2,
+        end_column=5,
+    )
+
+    assert location.data == "β\nhello".encode()
+    assert location.content_digest == hashlib.sha256(content).hexdigest()
+    assert location.source == "workspace"
+
+
+async def test_workspace_rejects_code_location_outside_line(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "source.py").write_text("short\n")
+    service = _general_service(_run("run-1", root))
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.read_location(
+            "run-1",
+            path="source.py",
+            start_line=1,
+            start_column=0,
+            end_line=1,
+            end_column=6,
+        )
+    assert captured.value.code == "code_location_invalid"
+
+
 async def test_workspace_never_follows_symlinks_or_reads_special_files(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

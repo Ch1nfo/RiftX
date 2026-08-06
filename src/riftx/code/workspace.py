@@ -142,6 +142,16 @@ class CodeArtifactPublisher(Protocol):
     ) -> CodePatchReceipt: ...
 
 
+@dataclass(frozen=True, slots=True)
+class CodeLocationContent:
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None
+    audit_id: str | None
+    path: str
+    content_digest: str
+    data: bytes
+
+
 @dataclass(slots=True)
 class _SemanticScan:
     source: _Source
@@ -282,6 +292,47 @@ class CodeWorkspaceService:
 
         result, data, audit_id = await asyncio.to_thread(operation)
         return await self._publish_partial(run_id, result, data, audit_id)
+
+    async def read_location(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        start_line: int,
+        start_column: int,
+        end_line: int,
+        end_column: int,
+    ) -> CodeLocationContent:
+        path = _relative_path(path)
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeLocationContent:
+            with source as opened:
+                data, _, content_digest = opened.read_bytes(
+                    path,
+                    max_bytes=self._max_snapshot_file_bytes,
+                )
+                if content_digest is None:
+                    raise _conflict(
+                        "code_location_digest_unavailable",
+                        "Code source content digest is unavailable",
+                    )
+                return CodeLocationContent(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    audit_id=opened.audit_id,
+                    path=path,
+                    content_digest=content_digest,
+                    data=_slice_code_location(
+                        data,
+                        start_line=start_line,
+                        start_column=start_column,
+                        end_line=end_line,
+                        end_column=end_column,
+                    ),
+                )
+
+        return await asyncio.to_thread(operation)
 
     async def read_many_files(
         self,
@@ -1632,6 +1683,51 @@ def _model_content(data: bytes) -> tuple[Literal["utf-8", "utf-8-lossy", "base64
         return "utf-8", data.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         return "utf-8-lossy", data.decode("utf-8", errors="replace")
+
+
+def _slice_code_location(
+    data: bytes,
+    *,
+    start_line: int,
+    start_column: int,
+    end_line: int,
+    end_column: int,
+) -> bytes:
+    if min(start_line, end_line) < 1 or min(start_column, end_column) < 0:
+        raise _conflict("code_location_invalid", "Code Location coordinates are invalid")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise _conflict(
+            "code_location_not_text",
+            "Code Location requires valid UTF-8 source text",
+        ) from None
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        lines = [""]
+    elif text.endswith(("\n", "\r")):
+        lines.append("")
+    if max(start_line, end_line) > len(lines):
+        raise _conflict("code_location_invalid", "Code Location line is outside the file")
+
+    def line_offset(line_number: int, column: int) -> int:
+        line = lines[line_number - 1]
+        body = line.removesuffix("\n").removesuffix("\r")
+        if column > len(body):
+            raise _conflict(
+                "code_location_invalid",
+                "Code Location column is outside the line",
+            )
+        return sum(len(item) for item in lines[: line_number - 1]) + column
+
+    start = line_offset(start_line, start_column)
+    end = line_offset(end_line, end_column)
+    if end <= start:
+        raise _conflict(
+            "code_location_invalid",
+            "Code Location end must follow its start",
+        )
+    return text[start:end].encode("utf-8")
 
 
 def _looks_binary(data: bytes) -> bool:
