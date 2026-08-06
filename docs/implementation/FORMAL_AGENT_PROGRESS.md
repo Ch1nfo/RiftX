@@ -52,9 +52,9 @@
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
 - Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
-- Verification：全仓 `5275 passed, 5 skipped, 17 warnings`；全仓 Ruff；Database Maintenance/Doctor 目标回归 `27 passed`；Database Maintenance/Doctor Scoped mypy；只读 readiness、备份目录 `0700`、不安全目录失败关闭、备份/恢复 identity 与 Pack 修复回滚回归均通过。
-- Next delivery slice：进入 PEN-500，先固化 Pentest workload 边界与 admission，再交付 `riftx pentest start/status/resume/stop`、持久 Attack Surface 和一个隔离授权目标 E2E。`packs install/update/rollback` 延后至 ECO-800，不阻塞 V1。
+- Current PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`。
+- Verification：全仓 `5284 passed, 5 skipped, 17 warnings`；全仓 Ruff；PEN-500 相关源码 scoped mypy；migration 专项 `152 passed, 295 deselected, 6 warnings`；Domain/Mapper/Schema/Effect Policy/Diagnostics/Repository/API 定向回归 `168 passed`。
+- Next delivery slice：贯通 Pentest Workflow signal、Runner binding、Effect Policy 与交互 Run guard，未逐项审计的副作用继续失败关闭；随后实现专用 Application/API、`riftx pentest start/status/resume/stop`、持久 Attack Surface 和隔离授权目标 E2E。`packs install/update/rollback` 延后至 ECO-800，不阻塞 V1。
 
 ## 3. 研究与实现基线
 
@@ -153,7 +153,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | AUD-403 | COG-201, AUD-400, AUD-401 | pending | — |
 | AUD-404 | AUD-400, AUD-403 | pending | — |
 | AUD-405 | CAP-101, AUD-403 | pending | — |
-| PEN-500 | CAP-102, COG-202 | in_progress | `315039fc` |
+| PEN-500 | CAP-102, COG-202 | in_progress | `315039fc`, `86aaecdf` |
 | PEN-501 | CAP-102, PEN-500 | pending | — |
 | PEN-502 | COG-203, PEN-500, PEN-501 | pending | — |
 | PEN-503 | CAP-102, PEN-502 | pending | — |
@@ -1027,9 +1027,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - Pentest 必须使用专用 Application/API/CLI 创建路径，并在创建时持久验证授权引用、具体 Scope、网络 Entry Point、Approval、预算、禁止行为与停止条件；
   - Workflow signal owner、Runner effect binding、Effect Inventory、API discriminant 和数据库约束必须显式支持 `pentest`，未审计分支继续失败关闭；
   - Attack Surface 作为 Run admission、Artifact/Evidence、Reasoning 和 Traffic 的可重建投影，不新建第二套事实库。
-- Verification：`conda run --no-capture-output -n agent python -m pytest -q tests/docs/test_formal_agent_docs.py`：`4 passed`；`git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`315039fc`。
-- Next：以合同测试驱动 `RunKind.PENTEST`、结构化 admission、mapper 与 migration，随后接通 Workflow/Runner/Effect Policy。
+- Domain and persistence slice：
+  - 新增 `RunKind.PENTEST`、`PentestBudget`、`PentestAdmission`、强制禁止行为与硬停止条件；Pentest Run 缺 Admission、具体正向网络 Scope 或网络 Entry Point 时 Domain 拒绝，非 Pentest Run 携带 Admission 时拒绝；
+  - Run ORM 新增 `pentest_admission_json`，数据库约束精确绑定 `kind='pentest'` 与非空 Admission；Mapper、Repository 和 Pentest discriminated read projection 可完整往返；
+  - Alembic revision `6f2a9c4d8e17` 保留既有 General/Code Audit 数据，拒绝未知 kind、Pentest/Admission 错配和存在 Pentest 权威事实的降级；跨多级降级在任何 DDL 前继续检查 Task、Evidence、Capability、Preflight、Workflow 与 Runner 权威事实；
+  - 新增 RunKind 后，未审计的 Web/MCP/Workflow/Runner effect allowlist 显式维持 General/Code Audit，只有安全通用 Run 读取接受 Pentest，避免 `_ALL_RUN_KINDS` 自动扩权。
+- Verification：全仓 Ruff passed；PEN-500 相关源码 scoped mypy passed；migration 专项 `152 passed, 295 deselected, 6 warnings`；全仓 `5284 passed, 5 skipped, 17 warnings`；Alembic 单 head `6f2a9c4d8e17`；`git diff --check` 和 staged `git diff --check` passed。
+- Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`。
+- Next：接通 Pentest Workflow signal、Runner binding、Effect Policy 与 General+Pentest 交互 guard，所有新增权限逐项审计并保持未知分支失败关闭。
 
 ## 9. Known pre-existing worktree state
 

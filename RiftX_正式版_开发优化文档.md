@@ -8,7 +8,7 @@
 >
 > 当前实现分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前进度基线：`332fb81e`
+> 当前进度基线：`86aaecdf`
 >
 > 实际进度与提交证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -78,6 +78,15 @@ ADR-0013 已完成并明确决定：
 - Objective、Scope、Entry Point、Approval 继续复用现有 Run 字段；
 - Workflow、Runner、Effect Policy 必须显式识别 Pentest；
 - Attack Surface 是现有 Run、Artifact/Evidence、Reasoning 与 Traffic 的投影，不建立第二套事实数据库。
+
+首个实现切片也已完成：
+
+- `RunKind.PENTEST`、`PentestAdmission` 和有界预算已进入 Domain；
+- Pentest Run 必须具有具体正向网络 Scope、网络 Entry Point 和 Admission；
+- 非 Pentest Run 不得携带 Pentest Admission；
+- ORM、Mapper、Repository 与通用只读 API 已支持 Pentest 往返；
+- Alembic head 已更新为 `6f2a9c4d8e17`；
+- 未审计的 Pentest Web/MCP/Workflow/Runner 副作用仍保持失败关闭。
 
 ### 2.3 尚未完成的核心产品结果
 
@@ -326,8 +335,12 @@ O0 计划迁移（completed）
 - 已决定 Pentest admission 的持久边界；
 - 已决定独立 Workflow identity 与 Runner ownership；
 - 已决定 Attack Surface 采用可重建投影。
+- 已新增持久 `RunKind.PENTEST`；
+- 已新增结构化 Admission、预算、禁止行为与停止条件；
+- 已完成 ORM、Mapper、Repository、API 只读投影和 migration；
+- 已完成 upgrade/downgrade、跨级降级保护与全仓回归。
 
-### 8.2 切片 A：Domain 与持久化
+### 8.2 已完成：切片 A — Domain 与持久化
 
 最小实现：
 
@@ -338,7 +351,7 @@ O0 计划迁移（completed）
 - Pentest 必须存在具体正向网络 Scope 和至少一个网络 Entry Point；
 - 在 `runs` 增加 nullable JSON 字段并建立 kind/admission 一致性约束；
 - mapper、API schema 与 repository 完整往返；
-- Alembic 从当前 head `3c6e8a1f2b40` 继续；
+- Alembic 已从 `3c6e8a1f2b40` 迁移到新 head `6f2a9c4d8e17`；
 - downgrade 在存在 Pentest 权威数据时拒绝，不改写为 General。
 
 建议最小预算字段：
@@ -354,7 +367,7 @@ max_concurrent_target_interactions
 
 Domain 只验证结构不变量。Entry Point 与 Scope 的精确匹配由 Application Service 调用现有 `ScopeGuard` 完成，避免 `domain.run` 与 `riftx.scope` 循环依赖。
 
-### 8.3 切片 B：安全边界贯通
+### 8.3 当前下一步：切片 B — 安全边界贯通
 
 必须显式更新：
 
@@ -694,7 +707,7 @@ conda run --no-capture-output -n agent ...
 
 **依赖**：CAP-102、COG-202。
 
-状态：in_progress。当前唯一生产主线，按第 8 节施工。
+状态：in_progress。Domain/持久化已完成，当前进入 Workflow/Runner/Effect Policy 安全边界贯通。
 
 ### PEN-501：状态化 Web 测试
 
