@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["finding_ids", "report_artifact_ids", "closure_outcome"],
+  "properties": {
+    "finding_ids": {"type": "array", "items": {"type": "string"}},
+    "report_artifact_ids": {"type": "array", "items": {"type": "string"}},
+    "closure_outcome": {"type": "string", "enum": ["complete", "partial"]}
+  }
+}

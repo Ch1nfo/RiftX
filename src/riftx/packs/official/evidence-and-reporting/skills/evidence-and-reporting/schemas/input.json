@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["run_id", "audience"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "audience": {"type": "string"}
+  }
+}

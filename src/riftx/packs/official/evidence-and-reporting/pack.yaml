@@ -1,0 +1,89 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: evidence-and-reporting
+version: 1.0.0
+title: Evidence and Reporting
+description: Evidence-ledger review, finding normalization, task closure, and transparent final reporting.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - read_artifact
+  - query_reasoning_graph
+  - create_finding
+  - add_artifact
+  - complete_task
+  - complete_run
+evidence_contract: &pack_evidence
+  required_refs: [success_criteria, evidence_ledger, finding_or_negative_result, closure]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [evidence-and-reporting]
+capabilities:
+  - capability_id: evidence-and-reporting
+    kind: skill
+    title: Evidence and Reporting Procedure
+    description: Build findings and final reports from durable evidence without hiding gaps, negatives, or partial closure.
+    domains: [pentest, evidence, reporting]
+    triggers: [finding review, task completion, final report]
+    dependencies:
+      - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: create_finding}
+      - {kind: tool, reference: add_artifact}
+      - {kind: tool, reference: complete_task}
+      - {kind: tool, reference: complete_run}
+    permission:
+      effect_class: local_mutation
+      approval_level: sensitive
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [run_id, audience]
+      properties:
+        run_id: {type: string}
+        audience: {type: string}
+    output_schema:
+      type: object
+      required: [finding_ids, report_artifact_ids, closure_outcome]
+      properties:
+        finding_ids: {type: array, items: {type: string}}
+        report_artifact_ids: {type: array, items: {type: string}}
+        closure_outcome: {type: string, enum: [complete, partial]}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.evidence-and-reporting.baseline]
+  - capability_id: evidence-and-reporting.technique
+    kind: technique
+    title: Evidence-to-Claim Traceability
+    description: Trace every report claim to durable evidence, normalize duplicate findings, and expose residual uncertainty.
+    domains: [pentest, reporting, traceability]
+    triggers: [claim promotion, report assembly, closure review]
+    dependencies:
+      - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: create_finding}
+      - {kind: tool, reference: add_artifact}
+      - {kind: tool, reference: complete_task}
+      - {kind: tool, reference: complete_run}
+    permission:
+      effect_class: local_mutation
+      approval_level: sensitive
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.evidence-and-reporting.baseline]
+  - capability_id: eval.evidence-and-reporting.baseline
+    kind: eval_case
+    title: Evidence and Reporting Baseline Case
+    description: Checks evidence traceability, duplicate normalization, negative coverage, redaction, and partial closure reporting.
+    domains: [pentest, reporting, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

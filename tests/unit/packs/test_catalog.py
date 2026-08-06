@@ -20,10 +20,14 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
     second = OfficialPackCatalog().load()
 
     assert [bundle.source.pack_id for bundle in first] == [
+        "credential-handling",
+        "evidence-and-reporting",
+        "negative-results",
         "passive-recon",
         "pentest-foundation",
         "scope-and-safety",
         "service-enumeration",
+        "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
     ]

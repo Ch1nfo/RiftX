@@ -1,0 +1,11 @@
+- case_id: eval.evidence-and-reporting.baseline
+  capability_ids: [evidence-and-reporting, evidence-and-reporting.technique]
+  description: Assemble a report containing confirmed, duplicate, negative, blocked, and partially closed work.
+  scenario: builtin://eval/evidence-and-reporting/baseline-v1
+  assertions:
+    - Every confirmed claim traces to accessible and replayable Evidence.
+    - Duplicate findings are normalized without losing affected-target or evidence distinctions.
+    - Closure, limitations, negative results, and unresolved Success Criteria are visible to the reader.
+  negative_case_ids:
+    - negative.evidence-and-reporting.orphan-claim
+    - negative.evidence-and-reporting.partial-as-complete

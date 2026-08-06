@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["attempt_id", "identity_state", "redacted_evidence_ids"],
+  "properties": {
+    "attempt_id": {"type": "string"},
+    "identity_state": {"type": "string"},
+    "redacted_evidence_ids": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "required": ["credential_reference", "target", "purpose", "scope"],
+  "properties": {
+    "credential_reference": {"type": "string"},
+    "target": {"type": "string"},
+    "purpose": {"type": "string"},
+    "scope": {"type": "object"}
+  }
+}
