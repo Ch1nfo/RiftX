@@ -40,6 +40,18 @@ from .audits import (
     CreateAuditDraft,
     CreateAuditDraftV2,
 )
+from .closure import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
+    ClosureOutcome,
+    ClosureReport,
+    ClosureVerifierApplicationService,
+    FindingClosure,
+    IncompleteTaskClosure,
+    SuccessCriterionClosure,
+    closure_event_id,
+    closure_event_payload,
+    closure_report_digest,
+)
 from .code_artifacts import ArtifactCodePublisher
 from .events import EventApplicationService
 from .evidence import (
@@ -131,6 +143,10 @@ __all__ = [
     "CreateAuditDraft",
     "CreateAuditDraftV2",
     "CreateRun",
+    "CLOSURE_EVALUATED_EVENT_TYPE",
+    "ClosureOutcome",
+    "ClosureReport",
+    "ClosureVerifierApplicationService",
     "StartAudit",
     "DecideApproval",
     "EventApplicationService",
@@ -138,6 +154,8 @@ __all__ = [
     "ExecutionApplicationService",
     "CreateFinding",
     "FindingApplicationService",
+    "FindingClosure",
+    "IncompleteTaskClosure",
     "ModelProfileApplicationService",
     "ModelProfilesView",
     "ModelProfileView",
@@ -155,6 +173,7 @@ __all__ = [
     "ReportComposer",
     "ReportSource",
     "StructuredReport",
+    "SuccessCriterionClosure",
     "DeterministicReportComposer",
     "GenerateReports",
     "render_report",
@@ -167,6 +186,9 @@ __all__ = [
     "RunSafetyStopService",
     "SafetyStopResult",
     "stop_resources_payload",
+    "closure_event_id",
+    "closure_event_payload",
+    "closure_report_digest",
     "RunApplicationService",
     "RunWorkflowClient",
     "ToolApplicationService",
