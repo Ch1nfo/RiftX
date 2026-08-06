@@ -352,6 +352,7 @@ class RunEffectOperation(StrEnum):
     GET_FINDING = "get_finding"
     GET_MEMORY = "get_memory"
     GET_NODE = "get_node"
+    GET_OBSERVER_PROJECTION = "get_observer_projection"
     GET_REPORT = "get_report"
     GET_RUN = "get_run"
     GET_RUN_ACTION = "get_run_action"
@@ -1155,8 +1156,11 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         EffectMode.READ_ONLY,
         _dedicated(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
-    _rule(
-        RunEffectOperation.GET_RUN_GRAPH,
+    *_rules(
+        (
+            RunEffectOperation.GET_RUN_GRAPH,
+            RunEffectOperation.GET_OBSERVER_PROJECTION,
+        ),
         EffectOrigin.LOCAL_OPERATOR_API,
         RunEffectFamily.GRAPH,
         _GENERAL_ONLY,
