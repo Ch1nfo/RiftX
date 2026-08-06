@@ -42,9 +42,9 @@ from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
 from .evidence_repository import SQLAlchemyEvidenceLedgerRepository
 from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
-from .observer_repositories import SQLAlchemyActiveTakeoverReader
 from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
+from .observer_repositories import SQLAlchemyActiveTakeoverReader
 from .orm import Base
 from .reasoning_repository import SQLAlchemyReasoningGraphRepository
 from .repositories import (
