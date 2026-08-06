@@ -42,6 +42,7 @@ from .connector_repositories import SQLAlchemyConnectorSubmissionRepository
 from .database import Database
 from .evidence_repository import SQLAlchemyEvidenceLedgerRepository
 from .graph_repositories import GraphReadLimits, SQLAlchemyGraphReadRepository
+from .observer_repositories import SQLAlchemyActiveTakeoverReader
 from .local_audit_jobs import SQLAlchemyLocalAuditJobRepository
 from .observability_repository import SQLAlchemyRuntimeObservabilityRepository
 from .orm import Base
@@ -96,6 +97,7 @@ __all__ = [
     "SQLAlchemyAgentCycleRepository",
     "SQLAlchemyAgentSessionRepository",
     "SQLAlchemyAgentStepRepository",
+    "SQLAlchemyActiveTakeoverReader",
     "SQLAlchemyBrowserRepository",
     "SQLAlchemyCapabilityRepository",
     "SQLAlchemyCapabilitySelectionStore",

@@ -1,5 +1,6 @@
 """Observer Supervisor checks for the durable Agent Runtime."""
 
+from .application import ObserverSupervisorApplicationService
 from .models import (
     SupervisorCheck,
     SupervisorDisposition,
@@ -12,6 +13,7 @@ from .supervisor import ObserverSupervisor
 
 __all__ = [
     "ObserverSupervisor",
+    "ObserverSupervisorApplicationService",
     "SupervisorCheck",
     "SupervisorDisposition",
     "SupervisorReport",
