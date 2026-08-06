@@ -1,0 +1,12 @@
+- case_id: eval.deserialization-audit.baseline
+  capability_ids: [deserialization-audit, deserialization-audit.technique]
+  description: Review schema-only parsing, polymorphic object loading, signed state, framework binders, cache and message payloads, and reachable hook or gadget candidates.
+  scenario: builtin://eval/deserialization-audit/baseline-v1
+  assertions:
+    - Candidates identify attacker-controlled bytes or structured data, parser mode, type resolution, constructed objects, callbacks, and reachable side effects.
+    - Schema validation, type allowlists, signatures, integrity, trusted origins, and inert data-only representations are evaluated on the effective path.
+    - Parser names, format presence, remembered gadget classes, or dynamic typing alone do not prove unsafe deserialization.
+    - Data-only, schema-bound, signed-and-verified, unreachable, test-only, and no-side-effect paths become durable negative results.
+  negative_case_ids:
+    - negative.deserialization-audit.schema-only
+    - negative.deserialization-audit.unreachable-hook

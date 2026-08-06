@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["source_snapshot", "candidate_ids"],
+  "properties": {
+    "source_snapshot": {"type": "string"},
+    "candidate_ids": {"type": "array", "items": {"type": "string"}},
+    "required_checks": {"type": "array", "items": {"type": "string"}}
+  }
+}

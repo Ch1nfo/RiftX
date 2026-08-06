@@ -29,9 +29,11 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         "code-audit-foundation",
         "credential-handling",
         "dependency-and-supply-chain",
+        "deserialization-audit",
         "entrypoint-discovery",
         "evidence-and-reporting",
         "file-upload-and-path-audit",
+        "finding-verification",
         "injection-audit",
         "negative-results",
         "passive-recon",
@@ -41,6 +43,7 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         "secret-and-config-audit",
         "service-enumeration",
         "ssrf-and-outbound-request-audit",
+        "variant-analysis",
         "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
@@ -53,9 +56,11 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         "code-audit-foundation.technique",
         "credential-handling.technique",
         "dependency-and-supply-chain.technique",
+        "deserialization-audit.technique",
         "entrypoint-discovery.technique",
         "evidence-and-reporting.technique",
         "file-upload-and-path-audit.technique",
+        "finding-verification.technique",
         "injection-audit.technique",
         "negative-results.technique",
         "passive-recon.technique",
@@ -65,6 +70,7 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         "secret-and-config-audit.technique",
         "service-enumeration.technique",
         "ssrf-and-outbound-request-audit.technique",
+        "variant-analysis.technique",
         "vulnerability-verification.technique",
         "web-attack-surface.technique",
         "web-request-analysis.technique",
@@ -82,12 +88,12 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
             )
         }
     assert counts == {
-        "capabilities": 57,
-        "capability_versions": 57,
-        "capability_packs": 19,
-        "capability_pack_members": 57,
-        "capability_pack_installs": 19,
-        "capability_pack_locks": 57,
+        "capabilities": 66,
+        "capability_versions": 66,
+        "capability_packs": 22,
+        "capability_pack_members": 66,
+        "capability_pack_installs": 22,
+        "capability_pack_locks": 66,
     }
     await database.dispose()
 

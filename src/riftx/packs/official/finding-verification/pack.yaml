@@ -1,0 +1,112 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: finding-verification
+version: 1.0.0
+title: Finding Verification
+description: Adversarial evidence review that turns vulnerability candidates into verified, disproven, duplicate, or explicitly unresolved outcomes without bypassing the confirmation gate.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - glob
+  - grep
+  - read_many_files
+  - symbol_search
+  - find_references
+  - call_hierarchy
+  - query_reasoning_graph
+  - record_observation
+  - propose_hypothesis
+  - propose_finding
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - candidate_claim_and_identity
+    - source_reachability_and_control_path
+    - defense_and_counterevidence_review
+    - impact_reproduction_or_unresolved_gap
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [finding-verification]
+capabilities:
+  - capability_id: finding-verification
+    kind: skill
+    title: Finding Verification Procedure
+    description: Reconstruct each candidate from authoritative source, challenge control and reachability, inspect defenses and counterevidence, and produce an evidence-complete candidate or durable non-finding.
+    domains: [code-audit, finding, verification]
+    triggers: [verify finding, challenge candidate, reduce false positive]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [source_snapshot, candidate_ids]
+      properties:
+        source_snapshot: {type: string}
+        candidate_ids: {type: array, items: {type: string}}
+        required_checks: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [verified_candidates, disproven_candidates, duplicates, unresolved_candidates, evidence_gaps]
+      properties:
+        verified_candidates: {type: array, items: {type: object}}
+        disproven_candidates: {type: array, items: {type: object}}
+        duplicates: {type: array, items: {type: object}}
+        unresolved_candidates: {type: array, items: {type: object}}
+        evidence_gaps: {type: array, items: {type: object}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.finding-verification.baseline]
+  - capability_id: finding-verification.technique
+    kind: technique
+    title: Adversarial Candidate Reconstruction
+    description: Independently rebuild the candidate claim, attacker control, reachable path, defenses, impact, counterevidence, identity, and replay contract before any confirmation decision.
+    domains: [code-audit, verification, false-positive-control]
+    triggers: [candidate triage, skeptic review, evidence gap]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.finding-verification.baseline]
+  - capability_id: eval.finding-verification.baseline
+    kind: eval_case
+    title: Finding Verification Baseline Case
+    description: Checks independent reconstruction, attacker control, reachability, defenses, counterevidence, impact, duplicate identity, unresolved gaps, and confirmation-gate discipline.
+    domains: [code-audit, finding, verification, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

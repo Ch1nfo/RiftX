@@ -1,0 +1,113 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: variant-analysis
+version: 1.0.0
+title: Variant Analysis
+description: Root-cause-driven search for structurally related vulnerability candidates with independent verification and explicit coverage accounting.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - glob
+  - grep
+  - read_many_files
+  - symbol_search
+  - find_references
+  - call_hierarchy
+  - query_reasoning_graph
+  - record_observation
+  - propose_hypothesis
+  - propose_finding
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - source_snapshot
+    - verified_seed_finding
+    - root_cause_invariant
+    - bounded_search_scope_and_anchors
+    - candidate_specific_verification_or_negative_evidence
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [variant-analysis]
+capabilities:
+  - capability_id: variant-analysis
+    kind: skill
+    title: Variant Analysis Procedure
+    description: Derive a reusable root-cause invariant from a verified seed, search structural and semantic neighbors, and verify every candidate independently.
+    domains: [code-audit, variant-analysis, root-cause]
+    triggers: [find variants, similar vulnerability, incomplete fix]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [source_snapshot, seed_finding_ids]
+      properties:
+        source_snapshot: {type: string}
+        seed_finding_ids: {type: array, items: {type: string}}
+        search_scope: {type: array, items: {type: string}}
+    output_schema:
+      type: object
+      required: [root_cause_models, searched_surfaces, verified_variants, negative_candidates, unresolved_candidates, coverage_gaps]
+      properties:
+        root_cause_models: {type: array, items: {type: object}}
+        searched_surfaces: {type: array, items: {type: object}}
+        verified_variants: {type: array, items: {type: object}}
+        negative_candidates: {type: array, items: {type: object}}
+        unresolved_candidates: {type: array, items: {type: object}}
+        coverage_gaps: {type: array, items: {type: object}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.variant-analysis.baseline]
+  - capability_id: variant-analysis.technique
+    kind: technique
+    title: Root-cause Invariant Expansion
+    description: Convert a verified seed into control, path, defense, and impact invariants; search semantic neighbors; and independently disposition every match.
+    domains: [code-audit, variants, semantic-search]
+    triggers: [verified seed, patch bypass, sibling implementation]
+    dependencies:
+      - {kind: tool, reference: glob}
+      - {kind: tool, reference: grep}
+      - {kind: tool, reference: read_many_files}
+      - {kind: tool, reference: symbol_search}
+      - {kind: tool, reference: find_references}
+      - {kind: tool, reference: call_hierarchy}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: propose_finding}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.variant-analysis.baseline]
+  - capability_id: eval.variant-analysis.baseline
+    kind: eval_case
+    title: Variant Analysis Baseline Case
+    description: Checks verified seeds, root-cause invariants, bounded structural search, independent candidate verification, duplicate handling, and coverage gaps.
+    domains: [code-audit, variant-analysis, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

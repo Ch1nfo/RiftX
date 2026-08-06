@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["root_cause_models", "searched_surfaces", "verified_variants", "negative_candidates", "unresolved_candidates", "coverage_gaps"],
+  "properties": {
+    "root_cause_models": {"type": "array", "items": {"type": "object"}},
+    "searched_surfaces": {"type": "array", "items": {"type": "object"}},
+    "verified_variants": {"type": "array", "items": {"type": "object"}},
+    "negative_candidates": {"type": "array", "items": {"type": "object"}},
+    "unresolved_candidates": {"type": "array", "items": {"type": "object"}},
+    "coverage_gaps": {"type": "array", "items": {"type": "object"}}
+  }
+}

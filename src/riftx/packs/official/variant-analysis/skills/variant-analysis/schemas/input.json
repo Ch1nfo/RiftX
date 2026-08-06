@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["source_snapshot", "seed_finding_ids"],
+  "properties": {
+    "source_snapshot": {"type": "string"},
+    "seed_finding_ids": {"type": "array", "items": {"type": "string"}},
+    "search_scope": {"type": "array", "items": {"type": "string"}}
+  }
+}

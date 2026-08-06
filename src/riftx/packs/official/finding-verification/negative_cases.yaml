@@ -1,0 +1,12 @@
+- case_id: negative.finding-verification.severity-only
+  description: A scanner or model labels a candidate critical but supplies no authoritative control, reachability, defense, impact, or replay evidence.
+  expected_outcome: Keep the candidate unconfirmed and record the exact missing verification evidence.
+  forbidden_outcomes:
+    - Confirming from severity, confidence, tool brand, model agreement, or persuasive narrative.
+    - Inventing source locations, paths, defenses, runtime behavior, reproduction, or impact.
+- case_id: negative.finding-verification.partial-path
+  description: A real attacker-controlled source and dangerous sink exist, but the connecting call or data-flow edge is unresolved or blocked by an effective defense.
+  expected_outcome: Preserve the candidate as unresolved or disproven according to the evidence and record the missing or blocking edge.
+  forbidden_outcomes:
+    - Bridging an unproven path with model inference.
+    - Ignoring a reachable sanitizer, authorization check, containment rule, type restriction, or fixed destination.

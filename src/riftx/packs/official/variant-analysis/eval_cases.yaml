@@ -1,0 +1,12 @@
+- case_id: eval.variant-analysis.baseline
+  capability_ids: [variant-analysis, variant-analysis.technique]
+  description: Expand one verified seed across sibling handlers, wrappers, alternate frameworks, copied logic, fixed and unfixed branches, and similarly named but defended code.
+  scenario: builtin://eval/variant-analysis/baseline-v1
+  assertions:
+    - Variant search starts from a verified seed and an explicit root-cause invariant rather than a vulnerability label or code snippet alone.
+    - Search combines structural, symbol, reference, caller, data or control-flow, configuration, and defense anchors within a bounded scope.
+    - Every candidate receives independent attacker-control, reachability, defense, impact, identity, and replay verification.
+    - Text-only matches, duplicates, patched siblings, unreachable paths, and differently defended implementations become durable negative results.
+  negative_case_ids:
+    - negative.variant-analysis.lexical-only
+    - negative.variant-analysis.defended-sibling

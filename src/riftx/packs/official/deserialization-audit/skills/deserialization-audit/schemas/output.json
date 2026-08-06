@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["parsers", "type_resolution_paths", "hook_or_gadget_candidates", "defenses", "negative_results", "coverage_gaps"],
+  "properties": {
+    "parsers": {"type": "array", "items": {"type": "object"}},
+    "type_resolution_paths": {"type": "array", "items": {"type": "object"}},
+    "hook_or_gadget_candidates": {"type": "array", "items": {"type": "object"}},
+    "defenses": {"type": "array", "items": {"type": "object"}},
+    "negative_results": {"type": "array", "items": {"type": "object"}},
+    "coverage_gaps": {"type": "array", "items": {"type": "object"}}
+  }
+}

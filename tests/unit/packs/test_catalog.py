@@ -26,9 +26,11 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
         "code-audit-foundation",
         "credential-handling",
         "dependency-and-supply-chain",
+        "deserialization-audit",
         "entrypoint-discovery",
         "evidence-and-reporting",
         "file-upload-and-path-audit",
+        "finding-verification",
         "injection-audit",
         "negative-results",
         "passive-recon",
@@ -38,6 +40,7 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
         "secret-and-config-audit",
         "service-enumeration",
         "ssrf-and-outbound-request-audit",
+        "variant-analysis",
         "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
@@ -78,12 +81,15 @@ def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
         "authn-authz-audit",
         "code-audit-foundation",
         "dependency-and-supply-chain",
+        "deserialization-audit",
         "entrypoint-discovery",
         "file-upload-and-path-audit",
+        "finding-verification",
         "injection-audit",
         "repository-mapping",
         "secret-and-config-audit",
         "ssrf-and-outbound-request-audit",
+        "variant-analysis",
     }
     bundles = {
         bundle.source.pack_id: bundle
@@ -118,16 +124,21 @@ def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
             "complete_run",
         },
         "dependency-and-supply-chain": analysis_tools | {"list_files"},
+        "deserialization-audit": analysis_tools | {"call_hierarchy"},
         "entrypoint-discovery": analysis_tools
         - {"propose_finding"}
         | {"call_hierarchy"},
         "file-upload-and-path-audit": analysis_tools | {"call_hierarchy"},
+        "finding-verification": analysis_tools
+        | {"call_hierarchy", "query_reasoning_graph"},
         "injection-audit": analysis_tools | {"call_hierarchy"},
         "repository-mapping": analysis_tools
         - {"propose_hypothesis", "propose_finding"}
         | {"list_files"},
         "secret-and-config-audit": analysis_tools | {"list_files"},
         "ssrf-and-outbound-request-audit": analysis_tools | {"call_hierarchy"},
+        "variant-analysis": analysis_tools
+        | {"call_hierarchy", "query_reasoning_graph"},
     }
     for pack_id, bundle in bundles.items():
         assert set(bundle.source.tool_requirements) == expected_tools[pack_id]
