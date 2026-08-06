@@ -8,7 +8,9 @@
 >
 > 当前实现分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前计划基线：`9424b82b`
+> 当前交付重基线：`9424b82b`
+>
+> 本优化计划采用提交：`84b45640`
 >
 > 实际进度与提交证据：[正式版 Agent 开发实施账本](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >

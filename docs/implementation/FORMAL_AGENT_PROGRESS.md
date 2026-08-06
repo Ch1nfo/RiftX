@@ -12,6 +12,8 @@
 >
 > 当前交付重基线提交：`9424b82b`
 >
+> Pentest-first 优化计划提交：`84b45640`
+>
 > 权威计划：[RiftX 正式版开发优化文档](../../RiftX_正式版_开发优化文档.md)
 >
 > 总体架构：[ADR-0012](../architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
@@ -60,6 +62,7 @@
 | RiftX | `e40af267` | 正式版计划开始前的产品代码基线 |
 | 正式版计划 | `84c657e1` | S0-S8 权威开发计划 |
 | 交付重基线 | `9424b82b` | 专业纵向闭环优先、分层验证门禁、V1/增强/生态边界 |
+| Pentest-first 优化计划 | `84b45640` | 新权威计划、ADR/账本链接与文档合同迁移 |
 | LuaN1aoAgent | `51af327c29c2` | Task/Reasoning/Operation Graph、Planner/Executor/Observer |
 | CyberStrikeAI | `f7ba7070ca74` | Tool Search、Progressive Skill、验证与负结果 |
 | OpenAI Codex | `757c151a0e92` | 原生代码工具、Sandbox、Approval、Skill/Plugin/MCP |
@@ -111,7 +114,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 | Milestone | Status | Exit condition |
 | --- | --- | --- |
-| O0 平台根基与计划迁移 | in_progress | S0-S2 已完成；优化计划、ADR、账本和文档合同完成迁移 |
+| O0 平台根基与计划迁移 | completed | S0-S2 已完成；优化计划、ADR、账本和文档合同完成迁移 |
 | O1 开箱即用收口 | in_progress | PACK-302 的真实 Backup/Restore Doctor 检查通过 |
 | P1 真实 Pentest Run | pending | 非空 Scope admission、Pentest CLI、真实隔离目标和重启恢复 |
 | P2 专业验证闭环 | pending | 状态化 Web、Attack Surface、Hypothesis、Evidence 与 Negative Result |
