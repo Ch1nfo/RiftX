@@ -608,6 +608,10 @@ conda run --no-capture-output -n agent ...
 
 这是 PACK-302 后的第一优先任务。
 
+工作负载、Admission、Workflow/Runner ownership 与 Attack Surface 边界由
+[ADR-0013](docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md)
+固化。
+
 必须交付：
 
 - Pentest workload ADR；

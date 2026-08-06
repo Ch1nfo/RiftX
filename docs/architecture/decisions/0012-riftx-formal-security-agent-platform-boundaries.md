@@ -117,6 +117,10 @@ General Run：
 
 #### Pentest Run
 
+> 后续决策：[ADR-0013](0013-riftx-pentest-run-admission-and-attack-surface.md)
+> 已选择持久 `RunKind.PENTEST`，并固化 Admission、Workflow/Runner ownership、
+> Effect Policy、Attack Surface 投影与回滚边界。下文保留为 SEC-000 时的决策前基线。
+
 Pentest Run 在本计划中首先是明确的工作负载类别，不是当前已经存在的持久 `RunKind`。
 `src/riftx/domain/enums.py` 当前只有 `general` 和 `code_audit`。
 

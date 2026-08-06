@@ -9,8 +9,12 @@ ADR = (
     REPOSITORY_ROOT
     / "docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md"
 )
+PENTEST_ADR = (
+    REPOSITORY_ROOT
+    / "docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md"
+)
 LEDGER = REPOSITORY_ROOT / "docs/implementation/FORMAL_AGENT_PROGRESS.md"
-AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, LEDGER)
+AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, PENTEST_ADR, LEDGER)
 
 TASK_HEADING = re.compile(r"^### ([A-Z]+-\d+)：", re.MULTILINE)
 DEPENDENCY_LINE = re.compile(r"\*\*依赖\*\*：(.+?)。")
