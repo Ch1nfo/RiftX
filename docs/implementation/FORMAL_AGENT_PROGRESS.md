@@ -34,7 +34,7 @@
 
 - Stage：`P1 — 真实 Pentest Run`
 - Current task：`PEN-500 — Pentest Admission 与 Attack Surface`
-- Status：`pending`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
@@ -153,7 +153,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | AUD-403 | COG-201, AUD-400, AUD-401 | pending | — |
 | AUD-404 | AUD-400, AUD-403 | pending | — |
 | AUD-405 | CAP-101, AUD-403 | pending | — |
-| PEN-500 | CAP-102, COG-202 | pending | — |
+| PEN-500 | CAP-102, COG-202 | in_progress | `315039fc` |
 | PEN-501 | CAP-102, PEN-500 | pending | — |
 | PEN-502 | COG-203, PEN-500, PEN-501 | pending | — |
 | PEN-503 | CAP-102, PEN-502 | pending | — |
@@ -1017,6 +1017,19 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Plan rebaseline：`9424b82b` 将正式版发布线调整为专业纵向闭环优先；内嵌 Official Packs 的 `packs install/update/rollback` 不再作为 PACK-302 或 V1 blocker，待 ECO-800 出现真实第三方来源、签名分发和多版本缓存边界后实现。
 - Completion：PACK-302 计划范围已完成；下一任务是 PEN-500 Pentest admission、真实 Run 与 Attack Surface。
+
+### PEN-500：Pentest Admission 与 Attack Surface
+
+- Status：in_progress
+- Started：2026-08-06
+- Workload and admission ADR slice：
+  - ADR-0013 选择持久 `RunKind.PENTEST`，拒绝在 `RunKind.GENERAL` 之上叠加平行 workload profile；
+  - Pentest 必须使用专用 Application/API/CLI 创建路径，并在创建时持久验证授权引用、具体 Scope、网络 Entry Point、Approval、预算、禁止行为与停止条件；
+  - Workflow signal owner、Runner effect binding、Effect Inventory、API discriminant 和数据库约束必须显式支持 `pentest`，未审计分支继续失败关闭；
+  - Attack Surface 作为 Run admission、Artifact/Evidence、Reasoning 和 Traffic 的可重建投影，不新建第二套事实库。
+- Verification：`conda run --no-capture-output -n agent python -m pytest -q tests/docs/test_formal_agent_docs.py`：`4 passed`；`git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`315039fc`。
+- Next：以合同测试驱动 `RunKind.PENTEST`、结构化 admission、mapper 与 migration，随后接通 Workflow/Runner/Effect Policy。
 
 ## 9. Known pre-existing worktree state
 
