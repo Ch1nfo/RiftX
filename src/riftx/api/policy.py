@@ -94,6 +94,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "list_run_actions",
                 "get_run_action",
                 "get_run_graph",
+                "get_observer_projection",
                 "list_target_http_exchanges",
                 "get_target_http_exchange",
                 "list_nodes",

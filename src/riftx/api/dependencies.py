@@ -45,6 +45,8 @@ from riftx.context import ContextApplicationService
 from riftx.domain import LocalPrincipal, OperatorCapability, Run, RunKind, RunnerPrincipal
 from riftx.memory import MemoryService
 from riftx.observability import RuntimeObservabilityService
+from riftx.observer import ObserverProjectorApplicationService
+from riftx.persistence import SQLAlchemyRunEventRepository
 from riftx.security import LocalObjectAuthorizer
 
 from .auth import (
@@ -202,6 +204,19 @@ def get_graph_service(request: Request) -> GraphApplicationService:
     return service
 
 
+def get_observer_projector(request: Request) -> ObserverProjectorApplicationService:
+    service = getattr(request.app.state, "observer_projector", None)
+    if service is None:
+        control_plane = request.app.state.control_plane
+        service = ObserverProjectorApplicationService(
+            graph_views=get_graph_service(request),
+            events=SQLAlchemyRunEventRepository(control_plane.database.session_factory),
+            report_drafts=control_plane.report_service,
+        )
+        request.app.state.observer_projector = service
+    return service
+
+
 def get_traffic_metadata_service(request: Request) -> TrafficMetadataApplicationService:
     """Build the read service without injecting Runner or Artifact body services."""
 
@@ -316,6 +331,10 @@ AuditObjectAuthorizerDependency = Annotated[
 ]
 ActionServiceDependency = Annotated[ActionApplicationService, Depends(get_action_service)]
 GraphServiceDependency = Annotated[GraphApplicationService, Depends(get_graph_service)]
+ObserverProjectorDependency = Annotated[
+    ObserverProjectorApplicationService,
+    Depends(get_observer_projector),
+]
 TrafficMetadataServiceDependency = Annotated[
     TrafficMetadataApplicationService,
     Depends(get_traffic_metadata_service),

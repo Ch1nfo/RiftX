@@ -99,6 +99,7 @@ from .nodes import (
     NodeResponse,
     RegisterNodeRequest,
 )
+from .observer import ObserverProjection, ObserverProjectionQuery
 from .reports import GenerateReportsRequest, ReportListResponse, ReportResponse
 from .runner_control import (
     ExecutionOutputReportRequest,
@@ -205,6 +206,8 @@ __all__ = [
     "NodeListResponse",
     "NodeRegistrationResponse",
     "NodeResponse",
+    "ObserverProjection",
+    "ObserverProjectionQuery",
     "RegisterNodeRequest",
     "RegisteredToolResponse",
     "RegisteredToolSummaryResponse",

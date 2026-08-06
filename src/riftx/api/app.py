@@ -35,6 +35,7 @@ from .routes import (
     models_router,
     nodes_router,
     observability_router,
+    observer_router,
     reports_router,
     runner_control_router,
     runs_router,
@@ -112,6 +113,7 @@ def create_app(
     app.include_router(actions_router, prefix="/api/v1")
     app.include_router(nodes_router, prefix="/api/v1")
     app.include_router(observability_router, prefix="/api/v1")
+    app.include_router(observer_router, prefix="/api/v1")
     app.include_router(runner_control_router, prefix="/api/v1")
     app.include_router(audit_preflight_runner_router, prefix="/api/v1")
     app.include_router(tools_router, prefix="/api/v1")
