@@ -46,10 +46,10 @@
 - Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 - Completed predecessor：CAP-101，implementation commits `73ba9900`、`80276a08`、`a83875d1`、`c6de9413`、`b7e4b969`、`cbc2a2e5`、`546f1466`、`08d746ec`、`203f6c1e`、`8ae9161d`、`abed90b4`。
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
-- Product behavior：PACK-302 已交付顶级只读 `riftx doctor`、live overlay 与本地操作员只读 `/api/v1/system/diagnostics`；13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；确定性不可用状态失败关闭。
-- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`。
-- Verification：全仓 `5223 passed, 5 skipped, 17 warnings`；全仓 Ruff、Doctor/CLI Client/Diagnostics/API Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live 状态晋升、Alembic head、Official Pack install/lock/digest、RunKind effect inventory 与失败关闭边界验证通过。
-- Next delivery slice：实现只修复明确 `fixable` 问题、写前备份、原子替换且可回滚的 `doctor --fix`，再实现 `riftx onboard`。
+- Product behavior：PACK-302 已交付顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics` 与有真实修复语义的 `riftx doctor --fix`；13 个稳定检查覆盖 Model Provider、Temporal、Runner、Browser、Tool、Skill、MCP、LSP、Scanner、Storage、Pack Digest、数据库迁移与 Backup/Restore，并以 Alembic head、22 个 Official Pack 及 66 个 active lock 的现有权威状态完成数据库与 Pack live 证明；`--fix` 目前只修复明确可安全创建的 Skill/Storage 目录，其他状态继续失败关闭。
+- Current implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`。
+- Verification：全仓 `5227 passed, 5 skipped, 18 warnings`；全仓 Ruff、Doctor/CLI Client/Diagnostics/API Scoped mypy、真实不可达 Control Plane CLI 冒烟、13 类稳定检查、live 状态晋升、Alembic head、Official Pack install/lock/digest、RunKind effect inventory、owner-only 目录创建、符号链接拒绝与失败回滚验证通过。
+- Next delivery slice：为 SQLite 数据库增加写前备份、Alembic 迁移和失败恢复合同，再将安全修复处理器扩展到 Official Pack drift 和常见配置迁移。
 
 ## 3. 研究与实现基线
 
@@ -138,7 +138,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
 | PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | completed | `4f74479d`, `81574f56`, `0237a0cb`, `8b1cea9b` |
-| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d` |
+| PACK-302 | PACK-300, PACK-301 | in_progress | `d4f6e4eb`, `02cde9fe`, `eb41f77d`, `41eb8896` |
 | AUD-400 | CAP-101, COG-202 | pending | — |
 | AUD-401 | AUD-400 | pending | — |
 | AUD-402 | AUD-400, AUD-401, COG-205, PACK-301 | pending | — |
@@ -863,6 +863,12 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - Official Pack 诊断校验 22 个 Pack install 的 version ID/version/digest、persisted manifest digest，以及每个 Pack 完整的 capability active lock set，正常状态总计 66 个 active lock；missing、unexpected 或 digest/lock drift 均返回有界 issue code；
   - Doctor live overlay 将 revision 匹配与 Pack install/lock/digest 完整性晋升为 ready；`unmanaged`、`mismatch` 或 Pack drift 失败关闭，数据库修复明确要求先备份再迁移；
   - 新接口已登记 API policy 与 RunKind effect inventory，效果固定为 `GLOBAL` / `READ_ONLY` / `NOT_RUN_SCOPED`。
+- Local fix slice：
+  - 顶级 `riftx doctor --fix` 先运行本地 Doctor，只对报告中明确 `fixable` 且已登记安全处理器的问题动作；修复后重新运行本地与 live Doctor，退出码仍由复检结果决定；
+  - 当前处理器仅初始化缺失的 Operator Skill root、Workspace root 和已启用 Audit 的 Snapshot/Temp/Fix root；所有新建目录均使用 owner-only `0700`；
+  - 目录遍历使用 POSIX `dir_fd`、`O_DIRECTORY` 与 `O_NOFOLLOW`，拒绝符号链接、非目录组件、非当前用户/非 root 所有者以及不安全可写祖先；
+  - 整个修复批次记录新建目录的 parent/child descriptor 与 inode identity；任一创建失败时按逆序删除本批次空目录，identity drift 或回滚不完整则显式失败，不删除无法证明归属的路径；
+  - Database migration、Official Pack reinstall 与配置文件迁移在具备写前备份/回滚处理器之前不再标记为 `fixable`，防止 CLI 暗示尚未存在的自动修复能力。
 - Safety boundaries：
   - Doctor 只读取已有配置、Pack/Skill 发行资产、环境变量是否存在和本地路径元数据；不输出 Credential 值，不调用目标、不启动 Runner/Browser/MCP/LSP/Scanner，不改变数据库或文件权限；
   - `degraded` 表示存在明确降级路径或缺少 live proof，不能被上层解释为 ready；`failed` 只用于已启用或基础必需组件的确定性不可用状态；
@@ -889,8 +895,15 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent mypy src/riftx/diagnostics.py src/riftx/api/routes/system.py src/riftx/api/dependencies.py src/riftx/doctor.py src/riftx/cli/client.py`：`Success: no issues found in 5 source files`；
   - `conda run --no-capture-output -n agent pytest -q`：`5223 passed, 5 skipped, 17 warnings`；跳过和警告原因与 Offline Doctor slice 一致；
   - `git diff --check` 和 staged `git diff --check`：passed。
-- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`。
-- Remaining：常见配置迁移和安全 `doctor --fix`、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
+- Local fix checks：
+  - 测试先行验证：`DoctorFix`、`DoctorFixError` 和 `apply_local_doctor_fixes` 尚不存在时产生 2 个预期 ImportError；实现后本地修复与顶级 CLI 定向回归 `6 passed, 64 deselected`；
+  - Doctor 和 CLI 关联回归：`104 passed`；
+  - `conda run --no-capture-output -n agent mypy src/riftx/doctor.py`：`Success: no issues found in 1 source file`；`src/riftx/cli/app.py` 单文件 mypy 仍命中既有 `_AuditGroup` Typer/Click override 的 6 个类型错误，本切片未修改该边界；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent pytest -q`：`5227 passed, 5 skipped, 18 warnings`；5 个跳过原因不变，17 个 SQLite datetime adapter 警告与 1 个既有 Pydantic `Field(alias=...)` schema 警告均与本切片无关；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`。
+- Remaining：Database Backup/Migration 修复、Official Pack drift 修复、常见配置迁移、`riftx onboard`、基础渗透/代码审计 Demo 验收、Capability/Pack 管理命令与 Backup/Restore 可用性验收仍待后续切片完成。
 
 ## 9. Known pre-existing worktree state
 
