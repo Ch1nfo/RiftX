@@ -28,9 +28,9 @@
 
 ## 2. Current wave
 
-- Stage：`S3 — Official Baseline Packs 与开箱即用`
-- Current task：`PACK-300 — 基础渗透 Packs`
-- Status：`pending`
+- Stage：`S1 — 生产 Capability Plane`
+- Current task：`CAP-101 — 原生代码工具`
+- Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
@@ -43,11 +43,11 @@
 - Completed predecessor：COG-203，implementation commits `a8dbdf50`、`87c7381d`、`d369b684`。
 - Completed predecessor：COG-204，implementation commits `16a1d800`、`a03654e0`、`21e28b3e`、`de863606`、`7a70ef6f`、`465ea1f0`、`65f12b02`；cleanup commit `654a72bd`。
 - Completed predecessor：COG-205，implementation commits `7849cb2b`、`f09ace2a`、`dc2099a0`。
-- Active carry-over：CAP-101 保持 `in_progress`；隔离 Worktree 与受控 LSP 在建立对应 ownership/lifecycle 基础后继续。
-- Product behavior：生产 Runtime 继续使用确定性 Observer 与只读 Projector；Completion 现在在既有 `COMPLETING` admission fence 后读取 Run Success Criteria、Task Graph、Reasoning Graph 与 Evidence Ledger，生成 `complete` 或 `partial` Closure Report。必需 Success Criterion 只有显式映射到真实 Evidence 才算满足；Pending/Blocked/Failed/Cancelled Task 必须具有可审查解释；Confirmed Finding 的 Evidence 必须存在且可重放。Closure 仅以脱敏、确定性的 `run.closure_evaluated` Event 保存摘要和 Digest，不创建第二套权威状态；随后必须取得 Execution、Browser 与 Target HTTP 的物理停止证明，Run 才能进入 `COMPLETED`。Report Source、Markdown、HTML 与 JSON 显式显示 Closure outcome/reason，旧 Run 缺少 Closure Event 时稳定显示 `partial / closure_verification_missing`。
-- Current implementation commits：COG-205 `7849cb2b`、`f09ace2a`、`dc2099a0`。
-- Verification：全仓 `5165 passed, 5 skipped, 17 warnings`；全仓 Ruff、COG-205 Scoped mypy、Closure/Application/Report、Temporal Activity/Workflow、Runtime Coordinator、生产 Worker、Observer Projection 与完整 Control Plane 生命周期回归通过。
-- Next delivery slice：开始 PACK-300，基于现有 Capability Manifest、Skill/Technique、Tool Selection、Closure 与渗透工具链交付首批 Official 基础渗透 Packs；先定义 Pack 公共契约和最小 `pentest-foundation`/`scope-and-safety` 垂直切片，不重复实现现有 Tool 或安全状态。
+- Completed predecessor：PACK-300，implementation commits `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
+- Product behavior：生产 Worker 启动时严格加载并幂等安装 10 个 Official 基础渗透 Pack，共注册 30 个不可变 Capability Version、10 个 Pack/Install 与 30 个精确 Version Lock；所有 Tool requirement 必须存在于生产 Tool Policy。Official Skill 以低优先级根目录进入现有 Progressive Skill Registry，Operator Skill 可显式同 ID 覆盖但不能伪造 `source=official`，运行中 Session 继续锁定原 version/digest。Pack 文本不授予 Scope、Approval、Credential 或 Tool 权限，Technique 继续从既有 Capability Repository 读取。
+- Current implementation commits：PACK-300 `5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
+- Verification：全仓 `5176 passed, 5 skipped, 17 warnings`；全仓 Ruff、PACK/Skill/Worker Scoped mypy、严格 Catalog、幂等 Bootstrap、Technique/Skill 可见性、Session pin/overlay、Subagent allowlist 与 wheel 发行资产验证通过。
+- Next delivery slice：恢复 CAP-101，先交付 General Run 的显式批准隔离 Worktree 生命周期与可审计回滚边界，再接入不执行项目配置、插件、Hook、构建或安装脚本的受控 LSP；CAP-101 完成后才能开始依赖它的 PACK-301。
 
 ## 3. 研究与实现基线
 
@@ -109,7 +109,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | S0 规格、基线与评测骨架 | completed | ADR/账本、Evaluation 骨架和 Capability Domain foundation 完成 |
 | S1 生产 Capability Plane | in_progress | Capability 可持久加载；Code/Browser/Web/MCP 接入生产 Runtime |
 | S2 认知运行时 | completed | Task/Evidence/Reasoning 持久化；Observer 和 Closure 工作 |
-| S3 Official Packs 与开箱即用 | pending | Onboard/Doctor 可完成基础渗透和代码审计流程 |
+| S3 Official Packs 与开箱即用 | in_progress | Onboard/Doctor 可完成基础渗透和代码审计流程 |
 | S4 代码审计完全体 | pending | 语义导航、Scanner、Evidence、Diff/Variant 和受控验证闭环 |
 | S5 渗透测试完全体 | pending | Attack Surface、状态 Web、验证规划、Research、Attack Chain 闭环 |
 | S6 学习飞轮 | pending | Trajectory 到 Candidate/Replay/Promotion/Curator 闭环 |
@@ -134,7 +134,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | COG-203 | COG-202 | completed | `a8dbdf50`, `87c7381d`, `d369b684` |
 | COG-204 | COG-203 | completed | `16a1d800`, `a03654e0`, `21e28b3e`, `de863606`, `7a70ef6f`, `465ea1f0`, `65f12b02` |
 | COG-205 | COG-204 | completed | `7849cb2b`, `f09ace2a`, `dc2099a0` |
-| PACK-300 | CAP-102, CAP-104, COG-205 | pending | — |
+| PACK-300 | CAP-102, CAP-104, COG-205 | completed | `5e56682e`, `89d43498`, `128f8ae1`, `b87305d9`, `c095ae7f` |
 | PACK-301 | CAP-101, CAP-104, COG-205 | pending | — |
 | PACK-302 | PACK-300, PACK-301 | pending | — |
 | AUD-400 | CAP-101, COG-202 | pending | — |
@@ -696,6 +696,40 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
   - `conda run --no-capture-output -n agent python -m pytest -q`：`5165 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
   - `git diff --check` 和 staged `git diff --check`：passed。
 - Implementation commits：`7849cb2b`、`f09ace2a`、`dc2099a0`。
+
+### PACK-300：基础渗透 Packs
+
+- Status：completed
+- Started：2026-08-06
+- Inputs：CAP-102、CAP-104、COG-205、既有 Capability/Pack persistence、Progressive Skill、Technique selection、Tool Policy、Scope/Approval、Evidence Ledger 与 Closure Verifier。
+- Official bundle catalog slice：
+  - 新增严格 `OfficialPackCatalog` 和发行物源码契约；每个 Bundle 必须包含 Pack Manifest、Skill、Technique、Eval Case、Tool requirements、Evidence contract、negative cases、changelog 与可选 JSON Schema；
+  - Skill Capability provenance 绑定完整 Progressive Skill package digest，Technique/Eval Case 与 Pack provenance 绑定完整 Bundle digest；Pack member 精确锁定 Capability version/digest；
+  - Bundle 拒绝 Symlink、特殊文件、超限资产、重复 ID、Skill source 伪造、未知生产 Tool、Tool dependency 漂移、Eval/negative 引用漂移、Evidence contract 缺失与 Changelog 版本缺失；
+  - setuptools package data 已包含 Official YAML、Markdown 与 JSON Schema，最终 wheel 验证包含 10 个 Pack 的 80 个发行资产。
+- Production bootstrap slice：
+  - Worker 在 Schema 初始化后复用 `SQLAlchemyCapabilityRepository` 幂等注册 30 个 Capability Version、10 个 Capability Pack、10 个 Official install 和 30 个精确 PackLock；
+  - 稳定 UUID、immutable manifest/digest 和既有 Repository 冲突语义使重复启动不产生重复状态，Manifest 或 Skill package 漂移失败关闭；
+  - `TechniqueContextManager` 直接从既有 Active Capability Version 读取 10 个 Official Technique，不建立第二套 Pack Registry 或 Runtime authority。
+- Skill layering slice：
+  - 现有 Progressive Skill Registry 支持多根目录和显式优先级：Official roots 为低优先级，配置的 Operator root 为高优先级；
+  - 同优先级重复 Skill ID 失败关闭；Operator 同 ID Skill 可显式覆盖 Official，但必须声明 `source=operator`，不能借覆盖伪造 Official provenance；
+  - Worker 默认暴露 10 个 Official Skill；运行中 Session 保留原 Skill document/reference/version/digest，磁盘或 overlay 更新只标记 stale，必须显式 reload；现有持久选择和 Subagent allowlist 继续生效。
+- Delivered Packs：
+  - `pentest-foundation`、`scope-and-safety`、`passive-recon`、`service-enumeration`、`web-attack-surface`；
+  - `web-request-analysis`、`vulnerability-verification`、`evidence-and-reporting`、`negative-results`、`credential-handling`。
+- Safety boundaries：
+  - Pack 和 Skill 只提供可版本化的专业程序、证据要求与负向纪律，不授予或扩大 Tool、Scope、Approval、Credential、Budget 或 Run lifecycle 权限；
+  - target interaction、external service 与 credential access 继续通过生产 Tool Policy、durable approval、Scope guard、Credential Reference、Artifact redaction 和 physical stop gate；
+  - Scanner、外部研究、版本匹配、模型置信度和报告文本不能代替直接可重放 Evidence 或 Finding promotion gate。
+- Checks：
+  - Catalog、Capability Repository、Bootstrap、Technique/Skill selection、Operator overlay/source spoof、Session pin/stale、Subagent allowlist 与生产 Worker 定向回归：passed；
+  - `conda run --no-capture-output -n agent python -m mypy src/riftx/packs src/riftx/skills/progressive.py src/riftx/skills/registry.py src/riftx/skills/__init__.py src/riftx/temporal/worker_runtime.py`：`Success: no issues found in 7 source files`；
+  - `conda run --no-capture-output -n agent ruff check .`：passed；
+  - `conda run --no-capture-output -n agent python -m build --wheel --outdir /private/tmp/riftx-pack-wheel-pack300`：passed，10 个 Pack 的 80 个发行资产存在；
+  - `conda run --no-capture-output -n agent python -m pytest -q`：`5176 passed, 5 skipped, 17 warnings`；跳过项仅涉及当前主机不具备 Windows、PowerShell 或 delegated cgroup 条件，警告为既有 Python 3.12 SQLite datetime adapter 弃用提示；
+  - `git diff --check` 和 staged `git diff --check`：passed。
+- Implementation commits：`5e56682e`、`89d43498`、`128f8ae1`、`b87305d9`、`c095ae7f`。
 
 ## 9. Known pre-existing worktree state
 
