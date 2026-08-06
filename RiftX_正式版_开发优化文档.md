@@ -331,7 +331,7 @@ _AUDIT_ONLY       = {code_audit}
 
 将 `require_general_run_operation` 重命名为 `require_interactive_run_operation`，只迁移确实允许 General+Pentest 的调用者。Code Audit 专属路径继续拒绝 Pentest。未知 RunKind 永远失败关闭。
 
-完成证据：策略清单收敛为 65 条非 Run、14 条 Code Audit 专属、55 条三类 Run 共享、109 条 General+Pentest 交互规则；不再存在 General-only Effect 漏洞。
+完成证据：加入专用 Pentest Application/API 入口后，策略清单为 67 条非 Run、14 条 Code Audit 专属、55 条三类 Run 共享、109 条 General+Pentest 交互规则；不再存在 General-only Effect 漏洞。
 
 ### 6.4 Migration
 
@@ -362,6 +362,8 @@ Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，�
 
 ### 7.1 专用 Application Service
 
+**状态：in_progress（Admission/Application/API 创建切片 `8f1b2554` 已完成；Capability Selection 原子锁定为下一切片）。**
+
 只实现一个权威创建入口，职责包括：
 
 - 验证 Engagement 存在非空授权引用；
@@ -375,7 +377,19 @@ Downgrade 前拒绝存在 Pentest Workflow signal intent 或 Runner binding，�
 
 普通 `POST /runs` 不得通过任意 `kind=pentest` 绕过该服务。
 
+已交付：
+
+- 专用 `POST /api/v1/pentests`，普通 `POST /runs` 继续拒绝 `kind=pentest`；
+- 同一数据库事务写入内联 Engagement（如有）、Pentest Run、`<run_id>:primary` Agent Session、上下文事件和首条指令；
+- Application 与持久化双重验证非空授权引用、Pentest Admission、具体正向 Scope 和每个 Entry Point 的 `ScopeGuard` 决策；
+- `request_id` 作为可恢复幂等身份；Temporal 失败后保留同一 Run 与消息事件，重试同一请求通过 `riftx-pentest-<run_id>` Signal-With-Start 恢复，不重复创建权威事实；
+- 创建入口纳入 Route Policy、Effect Policy 和 Managed Effect Inventory；事务中途失败回滚全部数据库事实。
+
+下一切片只补 Selection 绑定：扩展同一个 Creation UoW，复用现有 `agent_sessions`、`agent_capability_selections` 与 `capability_pack_locks`，在生产创建请求的同一事务内将 Model Profile、Tool、Skill、Technique 和 Pack 的最终版本/摘要绑定到主 Session。不得在 Run 上增加一份不被执行器强制消费的重复 JSON manifest，也不得新建平行 Selection 数据库。
+
 ### 7.2 API 与 CLI
+
+**状态：in_progress（专用创建 API 已完成；CLI 与 status 聚合未完成）。**
 
 实现专用创建 API 和以下 CLI：
 
@@ -685,7 +699,7 @@ conda run --no-capture-output -n agent ...
 **依赖**：CAP-101、AUD-403。状态：frozen；不得成为默认执行未知目标代码的入口。
 
 ### PEN-500：Pentest Admission 与 Attack Surface
-**依赖**：CAP-102、COG-202。状态：in_progress；P0 安全边界已完成，当前进入专用 Pentest Application/API 创建入口，随后交付 CLI、Attack Surface 与真实 E2E。
+**依赖**：CAP-102、COG-202。状态：in_progress；P0 安全边界和专用 Pentest Admission/Application/API 创建入口已完成，当前绑定最终 Capability Selection，随后交付 CLI、Attack Surface 与真实 E2E。
 
 ### PEN-501：状态化 Web 测试
 **依赖**：CAP-102、PEN-500。状态：pending；只交付一个真实身份/授权场景。
