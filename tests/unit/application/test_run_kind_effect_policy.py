@@ -27,12 +27,10 @@ from riftx.application.run_kind_effects import (
     OwnershipClaim,
     OwnershipResolverKind,
     PolicyDenialReason,
-    PreflightJobEffectOwnership,
     RunEffectFamily,
     RunEffectOperation,
     RunEffectOwnership,
     RunKindEffectInventoryError,
-    RunKindEffectPolicy,
     RunKindEffectPolicyDenied,
     global_effect_ownership_for_local_principal,
     require_run_kind_effect_policy,
@@ -50,7 +48,6 @@ from riftx.domain import (
 )
 
 _DIGEST = "a" * 64
-_OTHER_DIGEST = "b" * 64
 _GLOBAL_OWNER = GlobalEffectOwnership(administrative_scope_digest=_DIGEST)
 
 
@@ -111,16 +108,6 @@ def _run_owner(run_kind: RunKind | str, **overrides: object) -> RunEffectOwnersh
         values.update(audit_id="audit-owner", plan_digest=_DIGEST)
     values.update(overrides)
     return RunEffectOwnership(**values)  # type: ignore[arg-type]
-
-
-def _preflight_owner() -> PreflightJobEffectOwnership:
-    return PreflightJobEffectOwnership(
-        preflight_job_id="preflight-owner",
-        operator_principal_id="operator-owner",
-        authorization_scope_digest=_DIGEST,
-        request_digest=_OTHER_DIGEST,
-        node_id="node-owner",
-    )
 
 
 def test_pentest_effect_owner_cannot_claim_code_audit_identity() -> None:
@@ -316,94 +303,25 @@ def test_known_owner_discriminant_requires_the_exact_python_variant(
 
 
 def test_global_and_run_operations_never_fallback_across_owner_roots() -> None:
-    for wrong_owner in (_run_owner(RunKind.GENERAL), _preflight_owner()):
-        with pytest.raises(RunKindEffectPolicyDenied) as captured:
-            require_run_kind_effect_policy(
-                RunEffectOperation.UPDATE_TOOL,
-                EffectOrigin.ADMIN_API,
-                ownership=wrong_owner,
-                effect=OperationEffect.DURABLE_WRITE,
-                mode=EffectMode.GLOBAL,
-            )
-        assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+    with pytest.raises(RunKindEffectPolicyDenied) as captured:
+        require_run_kind_effect_policy(
+            RunEffectOperation.UPDATE_TOOL,
+            EffectOrigin.ADMIN_API,
+            ownership=_run_owner(RunKind.GENERAL),
+            effect=OperationEffect.DURABLE_WRITE,
+            mode=EffectMode.GLOBAL,
+        )
+    assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
 
-    for wrong_owner in (_GLOBAL_OWNER, _preflight_owner()):
-        with pytest.raises(RunKindEffectPolicyDenied) as captured:
-            require_run_kind_effect_policy(
-                RunEffectOperation.CANCEL_RUN,
-                EffectOrigin.LOCAL_OPERATOR_API,
-                ownership=wrong_owner,
-                effect=OperationEffect.WORKFLOW_CONTROL,
-                mode=EffectMode.NORMAL,
-            )
-        assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
-
-
-
-
-
-def test_preflight_owner_is_independent_and_never_resolves_run_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    required_claims = frozenset(
-        {
-            OwnershipClaim.PREFLIGHT_JOB_ID,
-            OwnershipClaim.OPERATOR_PRINCIPAL_ID,
-            OwnershipClaim.AUTHORIZATION_SCOPE_DIGEST,
-            OwnershipClaim.REQUEST_DIGEST,
-            OwnershipClaim.NODE_ID,
-        }
-    )
-    template = RUN_KIND_EFFECT_POLICIES[
-        (RunEffectOperation.SERVICE_TOOL_UPDATE, EffectOrigin.APPLICATION_SERVICE)
-    ]
-    preflight_policy = RunKindEffectPolicy(
-        operation=RunEffectOperation.SERVICE_TOOL_UPDATE,
-        origin=EffectOrigin.APPLICATION_SERVICE,
-        family=RunEffectFamily.ADMINISTRATION,
-        owner_kind=EffectOwnerKind.PREFLIGHT_JOB,
-        allowed_run_kinds=frozenset(),
-        required_effect=OperationEffect.DURABLE_WRITE,
-        ownership_resolver=OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE,
-        required_claims=required_claims,
-        effect_mode=EffectMode.NORMAL,
-        audit_alternative=template.audit_alternative,
-    )
-    monkeypatch.setattr(
-        run_kind_effects,
-        "RUN_KIND_EFFECT_POLICIES",
-        MappingProxyType(
-            {
-                (
-                    RunEffectOperation.SERVICE_TOOL_UPDATE,
-                    EffectOrigin.APPLICATION_SERVICE,
-                ): preflight_policy
-            }
-        ),
-    )
-
-    owner = _preflight_owner()
-    assert not hasattr(owner, "run_id")
-    assert not hasattr(owner, "run_kind")
-    accepted = require_run_kind_effect_policy(
-        RunEffectOperation.SERVICE_TOOL_UPDATE,
-        EffectOrigin.APPLICATION_SERVICE,
-        ownership=owner,
-        effect=OperationEffect.DURABLE_WRITE,
-        mode=EffectMode.NORMAL,
-    )
-    assert accepted is preflight_policy
-
-    for wrong_owner in (_GLOBAL_OWNER, _run_owner(RunKind.GENERAL)):
-        with pytest.raises(RunKindEffectPolicyDenied) as captured:
-            require_run_kind_effect_policy(
-                RunEffectOperation.SERVICE_TOOL_UPDATE,
-                EffectOrigin.APPLICATION_SERVICE,
-                ownership=wrong_owner,
-                effect=OperationEffect.DURABLE_WRITE,
-                mode=EffectMode.NORMAL,
-            )
-        assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
+    with pytest.raises(RunKindEffectPolicyDenied) as captured:
+        require_run_kind_effect_policy(
+            RunEffectOperation.CANCEL_RUN,
+            EffectOrigin.LOCAL_OPERATOR_API,
+            ownership=_GLOBAL_OWNER,
+            effect=OperationEffect.WORKFLOW_CONTROL,
+            mode=EffectMode.NORMAL,
+        )
+    assert captured.value.reason is PolicyDenialReason.OWNER_KIND_MISMATCH
 
 
 def test_wrong_owner_is_rejected_before_any_run_kind_interpretation() -> None:
@@ -891,15 +809,6 @@ def test_every_catalog_rule_declares_owner_and_resolver_claim_invariants() -> No
     owner_claims = {
         EffectOwnerKind.GLOBAL: frozenset({OwnershipClaim.ADMINISTRATIVE_SCOPE_DIGEST}),
         EffectOwnerKind.RUN: frozenset({OwnershipClaim.RUN_ID, OwnershipClaim.RUN_KIND}),
-        EffectOwnerKind.PREFLIGHT_JOB: frozenset(
-            {
-                OwnershipClaim.PREFLIGHT_JOB_ID,
-                OwnershipClaim.OPERATOR_PRINCIPAL_ID,
-                OwnershipClaim.AUTHORIZATION_SCOPE_DIGEST,
-                OwnershipClaim.REQUEST_DIGEST,
-                OwnershipClaim.NODE_ID,
-            }
-        ),
         EffectOwnerKind.LEGACY_RUNNER_COMMAND: frozenset(
             {
                 OwnershipClaim.NODE_ID,
@@ -986,15 +895,6 @@ def test_every_catalog_rule_declares_owner_and_resolver_claim_invariants() -> No
         OwnershipResolverKind.AUDIT_OWNERSHIP_ENVELOPE: frozenset(
             {OwnershipClaim.AUDIT_ID, OwnershipClaim.PLAN_DIGEST}
         ),
-        OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE: frozenset(
-            {
-                OwnershipClaim.PREFLIGHT_JOB_ID,
-                OwnershipClaim.OPERATOR_PRINCIPAL_ID,
-                OwnershipClaim.AUTHORIZATION_SCOPE_DIGEST,
-                OwnershipClaim.REQUEST_DIGEST,
-                OwnershipClaim.NODE_ID,
-            }
-        ),
     }
     assert set(owner_claims) == set(EffectOwnerKind)
     assert set(resolver_claims) == set(OwnershipResolverKind)
@@ -1009,13 +909,6 @@ def test_every_catalog_rule_declares_owner_and_resolver_claim_invariants() -> No
         elif policy.owner_kind is EffectOwnerKind.GLOBAL:
             assert not policy.allowed_run_kinds
             assert policy.effect_mode is EffectMode.GLOBAL
-            assert (
-                policy.ownership_resolver is not OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE
-            )
-        elif policy.owner_kind is EffectOwnerKind.PREFLIGHT_JOB:
-            assert not policy.allowed_run_kinds
-            assert policy.ownership_resolver is OwnershipResolverKind.PREFLIGHT_JOB_OWNER_ENVELOPE
-            assert policy.effect_mode is not EffectMode.GLOBAL
         else:
             assert not policy.allowed_run_kinds
             assert policy.ownership_resolver is OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE

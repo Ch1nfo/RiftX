@@ -4,10 +4,11 @@ from pathlib import Path
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
-from tests.integration.persistence.test_audit_repositories import (
+from tests.integration.persistence._audit_compat import (
     NOW,
     _create_audit,
     _create_engagement,
+    _create_project,
     _project,
 )
 
@@ -33,7 +34,6 @@ from riftx.domain import (
 from riftx.persistence import (
     Database,
     SQLAlchemyArtifactRepository,
-    SQLAlchemyAuditProjectRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyRunRepository,
@@ -243,8 +243,7 @@ async def _database_with_audits(path: Path) -> Database:
     await database.create_schema()
     await _create_engagement(database, "engagement-1")
     project = _project()
-    _, created = await SQLAlchemyAuditProjectRepository(database.session_factory).create(project)
-    assert created is True
+    await _create_project(database, project)
     await _create_audit(database, audit_id="audit-1", run_id="audit-run-1", snapshot_id=None)
     await _create_audit(database, audit_id="audit-2", run_id="audit-run-2", snapshot_id=None)
     return database

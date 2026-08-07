@@ -28,7 +28,6 @@ from riftx.config import (
     load_riftx_config,
 )
 from riftx.domain import (
-    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
     RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
     BrowserSessionStatus,
     Execution,
@@ -114,16 +113,6 @@ _SAFETY_COMMAND_KINDS = frozenset(
         RunnerCommandKind.TERMINAL_CLOSE,
     }
 )
-_AUDIT_READINESS_LABELS = frozenset(
-    {
-        "audit_source_ingest_available",
-        "audit_source_ingest_backend_id",
-        "audit_source_ingest_image_digest",
-        "audit_source_ingest_policy_digest",
-    }
-)
-
-
 class _ExecutionCallbackKwargs(TypedDict):
     runner_command_id: str
     runner_effect_binding_id: str
@@ -212,19 +201,12 @@ class RunnerDaemonConfig:
 
     @property
     def registration(self) -> NodeRegistration:
-        capabilities = set(self.capabilities)
-        capabilities.discard(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
-        configured_labels = {
-            key: value
-            for key, value in (self.labels or {}).items()
-            if key not in _AUDIT_READINESS_LABELS
-        }
         labels = {
             "mode": "remote",
             "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
             "working_directory": str(Path.cwd()),
             "tool_count": "0",
-            **configured_labels,
+            **(self.labels or {}),
         }
         return NodeRegistration(
             node_id=self.node_id,
@@ -232,7 +214,7 @@ class RunnerDaemonConfig:
             platform=self.platform,
             architecture=self.architecture,
             runner_version=self.runner_version,
-            capabilities=tuple(sorted(capabilities)),
+            capabilities=tuple(sorted(self.capabilities)),
             labels=labels,
         )
 

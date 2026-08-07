@@ -109,7 +109,6 @@ class AuditRunStateProjector:
                     occurred_at=occurred_at,
                     audit_event_id=_event_id("audit-control", *identity),
                     run_event_id=_event_id("audit-run-status", *identity),
-                    workflow_signal_kind=None,
                 )
             )
         )
