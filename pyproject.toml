@@ -52,6 +52,10 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
+"riftx" = [
+  "_webui/index.html",
+  "_webui/assets/*",
+]
 "riftx.packs" = [
   "official/*/*.yaml",
   "official/*/*.md",

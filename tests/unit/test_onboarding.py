@@ -21,6 +21,7 @@ from riftx.onboarding import (
     OnboardError,
     initialize_local_onboarding,
     resolve_onboard_tool_template,
+    resolve_onboard_web_dist,
 )
 from riftx.tools.config import load_tool_config
 
@@ -111,6 +112,8 @@ def test_onboarding_creates_authoritative_user_config_and_disables_missing_tools
     assert config.models.path == result.models_path
     assert config.tools.path == result.tools_path
     assert config.workspace.root == tmp_path / "data" / "riftx" / "workspaces"
+    assert config.web.dist_path == resolve_onboard_web_dist()
+    assert (config.web.dist_path / "index.html").is_file()
     assert config.audit.snapshot_root == tmp_path / "data" / "riftx" / "audit" / "snapshots"
     assert not (tmp_path / "data" / "riftx" / "audit" / "tmp").exists()
     assert not (tmp_path / "data" / "riftx" / "audit" / "fixes").exists()
@@ -227,4 +230,8 @@ def test_onboarding_tool_template_is_packaged_from_the_authoritative_config() ->
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     assert project["tool"]["setuptools"]["data-files"]["share/riftx/templates"] == [
         "configs/tools.example.yaml"
+    ]
+    assert project["tool"]["setuptools"]["package-data"]["riftx"] == [
+        "_webui/index.html",
+        "_webui/assets/*",
     ]

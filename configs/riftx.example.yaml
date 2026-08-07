@@ -72,7 +72,7 @@ tools:
   path: configs/tools.yaml
 
 web:
-  dist_path: apps/web/dist
+  dist_path: src/riftx/_webui
   search:
     enabled: true
     # openai_hosted uses the active Run model profile only when it is an

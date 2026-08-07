@@ -60,6 +60,7 @@ def initialize_local_onboarding(
     )
     secrets_root = state_root / "secrets"
     audit_snapshot_root = data_root / "audit" / "snapshots"
+    web_dist = resolve_onboard_web_dist()
 
     models = ModelsConfig(default_profile="primary", models={"primary": model_profile})
     models_content = _yaml_bytes(models.model_dump(mode="json", exclude_none=False))
@@ -85,6 +86,7 @@ def initialize_local_onboarding(
             "path": str(models_path),
             "secrets_path": str(secrets_root / "models.json"),
         },
+        "web": {"dist_path": str(web_dist)},
         "security": {
             "trust_profile": "local_single_operator",
             "local_principal_path": str(secrets_root / "local-principal.json"),
@@ -158,6 +160,17 @@ def resolve_onboard_tool_template(explicit_path: Path | None = None) -> Path:
         if candidate.is_file():
             return candidate
     raise OnboardError("Packaged onboarding Tool Registry template is unavailable.")
+
+
+def resolve_onboard_web_dist() -> Path:
+    candidates = (
+        Path(__file__).resolve().parent / "_webui",
+        Path(__file__).resolve().parents[2] / "apps" / "web" / "dist",
+    )
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    raise OnboardError("Packaged RiftX WebUI is unavailable.")
 
 
 def validate_existing_onboarding(path: Path) -> Path:
