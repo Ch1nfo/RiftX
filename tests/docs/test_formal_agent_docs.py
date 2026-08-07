@@ -16,43 +16,11 @@ PENTEST_ADR = (
 LEDGER = REPOSITORY_ROOT / "docs/implementation/FORMAL_AGENT_PROGRESS.md"
 AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, PENTEST_ADR, LEDGER)
 
-TASK_HEADING = re.compile(r"^### ([A-Z]+-\d+)：", re.MULTILINE)
-DEPENDENCY_LINE = re.compile(r"\*\*依赖\*\*：(.+?)。")
-LEDGER_ROW = re.compile(
-    r"^\| ([A-Z]+-\d+) \| ([^|]+?) \| "
-    r"(pending|in_progress|blocked|completed) \| ([^|]+?) \|$",
+PLAN_STAGE_ROW = re.compile(
+    r"^\| ([A-E])\. ([^|]+?) \| ([^|]+?) \| ([^|]+?) \|$",
     re.MULTILINE,
 )
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
-
-
-def _task_blocks(plan_text: str) -> dict[str, str]:
-    matches = list(TASK_HEADING.finditer(plan_text))
-    return {
-        match.group(1): plan_text[
-            match.end() : matches[index + 1].start() if index + 1 < len(matches) else None
-        ]
-        for index, match in enumerate(matches)
-    }
-
-
-def _dependencies(value: str) -> frozenset[str]:
-    normalized = value.strip().rstrip("。").strip()
-    if normalized.lower() in {"none", "无"}:
-        return frozenset()
-    return frozenset(
-        item.strip() for item in re.split(r"[、,]", normalized) if item.strip()
-    )
-
-
-def _ledger_rows(ledger_text: str) -> dict[str, tuple[frozenset[str], str, str]]:
-    task_table = ledger_text.split("## 7. Task status", maxsplit=1)[1].split(
-        "## 8. Task records", maxsplit=1
-    )[0]
-    return {
-        task_id: (_dependencies(dependency), status, commit.strip())
-        for task_id, dependency, status, commit in LEDGER_ROW.findall(task_table)
-    }
 
 
 def test_formal_agent_document_links_resolve() -> None:
@@ -66,55 +34,24 @@ def test_formal_agent_document_links_resolve() -> None:
             assert resolved.exists(), f"broken link in {document}: {raw_target}"
 
 
-def test_plan_and_ledger_have_the_same_explicit_task_graph() -> None:
+def test_plan_and_ledger_share_the_current_delivery_route() -> None:
     plan_text = PLAN.read_text(encoding="utf-8")
     ledger_text = LEDGER.read_text(encoding="utf-8")
-    blocks = _task_blocks(plan_text)
-    rows = _ledger_rows(ledger_text)
+    stages = PLAN_STAGE_ROW.findall(plan_text)
 
-    assert blocks
-    assert set(rows) == set(blocks)
-
-    plan_dependencies: dict[str, frozenset[str]] = {}
-    for task_id, block in blocks.items():
-        match = DEPENDENCY_LINE.search(block)
-        assert match is not None, f"{task_id} has no explicit dependency declaration"
-        plan_dependencies[task_id] = _dependencies(match.group(1))
-
-    ledger_dependencies = {
-        task_id: dependency for task_id, (dependency, _status, _commit) in rows.items()
-    }
-    assert ledger_dependencies == plan_dependencies
-
-    known_tasks = set(blocks)
-    for task_id, dependencies in plan_dependencies.items():
-        assert task_id not in dependencies
-        assert dependencies <= known_tasks, (
-            f"{task_id} references unknown dependencies: {dependencies - known_tasks}"
-        )
-
-
-def test_formal_task_dependency_graph_is_acyclic() -> None:
-    blocks = _task_blocks(PLAN.read_text(encoding="utf-8"))
-    graph = {
-        task_id: _dependencies(DEPENDENCY_LINE.search(block).group(1))
-        for task_id, block in blocks.items()
-    }
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(task_id: str) -> None:
-        if task_id in visited:
-            return
-        assert task_id not in visiting, f"task dependency cycle includes {task_id}"
-        visiting.add(task_id)
-        for dependency in graph[task_id]:
-            visit(dependency)
-        visiting.remove(task_id)
-        visited.add(task_id)
-
-    for task_id in graph:
-        visit(task_id)
+    assert [stage_id for stage_id, _name, _status, _result in stages] == list("ABCDE")
+    assert [status.strip() for _stage_id, _name, status, _result in stages] == [
+        "completed",
+        "completed",
+        "in progress；C1 当前施工",
+        "pending",
+        "pending",
+    ]
+    assert "### 9.1 C1：一个最小身份/对象授权靶场（当前唯一实现切片）" in plan_text
+    assert "- Stage：`Pentest-first V1 — Stage C 状态化 Web 与 Attack Chain`" in ledger_text
+    assert "- Current task：`C1 — 一个最小身份/对象授权靶场`" in ledger_text
+    assert "b2193139" in plan_text
+    assert "b2193139" in ledger_text
 
 
 def test_adr_freezes_all_workload_and_system_boundaries() -> None:

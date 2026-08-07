@@ -32,8 +32,8 @@
 
 ## 2. Current wave
 
-- Stage：`Pentest-first V1 — Stage B 网络服务专业闭环`
-- Current task：`Stage B — 一个可复位网络服务的证据化验证闭环`
+- Stage：`Pentest-first V1 — Stage C 状态化 Web 与 Attack Chain`
+- Current task：`C1 — 一个最小身份/对象授权靶场`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -52,10 +52,12 @@
 - Completed predecessor：PACK-301，implementation commits `4f74479d`、`81574f56`、`0237a0cb`、`8b1cea9b`。
 - Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Completed predecessor：PEN-500，implementation commits `315039fc`、`86aaecdf`、`e2314e9b`、`8b9ef440`、`8f1b2554`、`33c863ea`、`70f6f4a0`、`2271bc8e`、`9a4714fc`、`ca12ad9b`、`ad91c3f4`、`2c0f8004`、`73288673`、`b6b5f739`、`53812397`、`1c379dcc`。
+- Completed predecessor：Stage B 网络服务专业闭环，implementation commits `54c2489b`、`c7709790`、`5018f071`、`b2193139`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
-- Next delivery slice：只选择一个可复位网络服务靶场，复用现有 Runner、Artifact、Evidence、Reasoning、Finding、Closure 和 Report，形成一条从枚举到 Evidence/Negative Result 的生产闭环；不启动状态化 Web、Code Audit、学习平台、Marketplace 或新 Scanner Framework。
+- Stage B verification：B4 受影响 Report/Closure/Worker 回归 `78 passed`；完整 Control Plane `68 passed`；最终聚焦回归 `19 passed`；全仓 Ruff passed；3 个变更生产文件 scoped mypy passed；`git diff --check` passed。
+- Next delivery slice：只建立一个仓库内可复位的最小状态化 Web 靶场，包含两个测试用户、两个对象、登录、正常所有权访问和一个确定性跨对象授权分支；先复用 Target HTTP/Traffic，不启动 Browser、Crawler、Fuzzer、新身份系统或 Web Scanner。
 
 ## 3. 研究与实现基线
 
@@ -1076,6 +1078,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；`git diff --check` passed。
 - Implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；Dedicated Admission/Application/API `8f1b2554`；Capability Selection `33c863ea`；Pentest Status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；Isolated Lifecycle `ca12ad9b`；Target Interaction Budget `ad91c3f4`、`2c0f8004`；Live Run Usage `73288673`；Model/Token/Duration Budget `b6b5f739`；Tool/Duration Budget `53812397`；Unified Budget Stop `1c379dcc`。
 - Completion：PEN-500 已完成；下一施工阶段是优化计划 Stage B 的单一网络服务专业闭环，不按历史任务图提前启动 PEN-501 状态化 Web。
+
+### Stage B：网络服务专业闭环
+
+- Status：completed
+- Started：2026-08-07
+- Completed：2026-08-07
+- Artifact → Evidence slice：`54c2489b` 在生产 Worker 装配现有 `EvidenceApplicationService`，增加 Primary-only `register_artifact_evidence`，以当前 Run 的 opaque Artifact ID 和精确 byte span 登记幂等、可回放 Evidence，不新建表或 Evidence 模型。
+- Service enumeration slice：`c7709790` 复用 `service-enumeration` Pack、注册 Nmap Tool、`ExecutionArtifactStore`、Nmap XML parser 和 localhost fixture，形成 Admission → Execution → Artifact → Evidence → Observation → Hypothesis 的可重启 E2E；Scope、Approval、Tool/Target/Duration 预算在副作用前继续失败关闭。
+- Minimal verification slice：`5018f071` 复用 Target HTTP 对 `/diagnostics` 和 `/missing` 做确定性正负验证；受保护 HTTP Artifact 可登记 Evidence 但继续对通用读取面隐藏；Reasoning Vulnerability Candidate 仅能幂等投影为 Draft Finding，精确 404 仅形成对该路径猜测的 Negative Result。
+- Closure/Report slice：`b2193139` 将现有 `ReportApplicationService` 扩展为 `riftx.report.v2`，从权威持久事实重建 Engagement、Admission、Capability Selection/allowlist、Pack Lock、预算使用、Execution、Evidence、Reasoning、Task、Draft Finding、Negative Result、Closure 和 Stop Proof；Draft 不升级为 Confirmed。
+- Report safety：Target HTTP 原始请求/响应体、授权引用原文和本地路径不进入报告；受保护 Evidence 只输出 opaque ID、Digest、Redaction/Replay 状态和安全 Locator；`pentest.budget_exhausted`、Pause、Resume、Cleanup 和 Closure 只通过明确字段白名单进入 Report。
+- E2E：同一 localhost 场景覆盖 Nmap、HTTP 200/404、批准前零副作用、Evidence、Observation/Hypothesis、Draft Finding、Negative Result、目标预算暂停、Resume/Complete、Closure、JSON Report、Control Plane 重启重建和 Report 复用幂等；重放后 Finding 仍只有一条。
+- Verification：B4 Report/Closure/Worker 受影响回归 `78 passed`；完整 `tests/integration/api/test_control_plane.py` `68 passed`；最终聚焦回归 `19 passed`；`conda run --no-capture-output -n agent ruff check .` passed；`reports.py`、`api/runtime.py`、`temporal/worker_runtime.py` scoped mypy passed；`git diff --check` passed。
+- Non-goals upheld：未新增表、migration、Pack、Scanner、Planner、Graph、Worker、Browser 场景或 UI；未自动确认 Finding。
+- Implementation commits：`54c2489b`、`c7709790`、`5018f071`、`b2193139`。
+- Completion：Stage B 已完成；下一施工切片是 C1 最小身份/对象授权靶场，不提前开始 Browser、Attack Chain、能力学习或默认产品面删减。
 
 ## 9. Known pre-existing worktree state
 

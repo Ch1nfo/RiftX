@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`5018f071`（阶段 A 与 B1-B3 已完成）
+> 当前实现基线：`b2193139`（阶段 A-B 已完成）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -33,11 +33,11 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 
 - Pentest Admission、控制命令、状态聚合、Attack Surface、隔离生命周期和目标交互预算已经具备；
 - Model、Tool、Token、Duration 和 Target Interaction 已形成 Run 级持久执行前门禁；
-- Evidence、Negative Result、Finding、Report 等底层能力已经存在，但尚未在一个真实 Pentest 场景中形成可重复的生产闭环；
+- Evidence、Negative Result、Draft Finding、Closure 和 Report 已在一个真实网络服务场景中形成可重复生产闭环，但状态化 Web/Attack Chain 尚未闭环；
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1-B3 已完成；下一步只把 B3 已持久的 Admission、Execution、Artifact、Evidence、Reasoning、Draft Finding、Negative Result 和 Stop Proof 投影到现有 Closure/Report，完成阶段 B。此前不开始状态化 Web、新框架、新 Scanner 或大规模删除。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A-B 已完成；下一步只复用现有 Target HTTP、Traffic、Secret Reference、Scope、Approval、Evidence、Reasoning 和 Report，建立一个有两个测试用户与两个对象的最小本地授权差异场景。此前不启用 Browser、Crawler、Fuzzer、新身份系统或新 Web Scanner。**
 
 ---
 
@@ -94,7 +94,8 @@ RiftX 正式版要成为：
 | Admission 全预算 | Model、Tool、Token、Duration 和 Target Interaction 在模型或 Tool 副作用前持久检查；耗尽统一暂停并保留 Stop Proof | 已完成 |
 | Artifact → Evidence | Primary Agent 可把当前 Run 的 Artifact 精确 byte span 登记为稳定、可回放 Evidence，并用于 Reasoning | 已完成 |
 | 服务假设验证 | 受批准 Target HTTP 可将受保护响应登记为 Evidence，形成 Observation、Vulnerability Candidate、幂等 Draft Finding 和精确 Negative Result | 已完成 |
-| 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | Evidence/Reasoning/Draft Finding 已接入生产链，待验收 Closure/Report |
+| 网络服务结案 | JSON Report v2 可从持久事实重建 Engagement、Admission、Capability/Pack Lock、预算、Execution、Evidence、Reasoning、Draft Finding、Negative Result、Closure 和 Stop Proof | 已完成 |
+| 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 已在网络服务场景形成生产闭环，下一步复用到状态化 Web |
 | 能力底座 | Capability、Version、Digest、Provenance、Candidate、Selection、Pack、Progressive Skill 已存在 | 需要用户成长闭环 |
 
 阶段 A 最近实现：
@@ -108,12 +109,13 @@ b6b5f739  enforce model token duration budgets
 1c379dcc  unify budget exhaustion handling
 ```
 
-阶段 B 当前实现：
+阶段 B 已完成实现：
 
 ```text
 54c2489b  register artifact evidence
 c7709790  close service enumeration loop
 5018f071  verify service hypotheses
+b2193139  close network service reporting
 ```
 
 最近已验证的相关回归包括：
@@ -129,6 +131,9 @@ B2 Pack/upgrade regression: 14 passed
 B3 affected Runtime/Evidence/Repository regression: 117 passed
 Full Control Plane after B3: 68 passed
 B3 Pack regression: 13 passed
+B4 affected Report/Closure/Worker regression: 78 passed
+Full Control Plane after B4: 68 passed
+B4 final focused regression: 19 passed
 Full Ruff: passed
 Changed production files scoped mypy: passed
 ```
@@ -139,14 +144,14 @@ Changed production files scoped mypy: passed
 
 | 缺口 | 当前状态 | V1 必须 |
 | --- | --- | --- |
-| 网络服务专业闭环 | 枚举、HTTP 正负验证和 Draft Finding 已形成生产 E2E，缺 Closure/Report 关闭 | 是 |
+| 网络服务专业闭环 | 已完成枚举、HTTP 正负验证、Draft Finding、Closure 和 JSON Report | 已完成 |
 | 状态化 Web 闭环 | Browser、Traffic、Target HTTP 已存在，身份/授权场景未闭环 | 是 |
-| 专业报告 | 通用报告能力已存在，Pentest 事实组合与 E2E 未验收 | 是 |
+| 专业报告 | 网络服务 JSON Report 已验收；状态化 Web 与 Attack Chain 尚未验收 | 是 |
 | 用户驱动能力成长 | Capability 底座存在，缺少一次完整添加、选择、复盘、禁用和回滚 | 是 |
 | 默认产品面收缩 | 未按真实消费者审计 | 是 |
 | 大规模代码删除 | 尚无足够消费者证据 | 否，延后到收缩阶段 |
 
-阶段 B 的专业事实链已接通到 Draft Finding/Negative Result：
+阶段 B 的专业事实链已关闭：
 
 ```text
 Execution
@@ -158,7 +163,7 @@ Execution
 → Reasoning Observation/Hypothesis（已完成）
 → Target HTTP 最小验证（已完成）
 → Vulnerability Candidate/Draft Finding/Negative Result（已完成）
-→ Closure/Report（当前施工）
+→ Closure/JSON Report v2（已完成）
 ```
 
 可直接复用的现有生产事实：
@@ -169,10 +174,11 @@ Execution
 - Reasoning 的 Observation、Fact、Finding Candidate 和 Negative Result 已强制校验 Evidence ID；
 - Finding 已能从 Reasoning Vulnerability Candidate 确定性投影为 Draft，并引用同 Run 的 Artifact/Execution；
 - Target HTTP 原始请求/响应仍不对通用 Artifact 读取面可见，只能通过同 Run 持久关联在服务端登记 Evidence 或校验 Finding；
-- Report 已能读取 Finding、Artifact、Event 和 Closure，但尚未在 B3 生产事实上完成端到端验收；
+- Report v2 已能从权威持久状态重建 B3 事实，保留 Draft、精确否定、未验证假设、执行状态、预算停止原因和 Closure；
+- Target HTTP 原始体、授权引用原文和本地路径不进入 Report；受保护 Evidence 只暴露 opaque ID、Digest 和安全 Locator；
 - 现有测试已有 Nmap golden fixture、`fake_nmap.py` 和可复用的本地异步 HTTP 目标生命周期。
 
-因此，下一个提交应该是“用现有 Closure/Report 投影 B3 的全部权威事实并关闭阶段 B”，而不是新增报告系统、扫描框架、更多靶场或自动确认 Finding。
+因此，下一个提交应该是“复用现有 HTTP/Traffic 事实建立一个最小身份与对象授权靶场”，而不是新增 Browser 自动化框架、Crawler、Fuzzer、身份服务或 Web Scanner。
 
 ### 2.3 对“是否过度开发”的最终判断
 
@@ -345,8 +351,8 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | in progress；B0-B3 completed，B4 当前施工 | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
-| C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
+| B. 网络服务专业闭环 | completed | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
+| C. 状态化 Web 与报告 | in progress；C1 当前施工 | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
@@ -524,7 +530,7 @@ c7709790  feat(pentest): close service enumeration loop
 5018f071  feat(pentest): verify service hypotheses
 ```
 
-### 8.5 B4：Closure、Report 与阶段关闭（当前唯一实现切片）
+### 8.5 B4：Closure、Report 与阶段关闭（completed）
 
 用户结果：最终状态下的结构化 Report 能解释做了什么、证据在哪里、什么成立、什么不成立、什么没有执行以及为什么停止。
 
@@ -546,13 +552,28 @@ c7709790  feat(pentest): close service enumeration loop
 5. 实施账本单独更新并提交；
 6. 完成后才允许开始阶段 C。
 
+已完成实现：
+
+- 现有 `ReportApplicationService` 生成 `riftx.report.v2`，Pentest 投影显式包含 Engagement、Admission、Capability Selection/allowlist、Pack Lock、预算使用、Stop Proof、Execution、Evidence、Reasoning Node/Edge 和 Task；
+- Report 保留 Domain Finding 的 Draft/Confirmed 状态与 Reasoning 的 Observation、Hypothesis、Vulnerability Candidate、Negative Result，不自动提升结论；
+- `pentest.budget_exhausted`、Pause、Resume、Cleanup 与 Closure 通过安全字段白名单进入报告；
+- Target HTTP 受保护 Artifact 继续不进入通用 Artifact/Event/Report 读取面，Evidence 仅输出 opaque ID、Digest、Redaction/Replay 状态和安全 Locator；
+- 同一 localhost E2E 已覆盖 Closure、JSON Report、Draft/Negative Result、预算停止原因、重启重建、Report 复用幂等和不泄露原始 HTTP 体/授权引用/本地路径；
+- 未新增表、migration、Pack、Scanner、Planner、Graph、Worker、Browser 场景或 UI。
+
+提交：
+
+```text
+b2193139  feat(pentest): close network service reporting
+```
+
 ---
 
 ## 9. 阶段 C：状态化 Web 与 Attack Chain
 
 阶段 C 只在阶段 B 完成后开始。它不重做报告系统，而是在 B 的证据链上增加身份、会话、授权差异和多步攻击链。
 
-### 9.1 C1：一个最小身份/对象授权靶场
+### 9.1 C1：一个最小身份/对象授权靶场（当前唯一实现切片）
 
 使用仓库内可复位的本地 Web 服务，只保留：
 
@@ -834,18 +855,17 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从实现基线 `5018f071` 继续，只做 B4“Closure、Report 与阶段关闭”：
+从实现基线 `b2193139` 继续，只做 C1“一个最小身份/对象授权靶场”：
 
-1. 复用 B3 的同一 localhost Run 和已持久事实，不创建第二个靶场或平行报告模型；
-2. 从现有 `ClosureVerifierApplicationService`、`ReportApplicationService`、Report projection 和 Run 完成路径开始审计，只修复阻断 B3 事实进入结案的生产断点；
-3. 结构化 JSON Report 必须从权威持久状态重建 Engagement、Scope、Admission、Capability/Pack Lock、预算、Execution、Artifact/Evidence、Observation/Hypothesis、Draft Finding、Negative Result 和 Closure；
-4. 报告必须区分“已验证”、“Draft/待人工确认”、“精确否定”、“未执行”、“工具失败/被阻断”和“停止原因”，不得把 Draft 升级为 Confirmed；
-5. Target HTTP 原始请求/响应体继续对通用 Artifact、Event、Graph 和 Report 读取面隐藏；Report 只使用脱敏 Traffic 元数据、Evidence Digest/Locator 和可安全导出的引用；
-6. 预算耗尽造成的 Pause、随后 Resume/Complete 和 Stop Proof 必须可在 Closure/Report 中解释，不得被改写为目标结论；
-7. 验证同一 Report 在重放、Control Plane 重启和持久状态重建后不产生重复 Finding、丢失 Negative Result 或泄露 Secret/本地路径；
-8. 优先验收现有 JSON 输出；只有现有 Markdown renderer 能零新抽象复用时才同步验收 Markdown，不新建 Template Engine 或 Pentest Report Service；
-9. B4 不新增表、migration、Pack、Scanner、Planner、Graph、Worker、Browser 场景或 UI，不进入阶段 C-E；
-10. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成 B4 独立实现提交，再单独更新实施账本并关闭阶段 B。
+1. 先审计现有 Target HTTP request schema、Traffic Ledger、Cookie/Header 处理、Secret Reference 和 localhost 测试服务，只修复阻断最小身份流的生产断点；
+2. 在仓库测试内建立一个每次随机 localhost 端口、每次测试后关闭的状态化 HTTP 服务，不引入 Docker、外部镜像或公网依赖；
+3. 靶场只保留两个测试用户、两个对象、一个登录入口、各自对象的正常访问与一个确定性跨对象授权分支；测试数据不得使用真实账号、Token 或 Secret；
+4. C1 只验收靶场可复位性、登录状态、所有权正常访问、跨对象分支和请求前 Scope/Approval/预算边界；不在本切片创建 Finding、Attack Chain 或最终 Report；
+5. 协议级登录能用 Target HTTP 完成时不启用 Browser；只有真实前端行为阻断 C2 时才准入 Browser；
+6. Cookie、Token 和密码不得进入 URL、Event、Artifact 标题、Graph、Report 或测试失败输出；若现有 Target HTTP 尚不支持安全身份引用，只增加一个复用现有 Credential/Secret Reference 的薄入口；
+7. 每个请求及重定向继续逐次执行 Scope 校验；未批准、越界、预算耗尽和登录失败不得产生目标成功结论；
+8. C1 不新增身份服务、会话数据库、Crawler、Fuzzer、Web Scanner、表、migration、Pack、Planner、Graph、Worker 或 UI；
+9. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成 C1 独立实现提交，C1 完成前不进入 C2-D。
 
 ---
 
@@ -870,11 +890,11 @@ RiftX 不需要继续证明自己是一个功能更多的通用 Agent 平台。�
 完成目标的最短路径是：
 
 ```text
-接通 Artifact → Evidence
-→ 完成一个网络服务的专业事实闭环
-→ 完成一个状态化 Web 与 Attack Chain 闭环
-→ 完成一项用户驱动能力成长
-→ 收缩默认产品面并发布
+[已完成] 接通 Artifact → Evidence
+→ [已完成] 完成一个网络服务的专业事实闭环
+→ [当前] 完成一个状态化 Web 与 Attack Chain 闭环
+→ [待完成] 完成一项用户驱动能力成长
+→ [待完成] 收缩默认产品面并发布
 ```
 
 当前不需要更多架构。当前需要让已有架构产生连续、可重复、可审查的专业结果。
