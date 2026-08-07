@@ -134,6 +134,8 @@ riftx report show REPORT_ID
 RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投影，
 可恢复工作流与节点本地效果所有者，让客户端断开后的工作依然可恢复、可归因。
 
+- **简单的宿主机原生安装** —— wheel 内置 WebUI，`riftx onboard` 创建本地状态，
+  `riftx start` 统一托管完整本地栈，不要求 Conda 或 Docker。
 - **会话优先** —— 创建 Run 只会把目标和边界保存为 `waiting_user`；
   只有操作员发送第一条具体指令后，模型和工具才会启动。
 - **可归因控制** —— 审批、终端接管与浏览器接管都绑定稳定身份和不可变决策。
@@ -204,6 +206,7 @@ RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投�
 
 | 领域 | 已实现能力 |
 | --- | --- |
+| 安装与本地运行 | 标准 Python wheel、内置生产 WebUI、可重复运行的 `riftx onboard`、单命令 `riftx start`、自动复用/启动本地 Temporal、会话级本地管理员 Token 与统一停止 |
 | 持久 Agent 运行时 | 有边界 Agent Cycle、动态 Tool 发现、渐进式 Skill、结构化 Working Memory、上下文编译与压缩、长期 Memory、Subagent、Hook、受治理的 MCP 集成、重试、重放与幂等执行身份 |
 | 主机执行 | 仅限已注册的 Process、Shell 与 PTY；节点本地 Runner；有界输出；取消/等待；Linux delegated cgroup v2 隔离；Runner 范围内的 Target HTTP |
 | 证据与可观测性 | 不可变 Artifact、证据支持的 Finding、Markdown/HTML/JSON Report、确定性 Task/Evidence/Operation 投影、可恢复 SSE、Raw Events、运行指标与逻辑 `artifact://` 引用 |

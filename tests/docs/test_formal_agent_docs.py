@@ -113,3 +113,6 @@ def test_readmes_expose_one_pentest_first_quickstart() -> None:
         assert retirement_label in text
         assert "apps/demo" not in text
         assert "frozen/experimental" not in text
+
+    assert "| Installation and local operation |" in README.read_text(encoding="utf-8")
+    assert "| 安装与本地运行 |" in README_ZH.read_text(encoding="utf-8")

@@ -143,6 +143,8 @@ RiftX treats every Run as durable operational state. WebUI and CLI are projectio
 while resumable workflows and node-local effect owners keep work recoverable and
 attributable after a client disconnects.
 
+- **Simple host-native setup** — the wheel bundles the WebUI, `riftx onboard` creates
+  local state, and `riftx start` supervises the complete local stack without Conda or Docker.
 - **Conversation first** — creating a Run stores its objective and boundaries in
   `waiting_user`; no model or tool starts until the operator sends a concrete instruction.
 - **Attributable control** — approvals, terminal takeover, and browser takeover bind to
@@ -218,6 +220,7 @@ image for the full-resolution view.
 
 | Area | Implemented capabilities |
 | --- | --- |
+| Installation and local operation | Standard Python wheel, bundled production WebUI, repeatable `riftx onboard`, one-command `riftx start`, automatic local Temporal reuse/start, session-only local admin token, and coordinated shutdown |
 | Durable Agent runtime | Bounded Agent cycles, dynamic Tool discovery, progressive Skills, structured Working Memory, context compilation and compaction, long-term Memory, Subagents, Hooks, governed MCP integration, retry, replay, and idempotent execution identities |
 | Host execution | Registered-only Process, Shell, and PTY; node-local Runner; bounded output; cancel/wait; Linux delegated cgroup v2 containment; Runner-scoped Target HTTP |
 | Evidence and observability | Immutable Artifacts, evidence-backed Findings, Markdown/HTML/JSON Reports, deterministic Task/Evidence/Operation projections, resumable SSE, Raw Events, runtime metrics, and logical `artifact://` references |
