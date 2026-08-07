@@ -27,7 +27,6 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalOutcomeUnknown,
     WorkflowSignalTerminallyRejected,
 )
-from riftx.application.workflow_router import WorkflowDispatchDisposition
 from riftx.domain import (
     AuditLifecycleStatus,
     AuditPhase,
@@ -1281,7 +1280,7 @@ async def test_concurrent_cancel_fence_supersedes_pending_audit_resume_before_ro
     resume = next(
         item for item in intents if item.signal_kind is WorkflowSignalKind.RESUME
     )
-    router = SimpleNamespace(resume_audit=AsyncMock())
+    router = SimpleNamespace()
     transport = RoutedWorkflowSignalTransport(
         router,  # type: ignore[arg-type]
         runs=SQLAlchemyRunRepository(database.session_factory),
@@ -1292,95 +1291,8 @@ async def test_concurrent_cancel_fence_supersedes_pending_audit_resume_before_ro
         await transport.send(resume)
 
     assert captured.value.error_code == "workflow_signal_rejected"
-    router.resume_audit.assert_not_awaited()
     await database.dispose()
 
-
-async def test_audit_delivery_guard_linearizes_resume_rpc_before_competing_cancel(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-dispatch-race.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-dispatch-race",
-        run_id="run-dispatch-race",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.PAUSED,
-        run_status=RunStatus.PAUSED,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.PAUSED,
-        source_run_status=RunStatus.PAUSED,
-        target_audit_status=AuditLifecycleStatus.RUNNING,
-        target_run_status=RunStatus.RUNNING,
-        signal_kind=WorkflowSignalKind.RESUME,
-        expected_state_version=2,
-        event_suffix="guarded-resume",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    resume_record = (await _all_signal_records(database))[0]
-    resume = await repository.get(resume_record.id)
-    assert resume is not None
-    rpc_entered = asyncio.Event()
-    rpc_release = asyncio.Event()
-
-    async def resume_audit(**owner: str) -> WorkflowDispatchDisposition:
-        assert owner["audit_id"] == scan.id
-        rpc_entered.set()
-        await rpc_release.wait()
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    transport = RoutedWorkflowSignalTransport(
-        SimpleNamespace(resume_audit=resume_audit),  # type: ignore[arg-type]
-        runs=SQLAlchemyRunRepository(database.session_factory),
-        sources=repository,
-    )
-    send_task = asyncio.create_task(transport.send(resume))
-    await asyncio.wait_for(rpc_entered.wait(), timeout=2)
-    cancel_started = asyncio.Event()
-
-    async def commit_cancel() -> None:
-        cancel_started.set()
-        await _project_audit_control(
-            database,
-            audit_id=scan.id,
-            run_id=scan.run_id,
-            source_audit_status=AuditLifecycleStatus.RUNNING,
-            source_run_status=RunStatus.RUNNING,
-            target_audit_status=AuditLifecycleStatus.CANCELLING,
-            target_run_status=RunStatus.CANCELLING,
-            signal_kind=WorkflowSignalKind.CANCEL,
-            expected_state_version=3,
-            event_suffix="guarded-cancel",
-        )
-
-    cancel_task = asyncio.create_task(commit_cancel())
-    await cancel_started.wait()
-    await asyncio.sleep(0.05)
-    try:
-        assert cancel_task.done() is False
-    finally:
-        rpc_release.set()
-    await asyncio.wait_for(send_task, timeout=2)
-    await asyncio.wait_for(cancel_task, timeout=2)
-
-    async with database.session_factory() as session:
-        durable_scan = await session.get(AuditScanRecord, scan.id)
-    assert durable_scan is not None
-    assert durable_scan.lifecycle_status == AuditLifecycleStatus.CANCELLING.value
-    await database.dispose()
 
 
 async def test_audit_signal_accepted_then_disconnected_stays_unknown_and_probeable(

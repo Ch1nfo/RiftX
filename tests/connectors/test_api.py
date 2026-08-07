@@ -90,7 +90,6 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         settings=settings,
         connector_service=connector,
         run_service=runs,
-        audit_service=object(),
         tool_service=SimpleNamespace(node_id="local"),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]

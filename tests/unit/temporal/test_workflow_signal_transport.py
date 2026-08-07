@@ -20,7 +20,6 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalOutcomeUnknown,
     WorkflowSignalTerminallyRejected,
 )
-from riftx.application.workflow_router import WorkflowDispatchDisposition
 from riftx.domain import RunKind, RunStatus
 from riftx.domain.workflow_signal import (
     WorkflowSignalIntent,
@@ -88,7 +87,6 @@ class _Router:
         self.exact_workflow_ids: list[str | None] = []
         self.general_workflow_id = "riftx-run-run-1"
         self.approve_error: Exception | None = None
-        self.audit_disposition = WorkflowDispatchDisposition.DISPATCHED
 
     def workflow_id(self, run_id: str) -> str:
         assert run_id == "run-1"
@@ -137,19 +135,6 @@ class _Router:
     async def cancel(self, run_id: str, *, workflow_id: str | None = None) -> None:
         self.exact_workflow_ids.append(workflow_id)
         self.calls.append(("cancel", run_id))
-
-    async def pause_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("pause_audit", owner))
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    async def resume_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("resume_audit", owner))
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    async def cancel_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("cancel_audit", owner))
-        return self.audit_disposition
-
 
 def _runs(
     *,
@@ -334,9 +319,8 @@ async def test_transport_supersedes_invalid_payload_and_policy_rejection() -> No
     assert captured.value.error_code == "run_kind_effect_policy_denied"
 
 
-async def test_transport_supersedes_audit_signal_when_workflow_never_started() -> None:
+async def test_transport_rejects_retired_audit_signal_without_router_fallback() -> None:
     router = _Router()
-    router.audit_disposition = WorkflowDispatchDisposition.NOT_STARTED
 
     with pytest.raises(WorkflowSignalTerminallyRejected) as captured:
         await RoutedWorkflowSignalTransport(
@@ -348,31 +332,8 @@ async def test_transport_supersedes_audit_signal_when_workflow_never_started() -
             sources=_sources(),  # type: ignore[arg-type]
         ).send(_audit_intent())
 
-    assert captured.value.error_code == "audit_workflow_not_started"
-
-
-async def test_transport_routes_audit_cancel_without_general_fallback() -> None:
-    router = _Router()
-
-    await RoutedWorkflowSignalTransport(
-        router,  # type: ignore[arg-type]
-        runs=_runs(
-            kind=RunKind.CODE_AUDIT,
-            workflow_id="riftx-code-audit-audit-1",
-        ),  # type: ignore[arg-type]
-        sources=_sources(),  # type: ignore[arg-type]
-    ).send(_audit_intent())
-
-    assert router.calls == [
-        (
-            "cancel_audit",
-            {
-                "audit_id": "audit-1",
-                "run_id": "run-audit-1",
-                "signal_identity_digest": _audit_intent().identity_digest,
-            },
-        )
-    ]
+    assert captured.value.error_code == "unsupported_workflow_signal_owner"
+    assert router.calls == []
 
 
 async def test_transport_rejects_foreign_child_source_before_router_call() -> None:

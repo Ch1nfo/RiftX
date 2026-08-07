@@ -93,7 +93,6 @@ _GETTING_STARTED_PANEL = "Getting started"
 _PENTEST_PANEL = "Pentest workflow"
 _SERVICE_PANEL = "Service operation"
 _ADVANCED_PANEL = "Advanced"
-_FROZEN_PANEL = "Experimental (frozen)"
 
 app = typer.Typer(
     name="riftx",
@@ -117,7 +116,6 @@ demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
 capabilities_app = typer.Typer(help="Inspect the local Capability catalog.")
 packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
 skills_app = typer.Typer(help="Validate and manage local Operator Skills.")
-audit_app = typer.Typer(help="Retired code-audit history and cleanup controls.")
 app.add_typer(run_app, name="run", rich_help_panel=_ADVANCED_PANEL)
 app.add_typer(pentest_app, name="pentest", rich_help_panel=_PENTEST_PANEL)
 app.add_typer(execution_app, name="execution", rich_help_panel=_ADVANCED_PANEL)
@@ -132,7 +130,6 @@ app.add_typer(demo_app, name="demo", rich_help_panel=_ADVANCED_PANEL)
 app.add_typer(capabilities_app, name="capabilities", rich_help_panel=_ADVANCED_PANEL)
 app.add_typer(packs_app, name="packs", rich_help_panel=_ADVANCED_PANEL)
 app.add_typer(skills_app, name="skills", rich_help_panel=_PENTEST_PANEL)
-app.add_typer(audit_app, name="audit", rich_help_panel=_FROZEN_PANEL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -813,75 +810,6 @@ def _operator_skill_action[T](
     except CapabilityManagementError as exc:
         console.print(f"[red]Operator Skill operation failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-
-
-@audit_app.command("status")
-def show_local_audit_status(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """Show local Audit status."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(data=client.get_local_audit(audit_id)),
-    )
-
-
-@audit_app.command("findings")
-def show_local_audit_findings(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """List local Audit Findings."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(
-            data=client.list_local_audit_findings(audit_id)
-        ),
-    )
-
-
-@audit_app.command("report")
-def show_local_audit_report(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-    format: Annotated[
-        str,
-        typer.Option("--format", help="Report format: json or markdown."),
-    ] = "json",
-) -> None:
-    """Print a local Audit report."""
-
-    normalized = format.lower()
-    if normalized not in {"json", "markdown"}:
-        raise typer.BadParameter(
-            "format must be json or markdown",
-            param_hint="--format",
-        )
-    _run_with_client(
-        context,
-        lambda client: console.print(
-            client.get_local_audit_report(audit_id, format=normalized),
-            markup=False,
-            highlight=False,
-            end="",
-        ),
-    )
-
-
-@audit_app.command("cancel")
-def cancel_local_audit(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """Cancel a local Audit."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(data=client.cancel_local_audit(audit_id)),
-    )
 
 
 @app.command("approvals", rich_help_panel=_PENTEST_PANEL)

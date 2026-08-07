@@ -985,8 +985,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 3 | Browser Engine 惰性创建 | completed | `4b011725` | Browser Manager、Service、Stop、Worker、Control Plane、Pentest 回归通过 | Manager 启动不构造 Engine；首个 Session 串行创建唯一 Engine；失败不登记假 Session |
 | 4 | 停止新 Code Audit 创建 | completed | `532b0328` | CLI、API retirement、Route Policy、历史读取、Pentest 回归通过 | 移除 CLI scan/demo 与写 Client；创建、Start、Preflight/Plan 返回无请求体解析的 `410 code_audit_retired` |
 | 4 | 移除默认 Audit 装配 | completed | `c9215956` | 聚焦 `535 passed, 5 skipped`；Ruff、Phase Gate `344 passed` | 默认不装配 Audit/Preflight/Plan/Local Job/Reconciler；Runner 删除 Preflight 注入链；保留历史 Safety Stop 清理后端 |
-| 4 | 删除 Audit Worker/Source Ingest | completed | 本提交 | 聚焦 `762 passed, 5 skipped`；历史持久化 `23 passed`；Ruff、Phase Gate `340 passed` | 删除 Source Ingest、Materializer、Snapshot Mount、Runner Preflight Client/Backend 与 Worker 配置，净删 18,235 行；保留历史记录、migration 和 Safety Stop |
-| 4 | 删除 Audit API/Application | pending | — | — | C2 |
+| 4 | 删除 Audit Worker/Source Ingest | completed | `50a60acc` | 聚焦 `762 passed, 5 skipped`；历史持久化 `23 passed`；Ruff、Phase Gate `340 passed` | 删除 Source Ingest、Materializer、Snapshot Mount、Runner Preflight Client/Backend 与 Worker 配置，净删 18,235 行；保留历史记录、migration 和 Safety Stop |
+| 4 | 删除 Audit API/Application | completed | 本提交 | 聚焦 `316 passed`；全仓收集 `4866 tests`；Ruff、Phase Gate `340 passed` | 删除 Audit API、Schema、Application Service、Workflow Router 分支和 CLI，净删约 17,900 行；历史 Run/API fail closed，仅保留 Safety Stop 与底层数据兼容 |
 | 4 | 删除 Audit Domain/Persistence 上层 | pending | — | — | C2 |
 | 4 | 删除 Audit Pack/Demo/Web | pending | — | — | C2 |
 | 4 | Replay/Enum 兼容收尾 | pending | — | — | C2 |

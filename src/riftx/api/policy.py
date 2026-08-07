@@ -15,7 +15,6 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from .dependencies import (
     authorize_admin,
-    authorize_audit_preflight_runner,
     authorize_local_operator,
     authorize_runner,
     authorize_runner_bootstrap,
@@ -87,16 +86,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "list_runs",
                 "get_run",
                 "get_pentest_status",
-                "list_audits",
-                "get_audit",
-                "list_local_audit_findings",
-                "get_local_audit_finding",
-                "get_local_audit_report",
-                "get_audit_preflight",
-                "create_audit",
-                "start_audit",
-                "create_audit_preflight",
-                "issue_audit_preflight_plan",
                 "list_run_actions",
                 "get_run_action",
                 "get_run_graph",
@@ -125,9 +114,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "list_artifacts",
                 "get_artifact",
                 "download_artifact",
-                "list_audit_artifacts",
-                "get_audit_artifact",
-                "download_audit_artifact",
                 "get_session_context",
                 "get_context_compilation",
                 "get_run_context",
@@ -165,9 +151,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "pause_run",
-                "pause_audit",
                 "resume_run",
-                "resume_audit",
                 "cancel_run",
                 "compact_run",
                 "switch_run_model",
@@ -194,8 +178,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "close_terminal",
-                "cancel_audit",
-                "cancel_audit_preflight",
                 "terminal_websocket",
                 "close_browser",
                 "act_browser",
@@ -241,11 +223,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "heartbeat_node",
-                "poll_audit_preflight_job",
-                "renew_audit_preflight_lease",
-                "start_audit_preflight_job",
-                "finish_audit_preflight_job",
-                "stop_audit_preflight_job",
                 "poll_runner_command",
                 "finish_legacy_runner_command",
                 "finish_runner_command",
@@ -278,7 +255,6 @@ _AUTHENTICATION_DEPENDENCIES = (
     authorize_local_operator,
     authorize_admin,
     authorize_runner_bootstrap,
-    authorize_audit_preflight_runner,
     authorize_runner,
     authorize_runner_node,
 )
@@ -293,14 +269,6 @@ def _expected_authentication_dependency(
     if authorization is RouteAuthorization.RUNNER_BOOTSTRAP_TOKEN:
         return authorize_runner_bootstrap
     if authorization is RouteAuthorization.RUNNER_TOKEN:
-        if route_name in {
-            "poll_audit_preflight_job",
-            "renew_audit_preflight_lease",
-            "start_audit_preflight_job",
-            "finish_audit_preflight_job",
-            "stop_audit_preflight_job",
-        }:
-            return authorize_audit_preflight_runner
         return authorize_runner_node if route_name == "heartbeat_node" else authorize_runner
     if authorization is RouteAuthorization.LOCAL_OPERATOR:
         return authorize_local_operator

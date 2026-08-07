@@ -45,13 +45,12 @@ def test_root_help_prioritizes_the_pentest_workflow() -> None:
         result.output.index("Service operation"),
         result.output.index("Pentest workflow"),
         result.output.index("Advanced"),
-        result.output.index("Experimental (frozen)"),
     ]
     assert panels == sorted(panels)
     for command in ("onboard", "doctor", "model", "pentest", "report", "skills"):
         assert command in result.output
     assert "interactive   Enter the interactive RiftX session" not in result.output
-    assert "Retired code-audit history and cleanup controls" in result.output
+    assert "Retired code-audit history and cleanup controls" not in result.output
 
 
 def test_cli_import_does_not_eagerly_load_service_runtimes() -> None:
@@ -131,22 +130,6 @@ class FakeAPIClient:
     def get_pentest_status(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("get_pentest_status", run_id))
         return self._pentest_status(run_id)
-
-    def get_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("get_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "completed"}
-
-    def list_local_audit_findings(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("list_local_audit_findings", audit_id))
-        return {"items": [], "total": 0, "limit": 100, "offset": 0}
-
-    def get_local_audit_report(self, audit_id: str, *, format: str = "json") -> str:
-        self.calls.append(("get_local_audit_report", (audit_id, format)))
-        return "# Local Audit\n" if format == "markdown" else '{"findings":[]}\n'
-
-    def cancel_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("cancel_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "cancelled"}
 
     def list_runs(self, **kwargs: object) -> dict[str, Any]:
         self.calls.append(("list_runs", kwargs))
@@ -587,38 +570,6 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeAPIClient.fail = False
     FakeAPIClient.unhealthy = False
     monkeypatch.setattr(cli_module, "APIClient", FakeAPIClient)
-
-
-def test_local_audit_creation_is_removed_but_history_controls_remain(
-    tmp_path: Path,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-
-    scan = runner.invoke(cli_module.app, ["audit", "scan", str(project)])
-    status = runner.invoke(cli_module.app, ["audit", "status", "audit-1"])
-    findings = runner.invoke(cli_module.app, ["audit", "findings", "audit-1"])
-    report = runner.invoke(
-        cli_module.app,
-        ["audit", "report", "audit-1", "--format", "markdown"],
-    )
-    cancel = runner.invoke(cli_module.app, ["audit", "cancel", "audit-1"])
-
-    assert scan.exit_code == 2
-    assert "No such command 'scan'" in scan.output
-    for result in (status, findings, report, cancel):
-        assert result.exit_code == 0, result.output
-    assert "completed" in status.output
-    assert "Local Audit" in report.output
-    assert "cancelled" in cancel.output
-    assert FakeAPIClient.instances[0].calls == [("get_local_audit", "audit-1")]
-    assert FakeAPIClient.instances[1].calls == [
-        ("list_local_audit_findings", "audit-1")
-    ]
-    assert FakeAPIClient.instances[2].calls == [
-        ("get_local_audit_report", ("audit-1", "markdown"))
-    ]
-    assert FakeAPIClient.instances[3].calls == [("cancel_local_audit", "audit-1")]
 
 
 def test_offline_security_demos_do_not_call_control_plane(tmp_path: Path) -> None:

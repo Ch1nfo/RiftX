@@ -109,47 +109,6 @@ class APIClient:
     def get_run_metrics(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}/metrics")
 
-    def get_local_audit(self, audit_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/api/v1/audits/{audit_id}")
-
-    def list_local_audit_findings(
-        self,
-        audit_id: str,
-        *,
-        severity: str | None = None,
-        category: str | None = None,
-        file: str | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        params: dict[str, object] = {"limit": limit, "offset": offset}
-        if severity is not None:
-            params["severity"] = severity
-        if category is not None:
-            params["category"] = category
-        if file is not None:
-            params["file"] = file
-        return self._json(
-            "GET",
-            f"/api/v1/audits/{audit_id}/findings",
-            params=params,
-        )
-
-    def get_local_audit_report(
-        self,
-        audit_id: str,
-        *,
-        format: str = "json",
-    ) -> str:
-        return self._text(
-            "GET",
-            f"/api/v1/audits/{audit_id}/report",
-            params={"format": format},
-        )
-
-    def cancel_local_audit(self, audit_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/api/v1/audits/{audit_id}/cancel")
-
     def create_memory(self, payload: dict[str, object]) -> dict[str, Any]:
         return self._json("POST", "/api/v1/memories", json=payload)
 
@@ -566,11 +525,6 @@ class APIClient:
                 details={"path": path},
             )
         return payload
-
-    def _text(self, method: str, path: str, **kwargs: Any) -> str:
-        response = self._client.request(method, path, **kwargs)
-        self._raise_for_error(response)
-        return response.text
 
     def _admin_headers(self) -> dict[str, str]:
         if not self._admin_token:

@@ -12,8 +12,6 @@ import riftx.application.services.runs as run_service_module
 from riftx.api.auth import get_authenticated_local_principal
 from riftx.api.dependencies import (
     get_artifact_service,
-    get_audit_object_authorizer,
-    get_audit_service,
     get_finding_service,
     get_memory_service,
     get_report_service,
@@ -104,20 +102,6 @@ class FakeRunService:
 
 
 @dataclass
-class FakeAuditService:
-    run: Run
-    authorized_reads: list[tuple[str, str]] = field(default_factory=list)
-
-    async def get_by_run_authorized(self, run_id: str, **_: object) -> object:
-        self.authorized_reads.append(("get", run_id))
-        return SimpleNamespace(run=self.run)
-
-    async def list_authorized(self, **filters: object) -> list[object]:
-        self.authorized_reads.append(("list", str(filters.get("run_status"))))
-        return [SimpleNamespace(run=self.run)]
-
-
-@dataclass
 class FakeEffectService:
     calls: list[str] = field(default_factory=list)
 
@@ -178,10 +162,6 @@ def _app(service: FakeRunService) -> FastAPI:
     app.include_router(connectors_router, prefix="/api/v1")
     app.dependency_overrides[get_run_service] = lambda: service
     app.dependency_overrides[get_tool_service] = lambda: SimpleNamespace(node_id="local")
-    audit_service = FakeAuditService(service.run)
-    app.state.fake_audit_service = audit_service
-    app.dependency_overrides[get_audit_service] = lambda: audit_service
-    app.dependency_overrides[get_audit_object_authorizer] = lambda: object()
     app.dependency_overrides[get_authenticated_local_principal] = lambda: LocalPrincipal(
         id="principal-1",
         capabilities=frozenset(OperatorCapability),
@@ -223,7 +203,7 @@ def _effect_client(
 
 
 @pytest.mark.asyncio
-async def test_code_audit_generic_reads_use_path_free_discriminated_projection(
+async def test_code_audit_generic_reads_are_retired_and_fail_closed(
     tmp_path: Path,
 ) -> None:
     run = _run(RunKind.CODE_AUDIT, tmp_path)
@@ -233,15 +213,12 @@ async def test_code_audit_generic_reads_use_path_free_discriminated_projection(
         detail = await client.get(f"/api/v1/runs/{run.id}")
         listed = await client.get("/api/v1/runs", params={"kind": "code_audit"})
 
-    assert detail.status_code == 200, detail.text
-    assert listed.status_code == 200, listed.text
-    for payload in (detail.json(), listed.json()["items"][0]):
-        assert payload["id"] == run.id
-        assert payload["kind"] == RunKind.CODE_AUDIT.value
-        assert "workspace_path" not in payload
-        assert "temporal_workflow_id" not in payload
-        assert run.workspace_path not in str(payload)
-        assert run.temporal_workflow_id not in str(payload)
+    assert detail.status_code == 404, detail.text
+    assert detail.json()["error"]["code"] == "resource_not_accessible"
+    assert listed.status_code == 410, listed.text
+    assert listed.json()["error"]["code"] == "code_audit_retired"
+    assert run.workspace_path not in detail.text + listed.text
+    assert run.temporal_workflow_id not in detail.text + listed.text
 
 
 @pytest.mark.asyncio

@@ -3,9 +3,6 @@
 from .actions import router as actions_router
 from .approvals import router as approvals_router
 from .artifacts import router as artifacts_router
-from .audit_preflight import router as audit_preflight_router
-from .audit_preflight_runner import router as audit_preflight_runner_router
-from .audits import router as audits_router
 from .browser import router as browser_router
 from .connectors import router as connectors_router
 from .context import router as context_router
@@ -32,9 +29,6 @@ __all__ = [
     "actions_router",
     "approvals_router",
     "artifacts_router",
-    "audit_preflight_router",
-    "audit_preflight_runner_router",
-    "audits_router",
     "browser_router",
     "connectors_router",
     "context_router",

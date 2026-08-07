@@ -56,8 +56,6 @@ def _snapshot(run: Run, *, principal: LocalPrincipal | None = None) -> RunReadAu
         engagement_id=run.engagement_id,
         node_id=run.node_id,
         principal=principal or _principal(),
-        audit_id=("audit-stream" if run.kind is RunKind.CODE_AUDIT else None),
-        audit_project_id=("project-stream" if run.kind is RunKind.CODE_AUDIT else None),
     )
 
 
@@ -226,31 +224,13 @@ class _RunService:
         return self.run.model_copy(deep=True)
 
 
-class _AuditService:
-    def __init__(self, run: Run, *, audit_id: str = "audit-stream") -> None:
-        self.run = run
-        self.audit_id = audit_id
-        self.calls = 0
-
-    async def get_by_run_authorized(self, run_id: str, **_: object) -> object:
-        assert run_id == self.run.id
-        self.calls += 1
-        return SimpleNamespace(
-            run=self.run.model_copy(deep=True),
-            audit=SimpleNamespace(value=SimpleNamespace(id=self.audit_id)),
-            project=SimpleNamespace(value=SimpleNamespace(id="project-stream")),
-        )
-
-
 async def test_stream_snapshot_reauthenticates_before_any_owner_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_service = _RunService(_run())
     authorizer = RunReadAuthorizer(
         run_service=run_service,  # type: ignore[arg-type]
-        audit_service=object(),  # type: ignore[arg-type]
         principal=_principal(),
-        audit_authorizer=object(),  # type: ignore[arg-type]
     )
     frozen = await authorizer.require_stream_snapshot(run_service.run.id)
     monkeypatch.setattr(
@@ -277,9 +257,7 @@ async def test_stream_snapshot_rejects_a_different_authenticated_principal(
     run_service = _RunService(_run())
     authorizer = RunReadAuthorizer(
         run_service=run_service,  # type: ignore[arg-type]
-        audit_service=object(),  # type: ignore[arg-type]
         principal=_principal(),
-        audit_authorizer=object(),  # type: ignore[arg-type]
     )
     frozen = await authorizer.require_stream_snapshot(run_service.run.id)
     monkeypatch.setattr(
@@ -296,32 +274,19 @@ async def test_stream_snapshot_rejects_a_different_authenticated_principal(
     assert run_service.get_calls == 2
 
 
-async def test_code_audit_stream_snapshot_rejects_opaque_audit_owner_drift(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_code_audit_stream_snapshot_is_retired_and_fail_closed() -> None:
     run = _run(kind=RunKind.CODE_AUDIT)
     run_service = _RunService(run)
-    audit_service = _AuditService(run)
-    principal = _principal()
     authorizer = RunReadAuthorizer(
         run_service=run_service,  # type: ignore[arg-type]
-        audit_service=audit_service,  # type: ignore[arg-type]
-        principal=principal,
-        audit_authorizer=object(),  # type: ignore[arg-type]
-    )
-    frozen = await authorizer.require_stream_snapshot(run.id)
-    audit_service.audit_id = "audit-rebound"
-    monkeypatch.setattr(
-        api_dependencies,
-        "authorize_local_operator",
-        AsyncMock(return_value=principal),
+        principal=_principal(),
     )
 
     with pytest.raises(ResourceNotAccessibleError) as captured:
-        await authorizer.revalidate_stream_snapshot(object(), frozen)  # type: ignore[arg-type]
+        await authorizer.require_stream_snapshot(run.id)
 
     assert captured.value.code == "resource_not_accessible"
-    assert audit_service.calls == 2
+    assert run_service.get_calls == 0
 
 
 async def test_stream_admission_preserves_last_event_id_cursor() -> None:

@@ -50,7 +50,6 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ApprovalRequestRecorder,
     ArtifactApplicationService,
-    AuditApplicationService,
     ClosureVerifierApplicationService,
     EventApplicationService,
     EvidenceApplicationService,
@@ -150,8 +149,6 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
-    SQLAlchemyAuditAggregateReadRepository,
-    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
     SQLAlchemyCapabilityRepository,
     SQLAlchemyCapabilitySelectionStore,
@@ -758,7 +755,6 @@ tools:
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
-    audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -900,7 +896,6 @@ tools:
     )
     workflow_router = RunWorkflowControlRouter(
         runs=run_repository,
-        audits=audit_aggregate_repository,
         general=workflow_client,
     )
     workflow_signal_transport = RoutedWorkflowSignalTransport(
@@ -954,13 +949,6 @@ tools:
                     capabilities=capability_repository,
                     packs=official_pack_catalog,
                 ),
-            ),
-            audit_service=AuditApplicationService(
-                creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-                aggregate_repository=audit_aggregate_repository,
-                feature_enabled=settings.audit.enabled,
-                workspace_root=settings.audit.temp_root,
-                legacy_draft_api_enabled=True,
             ),
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),
@@ -3097,17 +3085,15 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "/api/v1/runs",
                 params={"kind": "code_audit"},
             )
-            assert listed_audits.status_code == 200
-            # A bare code_audit Run is not an authorized Audit aggregate and
-            # must never become visible through the generic Run projection.
-            assert listed_audits.json()["items"] == []
+            assert listed_audits.status_code == 410
+            assert listed_audits.json()["error"]["code"] == "code_audit_retired"
 
             combined_filter = await client.get(
                 "/api/v1/runs",
                 params={"kind": "code_audit", "status": "waiting_user"},
             )
-            assert combined_filter.status_code == 200
-            assert combined_filter.json()["items"] == []
+            assert combined_filter.status_code == 410
+            assert combined_filter.json()["error"]["code"] == "code_audit_retired"
 
             invalid_kind = await client.get(
                 "/api/v1/runs",
@@ -4191,11 +4177,11 @@ models:
     )
 
     runtime = await build_control_plane(settings)
-    assert runtime.audit_service is None
-    assert runtime.local_audit_job_service is None
-    assert runtime.audit_preflight_service is None
-    assert runtime.audit_preflight_plan_service is None
-    assert runtime.audit_preflight_runner_service is None
+    assert not hasattr(runtime, "audit_service")
+    assert not hasattr(runtime, "local_audit_job_service")
+    assert not hasattr(runtime, "audit_preflight_service")
+    assert not hasattr(runtime, "audit_preflight_plan_service")
+    assert not hasattr(runtime, "audit_preflight_runner_service")
     assert runtime.audit_control_service is not None
     assert runtime.connector_service is None
     process_executor = runtime.process_supervisor._process_executor
@@ -4208,40 +4194,13 @@ models:
         assert cleanup_reconciler is not None and not cleanup_reconciler.done()
         assert connection_attempts == []
         async for client in _client(runtime):
-            disabled_preflight = await client.post(
-                "/api/v1/audits/preflight",
-                json={
-                    "repository_path": "/RIFTX-PREFLIGHT-CANARY",
-                    "unknown": "RIFTX-PREFLIGHT-CANARY",
-                },
-            )
-            assert disabled_preflight.status_code == 410
-            assert disabled_preflight.json()["error"]["code"] == "code_audit_retired"
-            assert "RIFTX-PREFLIGHT-CANARY" not in disabled_preflight.text
             retired_create = await client.post(
                 "/api/v1/audits",
                 json={"source_path": "/RIFTX-AUDIT-CANARY"},
             )
-            retired_start = await client.post(
-                "/api/v1/audits/retired-audit/start"
-            )
-            retired_plan = await client.post(
-                "/api/v1/audits/preflight/retired-preflight/plan"
-            )
-            for retired in (retired_create, retired_start, retired_plan):
-                assert retired.status_code == 410
-                assert retired.json()["error"]["code"] == "code_audit_retired"
-                assert "RIFTX-AUDIT-CANARY" not in retired.text
-            missing_preflight = await client.get(
-                "/api/v1/audits/preflight/missing-preflight-job"
-            )
-            missing_preflight_cancel = await client.post(
-                "/api/v1/audits/preflight/missing-preflight-job/cancel"
-            )
-            assert missing_preflight.status_code == 503
-            assert missing_preflight_cancel.status_code == 503
-            assert missing_preflight.json()["error"]["code"] == "audit_preflight_unavailable"
-            assert missing_preflight_cancel.json() == missing_preflight.json()
+            assert retired_create.status_code == 404
+            assert retired_create.json()["error"]["code"] == "route_not_found"
+            assert "RIFTX-AUDIT-CANARY" not in retired_create.text
 
             created = await client.post(
                 "/api/v1/runs",

@@ -135,48 +135,6 @@ def test_api_client_combines_run_status_and_kind_filters() -> None:
     }
 
 
-def test_local_audit_client_uses_minimal_job_endpoints_and_text_report() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path.endswith("/report"):
-            return httpx.Response(200, text="# Audit\n")
-        return httpx.Response(200, json={"audit_id": "audit-1", "items": []})
-
-    with APIClient(
-        "http://control-plane",
-        transport=httpx.MockTransport(handler),
-    ) as client:
-        client.get_local_audit("audit-1")
-        client.list_local_audit_findings(
-            "audit-1",
-            severity="high",
-            category="secret",
-            file="src/app.py",
-            limit=25,
-            offset=5,
-        )
-        report = client.get_local_audit_report("audit-1", format="markdown")
-        client.cancel_local_audit("audit-1")
-
-    assert report == "# Audit\n"
-    assert [(request.method, request.url.path) for request in requests] == [
-        ("GET", "/api/v1/audits/audit-1"),
-        ("GET", "/api/v1/audits/audit-1/findings"),
-        ("GET", "/api/v1/audits/audit-1/report"),
-        ("POST", "/api/v1/audits/audit-1/cancel"),
-    ]
-    assert dict(requests[1].url.params) == {
-        "limit": "25",
-        "offset": "5",
-        "severity": "high",
-        "category": "secret",
-        "file": "src/app.py",
-    }
-    assert requests[2].url.params["format"] == "markdown"
-
-
 def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
     requests: list[tuple[str, str, object, str | None]] = []
 

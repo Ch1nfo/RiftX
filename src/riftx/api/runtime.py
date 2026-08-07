@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 import platform
@@ -21,11 +20,7 @@ from riftx.application.services import (
     ActionApplicationService,
     ApprovalApplicationService,
     ArtifactApplicationService,
-    AuditApplicationService,
     AuditControlApplicationService,
-    AuditPreflightApplicationService,
-    AuditPreflightPlanApplicationService,
-    AuditPreflightRunnerService,
     AuditRunStateProjector,
     EventApplicationService,
     ExecutionApplicationService,
@@ -47,29 +42,22 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalReconciler,
 )
 from riftx.application.workflow_router import RunWorkflowControlRouter
-from riftx.audit import (
-    LocalAuditJobService,
-)
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import (
     AuditConfig,
     RiftXConfig,
     RiftXConfigError,
-    audit_source_ingest_policy_digest,
     load_riftx_config,
     validate_audit_storage_isolation,
 )
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
 from riftx.domain import (
-    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
-    NodeStatus,
     OperatorCapability,
     RunKind,
     RunStatus,
     TrustProfile,
 )
-from riftx.domain.audit_preflight_plan import AuditPreflightTokenCodec
 from riftx.domain.base import utc_now
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
@@ -85,9 +73,6 @@ from riftx.persistence import (
     SQLAlchemyArtifactRepository,
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditControlUnitOfWork,
-    SQLAlchemyAuditCreationUnitOfWork,
-    SQLAlchemyAuditPreflightPlanRepository,
-    SQLAlchemyAuditPreflightRepository,
     SQLAlchemyCapabilityRepository,
     SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyEngagementRepository,
@@ -95,7 +80,6 @@ from riftx.persistence import (
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
-    SQLAlchemyLocalAuditJobRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyPentestCreationUnitOfWork,
     SQLAlchemyPentestStatusReader,
@@ -322,160 +306,11 @@ def _create_temporal_connector(settings: APISettings) -> Callable[[], Awaitable[
     return connector
 
 
-def _create_audit_service(
-    settings: APISettings,
-    database: Database,
-    *,
-    aggregate_repository: SQLAlchemyAuditAggregateReadRepository | None = None,
-) -> AuditApplicationService:
-    """Assemble the always-present, database-only Code Audit application edge."""
-
-    return AuditApplicationService(
-        creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-        aggregate_repository=(
-            aggregate_repository
-            or SQLAlchemyAuditAggregateReadRepository(database.session_factory)
-        ),
-        feature_enabled=settings.audit.enabled,
-        workspace_root=settings.audit.temp_root,
-    )
-
-
-async def _create_local_audit_job_service(
-    database: Database,
-) -> LocalAuditJobService:
-    repository = SQLAlchemyLocalAuditJobRepository(database.session_factory)
-    service = LocalAuditJobService(repository)
-    await service.recover()
-    return service
-
-
-def _create_audit_preflight_service(
-    settings: APISettings,
-    database: Database,
-    *,
-    repository: SQLAlchemyAuditPreflightRepository | None = None,
-    source_ingest_available: bool | Callable[[], bool | Awaitable[bool]] = False,
-) -> AuditPreflightApplicationService:
-    """Assemble the always-present, fail-closed pre-Audit Operator edge.
-
-    SourceIngest capability is not inferred from the Control Plane host.  The
-    independent Runner/Capsule protocol must later supply authoritative backend
-    availability; until then an enabled create returns ``audit_sandbox_unavailable``.
-    Existing jobs remain readable and cancellable through the durable repository.
-    """
-
-    audit = settings.audit
-    return AuditPreflightApplicationService(
-        repository=(
-            repository
-            if repository is not None
-            else SQLAlchemyAuditPreflightRepository(database.session_factory)
-        ),
-        feature_enabled=audit.enabled,
-        source_roots=audit.source_roots,
-        backend_id=audit.source_ingest.backend_id,
-        image_digest=audit.source_ingest.image_digest,
-        policy_digest=audit_source_ingest_policy_digest(audit.source_ingest),
-        source_ingest_available=source_ingest_available,
-        node_mode=audit.node_mode,
-        allowed_node_ids=audit.allowed_node_ids,
-        job_ttl_seconds=audit.source_ingest.job_ttl_seconds,
-    )
-
-
-def _create_audit_preflight_plan_service(
-    settings: APISettings,
-    database: Database,
-    *,
-    preflight_repository: SQLAlchemyAuditPreflightRepository | None = None,
-    plan_repository: SQLAlchemyAuditPreflightPlanRepository | None = None,
-) -> AuditPreflightPlanApplicationService:
-    """Assemble Plan issuance without inventing a fallback signing key."""
-
-    audit = settings.audit
-    token_codec: AuditPreflightTokenCodec | None = None
-    if audit.preflight_token_key is not None:
-        encoded = audit.preflight_token_key.get_secret_value()
-        token_codec = AuditPreflightTokenCodec(
-            key_id=audit.preflight_token_key_id,
-            key=base64.urlsafe_b64decode(encoded + "="),
-        )
-    return AuditPreflightPlanApplicationService(
-        preflight_repository=(
-            preflight_repository
-            if preflight_repository is not None
-            else SQLAlchemyAuditPreflightRepository(database.session_factory)
-        ),
-        plan_repository=(
-            plan_repository
-            if plan_repository is not None
-            else SQLAlchemyAuditPreflightPlanRepository(database.session_factory)
-        ),
-        feature_enabled=audit.enabled,
-        token_codec=token_codec,
-    )
-
-
-def _create_audit_preflight_availability_check(
-    settings: APISettings,
-    *,
-    node_service: NodeApplicationService,
-    credentials: SQLAlchemyRunnerCredentialRepository,
-) -> Callable[[], Awaitable[bool]]:
-    """Require one live, probe-backed local Runner identity for SourceIngest.
-
-    The immutable credential capability is the protocol authorization gate. The
-    Node capability and exact readiness labels are a separate, revocable
-    availability signal emitted only after the Runner's production backend probe
-    and recovery-journal validation succeed.
-    """
-
-    audit = settings.audit
-    backend_id = audit.source_ingest.backend_id
-    image_digest = audit.source_ingest.image_digest
-    policy_digest = audit_source_ingest_policy_digest(audit.source_ingest)
-
-    async def available() -> bool:
-        if image_digest is None:
-            return False
-        try:
-            node = await node_service.get("local")
-            credential = await credentials.get_current("local")
-        except Exception:
-            return False
-        if (
-            credential is None
-            or credential.revoked_at is not None
-            or node.current_owner != credential.principal
-            or node.status not in {NodeStatus.ONLINE, NodeStatus.DEGRADED}
-            or node.platform.strip().lower() != "linux"
-            or AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY
-            not in credential.protocol_capabilities
-            or AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY not in node.capabilities
-        ):
-            return False
-        expected_labels = {
-            "audit_source_ingest_available": "true",
-            "audit_source_ingest_backend_id": backend_id,
-            "audit_source_ingest_image_digest": image_digest,
-            "audit_source_ingest_policy_digest": policy_digest,
-        }
-        return all(
-            isinstance(node.labels.get(name), str)
-            and secrets.compare_digest(node.labels[name], expected)
-            for name, expected in expected_labels.items()
-        )
-
-    return available
-
-
 @dataclass(slots=True)
 class ControlPlane:
     settings: APISettings
     database: Database
     run_service: RunApplicationService
-    audit_service: AuditApplicationService | None
     action_service: ActionApplicationService
     event_service: EventApplicationService
     execution_service: ExecutionApplicationService
@@ -495,11 +330,7 @@ class ControlPlane:
     graph_repository: SQLAlchemyGraphReadRepository
     traffic_repository: SQLAlchemyTrafficMetadataReadRepository
     pentest_service: PentestApplicationService | None = None
-    local_audit_job_service: LocalAuditJobService | None = None
     audit_control_service: AuditControlApplicationService | None = None
-    audit_preflight_service: AuditPreflightApplicationService | None = None
-    audit_preflight_plan_service: AuditPreflightPlanApplicationService | None = None
-    audit_preflight_runner_service: AuditPreflightRunnerService | None = None
     workflow_signal_dispatcher: WorkflowSignalDispatcher | None = None
     workflow_signal_reconciler: WorkflowSignalReconciler | None = None
     browser_service: BrowserApplicationService | None = None
@@ -511,7 +342,6 @@ class ControlPlane:
     _cleanup_reconciler_task: asyncio.Task[None] | None = None
     _workflow_signal_task: asyncio.Task[None] | None = None
     _runner_reconciliation_task: asyncio.Task[None] | None = None
-    _audit_preflight_reconciliation_task: asyncio.Task[None] | None = None
     _cleanup_failures: set[str] = field(default_factory=set)
 
     def start_cleanup_reconciler(self) -> None:
@@ -537,36 +367,6 @@ class ControlPlane:
                 self._reconcile_runner_state(),
                 name="riftx-control-plane-runner-reconciler",
             )
-        if (
-            self._audit_preflight_reconciliation_task is None
-            and self.audit_preflight_runner_service is not None
-        ):
-            self._audit_preflight_reconciliation_task = asyncio.create_task(
-                self._reconcile_audit_preflight_jobs(),
-                name="riftx-control-plane-audit-preflight-reconciler",
-            )
-
-    async def _reconcile_audit_preflight_jobs(self) -> None:
-        """Converge expired Preflight jobs without redispatching unknown work."""
-
-        assert self.audit_preflight_runner_service is not None
-        unavailable = False
-        while True:
-            try:
-                await self.audit_preflight_runner_service.reconcile_batch()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if not unavailable:
-                    logger.exception(
-                        "Control Plane Audit Preflight reconciliation failed; retrying"
-                    )
-                unavailable = True
-            else:
-                if unavailable:
-                    logger.info("Control Plane Audit Preflight reconciliation recovered")
-                unavailable = False
-            await asyncio.sleep(0.1)
 
     async def _reconcile_runner_state(self) -> None:
         unavailable = False
@@ -680,16 +480,6 @@ class ControlPlane:
             await asyncio.sleep(0.1)
 
     async def close(self) -> None:
-        if self.local_audit_job_service is not None:
-            await self.local_audit_job_service.close()
-        audit_preflight_reconciliation_task = self._audit_preflight_reconciliation_task
-        self._audit_preflight_reconciliation_task = None
-        if audit_preflight_reconciliation_task is not None:
-            audit_preflight_reconciliation_task.cancel()
-            try:
-                await audit_preflight_reconciliation_task
-            except asyncio.CancelledError:
-                pass
         runner_reconciliation_task = self._runner_reconciliation_task
         self._runner_reconciliation_task = None
         if runner_reconciliation_task is not None:
@@ -796,16 +586,6 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     browser_repository = SQLAlchemyBrowserRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
-    audit_preflight_repository = (
-        SQLAlchemyAuditPreflightRepository(database.session_factory)
-        if settings.audit.enabled
-        else None
-    )
-    local_audit_job_service = (
-        await _create_local_audit_job_service(database)
-        if settings.audit.enabled
-        else None
-    )
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
     model_profile_service = ModelProfileApplicationService(
@@ -859,15 +639,6 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         tool_call_intents=tool_call_intent_repository,
         events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
-    )
-    audit_preflight_runner_service = (
-        AuditPreflightRunnerService(
-            repository=audit_preflight_repository,
-            credentials=runner_credential_repository,
-            lease_duration=timedelta(seconds=settings.audit.source_ingest.lease_seconds),
-        )
-        if audit_preflight_repository is not None
-        else None
     )
     # Process and PTY work share one trusted containment root so durable
     # identities resolve to the same kernel ownership namespace after restart.
@@ -982,41 +753,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         hooks=hooks,
         events=event_repository,
     )
-    audit_service = (
-        _create_audit_service(
-            settings,
-            database,
-            aggregate_repository=audit_aggregate_repository,
-        )
-        if settings.audit.enabled
-        else None
-    )
-    audit_preflight_service = (
-        _create_audit_preflight_service(
-            settings,
-            database,
-            repository=audit_preflight_repository,
-            source_ingest_available=_create_audit_preflight_availability_check(
-                settings,
-                node_service=node_service,
-                credentials=runner_credential_repository,
-            ),
-        )
-        if audit_preflight_repository is not None
-        else None
-    )
-    audit_preflight_plan_service = (
-        _create_audit_preflight_plan_service(
-            settings,
-            database,
-            preflight_repository=audit_preflight_repository,
-        )
-        if audit_preflight_repository is not None
-        else None
-    )
     workflow_router = RunWorkflowControlRouter(
         runs=run_repository,
-        audits=audit_aggregate_repository,
         general=workflow_client,
     )
     safety_stopper = RunSafetyStopService(
@@ -1052,14 +790,8 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             packs=official_pack_catalog,
         ),
     )
-    # Historical cleanup remains assembled even when the retired product edge is not.
-    audit_cleanup_backend = audit_service or _create_audit_service(
-        settings,
-        database,
-        aggregate_repository=audit_aggregate_repository,
-    )
     audit_control_service = AuditControlApplicationService(
-        audits=audit_cleanup_backend,
+        audits=audit_aggregate_repository,
         projector=AuditRunStateProjector(
             SQLAlchemyAuditControlUnitOfWork(database.session_factory)
         ),
@@ -1090,7 +822,6 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         database=database,
         run_service=run_service,
         pentest_service=pentest_service,
-        audit_service=audit_service,
         action_service=ActionApplicationService(
             action_read_repository,
             authorizer=LocalObjectAuthorizer(settings.create_local_operator_security()),
@@ -1170,11 +901,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         terminal_supervisor=terminal_supervisor,
         graph_repository=graph_repository,
         traffic_repository=traffic_repository,
-        local_audit_job_service=local_audit_job_service,
         audit_control_service=audit_control_service,
-        audit_preflight_service=audit_preflight_service,
-        audit_preflight_plan_service=audit_preflight_plan_service,
-        audit_preflight_runner_service=audit_preflight_runner_service,
         workflow_signal_dispatcher=workflow_signal_dispatcher,
         workflow_signal_reconciler=workflow_signal_reconciler,
         browser_manager=browser_manager,

@@ -4,7 +4,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from riftx.application.errors import ServiceUnavailableError
 from riftx.application.run_kind_effects import (
     EffectMode,
     EffectOrigin,
@@ -19,13 +18,12 @@ from riftx.application.services.runs import (
 from riftx.domain import RunKind, RunStatus
 
 from ..dependencies import (
-    AuditObjectAuthorizerDependency,
     AuthorizedRunReadDependency,
     LocalPrincipalDependency,
-    OptionalAuditServiceDependency,
     RunServiceDependency,
     ToolServiceDependency,
 )
+from ..errors import APIError
 from ..schemas import (
     CompactRunRequest,
     CreateRunRequest,
@@ -45,6 +43,7 @@ from ..schemas.runs import (
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _ERROR_RESPONSES = {
+    410: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
@@ -81,44 +80,23 @@ async def create_run(
 @router.get("", response_model=RunListResponse, responses=_ERROR_RESPONSES)
 async def list_runs(
     run_service: RunServiceDependency,
-    audit_service: OptionalAuditServiceDependency,
-    principal: LocalPrincipalDependency,
-    audit_authorizer: AuditObjectAuthorizerDependency,
     run_status: Annotated[RunStatus | None, Query(alias="status")] = None,
     run_kind: Annotated[RunKind, Query(alias="kind")] = RunKind.GENERAL,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
     if run_kind is RunKind.CODE_AUDIT:
-        if audit_service is None:
-            raise ServiceUnavailableError(
-                "audit_service_unavailable",
-                "RiftX Code Audit is retired from the default runtime",
-            )
-        runs = []
-        page_offset = offset
-        remaining = limit
-        while remaining:
-            page_limit = min(remaining, 200)
-            aggregates = await audit_service.list_authorized(
-                principal=principal,
-                authorizer=audit_authorizer,
-                run_status=run_status,
-                limit=page_limit,
-                offset=page_offset,
-            )
-            runs.extend(aggregate.run for aggregate in aggregates)
-            if len(aggregates) < page_limit:
-                break
-            remaining -= len(aggregates)
-            page_offset += len(aggregates)
-    else:
-        runs = await run_service.list_runs(
-            status=run_status,
-            kind=run_kind,
-            limit=limit,
-            offset=offset,
+        raise APIError(
+            status.HTTP_410_GONE,
+            "code_audit_retired",
+            "Code Audit history is retired from the API",
         )
+    runs = await run_service.list_runs(
+        status=run_status,
+        kind=run_kind,
+        limit=limit,
+        offset=offset,
+    )
     return RunListResponse(
         items=[run_read_response_from_domain(run) for run in runs],
         limit=limit,

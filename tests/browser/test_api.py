@@ -127,12 +127,6 @@ class FakeRunService:
         return self.kind
 
 
-class FakeAuditService:
-    async def get_by_run_authorized(self, run_id: str, **_: object):
-        assert run_id == "run-1"
-        return SimpleNamespace(run=SimpleNamespace(kind=RunKind.CODE_AUDIT))
-
-
 def test_browser_routes_expose_bounded_state_without_runner_secrets(tmp_path: Path) -> None:
     service = FakeBrowserService()
     settings = APISettings(
@@ -147,7 +141,6 @@ def test_browser_routes_expose_bounded_state_without_runner_secrets(tmp_path: Pa
         settings=settings,
         browser_service=service,
         run_service=FakeRunService(),
-        audit_service=object(),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
 
@@ -228,7 +221,6 @@ def test_code_audit_browser_http_mutations_are_rejected_before_service_effect(
         settings=settings,
         browser_service=service,
         run_service=FakeRunService(RunKind.CODE_AUDIT),
-        audit_service=FakeAuditService(),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
 
@@ -259,7 +251,6 @@ def test_code_audit_browser_stream_reports_kind_error_before_starting_tasks(
         settings=settings,
         browser_service=service,
         run_service=FakeRunService(RunKind.CODE_AUDIT),
-        audit_service=FakeAuditService(),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
 
@@ -273,7 +264,7 @@ def test_code_audit_browser_stream_reports_kind_error_before_starting_tasks(
                 websocket.receive_json()
 
     assert error["type"] == "error"
-    assert error["code"] == "run_kind_operation_unsupported"
+    assert error["code"] == "resource_not_accessible"
     assert closed.value.code == 4409
     assert service.calls["get"] == 0
     assert service.calls["observations_after"] == 0

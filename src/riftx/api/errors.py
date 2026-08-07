@@ -164,25 +164,15 @@ async def _handle_traffic_source_contract(_: Request, exc: Exception) -> JSONRes
     )
 
 
-async def _handle_validation(request: Request, exc: Exception) -> JSONResponse:
+async def _handle_validation(_: Request, exc: Exception) -> JSONResponse:
     error = _expect(exc, RequestValidationError)
-    redact_audit_body = (
-        request.method in {"POST", "PUT", "PATCH"}
-        and request.url.path.startswith("/api/v1/audits")
-    )
-    sensitive_values = (
-        _all_string_values(error.body)
-        if redact_audit_body
-        else _sensitive_values(error.body)
-    )
     return _response(
         422,
         "validation_error",
         "Request validation failed",
         _redact_validation_errors(
             jsonable_encoder(error.errors()),
-            sensitive_values=sensitive_values,
-            redact_body=redact_audit_body,
+            sensitive_values=_sensitive_values(error.body),
         ),
     )
 
@@ -226,7 +216,6 @@ def _redact_validation_errors(
     errors: list[object],
     *,
     sensitive_values: tuple[str, ...] = (),
-    redact_body: bool = False,
 ) -> list[object]:
     redacted: list[object] = []
     for item in errors:
@@ -244,13 +233,7 @@ def _redact_validation_errors(
         sensitive_field = isinstance(location, (list, tuple)) and any(
             _redact_validation_field(part) for part in location if isinstance(part, str)
         )
-        body_value = (
-            redact_body
-            and isinstance(location, (list, tuple))
-            and bool(location)
-            and location[0] == "body"
-        )
-        if external_value or sensitive_field or body_value:
+        if external_value or sensitive_field:
             copied["input"] = "[redacted]"
         else:
             copied["input"] = _redact_sensitive_mapping(copied.get("input"))
@@ -286,25 +269,6 @@ def _sensitive_values(value: object) -> tuple[str, ...]:
                 visit(child, sensitive=sensitive)
             return
         if sensitive and isinstance(item, str) and item:
-            collected.add(item)
-
-    visit(value)
-    return tuple(sorted(collected, key=len, reverse=True))
-
-
-def _all_string_values(value: object) -> tuple[str, ...]:
-    collected: set[str] = set()
-
-    def visit(item: object) -> None:
-        if isinstance(item, Mapping):
-            for child in item.values():
-                visit(child)
-            return
-        if isinstance(item, (list, tuple)):
-            for child in item:
-                visit(child)
-            return
-        if isinstance(item, str) and item:
             collected.add(item)
 
     visit(value)

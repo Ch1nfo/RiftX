@@ -25,10 +25,7 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalTerminallyRejected,
     WorkflowSignalTransportReceipt,
 )
-from riftx.application.workflow_router import (
-    RunWorkflowControlRouter,
-    WorkflowDispatchDisposition,
-)
+from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.domain import RunStatus
 from riftx.domain.workflow_signal import (
     WorkflowSignalIntent,
@@ -179,33 +176,7 @@ class RoutedWorkflowSignalTransport:
                 return
             raise WorkflowSignalTerminallyRejected("unsupported_interactive_signal_kind")
 
-        if intent.owner_kind is not WorkflowSignalOwnerKind.CODE_AUDIT:
-            raise WorkflowSignalTerminallyRejected("unsupported_workflow_signal_owner")
-        audit_id = intent.audit_id
-        if audit_id is None or intent.workflow_id != f"riftx-code-audit-{audit_id}":
-            raise WorkflowSignalTerminallyRejected("audit_workflow_identity_mismatch")
-        if intent.signal_kind is WorkflowSignalKind.PAUSE:
-            disposition = await self._router.pause_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        elif intent.signal_kind is WorkflowSignalKind.RESUME:
-            disposition = await self._router.resume_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        elif intent.signal_kind is WorkflowSignalKind.CANCEL:
-            disposition = await self._router.cancel_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        else:
-            raise WorkflowSignalTerminallyRejected("unsupported_audit_signal_kind")
-        if disposition is WorkflowDispatchDisposition.NOT_STARTED:
-            raise WorkflowSignalTerminallyRejected("audit_workflow_not_started")
+        raise WorkflowSignalTerminallyRejected("unsupported_workflow_signal_owner")
 
 
 class TemporalWorkflowSignalOutcomeProbe:
