@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`6f59e278`；本次重写输入计划基线：`d63e6f84`
+> 当前代码基线：`a929fdb4`；本次重写输入计划基线：`d63e6f84`
 >
-> 当前施工：D2 基于现有 Report 的人工复盘与版本迭代；D1 已完成
+> 当前施工：E1 默认产品入口与 Quickstart 单路径；阶段 D 已完成
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,10 +37,10 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 正式版路径只包含三个交付包：
 
 1. Operator Skill 的最小生命周期和新 Pentest 门禁（已完成）；
-2. 复用现有 Report 完成一次人工复盘与版本迭代，不建设自动学习平台；
+2. 复用现有 Report 完成一次人工复盘与版本迭代（已完成）；
 3. 收缩默认产品面，完成干净环境安装、两条真实场景和发布回归。
 
-正式版完成前停止新增通用平台能力。剩余工作不是几十个历史 Task，而是 D2、E 两个有边界的用户结果。
+正式版完成前停止新增通用平台能力。剩余工作只有阶段 E 的产品收口与发布门，不再扩建能力成长平台。
 
 ---
 
@@ -124,8 +124,8 @@ RiftX 的目标是：
 | 专业事实 | Task、Artifact、Traffic、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 作为唯一事实链 |
 | 网络服务闭环 | 枚举、Artifact、Evidence、Hypothesis、验证、结论、Closure、JSON Report 已完成 | 阶段 B completed |
 | 状态化 Web 闭环 | Alice/Bob、Credential Reference、跨对象 Attempt、Finding、Closure、JSON/Markdown Report 已完成 | 阶段 C completed |
-| 能力底座 | Capability Version、Digest、Provenance、Selection、Pack、Progressive Skill 已存在 | 只补用户生命周期 |
-| 报告投影 | Report 已能读取 Capability Selection、Attempt、Evidence、Finding 等持久事实 | D2 优先验证复用 |
+| 能力底座 | Capability Version、Selection、Progressive Skill 与 Operator 生命周期已存在 | 阶段 D completed；只做回归 |
+| 报告投影 | JSON/Markdown 已显示 Selection、Allowlist、Execution、Evidence、Attempt、Finding 和停止事实 | 阶段 D completed；只做回归 |
 
 阶段 C3 的实现提交为 `a8b29a4c`，已验证状态化 Web E2E、Report、Temporal、Target HTTP、Runtime Control、Worker、Control Plane、文档合同、Ruff、scoped mypy 和 `git diff --check`。
 
@@ -133,8 +133,8 @@ RiftX 的目标是：
 
 只剩下以下产品缺口：
 
-1. “试用后改进”尚未通过一次基于现有 Report 的版本迭代 E2E 证明；
-2. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
+1. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
+2. 干净环境 Onboard、基础工具缺失降级和 Quickstart 单路径尚未形成最终发布证据；
 3. 可选模块是否真实拖慢安装、启动或维护尚未测量，不能凭体感删除。
 
 ### 2.4 对“过度开发”的准确判断
@@ -279,10 +279,10 @@ CLI/API
 | A. Pentest 预算与停止 | completed | Admission 预算有明确执行语义和硬停止 |
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
-| D. 用户驱动能力成长 | in progress；D2 当前施工 | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
-| E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
+| D. 用户驱动能力成长 | completed | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
+| E. 默认产品面收缩与发布 | in progress；E1 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
-阶段 A、B、C 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
+阶段 A、B、C、D 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
 ### 6.1 阶段 A-C 的回归合同
 
@@ -427,7 +427,7 @@ R1 不保存 Operator Skill 历史源码包，因此 rollback 不是包管理器
 
 D1 已由实现提交 `6f59e278` 完成：新增本地 `skills` 生命周期命令、Operator 来源校验、保守 Capability Version、Pentest active/source digest 门禁、完整 Selection 快照回归，以及源码删除后的旧 Run 可解释性；未新增表、migration、包缓存、Candidate/Promotion、UI 或自动学习流程。
 
-### 7.8 D2：复盘与人工改进（当前施工）
+### 7.8 D2：复盘与人工改进（completed）
 
 现有 Report 已包含 Capability Selection、Allowlist、Attempt、Evidence、Finding、Closure 和停止信息。D2 首先验证这些事实是否足以回答：
 
@@ -440,6 +440,8 @@ D1 已由实现提交 `6f59e278` 完成：新增本地 `skills` 生命周期命�
 若现有 JSON/Markdown Report 已能回答，不新增 Review Domain、表或命令，只补文档和 E2E。若确有字段缺失，只向 `ReportApplicationService` 增加确定性、脱敏投影。
 
 D2 的完成结果是：用户根据一次真实 Run 修改 Skill、提升版本、重新注册并在下一次 Run 使用新版本。自动评分、自动改写、Replay Lab 和 Trajectory Store 全部延期。
+
+D2 已由实现提交 `a929fdb4` 完成：JSON 保持原有完整结构化事实，Markdown 增加确定性、脱敏的 Capability Selection、Allowlist、Stop、Execution 和 Evidence 投影；纵向 E2E 证明旧 Run 与旧 Report 在 v2 启用后仍固定 v1，下一 Run 和 Report 固定 v2；专业用户流程见 [`docs/operator-skill-lifecycle.md`](docs/operator-skill-lifecycle.md)。未新增 Review Domain、表、migration、命令、自动评分或自动改写。
 
 ## 8. 阶段 E：产品面收缩与发布
 
@@ -626,24 +628,24 @@ conda run --no-capture-output -n agent ...
 
 ## 12. 当前唯一施工指令
 
-从实现提交 `6f59e278` 继续，只完成 D2：
+从实现提交 `a929fdb4` 继续，只完成 E1 默认产品入口与 Quickstart 单路径：
 
-1. 先证明现有 JSON/Markdown Report 是否已经显示 Operator Skill ID、Version、Digest、Source、Tool allowlist、Attempt、Evidence、Finding、Negative Result、失败与停止原因；
-2. 若事实已存在，不新增 Review Domain、表、命令或存储，只补一个纵向 E2E 和专业用户文档；
-3. 若仅缺少报告字段，只修改 `ReportApplicationService` 的确定性脱敏投影，不复制 Report 业务逻辑；
-4. E2E 必须覆盖：v1 Skill 进入 Run 和 Report、用户依据结果修改 Skill 并提升为 v2、v2 注册/启用、下一 Run 固定 v2，而旧 Run Report 仍显示 v1；
-5. 明确区分 Skill 方法问题、Tool 执行失败、Scope/Approval/预算阻断与目标 Negative Result；
-6. 不自动评分、自动改写、自动批准或自动生成 Skill；
-7. 运行 Report、Capability Selection、Skill lifecycle、Pentest E2E、全仓 Ruff、scoped mypy、文档合同和 `git diff --check`；
-8. 形成 D2 独立提交，再单独更新实施账本；D2 完成前不开始阶段 E 或 R2 Operator Tool。
+1. 审计 `README.md`、`riftx --help`、Pentest CLI 帮助和现有示例，记录用户从安装到第一份 Report 当前必须经过的真实步骤；
+2. 第一层只突出 `onboard / doctor / model / pentest / approvals / report / skills`，其余现有命令保留为 Advanced，不删除实现、不改 API 路径；
+3. Quickstart 只保留一条真实 Pentest 路径，命令必须可执行，离线 Demo 必须明确标记 simulated/transcript；
+4. `audit` 与 Code Audit 只标记 frozen/experimental，不继续开发，也不为了隐藏入口重做 WebUI；
+5. 优先修改已有 README、CLI help 文案或命令分组；没有当前用户阻断时不新增配置层、导航框架或文档站；
+6. 补最小 CLI help/README 合同测试，防止通用平台概念重新占据默认入口；
+7. 运行 CLI、Onboard/Doctor、Pentest 创建、Operator Skill、文档合同、全仓 Ruff、scoped mypy 和 `git diff --check`；
+8. 形成 E1 独立实现提交，再单独更新实施账本；E1 完成前不做消费者删除、可选依赖拆分或 R2 Operator Tool。
 
 建议起始验证命令：
 
 ```bash
 conda run --no-capture-output -n agent pytest -q tests/unit/skills/test_progressive.py
-conda run --no-capture-output -n agent pytest -q tests/unit/test_operator_skill_lifecycle.py
-conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_skill_selection_repository.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
+conda run --no-capture-output -n agent pytest -q tests/unit/cli/test_app.py
+conda run --no-capture-output -n agent pytest -q tests/unit/test_onboard.py tests/unit/test_doctor.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_operator_skill_reports.py
 conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
@@ -658,9 +660,10 @@ git diff --check
 → [已完成] B：网络服务专业闭环
 → [已完成] C：状态化 Web、Closure 与 Report
 → [已完成] D1：Operator Skill 生命周期与 Admission 门禁
-→ [当前] D2：复用现有 Report 完成人工复盘和版本迭代
-→ [最后] E：默认产品面收缩、消费者审计和 R1 发布
+→ [已完成] D2：复用现有 Report 完成人工复盘和版本迭代
+→ [当前] E1：默认产品入口与 Quickstart 单路径
+→ [最后] E2-E4：安装降级、消费者成本审计和 R1 发布门
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 
-RiftX 当前不需要更多架构，也不应立刻大规模删代码。最短路径是完成用户能力生命周期，证明已有 Report 能支持人工改进，再收缩默认入口并发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
+RiftX 当前不需要更多架构，也不应立刻大规模删代码。能力成长闭环已经完成，最短路径是收缩默认入口、验证干净环境和真实场景，然后发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
