@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`c7709790`（阶段 A 与 B1-B2 已完成）
+> 当前实现基线：`5018f071`（阶段 A 与 B1-B3 已完成）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,7 +37,7 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1-B2 已完成；下一步只在现有 localhost 服务、Target HTTP、Artifact、Evidence 和 Reasoning 链上，对 B2 的 Hypothesis 做一次最小协议验证，形成一个可审查 Finding Candidate/Draft 和一个有证据的 Negative Result。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1-B3 已完成；下一步只把 B3 已持久的 Admission、Execution、Artifact、Evidence、Reasoning、Draft Finding、Negative Result 和 Stop Proof 投影到现有 Closure/Report，完成阶段 B。此前不开始状态化 Web、新框架、新 Scanner 或大规模删除。**
 
 ---
 
@@ -93,7 +93,8 @@ RiftX 正式版要成为：
 | 目标交互预算 | 总量和并发预算在持久事务中原子占用；总量耗尽复用 pause、Safety Stop 和 Stop Proof | 已完成 |
 | Admission 全预算 | Model、Tool、Token、Duration 和 Target Interaction 在模型或 Tool 副作用前持久检查；耗尽统一暂停并保留 Stop Proof | 已完成 |
 | Artifact → Evidence | Primary Agent 可把当前 Run 的 Artifact 精确 byte span 登记为稳定、可回放 Evidence，并用于 Reasoning | 已完成 |
-| 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 需要生产消费者 |
+| 服务假设验证 | 受批准 Target HTTP 可将受保护响应登记为 Evidence，形成 Observation、Vulnerability Candidate、幂等 Draft Finding 和精确 Negative Result | 已完成 |
+| 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | Evidence/Reasoning/Draft Finding 已接入生产链，待验收 Closure/Report |
 | 能力底座 | Capability、Version、Digest、Provenance、Candidate、Selection、Pack、Progressive Skill 已存在 | 需要用户成长闭环 |
 
 阶段 A 最近实现：
@@ -112,6 +113,7 @@ b6b5f739  enforce model token duration budgets
 ```text
 54c2489b  register artifact evidence
 c7709790  close service enumeration loop
+5018f071  verify service hypotheses
 ```
 
 最近已验证的相关回归包括：
@@ -124,6 +126,9 @@ B1 Artifact → Evidence focused regression: 151 passed
 B2 relevant regression: 235 passed
 Full Control Plane after B2: 68 passed
 B2 Pack/upgrade regression: 14 passed
+B3 affected Runtime/Evidence/Repository regression: 117 passed
+Full Control Plane after B3: 68 passed
+B3 Pack regression: 13 passed
 Full Ruff: passed
 Changed production files scoped mypy: passed
 ```
@@ -134,14 +139,14 @@ Changed production files scoped mypy: passed
 
 | 缺口 | 当前状态 | V1 必须 |
 | --- | --- | --- |
-| 网络服务专业闭环 | Pack、Runner、Evidence 等组件存在，未形成生产 E2E | 是 |
+| 网络服务专业闭环 | 枚举、HTTP 正负验证和 Draft Finding 已形成生产 E2E，缺 Closure/Report 关闭 | 是 |
 | 状态化 Web 闭环 | Browser、Traffic、Target HTTP 已存在，身份/授权场景未闭环 | 是 |
 | 专业报告 | 通用报告能力已存在，Pentest 事实组合与 E2E 未验收 | 是 |
 | 用户驱动能力成长 | Capability 底座存在，缺少一次完整添加、选择、复盘、禁用和回滚 | 是 |
 | 默认产品面收缩 | 未按真实消费者审计 | 是 |
 | 大规模代码删除 | 尚无足够消费者证据 | 否，延后到收缩阶段 |
 
-阶段 B 的首个生产断点已经关闭：
+阶段 B 的专业事实链已接通到 Draft Finding/Negative Result：
 
 ```text
 Execution
@@ -150,8 +155,10 @@ Execution
 → Agent Tool Result Context（已完成）
 → register_artifact_evidence（已完成；Primary-only、当前 Run、精确 byte span）
 → Evidence Ledger（生产写入与幂等语义已接通）
-→ Reasoning Observation（已证明可消费返回的 Evidence ID）
-→ Finding/Closure/Report
+→ Reasoning Observation/Hypothesis（已完成）
+→ Target HTTP 最小验证（已完成）
+→ Vulnerability Candidate/Draft Finding/Negative Result（已完成）
+→ Closure/Report（当前施工）
 ```
 
 可直接复用的现有生产事实：
@@ -160,10 +167,12 @@ Execution
 - `ToolResultProcessor` 已保留原始输出、解析 Nmap XML、生成结构化结果与有界摘要；
 - `EvidenceApplicationService.register_artifact_span` 已由生产 Worker 和 Primary-only Control Tool 装配；
 - Reasoning 的 Observation、Fact、Finding Candidate 和 Negative Result 已强制校验 Evidence ID；
-- Finding 当前可引用同 Run 的 Artifact/Execution，Report 已能读取 Finding、Artifact、Event 和 Closure；
+- Finding 已能从 Reasoning Vulnerability Candidate 确定性投影为 Draft，并引用同 Run 的 Artifact/Execution；
+- Target HTTP 原始请求/响应仍不对通用 Artifact 读取面可见，只能通过同 Run 持久关联在服务端登记 Evidence 或校验 Finding；
+- Report 已能读取 Finding、Artifact、Event 和 Closure，但尚未在 B3 生产事实上完成端到端验收；
 - 现有测试已有 Nmap golden fixture、`fake_nmap.py` 和可复用的本地异步 HTTP 目标生命周期。
 
-因此，下一个提交应该是“对已有服务 Hypothesis 做最小 HTTP 验证并记录正负结论”，而不是新增扫描框架、更多靶场或自动确认 Finding。
+因此，下一个提交应该是“用现有 Closure/Report 投影 B3 的全部权威事实并关闭阶段 B”，而不是新增报告系统、扫描框架、更多靶场或自动确认 Finding。
 
 ### 2.3 对“是否过度开发”的最终判断
 
@@ -336,7 +345,7 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | in progress；B0-B2 completed，B3 当前施工 | 一个真实服务从枚举走到证据化结论 |
+| B. 网络服务专业闭环 | in progress；B0-B3 completed，B4 当前施工 | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
@@ -483,7 +492,7 @@ B2 已满足的回归合同：
 c7709790  feat(pentest): close service enumeration loop
 ```
 
-### 8.4 B3：最小验证、Finding 与 Negative Result（当前唯一实现切片）
+### 8.4 B3：最小验证、Finding 与 Negative Result（completed）
 
 用户结果：Agent 对 B2 的一个 Hypothesis 执行最小协议验证，并产生一种可审查结论。
 
@@ -500,7 +509,22 @@ c7709790  feat(pentest): close service enumeration loop
 
 若现有 Finding 与 Reasoning Finding 是两套未完全接通的表示，只做一个确定性投影或薄调用；不得新建第三套 Finding 状态。
 
-### 8.5 B4：Closure、Report 与阶段关闭
+已完成实现：
+
+- Primary-only `create_finding` 只接受现有 `VULNERABILITY_CANDIDATE/CANDIDATE`，并固定创建 Draft；
+- Finding ID 由 Run/Session/Tool Call 确定性生成，同内容重放不重复写入，内容漂移失败关闭；
+- Target HTTP 受保护 Artifact 保持对通用读取面隐藏，但可通过同 Run 交换关联登记精确 Evidence 并校验 Finding；
+- Target HTTP Control Intent 由服务端生成脱敏 origin `target_summary`，Nmap 与 HTTP 跨工具共享同一 Target Interaction 预算；
+- 同一 localhost E2E 已覆盖 Nmap、HTTP 200/404、批准前零副作用、Evidence、Observation、Candidate、Draft Finding、Negative Result、预算暂停和跨重启读取；
+- 没有自动创建 Confirmed Finding，也没有新增表、migration、Pack、Scanner、Planner、Graph、Worker 或 UI。
+
+提交：
+
+```text
+5018f071  feat(pentest): verify service hypotheses
+```
+
+### 8.5 B4：Closure、Report 与阶段关闭（当前唯一实现切片）
 
 用户结果：最终状态下的结构化 Report 能解释做了什么、证据在哪里、什么成立、什么不成立、什么没有执行以及为什么停止。
 
@@ -810,18 +834,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从实现基线 `c7709790` 继续，只做 B3“最小验证、Finding 与 Negative Result”：
+从实现基线 `5018f071` 继续，只做 B4“Closure、Report 与阶段关闭”：
 
-1. 复用 B2 的随机 localhost HTTP 服务，只增加一个只读诊断路径和一个确定性 404 路径；测试数据不得包含真实 Secret、Credential 或公网依赖；
-2. 复用 `target_http_request`、Traffic Ledger、Request/Response Artifact、`register_artifact_evidence`、Reasoning 和现有 Finding Service；
-3. 对 B2 的 HTTP Hypothesis 只执行一个最小 GET 验证，批准、Scope、Tool/Target Interaction/Duration 预算必须在请求副作用前继续生效；
-4. 将诊断路径响应的精确 Artifact span 登记为 Evidence，创建一个低风险信息披露 Vulnerability Candidate，并投影为可审查 Draft Finding；
-5. 对确定性 404 路径记录独立 Evidence 和 Negative Result，只否定该精确猜测，不得扩大为“目标不存在漏洞”或“目标安全”；
-6. 正负结论必须引用各自的 HTTP/Artifact Evidence；工具错误、Scope 拒绝、Approval 拒绝和预算耗尽不得伪装成 Negative Result；
-7. 相同 Tool Call/Evidence/Reasoning 写入保持幂等，不因模型循环重复目标请求或结论；
-8. 若 Reasoning Finding 与现有 Finding Service 需要接通，只增加一个确定性薄投影，不新建第三套 Finding 状态；
-9. B3 不生成最终 Report、不增加第二个靶场、Scanner Framework、表、migration、Pack、Planner、Graph、Worker 或 UI；
-10. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成独立实现提交，B3 完成前不进入 B4 或阶段 C-E。
+1. 复用 B3 的同一 localhost Run 和已持久事实，不创建第二个靶场或平行报告模型；
+2. 从现有 `ClosureVerifierApplicationService`、`ReportApplicationService`、Report projection 和 Run 完成路径开始审计，只修复阻断 B3 事实进入结案的生产断点；
+3. 结构化 JSON Report 必须从权威持久状态重建 Engagement、Scope、Admission、Capability/Pack Lock、预算、Execution、Artifact/Evidence、Observation/Hypothesis、Draft Finding、Negative Result 和 Closure；
+4. 报告必须区分“已验证”、“Draft/待人工确认”、“精确否定”、“未执行”、“工具失败/被阻断”和“停止原因”，不得把 Draft 升级为 Confirmed；
+5. Target HTTP 原始请求/响应体继续对通用 Artifact、Event、Graph 和 Report 读取面隐藏；Report 只使用脱敏 Traffic 元数据、Evidence Digest/Locator 和可安全导出的引用；
+6. 预算耗尽造成的 Pause、随后 Resume/Complete 和 Stop Proof 必须可在 Closure/Report 中解释，不得被改写为目标结论；
+7. 验证同一 Report 在重放、Control Plane 重启和持久状态重建后不产生重复 Finding、丢失 Negative Result 或泄露 Secret/本地路径；
+8. 优先验收现有 JSON 输出；只有现有 Markdown renderer 能零新抽象复用时才同步验收 Markdown，不新建 Template Engine 或 Pentest Report Service；
+9. B4 不新增表、migration、Pack、Scanner、Planner、Graph、Worker、Browser 场景或 UI，不进入阶段 C-E；
+10. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成 B4 独立实现提交，再单独更新实施账本并关闭阶段 B。
 
 ---
 
