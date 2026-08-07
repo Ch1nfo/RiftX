@@ -436,7 +436,7 @@ D1 先关闭“本地 Skill 可以绕过 Capability 状态直接进入 Pentest�
 生产合同：
 
 - Operator Skill 包继续由 `ProgressiveSkillRegistry` 做静态解析和 Digest；
-- 导入时只生成一个 `CapabilityKind.SKILL` Version，保存 Version、Digest、Operator Provenance、Permission 和完整 Skill 快照；
+- 导入时只生成一个 `CapabilityKind.SKILL` Version，保存 Version、Digest、Operator Provenance 和 Permission；完整 Document/Reference 继续由新 Run 的持久 Session Selection 快照固定；
 - 新导入版本从 `approved` 开始，必须经显式启用才可被新 Pentest 选择；
 - Pentest Admission 选择 Operator Skill 时，必须找到同 ID、Version、Digest、Source 的 active Capability Version；
 - 文件漂移、Version/Digest 不匹配、未批准、已禁用或已删除源包均失败关闭；
@@ -652,7 +652,7 @@ Ledger commit:
 1. 用一个本地 Operator Skill fixture 代表“基于服务特征选择最小验证步骤”，只复用现有 Tool；
 2. 复用 `ProgressiveSkillRegistry.validate()` 与 Doctor 校验 Skill 结构，不新建 Parser 或 Skill SDK；
 3. 增加最薄 Operator Skill 管理服务/命令，将验证后包幂等注册为 `approved` Capability Version，再经用户命令显式启用；
-4. 注册快照必须包含 Skill ID、Version、Digest、Operator Provenance、Permission 与完整 Document/Reference，不保存 Secret；
+4. Capability Version 必须包含 Skill ID、Version、Digest、Operator Provenance 和 Permission；完整 Document/Reference 仅进入新 Run 的持久 Selection 快照，不进入 Capability Manifest，不保存 Secret；
 5. Pentest Capability Resolver 对显式 Operator Skill 只接受同 ID/Version/Digest/Source 的 active Capability Version；未注册、未启用、已禁用或漂移全部失败关闭；
 6. Skill 的 Approval 只能等于或高于它声明的最小值，不得改写 Tool 自身 Approval；Skill 不得把 Tool 加入 Run allowlist；
 7. 实现显式 disable 与 rollback；rollback 只切换已存版本状态，不重写旧版本；
