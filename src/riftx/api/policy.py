@@ -93,6 +93,10 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "get_local_audit_finding",
                 "get_local_audit_report",
                 "get_audit_preflight",
+                "create_audit",
+                "start_audit",
+                "create_audit_preflight",
+                "issue_audit_preflight_plan",
                 "list_run_actions",
                 "get_run_action",
                 "get_run_graph",
@@ -144,8 +148,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
             {
                 "create_run",
                 "create_pentest",
-                "create_audit",
-                "issue_audit_preflight_plan",
                 "create_finding",
                 "update_finding",
                 "create_memory",
@@ -182,8 +184,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         _policy(RouteAuthorization.LOCAL_OPERATOR, RouteEffect.HOST_EXECUTION),
         frozenset(
             {
-                "create_audit_preflight",
-                "start_audit",
                 "create_terminal",
                 "open_browser",
             }

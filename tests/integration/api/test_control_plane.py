@@ -4212,9 +4212,23 @@ models:
                     "unknown": "RIFTX-PREFLIGHT-CANARY",
                 },
             )
-            assert disabled_preflight.status_code == 503
-            assert disabled_preflight.json()["error"]["code"] == "audit_feature_disabled"
+            assert disabled_preflight.status_code == 410
+            assert disabled_preflight.json()["error"]["code"] == "code_audit_retired"
             assert "RIFTX-PREFLIGHT-CANARY" not in disabled_preflight.text
+            retired_create = await client.post(
+                "/api/v1/audits",
+                json={"source_path": "/RIFTX-AUDIT-CANARY"},
+            )
+            retired_start = await client.post(
+                "/api/v1/audits/retired-audit/start"
+            )
+            retired_plan = await client.post(
+                "/api/v1/audits/preflight/retired-preflight/plan"
+            )
+            for retired in (retired_create, retired_start, retired_plan):
+                assert retired.status_code == 410
+                assert retired.json()["error"]["code"] == "code_audit_retired"
+                assert "RIFTX-AUDIT-CANARY" not in retired.text
             missing_preflight = await client.get(
                 "/api/v1/audits/preflight/missing-preflight-job"
             )

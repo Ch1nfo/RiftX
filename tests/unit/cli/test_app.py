@@ -51,7 +51,7 @@ def test_root_help_prioritizes_the_pentest_workflow() -> None:
     for command in ("onboard", "doctor", "model", "pentest", "report", "skills"):
         assert command in result.output
     assert "interactive   Enter the interactive RiftX session" not in result.output
-    assert "Experimental frozen local code-audit surface" in result.output
+    assert "Retired code-audit history and cleanup controls" in result.output
 
 
 def test_cli_import_does_not_eagerly_load_service_runtimes() -> None:
@@ -131,14 +131,6 @@ class FakeAPIClient:
     def get_pentest_status(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("get_pentest_status", run_id))
         return self._pentest_status(run_id)
-
-    def create_local_audit(self, source_path: str) -> dict[str, Any]:
-        self.calls.append(("create_local_audit", source_path))
-        return {"audit_id": "audit-1", "status": "draft"}
-
-    def start_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("start_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "queued"}
 
     def get_local_audit(self, audit_id: str) -> dict[str, Any]:
         self.calls.append(("get_local_audit", audit_id))
@@ -597,13 +589,13 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "APIClient", FakeAPIClient)
 
 
-def test_local_audit_commands_delegate_to_minimal_api(
+def test_local_audit_creation_is_removed_but_history_controls_remain(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
 
-    scan = runner.invoke(cli_module.app, ["audit", str(project)])
+    scan = runner.invoke(cli_module.app, ["audit", "scan", str(project)])
     status = runner.invoke(cli_module.app, ["audit", "status", "audit-1"])
     findings = runner.invoke(cli_module.app, ["audit", "findings", "audit-1"])
     report = runner.invoke(
@@ -612,24 +604,21 @@ def test_local_audit_commands_delegate_to_minimal_api(
     )
     cancel = runner.invoke(cli_module.app, ["audit", "cancel", "audit-1"])
 
-    for result in (scan, status, findings, report, cancel):
+    assert scan.exit_code == 2
+    assert "No such command 'scan'" in scan.output
+    for result in (status, findings, report, cancel):
         assert result.exit_code == 0, result.output
-    assert "queued" in scan.output
     assert "completed" in status.output
     assert "Local Audit" in report.output
     assert "cancelled" in cancel.output
-    assert FakeAPIClient.instances[0].calls == [
-        ("create_local_audit", str(project.resolve())),
-        ("start_local_audit", "audit-1"),
-    ]
-    assert FakeAPIClient.instances[1].calls == [("get_local_audit", "audit-1")]
-    assert FakeAPIClient.instances[2].calls == [
+    assert FakeAPIClient.instances[0].calls == [("get_local_audit", "audit-1")]
+    assert FakeAPIClient.instances[1].calls == [
         ("list_local_audit_findings", "audit-1")
     ]
-    assert FakeAPIClient.instances[3].calls == [
+    assert FakeAPIClient.instances[2].calls == [
         ("get_local_audit_report", ("audit-1", "markdown"))
     ]
-    assert FakeAPIClient.instances[4].calls == [("cancel_local_audit", "audit-1")]
+    assert FakeAPIClient.instances[3].calls == [("cancel_local_audit", "audit-1")]
 
 
 def test_offline_security_demos_do_not_call_control_plane(tmp_path: Path) -> None:
@@ -652,19 +641,17 @@ def test_offline_security_demos_do_not_call_control_plane(tmp_path: Path) -> Non
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(cli_module, "load_riftx_config", lambda **_: config)
         pentest = runner.invoke(cli_module.app, ["demo", "pentest"])
-        code_audit = runner.invoke(cli_module.app, ["demo", "code-audit"])
+        retired = runner.invoke(cli_module.app, ["demo", "code-audit"])
 
     assert pentest.exit_code == 0, pentest.output
-    assert code_audit.exit_code == 0, code_audit.output
+    assert retired.exit_code == 2
+    assert "No such command 'code-audit'" in retired.output
     assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
     assert "nmap, nuclei" in pentest.output
-    assert "SANITIZED LOCAL CODE AUDIT DEMO" in code_audit.output
-    assert "secret.hardcoded_credential" in code_audit.output
-    assert "demo-secret-value" not in code_audit.output
     assert FakeAPIClient.instances == []
 
 
-def test_new_user_can_run_both_demos_after_onboard(
+def test_new_user_can_run_pentest_demo_after_onboard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -707,19 +694,11 @@ def test_new_user_can_run_both_demos_after_onboard(
         cli_module.app,
         ["--config", str(config_path), "demo", "pentest"],
     )
-    code_audit = runner.invoke(
-        cli_module.app,
-        ["--config", str(config_path), "demo", "code-audit"],
-    )
-
     assert onboard.exit_code == 0, onboard.output
     assert pentest.exit_code == 0, pentest.output
-    assert code_audit.exit_code == 0, code_audit.output
     assert "Onboarding complete" in onboard.output
     assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
     assert "Degradation path" in pentest.output
-    assert "SANITIZED LOCAL CODE AUDIT DEMO" in code_audit.output
-    assert "Built-in static detectors remain available" in code_audit.output
     assert FakeAPIClient.instances == []
 
 

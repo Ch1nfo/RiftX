@@ -45,17 +45,17 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert len(inventory) == len(ROUTE_POLICIES)
     assert {record.name for record in inventory} == set(ROUTE_POLICIES)
     assert ROUTE_POLICIES["cancel_run"].effect is RouteEffect.WORKFLOW_CONTROL
-    assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.DURABLE_WRITE
+    assert ROUTE_POLICIES["create_audit"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["list_audits"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["get_audit"].effect is RouteEffect.READ_ONLY
-    assert ROUTE_POLICIES["start_audit"].effect is RouteEffect.HOST_EXECUTION
+    assert ROUTE_POLICIES["start_audit"].effect is RouteEffect.READ_ONLY
     for route_name in (
         "list_local_audit_findings",
         "get_local_audit_finding",
         "get_local_audit_report",
     ):
         assert ROUTE_POLICIES[route_name].effect is RouteEffect.READ_ONLY
-    assert ROUTE_POLICIES["create_audit_preflight"].effect is RouteEffect.HOST_EXECUTION
+    assert ROUTE_POLICIES["create_audit_preflight"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["get_audit_preflight"].effect is RouteEffect.READ_ONLY
     assert ROUTE_POLICIES["cancel_audit_preflight"].effect is RouteEffect.HOST_CONTROL
     for route_name in (
@@ -90,12 +90,16 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert update_model["x-riftx-effect"] == "durable_write"
     create_audit = openapi["paths"]["/api/v1/audits"]["post"]
     assert create_audit["x-riftx-authorization"] == "local_operator"
-    assert create_audit["x-riftx-effect"] == "durable_write"
+    assert create_audit["x-riftx-effect"] == "read_only"
+    assert "requestBody" not in create_audit
+    assert "410" in create_audit["responses"]
     assert openapi["paths"]["/api/v1/audits"]["get"]["x-riftx-effect"] == "read_only"
     assert openapi["paths"]["/api/v1/audits/{audit_id}"]["get"]["x-riftx-effect"] == "read_only"
     create_preflight = openapi["paths"]["/api/v1/audits/preflight"]["post"]
     assert create_preflight["x-riftx-authorization"] == "local_operator"
-    assert create_preflight["x-riftx-effect"] == "host_execution"
+    assert create_preflight["x-riftx-effect"] == "read_only"
+    assert "requestBody" not in create_preflight
+    assert "410" in create_preflight["responses"]
     get_preflight = openapi["paths"]["/api/v1/audits/preflight/{job_id}"]["get"]
     assert get_preflight["x-riftx-authorization"] == "local_operator"
     assert get_preflight["x-riftx-effect"] == "read_only"
@@ -104,7 +108,8 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
     assert cancel_preflight["x-riftx-effect"] == "host_control"
     issue_plan = openapi["paths"]["/api/v1/audits/preflight/{job_id}/plan"]["post"]
     assert issue_plan["x-riftx-authorization"] == "local_operator"
-    assert issue_plan["x-riftx-effect"] == "durable_write"
+    assert issue_plan["x-riftx-effect"] == "read_only"
+    assert "410" in issue_plan["responses"]
     for path in (
         "/api/v1/audits/{audit_id}/artifacts",
         "/api/v1/audits/{audit_id}/artifacts/{artifact_id}",
@@ -183,7 +188,7 @@ def test_control_plane_route_policy_inventory_rejects_unknown_route() -> None:
         ("cancel_run", OperatorCapability.CONTROL),
         ("create_terminal", OperatorCapability.HOST_EXECUTE),
         ("observe_browser", OperatorCapability.HOST_CONTROL),
-        ("create_audit_preflight", OperatorCapability.HOST_EXECUTE),
+        ("create_audit_preflight", OperatorCapability.READ),
         ("get_audit_preflight", OperatorCapability.READ),
         ("cancel_audit_preflight", OperatorCapability.HOST_CONTROL),
     ],

@@ -109,26 +109,6 @@ class APIClient:
     def get_run_metrics(self, run_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/runs/{run_id}/metrics")
 
-    def create_local_audit(
-        self,
-        source_path: str,
-        *,
-        include_patterns: tuple[str, ...] = (),
-        exclude_patterns: tuple[str, ...] = (),
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/api/v1/audits",
-            json={
-                "source_path": source_path,
-                "include_patterns": list(include_patterns),
-                "exclude_patterns": list(exclude_patterns),
-            },
-        )
-
-    def start_local_audit(self, audit_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/api/v1/audits/{audit_id}/start")
-
     def get_local_audit(self, audit_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/audits/{audit_id}")
 

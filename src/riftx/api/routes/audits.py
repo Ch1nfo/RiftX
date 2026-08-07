@@ -3,16 +3,13 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, status
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
-    ServiceUnavailableError,
 )
-from riftx.audit import LocalAuditJob, LocalAuditJobService, SourcePathAuthorizationError
-from riftx.domain import OperatorCapability
+from riftx.audit import LocalAuditJob, LocalAuditJobService
 
 from ..dependencies import (
     AuditControlServiceDependency,
@@ -24,13 +21,9 @@ from ..dependencies import (
 )
 from ..errors import APIError
 from ..schemas import (
-    AuditDraftResponse,
     AuditListQuery,
     AuditListResponse,
     AuditResponse,
-    CreateAuditDraftRequest,
-    CreateAuditDraftRequestV2,
-    CreateLocalAuditRequest,
     ErrorResponse,
     LocalAuditFindingListResponse,
     LocalAuditFindingResponse,
@@ -60,68 +53,14 @@ AuditId = Annotated[
 
 @router.post(
     "",
-    response_model=LocalAuditJobResponse | AuditDraftResponse,
-    status_code=status.HTTP_201_CREATED,
-    responses={
-        200: {"model": AuditDraftResponse, "description": "Exact idempotent replay"},
-        **_ERROR_RESPONSES,
-    },
+    status_code=status.HTTP_410_GONE,
+    responses={410: {"model": ErrorResponse}, **_ERROR_RESPONSES},
 )
-async def create_audit(
-    request: CreateLocalAuditRequest | CreateAuditDraftRequestV2 | CreateAuditDraftRequest,
-    local_service: OptionalLocalAuditJobServiceDependency,
-    service: AuditServiceDependency,
-    principal: LocalPrincipalDependency,
-    authorizer: AuditObjectAuthorizerDependency,
-) -> JSONResponse:
-    """Create a local Audit Job or preserve the historical draft API."""
-
-    if isinstance(request, CreateLocalAuditRequest):
-        local = _require_local_service(local_service)
-        try:
-            local_job = await local.create(
-                request.source_path,
-                include_paths=request.include_patterns,
-                exclude_paths=request.exclude_patterns,
-            )
-        except SourcePathAuthorizationError as exc:
-            raise APIError(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                exc.failure.value,
-                "Local Audit source path or filters are invalid",
-            ) from None
-        response: LocalAuditJobResponse | AuditDraftResponse = LocalAuditJobResponse.from_domain(
-            local_job
-        )
-        response_status = status.HTTP_201_CREATED
-    elif isinstance(request, CreateAuditDraftRequestV2):
-        result = await service.create_draft_v2_authorized(
-            request.to_command(),
-            principal=principal,
-            authorizer=authorizer,
-        )
-        response = AuditDraftResponse.from_result(result)
-        response_status = (
-            status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
-        )
-    else:
-        service.require_legacy_draft_api_enabled()
-        authorization_reference = authorizer.draft_authorization_reference(
-            principal,
-            capability=OperatorCapability.WRITE,
-        )
-        result = await service.create_draft_authorized(
-            request.to_command(authorization_reference=authorization_reference),
-            principal=principal,
-            authorizer=authorizer,
-        )
-        response = AuditDraftResponse.from_result(result)
-        response_status = (
-            status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
-        )
-    return JSONResponse(
-        status_code=response_status,
-        content=jsonable_encoder(response),
+async def create_audit() -> None:
+    raise APIError(
+        status.HTTP_410_GONE,
+        "code_audit_retired",
+        "Code Audit creation is retired; existing history remains readable",
     )
 
 
@@ -222,19 +161,15 @@ async def resume_audit(
 
 @router.post(
     "/{audit_id}/start",
-    response_model=LocalAuditJobResponse,
-    responses=_ERROR_RESPONSES,
+    status_code=status.HTTP_410_GONE,
+    responses={410: {"model": ErrorResponse}, **_ERROR_RESPONSES},
 )
-async def start_audit(
-    audit_id: AuditId,
-    service: LocalAuditJobServiceDependency,
-) -> LocalAuditJobResponse:
-    if not service.runnable:
-        raise ServiceUnavailableError(
-            "local_audit_scanner_unavailable",
-            "Local Code Audit requires an enabled source root on this machine",
-        )
-    return LocalAuditJobResponse.from_domain(await service.start(audit_id))
+async def start_audit(audit_id: AuditId) -> None:
+    raise APIError(
+        status.HTTP_410_GONE,
+        "code_audit_retired",
+        "Code Audit start is retired; existing history remains readable",
+    )
 
 
 @router.get(
@@ -340,17 +275,6 @@ async def cancel_audit(
             authorizer=authorizer,
         )
     )
-
-
-def _require_local_service(
-    service: LocalAuditJobService | None,
-) -> LocalAuditJobService:
-    if service is None:
-        raise ServiceUnavailableError(
-            "local_audit_unavailable",
-            "Local Code Audit is temporarily unavailable",
-        )
-    return service
 
 
 async def _get_local_job(

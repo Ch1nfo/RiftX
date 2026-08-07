@@ -3,26 +3,19 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Request, status
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 
 from riftx.application.errors import ServiceUnavailableError
 from riftx.application.services.audit_preflight import (
     AuditPreflightApplicationService,
-)
-from riftx.application.services.audit_preflight_plan import (
-    AuditPreflightPlanApplicationService,
 )
 
 from ..dependencies import (
     AuditObjectAuthorizerDependency,
     LocalPrincipalDependency,
 )
+from ..errors import APIError
 from ..schemas.audit_preflight import (
-    AuditPreflightCreateResponse,
     AuditPreflightJobResponse,
-    AuditPreflightPlanIssuanceResponse,
-    CreateAuditPreflightRequest,
 )
 from ..schemas.errors import ErrorResponse
 
@@ -64,69 +57,16 @@ AuditPreflightServiceDependency = Annotated[
 ]
 
 
-def get_audit_preflight_plan_service(
-    request: Request,
-) -> AuditPreflightPlanApplicationService:
-    control_plane = getattr(request.app.state, "control_plane", None)
-    service = getattr(control_plane, "audit_preflight_plan_service", None)
-    if not isinstance(service, AuditPreflightPlanApplicationService):
-        raise ServiceUnavailableError(
-            "audit_preflight_plan_unavailable",
-            "RiftX Code Audit Preflight Plan issuance is temporarily unavailable",
-        )
-    return service
-
-
-AuditPreflightPlanServiceDependency = Annotated[
-    AuditPreflightPlanApplicationService,
-    Depends(get_audit_preflight_plan_service),
-]
-
-
-def require_audit_preflight_create_enabled(
-    service: AuditPreflightServiceDependency,
-) -> None:
-    """Run the feature gate before FastAPI validates the sensitive request body."""
-
-    service.require_create_enabled()
-
-
-def require_audit_preflight_plan_issuance_enabled(
-    service: AuditPreflightPlanServiceDependency,
-) -> None:
-    """Fence issuance before restricted Job, Plan, nonce, or token access."""
-
-    service.require_issuance_enabled()
-
-
 @router.post(
     "",
-    response_model=AuditPreflightCreateResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    responses={
-        200: {
-            "model": AuditPreflightCreateResponse,
-            "description": "Exact idempotent replay",
-        },
-        **_ERROR_RESPONSES,
-    },
-    dependencies=[Depends(require_audit_preflight_create_enabled)],
+    status_code=status.HTTP_410_GONE,
+    responses={410: {"model": ErrorResponse}, **_ERROR_RESPONSES},
 )
-async def create_audit_preflight(
-    request: CreateAuditPreflightRequest,
-    service: AuditPreflightServiceDependency,
-    principal: LocalPrincipalDependency,
-    authorizer: AuditObjectAuthorizerDependency,
-) -> JSONResponse:
-    result = await service.create_authorized(
-        request.to_domain(),
-        principal=principal,
-        authorizer=authorizer,
-    )
-    response = AuditPreflightCreateResponse.from_result(result)
-    return JSONResponse(
-        status_code=(status.HTTP_202_ACCEPTED if result.created else status.HTTP_200_OK),
-        content=jsonable_encoder(response),
+async def create_audit_preflight() -> None:
+    raise APIError(
+        status.HTTP_410_GONE,
+        "code_audit_retired",
+        "Code Audit Preflight creation is retired",
     )
 
 
@@ -172,44 +112,19 @@ async def cancel_audit_preflight(
 
 @router.post(
     "/{job_id}/plan",
-    response_model=AuditPreflightPlanIssuanceResponse,
-    status_code=status.HTTP_201_CREATED,
-    responses={
-        200: {
-            "model": AuditPreflightPlanIssuanceResponse,
-            "description": "Exact available-Plan token replay",
-        },
-        **_ERROR_RESPONSES,
-    },
-    dependencies=[Depends(require_audit_preflight_plan_issuance_enabled)],
+    status_code=status.HTTP_410_GONE,
+    responses={410: {"model": ErrorResponse}, **_ERROR_RESPONSES},
 )
-async def issue_audit_preflight_plan(
-    job_id: PreflightJobId,
-    service: AuditPreflightPlanServiceDependency,
-    principal: LocalPrincipalDependency,
-    authorizer: AuditObjectAuthorizerDependency,
-) -> JSONResponse:
-    result = await service.issue_authorized(
-        job_id,
-        principal=principal,
-        authorizer=authorizer,
-    )
-    response = AuditPreflightPlanIssuanceResponse.from_result(result)
-    return JSONResponse(
-        status_code=(status.HTTP_201_CREATED if result.created else status.HTTP_200_OK),
-        content=jsonable_encoder(response),
-        headers={
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        },
+async def issue_audit_preflight_plan(job_id: PreflightJobId) -> None:
+    raise APIError(
+        status.HTTP_410_GONE,
+        "code_audit_retired",
+        "Code Audit Preflight Plan issuance is retired",
     )
 
 
 __all__ = [
     "get_audit_preflight_service",
-    "get_audit_preflight_plan_service",
     "issue_audit_preflight_plan",
-    "require_audit_preflight_create_enabled",
-    "require_audit_preflight_plan_issuance_enabled",
     "router",
 ]

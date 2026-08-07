@@ -19,10 +19,8 @@ from uuid import uuid4
 import httpx
 import typer
 import uvicorn
-from click import Command, Context
 from rich.console import Console
 from rich.table import Table
-from typer.core import TyperGroup
 
 from riftx.config import (
     RiftXConfig,
@@ -91,20 +89,6 @@ if TYPE_CHECKING:
 console = Console()
 
 
-class _AuditGroup(TyperGroup):
-    """Route an unknown first token to the local folder scan command."""
-
-    def resolve_command(
-        self,
-        ctx: Context,
-        args: list[str],
-    ) -> tuple[str | None, Command | None, list[str]]:
-        if args and not args[0].startswith("-") and args[0] not in self.commands:
-            command = self.get_command(ctx, "scan")
-            return "scan", command, args
-        return super().resolve_command(ctx, args)
-
-
 _GETTING_STARTED_PANEL = "Getting started"
 _PENTEST_PANEL = "Pentest workflow"
 _SERVICE_PANEL = "Service operation"
@@ -133,10 +117,7 @@ demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
 capabilities_app = typer.Typer(help="Inspect the local Capability catalog.")
 packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
 skills_app = typer.Typer(help="Validate and manage local Operator Skills.")
-audit_app = typer.Typer(
-    cls=_AuditGroup,
-    help="Experimental frozen local code-audit surface; security fixes only.",
-)
+audit_app = typer.Typer(help="Retired code-audit history and cleanup controls.")
 app.add_typer(run_app, name="run", rich_help_panel=_ADVANCED_PANEL)
 app.add_typer(pentest_app, name="pentest", rich_help_panel=_PENTEST_PANEL)
 app.add_typer(execution_app, name="execution", rich_help_panel=_ADVANCED_PANEL)
@@ -607,29 +588,6 @@ def demo_pentest(context: typer.Context) -> None:
         console.print("Tool configuration note: " + result.tool_config_issue, markup=False)
 
 
-@demo_app.command("code-audit")
-def demo_code_audit() -> None:
-    """Run real built-in static detectors over a bundled safe fixture."""
-
-    from riftx.demo import DemoError, run_code_audit_demo
-
-    try:
-        result = run_code_audit_demo()
-    except DemoError as exc:
-        console.print(f"[red]Code Audit Demo failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
-    console.print("[bold]SANITIZED LOCAL CODE AUDIT DEMO[/bold]")
-    console.print(f"Official Pack: {result.pack_id}")
-    console.print(f"Files scanned: {result.files_scanned}; findings: {len(result.findings)}")
-    for finding in result.findings:
-        console.print(
-            f"- {finding.rule_id} {finding.relative_path}:{finding.line} "
-            f"{finding.message} | {finding.evidence}",
-            markup=False,
-        )
-    console.print("Degradation path: " + result.degradation_path)
-
-
 @capabilities_app.command("list")
 def list_capabilities(context: typer.Context) -> None:
     """List active Capability versions from local authoritative persistence."""
@@ -855,28 +813,6 @@ def _operator_skill_action[T](
     except CapabilityManagementError as exc:
         console.print(f"[red]Operator Skill operation failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-
-
-@audit_app.command("scan")
-def scan_local_folder(
-    context: typer.Context,
-    folder: Annotated[Path, typer.Argument(help="Local folder to audit.")],
-) -> None:
-    """Create and start a read-only static audit for a local folder."""
-
-    try:
-        source_path = folder.expanduser().resolve(strict=True)
-    except OSError as exc:
-        raise typer.BadParameter("folder does not exist", param_hint="folder") from exc
-    if not source_path.is_dir():
-        raise typer.BadParameter("folder must be a directory", param_hint="folder")
-
-    def operation(client: APIClient) -> None:
-        created = client.create_local_audit(str(source_path))
-        audit_id = str(created["audit_id"])
-        console.print_json(data=client.start_local_audit(audit_id))
-
-    _run_with_client(context, operation)
 
 
 @audit_app.command("status")

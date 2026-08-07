@@ -148,12 +148,6 @@ def test_local_audit_client_uses_minimal_job_endpoints_and_text_report() -> None
         "http://control-plane",
         transport=httpx.MockTransport(handler),
     ) as client:
-        client.create_local_audit(
-            "/workspace/project",
-            include_patterns=("src/**",),
-            exclude_patterns=("vendor/**",),
-        )
-        client.start_local_audit("audit-1")
         client.get_local_audit("audit-1")
         client.list_local_audit_findings(
             "audit-1",
@@ -168,26 +162,19 @@ def test_local_audit_client_uses_minimal_job_endpoints_and_text_report() -> None
 
     assert report == "# Audit\n"
     assert [(request.method, request.url.path) for request in requests] == [
-        ("POST", "/api/v1/audits"),
-        ("POST", "/api/v1/audits/audit-1/start"),
         ("GET", "/api/v1/audits/audit-1"),
         ("GET", "/api/v1/audits/audit-1/findings"),
         ("GET", "/api/v1/audits/audit-1/report"),
         ("POST", "/api/v1/audits/audit-1/cancel"),
     ]
-    assert json.loads(requests[0].content) == {
-        "source_path": "/workspace/project",
-        "include_patterns": ["src/**"],
-        "exclude_patterns": ["vendor/**"],
-    }
-    assert dict(requests[3].url.params) == {
+    assert dict(requests[1].url.params) == {
         "limit": "25",
         "offset": "5",
         "severity": "high",
         "category": "secret",
         "file": "src/app.py",
     }
-    assert requests[4].url.params["format"] == "markdown"
+    assert requests[2].url.params["format"] == "markdown"
 
 
 def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:
