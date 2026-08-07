@@ -1,6 +1,6 @@
 # RiftX 正式版开发优化文档
 
-> 文档定位：RiftX 当前唯一的产品收敛、代码优化与 Pentest-first V1 完成指南
+> 文档定位：RiftX 当前唯一的产品收敛、代码优化与 Pentest-first 正式版完成指南
 >
 > 适用对象：Codex、RiftX 开发者、专业渗透测试用户
 >
@@ -8,259 +8,245 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 已提交基线：`a8b29a4c`；C1 实现基线：`d73a0c86`
+> 当前代码基线：`a8b29a4c`；本次重写输入计划基线：`d63e6f84`
 >
-> 当前施工：D1 Operator Skill 注册、批准、启用与 Pentest Selection 门禁；阶段 C 已完成
+> 当前施工：D1 Operator Skill 生命周期门禁；阶段 A、B、C 已完成
 >
-> 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
+> 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
 > 平台边界：[`ADR-0012`](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
 >
-> Pentest Admission 与 Attack Surface：[`ADR-0013`](docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md)
+> Pentest Admission：[`ADR-0013`](docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md)
 
 ---
 
-## 0. 执行结论
+## 0. 一页执行结论
 
-RiftX 当前已经存在过度平台化，但还没有证据支持大规模删代码。
+RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实底座。当前问题不是“能力太少”，而是已有能力没有被收敛成一条专业用户愿意持续使用的 Pentest 主路径。
 
-真正的问题不是“底座不足”，而是：
+项目确实存在过度开发，主要表现为：
 
-- 底座、模块、路由、Pack 和测试很多；
-- 专业用户可连续完成的 Pentest 结果仍少；
-- “越用越好用”的能力添加闭环尚未兑现；
-- 默认产品面仍更像通用 Agent 平台，而不是专注的渗透测试 Agent。
+- 生产代码约 18 万行、424 个 Python 文件、111 个 API 路由和 51 个 migration；
+- Capability、Code Audit、Evaluation、Web、Browser、MCP、Connector 等横向能力同时存在；
+- CLI 默认展示通用 Run、Memory、Terminal、Node、Audit 等大量平台概念；
+- 历史账本保留了 Candidate、Promotion、Replay、Marketplace 等远期任务，容易被误当成当前待办；
+- 专业用户添加一项方法后，仍缺少最小的注册、启用、使用、禁用和回滚闭环。
 
-因此，后续只做三件事：
+但现在不应进行大规模删库或重写。安全边界、migration、恢复路径和旧数据兼容都使“先删再说”风险很高，而且删代码本身不会让 Pentest 更好用。
 
-1. 完成一次用户 Skill 添加、选择、复盘、禁用和回滚；
-2. 收缩默认入口、初始化和文档，不先重写架构；
-3. 只删除已证明无生产消费者、无兼容价值且不承担安全责任的代码。
+从现在起只做三个交付包：
 
-当前禁止继续建设新的通用平台能力。任何新工作都必须直接改善下列至少一项：
+1. 完成 Operator Skill 的最小生命周期和新 Pentest 门禁；
+2. 复用现有 Report 完成一次人工复盘与版本迭代，不建设自动学习平台；
+3. 收缩默认产品面，完成干净环境安装、两条真实场景和发布回归。
 
-- 专业用户可以完成的 Pentest 操作；
-- 目标副作用的安全约束；
-- Evidence、Negative Result、Finding 或 Report 的可信度；
-- 暂停、恢复、取消和重启后的连续性；
-- 用户方法在下一次 Run 中的安全复用；
-- 安装、配置和默认操作路径的可理解性。
+正式版完成前停止新增通用平台能力。剩余工作不是几十个历史 Task，而是 D1、D2、E 三个有边界的用户结果。
 
 ---
 
-## 1. 产品北极星
+## 1. 产品目标与完成层级
 
-RiftX 的唯一正式版目标是：
+### 1.1 唯一产品目标
 
-> 成为一个专业人士手中好用、可控、可恢复，并且能通过持续加入 Tool、Skill、Technique 和实战方法而越来越顺手的授权渗透测试 Agent。
+RiftX 的目标是：
 
-### 1.1 两个基础属性
+> 成为一个在专业人士手中好用、可控、可恢复，并且能通过持续加入 Skill、Tool、Technique 和实战方法而越来越顺手的授权渗透测试 Agent。
+
+“超过直接使用 Codex、Claude Code、OpenCode”是长期追求，不是发布门槛，也不要求构造单一排行榜证明。RiftX 的优势应来自领域复利：
+
+- 通用 Agent 提供模型、代码操作和通用推理；
+- RiftX 提供 Scope、Approval、预算、持久任务、Evidence、Finding、Report 和停止证明；
+- 专业用户把自己的方法固化为有版本、有来源、可禁用的能力；
+- 新 Run 能安全复用，旧 Run 始终能解释当时使用了什么。
+
+### 1.2 两个基础属性
 
 **开箱即用的即战力**：
 
-- Onboard、Doctor 和模型配置后可以启动一个基础 Pentest；
-- 用户能看见 Scope、Approval、预算、运行状态和停止结果；
-- 基础枚举、最小验证、证据登记和报告不依赖用户先开发插件；
-- 配置或外部工具缺失时给出可执行修复方式。
+- 新用户完成 Onboard、Doctor 和模型配置后能启动基础 Pentest；
+- 不安装额外 Scanner、Browser 或 Connector 也能完成基础场景；
+- Scope、Approval、预算、运行状态、Evidence、Finding 和 Report 可见；
+- 配置缺失时给出具体错误对象和修复动作；
+- 网络服务与状态化 Web 至少各有一条可重复的专业闭环。
 
-**极高的专业上限**：
+**专业用户可持续提高的上限**：
 
-- 专业用户能加入自己的工具和方法；
-- 每项能力具有 Version、Digest、Provenance 和 Permission；
-- Run 显式固定 Selection，旧 Run 始终可解释；
-- 能力可以试用、复盘、批准、禁用和回滚；
-- 新能力不能扩大 Scope、降低 Approval 或绕过证据要求。
+- 用户可以加入自己的 Skill，并在后续版本扩展 Operator Tool 与 Technique；
+- 每项能力有 ID、Version、Digest、Source、Provenance 和最小权限；
+- 新 Run 显式固定 Selection，文件漂移不能静默替换；
+- 用户能启用、禁用和回滚，且旧 Run 不受新状态影响；
+- Skill 不能扩大 Tool allowlist、绕过 Scope 或降低 Tool 自身 Approval；
+- 用户根据真实 Run 的证据和失败修改方法，而不是让模型自动批准自己生成的能力。
 
-“超过直接使用 Codex、Claude Code、OpenCode”是追求方向，不是 V1 的量化发布条件。优势应来自长期领域复利，而不是一次排行榜：
+### 1.3 两个“完成”定义
 
-- 通用 Agent 提供模型与推理能力；
-- RiftX 提供授权边界、持久任务、专业事实、工具方法和操作者经验；
-- 用户每次认可的方法都能成为下一次可控、可追溯的能力。
+**Pentest-first R1** 是当前开发终点：产品可安装、可完成两类场景、可报告、可恢复，并完成一次 Operator Skill 成长闭环。
 
-### 1.2 V1 非目标
+**完全体方向** 不是一次性里程碑：在 R1 稳定后，按真实需求逐步开放 Operator Tool、Technique、团队共享和更多专业场景。没有真实用户阻断时，不预建生态平台。
 
-以下内容不阻塞 Pentest-first V1：
+### 1.4 R1 明确非目标
 
-- Code Audit 完全体及新的代码审计里程碑；
+以下内容不阻塞当前正式版：
+
+- Code Audit 新功能、Detector、Pack 或新里程碑；
 - Marketplace、在线 Registry、组织同步、多租户和远程集群；
 - 常驻多 Agent 团队、新 Planner、新 Graph 或第二套 Runtime；
-- 自动生成、自动批准和自动启用 Skill；
-- CVE/PoC 自动研究平台、Trajectory Store、Replay Lab 和向量记忆系统；
+- Candidate/Promotion 自动流水线、自动生成、自动批准或自动启用 Skill；
+- Trajectory Store、Replay Lab、向量记忆和自动评分平台；
 - 更多 Official Pack、Scanner、Crawler、Fuzzer 和 Connector；
-- 为量化证明超过通用 Agent 而建设综合评分；
-- 与 Pentest 主路径无关的大规模 UI 重做。
+- 为证明超过通用 Agent 而建设综合评分系统；
+- 与 Pentest 主路径无关的 UI 重做。
 
 ---
 
 ## 2. 当前实际进度
 
-### 2.1 项目规模信号
+### 2.1 规模只说明复杂度，不说明产品成熟度
 
-截至本次校准，仓库约有：
+截至本次校准：
 
-| 项目 | 数量 | 解释 |
+| 项目 | 当前规模 | 结论 |
 | --- | ---: | --- |
-| 生产 Python 文件 | 424 | 已达到必须严格控制新增抽象的规模 |
-| Python 测试文件 | 298 | 测试面大，不代表专业用户闭环已完成 |
-| API 路由 | 111 | 默认暴露面需要消费者审计 |
-| Alembic migration | 51 | 历史不得重写，新增表必须极慎重 |
-| Official Pack | 22 | V1 不再以增加 Pack 数量作为进度 |
+| 生产 Python 文件 | 424 | 禁止继续随意加层和抽象 |
+| 生产 Python 代码 | 约 18 万行 | 优先复用和收缩入口 |
+| Python 测试文件 | 298 | 测试多不等于用户闭环完成 |
+| API 路由 | 111 | 需要默认产品面和消费者审计 |
+| Alembic migration | 51 | 历史不可重写，新增表必须极谨慎 |
+| Official Pack | 22 | 不再以 Pack 数量作为进度 |
 
-这些数字只用于判断复杂度，不作为删除依据，也不作为产品成熟度指标。
+### 2.2 已经完成且不再扩建的能力
 
-### 2.2 已完成能力
-
-| 能力 | 当前事实 | 处置 |
+| 能力 | 当前事实 | 后续处置 |
 | --- | --- | --- |
-| Onboard 与诊断 | 配置初始化、Doctor、migration、Backup/Restore、Pack repair 已存在 | 只修真实用户阻断 |
-| Durable Runtime | Run、Temporal、Runner、Execution、取消、恢复和 Stop Proof 已存在 | 不建第二套 Runtime |
-| Pentest Admission | 专用创建入口、Capability Selection、Pack Lock、Scope 和预算已存在 | 普通 Run 不得绕过 |
-| Pentest 控制 | `pentest start/status/resume/stop` 已存在 | 收敛为默认主入口 |
-| 安全边界 | Scope、Approval、Credential Reference、Redaction、Effect Policy 已存在 | 不得以 YAGNI 为由删除 |
-| 执行预算 | Model、Tool、Token、Duration、Target Interaction 已在副作用前持久检查 | 只维持回归合同 |
-| Attack Surface | declared/observed/verified 可从权威事实重建 | 不建第二套资产库 |
-| 专业事实 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 继续复用 |
-| 网络服务闭环 | 枚举、Artifact、Evidence、Hypothesis、最小验证、Draft Finding、Negative Result、Closure、JSON Report 已完成 | 阶段 B completed |
-| 状态化 Web 靶场 | Alice/Bob、两个对象、登录、所有权基线、跨对象分支和预算暂停已完成 | 阶段 C1 completed |
-| 状态化 Web 身份证据 | Credential Reference、两身份基线、跨对象 Attempt、Evidence、Reasoning 和重启重建已完成 | 阶段 C2 completed |
-| 状态化 Web 专业结果 | Draft Finding、Closure、JSON/Markdown Report、Attempt 投影和重放幂等已完成 | 阶段 C3 completed |
-| 能力底座 | Capability、Version、Digest、Provenance、Selection、Pack、Progressive Skill 已存在 | 缺少用户闭环 |
+| Onboard / Doctor | 初始化、migration、配置诊断、Pack repair、Backup/Restore 已存在 | 只修可复现阻断 |
+| Durable Runtime | Run、Temporal、Runner、Execution、暂停、恢复、取消和 Stop Proof 已存在 | 不建第二套 Runtime |
+| Pentest Admission | 专用创建入口、Scope、Approval、预算、Capability Selection 和 Pack Lock 已存在 | 普通 Run 不得绕过 |
+| 专业事实 | Task、Artifact、Traffic、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 作为唯一事实链 |
+| 网络服务闭环 | 枚举、Artifact、Evidence、Hypothesis、验证、结论、Closure、JSON Report 已完成 | 阶段 B completed |
+| 状态化 Web 闭环 | Alice/Bob、Credential Reference、跨对象 Attempt、Finding、Closure、JSON/Markdown Report 已完成 | 阶段 C completed |
+| 能力底座 | Capability Version、Digest、Provenance、Selection、Pack、Progressive Skill 已存在 | 只补用户生命周期 |
+| 报告投影 | Report 已能读取 Capability Selection、Attempt、Evidence、Finding 等持久事实 | D2 优先验证复用 |
 
-已完成主线提交：
+阶段 C3 的实现提交为 `a8b29a4c`，已验证状态化 Web E2E、Report、Temporal、Target HTTP、Runtime Control、Worker、Control Plane、文档合同、Ruff、scoped mypy 和 `git diff --check`。
+
+### 2.3 当前真正缺口
+
+只剩下以下产品缺口：
+
+1. Operator Skill 文件可以被 Progressive Skill Registry 发现，但显式选择时尚未强制要求对应 active Capability Version；
+2. 用户还不能通过一组简单命令完成 Skill 注册、启用、禁用和回滚；
+3. “试用后改进”没有收敛成一次基于现有 Report 的人工操作流程；
+4. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
+5. 可选模块是否真实拖慢安装、启动或维护尚未测量，不能凭体感删除。
+
+### 2.4 对“过度开发”的准确判断
+
+**已经过度的部分**：产品面、历史计划范围、Capability 远期模型、默认暴露概念和文档数量。
+
+**尚不能直接判定为应删除的部分**：Runtime、安全边界、Code Audit 持久化、Capability 表、Browser、MCP、Connector 和前端页面。它们可能有迁移、兼容、安全或高级用户消费者。
+
+因此优化顺序必须是：
 
 ```text
-54c2489b  feat(pentest): register artifact evidence
-c7709790  feat(pentest): close service enumeration loop
-5018f071  feat(pentest): verify service hypotheses
-b2193139  feat(pentest): close network service reporting
-d73a0c86  feat(pentest): establish stateful web target
-9c0fe158  docs(plan): advance stateful web verification
-85decf8d  feat(pentest): authorize stateful web credentials
-a8b29a4c  feat(pentest): report stateful web findings
+冻结新增
+→ 收缩默认入口
+→ 测量真实成本
+→ 审计消费者
+→ 隔离可选模块
+→ 删除被证明无用的代码
 ```
-
-### 2.3 C2 已完成事实
-
-C2 已完成：
-
-- Target HTTP 支持 `header_secret_refs`、`body_secret_ref` 和 `cookie_secret_refs`；
-- Credential Reference 由当前 Session 已固定 Technique 的 Permission 授权；
-- 引用在 Runner 发送前才按 Environment → Keyring 解析；
-- 明文值不进入 ToolCallIntent、请求 fingerprint、Artifact 快照或 Control Plane；
-- 未选择、未激活、越权、缺失或损坏的引用/Selection 在网络副作用前失败关闭；
-- 完整生产链完成 Alice/Bob 登录、各自基线和一次 Alice 跨对象验证；
-- 正常与跨对象响应分别登记受保护 Evidence，并形成 Observation、Hypothesis 和 Attempt；
-- Control Plane 重建后可恢复 Selection、Traffic、Evidence、Reasoning 和 Working Memory；
-- 6 次已批准尝试中只有 5 次形成真实 HTTP 交换，未授权引用保持零网络副作用；
-- 未创建 Finding、Report、新表、migration、Browser、Scanner、Worker 或 UI；
-- 实现提交：`85decf8d`。
-
-### 2.4 C3 已完成事实
-
-- 跨对象 Observation 投影为 `VULNERABILITY_CANDIDATE` 和幂等 Draft Finding，不自动 Confirmed；
-- Finding 引用受保护跨对象 Artifact/Evidence，并明确 Alice 前置、单变量步骤、影响、修复与未测试范围；
-- 未授权 Credential Reference 记为网络前执行失败，不被误写为目标无漏洞；
-- Working Memory Attempt 与 Reasoning 通过现有 Report Source 进入 JSON/Markdown 报告；
-- Closure、Finding 和两种 Report 在 Control Plane 重建后保持一致，重放不重复创建；
-- Secret、认证值、受保护 HTTP 原始体和本地路径不进入报告；
-- 未新增表、migration、Attack Chain、Browser、Scanner、Worker 或 UI；
-- 实现提交：`a8b29a4c`。
-
-### 2.5 当前真正缺口
-
-1. 用户添加方法后，尚无一次完整的试用、复盘、启用、禁用和回滚；
-2. README、CLI 和启动路径仍展示大量通用平台能力；
-3. 非默认模块是否造成启动、依赖和维护负担尚未测量；
-4. 代码审计功能目前冻结，但未经过消费者审计，不应现在删除。
 
 ---
 
-## 3. 过度开发处理原则
+## 3. 保留、冻结、隐藏与删除
 
-### 3.1 立即保留
+### 3.1 必须保留
 
-- Scope、Approval、Credential、Redaction 和 Effect Policy；
-- Run、Execution、Runner ownership、恢复、取消和 Stop Proof；
+- Scope、Approval、Credential Reference、Redaction 和 Effect Policy；
+- Run、Execution、Runner ownership、暂停、恢复、取消和 Stop Proof；
 - Artifact、Traffic、Evidence、Reasoning、Finding、Closure 和 Report；
 - Capability Version、Digest、Provenance、Selection 和 Pack Lock；
 - migration 历史、Backup/Restore 和旧数据兼容读取；
-- 被当前 Pentest CLI/API/Worker/E2E 直接使用的 Tool、Target HTTP、Browser 和 MCP 路径。
+- 当前 Pentest CLI/API/Worker/E2E 直接使用的 Tool、Target HTTP 和模型路径。
+
+这些能力看起来重，但承担安全、恢复或审计责任，不能以 YAGNI 为由删除。
 
 ### 3.2 立即冻结
 
-在 V1 发布前，不新增：
+R1 前不再开发：
 
-- Code Audit 功能、Pack、Detector 或 UI；
-- Marketplace、Gateway、多租户、远程集群和组织同步；
-- 新 Agent 角色、常驻多 Agent、Planner、Graph 或 Runtime；
-- 新 Policy Engine、Budget Service、资产数据库和向量数据库；
-- 没有当前生产消费者的 Domain、Repository、Adapter 和后台任务；
-- 与剩余 C2、C3、D、E 无关的 Pack、Tool 和 Connector。
+- Code Audit 新能力；
+- Capability Candidate、Promotion、Evaluation 自动流程；
+- Marketplace、Gateway、多租户、组织同步和远程 Registry；
+- 新 Agent 角色、Planner、Graph、Memory 类型或 Runtime；
+- 新资产数据库、向量数据库、Budget Service 或后台 Worker；
+- 新 Official Pack、通用 Scanner、Crawler、Fuzzer 和 Connector；
+- 没有当前生产消费者的 Domain、Repository、Adapter 和兼容层。
 
-### 3.3 先收缩，再删除
+冻结表示不继续完成，不表示立刻删除历史表或兼容代码。
 
-优化顺序固定为：
+### 3.3 从默认产品面隐藏，但先保留代码
 
-```text
-收缩默认文档与入口
-→ 对非主线模块按需初始化
-→ 测量启动时间、内存、依赖和导入成本
-→ 审计真实消费者
-→ 隔离冻结功能
-→ 删除已证明无消费者的代码
-```
-
-不得先做“大清理”。大量删除会同时扩大 migration、恢复、安全和回归风险，却不一定改善专业用户体验。
+| 模块 | R1 处置 | 原因 |
+| --- | --- | --- |
+| `audit` 与 Code Audit 页面 | 标记 frozen/experimental，不进入 Quickstart | 当前主线是 Pentest |
+| General Run、Memory、Terminal、Node、Execution | 放入 Advanced 文档 | 高级能力不是新手路径 |
+| Capability Candidate/Promotion/Evaluation | 无默认入口，不继续接线 | 当前 Skill 生命周期不需要 |
+| Browser、MCP、Connector、外部 Scanner | 可选能力，缺失时降级 | 不应阻塞基础 Pentest |
+| Evaluation Harness | 仅开发与回归使用 | 不是用户产品面 |
+| `demo code-audit` | 明确离线/冻结属性 | 避免误解为当前主产品 |
 
 ### 3.4 删除准入门
 
-生产代码只有同时满足以下条件才能删除：
+生产代码只有同时满足以下条件才允许删除：
 
 1. 没有 Pentest 主路径消费者；
-2. 没有默认 CLI、API、Desktop 或 Worker 消费者；
+2. 没有默认或 Advanced CLI/API/Web/Worker 消费者；
 3. 不是 migration、Backup/Restore 或旧数据读取所需；
 4. 不承担 Scope、Approval、Credential、Evidence、Provenance 或 Stop Proof；
 5. 没有受支持用户数据依赖；
 6. 禁用或替代路径已有说明；
 7. 引用审计、目标测试、migration 回归和 Pentest E2E 全部通过。
 
-Migration 历史永不删除或重写。优先删除重复装配、无入口 wrapper 和不可达分支，最后才考虑 Domain 或持久化模型。
+Migration 历史永不删除或重写。优先删除不可达 wrapper、重复装配、废弃入口和无消费者适配层，最后才考虑 Domain 或持久化模型。
 
 ---
 
-## 4. Pentest-first V1 完成定义
+## 4. Pentest-first R1 完成定义
 
-V1 不要求功能最多，只要求以下用户结果连续成立：
+R1 只要求以下用户结果连续成立：
 
-1. 新用户可以完成 Onboard、Doctor、模型配置和第一个授权 Pentest；
-2. 模型、Provider、Profile 或 Credential 配置错误会指出错误对象、可用候选和修复命令；
+1. 干净环境可以完成 Onboard、Doctor、模型配置和第一个授权 Pentest；
+2. 配置错误能指出对象、候选和修复动作，无法复现的外部错误不进入 RiftX 开发计划；
 3. 所有目标副作用都在 Scope、Approval、预算和 Run 状态检查之后发生；
-4. 网络服务和状态化 Web 两个本地场景都能走到可审查报告；
-5. Evidence、Negative Result、Finding 和未验证假设不会混淆；
-6. 暂停、恢复、取消、失败和重启后，Run 身份、专业事实和 Stop Proof 可重建；
-7. 专业用户能加入一项本地 Skill，并完成试用、选择、复盘、禁用和回滚；
-8. 默认文档、CLI 和启动路径只要求用户理解 Pentest 主线；
+4. 网络服务和状态化 Web 两个本地场景都能生成可审查报告；
+5. Evidence、Negative Result、Finding、执行失败和未验证假设不会混淆；
+6. 暂停、恢复、取消、失败和重启后，Run 身份、专业事实与 Stop Proof 可重建；
+7. 专业用户能加入一项 Operator Skill，并完成验证、注册、启用、使用、禁用和回滚；
+8. 默认文档与 CLI 只要求用户先理解 Pentest 主线；
 9. migration、Backup/Restore、安全边界和受影响回归通过；
 10. 已知限制明确记录，不把模型文本当作已执行或已验证事实。
 
-V1 的最小用户路径：
+最小用户路径：
 
 ```text
-onboard
-→ doctor
-→ model configure/default
-→ pentest start/status
-→ approval
-→ resume/stop
-→ report
-→ capability verify/select/disable/rollback
+riftx onboard
+→ riftx doctor
+→ riftx model configure/default
+→ riftx pentest start/status
+→ riftx approvals / approve / reject
+→ riftx pentest resume/stop
+→ riftx report generate/show
+→ riftx skills validate/register/activate/list/disable/rollback
 ```
+
+R1 不以“功能数量最多”或“量化超过通用 Agent”为完成条件。
 
 ---
 
 ## 5. 必须复用的权威事实
 
-| 需求 | 权威事实 | 禁止的平行实现 |
+| 需求 | 唯一权威事实 | 禁止的平行实现 |
 | --- | --- | --- |
 | Run 生命周期 | Run、Run Event、Workflow signal | Pentest Job 状态机 |
 | 授权与范围 | Engagement、Admission、ScopeGuard | Prompt 内授权或新 Scope 表 |
@@ -284,7 +270,7 @@ CLI/API
 → Finding / Closure / Report
 ```
 
-任何副作用绕过这条链，都应修正共享入口，不得用 Prompt 约定补洞。
+任何副作用绕过这条链，应修正共享入口，不能用 Prompt 约定补洞。
 
 ---
 
@@ -292,268 +278,274 @@ CLI/API
 
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
-| A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | completed | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
-| C. 状态化 Web 与报告 | completed | 一个身份/授权场景走到证据化结论、Closure 和 Report |
-| D. 用户驱动能力成长 | in progress；D1 当前施工 | 一项专业方法可添加、选择、复盘、禁用和回滚 |
+| A. Pentest 预算与停止 | completed | Admission 预算有明确执行语义和硬停止 |
+| B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
+| C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
+| D. 用户驱动能力成长 | in progress；D1 当前施工 | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
-除安全修复、数据兼容和当前用户阻断外，不得跳过阶段。
+阶段 A、B、C 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
-阶段 A 和 B 只保留回归合同，不再重复描述或扩建。其实现和测试事实以实施账本为准。
+### 6.1 阶段 A-C 的回归合同
 
----
-
-## 7. 阶段 A-B：已完成合同
-
-### 7.1 阶段 A 回归合同
-
-- Model、Token、Duration 在 Provider 副作用前检查；
-- Tool、Duration 在共享 execution claim 前检查；
-- Tool Proposal、等待批准和 Scope 拒绝不计预算；
-- 总量耗尽统一 Pause、Safety Stop 和 Stop Proof；
-- 并发容量不足可重试，不错误暂停 Run；
-- status、门禁和重启恢复读取同一持久事实。
-
-不得新增 Budget 表、计费系统、Budget Worker 或第二套停止服务。
-
-### 7.2 阶段 B 回归合同
-
-生产路径已经完成：
-
-```text
-Pentest Admission
-→ service-enumeration
-→ 注册工具 Execution
-→ Artifact
-→ Evidence
-→ Observation / Hypothesis
-→ Target HTTP 最小验证
-→ Draft Finding / Negative Result
-→ Closure / JSON Report v2
-```
-
-必须继续保证：
-
+- Model、Token、Tool、Duration 和 Target Interaction 在真实副作用前检查；
+- Proposal、等待批准和 Scope 拒绝不计成真实执行；
+- 预算耗尽统一产生 Pause、Safety Stop 和 Stop Proof；
 - scanner guess、banner 和模型猜测不能直接成为 Confirmed Finding；
 - Tool failure、Scope rejection、Approval rejection 和 Negative Result 语义分离；
-- Target HTTP 原始体和 Secret 不进入通用 Artifact/Event/Report 读取面；
-- Report 从持久事实重建，而不是依赖最终模型文本；
-- 重放不重复创建 Finding；
-- 暂停、恢复、预算停止和 Control Plane 重建可解释。
+- Secret 和受保护 HTTP 原始体不进入通用 Event、Artifact 标题和 Report；
+- Report 从持久事实重建，重放不重复创建 Finding；
+- Control Plane 重建后仍能解释 Selection、Traffic、Evidence、Reasoning 和结果。
 
 ---
 
-## 8. 阶段 C：状态化 Web 专业闭环
+## 7. 阶段 D：最小能力成长闭环
 
-阶段 C 只增加身份、会话、对象授权差异和报告表达，不建设通用 Web Scanner。
+### 7.1 正确的 R1 用户流程
 
-### 8.1 C1：最小身份/对象授权靶场（completed）
-
-C1 已完成：
-
-- 可复位随机 localhost 靶场；
-- Alice/Bob、两个对象、登录和所有权正常访问；
-- 确定性跨对象分支；
-- 未批准和越界请求零网络副作用；
-- 第六次目标交互预算耗尽并暂停 Run；
-- Event、Traffic、Attack Surface 和 Artifact 标题不泄露测试密码或 Cookie；
-- 未创建 Finding、Report 或新生产基础设施。
-
-实现提交：`d73a0c86`。
-
-### 8.2 C2：身份、状态与最小验证（completed）
-
-C2 只允许 Agent 持久化 Credential Reference，真实 Header、Body 和 Cookie 值只在 Runner 发送前解析。
-
-最小权限模型：
-
-- 引用必须由当前 Session 固定的 Technique `CapabilityPermission.credential_references` 声明；
-- Selection 不存在、损坏、漂移、未激活或跨 Run 时失败关闭；
-- Agent 和 Control Plane 不持久化明文 Secret；
-- 不建设动态 Cookie Vault、身份服务或会话数据库；
-- 真实服务若必须处理动态浏览器会话，等当前协议级闭环证明不足后再准入。
-
-#### C2 已满足的完成门
-
-C2 必须通过完整生产链：
+当前架构不支持“未启用 Skill 直接进入测试 Pentest”，也不需要为此增加 Candidate/Promotion 流水线。R1 流程固定为：
 
 ```text
-RuntimeControlToolService
-→ DeferredExecutionDispatcher
-→ TargetHttpApplicationService
-→ RunnerTargetHttpClient
+用户创建或修改本地 Operator Skill
+→ validate 静态验证
+→ register 为 approved Capability Version
+→ 用户显式 activate
+→ 在授权本地/测试目标运行 Pentest
+→ 从现有 Report 查看 Selection、Attempt、Evidence、Finding 和失败
+→ 保持 active，或 disable
+→ 修改内容并提升版本后重新注册
+→ 需要回退时先恢复旧源码，再 rollback 状态
 ```
 
-已验收：
+这是人工可控的“越用越好用”。R1 不自动生成、不自动改写、不自动批准 Skill。
 
-1. 注册一个仅用于测试的 Technique，并声明 Alice/Bob 登录和 Session 引用；
-2. Pentest 显式选择 `web-request-analysis` Pack 和该 Technique；
-3. ToolCallIntent、Approval、Event、Traffic、Artifact 标题和错误中只出现引用名，不出现密码或 Cookie 值；
-4. 通过 Runtime 完成 Alice/Bob 登录和各自对象基线；
-5. Alice 只改变对象标识访问 Bob 对象；
-6. 正常响应和跨对象响应分别登记受保护 HTTP Evidence；
-7. 创建 Observation、明确前置条件和正负判据的 Hypothesis、一次结构化 Attempt；
-8. Control Plane 重建后可恢复 Capability Selection、Traffic、Evidence 和 Reasoning；
-9. 未选中、损坏、不存在或未授权引用在网络副作用前拒绝；
-10. 不创建 Finding、最终验证链或 Report，不新增表、migration、Browser、Crawler、Fuzzer、Scanner、Worker 或 UI。
+### 7.2 D1 的边界
 
-### 8.3 C3：结论、Closure 与 Report（completed）
+D1 只关闭一个真实漏洞：显式 Operator Skill 当前可从 Progressive Skill Registry 直接进入 Pentest，而不要求 active Capability Version。
 
-C3 的目标不是增加一个 Attack Chain Domain，而是关闭现有事实链：
+必须复用：
+
+- `ProgressiveSkillRegistry.validate()` 和现有 Skill digest；
+- `CapabilityVersion`、`register_version()`、`list_versions()`、`list_active_versions()` 与 `set_version_status()`；
+- `PentestCapabilityResolver`；
+- Session Capability Selection 与完整 Skill Document/Reference 快照；
+- 现有本地 SQLite、Doctor 和 CLI 装配。
+
+D1 禁止新增：
+
+- 表、migration 和新的包存储；
+- Candidate、Promotion、Evaluation 或 Review 工作流；
+- Marketplace、在线 Registry、签名服务和 UI；
+- 新 Skill Parser、Skill SDK 或第二套权限模型；
+- 自动批准、自动启用、自动回滚源码。
+
+### 7.3 Operator Skill Capability Version 的最小映射
+
+Capability Version 只承担“这个文件包是否允许被新 Run 选择”的身份与安全门禁，不保存 Skill 全文。
+
+最小映射：
+
+- `capability_id`：目录 Skill ID；
+- `version`：Skill front matter version，必须是语义版本；
+- `kind`：`skill`；
+- `title` / `description`：Skill 文档元数据；
+- `domains`：固定为 `pentest`、`operator-skill`；
+- `dependencies`：留空，不能从 `preferred_tools` 推导 Tool 依赖；
+- `provenance.source`：`operator`；
+- `provenance.source_reference`：稳定的 `operator://skills/<id>/<version>`，不写绝对本地路径；
+- `provenance.source_digest`：Progressive Skill 包 digest；
+- `trust_tier`：`local`；
+- `permission`：固定为 `target_interaction + always approval + requires_scope=true + credential_references=[]`；
+- `evidence_contract`：固定为人工复核合同，不创造新的 Evidence 类型；
+- `input_schema` / `output_schema`：存在 Skill schema 时复用，否则使用空对象；
+- 完整 `SkillDocument`、`Reference` 和可选 schema 只进入新 Run 的 Session Selection 快照。
+
+不得把 Skill 全文塞进 Capability Manifest。否则会重复持久化内容、污染 Capability 语义，并扩大 Official Pack digest 与迁移影响面。
+
+固定权限是保守的准入元数据，不表示 Skill 可以执行目标副作用。Operator Skill 的 `preferred_tools` 和 `required_capabilities` 只用于选择提示，不能把 Tool 加入 Run allowlist。Tool 是否可用、是否需审批和是否允许目标交互，继续由 Tool Definition、Selection、ScopeGuard 和 Effect Policy 决定。
+
+### 7.4 CLI 最小命令
+
+只增加一个薄 `skills` 命令组：
 
 ```text
-身份前置条件
-→ 所有权正常基线 Evidence
-→ 单变量跨对象 Attempt
-→ 差异 Evidence
-→ Vulnerability Candidate
-→ Draft Finding 或精确 Negative Result
-→ Closure
-→ Report
+riftx skills validate [skill-id]
+riftx skills register <skill-id>
+riftx skills activate <skill-id> <version>
+riftx skills list [skill-id]
+riftx skills disable <skill-id> [version]
+riftx skills rollback <skill-id> <version>
 ```
 
-如果专业报告需要显示“攻击链”，只能从现有 Reasoning Node/Edge、Evidence 和 Finding 做确定性投影。禁止新增 Attack Chain 表、Repository、Planner 或第二套 Graph。
+行为要求：
 
-C3 完成门：
+- `validate` 只读本地文件，不写数据库；
+- `register` 创建 `approved` Version，同 ID/version/digest 幂等；
+- 同 ID/version 但 digest 不同必须失败并要求提升版本号；
+- `activate` 只接受当前本地源与注册 Version 的 ID/version/digest/source 完全匹配；
+- 同一 Skill 已有另一个 active Version 时，普通 `activate` 失败并要求用户先显式 disable；
+- `disable` 只阻止新 Run，旧 Run 继续读取已持久化 Selection 快照；
+- `list` 同时显示本地文件状态与数据库状态，明确 missing、drifted、approved、active、disabled；
+- 所有错误给出下一条可执行修复命令。
 
-- 漏洞分支最多创建 Draft Finding，不自动 Confirmed；
-- 无漏洞、登录失败、Scope 阻断、Approval 拒绝、预算耗尽和工具错误分别表达；
-- 每个成立步骤引用 Evidence，每个假设步骤明确未验证；
-- JSON/Markdown Report 能重建身份前置、动作、结果、停止原因和未测试范围；
-- Secret 不进入事件、URL、日志、Artifact 标题或报告；
-- 暂停、恢复、取消和重建保持 Run 身份、事实与 Stop Proof；
-- 复用 ReportApplicationService，不复制报告业务逻辑。
+### 7.5 回滚的真实语义
 
----
+R1 不保存 Operator Skill 历史源码包，因此 rollback 不是包管理器：
 
-## 9. 阶段 D：兑现“越用越好用”
+1. 用户先从 Git、备份或自己的 Skill 仓库恢复目标版本源码；
+2. `skills rollback` 验证当前文件的 ID/version/digest 与已注册旧 Version 一致；
+3. 在全部校验通过后禁用当前 active Version，再重新激活目标 Version；
+4. 新 Run 使用恢复后的旧版本；旧 Run 保留各自原 Selection 快照。
+
+若本地源码未恢复，rollback 必须失败并说明期望 digest。若状态切换中途失败，保持无 active Version 的安全状态并输出修复命令，不静默回到不确定状态。不得从历史 Run 快照自动覆盖用户文件，也不得为了 R1 新建包缓存、制品仓库或下载服务。
+
+### 7.6 Pentest Admission 门禁
+
+`PentestCapabilityResolver` 对显式 Operator Skill 必须：
+
+1. 从 Progressive Skill Registry 读取当前包；
+2. 在 active Skill Capability Versions 中查找同一 ID；
+3. 校验 Version、`source=operator` 和 `provenance.source_digest`；
+4. 任一不匹配在创建 Run 和网络副作用前失败关闭；
+5. 将完整 Skill 快照与 Capability Selection 一起持久化；
+6. 不把 Skill 的 preferred tool 自动加入 Tool allowlist。
+
+未注册、仅 approved、disabled、源文件删除、同版本漂移、版本不匹配或持久状态损坏都必须拒绝新 Run。Official Pack Skill 保持现有 Pack Lock 与版本匹配逻辑。
+
+### 7.7 D1 最小验收
+
+至少覆盖：
+
+- 注册幂等；
+- 同版本内容漂移冲突；
+- 未 activate 不能进入 Pentest；
+- activate 后新 Run 固定 ID/version/digest/source 与完整文档快照；
+- disable 后新 Run 拒绝；
+- 恢复旧源码并 rollback 后，新 Run 使用旧版本；
+- 已存在 Run 在 disable、升级、源码删除后仍可读取原 Selection；
+- 本地源删除后新 Run 拒绝；
+- Skill 不能扩展 Tool allowlist；
+- Skill 不能降低 Tool 自身 Approval、绕过 Scope 或 Credential Reference 权限。
+
+### 7.8 D2：复盘与人工改进
+
+现有 Report 已包含 Capability Selection、Allowlist、Attempt、Evidence、Finding、Closure 和停止信息。D2 首先验证这些事实是否足以回答：
+
+- 使用了哪个 Skill、版本、Digest 和来源；
+- 调用了哪些 Tool；
+- 产生了什么 Evidence、Finding、Negative Result 或执行失败；
+- 是否被 Scope、Approval、预算、Credential 或环境阻断；
+- 哪一步方法需要修改。
+
+若现有 JSON/Markdown Report 已能回答，不新增 Review Domain、表或命令，只补文档和 E2E。若确有字段缺失，只向 `ReportApplicationService` 增加确定性、脱敏投影。
+
+D2 的完成结果是：用户根据一次真实 Run 修改 Skill、提升版本、重新注册并在下一次 Run 使用新版本。自动评分、自动改写、Replay Lab 和 Trajectory Store 全部延期。
 
 ### 9.0 D1：Operator Skill 生命周期门禁（当前唯一实现切片）
 
-D1 先关闭“本地 Skill 可以绕过 Capability 状态直接进入 Pentest”的真实缺口，不同时建设复盘 UI 或自动学习。
+当前只实现 7.2 至 7.7。D1 完成并形成独立实现提交前，不开始 D2、阶段 E、Operator Tool、Marketplace 或任何自动学习能力。
 
-生产合同：
+---
 
-- Operator Skill 包继续由 `ProgressiveSkillRegistry` 做静态解析和 Digest；
-- 导入时只生成一个 `CapabilityKind.SKILL` Version，保存 Version、Digest、Operator Provenance 和 Permission；完整 Document/Reference 继续由新 Run 的持久 Session Selection 快照固定；
-- 新导入版本从 `approved` 开始，必须经显式启用才可被新 Pentest 选择；
-- Pentest Admission 选择 Operator Skill 时，必须找到同 ID、Version、Digest、Source 的 active Capability Version；
-- 文件漂移、Version/Digest 不匹配、未批准、已禁用或已删除源包均失败关闭；
-- 禁用只影响新 Run，旧 Run 继续从持久 Selection 快照解释当时版本；
-- 回滚复用现有 Version 状态转移：禁用当前版本并重新启用旧版本，不覆盖、不改写旧 Version；
-- 不新增表、Marketplace、Registry Service、Candidate/Promotion 工作流、自动批准或 UI。
+## 8. 阶段 E：产品面收缩与发布
 
-### 9.1 最小成长闭环
+### 8.1 默认路径收缩
 
-V1 只证明一种扩展：Operator Skill。
+README、CLI help 和示例只把以下概念放在第一层：
 
 ```text
-用户放入本地 Skill
-→ verify/doctor 静态检查
-→ Capability Version / Digest / Provenance
-→ 测试 Run 显式 Selection
-→ 查看脱敏复盘
-→ 用户批准启用
-→ 新 Run 固定版本
-→ 禁用 / 回滚
+onboard / doctor / model
+pentest / approvals / report
+skills
 ```
 
-首个 Skill 应选择一个现有 Tool 就能执行的真实渗透方法，例如“基于服务特征选择最小验证步骤”。不要同时建设 Tool SDK、Technique Builder 和 Marketplace。
+以下命令继续保留，但进入 Advanced：
 
-### 9.2 必须复用
+```text
+run / execution / node / tools / terminal / artifact / memory
+capabilities / packs / attach
+```
 
-- Progressive Skill loader；
-- Capability Repository、Version、Digest 和 Provenance；
-- Capability Selection、Pack Lock 和 Tool allowlist；
-- Event、Attempt、Artifact、Evidence、Reasoning、Finding、Closure 和 Stop Proof；
-- 已有 Doctor/verify 命令，缺口只补薄入口或文档。
+`audit` 和 Code Audit 页面明确标记 frozen/experimental。不要为了隐藏命令删除其实现，也不要在 R1 前重做整个 WebUI。
 
-### 9.3 复盘的最小实现
+任何类似 `Configured model not found` 的问题必须先在 RiftX CLI/API 内复现并定位。若字符串和失败来自 Codex、编辑器或外部 Provider，不得把它当作 RiftX 功能缺口继续开发。
 
-初版复盘只做确定性、脱敏导出，回答：
+### 8.2 安装和降级体验
 
-- 使用了哪个 Skill、版本和 Digest；
-- 在什么目标条件和前置条件下使用；
-- 调用了哪些 Tool；
-- 产生了哪些 Evidence、Finding、Negative Result 或失败；
-- 是否被 Scope、Approval、预算或环境阻断；
-- 用户决定继续试用、启用、禁用还是回滚。
+- 干净 XDG 环境完成一次真实 Onboard；
+- Doctor 区分 ready、degraded、failed，并给出修复命令；
+- 缺少 Nmap、Nuclei、Browser、MCP 或 Connector 时，基础 Pentest 仍可启动；
+- 模型配置错误显示 profile/provider/model 和实际候选；
+- 离线 Demo 明确标记 simulated/transcript，不冒充真实 Pentest；
+- Quickstart 从安装到第一份报告只有一条路径。
 
-不建设 Trajectory Store、Replay Lab、向量库、自动评分、自动改写 Skill 或自动批准。
+### 8.3 消费者与成本审计
 
-### 9.4 阶段 D 完成门
+每个候选模块只做一次表格化审计：
 
-1. 新 Skill 不扩大 Scope；
-2. 新 Skill 不降低 Approval；
-3. 新 Skill 不能调用 Selection/allowlist 外 Tool；
-4. Digest 或版本漂移失败关闭；
-5. 测试 Run 与正式 Run 的 Selection 可追溯；
-6. 用户能看到来源、权限和变更；
-7. 禁用后新 Run 不再选择；
-8. 回滚后新 Run 使用旧版本；
-9. 旧 Run 仍能解释当时固定版本；
-10. 删除本地源目录不破坏旧 Run 的审计事实。
-
----
-
-## 10. 阶段 E：默认产品面收缩与发布
-
-### 10.1 先修用户路径
-
-优先级固定为：
-
-1. 修复 `Configured model not found`：显示配置的 model/provider/profile、实际候选和修复命令；
-2. README、CLI help 和示例以 Pentest 为主；
-3. Code Audit 和生态功能标记 frozen/experimental，不出现在默认新手路径；
-4. `demo pentest` 若是静态转录，必须明确标记 simulated；
-5. Nmap、Browser 或 Connector 缺失时给出降级路径，不阻塞基础 Pentest；
-6. 让用户从 Onboard 到第一份报告只需要一条清晰路径。
-
-### 10.2 消费者与成本审计
-
-候选模块按下表记录一次：
-
-| 模块 | Pentest 消费者 | 默认入口 | 启动/依赖成本 | 数据兼容 | 安全价值 | 处置 |
+| 模块 | 生产消费者 | 默认入口 | 启动/依赖成本 | 数据兼容 | 安全价值 | 处置 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 待审计 | CLI/API/Worker/E2E | 默认/可选/无 | 实测 | 有/无 | 必需/可选/无 | 保留/按需/隔离/删除 |
+| Code Audit runtime / snapshot / materializer | 实测 | frozen | 实测 | 有 | 部分 | 保留/按需 |
+| Browser / MCP / Connector | 实测 | 可选 | 实测 | 低 | 场景相关 | 按需初始化 |
+| Candidate / Promotion / Evaluation | 无 R1 用户入口 | 无 | 实测 | migration 有 | R1 无 | 冻结兼容 |
+| General Agent / Memory / Terminal | Advanced 用户 | Advanced | 实测 | 有 | 可选 | 保留 |
+| Demo / 前端非主线路由 | 实测 | 非默认 | 实测 | 低 | 低 | 隔离/删除候选 |
+| 重复 wrapper / 旧入口 | 引用审计 | 无 | 实测 | 无 | 无 | 优先删除 |
 
-优先审计：
+只有测到安装体积、导入时间、启动耗时、内存或维护问题，才允许做 lazy-load、拆可选依赖或删除。没有数据时不做通用“优化框架”。
 
-- CLI 命令面和 API routes；
-- Worker eager 初始化；
-- Code Audit 专属 Runtime、snapshot、materializer 和 preflight；
-- 未进入 B/C E2E 的 Connector、Pack、Demo 和 UI；
-- 只被测试引用、没有生产入口的辅助层；
-- 重复 Effect Policy、兼容 wrapper 和旧入口。
+### 8.4 R1 发布门
 
-没有测到启动、内存、安装或维护问题前，不做通用 lazy-loader 重构。
+发布前至少证明：
 
-### 10.3 发布检查
+- 全新环境 Onboard、Doctor 和模型配置成功；
+- 网络服务场景从 Admission 到 Report；
+- 状态化 Web 场景从双身份基线到 Draft Finding 与 Report；
+- Operator Skill 从 validate/register/activate 到使用、disable、源码恢复和 rollback；
+- Scope、Approval、Credential、Redaction 和预算失败关闭；
+- 暂停、恢复、取消、超时、重启和 Stop Proof 可解释；
+- migration upgrade、受保护 downgrade 和 Backup/Restore 通过；
+- 默认 CLI/API、可选工具降级和已知限制已记录；
+- 全仓 Python 测试、Ruff、必要 mypy、相关前端 build、文档链接和 `git diff --check` 通过。
 
-R1 至少覆盖：
-
-- 全新环境 Onboard、Doctor 和模型配置诊断；
-- 网络服务和状态化 Web 两个专业闭环；
-- Skill 添加、选择、复盘、禁用和回滚；
-- Scope、Approval、Credential、Redaction 和预算；
-- 取消、失败、超时、重启和 Stop Proof；
-- migration upgrade、受保护 downgrade 和 Backup/Restore；
-- 默认 CLI/API、可选工具降级和已知限制；
-- 全仓 Python 回归、相关前端/桌面 build 和发布检查。
-
-评测只服务于回归、复现、发布和能力演进，不承担量化证明超过通用 Agent 的义务。
+评测只用于 RiftX 自身回归、复现、发布和能力演进，不承担量化证明超过通用 Agent 的义务。
 
 ---
 
-## 11. 开发准入规则
+## 9. R1 之后如何兑现更高上限
+
+R1 完成后按真实用户阻断逐层开放，不并行建设。
+
+### 9.1 R2：Operator Tool
+
+只有当用户方法无法由现有 Tool 完成时，才增加 Operator Tool 生命周期。复用 Capability Version、Tool Registry、Runner、Effect Policy、Scope 和 Approval；不得允许 Skill 直接拼接未注册 shell 命令。
+
+完成结果：专业用户能加入一个本地 Tool，声明输入、输出、权限和可执行环境，并像 Skill 一样启用、禁用和回滚。
+
+### 9.2 R3：Technique 与方法组合
+
+只有多项 Skill/Tool 已稳定复用后，才开放 Operator Technique 或 Playbook。优先使用现有 Task Graph、Reasoning Graph 和 Capability Selection 组合，不建设第二套 Planner/Graph。
+
+完成结果：用户能把多个已注册能力组合成一套可审查方法，并保留每一步 Evidence 与停止条件。
+
+### 9.3 R4：团队共享
+
+只有出现多个真实操作者、跨机器同步和来源验证需求后，才考虑签名包、组织源或 Registry。Marketplace、多租户和在线分发不是单用户产品的前置条件。
+
+### 9.4 Code Audit 恢复条件
+
+Code Audit 只有在 Pentest R1 稳定，且有明确用户任务、维护预算和消费者后才恢复。恢复时先复用现有 Audit 基础，不能重启一套新的 Agent 平台计划。
+
+---
+
+## 10. 开发准入与停止规则
 
 新增抽象、表、依赖、后台服务或兼容层前，必须回答：
 
-1. 哪个当前 Pentest 用户流程无法由已有组件完成？
+1. 哪个当前 Pentest 用户结果无法由已有组件完成？
 2. 第一个生产消费者是谁？
-3. 不实现会导致什么当前用户失败？
-4. 能否改成现有 Service 的一个方法、一个确定性投影或一个薄 CLI？
+3. 不实现会造成什么当前失败？
+4. 能否改成现有 Service 的一个方法、确定性投影或薄 CLI？
 5. 是否扩大权限、migration、恢复和测试面积？
 
 答案不具体时，不实现。
@@ -566,44 +558,23 @@ R1 至少覆盖：
 - 一条 Evidence/Negative Result/Finding 链可审查；
 - 一个失败、停止或恢复场景被证明；
 - 一项用户能力可安全复用或回滚；
-- 默认产品面通过实测变简单。
+- 默认产品路径通过实测变简单。
 
 只增加 Domain、Repository、Adapter、Graph、空 CLI、空服务或设计文档，不算开发完成。
 
----
+出现以下情况立即停止扩张：
 
-## 12. 验证与 Git 纪律
-
-所有 Agent 相关测试和运行必须使用：
-
-```bash
-conda run --no-capture-output -n agent ...
-```
-
-### 12.1 分层验证
-
-| Gate | 最小要求 |
-| --- | --- |
-| Slice | 目标测试、受影响回归、Ruff、必要 mypy/typecheck、`git diff --check` |
-| User result | CLI/API、持久化、权限、失败、恢复和跨进程读取 |
-| Milestone | 全仓 Python、相关前端/桌面 build、migration 和 release checks |
-| Release | 两个靶场、能力成长、升级恢复、安全评审和已知限制 |
-
-安全路径、migration、Runner ownership、Effect Policy 和 Stop Proof 不得因测试耗时跳过。
-
-### 12.2 提交规则
-
-- 一个实现提交只表达一个用户结果或一个安全结果；
-- 实现提交与实施账本提交分开；
-- Task 完成后更新 `FORMAL_AGENT_PROGRESS.md`；
-- 不提交用户无关改动；
-- 不使用破坏性 reset/checkout 清理工作树；
-- 提交前检查 staged diff、`git diff --cached --check` 和实际测试命令；
-- 每个切片保持可回滚。
+- 正在实现 Frozen 或 Post-R1 范围；
+- 新抽象没有当前生产消费者；
+- 新表复制已有权威事实；
+- 一个小功能要求修改大量无关模块；
+- 只有单元测试，没有 CLI/API/Worker 生产路径；
+- 为未来可能性阻塞当前 Pentest 闭环；
+- 用 Prompt 修补确定性安全边界。
 
 ---
 
-## 13. Codex 执行协议
+## 11. Codex 执行协议
 
 Codex 每轮只处理一个最小纵向切片。开始前写明：
 
@@ -633,55 +604,72 @@ Ledger commit:
 8. Task 完成后单独更新账本并提交；
 9. 进入下一条未满足验收条件。
 
-遇到以下情况立即停止扩张：
+所有 Agent 相关测试和运行必须使用：
 
-- 正在实现冻结或 Post-V1 范围；
-- 新抽象没有当前生产消费者；
-- 新表复制已有权威事实；
-- 一个小功能要求修改大量无关模块；
-- 只有单元测试，没有 CLI/API/Worker 生产路径；
-- 为未来可能性阻塞当前 Pentest 闭环；
-- 用 Prompt 修补确定性安全边界问题。
+```bash
+conda run --no-capture-output -n agent ...
+```
+
+分层验证：
+
+| Gate | 最小要求 |
+| --- | --- |
+| Slice | 目标测试、受影响回归、Ruff、必要 mypy/typecheck、`git diff --check` |
+| User result | CLI/API、持久化、权限、失败、恢复和跨进程读取 |
+| Milestone | 全仓 Python、相关前端 build、migration 和 release checks |
+| Release | 两个靶场、能力成长、升级恢复、安全评审和已知限制 |
+
+提交纪律：
+
+- 一个实现提交只表达一个用户结果或安全结果；
+- 实现提交与实施账本提交分开；
+- 不提交用户无关改动；
+- 不使用破坏性 reset/checkout 清理工作树；
+- 提交前检查 staged diff、`git diff --cached --check` 和实际测试命令；
+- 每个切片保持可回滚。
 
 ---
 
-## 14. 当前唯一施工指令
+## 12. 当前唯一施工指令
 
-从实现提交 `a8b29a4c` 继续，只关闭 D1 Operator Skill 生命周期门禁：
+从实现提交 `a8b29a4c` 继续，只完成 D1：
 
-1. 用一个本地 Operator Skill fixture 代表“基于服务特征选择最小验证步骤”，只复用现有 Tool；
-2. 复用 `ProgressiveSkillRegistry.validate()` 与 Doctor 校验 Skill 结构，不新建 Parser 或 Skill SDK；
-3. 增加最薄 Operator Skill 管理服务/命令，将验证后包幂等注册为 `approved` Capability Version，再经用户命令显式启用；
-4. Capability Version 必须包含 Skill ID、Version、Digest、Operator Provenance 和 Permission；完整 Document/Reference 仅进入新 Run 的持久 Selection 快照，不进入 Capability Manifest，不保存 Secret；
-5. Pentest Capability Resolver 对显式 Operator Skill 只接受同 ID/Version/Digest/Source 的 active Capability Version；未注册、未启用、已禁用或漂移全部失败关闭；
-6. Skill 的 Approval 只能等于或高于它声明的最小值，不得改写 Tool 自身 Approval；Skill 不得把 Tool 加入 Run allowlist；
-7. 实现显式 disable 与 rollback；rollback 只切换已存版本状态，不重写旧版本；
-8. 验证禁用后新 Run 无法选择，回滚后新 Run 固定旧版本，已存 Run 仍从 Selection 快照解释原版本；
-9. 删除本地 Skill 源目录后，旧 Run 快照仍可读，但新 Run 不得从已删除源包建立选择；
-10. 运行 Progressive Skill、Capability Repository、Pentest Admission、CLI/Doctor 聚焦回归、全仓 Ruff、scoped mypy 和 `git diff --check`；
-11. 形成 D1 独立实现提交，再单独更新实施账本；D1 完成前不开始复盘导出、Marketplace、自动改写 Skill 或阶段 E。
+1. 复用现有 Progressive Skill、Capability Repository 和 Pentest Resolver；
+2. 增加薄 `skills validate/register/activate/list/disable/rollback` 本地命令；
+3. `register` 生成保守的 Operator Skill Capability Version，初始状态为 approved；
+4. 显式 activate 后，新 Pentest 才能选择该 Skill；
+5. Resolver 强制匹配 ID/version/source/source digest；
+6. 完整 Skill Document/Reference 只进入 Session Selection 快照；
+7. Skill 不扩展 Tool allowlist，不降低 Tool Approval，不新增 Credential 权限；
+8. disable 只影响新 Run；
+9. rollback 要求操作者先恢复旧源码，不建设历史包缓存；
+10. 覆盖幂等、漂移、禁用、回滚、源码删除、旧 Run 快照和权限回归；
+11. 运行聚焦测试、受影响回归、全仓 Ruff、scoped mypy、文档合同和 `git diff --check`；
+12. 形成 D1 独立实现提交，再单独更新实施账本。
 
-建议验证命令：
+建议起始验证命令：
 
 ```bash
 conda run --no-capture-output -n agent pytest -q tests/unit/skills/test_progressive.py
 conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_skill_selection_repository.py
 conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_capability_repository.py
+conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
 ```
 
 ---
 
-## 15. 最终完成顺序
+## 13. 最终完成顺序
 
 ```text
 [已完成] A：预算与停止语义
 → [已完成] B：网络服务专业闭环
-→ [已完成] C：状态化 Web 结论、Closure 与 Report
-→ [当前] D1：Operator Skill 注册、启用、禁用与回滚门禁
-→ [下一步] D2：脱敏复盘导出与用户决定
-→ [最后] E：默认产品面收缩、消费者审计与发布
+→ [已完成] C：状态化 Web、Closure 与 Report
+→ [当前] D1：Operator Skill 生命周期与 Admission 门禁
+→ [下一步] D2：复用现有 Report 完成人工复盘和版本迭代
+→ [最后] E：默认产品面收缩、消费者审计和 R1 发布
+→ [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 
-RiftX 现在不需要更多架构，也不需要立即删除大量代码。最短路径是让已有架构连续产出专业结果，再把用户认可的方法安全沉淀为下一次可复用能力，最后根据真实消费者和实测成本收缩项目。
+RiftX 当前不需要更多架构，也不应立刻大规模删代码。最短路径是完成用户能力生命周期，证明已有 Report 能支持人工改进，再收缩默认入口并发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
