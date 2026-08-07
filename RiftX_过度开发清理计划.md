@@ -975,8 +975,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 1 | Security Agent Harness | completed | `dc182854` | Evaluation/Docs/E2E、Ruff、Phase Gate 通过 | 删除 10 个 Harness/Fixture 文件，净删约 1,300 行 |
 | 1 | Capability API Schema | completed | `2ba28d8c` | API/OpenAPI、CLI、Capability、Pentest 回归通过 | 删除 248 行未接线 Schema 及自验证测试 |
 | 1 | Fact Promotion 写入栈 | completed | `c6e55416` | Graph 历史读取、API、migration、Pentest、Ruff 通过 | 删除 790 行无装配写入栈；保留 ORM、migration 和 Graph 投影 |
-| 2 | Capability 公共写契约 | completed | 本提交 | Capability Protocol、公开 import、持久化兼容回归通过 | 删除 Candidate/Promotion/Evaluation 写契约与公开导出 |
-| 2 | Capability 持久化写路径 | pending | — | — | C1 |
+| 2 | Capability 公共写契约 | completed | `dba9f3e2` | Capability Protocol、公开 import、持久化兼容回归通过 | 删除 Candidate/Promotion/Evaluation 写契约与公开导出 |
+| 2 | Capability 持久化写路径 | completed | 本提交 | Version/Pack/Install/Lock、migration、Pentest 回归通过 | 删除 SQLAlchemy 写方法、mapper 和专用测试；保留历史 Record |
 | 2 | Capability Domain 收缩 | pending | — | — | C1 |
 | 3 | Playwright 可选依赖 | pending | — | — | B2 |
 | 3 | MCP 按配置初始化 | pending | — | — | B1 |

@@ -1,4 +1,4 @@
-"""Durable, idempotent persistence for Capability versions, candidates, and packs."""
+"""Durable, idempotent persistence for Capability versions and packs."""
 
 from __future__ import annotations
 
@@ -39,26 +39,15 @@ from riftx.capabilities import (
     PackLockOwnerKind,
     PackStatus,
 )
-from riftx.capabilities.models import (
-    CapabilityCandidate,
-    CapabilityCandidateStatus,
-    CapabilityEvaluationResult,
-    EvaluationResultStatus,
-    PromotionRun,
-    PromotionStatus,
-)
 
 from .capability_records import (
-    CapabilityCandidateRecord,
     CapabilityDependencyRecord,
-    CapabilityEvaluationResultRecord,
     CapabilityEvidenceContractRecord,
     CapabilityPackInstallRecord,
     CapabilityPackLockRecord,
     CapabilityPackMemberRecord,
     CapabilityPackRecord,
     CapabilityPermissionRecord,
-    CapabilityPromotionRunRecord,
     CapabilityRecord,
     CapabilityVersionRecord,
 )
@@ -249,181 +238,6 @@ class SQLAlchemyCapabilityRepository:
             raise
         except (JSONDecodeError, TypeError, ValueError):
             raise RepositoryIntegrityError("CapabilityVersion", version_id) from None
-        except SQLAlchemyError:
-            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
-
-    async def create_candidate(
-        self,
-        candidate: CapabilityCandidate,
-    ) -> CapabilityCandidate:
-        try:
-            async with serialized_write(self._session_factory) as session:
-                existing = await session.get(CapabilityCandidateRecord, candidate.candidate_id)
-                if existing is not None:
-                    loaded = _from_candidate_record(existing)
-                    if loaded == candidate:
-                        return loaded
-                    raise RepositoryConflictError("Capability Candidate ID already exists")
-                identity = await session.scalar(
-                    select(CapabilityCandidateRecord).where(
-                        CapabilityCandidateRecord.capability_id
-                        == candidate.proposed_manifest.capability_id,
-                        CapabilityCandidateRecord.proposed_version
-                        == candidate.proposed_manifest.version,
-                        CapabilityCandidateRecord.candidate_digest
-                        == candidate.candidate_digest,
-                    )
-                )
-                if identity is not None:
-                    return _from_candidate_record(identity)
-                session.add(_candidate_record(candidate))
-                await session.flush()
-                return candidate
-        except RepositoryError:
-            raise
-        except IntegrityError:
-            raise RepositoryConflictError("Capability Candidate creation conflicted") from None
-        except SQLAlchemyError:
-            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
-
-    async def get_candidate(self, candidate_id: str) -> CapabilityCandidate | None:
-        try:
-            async with self._session_factory() as session:
-                record = await session.get(CapabilityCandidateRecord, candidate_id)
-            return _from_candidate_record(record) if record else None
-        except (JSONDecodeError, TypeError, ValueError):
-            raise RepositoryIntegrityError("CapabilityCandidate", candidate_id) from None
-        except SQLAlchemyError:
-            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
-
-    async def create_promotion(self, promotion: PromotionRun) -> PromotionRun:
-        try:
-            async with serialized_write(self._session_factory) as session:
-                existing = await session.get(
-                    CapabilityPromotionRunRecord,
-                    promotion.promotion_id,
-                )
-                if existing is not None:
-                    loaded = _from_promotion_record(existing)
-                    if loaded == promotion:
-                        return loaded
-                    raise RepositoryConflictError("Capability Promotion ID already exists")
-                if await session.get(CapabilityCandidateRecord, promotion.candidate_id) is None:
-                    raise EntityNotFoundError("CapabilityCandidate", promotion.candidate_id)
-                session.add(_promotion_record(promotion))
-                await session.flush()
-                return promotion
-        except RepositoryError:
-            raise
-        except IntegrityError:
-            raise RepositoryConflictError("Capability Promotion creation conflicted") from None
-        except SQLAlchemyError:
-            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
-
-    async def add_evaluation_result(
-        self,
-        result: CapabilityEvaluationResult,
-    ) -> CapabilityEvaluationResult:
-        try:
-            async with serialized_write(self._session_factory) as session:
-                existing = await session.get(CapabilityEvaluationResultRecord, result.result_id)
-                if existing is not None:
-                    loaded = _from_evaluation_record(existing)
-                    if loaded == result:
-                        return loaded
-                    raise RepositoryConflictError("Capability Evaluation ID already exists")
-                if (
-                    await session.get(CapabilityPromotionRunRecord, result.promotion_id)
-                    is None
-                ):
-                    raise EntityNotFoundError("CapabilityPromotion", result.promotion_id)
-                session.add(_evaluation_record(result))
-                await session.flush()
-                return result
-        except RepositoryError:
-            raise
-        except IntegrityError:
-            raise RepositoryConflictError("Capability Evaluation creation conflicted") from None
-        except SQLAlchemyError:
-            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
-
-    async def promote_candidate(
-        self,
-        candidate_id: str,
-        promotion_id: str,
-        capability: Capability,
-        version: CapabilityVersion,
-        *,
-        approval_reference: str,
-        promoted_at: datetime,
-    ) -> CapabilityVersion:
-        try:
-            async with serialized_write(self._session_factory) as session:
-                candidate = await session.get(
-                    CapabilityCandidateRecord,
-                    candidate_id,
-                    with_for_update=True,
-                )
-                promotion = await session.get(
-                    CapabilityPromotionRunRecord,
-                    promotion_id,
-                    with_for_update=True,
-                )
-                if candidate is None:
-                    raise EntityNotFoundError("CapabilityCandidate", candidate_id)
-                if promotion is None or promotion.candidate_id != candidate_id:
-                    raise EntityNotFoundError("CapabilityPromotion", promotion_id)
-                if candidate.status == CapabilityCandidateStatus.PROMOTED.value:
-                    if (
-                        candidate.promoted_version_id == version.version_id
-                        and promotion.promoted_version_id == version.version_id
-                    ):
-                        existing = await session.get(
-                            CapabilityVersionRecord,
-                            version.version_id,
-                        )
-                        if existing is None:
-                            raise RepositoryIntegrityError(
-                                "CapabilityCandidate",
-                                candidate_id,
-                            )
-                        return await _from_version_record(session, existing)
-                    raise RepositoryConflictError("Capability Candidate is already promoted")
-                if candidate.status != CapabilityCandidateStatus.APPROVED.value:
-                    raise RepositoryConflictError("Capability Candidate is not approved")
-                if promotion.status != PromotionStatus.APPROVED.value:
-                    raise RepositoryConflictError("Capability Promotion is not approved")
-                if version.manifest_digest != candidate.candidate_digest:
-                    raise RepositoryConflictError(
-                        "promoted version must preserve the approved Candidate content"
-                    )
-                results = (
-                    await session.scalars(
-                        select(CapabilityEvaluationResultRecord).where(
-                            CapabilityEvaluationResultRecord.promotion_id == promotion_id
-                        )
-                    )
-                ).all()
-                if not results or any(
-                    result.status != EvaluationResultStatus.PASSED.value for result in results
-                ):
-                    raise RepositoryConflictError(
-                        "Capability Promotion requires only passing evaluation results"
-                    )
-                promoted = await _register_version(session, capability, version)
-                candidate.status = CapabilityCandidateStatus.PROMOTED.value
-                candidate.promoted_version_id = promoted.version_id
-                candidate.updated_at = promoted_at
-                promotion.status = PromotionStatus.PROMOTED.value
-                promotion.approval_reference = approval_reference
-                promotion.promoted_version_id = promoted.version_id
-                promotion.updated_at = promoted_at
-                await session.flush()
-                return promoted
-        except RepositoryError:
-            raise
-        except IntegrityError:
-            raise RepositoryConflictError("Capability Promotion conflicted") from None
         except SQLAlchemyError:
             raise RepositoryUnavailableError("Capability persistence is unavailable") from None
 
@@ -1173,104 +987,6 @@ def _version_record(version: CapabilityVersion) -> CapabilityVersionRecord:
         created_at=version.created_at,
         activated_at=version.activated_at,
         retired_at=version.retired_at,
-    )
-
-
-def _candidate_record(candidate: CapabilityCandidate) -> CapabilityCandidateRecord:
-    manifest = candidate.proposed_manifest
-    return CapabilityCandidateRecord(
-        id=candidate.candidate_id,
-        capability_id=manifest.capability_id,
-        proposed_version=manifest.version,
-        kind=manifest.kind.value,
-        status=candidate.status.value,
-        manifest_json=manifest.model_dump(mode="json"),
-        candidate_digest=candidate.candidate_digest,
-        provenance_json=manifest.provenance.model_dump(mode="json"),
-        proposed_by=candidate.proposed_by,
-        source_run_id=candidate.source_run_id,
-        promoted_version_id=candidate.promoted_version_id,
-        created_at=candidate.created_at,
-        updated_at=candidate.updated_at,
-    )
-
-
-def _from_candidate_record(record: CapabilityCandidateRecord) -> CapabilityCandidate:
-    manifest = CapabilityManifest.model_validate(record.manifest_json)
-    if (
-        record.capability_id != manifest.capability_id
-        or record.proposed_version != manifest.version
-        or record.kind != manifest.kind.value
-        or record.candidate_digest != _manifest_digest(manifest)
-        or record.provenance_json != manifest.provenance.model_dump(mode="json")
-    ):
-        raise RepositoryIntegrityError("CapabilityCandidate", record.id)
-    return CapabilityCandidate(
-        candidate_id=record.id,
-        proposed_manifest=manifest,
-        candidate_digest=record.candidate_digest,
-        status=CapabilityCandidateStatus(record.status),
-        proposed_by=record.proposed_by,
-        source_run_id=record.source_run_id,
-        promoted_version_id=record.promoted_version_id,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
-
-
-def _promotion_record(promotion: PromotionRun) -> CapabilityPromotionRunRecord:
-    return CapabilityPromotionRunRecord(
-        id=promotion.promotion_id,
-        candidate_id=promotion.candidate_id,
-        status=promotion.status.value,
-        requested_by=promotion.requested_by,
-        approval_reference=promotion.approval_reference,
-        promoted_version_id=promotion.promoted_version_id,
-        created_at=promotion.created_at,
-        updated_at=promotion.updated_at,
-    )
-
-
-def _from_promotion_record(record: CapabilityPromotionRunRecord) -> PromotionRun:
-    return PromotionRun(
-        promotion_id=record.id,
-        candidate_id=record.candidate_id,
-        status=PromotionStatus(record.status),
-        requested_by=record.requested_by,
-        approval_reference=record.approval_reference,
-        promoted_version_id=record.promoted_version_id,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
-
-
-def _evaluation_record(
-    result: CapabilityEvaluationResult,
-) -> CapabilityEvaluationResultRecord:
-    return CapabilityEvaluationResultRecord(
-        id=result.result_id,
-        promotion_id=result.promotion_id,
-        evaluator=result.evaluator,
-        status=result.status.value,
-        scenario_ids_json=list(result.scenario_ids),
-        report_json=result.report,
-        report_digest=result.report_digest,
-        created_at=result.created_at,
-    )
-
-
-def _from_evaluation_record(
-    record: CapabilityEvaluationResultRecord,
-) -> CapabilityEvaluationResult:
-    return CapabilityEvaluationResult(
-        result_id=record.id,
-        promotion_id=record.promotion_id,
-        evaluator=record.evaluator,
-        status=EvaluationResultStatus(record.status),
-        scenario_ids=tuple(record.scenario_ids_json),
-        report=record.report_json,
-        report_digest=record.report_digest,
-        created_at=record.created_at,
     )
 
 

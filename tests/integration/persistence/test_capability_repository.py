@@ -34,15 +34,6 @@ from riftx.capabilities import (
     capability_manifest_digest,
     capability_pack_digest,
 )
-from riftx.capabilities.models import (
-    CapabilityCandidate,
-    CapabilityCandidateStatus,
-    CapabilityEvaluationResult,
-    EvaluationResultStatus,
-    PromotionRun,
-    PromotionStatus,
-    evaluation_report_digest,
-)
 from riftx.domain.enums import ApprovalLevel
 from riftx.persistence import Database, SQLAlchemyCapabilityRepository
 
@@ -191,32 +182,15 @@ async def test_version_registration_is_idempotent_immutable_and_restart_safe(
     with pytest.raises(RepositoryConflictError, match="cannot be overwritten"):
         await repository.register_version(capability, overwritten)
 
-    candidate_manifest = manifest(version="1.1.0")
-    candidate = CapabilityCandidate(
-        candidate_id="candidate-1",
-        proposed_manifest=candidate_manifest,
-        candidate_digest=capability_manifest_digest(candidate_manifest),
-        status=CapabilityCandidateStatus.DRAFT,
-        proposed_by="operator-1",
-        source_run_id="run-1",
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    assert await repository.create_candidate(candidate) == candidate
-    assert await repository.get_candidate(candidate.candidate_id) == candidate
     await database.dispose()
 
     reopened = Database(database_url)
     await reopened.create_schema()
     restarted = SQLAlchemyCapabilityRepository(reopened.session_factory)
     assert await restarted.get_version(first.version_id) == first
-    assert await restarted.get_candidate(candidate.candidate_id) == candidate
     async with reopened.session_factory() as session:
         version_count = await session.scalar(text("SELECT count(*) FROM capability_versions"))
-        candidate_count = await session.scalar(
-            text("SELECT count(*) FROM capability_candidates")
-        )
-    assert version_count == candidate_count == 1
+    assert version_count == 1
     await reopened.dispose()
 
 
@@ -347,88 +321,6 @@ async def test_pack_install_disable_and_rollback_are_idempotent(tmp_path) -> Non
             CapabilityVersionStatus.DISABLED,
             changed_at=NOW + timedelta(minutes=5),
         )
-    await database.dispose()
-
-
-async def test_candidate_promotion_is_atomic_and_requires_passing_evaluation(
-    tmp_path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'riftx.db'}")
-    await database.create_schema()
-    repository = SQLAlchemyCapabilityRepository(database.session_factory)
-    promoted_manifest = manifest(version="3.0.0")
-    candidate = CapabilityCandidate(
-        candidate_id="candidate-approved",
-        proposed_manifest=promoted_manifest,
-        candidate_digest=capability_manifest_digest(promoted_manifest),
-        status=CapabilityCandidateStatus.APPROVED,
-        proposed_by="operator-1",
-        source_run_id="run-3",
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    promotion = PromotionRun(
-        promotion_id="promotion-approved",
-        candidate_id=candidate.candidate_id,
-        status=PromotionStatus.APPROVED,
-        requested_by="operator-1",
-        approval_reference="approval-1",
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    report = {"passed": True, "scenario": "eval.web.request-analysis"}
-    evaluation = CapabilityEvaluationResult(
-        result_id="evaluation-passed",
-        promotion_id=promotion.promotion_id,
-        evaluator="security-eval/v1",
-        status=EvaluationResultStatus.PASSED,
-        scenario_ids=("eval.web.request-analysis",),
-        report=report,
-        report_digest=evaluation_report_digest(report),
-        created_at=NOW,
-    )
-    capability = Capability(
-        capability_id=promoted_manifest.capability_id,
-        kind=promoted_manifest.kind,
-        created_at=NOW,
-    )
-    promoted_version = CapabilityVersion(
-        version_id="version-promoted",
-        manifest=promoted_manifest,
-        manifest_digest=candidate.candidate_digest,
-        status=CapabilityVersionStatus.ACTIVE,
-        created_at=NOW,
-        activated_at=NOW + timedelta(minutes=1),
-    )
-
-    await repository.create_candidate(candidate)
-    await repository.create_promotion(promotion)
-    assert await repository.get_version(promoted_version.version_id) is None
-    with pytest.raises(RepositoryConflictError, match="passing evaluation"):
-        await repository.promote_candidate(
-            candidate.candidate_id,
-            promotion.promotion_id,
-            capability,
-            promoted_version,
-            approval_reference="approval-1",
-            promoted_at=NOW + timedelta(minutes=1),
-        )
-    await repository.add_evaluation_result(evaluation)
-    assert (
-        await repository.promote_candidate(
-            candidate.candidate_id,
-            promotion.promotion_id,
-            capability,
-            promoted_version,
-            approval_reference="approval-1",
-            promoted_at=NOW + timedelta(minutes=1),
-        )
-        == promoted_version
-    )
-    promoted_candidate = await repository.get_candidate(candidate.candidate_id)
-    assert promoted_candidate is not None
-    assert promoted_candidate.status is CapabilityCandidateStatus.PROMOTED
-    assert promoted_candidate.promoted_version_id == promoted_version.version_id
     await database.dispose()
 
 
