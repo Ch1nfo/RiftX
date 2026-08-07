@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前审计基线：`0b53e43d`（阶段 A/PEN-500 已关闭，工作树干净）
+> 当前实现基线：`54c2489b`（阶段 A 与 B1 已完成）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,7 +37,7 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A 已完成；阶段 B 的代码审计已经确认了最短施工路径：先把现有 Nmap/Tool Result 的原始 Artifact 接入 Evidence Ledger，再走通一个本地网络服务的 Observation → Hypothesis → 最小验证 → Finding/Negative Result → Report。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1 已完成；下一步只复用现有 `service-enumeration`、fake Nmap、Nmap XML parser 和刚接通的 Artifact → Evidence 入口，走通一个本地网络服务的 Execution → Artifact → Evidence → Observation → Hypothesis。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
 
 ---
 
@@ -92,6 +92,7 @@ RiftX 正式版要成为：
 | 真实目标交互 | 隔离授权 HTTP 生命周期已覆盖成功、超时、越界、暂停、恢复、取消和重启 | 可作为后续 E2E 基座 |
 | 目标交互预算 | 总量和并发预算在持久事务中原子占用；总量耗尽复用 pause、Safety Stop 和 Stop Proof | 已完成 |
 | Admission 全预算 | Model、Tool、Token、Duration 和 Target Interaction 在模型或 Tool 副作用前持久检查；耗尽统一暂停并保留 Stop Proof | 已完成 |
+| Artifact → Evidence | Primary Agent 可把当前 Run 的 Artifact 精确 byte span 登记为稳定、可回放 Evidence，并用于 Reasoning | 已完成 |
 | 专业事实底座 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 需要生产消费者 |
 | 能力底座 | Capability、Version、Digest、Provenance、Candidate、Selection、Pack、Progressive Skill 已存在 | 需要用户成长闭环 |
 
@@ -106,12 +107,19 @@ b6b5f739  enforce model token duration budgets
 1c379dcc  unify budget exhaustion handling
 ```
 
+阶段 B 当前实现：
+
+```text
+54c2489b  register artifact evidence
+```
+
 最近已验证的相关回归包括：
 
 ```text
 Full Control Plane: 67 passed
 Runtime/Execution/Target HTTP/Worker: 467 passed
 Budget handling focused regression: 215 passed
+B1 Artifact → Evidence focused regression: 151 passed
 Full Ruff: passed
 Changed production files scoped mypy: passed
 ```
@@ -129,15 +137,16 @@ Changed production files scoped mypy: passed
 | 默认产品面收缩 | 未按真实消费者审计 | 是 |
 | 大规模代码删除 | 尚无足够消费者证据 | 否，延后到收缩阶段 |
 
-阶段 B 的审计已定位到一个明确断点，不需要再做大范围架构研究：
+阶段 B 的首个生产断点已经关闭：
 
 ```text
 Execution
 → ExecutionArtifactStore（已将 stdout/stderr 注册为不可变 Artifact）
 → ToolResultProcessor（已确定性解析 Nmap XML）
 → Agent Tool Result Context（已完成）
-→ Evidence Ledger（生产写入入口未接通）
-→ Reasoning Observation/Negative Result（因缺 Evidence ID 而无法完成真实链路）
+→ register_artifact_evidence（已完成；Primary-only、当前 Run、精确 byte span）
+→ Evidence Ledger（生产写入与幂等语义已接通）
+→ Reasoning Observation（已证明可消费返回的 Evidence ID）
 → Finding/Closure/Report
 ```
 
@@ -145,12 +154,12 @@ Execution
 
 - `service-enumeration` Official Pack 已声明 `port_scan`、`run_registered_tool`、`read_artifact`、`record_observation` 和 `record_negative_result`；
 - `ToolResultProcessor` 已保留原始输出、解析 Nmap XML、生成结构化结果与有界摘要；
-- `EvidenceApplicationService.register_artifact_span` 已能对不可变 Artifact 片段计算 Digest 并登记可回放 Evidence，但尚未被生产 Worker/Control Tool 装配；
+- `EvidenceApplicationService.register_artifact_span` 已由生产 Worker 和 Primary-only Control Tool 装配；
 - Reasoning 的 Observation、Fact、Finding Candidate 和 Negative Result 已强制校验 Evidence ID；
 - Finding 当前可引用同 Run 的 Artifact/Execution，Report 已能读取 Finding、Artifact、Event 和 Closure；
 - 现有测试已有 Nmap golden fixture、`fake_nmap.py` 和可复用的本地异步 HTTP 目标生命周期。
 
-因此，下一个提交应该是“生产 Artifact → Evidence 薄接入”，而不是新增扫描框架或自动生成 Finding。
+因此，下一个提交应该是“可复位 localhost 服务与枚举 E2E”，而不是新增扫描框架或自动生成 Finding。
 
 ### 2.3 对“是否过度开发”的最终判断
 
@@ -323,7 +332,7 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | in progress；B0 审计 completed，B1 待施工 | 一个真实服务从枚举走到证据化结论 |
+| B. 网络服务专业闭环 | in progress；B0-B1 completed，B2 当前施工 | 一个真实服务从枚举走到证据化结论 |
 | C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
@@ -386,29 +395,26 @@ Pentest Admission
 - 选择现有 Reasoning、Finding、Closure 和 Report Service，不新建 Pentest 专用 Graph 或 Report；
 - CI 复用 `tests/tools/fixtures/fake_nmap.py` 和 golden XML；人工发布 Smoke 在系统安装 Nmap 时对同一 localhost 靶场执行真实 Nmap，不把外部工具存在作为普通测试前提。
 
-已确认的首要断点是：`EvidenceApplicationService` 没有生产写入入口，导致 Tool Result 虽然已有 Artifact 和解析结果，Agent 却拿不到可用于 `record_observation` 的 Evidence ID。
+B0 确认的首要断点是 `EvidenceApplicationService` 缺少生产写入入口；B1 已用薄 Control Tool 关闭该断点，Agent 现在可以取得供 `record_observation` 使用的 Evidence ID。
 
-### 8.2 B1：Artifact → Evidence 生产入口（当前唯一实现切片）
+### 8.2 B1：Artifact → Evidence 生产入口（completed）
 
 用户结果：Agent 读取一个已完成 Execution 的原始 Artifact 后，可以把精确、不可变、可回放的片段登记为 Evidence，并立即用于 Observation 或 Negative Result。
 
-最小实现：
+已完成实现：
 
 1. 在生产 Worker 中装配现有 `EvidenceApplicationService`；
-2. 增加一个薄的本地认知 Control Tool，例如 `register_artifact_evidence`；
+2. 增加 Primary-only 本地认知 Control Tool `register_artifact_evidence`；
 3. 在有界 Tool Result Context 中暴露已存在的 opaque Artifact ID；Tool 输入只接受该 ID、精确 byte span、可选 Task ID 和目标引用；
 4. 服务端解析并验证 Artifact owner、Run/Session/Task owner、span 上限、Digest、Redaction 和当前 Run 状态；
 5. 返回稳定的 Evidence ID、canonical source URI 和 Digest；
 6. `record_observation`、`propose_fact`、`propose_finding` 与 `record_negative_result` 继续只接受已存在且同 Run 的 Evidence ID。
 
-优先修改现有装配和薄适配层，预期关注：
+实现复用了现有装配和薄适配层，未新增表、migration、Pack、Scanner、Planner、Graph、后台 Worker 或 UI。提交：
 
-- `src/riftx/temporal/worker_runtime.py`
-- `src/riftx/runtime/control_tools.py`
-- `src/riftx/tools/discovery.py`
-- `src/riftx/context/sources.py`
-- `src/riftx/application/services/evidence.py`（只有现有 API 确实无法表达时才改）
-- 对应 runtime、evidence、tool discovery 测试
+```text
+54c2489b  feat(pentest): register artifact evidence
+```
 
 禁止：
 
@@ -418,7 +424,7 @@ Pentest Admission
 - 让 parser 输出绕过 Evidence Ledger 直接成为 Confirmed Finding；
 - 因工具失败自动写“端口关闭”等目标结论。
 
-B1 验收：
+B1 已满足的回归合同：
 
 - 成功 Execution 的 Artifact span 可登记并跨进程读取；
 - 跨 Run Artifact、越界 span、缺失 Artifact、错误 Session/Task 全部失败关闭；
@@ -428,7 +434,7 @@ B1 验收：
 - 目标测试、受影响回归、Ruff、scoped mypy 和 `git diff --check` 通过；
 - 单独实现提交，不同时加入靶场或报告改造。
 
-### 8.3 B2：可复位本地服务与枚举 E2E
+### 8.3 B2：可复位本地服务与枚举 E2E（当前唯一实现切片）
 
 用户结果：一个 Pentest Run 在明确 localhost Scope 和预算内，能够发现本地服务并形成证据化 Observation 与 Hypothesis。
 
@@ -785,18 +791,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从审计基线 `0b53e43d` 继续，只做 B1“Artifact → Evidence 生产入口”：
+从实现基线 `54c2489b` 继续，只做 B2“可复位本地服务与枚举 E2E”：
 
-1. 在 Temporal Worker 装配现有 `EvidenceApplicationService`；
-2. 在 Tool Result Context 暴露 opaque Artifact ID，并增加一个薄 Control Tool，让 Primary Agent 对当前 Run 的不可变 Artifact 精确片段登记 Evidence；
-3. 复用 `ExecutionArtifactStore`、Artifact Service、Evidence Ledger、Run/Session/Task owner 校验和现有 Reasoning Proposal Tool；
-4. 返回 Evidence ID 后，证明 `record_observation` 能消费该 ID；
-5. 覆盖成功、跨 Run、越界 span、缺失 Artifact、parser error、重启读取和幂等语义；
-6. 不自动生成 Observation、Negative Result 或 Finding；
-7. 不新增表、migration、Scanner Framework、Pack、Planner、Graph、后台 Worker 或 UI；
-8. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；
-9. 通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后，形成一个独立实现提交；
-10. B1 提交完成后再进入 B2，不提前修改状态化 Web、Code Audit、学习平台或默认产品面。
+1. 复用仓库现有异步 localhost TCP/HTTP 测试服务，提供随机端口、确定性 banner/headers 和可复位关闭；
+2. 复用 `service-enumeration` Official Pack、`tests/tools/fixtures/fake_nmap.py`、Nmap golden XML、注册工具 Runner、`ExecutionArtifactStore` 和 `ToolResultProcessor`；
+3. 通过 Pentest Admission 或等价生产 API 创建一个具有 localhost Scope 和明确预算的真实 Pentest Run；
+4. 让一次枚举真实产生 Execution、stdout Artifact、Nmap 结构化结果、Evidence、Observation 和一个待验证 Hypothesis；
+5. Observation 只声明端点可达和带来源的服务特征；不得把默认端口、banner 或 scanner guess 直接写成漏洞；
+6. 覆盖正常端口、确定性失败、工具错误、Scope/预算前置门禁、暂停恢复和跨重启读取；
+7. B2 不创建 Confirmed Finding、Negative Result 自动结论、第二套扫描框架、事实表、Pack、Planner、Graph、Worker 或 UI；
+8. 默认 CI 只使用 fake Nmap；真实 Nmap 仅作为系统已安装时的非阻塞人工 Smoke；
+9. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；
+10. 通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后，形成一个独立实现提交；B2 完成前不进入 B3、状态化 Web、Code Audit、学习平台或默认产品面。
 
 ---
 
